@@ -1,0 +1,10 @@
+{
+  "name": "neo-trainer",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.9.0",
+  "scripts": {
+    "test": "pnpm -C shared test",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
