@@ -198,9 +198,10 @@ export function compileWorkout(w: Workout, opts: CompileOptions = {}): CompiledW
     for (let i = 1; i < wb.length; i++) if ((wb[i] as number) < (wb[mi] as number)) mi = i;
     const minW = wb[mi] as number;
     const nodeId = blocks[owner[mi] as number]?.nodeId;
+    const at = nodeId !== undefined ? { nodeId } : {};
     const pct = Math.round((minW / phys.wPrime) * 100);
-    if (minW < 0) issues.push({ severity: "error", nodeId, message: `W'bal drops to ${pct} % — not sustainable as prescribed` });
-    else if (minW < 0.15 * phys.wPrime) issues.push({ severity: "warning", nodeId, message: `W'bal drops to ${pct} % — very hard, little reserve` });
+    if (minW < 0) issues.push({ severity: "error", ...at, message: `W'bal drops to ${pct} % — not sustainable as prescribed` });
+    else if (minW < 0.15 * phys.wPrime) issues.push({ severity: "warning", ...at, message: `W'bal drops to ${pct} % — very hard, little reserve` });
   }
 
   if (w.nodes.length === 0) issues.push({ severity: "error", message: "Workout is empty" });

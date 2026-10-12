@@ -202,7 +202,10 @@ export const LAYOUT_STORAGE_KEY = "neo-trainer.layouts.v1";
 
 /** Saved layouts overlay the built-ins by id; custom ids are appended. */
 export class LayoutStore {
-  constructor(private storage: StorageLike) {}
+  private readonly storage: StorageLike;
+  constructor(storage: StorageLike) {
+    this.storage = storage;
+  }
 
   private saved(): Layout[] {
     try {

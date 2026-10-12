@@ -135,7 +135,16 @@ export class RideSim {
   private readonly pz: ReturnType<typeof powerZones>;
   private readonly hz: ReturnType<typeof hrZones>;
 
-  constructor(readonly athlete: Athlete, private readonly seed: number, private readonly bus: MetricBus, private readonly hooks: SimHooks) {
+  readonly athlete: Athlete;
+  private readonly seed: number;
+  private readonly bus: MetricBus;
+  private readonly hooks: SimHooks;
+
+  constructor(athlete: Athlete, seed: number, bus: MetricBus, hooks: SimHooks) {
+    this.athlete = athlete;
+    this.seed = seed;
+    this.bus = bus;
+    this.hooks = hooks;
     this.phys = physioFor(athlete);
     this.rng = new Rng(seed);
     this.pz = powerZones(athlete.ftp);

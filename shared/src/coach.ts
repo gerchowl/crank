@@ -41,7 +41,12 @@ export class Coach {
   private seq = 0;
   private rng: Rng;
 
-  constructor(private host: CoachHost, private seed: number) {
+  private readonly host: CoachHost;
+  private readonly seed: number;
+
+  constructor(host: CoachHost, seed: number) {
+    this.host = host;
+    this.seed = seed;
     this.rng = new Rng(seed ^ 0xc0ac4);
   }
 

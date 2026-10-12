@@ -16,8 +16,12 @@ class Level {
   readonly min: Float64Array;
   readonly max: Float64Array;
   latest = -1;
+  readonly res: number;
+  readonly cap: number;
 
-  constructor(readonly res: number, readonly cap: number) {
+  constructor(res: number, cap: number) {
+    this.res = res;
+    this.cap = cap;
     this.slot = new Float64Array(cap).fill(-1);
     this.sum = new Float64Array(cap);
     this.cnt = new Uint32Array(cap);

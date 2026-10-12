@@ -15,7 +15,10 @@ class Sma implements FilterStage {
   private ts: number[] = [];
   private vs: number[] = [];
   private sum = 0;
-  constructor(private windowS: number) {}
+  private readonly windowS: number;
+  constructor(windowS: number) {
+    this.windowS = windowS;
+  }
   push(t: number, v: number | null): number | null {
     if (v === null) return null;
     this.ts.push(t);
@@ -37,7 +40,10 @@ class Sma implements FilterStage {
 class Ema implements FilterStage {
   private y: number | null = null;
   private lastT = 0;
-  constructor(private tauS: number) {}
+  private readonly tauS: number;
+  constructor(tauS: number) {
+    this.tauS = tauS;
+  }
   push(t: number, v: number | null): number | null {
     if (v === null) return null;
     if (this.y === null || this.tauS <= 0) {
@@ -57,7 +63,10 @@ class Ema implements FilterStage {
 
 class Median implements FilterStage {
   private buf: number[] = [];
-  constructor(private n: number) {}
+  private readonly n: number;
+  constructor(n: number) {
+    this.n = n;
+  }
   push(_t: number, v: number | null): number | null {
     if (v === null) return null;
     this.buf.push(v);
@@ -76,7 +85,14 @@ class OneEuro implements FilterStage {
   private x: number | null = null;
   private dx = 0;
   private lastT = 0;
-  constructor(private minCutoff: number, private beta: number, private dCutoff = 1) {}
+  private readonly minCutoff: number;
+  private readonly beta: number;
+  private readonly dCutoff: number;
+  constructor(minCutoff: number, beta: number, dCutoff = 1) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.dCutoff = dCutoff;
+  }
   private static alpha(cutoff: number, dt: number): number {
     const tau = 1 / (2 * Math.PI * cutoff);
     return 1 / (1 + tau / dt);
