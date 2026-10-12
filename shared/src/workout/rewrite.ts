@@ -24,7 +24,7 @@ function scaleTime(s: StepNode, k: number, min = 5): StepNode {
   return { ...s, end: { kind: "time", s: Math.max(min, r5(s.end.s * k)) } };
 }
 
-/** Apply `f` to the outermost repeats that contain work; other nodes go through `g`. */
+/** Apply `f` to the top-level repeats (of the selection) that contain work; other nodes pass through. */
 function mapOuterWorkRepeats(nodes: readonly WorkoutNode[], ftp: number, f: (r: RepeatNode) => RepeatNode): WorkoutNode[] {
   return nodes.map((n) => {
     if (n.type === "repeat") return containsWork(n, ftp) ? f(n) : n;

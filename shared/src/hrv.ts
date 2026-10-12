@@ -7,7 +7,7 @@
  * dfa_a1: short-term scaling exponent of detrended fluctuation analysis (Peng 1995) over a
  * trailing window of beats (the backend uses 120 beats, recomputed at 1 Hz), box sizes
  * n = 4..16, non-overlapping boxes, linear detrending, slope of log F(n) vs log n.
- * Before DFA the series is detrended with a centred 41-beat moving average (a cheap stand-in for
+ * Before DFA the series is detrended with a centred 25-beat moving average (a cheap stand-in for
  * the smoothness-priors detrending Kubios uses) so workload-driven HR changes don't inflate α1.
  * Otherwise this is the standard algorithm on a short window; the caveat is in the *input*: the mock's
  * RR series is synthetic (an intensity-dependent mix of AR(1), white and anti-correlated
@@ -43,7 +43,7 @@ export function detrendRr(rr: readonly number[], w = 41): number[] {
   return out;
 }
 
-export function dfaAlpha1(rrRaw: readonly number[], minBox = 4, maxBox = 16, detrendWindow = 41): number | null {
+export function dfaAlpha1(rrRaw: readonly number[], minBox = 4, maxBox = 16, detrendWindow = 25): number | null {
   const N = rrRaw.length;
   if (N < maxBox * 3) return null;
   const rr = detrendWindow > 0 ? detrendRr(rrRaw, detrendWindow) : rrRaw;

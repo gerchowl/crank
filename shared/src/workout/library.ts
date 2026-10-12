@@ -26,7 +26,7 @@ export function seedSnippets(): { name: string; nodes: WorkoutNode[] }[] {
  */
 export const DEMO_DSL = `"Warm-up" 8m ramp 45-75% 90rpm
 3m 60%
-"VO2 sets" 3x[+5w](5x(30s 125%, 15s 50%), "Recover" hr<112 2m..4m 40%)
+"VO2 sets" 3x[+5w](5x(30s 125%, 15s 50%), "Recover" hr<118 2m..4m 40%)
 "Threshold" 2x[!last](4m 95% 90-95rpm, 2m 55%)
 "Cool-down" 5m ramp 60-40%`;
 
