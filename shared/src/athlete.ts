@@ -31,7 +31,7 @@ export function physioFor(a: Athlete): Physio {
     wPrime: 20000,
     hrAtZero: a.restHr + 12,
     hrAtFtp: Math.round(a.maxHr * 0.9),
-    usualTauS: 50,
+    usualTauS: 55,
   };
 }
 
