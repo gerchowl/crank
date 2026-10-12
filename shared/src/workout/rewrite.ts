@@ -96,14 +96,13 @@ function vary(nodes: readonly WorkoutNode[], ftp: number, rng: Rng): WorkoutNode
         const rep: RepeatNode = {
           type: "repeat",
           id: uid("r"),
-          label: n.label,
           count: 2,
           children: [
             { type: "step", id: n.id, end: { kind: "time", s: half }, target: { kind: "pct_ftp", value: Math.round(v - 5) } },
             { type: "step", id: uid("s"), end: { kind: "time", s: half }, target: { kind: "pct_ftp", value: Math.round(v + 5) } },
           ],
         };
-        if (rep.label === undefined) delete rep.label;
+        if (n.label !== undefined) rep.label = n.label;
         return [rep];
       }
       if (choice === 1) return [{ ...n, target: { kind: "ramp", from: Math.round(v - 7), to: Math.round(v + 7) } }];

@@ -14,8 +14,12 @@ type TokKind = "word" | "string" | "(" | ")" | "[" | "]" | "sep" | "eof";
 interface Tok { kind: TokKind; text: string; offset: number; length: number }
 
 class DslFail extends Error {
-  constructor(message: string, readonly offset: number, readonly length: number) {
+  readonly offset: number;
+  readonly length: number;
+  constructor(message: string, offset: number, length: number) {
     super(message);
+    this.offset = offset;
+    this.length = length;
   }
 }
 
@@ -97,7 +101,12 @@ export function parseDurationWord(w: string): number | null {
 
 class Parser {
   private i = 0;
-  constructor(private toks: Tok[], private ftp: number) {}
+  private readonly toks: Tok[];
+  private readonly ftp: number;
+  constructor(toks: Tok[], ftp: number) {
+    this.toks = toks;
+    this.ftp = ftp;
+  }
 
   private peek(): Tok {
     return this.toks[this.i] as Tok;
