@@ -111,6 +111,23 @@ class LayoutState {
     if (this.selectedId === id) this.selectedId = null;
   }
 
+  /** After a drop: push widgets overlapping `moved` (and then each other) downwards. */
+  resolveCollisions(moved: Widget): void {
+    const page = this.page;
+    if (!page) return;
+    const overlaps = (a: Widget, b: Widget) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    const queue: Widget[] = [moved];
+    for (let guard = 0; queue.length && guard < 200; guard++) {
+      const a = queue.shift();
+      if (!a) break;
+      for (const b of page.widgets) {
+        if (b === a || b.id === moved.id || !overlaps(a, b)) continue;
+        b.y = a.y + a.h;
+        queue.push(b);
+      }
+    }
+  }
+
   addPage(): void {
     this.layout.pages.push({ id: `page-${Date.now().toString(36)}`, name: `Page ${this.layout.pages.length + 1}`, widgets: [] });
     this.pageIndex = this.layout.pages.length - 1;
