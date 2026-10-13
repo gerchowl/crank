@@ -289,6 +289,7 @@ motion are pixel-identical to A's start screen (both sizes, both themes).
 | (b) slow boot — **default** | the sequence plays through and **rests** on the wordmark (as A); status line from the boot timer at 1.2 s; fade on ready |
 | (b′) slow boot, `?hold` | the spin **sustains at ω_max** (no further acceleration) until ready — at full speed that is the steady closed ring; status at 1.2 s; on ready the glide + letters run inside the 200 ms fade |
 | reduced motion | no motion, no script: the markup at rest is the wordmark; status at 1.2 s; removed at once on ready |
+| boot failure | as "Boot failure" above: the alert replaces the status at once; F's motion is not cut — it plays through and rests on the wordmark (with `?hold`, it too finishes instead of holding). Wiring this into F is integration work, done only if F wins (#62's start screen owns the failure path) |
 
 **Why (b) and not (b′) as default.** A held spin is a progress spinner, which the start screen rules out
 ("no progress bar"); and since the hand-off begins the moment the core is ready, a morph gated on
