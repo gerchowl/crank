@@ -15,7 +15,7 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
       cargoFiles = lib.fileset.difference (craneLib.fileset.commonCargoSources ./.) ./crates/crank-fec/fuzz;
-      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-fec/tests/fixtures ./clippy.toml ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
+      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-fec/tests/fixtures ./clippy.toml ./crates/crank-domain/tests/vectors ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
         (lib.fileset.difference ./app ./app/src-tauri) ./shared
@@ -83,6 +83,18 @@
             productionMetadata=$(mktemp)
             cargo metadata --locked --format-version 1 --features crank-desktop/custom-protocol > "$productionMetadata"
             cargo metadata --locked --format-version 1 --all-features | python3 scripts/deps-edges.py "$productionMetadata"
+          '';
+          doInstallCargoArtifacts = false; installPhase = "touch $out";
+        });
+        scales-parity = craneLib.mkCargoDerivation (rustCheck // {
+          src = source (lib.fileset.unions [ rustFiles
+            (lib.fileset.difference ./app ./app/src-tauri) ./shared
+            ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ]);
+          inherit pnpmDeps;
+          nativeBuildInputs = rustCheck.nativeBuildInputs ++ [ pkgs.nodejs pkgs.pnpm_12 pkgs.pnpmConfigHook ];
+          buildPhaseCargoCommand = ''
+            cargo run --release --locked -p crank-domain --example export_scale_edges > "$TMPDIR/rust-edges.json"
+            CRANK_SCALE_EDGES="$TMPDIR/rust-edges.json" pnpm -C app exec vitest run tests/scales-parity.test.ts
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
