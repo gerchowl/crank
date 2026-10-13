@@ -5,7 +5,7 @@ import ts from "typescript-eslint";
 import svelteConfig from "./svelte.config.js";
 
 export default ts.config(
-  { ignores: ["dist/", "shots/", "node_modules/"] },
+  { ignores: ["dist/", "shots/", "node_modules/", "**/*.tmp.mjs"] },
   js.configs.recommended,
   ...ts.configs.strictTypeChecked,
   ...svelte.configs.recommended,
