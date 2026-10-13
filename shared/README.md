@@ -105,3 +105,7 @@ peak; τ is profiled on a 10–200 s grid with (hrInf, amp) solved linearly per 
   returned by `ride.current()` is the original.
 - Layouts persist under `localStorage["neo-trainer.layouts.v1"]` (in-memory fallback).
 - Run tests: `pnpm -C shared test`, types: `pnpm -C shared typecheck`.
+
+## Ride record for review views
+- `streams(metrics, fromS?)`: full-ride 1 Hz per-second means (`null` = no data). Poll at ≤ 1 Hz and pass `fromS = previous.toS` to fetch only new seconds.
+- `recoveries()`: finished `hr_recovery` blocks (final fit, τ) of the current ride, oldest first.
