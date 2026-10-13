@@ -46,9 +46,57 @@ pub enum StoreError {
     /// Invalid persisted binary chunk.
     #[error("corrupt ride chunk: {0}")]
     CorruptChunk(String),
+    /// The database was written by a newer schema than this build supports;
+    /// it is never interpreted, read-only or not.
+    #[error("database schema v{found} is newer than supported v{supported}")]
+    SchemaTooNew {
+        /// `user_version` found in the database.
+        found: u32,
+        /// Newest schema this build understands.
+        supported: u32,
+    },
+    /// A stored `ride.state` is not one of the known values.
+    #[error("unknown ride state {0:?}")]
+    UnknownRideState(String),
     /// Writer terminated or reader mutex poisoned.
     #[error("store worker unavailable")]
     WorkerStopped,
+}
+/// Lifecycle of a ride, mirroring the `ride.state` column.
+/// The column is NULL while the ride is live and otherwise `finished` or
+/// `aborted` (enforced by a CHECK constraint); `Open` is the NULL case.
+/// The serde names are the stored strings, plus `open` for NULL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RideState {
+    /// Still being recorded (`state` is NULL).
+    Open,
+    /// Closed normally by `finish_ride`.
+    Finished,
+    /// Closed by crash recovery in the next lock owner.
+    Aborted,
+}
+impl RideState {
+    /// Decode the nullable `ride.state` column.
+    /// # Errors
+    /// Returns `UnknownRideState` for any string other than `finished`/`aborted`.
+    pub fn from_column(stored: Option<&str>) -> Result<Self, StoreError> {
+        match stored {
+            None => Ok(Self::Open),
+            Some("finished") => Ok(Self::Finished),
+            Some("aborted") => Ok(Self::Aborted),
+            Some(other) => Err(StoreError::UnknownRideState(other.to_owned())),
+        }
+    }
+    /// The value stored in `ride.state`; `None` (NULL) for `Open`.
+    #[must_use]
+    pub fn as_column(self) -> Option<&'static str> {
+        match self {
+            Self::Open => None,
+            Self::Finished => Some("finished"),
+            Self::Aborted => Some("aborted"),
+        }
+    }
 }
 /// One second's per-metric mean (ADR-0001 §5–6).
 #[derive(Clone, Debug)]
@@ -99,8 +147,8 @@ pub struct Ride {
     pub started_at: i64,
     /// UTC Unix seconds at finish/recovery; absent while live.
     pub ended_at: Option<i64>,
-    /// `finished` or `aborted`; absent while live.
-    pub state: Option<String>,
+    /// Lifecycle state; `Open` while live.
+    pub state: RideState,
     /// Workout snapshot.
     pub workout: RideWorkoutJson,
     /// Compiled snapshot.
@@ -140,8 +188,11 @@ impl Store {
         Self::readers(data_dir, Some(WriterHandle::open(data_dir)?))
     }
     /// Open an existing database without migrations, writes or recovery.
+    /// A database whose `user_version` exceeds this build's schema is refused:
+    /// a read-only process must never interpret a schema it does not know.
     /// # Errors
-    /// Returns SQL errors for an absent/unreadable database.
+    /// Returns SQL errors for an absent/unreadable database, or
+    /// `SchemaTooNew` for a newer schema.
     pub fn open_read_only(data_dir: &Path) -> Result<Self, StoreError> {
         Self::readers(data_dir, None)
     }
@@ -151,6 +202,13 @@ impl Store {
                 data_dir.join("crank.db"),
                 OpenFlags::SQLITE_OPEN_READ_ONLY,
             )?;
+            let found: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
+            if found > writer::SCHEMA_VERSION {
+                return Err(StoreError::SchemaTooNew {
+                    found,
+                    supported: writer::SCHEMA_VERSION,
+                });
+            }
             db.pragma_update(None, "foreign_keys", true)?;
             Ok(Mutex::new(db))
         };
@@ -306,7 +364,7 @@ impl Store {
                             r.get(0)?,
                             r.get(1)?,
                             r.get(2)?,
-                            r.get(3)?,
+                            r.get::<_, Option<String>>(3)?,
                             r.get::<_, String>(4)?,
                             r.get::<_, String>(5)?,
                             r.get::<_, Option<String>>(6)?,
@@ -320,7 +378,7 @@ impl Store {
                         id,
                         started_at,
                         ended_at,
-                        state,
+                        state: RideState::from_column(state.as_deref())?,
                         workout: RideWorkoutJson::parse(&workout)?,
                         compiled: CompiledJson::parse(&compiled)?,
                         summary: summary.map(|s| RideSummaryJson::parse(&s)).transpose()?,
