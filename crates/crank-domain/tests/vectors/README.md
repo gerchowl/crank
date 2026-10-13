@@ -35,7 +35,9 @@ comparison type map, not a JSON Schema document or a full domain validator:
 - `float` declares a physical quantity, duration, timestamp, or continuous
   calculation result. No classification depends on whether its value is whole.
 - `integer` declares counts, indices, seeds, ticks, parser UTF-16 offsets/lengths,
-  zone codes, or the simulator speed enum. Integer values must also be integral.
+  zone codes, the simulator speed enum, and the 1 Hz sample counts reported as
+  histogram/heatmap seconds or compiler time-in-zone seconds. Integer values
+  must also be integral.
 - `exact` declares nonnumeric discrete data (strings, booleans, null).
 - `fields` enumerates allowed object keys; `items` declares array elements;
   `ref` resolves through `definitions` for recursive workout nodes.

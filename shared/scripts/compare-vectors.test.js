@@ -69,6 +69,16 @@ describe("semantic vector comparison (ADR-0001 §3)", () => {
     expect(difference(value, value)).not.toBeNull();
   });
 
+  it.each([
+    ["compile", { timeInZoneS: [3] }, { timeInZoneS: [3.0000000000001] }],
+    ["distributions", { bins: [{ lo: 250, seconds: 3 }] }, { bins: [{ lo: 250, seconds: 3.0000000000001 }] }],
+    ["distributions", { seconds: [3] }, { seconds: [3.0000000000001] }],
+  ])("keeps 1 Hz sample counts exact in %s", (area, expected, actual) => {
+    const document = (output) => ({ schemaVersion: 1, cases: [{ name: "counts", input: {}, output }] });
+    expect(vectorDifference(document(expected), document(actual), vectorSchemas.areas[area], vectorSchemas.definitions))
+      .not.toBeNull();
+  });
+
   it("resolves recursive declarations and rejects unknown nested fields", () => {
     const tree = [{ count: 3, children: [{ count: 2 }] }];
     const schema = { items: { ref: "node" } };
