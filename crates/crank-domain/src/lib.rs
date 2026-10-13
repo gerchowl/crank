@@ -38,3 +38,7 @@ mod tests {
         assert!(super::js_round(f64::NAN).is_nan());
     }
 }
+
+pub mod hr_recovery;
+pub mod hrv;
+pub mod wbal;
