@@ -34,7 +34,7 @@ bindings:
 
 # ADR-0001 §3: regenerate frozen TypeScript reference results for Rust ports.
 vectors:
-    CRANK_EXPORT_VECTORS=1 pnpm -C shared exec vitest run scripts/export-vectors.test.js
+    CRANK_EXPORT_VECTORS=1 pnpm -C shared exec vitest run scripts/export-vectors.test.js scripts/tree-reference.test.js
 
 vectors-check:
     pnpm -C shared exec vitest run scripts
