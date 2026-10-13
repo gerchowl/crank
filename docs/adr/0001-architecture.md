@@ -499,7 +499,7 @@ agent assumes a hardware result it did not see.
   | `bindings-drift` | runs the bindings export binary and `diff`s its output against the committed `app/src/bindings.ts` |
   | `doctest` | `cargoDocTest` |
   | `doc` | `cargoDoc` with `RUSTDOCFLAGS=-D warnings` (`missing_docs` denied) |
-  | `deny` | `cargoDeny` (bans, licenses, sources) |
+  | `deny` | ~~`cargoDeny` (bans, licenses, sources)~~ `cargoDeny` (advisories, bans, licenses, sources; advisories amended by §9.5) |
   | `deps-edges` | script over `cargo metadata`: forbidden crate edges (§2) and `e2e` feature not in `crank-app` |
   | `app-typecheck`, `app-lint`, `app-test` | frontend derivations: `tsc --noEmit`, ESLint, Vitest |
 
@@ -584,6 +584,32 @@ agent assumes a hardware result it did not see.
   `busy_timeout`. It never writes `ride` or `ride_chunk` and never runs recovery. The current store is
   strictly read-only for lock-less processes (`StoreError::ReadOnly`) and stays so until the first lock-less
   writer (MCP/CLI) lands; #166 tracks that implementation.
+
+### 9.5 Amendment 2026-10-13: supply-chain gate (#124)
+
+*Amends §9.1 (`deny` row). Dependency policy is `deny.toml`; this section is the rationale.*
+
+- **RustSec in the gate.** The `deny` check now runs `advisories` in addition to `bans licenses sources`.
+  The Nix sandbox has no network, so the database is the pinned flake input `advisory-db`
+  (`github:rustsec/advisory-db`, `flake = false`), copied into a git checkout at build time and read with
+  `cargo deny --offline`. Advisory updates therefore arrive as ordinary `flake.lock` bumps:
+  `nix flake update advisory-db`, then `nix flake check -L`; a new advisory fails the check in that PR
+  and is fixed or ignored there. `deny.toml` stays the single policy file; Nix only injects the db path.
+- **Policy.** Vulnerabilities, `unmaintained = "all"` and `unsound = "all"` (transitive included) and
+  `yanked = "deny"` all fail. There are no blanket ignores: every `ignore` entry in `deny.toml` carries a
+  reason and a tracking issue. Today that is three transitive build-time/Linux-only entries (glib, paste,
+  proc-macro-error) tracked in #180, which must be empty before it closes.
+- **What the sandbox cannot see.** Yanked releases need the crates.io index, so the in-gate run silences
+  `index-failure` (`-A`) and the pin means advisories published after the last bump are invisible to PRs.
+  `.github/workflows/advisories.yml` (#181) runs weekly, on lockfile/`deny.toml` PRs and on demand against
+  the live db and index, outside `CI Summary` so an upstream advisory cannot block unrelated work.
+  An automated "bump the lock and open a PR" job was rejected: PRs opened with `GITHUB_TOKEN` do not
+  trigger the required CI, and a GitHub App for that is not worth it for one input. A red weekly run is
+  the prompt for a manual bump.
+- **Frontend.** `pnpm audit` queries the registry, so it cannot run in the sandbox. Decision: run
+  `pnpm audit --prod` in the same workflow (production dependencies only: dev tooling never ships in the
+  app). Rejected: a pinned offline npm advisory database (no maintained Nix-packaged source) and gating
+  PRs on it (same upstream-blocks-unrelated-work problem as above).
 
 ## 10. Alternatives considered (summary)
 
