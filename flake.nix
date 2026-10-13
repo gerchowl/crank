@@ -63,8 +63,9 @@
         bindings-drift = craneLib.mkCargoDerivation (rustCheck // {
           src = source (lib.fileset.unions [ rustFiles ./app/src/bindings.ts ]);
           buildPhaseCargoCommand = ''
-            cargo run --release --locked -p crank-desktop --bin export-bindings -- /tmp/bindings.ts
-            diff -u app/src/bindings.ts /tmp/bindings.ts
+            bindingsDir=$(mktemp -d)
+            cargo run --release --locked -p crank-desktop --bin export-bindings -- "$bindingsDir/bindings.ts"
+            diff -u app/src/bindings.ts "$bindingsDir/bindings.ts"
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
