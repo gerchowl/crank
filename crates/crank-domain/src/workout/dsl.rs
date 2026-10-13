@@ -110,6 +110,7 @@ fn lex(src: &str) -> Result<Vec<Token>, DslError> {
             length: offset - start,
         };
         if kind == 'w'
+            && is_numeric_token(&token.text)
             && token
                 .text
                 .split(|c: char| !c.is_ascii_digit() && c != '.')
@@ -130,6 +131,22 @@ fn lex(src: &str) -> Result<Vec<Token>, DslError> {
         length: 0,
     });
     Ok(tokens)
+}
+// Only tokens shaped like a DSL number can overflow: an optional sign or `hr<`, then digits,
+// `.`/`-`/`h`/`m`/`s` (ranges, durations), then an optional unit. Other words with long digit
+// runs must reach the parser, which reports `UnknownToken` as in TS.
+fn is_numeric_token(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let body = lower.strip_prefix(['+', '-']).unwrap_or(&lower);
+    let body = body.strip_prefix("hr<").unwrap_or(body);
+    let body = ["kj", "bpm", "rpm", "x", "w", "%"]
+        .iter()
+        .find_map(|unit| body.strip_suffix(unit))
+        .unwrap_or(body);
+    body.starts_with(|c: char| c.is_ascii_digit())
+        && body
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | 'h' | 'm' | 's'))
 }
 fn number(s: &str, decimal: bool) -> Option<f64> {
     let mut parts = s.split('.');
