@@ -768,21 +768,17 @@ function ProposedTo({ pct }: { pct: number }) {
 function Lane(p: { cls: "idle" | "ask" | "applied"; alert?: boolean; head?: ReactNode; band?: string; reason?: ReactNode; actions?: ReactNode; deadline?: ReactNode; bar?: number | null; grammar?: ReactNode; metric?: ReactNode }) {
   return (
     <div className={`coach ${p.cls}`} role={p.alert ? "alert" : "status"} data-fit data-lane={p.cls} data-geom="lane">
-      {p.metric ? (
-        <div className="lane-metric">{p.metric}</div>
-      ) : (
-        <>
-          <div className="lane-head" data-fit data-geom="lane-head">
-            {p.head}
-          </div>
-          <p className="t3 reason" data-fit>
-            {p.reason}
-          </p>
-          <div className="coach-actions" data-geom="lane-actions">
-            {p.actions}
-          </div>
-        </>
-      )}
+      {/* the rows always exist; Detail's metric lies over the first three (§16.1) */}
+      <div className="lane-head" data-fit data-geom="lane-head">
+        {p.head}
+      </div>
+      <p className="t3 reason" data-fit data-geom="lane-reason">
+        {p.reason}
+      </p>
+      <div className="coach-actions" data-geom="lane-actions">
+        {p.actions}
+      </div>
+      {p.metric && <div className="lane-metric">{p.metric}</div>}
       {p.band && <span className="band-word">{p.band}</span>}
       <div className="lane-deadline" data-geom="lane-deadline">
         <span className="t3 deadline-text" data-fit>

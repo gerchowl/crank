@@ -63,7 +63,8 @@ export function Today() {
   const stop = stopActive() || safe.stop;
   const checkinDone = confirmed !== null && safe.checkedToday && !stop;
   const collapsed = checkinDone && !editing;
-  const ready = !!proposal && !pending && checkinDone;
+  // Start acts only on the card the rider can see: the check-in done and closed (DESIGN §16.2)
+  const ready = !!proposal && !pending && checkinDone && !editing;
   const capped = !!fx.healthCap;
   const coachPick: Cell = capped ? { intensity: "tempo", format: "intervals" } : { intensity: "vo2max", format: "intervals" };
   const outcome = planWish(wish, { legs: c.legs, sleep: c.sleep, minutes: c.minutes, capped, coachPick });
@@ -153,7 +154,7 @@ export function Today() {
           <button onClick={() => setEditing(true)}>Edit</button>
         </section>
       ) : (
-        <section className="card checkin" aria-label="How are you today" data-prefilled={!confirmed || undefined}>
+        <section className="card checkin" aria-label="How are you today" data-prefilled={!confirmed || undefined} data-stop={stop || undefined}>
           <div className="checkin-answers">
             <h2>
               How are you? <span className={confirmed ? "muted small" : "small status-info"}>{confirmed === "same" ? "Same as yesterday — confirmed." : confirmed === "changed" ? "Your answers for today." : "Pre-filled from yesterday. Confirm or change."}</span>

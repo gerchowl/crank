@@ -134,6 +134,7 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .today-week { grid-area: week; min-width: 0; }
 .today-model { grid-area: model; min-width: 0; }
 .checkin { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 28px; margin-bottom: 16px; }
+.checkin[data-stop] { grid-template-columns: minmax(0, 1fr); }
 .checkin h2 .small { font-weight: 400; margin-left: 6px; }
 .checkin .redflag-check.compact { margin-top: 0; border-top: 0; padding-top: 0; }
 .checkin-summary { display: flex; align-items: center; gap: 16px; padding: 8px 12px 8px 22px; margin-bottom: 16px; font-size: 17px; }
@@ -297,7 +298,9 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .coach.ask { border-top-color: var(--status-info); }
 .coach.applied { border-top-color: var(--status-good); }
 .lane-head { display: flex; align-items: baseline; white-space: nowrap; min-width: 0; line-height: 1.2; }
-.lane-metric { grid-row: 1 / 4; display: flex; align-items: center; min-height: 0; }
+.coach > * { grid-column: 1; }
+.lane-head { grid-row: 1; } .coach .reason { grid-row: 2; } .coach > .coach-actions { grid-row: 3; } .lane-deadline { grid-row: 4; } .coach .grammar { grid-row: 5; }
+.lane-metric { grid-row: 1 / 4; grid-column: 1; display: flex; align-items: center; min-height: 0; }
 .lane-deadline { display: grid; grid-template-rows: auto 6px; gap: 4px; align-content: start; }
 .deadline.reserved { visibility: hidden; }
 .coach .verb { font-size: var(--t3p); font-weight: 800; white-space: nowrap; display: block; }
