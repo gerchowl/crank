@@ -15,7 +15,7 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
       cargoFiles = craneLib.fileset.commonCargoSources ./.;
-      rustFiles = lib.fileset.unions [ cargoFiles ./spec/knowledge-pack/rules.md
+      rustFiles = lib.fileset.unions [ cargoFiles ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
         (lib.fileset.difference ./app ./app/src-tauri) ./shared
@@ -42,7 +42,11 @@
         cargoExtraArgs = "--workspace --locked";
       };
       cargoArtifacts = craneLib.buildDepsOnly (common // { src = source cargoFiles; });
-      rustCheck = common // { inherit cargoArtifacts; };
+      rustCheck = common // {
+        inherit cargoArtifacts;
+        nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.python3 ];
+        postConfigure = "python3 scripts/relocate-tauri-permissions.py";
+      };
       desktop = features: craneLib.buildPackage (rustCheck // {
         pname = "crank-desktop"; cargoExtraArgs = "--locked -p crank-desktop --bin crank-desktop --features custom-protocol${features}";
         doCheck = false;
