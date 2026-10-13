@@ -38,7 +38,7 @@
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.webkitgtk_4_1 pkgs.gtk3 pkgs.libsoup_3 pkgs.openssl ];
-        # Checks compile in dev mode; the release desktop embeds appDist below.
+        # Rust checks share crane's default release-profile artifacts.
         cargoExtraArgs = "--workspace --locked";
       };
       cargoArtifacts = craneLib.buildDepsOnly (common // { src = source cargoFiles; });
@@ -59,7 +59,7 @@
         bindings-drift = craneLib.mkCargoDerivation (rustCheck // {
           src = source (lib.fileset.unions [ rustFiles ./app/src/bindings.ts ]);
           buildPhaseCargoCommand = ''
-            cargo run --locked -p crank-desktop --bin export-bindings -- /tmp/bindings.ts
+            cargo run --release --locked -p crank-desktop --bin export-bindings -- /tmp/bindings.ts
             diff -u app/src/bindings.ts /tmp/bindings.ts
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
