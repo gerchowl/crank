@@ -458,7 +458,7 @@ impl Parser<'_> {
         if pct > 400.0 {
             return Err(target_tok.error(
                 DslErrorKind::ImplausiblePower { pct },
-                format!("{:.0} % FTP is implausible (max 400 %)", js_round(pct)),
+                format!("{} % FTP is implausible (max 400 %)", fmt_whole(pct)),
             ));
         }
         Ok(StepNode {
