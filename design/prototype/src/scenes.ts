@@ -5,9 +5,10 @@ import { editor } from "./editor/model";
 import { pathNodes } from "./format";
 import { athleteModel, cappedProposal, freeRide, sceneFixture, type SceneFixture } from "./mock/ext";
 import { rideScreen } from "./persist";
-import { pendingStart, reportSymptomInRide } from "./safety";
+import { pendingStart, reportSymptomInRide, safety } from "./safety";
 import { backend, loadRide, navigate, session, type View } from "./session";
 import { openTopic, whyOpen } from "./views/Why";
+import { planWish } from "./mock/wish";
 
 const CP = athleteModel[0]?.value ?? 280;
 
@@ -54,6 +55,8 @@ function startRide(w: Workout = demoWorkout(backend.athlete.ftp)) {
 }
 
 interface Scene { view: View; sub?: string; setup?: () => void }
+/** Today after the check-in and today's red-flag check: the saddle proposal (DESIGN §15.2). */
+const saddle = (fx: SceneFixture, then?: () => void): Scene => ({ view: "today", setup: () => (sceneFixture.set({ ...fx, ready: true }), safety.set((s) => ({ ...s, checkedToday: true })), then?.()) });
 const ride = (setup: () => void): Scene => ({ view: "ride", setup: () => (startRide(), setup()) });
 /** A state the mock cannot produce: ride to a moment, then overlay what the core would send (labelled fixture). */
 const fixture = (setup: () => void, fx: SceneFixture): Scene => ({ view: "ride", setup: () => (startRide(), setup(), sceneFixture.set(fx)) });
@@ -135,11 +138,19 @@ export const scenes: Record<string, Scene> = {
   // training profile, wish matrix, Why?/Background (DESIGN §15)
   "onboarding-profile": { view: "onboarding", sub: "profile" },
   "settings-profile": { view: "settings", sub: "profile" },
-  "today-wish-granted": { view: "today", setup: () => sceneFixture.set({ wish: { intensity: "vo2max", format: "intervals" } }) },
-  "today-wish-deviates": { view: "today", setup: () => sceneFixture.set({ wish: { intensity: "vo2max", format: "intervals" }, checkin: { legs: 1, sleep: 2 } }) },
-  "today-wish-capped": { view: "today", setup: () => sceneFixture.set({ healthCap: true, wish: { intensity: "threshold", format: "hills" } }) },
-  "today-wish-long": { view: "today", setup: () => sceneFixture.set({ wish: { intensity: "easy", format: "long" } }) },
-  "today-why": { view: "today", setup: () => (sceneFixture.set({ wish: { intensity: "vo2max", format: "intervals" }, checkin: { legs: 1, sleep: 2 } }), whyOpen.set("R-RDY-02")) },
+  // after the check-in (ready): the saddle proposal, captured as the viewport — what the rider sees from the bike
+  "today-wish-granted": saddle({ wish: { intensity: "vo2max", format: "intervals" } }),
+  "today-wish-deviates": saddle({ wish: { intensity: "vo2max", format: "intervals" }, checkin: { legs: 1, sleep: 2 } }),
+  "today-wish-adapted": saddle({ wish: { intensity: "tempo", format: "steady" }, checkin: { sleep: 2, minutes: 120 } }),
+  "today-wish-capped": saddle({ healthCap: true, wish: { intensity: "threshold", format: "intervals" } }),
+  "today-wish-remote": saddle({ remote: { intensity: "threshold", format: "hills" } }),
+  "today-wish-carried": { view: "today", setup: () => sceneFixture.set({ carried: true }) },
+  "today-why": saddle({ wish: { intensity: "vo2max", format: "intervals" }, checkin: { legs: 1, sleep: 2 } }, () => {
+    const r = planWish({ intensity: "vo2max", format: "intervals" }, { legs: 1, sleep: 2, minutes: 45, capped: false, coachPick: { intensity: "vo2max", format: "intervals" } }).reasons[0];
+    whyOpen.set(r ? { id: "R-RDY-02", reason: r } : { id: "R-RDY-02" });
+  }),
+  "workouts-start-capped": { view: "gate", sub: "capped", setup: () => (sceneFixture.set({ healthCap: true }), pendingStart.set({ workout: demoWorkout(CP), from: "workouts" })) },
+  "ride-cap-exceeded": { view: "ride", setup: () => (startRide(cappedProposal(CP, 45).workout), rideFor(backend, 900), sceneFixture.set({ healthCap: true, metrics: { power_3s: 312 } })) },
   "settings-background": { view: "settings", sub: "background" },
   "settings-background-topic": { view: "settings", sub: "background", setup: () => openTopic.set("06") },
 };

@@ -3,8 +3,8 @@
 // ride starts from any path; the only exception is the deliberate, logged free ride. Production
 // enforces the same rule in the core, so MCP/CLI starts can't bypass it (#81).
 import type { Workout } from "@crank/shared";
-import { sceneFixture, type HealthAnswer, type HealthId } from "./mock/ext";
-import { loadRide, navigate } from "./session";
+import { CAP_PCT_CP, sceneFixture, type HealthAnswer, type HealthId } from "./mock/ext";
+import { backend, loadRide, navigate } from "./session";
 import { createStore } from "./store";
 
 export type StartPath = "today" | "workouts" | "resume" | "history" | "ready";
@@ -18,8 +18,29 @@ export const pendingStart = createStore<{ workout: Workout; from: StartPath } | 
 export const stopActive = () => safety.get().stop || !!sceneFixture.get().medicalStop;
 export const isFreeRide = (w: Workout) => w.id === "free";
 
+/**
+ * The health cap is about actual power (DESIGN §15.2): under it only ERG rides with every target at or below
+ * the cap. A workout with a higher target or a free (non-ERG) block is refused at start, not silently edited.
+ */
+export function capViolations(workout: Workout): string[] {
+  if (!sceneFixture.get().healthCap) return [];
+  const capW = (workout.ftp * CAP_PCT_CP.threshold) / 100;
+  const blocks = backend.compileWorkout(workout).blocks;
+  const out = [];
+  const over = Math.max(...blocks.map((b) => Math.max(b.powerFrom, b.powerTo)));
+  if (over > capW + 0.5) out.push(`targets up to ${Math.round(over)} W, above your cap of ${Math.round(capW)} W`);
+  if (blocks.some((b) => b.phase === "free")) out.push("a part without targets, which the trainer can't hold under the cap");
+  return out;
+}
+
 /** The one guard every start path calls. */
 export function requestStart(workout: Workout, from: StartPath) {
+  // the medical stop outranks everything for planned rides; the cap then binds every ride, the free ride too (§15.2)
+  if (capViolations(workout).length && (!stopActive() || isFreeRide(workout))) {
+    pendingStart.set({ workout, from });
+    navigate("gate", "capped");
+    return;
+  }
   if (isFreeRide(workout)) {
     // reached only through the ticked free-ride confirmation; logged with its reason
     loadRide(workout);

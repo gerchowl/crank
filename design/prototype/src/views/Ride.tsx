@@ -424,9 +424,16 @@ function HeroHeader({ workout, block, kind, step, capped }: { workout: Workout; 
       )}
       {/* out-of-range cadence is the ERG lever: always a chip in row 1, in every density (§5.2) */}
       {cs !== "in" && cs !== "none" && <span className={`chip cad-chip cad-${cs}`}>{CADENCE_WORD[cs]}</span>}
-      {capped && <span className="chip cap-chip">capped ≤ {Math.round((workout.ftp * CAP_PCT_CP.threshold) / 100)} W</span>}
+      {capped && <CapChip capW={Math.round((workout.ftp * CAP_PCT_CP.threshold) / 100)} />}
     </div>
   );
+}
+
+/** The cap is on actual power (§15.2): ERG holds it; anything above it is flagged here, with a tone, and logged. */
+function CapChip({ capW }: { capW: number }) {
+  const p = useMetric("power_3s", 4);
+  const over = p !== null && p > capW * 1.03;
+  return <span className={over ? "chip cap-chip over" : "chip cap-chip"}>{over ? `⚠ ${Math.round(p)} W above cap · logged` : `capped ≤ ${capW} W`}</span>;
 }
 
 interface RowProps { status: RideStatus; facts: CoreFacts; kind: BlockKind; block: FlatBlock; prev: FlatBlock | undefined; step: StepNode | undefined; offset: number; left: number | null; onEnd: () => void }

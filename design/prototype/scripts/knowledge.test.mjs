@@ -2,7 +2,8 @@
 // form. The UI reads the knowledge pack itself (src/knowledge.ts); this fails unless every rule and every
 // citation it can show resolves: rule refs and topic-file citations exist in references.bib, every
 // reference has a DOI or PMID or OpenAlex ID, every grade is A–D and every rule ID the prototype names
-// exists. It also compiles every wish-matrix cell at every time-available choice (DESIGN §15.2).
+// exists. It also compiles every wish-matrix cell at every time choice (DESIGN §15.2), and checks that the
+// planner's reasons name only inputs crank has and rest on A/B rules (a cut-off may be D, labelled).
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -43,14 +44,29 @@ try {
     for (const format of w.FORMATS) {
       const c = { intensity, format };
       if (!w.coherent(c)) continue;
-      for (const m of [30, 45, 60, 90])
+      for (const m of [30, 45, 60, 90, 120, 180])
         try {
           w.proposalFor(c, m, 280);
         } catch (e) {
           bad.push(`${intensity}.${format} @ ${m} min: ${e.message}`);
         }
     }
-  check("every wish cell compiles at 30 / 45 / 60 / 90 min", bad.length === 0, bad.join("; "));
+  check("every wish cell compiles at every time choice (30 min – 3 h)", bad.length === 0, bad.join("; "));
+
+  // "What crank uses here" may only name inputs crank has (§15.3 check 5): never HRV or α1
+  const inputs = Object.keys(w.INPUTS);
+  check("crank's input registry names nothing it can't measure (HRV, α1, lactate)", !inputs.some((i) => /hrv|alpha|α1|dfa|lactate/i.test(i + w.INPUTS[i])));
+  const reasons = [];
+  for (const wish of [null, ...w.ALL_CELLS])
+    for (const [legs, sleep] of [[1, 2], [3, 4], [3, 1]])
+      for (const minutes of [45, 120])
+        for (const capped of [false, true]) reasons.push(...w.planWish(wish, { legs, sleep, minutes, capped, coachPick: { intensity: "tempo", format: "intervals" } }).reasons);
+  const effects = [w.profileFixture, w.defaultProfile, { ...w.profileFixture, returning: { since: "x" } }, { ...w.profileFixture, focus: "racing" }].flatMap((p) => w.profileEffects(p));
+  const wrongUse = reasons.filter((r) => r.uses.some((u) => !inputs.includes(u)));
+  const wrongRule = [...reasons, ...effects].filter((r) => r.rule && !ruleIds.has(r.rule));
+  check("every planner reason uses only registered inputs and resolvable rules", wrongUse.length === 0 && wrongRule.length === 0 && reasons.length > 0, [...wrongUse, ...wrongRule].map((r) => r.text).join("; "));
+  const looseCutoff = reasons.filter((r) => r.kind !== "safety" && r.rule && k.rules.find((x) => x.id === r.rule)?.grade > "B");
+  check("a deviation rests on A/B evidence; its cut-off may be D and says so", looseCutoff.length === 0 && reasons.filter((r) => r.cutoff).every((r) => r.cutoff.grade && r.cutoff.what), looseCutoff.map((r) => r.rule).join(", "));
 } finally {
   await server.close();
 }
