@@ -104,7 +104,8 @@ fn distribution_vectors() {
                 let typical = typical_distribution(
                     i["metric"].as_str().unwrap(),
                     number(&i["athlete"]["ftp"]),
-                );
+                )
+                .unwrap();
                 if number(&i["binWidth"]) <= 0. {
                     assert!(
                         histogram_from(

@@ -57,6 +57,12 @@ fn contract_options(nodes: &mut Value) {
 fn schema() -> Value {
     serde_json::from_str(include_str!("vectors/schema.json")).expect("portable vector schema")
 }
+fn scalar_kind(shape: &Value) -> Option<&str> {
+    shape
+        .as_str()
+        .or_else(|| shape["kind"].as_str())
+        .or_else(|| shape["number"].as_str())
+}
 fn resolve<'a>(shape: &'a Value, defs: &'a Value, path: &str) -> Result<&'a Value, String> {
     if let Some(name) = shape.get("ref").and_then(Value::as_str) {
         defs.get(name)
@@ -70,7 +76,7 @@ fn resolve<'a>(shape: &'a Value, defs: &'a Value, path: &str) -> Result<&'a Valu
 fn validate(value: &Value, shape: &Value, defs: &Value, path: &str) -> Result<(), String> {
     let shape = resolve(shape, defs, path)?;
     match value {
-        Value::Number(_) if shape != "float" && shape != "integer" => {
+        Value::Number(_) if !matches!(scalar_kind(shape), Some("float" | "integer")) => {
             return Err(format!("{path}: numeric classification missing"));
         }
         Value::Array(items) => {
@@ -108,7 +114,7 @@ fn compare(a: &Value, b: &Value, shape: &Value, defs: &Value, path: &str) -> Res
     let mismatch = || Err(format!("{path}: {a} != {b}"));
     match (a, b) {
         (Value::Number(a), Value::Number(b)) => {
-            if shape == "integer" {
+            if scalar_kind(shape) == Some("integer") {
                 // Preserve adjacent JSON integers above 2^53. Canonicalize only
                 // floats emitted by the Rust schema, requiring integrality.
                 let exact = |n: &serde_json::Number| {
@@ -211,7 +217,7 @@ fn vector_error_kinds() -> [(&'static str, K); 32] {
 #[test]
 fn frozen_vectors() {
     let schema = schema();
-    assert_eq!(schema["schemaVersion"], 1);
+    assert_eq!(schema["schemaVersion"], 2);
     let defs = &schema["definitions"];
     let output_shape = &schema["areas"]["dsl"]["fields"]["cases"]["items"]["fields"]["output"];
     let error_kinds = vector_error_kinds();

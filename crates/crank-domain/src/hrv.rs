@@ -67,22 +67,28 @@ fn size(n: usize) -> f64 {
 /// RR values can retain floating-point detrending residuals, as in TS. No RR
 /// artefacts are removed.
 /// Nonfinite arithmetic follows TS (a nonfinite slope may be `Some(NaN)`).
+/// Checks run in TS order: fewer than `3*max_box` beats is `Ok(None)` before any parameter is
+/// examined, then the bounds below. Logarithms use `libm` for cross-platform parity.
 /// # Errors
-/// A zero minimum box size, computational box sizes over 4096, or windows outside JS's signed
-/// shift range are rejected to keep index arithmetic and work bounded.
+/// With enough beats, a zero minimum box size, computational box sizes over 4096, or windows
+/// outside JS's signed shift range are rejected to keep index arithmetic and work bounded
+/// (TS does not terminate for a zero box size).
 pub fn dfa_alpha1(
     rr_raw: &[f64],
     min_box: u32,
     max_box: u32,
     detrend_window: u32,
 ) -> Result<Option<f64>, MetricError> {
-    if min_box == 0 {
+    // TS order: the length guard comes first, so too-short input is `None` for any box size.
+    // A zero box size is reachable only with enough data, where TS does not terminate (its
+    // box count is N/0 = Infinity); with no beats at all (and `max_box == 0`) TS ends in null.
+    if u64::try_from(rr_raw.len()).unwrap_or(u64::MAX) < u64::from(max_box) * 3 {
+        return Ok(None);
+    }
+    if min_box == 0 && !rr_raw.is_empty() {
         return Err(MetricError::InvalidMetricParameter("boxSize"));
     }
     if max_box < min_box {
-        return Ok(None);
-    }
-    if u64::try_from(rr_raw.len()).unwrap_or(u64::MAX) < u64::from(max_box) * 3 {
         return Ok(None);
     }
     if max_box > 4096 {
@@ -133,8 +139,8 @@ pub fn dfa_alpha1(
         }
         let f = (f2 / size(boxes * width)).sqrt();
         if f > 0. {
-            lx.push(nf.ln());
-            ly.push(f.ln());
+            lx.push(libm::log(nf));
+            ly.push(libm::log(f));
         }
     }
     if lx.len() < 3 {

@@ -79,7 +79,8 @@ fn bin_index(index: f64, len: usize) -> Option<usize> {
 }
 /// Histogram in metric units; nonfinite samples are omitted. Empty input with a
 /// valid width omits `typical`. The callback returns a fraction of time per bin.
-/// Widening follows TS, allowing at most 401 bins after grid realignment.
+/// Widening follows TS, allowing at most 401 bins after grid realignment. An axis that
+/// cannot be widened to fit is an error, unlike [`heatmap_from`], which clamps (#155).
 /// A rounded negative index is omitted, exactly like TS's non-index array property;
 /// even a zero-bin result from finite origin rounding is preserved.
 ///
@@ -167,16 +168,37 @@ fn norm_cdf(z: f64) -> f64 {
 }
 /// Synthetic mixture-of-normals reference distribution. FTP is in watts.
 /// Supported metrics are power (including smoothed variants), `pct_ftp`, HR and
-/// cadence. Other metrics have no typical model. FTP must be finite and positive.
-#[must_use]
-pub fn typical_distribution(metric: &str, ftp: f64) -> Option<impl Fn(f64, f64) -> f64> {
+/// cadence. Other metrics have no typical model and return `Ok(None)`.
+/// The returned callback maps a bin's `(lo, hi)` bounds, in the metric's units, to the
+/// expected fraction of time in `[lo, hi)`.
+///
+/// # Errors
+/// Returns `InvalidMetricParameter("ftp")` unless `ftp` is finite and positive and its power
+/// components (means `0.25..1.05 × ftp`, deviations `0.07..0.12 × ftp`) are finite and the
+/// deviations nonzero, so the callback can never produce NaN (an FTP near `f64::MAX` overflows
+/// a mean; one near the smallest subnormal underflows a deviation to zero). This holds for every
+/// metric including those that do not use FTP, and before the metric is looked up. TS has no
+/// check and propagates NaN into the distribution; a typed error replaces that (#155).
+pub fn typical_distribution(
+    metric: &str,
+    ftp: f64,
+) -> Result<Option<impl Fn(f64, f64) -> f64>, MetricError> {
+    let power = vec![
+        (0.12, 0.25 * ftp, 0.12 * ftp),
+        (0.45, 0.62 * ftp, 0.07 * ftp),
+        (0.28, 0.82 * ftp, 0.08 * ftp),
+        (0.15, 1.05 * ftp, 0.1 * ftp),
+    ];
+    if !ftp.is_finite()
+        || ftp <= 0.
+        || power
+            .iter()
+            .any(|&(_, mean, sd)| !mean.is_finite() || !sd.is_finite() || sd <= 0.)
+    {
+        return Err(MetricError::InvalidMetricParameter("ftp"));
+    }
     let components = match metric {
-        "power" | "power_3s" | "power_10s" | "power_30s" => vec![
-            (0.12, 0.25 * ftp, 0.12 * ftp),
-            (0.45, 0.62 * ftp, 0.07 * ftp),
-            (0.28, 0.82 * ftp, 0.08 * ftp),
-            (0.15, 1.05 * ftp, 0.1 * ftp),
-        ],
+        "power" | "power_3s" | "power_10s" | "power_30s" => power,
         "pct_ftp" => vec![
             (0.12, 25., 12.),
             (0.45, 62., 7.),
@@ -185,13 +207,13 @@ pub fn typical_distribution(metric: &str, ftp: f64) -> Option<impl Fn(f64, f64) 
         ],
         "hr" => vec![(0.2, 115., 10.), (0.5, 138., 9.), (0.3, 160., 9.)],
         "cadence" => vec![(0.1, 75., 8.), (0.9, 89., 5.)],
-        _ => return None,
+        _ => return Ok(None),
     };
-    Some(move |lo, hi| {
+    Ok(Some(move |lo, hi| {
         components.iter().fold(0., |s, &(w, m, sd)| {
             s + w * (norm_cdf((hi - m) / sd) - norm_cdf((lo - m) / sd))
         })
-    })
+    }))
 }
 /// Joint time-in-bin distribution, in row-major order.
 #[derive(Debug, Deserialize, Serialize)]
@@ -221,6 +243,13 @@ pub struct Heatmap2D {
 /// nonfinite member. Empty input with valid widths has zero-sized axes.
 /// Each axis is capped at 400 bins, and clipped indices use TS row-major arithmetic,
 /// including rounded negative column indices; negative flat indices are omitted.
+///
+/// The cap is a clamp, not an error, unlike [`histogram_from`]'s `TooManyBins`: the two follow
+/// two different TS contracts, both kept. A histogram widens its bin width until the range
+/// fits, so every sample keeps a meaningful bin and an unfittable range is an error. A heatmap
+/// keeps the caller's bin sizes (the axes are a display grid) and the last bin of an axis is
+/// its overflow bin, so any finite range yields a result with `cols`/`rows` at most 400.
+/// Making it an error would reject inputs TS renders, and the frozen vectors pin the clamp (#155).
 ///
 /// # Errors
 /// Returns `InvalidBinWidth` for non-finite/nonpositive widths, `NonFiniteRange`

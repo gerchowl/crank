@@ -380,6 +380,48 @@ fn finite_arithmetic_failure_is_not_nonfinite_input() {
     assert_ne!(error, CompileError::NonFinite);
 }
 
+/// #160 (from the #163 re-review): at FTP 0 a hard step leaves a NaN HR state (`hr_steady` divides
+/// by zero), so a following HR-recovery step estimates NaN. TS emits NaN `durS`/`totalS` for it
+/// (captured with Vitest: totalS NaN, blocks [300, NaN], totalRangeS [360, 540], issue "FTP must
+/// be positive"); the Rust boundary requires finite output and returns `InvalidArithmetic`, which
+/// is not `NonFinite`: every supplied number is finite. The recovery-first variant (reference case
+/// `zero-ftp-initial-hr-recovery`) keeps a finite HR state and compiles with the diagnostic.
+#[test]
+fn zero_ftp_hard_step_then_hr_recovery_is_invalid_arithmetic() {
+    let recovery = WorkoutNode::Step(StepNode {
+        id: "r".into(),
+        label: None,
+        end: StepEnd::HrRecovery {
+            target_bpm: 120.,
+            min_s: 60.,
+            max_s: 240.,
+            on_unreachable: OnUnreachable::Cap,
+        },
+        target: PowerTarget::PctFtp { value: 40. },
+        cadence: None,
+    });
+    let options = CompileOptions::default();
+    assert_eq!(
+        compile_workout(
+            &workout(vec![step(300., 110.), recovery.clone()], 0.),
+            &options
+        ),
+        Err(CompileError::InvalidArithmetic)
+    );
+    // Same workout at a positive FTP is an ordinary finite compile.
+    assert!(
+        compile_workout(
+            &workout(vec![step(300., 110.), recovery.clone()], 280.),
+            &options
+        )
+        .is_ok()
+    );
+    // Recovery first: a finite initial HR state, the FTP diagnostic only.
+    let first = compile_workout(&workout(vec![recovery], 0.), &options).unwrap();
+    assert_eq!(first.issues[0].kind, ValidationKind::InvalidFtp);
+    assert!((first.total_s - 60.).abs() < 1e-12);
+}
+
 fn nodes_are_finite(nodes: &[WorkoutNode]) -> bool {
     nodes.iter().all(|node| match node {
         WorkoutNode::Repeat(r) => {
