@@ -276,6 +276,7 @@ and single-page control remain within two ticks. This bounds observation starvat
 safety-relevant trainer_following. The extra SIM tick arises under back-to-back changes faster than
 real terrain; `L` = 2 s budgets 0.5 s nominal writer delay, and #44 check 3 measures end-to-end p99
 including slot/coalescing delay so the 0.75 s worst case is calibrated rather than assumed.
+Latency is measured per page from the moment it first becomes pending; coalescing replaces the value, not the deadline.
 Rider configuration is written on connection; explicit SetRider on a live connection returns a
 protocol fault and requires a new connection. Reserving polls avoids five-second observation expiry;
 one tick of single-page delay remains inside the control latency budget.

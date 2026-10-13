@@ -48,12 +48,13 @@ pub trait FecTransport: Send + Sync + 'static {
 struct ConnectGuard(
     Option<Arc<dyn FecTransport>>,
     Option<tokio::sync::OwnedMutexGuard<()>>,
+    tokio::runtime::Handle,
 );
 impl Drop for ConnectGuard {
     fn drop(&mut self) {
         if let Some(transport) = self.0.take() {
             let guard = self.1.take();
-            tokio::spawn(async move {
+            self.2.spawn(async move {
                 let _guard = guard;
                 if let Err(error) = transport.disconnect().await {
                     tracing::warn!(%error, "cancelled connection cleanup failed");
@@ -115,7 +116,11 @@ impl TrainerDriver for FecTrainer {
             })
             .map_err(|e| crate::protocol(e, ProtocolErrorKind::Encode))?;
             let (info, mut notifications) = transport.connect(dev, clock.clone()).await?;
-            let mut cleanup = ConnectGuard(Some(transport.clone()), Some(guard));
+            let mut cleanup = ConnectGuard(
+                Some(transport.clone()),
+                Some(guard),
+                tokio::runtime::Handle::current(),
+            );
             let (events, receiver) = mpsc::channel(256);
             let (commands, control) = mpsc::channel(64);
             let result = async {
@@ -257,6 +262,7 @@ async fn run(
         clock.sleep_until(MonoTime(next)).await;
         let mut now = clock.now().0;
         if now < next {
+            tokio::task::yield_now().await;
             continue;
         }
         while now.saturating_sub(last_write) < 250_000 {
@@ -264,6 +270,7 @@ async fn run(
                 .sleep_until(MonoTime(last_write.saturating_add(250_000)))
                 .await;
             now = clock.now().0;
+            tokio::task::yield_now().await;
         }
         tick = tick.max(
             now.saturating_sub(start)

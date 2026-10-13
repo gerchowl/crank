@@ -217,8 +217,8 @@ pub enum ObservationSource {
     /// Page-25 target flags.
     Page25Flags,
 }
-/// Exhaustive for engine routing R1–R5 (ADR-0002 §4.4.1).
 /// Page-71 status, retaining every unknown byte. See ADR-0002 §3.
+/// Exhaustive for engine routing R1–R5 (ADR-0002 §4.4.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandStatus {
     /// Command reported successful.

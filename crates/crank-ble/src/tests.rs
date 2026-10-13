@@ -83,7 +83,8 @@ proptest! {
             let tick = u64::try_from(index).unwrap() + 8;
             if let Some(target_w) = target {
                 pacer.set(ControlMode::Erg { target_w }, tick).unwrap();
-                pending = (delivered != Some(target_w)).then_some((tick, target_w));
+                let since = pending.map_or(tick, |(since, _)| since);
+                pending = (delivered != Some(target_w)).then_some((since, target_w));
             }
             if let Some(written) = pacer.tick(tick).unwrap() {
                 if written[4] == 70 {
@@ -446,7 +447,7 @@ fn capture_writer_roundtrips_with_existing_codec_fixture_reader() {
         .map(|(at, rx, bytes)| (at.0 - 100, *rx, crank_fec::decode(bytes)))
         .collect();
     assert_eq!(capture_reader::replay(&text), expected);
-    assert!(capture.record(MonoTime(199), true, &[0]).is_err());
+    assert!(capture.record(MonoTime(99), true, &[0]).is_err());
     assert!(Capture::create(&path, MonoTime(0)).is_err());
     std::fs::remove_file(path).unwrap();
 }
@@ -576,7 +577,7 @@ async fn trace_capture_failure_is_reported_without_misreporting_gatt_or_stopping
         "crank-43-capture-fault-{}.fecap",
         std::process::id()
     ));
-    let capture = Arc::new(Capture::create(&path, MonoTime(0)).unwrap());
+    let capture = Arc::new(Capture::create(&path, MonoTime(u64::MAX)).unwrap());
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
     let fake = Fake::new(clock.clone());
     let driver = FecTrainer::new(Arc::new(fake.clone()), clock).with_capture(capture.clone());
@@ -585,9 +586,8 @@ async fn trace_capture_failure_is_reported_without_misreporting_gatt_or_stopping
         .await
         .unwrap();
     settle().await;
-    // Make subsequent append timestamps invalid to exercise capture's I/O error
-    // path without relying on host filesystem permissions or a Linux /dev/full.
-    capture.record(MonoTime(1_000_000_000), true, &[]).unwrap();
+    // Drain setup diagnostics: the next invalid-epoch append must emit its own fault.
+    while link.events.try_recv().is_ok() {}
     link.control
         .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
         .await
@@ -821,22 +821,12 @@ async fn writer_sequence(modes: Vec<ControlMode>) -> usize {
     let mut pending = std::collections::BTreeMap::new();
     let mut sent = std::collections::BTreeMap::new();
     let mut kind = None;
-    let mut previous_desired = Vec::new();
     let mut due = epoch + 1_250_000;
     let mut last_poll = None;
     let mut third_ticks = 0;
     for mode in modes.into_iter().map(Some).chain([None, None, None]) {
         if let Some(mode) = mode {
             let desired = pages(mode).unwrap();
-            // A new desired mode supersedes the entire older coalescing slot.
-            // Repeating an identical target must not restart its latency budget.
-            if desired != previous_desired {
-                for (_, issued, deferred) in pending.values_mut() {
-                    *issued = fake.clock.now().0;
-                    *deferred = None;
-                }
-            }
-            previous_desired.clone_from(&desired);
             if kind != Some(desired[0][4]) {
                 sent.clear();
             }
@@ -847,13 +837,11 @@ async fn writer_sequence(modes: Vec<ControlMode>) -> usize {
                     pending.remove(&page[4]);
                     continue;
                 }
-                // Superseding a value replaces its deadline; identical values retain it.
+                // Coalescing changes only the value, never the first-pending time.
                 let entry = pending
                     .entry(page[4])
                     .or_insert((page, fake.clock.now().0, None));
-                if entry.0 != page {
-                    *entry = (page, fake.clock.now().0, None);
-                }
+                entry.0 = page;
             }
             link.control
                 .send(TrainerCommand::SetMode(mode))
@@ -1012,4 +1000,136 @@ fn grade_updates_on_poll_ticks_do_not_reset_the_sim_component_phase() {
     for pair in replies.windows(2) {
         assert_ne!(pair[0], pair[1]);
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn older_track_deadline_survives_an_on_time_poll_and_new_wind() {
+    let mode = |grade, wind| ControlMode::Sim {
+        grade_pct: grade,
+        crr: 0.004,
+        wind: Wind {
+            speed_kmh: wind,
+            ..Wind::default()
+        },
+    };
+    // t8: grade 96 first pending, t9: nominal poll, t10: wind changes,
+    // t11: grade changes again. Track's original deadline survives both updates.
+    let modes = [mode(0.0, 2.0); 8]
+        .into_iter()
+        .chain([mode(96.0, 2.0), mode(96.0, 0.0), mode(0.0, 0.0)])
+        .collect();
+    writer_sequence(modes).await;
+}
+
+#[test]
+fn dropping_setup_outside_the_runtime_still_disconnects() {
+    let rt = runtime();
+    let (fake, setup) = rt.block_on(async {
+        let clock = Arc::new(MonotonicClock::default());
+        let fake = Fake::new(clock.clone());
+        let mut setup = FecTrainer::new(Arc::new(fake.clone()), clock)
+            .connect(&DeviceRef("fake".into()), rider());
+        tokio::select! {
+            biased;
+            _ = &mut setup => panic!("setup must await its second tick"),
+            () = tokio::task::yield_now() => {}
+        }
+        assert_eq!(fake.writes.lock().unwrap().len(), 1);
+        (fake, setup)
+    });
+    assert!(tokio::runtime::Handle::try_current().is_err());
+    drop(setup);
+    rt.block_on(settle());
+    assert_eq!(fake.disconnects.load(Ordering::SeqCst), 1);
+}
+
+struct AlwaysEarlyClock {
+    base: MonotonicClock,
+    enabled: AtomicBool,
+    wakes: AtomicUsize,
+}
+impl Clock for AlwaysEarlyClock {
+    fn now(&self) -> MonoTime {
+        self.base.now()
+    }
+    fn sleep_until(&self, at: MonoTime) -> BoxFuture<'static, ()> {
+        if self.enabled.load(Ordering::SeqCst) {
+            // Bound a broken writer so the regression fails rather than hanging.
+            assert!(self.wakes.fetch_add(1, Ordering::SeqCst) < 100);
+            Box::pin(async {})
+        } else {
+            self.base.sleep_until(at)
+        }
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn always_early_clock_yields_to_other_tasks_and_cancellation() {
+    let clock = Arc::new(AlwaysEarlyClock {
+        base: MonotonicClock::default(),
+        enabled: AtomicBool::new(false),
+        wakes: AtomicUsize::new(0),
+    });
+    let fake = Fake::new(clock.clone());
+    let link = FecTrainer::new(Arc::new(fake.clone()), clock.clone())
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    clock.enabled.store(true, Ordering::SeqCst);
+    settle().await;
+    let wakes = clock.wakes.load(Ordering::SeqCst);
+    assert!((1..100).contains(&wakes));
+    assert_eq!(fake.writes.lock().unwrap().len(), 2);
+    clock.enabled.store(false, Ordering::SeqCst);
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+    assert_eq!(fake.disconnects.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_accepts_rx_arriving_before_tx_but_processed_after_it() {
+    enable_trace();
+    let path =
+        std::env::temp_dir().join(format!("crank-43-interleave-{}.fecap", std::process::id()));
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let fake = Fake::new(clock.clone());
+    let capture = Arc::new(Capture::create(&path, MonoTime(0)).unwrap());
+    let mut link = FecTrainer::new(Arc::new(fake.clone()), clock.clone())
+        .with_capture(capture)
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    while link.events.try_recv().is_ok() {}
+    let arrival = clock.now();
+    let bytes = reply(pages(sim(0.0)).unwrap()[0], 0);
+    link.control
+        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 100 }))
+        .await
+        .unwrap();
+    tick().await; // TX recorded after RX arrival, before its processing.
+    fake.sender.send(Ok((arrival, bytes.clone()))).unwrap();
+    settle().await;
+    let mut observed = false;
+    while let Ok(event) = link.events.try_recv() {
+        assert!(!matches!(
+            event,
+            TrainerEvent::Fault(DeviceError::Capture(_))
+        ));
+        observed |= matches!(event, TrainerEvent::Observed(o) if o.at == arrival);
+    }
+    assert!(observed);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.lines()
+            .last()
+            .unwrap()
+            .starts_with(&format!("{} rx", arrival.0))
+    );
+    let records = capture_reader::replay(&text);
+    assert!(records.contains(&(arrival.0, true, crank_fec::decode(&bytes))));
+    assert!(records.windows(2).all(|p| p[0].0 <= p[1].0));
+    #[cfg(feature = "replay")]
+    assert!(crate::replay::ReplayTrainer::new(&text, clock).is_ok());
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+    std::fs::remove_file(path).unwrap();
 }

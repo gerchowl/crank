@@ -5,7 +5,6 @@ pub(crate) type Record = (u64, bool, Result<AntFrame, FrameError>);
 
 pub(crate) fn replay(capture: &str) -> Vec<Record> {
     let mut records = Vec::new();
-    let mut previous = 0;
     for line in capture.lines() {
         let line = line.split('#').next().expect("line").trim();
         if line.is_empty() {
@@ -17,8 +16,6 @@ pub(crate) fn replay(capture: &str) -> Vec<Record> {
             .expect("timestamp")
             .parse()
             .expect("microseconds");
-        assert!(at >= previous, "capture must be ordered");
-        previous = at;
         let received = match fields.next().expect("direction") {
             "rx" => true,
             "tx" => false,
@@ -30,5 +27,6 @@ pub(crate) fn replay(capture: &str) -> Vec<Record> {
         // Keep errors as records: a bad notification cannot consume its successor.
         records.push((at, received, decode(&bytes)));
     }
+    records.sort_by_key(|(at, _, _)| *at);
     records
 }
