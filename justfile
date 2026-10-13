@@ -6,6 +6,11 @@ check:
 hygiene:
     scripts/check-public-hygiene.sh
 
+# Same gates as the `window-config` and `package-licenses` flake checks (#123, #125).
+config-checks:
+    scripts/check-window-config.py
+    scripts/check-licenses.py
+
 test:
     cargo nextest run --workspace
     cargo test --workspace --doc

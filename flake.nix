@@ -122,6 +122,15 @@
           sh ${./scripts/check-public-hygiene.sh} ${source (lib.fileset.gitTracked ./.)}
           touch $out
         '';
+        # Window config follows DESIGN §8 (#123); every package.json is Apache-2.0 (#125).
+        window-config = pkgs.runCommand "window-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          python3 ${./scripts/check-window-config.py} ${source (lib.fileset.unions [ ./docs/design/DESIGN.md ./app/src-tauri/tauri.conf.json ])}
+          touch $out
+        '';
+        package-licenses = pkgs.runCommand "package-licenses" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          python3 ${./scripts/check-licenses.py} ${source (lib.fileset.intersection (lib.fileset.gitTracked ./.) (lib.fileset.fileFilter (f: f.name == "package.json") ./.))}
+          touch $out
+        '';
         # Executable model of the trainer-following machine (ADR-0002 §4.4.1, #54).
         following-model = pkgs.runCommand "following-model" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md}
