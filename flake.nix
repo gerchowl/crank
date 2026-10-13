@@ -88,7 +88,7 @@
         });
       } // lib.genAttrs [ "app-typecheck" "app-lint" "app-test" "shared-test" "vectors-drift" ] (name:
         (frontend name (if name == "shared-test" then "pnpm -C shared test"
-          else if name == "vectors-drift" then "pnpm -C shared exec vitest run scripts/export-vectors.test.js"
+          else if name == "vectors-drift" then "pnpm -C shared exec vitest run scripts"
           else "pnpm -C app ${lib.removePrefix "app-" name}" )).overrideAttrs {
             installPhase = "touch $out";
           });

@@ -99,6 +99,8 @@ output bounded by input range). Lifecycle of `shared/`: frozen now (no new logic
 still uses it), deleted when the React app runs on the generated bindings. No physiology, aggregation or
 thresholds remain in TS after the port (#2, #13).
 
+Float parity tolerance: exports retain full precision; semantic comparisons require exact integers, strings, booleans, structure and array lengths, and floats satisfy `|a−b| ≤ max(1e-12·max(|a|,|b|), 1e-15)` because JS transcendental results vary by platform/libm; downstream Rust tests use the same tolerance unless exactness is justified.
+
 Rejected: **keep the TS logic and run it in the webview** (two implementations or a UI-only core, CLI/MCP
 could not use it); **compile the Rust domain to WASM for the UI** (a second runtime to ship for no gain:
 the UI asks the core over IPC at ≤ 10 Hz, see §4).

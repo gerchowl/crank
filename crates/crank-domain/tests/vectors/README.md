@@ -3,7 +3,7 @@
 ADR-0001 §3 and #31 require exporting the reference results before porting.
 Run `nix develop -c just vectors` from the repository root to regenerate every
 JSON file. `nix develop -c just vectors-check` re-exports in memory and compares
-every byte, without writing files. Both `shared-test` and `vectors-drift` run
+JSON semantically, without writing files. Both `shared-test` and `vectors-drift` run
 this comparison in the flake gate on Linux and macOS. No new runtime dependency
 is needed: Vitest executes the exporter in `shared/scripts/`.
 
@@ -18,10 +18,26 @@ generator is part of the simulator parity contract.
 JSON strings `"NaN"`, `"Infinity"`, and `"-Infinity"` encode non-finite numbers.
 `null` remains a missing sample or a function's absent result. Optional object
 fields follow the mock's JSON shape (undefined fields are absent). Exported
-numbers retain JavaScript's full JSON precision; there is no rounding or
-tolerance in the reproducibility check. Rust parity assertions must be exact
-for integers and strings and document any necessary floating tolerance at the
-assertion (#66, #68, #69).
+numbers retain JavaScript's full JSON precision; the export never rounds.
+
+ADR-0001 §3's float parity tolerance applies to the reproducibility comparator:
+integers, strings, booleans, nulls, object keys, structure and array lengths
+must match exactly (object key order is immaterial). If either numeric operand
+is an integer, equality is exact. Otherwise, floats compare equal only when
+`|a−b| ≤ max(1e-12·max(|a|,|b|), 1e-15)`. Non-finite values use the exact string
+encoding above, and cannot silently compare equal as numeric NaN/infinities.
+The comparator reports the first mismatching JSON path.
+
+JS transcendental functions are implementation-approximated rather than
+correctly rounded, so platform/libm differences make bit-exact float parity
+invalid. For example, the same generated history sample was
+`305.0239643501903` on aarch64-darwin and `305.0239643501902` on x86_64-linux.
+Rounding exports would merely move that problem to rounding boundaries.
+The comparator tests accept this one-ulp difference and reject real changes
+such as `305.02` versus `305.03`, including exact integer/structure drift and
+both float tolerance boundaries. Both flake gates run these tests on Linux and
+macOS. Downstream Rust parity assertions (#66–#69) use the same tolerance
+unless they justify exactness; document it beside each assertion.
 
 DSL trees omit volatile ids; offsets and lengths retain TS UTF-16 code-unit
 semantics (including Unicode labels). Compiler and simulator workouts use
