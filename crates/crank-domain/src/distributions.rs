@@ -1,4 +1,5 @@
 //! Distributions over 1 Hz samples. Nonfinite samples represent missing seconds.
+use crate::metric_error::MetricError;
 use serde::{Deserialize, Serialize};
 
 /// One histogram bin, including empty bins between populated ones.
@@ -28,20 +29,73 @@ pub struct Histogram {
 fn round6(x: f64) -> f64 {
     crate::js_round(x * 1e6) / 1e6
 }
-fn width(x: f64) -> f64 {
-    if x > 0. { x } else { 1. }
+fn width(x: f64) -> Result<f64, MetricError> {
+    if x.is_finite() && x > 0. {
+        Ok(x)
+    } else {
+        Err(MetricError::InvalidBinWidth)
+    }
 }
-/// Histogram in metric units. Nonpositive widths become one; nonfinite samples
-/// are omitted. Empty input omits `typical`, even when a model was supplied.
-/// The optional callback returns a fraction of time in the half-open bin.
-#[must_use]
+fn origin(lo: f64, bin: f64) -> Result<f64, MetricError> {
+    let snapped = (lo / bin).floor() * bin;
+    if snapped.is_finite() {
+        Ok(snapped)
+    } else {
+        Err(MetricError::NonFiniteRange)
+    }
+}
+fn bin_count(hi: f64, lo: f64, bin: f64) -> Result<f64, MetricError> {
+    let range = hi - lo;
+    if !range.is_finite() {
+        return Err(MetricError::NonFiniteRange);
+    }
+    let count = (range / bin).floor() + 1.;
+    if count.is_finite() && count >= 0. {
+        Ok(count)
+    } else {
+        Err(MetricError::TooManyBins)
+    }
+}
+fn bin_index(index: f64, len: usize) -> Option<usize> {
+    if !index.is_finite() || index < 0. || index.fract() != 0. {
+        return None;
+    }
+    // Checked binary search over a bounded integer grid avoids unchecked f64 casts.
+    let end = u32::try_from(len).ok()?;
+    let (mut lo, mut hi) = (0, end);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if f64::from(mid) < index {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if lo < end {
+        usize::try_from(lo).ok()
+    } else {
+        None
+    }
+}
+/// Histogram in metric units; nonfinite samples are omitted. Empty input with a
+/// valid width omits `typical`. The callback returns a fraction of time per bin.
+/// Widening follows TS, allowing at most 401 bins after grid realignment.
+/// A rounded negative index is omitted, exactly like TS's non-index array property;
+/// even a zero-bin result from finite origin rounding is preserved.
+///
+/// # Errors
+/// Returns `InvalidBinWidth` for non-finite/nonpositive widths (also on empty
+/// input; intentional TS normalization divergence tracked in
+/// <https://github.com/gerchowl/crank/issues/148>), `NonFiniteRange` for overflowed origins/ranges, or `TooManyBins` for
+/// overflowed counts or grids beyond 401 bins. Errors are never empty success.
+/// A caller-supplied callback must itself be panic-free.
 pub fn histogram_from(
     metric: &str,
     series: &[f64],
     bin_width: f64,
     typical: Option<&dyn Fn(f64, f64) -> f64>,
-) -> Histogram {
-    let mut bw = width(bin_width);
+) -> Result<Histogram, MetricError> {
+    let mut bw = width(bin_width)?;
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
     let mut total = 0.;
@@ -57,17 +111,22 @@ pub fn histogram_from(
         typical: None,
     };
     if total == 0. {
-        return h;
+        return Ok(h);
     }
-    let mut lo0 = (lo / bw).floor() * bw;
-    let mut nb = ((hi - lo0) / bw).floor() + 1.;
+    let mut lo0 = origin(lo, bw)?;
+    let mut nb = bin_count(hi, lo0, bw)?;
     if nb > 400. {
         bw *= (((hi - lo0) / 400.) / bw).ceil();
-        lo0 = (lo / bw).floor() * bw;
-        nb = ((hi - lo0) / bw).floor() + 1.;
+        if !bw.is_finite() {
+            return Err(MetricError::TooManyBins);
+        }
+        lo0 = origin(lo, bw)?;
+        nb = bin_count(hi, lo0, bw)?;
     }
-    // One-based integer grid also avoids narrowing floating-point bin indices.
-    let grid: Vec<_> = (0_u32..=u32::MAX)
+    if nb > 401. {
+        return Err(MetricError::TooManyBins);
+    }
+    let grid: Vec<_> = (0_u32..401)
         .take_while(|&i| f64::from(i) < nb)
         .map(f64::from)
         .collect();
@@ -80,8 +139,9 @@ pub fn histogram_from(
         .collect();
     for &v in series.iter().filter(|v| v.is_finite()) {
         let index = ((v - lo0) / bw).floor();
-        let i = grid.partition_point(|&g| g < index).min(grid.len() - 1);
-        h.bins[i].seconds += 1;
+        if let Some(i) = bin_index(index.min(nb - 1.), grid.len()) {
+            h.bins[i].seconds += 1;
+        }
     }
     h.bin_width = bw;
     h.typical = typical.map(|f| {
@@ -89,7 +149,7 @@ pub fn histogram_from(
             .map(|i| f(lo0 + i * bw, lo0 + (i + 1.) * bw) * total)
             .collect()
     });
-    h
+    Ok(h)
 }
 fn norm_cdf(z: f64) -> f64 {
     let x = z.abs() / std::f64::consts::SQRT_2;
@@ -158,11 +218,26 @@ pub struct Heatmap2D {
     pub seconds: Vec<usize>,
 }
 /// Paired 1 Hz heatmap. Uses the shorter series and ignores pairs with a
-/// nonfinite member. Nonpositive bin widths become one; empty axes start at zero.
-#[must_use]
-pub fn heatmap_from(x: &str, y: &str, xs: &[f64], ys: &[f64], x_bin: f64, y_bin: f64) -> Heatmap2D {
-    let xb = width(x_bin);
-    let yb = width(y_bin);
+/// nonfinite member. Empty input with valid widths has zero-sized axes.
+/// Each axis is capped at 400 bins, and clipped indices use TS row-major arithmetic,
+/// including rounded negative column indices; negative flat indices are omitted.
+///
+/// # Errors
+/// Returns `InvalidBinWidth` for non-finite/nonpositive widths, `NonFiniteRange`
+/// for overflowed origins/ranges, or `TooManyBins` for overflowed bin arithmetic.
+/// Invalid requests return an error even when the input has no valid pairs.
+/// Nonpositive-width divergence from TS is tracked in
+/// <https://github.com/gerchowl/crank/issues/148>.
+pub fn heatmap_from(
+    x: &str,
+    y: &str,
+    xs: &[f64],
+    ys: &[f64],
+    x_bin: f64,
+    y_bin: f64,
+) -> Result<Heatmap2D, MetricError> {
+    let xb = width(x_bin)?;
+    let yb = width(y_bin)?;
     let pairs = || {
         xs.iter()
             .zip(ys)
@@ -192,33 +267,36 @@ pub fn heatmap_from(x: &str, y: &str, xs: &[f64], ys: &[f64], x_bin: f64, y_bin:
         seconds: vec![],
     };
     if !xl.is_finite() {
-        return heatmap;
+        return Ok(heatmap);
     }
-    let x_lo = (xl / xb).floor() * xb;
-    let y_lo = (yl / yb).floor() * yb;
-    let grid = |hi: f64, lo: f64, bin: f64| {
+    let x_lo = origin(xl, xb)?;
+    let y_lo = origin(yl, yb)?;
+    let grid = |count: f64| {
         (0..400)
             .map(f64::from)
-            .take_while(|&i| i < ((hi - lo) / bin).floor() + 1.)
+            .take_while(|&i| i < count)
             .collect::<Vec<_>>()
     };
-    let cols = grid(xh, x_lo, xb);
-    let rows = grid(yh, y_lo, yb);
+    let cols = grid(bin_count(xh, x_lo, xb)?);
+    let rows = grid(bin_count(yh, y_lo, yb)?);
     heatmap.cols = cols.len();
     heatmap.rows = rows.len();
     heatmap.x_lo = round6(x_lo);
     heatmap.y_lo = round6(y_lo);
     heatmap.seconds.resize(heatmap.cols * heatmap.rows, 0);
     for (&a, &b) in pairs() {
-        let c = cols
-            .partition_point(|&g| g < ((a - x_lo) / xb).floor())
-            .min(heatmap.cols - 1);
-        let r = rows
-            .partition_point(|&g| g < ((b - y_lo) / yb).floor())
-            .min(heatmap.rows - 1);
-        heatmap.seconds[r * heatmap.cols + c] += 1;
+        let col = ((a - x_lo) / xb)
+            .floor()
+            .min(cols.last().copied().unwrap_or(-1.));
+        let row = ((b - y_lo) / yb)
+            .floor()
+            .min(rows.last().copied().unwrap_or(-1.));
+        let stride = cols.last().map_or(0., |last| last + 1.);
+        if let Some(index) = bin_index(row * stride + col, heatmap.seconds.len()) {
+            heatmap.seconds[index] += 1;
+        }
     }
-    heatmap
+    Ok(heatmap)
 }
 /// Reference power-duration sampling grid, in seconds.
 pub const MMP_DURATIONS_S: [u16; 23] = [

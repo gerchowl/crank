@@ -2,6 +2,7 @@
 pub mod distributions;
 pub mod filters;
 pub mod history;
+pub mod metric_error;
 pub mod scales;
 
 // Math.round rounds ties towards +infinity and preserves negative zero. Adding
