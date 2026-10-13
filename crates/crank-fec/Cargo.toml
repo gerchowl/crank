@@ -11,4 +11,4 @@ workspace = true
 [dependencies]
 
 [dev-dependencies]
-proptest = { version = "1", default-features = false, features = ["std"] }
+proptest.workspace = true
