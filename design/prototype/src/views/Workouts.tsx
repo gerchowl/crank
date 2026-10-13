@@ -21,9 +21,13 @@ export const libraryOpen = createStore(false);
 const DRAWER_MEDIA = "(max-width: 1279px)";
 // Crossing to ≥ 1280 px closes the drawer. Owned here, with the state, not by the mounted view: it must also close
 // while another place is showing, or it would come back as a modal when the window shrinks again (DESIGN §16.3, #189).
-matchMedia(DRAWER_MEDIA).addEventListener("change", (e) => {
+const closeOnWide = (e: MediaQueryListEvent) => {
   if (!e.matches) libraryOpen.set(false);
-});
+};
+const drawerQuery = matchMedia(DRAWER_MEDIA);
+drawerQuery.addEventListener("change", closeOnWide);
+// a hot reload re-runs this module: drop the old listener so they do not accumulate
+import.meta.hot?.dispose(() => drawerQuery.removeEventListener("change", closeOnWide));
 /** True while the library is a drawer (the window is below 1280 px). */
 function useDrawerMode() {
   return useSyncExternalStore(

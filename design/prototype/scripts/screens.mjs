@@ -198,9 +198,10 @@ async function startScreens() {
       query: "boot=600",
       async prepare(page) {
         await page.clock.runFor(600); // the core is ready: destination live underneath, F running on under the fade
-        // F's own rAF driver paints t = 591 or 592 ms (the fake clock's frame phase varies with load timing, #189):
-        // paint the frame at the exact t instead, as the motion frames do
-        await paintAt(page, 600);
+        // the page's own rAF driver paints t = 591 or 592 ms (the fake clock's performance.now() starts at 0 or 1, #189).
+        // F runs on 1:1 under the fade, so 100 ms into it the app shows t = 700 (as design/brand's spin.handoff-100ms):
+        // paint that exact frame, as the motion frames do
+        await paintAt(page, 700);
         await page.evaluate(() => {
           const fade = document.getAnimations().find((a) => a.effect?.target?.classList.contains("start"));
           fade.currentTime = 100;
