@@ -203,5 +203,7 @@ export interface SceneFixture {
   screenCrashed?: boolean;
   feelPrompt?: boolean;
   healthCap?: boolean;
+  /** Review: expand the coach call with this index */
+  openCall?: number;
 }
 export const sceneFixture = createStore<SceneFixture>({});
