@@ -1,0 +1,912 @@
+{
+  "schemaVersion": 1,
+  "definitions": {
+    "node": {
+      "fields": {
+        "type": "exact",
+        "id": "exact",
+        "label": "exact",
+        "count": "integer",
+        "children": {
+          "items": {
+            "ref": "node"
+          }
+        },
+        "skipLastRest": "exact",
+        "progression": {
+          "fields": {
+            "wattsPerRep": "float",
+            "pctPerRep": "float"
+          }
+        },
+        "cadence": {
+          "fields": {
+            "lo": "float",
+            "hi": "float"
+          }
+        },
+        "end": {
+          "fields": {
+            "kind": "exact",
+            "onUnreachable": "exact",
+            "s": "float",
+            "kj": "float",
+            "targetBpm": "float",
+            "minS": "float",
+            "maxS": "float"
+          }
+        },
+        "target": {
+          "fields": {
+            "kind": "exact",
+            "value": "float",
+            "lo": "float",
+            "hi": "float",
+            "from": "float",
+            "to": "float",
+            "bpm": "float"
+          }
+        }
+      }
+    }
+  },
+  "areas": {
+    "dsl": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "text": "exact",
+                  "ftp": "float"
+                }
+              },
+              "output": {
+                "fields": {
+                  "nodes": {
+                    "items": {
+                      "ref": "node"
+                    }
+                  },
+                  "printed": "exact",
+                  "error": {
+                    "fields": {
+                      "message": "exact",
+                      "offset": "integer",
+                      "length": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "compile": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "workout": {
+                    "fields": {
+                      "id": "exact",
+                      "name": "exact",
+                      "ftp": "float",
+                      "nodes": {
+                        "items": {
+                          "ref": "node"
+                        }
+                      }
+                    }
+                  },
+                  "options": {
+                    "fields": {
+                      "athlete": {
+                        "fields": {
+                          "ftp": "float",
+                          "weightKg": "float",
+                          "restHr": "float",
+                          "maxHr": "float"
+                        }
+                      },
+                      "usualTauS": "float"
+                    }
+                  },
+                  "power": {
+                    "items": "float"
+                  }
+                }
+              },
+              "output": {
+                "fields": {
+                  "blocks": {
+                    "items": {
+                      "fields": {
+                        "path": {
+                          "items": "integer"
+                        },
+                        "iteration": {
+                          "items": "integer"
+                        },
+                        "nodeId": "exact",
+                        "phase": "exact",
+                        "aiChanged": "exact",
+                        "startS": "float",
+                        "durS": "float",
+                        "powerFrom": "float",
+                        "powerTo": "float",
+                        "durRangeS": {
+                          "items": "float"
+                        }
+                      }
+                    }
+                  },
+                  "totalS": "float",
+                  "tss": "float",
+                  "if": "float",
+                  "np": "float",
+                  "totalRangeS": {
+                    "items": "float"
+                  },
+                  "timeInZoneS": {
+                    "items": "integer"
+                  },
+                  "issues": {
+                    "items": {
+                      "fields": {
+                        "severity": "exact",
+                        "nodeId": "exact",
+                        "message": "exact"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "filters": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "samples": {
+                    "items": {
+                      "fields": {
+                        "t": "float",
+                        "v": "float"
+                      }
+                    }
+                  },
+                  "filters": {
+                    "items": {
+                      "fields": {
+                        "kind": "exact",
+                        "n": "integer",
+                        "windowS": "float",
+                        "tauS": "float",
+                        "minCutoff": "float",
+                        "beta": "float"
+                      }
+                    }
+                  }
+                }
+              },
+              "output": {
+                "items": "float"
+              }
+            }
+          }
+        }
+      }
+    },
+    "history": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "samples": {
+                    "items": {
+                      "fields": {
+                        "t": "float",
+                        "v": "float"
+                      }
+                    }
+                  },
+                  "reset": "exact",
+                  "spanS": "float",
+                  "buckets": "integer",
+                  "scale": "exact",
+                  "query": {
+                    "fields": {
+                      "metric": "exact",
+                      "now": "float",
+                      "spanS": "float",
+                      "buckets": "integer",
+                      "scale": "exact"
+                    }
+                  }
+                }
+              },
+              "output": {
+                "items": {
+                  "fields": {
+                    "tAgo": "float",
+                    "dur": "float",
+                    "mean": "float",
+                    "min": "float",
+                    "max": "float"
+                  }
+                },
+                "fields": {
+                  "edges": {
+                    "items": "float"
+                  },
+                  "mapping": {
+                    "items": {
+                      "fields": {
+                        "u": "float",
+                        "tAgo": "float",
+                        "back": "float"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "wbal": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "w": "float",
+                  "power": "float",
+                  "dt": "float",
+                  "cp": "float",
+                  "wPrime": "float",
+                  "powers": {
+                    "items": "float"
+                  }
+                }
+              },
+              "output": {
+                "number": "float",
+                "indexed": "float"
+              }
+            }
+          }
+        }
+      }
+    },
+    "hrv": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "rr": {
+                    "items": "float"
+                  }
+                }
+              },
+              "output": {
+                "fields": {
+                  "rmssd": "float",
+                  "dfaAlpha1": "float"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "recovery": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "t0": "float",
+                  "startedT": "float",
+                  "minS": "float",
+                  "maxS": "float",
+                  "usualTauS": "float",
+                  "priorHrInf": "float",
+                  "targetBpm": "float",
+                  "now": "float",
+                  "ts": {
+                    "items": "float"
+                  },
+                  "ys": {
+                    "items": "float"
+                  },
+                  "observed": {
+                    "items": {
+                      "fields": {
+                        "t": "float",
+                        "v": "float"
+                      }
+                    }
+                  },
+                  "prior": {
+                    "fields": {
+                      "tauS": "float",
+                      "tauLogSd": "float",
+                      "hrInf": "float",
+                      "hrInfSd": "float"
+                    }
+                  }
+                }
+              },
+              "output": {
+                "fields": {
+                  "startedT": "float",
+                  "peakT": "float",
+                  "targetBpm": "float",
+                  "minS": "float",
+                  "maxS": "float",
+                  "active": "exact",
+                  "unreachable": "exact",
+                  "observed": {
+                    "items": {
+                      "fields": {
+                        "t": "float",
+                        "v": "float"
+                      }
+                    }
+                  },
+                  "fit": {
+                    "fields": {
+                      "hrInf": "float",
+                      "amp": "float",
+                      "tauS": "float",
+                      "usualTauS": "float",
+                      "t0": "float",
+                      "sigma": "float",
+                      "n": "integer",
+                      "grid": {
+                        "items": {
+                          "fields": {
+                            "tau": "float",
+                            "a": "float",
+                            "b": "float",
+                            "c00": "float",
+                            "c01": "float",
+                            "c11": "float",
+                            "w": "float"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "predicted": {
+                    "items": {
+                      "fields": {
+                        "t": "float",
+                        "mean": "float",
+                        "lo": "float",
+                        "hi": "float"
+                      }
+                    }
+                  },
+                  "readyInS": {
+                    "fields": {
+                      "mean": "float",
+                      "lo": "float",
+                      "hi": "float"
+                    }
+                  },
+                  "prediction": {
+                    "fields": {
+                      "mean": "float",
+                      "lo": "float",
+                      "hi": "float"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "athlete": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "ftp": "float",
+                  "weightKg": "float",
+                  "restHr": "float",
+                  "maxHr": "float"
+                }
+              },
+              "output": {
+                "fields": {
+                  "physio": {
+                    "fields": {
+                      "cp": "float",
+                      "wPrime": "float",
+                      "hrAtZero": "float",
+                      "hrAtFtp": "float",
+                      "usualTauS": "float"
+                    }
+                  },
+                  "powerZones": {
+                    "items": {
+                      "fields": {
+                        "name": "exact",
+                        "min": "float",
+                        "max": "float",
+                        "color": "exact"
+                      }
+                    }
+                  },
+                  "hrZones": {
+                    "items": {
+                      "fields": {
+                        "name": "exact",
+                        "min": "float",
+                        "max": "float",
+                        "color": "exact"
+                      }
+                    }
+                  },
+                  "power": {
+                    "items": {
+                      "fields": {
+                        "watts": "float",
+                        "hr": "float",
+                        "zone": "integer"
+                      }
+                    }
+                  },
+                  "hr": {
+                    "items": {
+                      "fields": {
+                        "bpm": "float",
+                        "watts": "float"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "distributions": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "metric": "exact",
+                  "x": "exact",
+                  "y": "exact",
+                  "athlete": {
+                    "fields": {
+                      "ftp": "float",
+                      "weightKg": "float",
+                      "restHr": "float",
+                      "maxHr": "float"
+                    }
+                  },
+                  "binWidth": "float",
+                  "xBin": "float",
+                  "yBin": "float",
+                  "scale": "float",
+                  "series": {
+                    "items": "float"
+                  },
+                  "power": {
+                    "items": "float"
+                  },
+                  "durations": {
+                    "items": "float"
+                  },
+                  "xs": {
+                    "items": "float"
+                  },
+                  "ys": {
+                    "items": "float"
+                  }
+                }
+              },
+              "output": {
+                "items": "float",
+                "fields": {
+                  "metric": "exact",
+                  "x": "exact",
+                  "y": "exact",
+                  "binWidth": "float",
+                  "xBin": "float",
+                  "yBin": "float",
+                  "xLo": "float",
+                  "yLo": "float",
+                  "cols": "integer",
+                  "rows": "integer",
+                  "bins": {
+                    "items": {
+                      "fields": {
+                        "lo": "float",
+                        "seconds": "integer"
+                      }
+                    }
+                  },
+                  "typical": {
+                    "items": "float"
+                  },
+                  "seconds": {
+                    "items": "integer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "simulator": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "workout": {
+                    "fields": {
+                      "id": "exact",
+                      "name": "exact",
+                      "ftp": "float",
+                      "nodes": {
+                        "items": {
+                          "ref": "node"
+                        }
+                      }
+                    }
+                  },
+                  "athlete": {
+                    "fields": {
+                      "ftp": "float",
+                      "weightKg": "float",
+                      "restHr": "float",
+                      "maxHr": "float"
+                    }
+                  },
+                  "seed": "integer",
+                  "ticks": "integer",
+                  "dt": "float",
+                  "metrics": {
+                    "items": "exact"
+                  }
+                }
+              },
+              "output": {
+                "fields": {
+                  "published": {
+                    "items": {
+                      "fields": {
+                        "metric": "exact",
+                        "t": "float",
+                        "v": "float",
+                        "reset": "exact"
+                      }
+                    }
+                  },
+                  "snapshots": {
+                    "items": {
+                      "fields": {
+                        "status": {
+                          "fields": {
+                            "t": "float",
+                            "manualOffsetPct": "float",
+                            "blockIndex": "integer",
+                            "speed": "integer",
+                            "state": "exact",
+                            "mode": "exact",
+                            "trainer": "exact",
+                            "hrSensor": "exact",
+                            "phase": "exact"
+                          }
+                        },
+                        "recovery": {
+                          "fields": {
+                            "startedT": "float",
+                            "peakT": "float",
+                            "targetBpm": "float",
+                            "minS": "float",
+                            "maxS": "float",
+                            "active": "exact",
+                            "unreachable": "exact",
+                            "observed": {
+                              "items": {
+                                "fields": {
+                                  "t": "float",
+                                  "v": "float"
+                                }
+                              }
+                            },
+                            "fit": {
+                              "fields": {
+                                "hrInf": "float",
+                                "amp": "float",
+                                "tauS": "float",
+                                "usualTauS": "float",
+                                "t0": "float",
+                                "sigma": "float",
+                                "n": "integer",
+                                "grid": {
+                                  "items": {
+                                    "fields": {
+                                      "tau": "float",
+                                      "a": "float",
+                                      "b": "float",
+                                      "c00": "float",
+                                      "c01": "float",
+                                      "c11": "float",
+                                      "w": "float"
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "predicted": {
+                              "items": {
+                                "fields": {
+                                  "t": "float",
+                                  "mean": "float",
+                                  "lo": "float",
+                                  "hi": "float"
+                                }
+                              }
+                            },
+                            "readyInS": {
+                              "fields": {
+                                "mean": "float",
+                                "lo": "float",
+                                "hi": "float"
+                              }
+                            }
+                          }
+                        },
+                        "features": {
+                          "fields": {
+                            "phase": "exact",
+                            "blockIndex": "integer",
+                            "t": "float",
+                            "blockElapsed": "float",
+                            "power3s": "float",
+                            "target": "float",
+                            "cadence10s": "float",
+                            "compliance": "float",
+                            "decoupling": "float",
+                            "hrDrift": "float",
+                            "hrVsTypical": "float",
+                            "wbalPct": "float"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "events": {
+                    "items": {
+                      "fields": {
+                        "status": {
+                          "fields": {
+                            "t": "float",
+                            "manualOffsetPct": "float",
+                            "blockIndex": "integer",
+                            "speed": "integer",
+                            "state": "exact",
+                            "mode": "exact",
+                            "trainer": "exact",
+                            "hrSensor": "exact",
+                            "phase": "exact"
+                          }
+                        },
+                        "evaluate": "float",
+                        "recoveryEnded": {
+                          "fields": {
+                            "startedT": "float",
+                            "peakT": "float",
+                            "targetBpm": "float",
+                            "minS": "float",
+                            "maxS": "float",
+                            "active": "exact",
+                            "unreachable": "exact",
+                            "observed": {
+                              "items": {
+                                "fields": {
+                                  "t": "float",
+                                  "v": "float"
+                                }
+                              }
+                            },
+                            "fit": {
+                              "fields": {
+                                "hrInf": "float",
+                                "amp": "float",
+                                "tauS": "float",
+                                "usualTauS": "float",
+                                "t0": "float",
+                                "sigma": "float",
+                                "n": "integer",
+                                "grid": {
+                                  "items": {
+                                    "fields": {
+                                      "tau": "float",
+                                      "a": "float",
+                                      "b": "float",
+                                      "c00": "float",
+                                      "c01": "float",
+                                      "c11": "float",
+                                      "w": "float"
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "predicted": {
+                              "items": {
+                                "fields": {
+                                  "t": "float",
+                                  "mean": "float",
+                                  "lo": "float",
+                                  "hi": "float"
+                                }
+                              }
+                            },
+                            "readyInS": {
+                              "fields": {
+                                "mean": "float",
+                                "lo": "float",
+                                "hi": "float"
+                              }
+                            }
+                          }
+                        },
+                        "recoveryUnreachable": {
+                          "fields": {
+                            "startedT": "float",
+                            "peakT": "float",
+                            "targetBpm": "float",
+                            "minS": "float",
+                            "maxS": "float",
+                            "active": "exact",
+                            "unreachable": "exact",
+                            "observed": {
+                              "items": {
+                                "fields": {
+                                  "t": "float",
+                                  "v": "float"
+                                }
+                              }
+                            },
+                            "fit": {
+                              "fields": {
+                                "hrInf": "float",
+                                "amp": "float",
+                                "tauS": "float",
+                                "usualTauS": "float",
+                                "t0": "float",
+                                "sigma": "float",
+                                "n": "integer",
+                                "grid": {
+                                  "items": {
+                                    "fields": {
+                                      "tau": "float",
+                                      "a": "float",
+                                      "b": "float",
+                                      "c00": "float",
+                                      "c01": "float",
+                                      "c11": "float",
+                                      "w": "float"
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "predicted": {
+                              "items": {
+                                "fields": {
+                                  "t": "float",
+                                  "mean": "float",
+                                  "lo": "float",
+                                  "hi": "float"
+                                }
+                              }
+                            },
+                            "readyInS": {
+                              "fields": {
+                                "mean": "float",
+                                "lo": "float",
+                                "hi": "float"
+                              }
+                            }
+                          }
+                        },
+                        "nodeId": "exact"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "rewrite": {
+      "fields": {
+        "schemaVersion": "integer",
+        "cases": {
+          "items": {
+            "fields": {
+              "name": "exact",
+              "input": {
+                "fields": {
+                  "nodes": {
+                    "items": {
+                      "ref": "node"
+                    }
+                  },
+                  "intent": "exact",
+                  "ftp": "float",
+                  "seed": "integer"
+                }
+              },
+              "output": {
+                "items": {
+                  "ref": "node"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
