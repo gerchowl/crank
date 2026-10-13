@@ -6,3 +6,4 @@ dist/
 /app/dist/
 /result*
 /app/src-tauri/gen/
+__pycache__/

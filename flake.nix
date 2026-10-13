@@ -86,6 +86,11 @@
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
+        # Executable model of the trainer-following machine (ADR-0002 §4.4.1, #54).
+        following-model = pkgs.runCommand "following-model" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          python3 ${./docs/adr/models/trainer_following.py}
+          touch $out
+        '';
       } // lib.genAttrs [ "app-typecheck" "app-lint" "app-test" "shared-test" "vectors-drift" ] (name:
         (frontend name (if name == "shared-test" then "pnpm -C shared test"
           else if name == "vectors-drift" then "pnpm -C shared exec vitest run scripts"

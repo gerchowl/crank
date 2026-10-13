@@ -8,6 +8,10 @@ test:
     pnpm -C app test
     pnpm -C shared test
 
+# Executable model of ADR-0002 §4.4.1 (also the `following-model` flake check).
+model:
+    python3 docs/adr/models/trainer_following.py
+
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
     pnpm -C app lint
