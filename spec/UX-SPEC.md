@@ -73,6 +73,12 @@ optional free-text "how do you feel". Submit → mock planner returns a proposed
 Summary numbers, log-time chart of the whole ride, list of coach decisions (time, verdict, band,
 accepted?) each rateable 👍/👎 (`backend.coach.rate(callId, ...)`), τ per recovery block chart.
 
+## Ride-screen stability (learned from spike review)
+- **Zero layout shift** while riding: fixed-width controls (Pause/Resume, status chips, speed),
+  **tabular numerals** for every live number, reserved space for optional elements (coach card,
+  warnings). Nothing moves except values.
+- One dominant number per tile; the main metric must be readable at a glance from ~1 m.
+
 ## Non-functional
 - 60 fps while riding on a mid laptop; no full-tree re-render per telemetry frame.
 - Keyboard shortcuts listed in a `?` overlay.
