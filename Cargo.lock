@@ -495,6 +495,9 @@ dependencies = [
 name = "crank-domain"
 version = "0.1.0"
 dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
  "specta",
 ]
 
