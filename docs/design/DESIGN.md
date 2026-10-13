@@ -589,6 +589,10 @@ Sounds never carry information that is not also on screen. The prototype plays t
 ---
 
 ## 8. Window sizes
+The sizes are defined in [`sizes.json`](sizes.json); the table below must list exactly those, in that
+order (the `window-config` check fails otherwise), and `tauri.conf.json` must match the first (default)
+and the smallest (minimum).
+
 | Size | Target | Rules |
 |---|---|---|
 | **1440×900** | laptop/desktop landscape (primary) | as specified |

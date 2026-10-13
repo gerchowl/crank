@@ -26,7 +26,8 @@
       pnpmDeps = pkgs.fetchPnpmDeps {
         pname = "crank"; src = frontendSrc; pnpm = pkgs.pnpm_12;
         # pnpm 12 --force still filters optional dependencies by host platform.
-        # Fetch both supported targets so one hash works on macOS and Linux.
+        # Fetch both supported targets so one hash works on macOS and Linux. The platform-list form (pnpm >= 12.5)
+        # prepares exactly these two; the os/cpu mapping would fetch their cross product (4 targets, #64).
         prePnpmInstall = ''pnpm config set --location=project --json supportedArchitectures '["darwin-arm64","linux-x64"]' '';
         # pnpm leaves an empty v11/links directory on macOS but not Linux.
         # Empty store directories carry no cache data; normalize before packing.
@@ -148,7 +149,7 @@
         '';
         # Window config follows DESIGN §8 (#123); every package.json is Apache-2.0 (#125).
         window-config = pkgs.runCommand "window-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          python3 ${./scripts/check-window-config.py} ${source (lib.fileset.unions [ ./docs/design/DESIGN.md ./app/src-tauri/tauri.conf.json ])}
+          python3 ${./scripts/check-window-config.py} ${source (lib.fileset.unions [ ./docs/design/DESIGN.md ./docs/design/sizes.json ./app/src-tauri/tauri.conf.json ])}
           touch $out
         '';
         package-licenses = pkgs.runCommand "package-licenses" { nativeBuildInputs = [ pkgs.python3 ]; } ''
