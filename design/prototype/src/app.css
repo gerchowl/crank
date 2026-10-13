@@ -131,6 +131,9 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .today-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 7fr) minmax(0, 4fr); grid-template-areas: "card wish" "week model"; align-items: start; }
 .today-grid[data-stop] { grid-template-areas: "card card" "week model"; }
 .today-card { grid-area: card; display: flex; flex-direction: column; min-width: 0; align-self: stretch; }
+/* the desk card does not stretch to the matrix beside it: stretching pushed Start below the fold and left an empty band
+   under "Why today" (§16.2, #179). The saddle card stretches, its actions pinned to its bottom edge. */
+.today-card:has(> .proposal-card.desk) { align-self: start; }
 .today-card > .card { flex: 1; }
 .today-wish { grid-area: wish; min-width: 0; }
 .today-week { grid-area: week; min-width: 0; }
@@ -628,8 +631,7 @@ main[data-destination]:focus { outline: none; }
 .card-keys kbd { font-size: 0.6em; vertical-align: middle; }
 .proposal-card .actions { flex-wrap: nowrap; gap: 8px; margin-top: 10px; }
 .proposal-card.saddle .actions.saddle { margin-top: auto; padding-top: 8px; }
-/* the desk card stretches to the matrix beside it; its actions sit at the bottom (§16.2) */
-.proposal-card.desk .actions { margin-top: auto; padding-top: 4px; }
+.proposal-card.desk .actions { padding-top: 4px; }
 .proposal-card.saddle .actions.saddle button { min-height: 72px; font-size: var(--t3); padding: 0 12px; flex: 1 1 auto; white-space: nowrap; }
 .proposal-card.saddle .actions.saddle kbd { font-size: 0.55em; padding: 1px 4px; vertical-align: middle; }
 .outcome-line { font-weight: 700; border-left: 6px solid var(--border); padding-left: 12px; }
