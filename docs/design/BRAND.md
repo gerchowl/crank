@@ -34,7 +34,7 @@ you trust; not Zwift-cartoon, not gamer-neon (DESIGN.md, PR #49). It must sit wi
 | `docs/design/brand/spin.{1440x900,1024x768}.*.png` | F under reduced motion (= A at rest, checked pixel for pixel) |
 | `docs/design/brand/spin.handoff-100ms.*`, `spin.hold.*`, `spin.small.*` | F 100 ms into a hand-off; the `?hold` variant at 1.9 s; F at a 160 px wordmark |
 | `docs/design/brand/spin.early-handoff.<w>x<h>.<theme>.png` | F handed off at readiness 149 / 151 / 300 / 450 ms, 0–150 ms into the fade |
-| `docs/design/brand/spin*.mp4` | F in real time (60 fps, both themes) and at 4× slow motion (`pnpm video`, needs ffmpeg) |
+| `docs/design/brand/spin*.mp4` | F in real time (60 fps, both themes) and at 4× slow motion (both themes; `pnpm video`, needs ffmpeg) |
 
 `pnpm -C design/brand screens` regenerates the outlines, re-exports the assets and renders every PNG (Vite +
 Playwright, timers on Playwright's fake clock). It fails on: page errors; overflow; a wordmark leaving the
@@ -339,8 +339,10 @@ band under ~6 px closes into a blob). Static size rules are A's, unchanged.
 ### Review guide (round 2)
 
 1. `compare.slice-vs-spin.dark.png` / `.light.png` — the two launches side by side every 100 ms.
-2. `spin.slowmo-4x.1440x900.dark.mp4`, then `spin.1440x900.dark.mp4` — the slice through the uncut word at
-   780–1080 ms (finding 1), the clean O and slit at 420–480 ms (3), the two ghosts at 200–400 ms (4).
+2. `spin.slowmo-4x.1440x900.dark.mp4` and `.light.mp4` (the light theme was not reviewed in round 2, #142), then
+   `spin.1440x900.dark.mp4` — the slice through the uncut word at 780–1080 ms (finding 1), the clean O and the
+   slit at 420–480 ms (3; closed until the faces are 1 px apart, then only widening, #142), the two ghosts at
+   200–400 ms (4).
 3. `spin.early-handoff.{1440x900,1024x768}.{dark,light}.png` — readiness at 149 / 151 / 300 / 450 ms (2).
 4. `spin.storyboard.*`, `spin.small.*`, `spin.handoff-100ms.*`, `spin.hold.*`.
 
