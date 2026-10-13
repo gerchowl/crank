@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>io.github.gerchowl.crank</string>
+<key>CFBundleExecutable</key><string>crank-desktop</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>NSBluetoothAlwaysUsageDescription</key><string>crank connects to your smart trainer and heart-rate strap over Bluetooth.</string>
+</dict></plist>

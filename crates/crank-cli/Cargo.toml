@@ -1,0 +1,17 @@
+[package]
+name = "crank-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+crank-core.workspace = true
+crank-mcp.workspace = true
+
+[[bin]]
+name = "crank"
+path = "src/main.rs"
