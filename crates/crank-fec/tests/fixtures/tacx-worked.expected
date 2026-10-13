@@ -1,0 +1,1 @@
+(0, true, Ok(AntFrame { msg_type: Broadcast, channel: 5, page: GeneralFe(GeneralFe { equipment_type: 25, elapsed_s: 1.0, distance_m: 0, speed_mps: Some(0.0), heart_rate_bpm: None, state: 2, lap_toggle: false, flags: 4 }) }))
