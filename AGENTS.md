@@ -45,3 +45,8 @@ The fleet cache is provided by host configuration (g-fleet
 `modules/fleet-cache.nix`). Non-fleet machines build using cache.nixos.org
 and source. The flake declares no nixConfig; never use --accept-flake-config
 or change nix.conf for this project (architect decision, #28 round 2).
+
+Tauri ACL JSON lists contain absolute generated paths. Rust derivations run
+`scripts/relocate-tauri-permissions.py` after restoring crane artifacts:
+Cargo relocates its own metadata, while this hook rebases the embedded ACL
+paths using Cargo's `root-output` marker and verifies every file exists.
