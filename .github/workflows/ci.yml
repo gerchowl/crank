@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# GitHub-hosted runners (the repo is public; no self-hosted runners, #25).
+# Until the scaffold lands (#28) the jobs run the existing shared/ tests.
+# Switching to `nix flake check -L` and the macOS `just bundle` is tracked in
+# #57 (follow-up to #25).
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - run: nix shell nixpkgs#nodejs nixpkgs#pnpm -c sh -c 'pnpm install --frozen-lockfile && pnpm -C shared test'
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - run: nix shell nixpkgs#nodejs nixpkgs#pnpm -c sh -c 'pnpm install --frozen-lockfile && pnpm -C shared test'
+
+  ci-summary:
+    name: CI Summary
+    if: always()
+    needs: [linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require linux and macos to have succeeded
+        env:
+          LINUX: ${{ needs.linux.result }}
+          MACOS: ${{ needs.macos.result }}
+        run: |
+          echo "linux=$LINUX macos=$MACOS"
+          [ "$LINUX" = success ] && [ "$MACOS" = success ]
