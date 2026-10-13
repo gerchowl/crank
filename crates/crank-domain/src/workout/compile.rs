@@ -22,14 +22,33 @@ fn finite(x: f64) -> Result<f64, CompileError> {
     if x.is_finite() {
         Ok(x)
     } else {
-        Err(CompileError::NonFinite)
+        Err(CompileError::InvalidArithmetic)
+    }
+}
+fn input_finite(x: f64) -> Result<f64, CompileError> {
+    finite(x).map_err(|_| CompileError::NonFinite)
+}
+// JavaScript Math.max propagates NaN; f64::max ignores it.
+fn js_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+// Number-to-string conversion in JS discards the sign of zero.
+fn display_number(value: f64) -> String {
+    if value == 0. {
+        "0".into()
+    } else {
+        value.to_string()
     }
 }
 // Compiler-only subset of athlete.ts; the wider athlete API belongs to #136.
-fn power_for_hr(bpm: f64, ftp: f64, a: &Athlete) -> Result<f64, CompileError> {
-    Ok(
-        finite(((bpm - (a.rest_hr + 12.)) / (js_round(a.max_hr * 0.9) - (a.rest_hr + 12.))) * ftp)?
-            .max(0.),
+fn power_for_hr(bpm: f64, ftp: f64, a: &Athlete) -> f64 {
+    js_max(
+        ((bpm - (a.rest_hr + 12.)) / (js_round(a.max_hr * 0.9) - (a.rest_hr + 12.))) * ftp,
+        0.,
     )
 }
 fn hr_steady(power: f64, ftp: f64, a: &Athlete) -> f64 {
@@ -43,15 +62,8 @@ fn hr_steady(power: f64, ftp: f64, a: &Athlete) -> f64 {
     }
 }
 fn athlete_finite(a: &Athlete) -> Result<(), CompileError> {
-    for x in [
-        a.ftp,
-        a.weight_kg,
-        a.max_hr,
-        a.rest_hr,
-        a.rest_hr + 12.,
-        a.max_hr * 0.9,
-    ] {
-        finite(x)?;
+    for x in [a.ftp, a.weight_kg, a.max_hr, a.rest_hr] {
+        input_finite(x)?;
     }
     Ok(())
 }
@@ -64,25 +76,30 @@ fn target_finite(t: &PowerTarget) -> Result<(), CompileError> {
         PowerTarget::Free => [0., 0.],
     };
     for x in values {
-        finite(x)?;
+        input_finite(x)?;
     }
     Ok(())
 }
 /// Representative intensity, % FTP; ramps use their maximum, ranges their midpoint.
-/// HR inversion uses the supplied athlete.
+/// HR inversion uses the supplied athlete. NaN/Infinity results from finite inputs
+/// are retained for JavaScript-compatible intensity comparisons (e.g. zero FTP).
 ///
 /// # Errors
-/// Nonfinite inputs/results return a typed error.
+/// Nonfinite input parameters return [`CompileError::NonFinite`].
 pub fn target_pct(t: &PowerTarget, ftp: f64, athlete: &Athlete) -> Result<f64, CompileError> {
     target_finite(t)?;
-    finite(ftp)?;
+    input_finite(ftp)?;
     athlete_finite(athlete)?;
-    finite(match *t {
+    Ok(match *t {
         PowerTarget::PctFtp { value } => value,
         PowerTarget::Watts { value } => value / ftp * 100.,
-        PowerTarget::Range { lo, hi } => finite(lo + hi)? / 2.,
+        PowerTarget::Range { lo, hi } => {
+            // Retain the TS addition order, including overflow used only in comparisons.
+            let sum = lo + hi;
+            sum / 2.
+        }
         PowerTarget::Ramp { from, to } => from.max(to),
-        PowerTarget::Hr { bpm } => power_for_hr(bpm, ftp, athlete)? / ftp * 100.,
+        PowerTarget::Hr { bpm } => power_for_hr(bpm, ftp, athlete) / ftp * 100.,
         PowerTarget::Free => 50.,
     })
 }
@@ -98,7 +115,7 @@ pub fn target_watts(
 ) -> Result<[f64; 2], CompileError> {
     target_finite(t)?;
     for x in [ftp, off.watts, off.pct] {
-        finite(x)?;
+        input_finite(x)?;
     }
     athlete_finite(athlete)?;
     let w = |p: f64| -> Result<f64, CompileError> {
@@ -116,7 +133,7 @@ pub fn target_watts(
         }
         PowerTarget::Ramp { from, to } => [w(from)?, w(to)?],
         PowerTarget::Hr { bpm } => {
-            let v = power_for_hr(bpm, ftp, athlete)?;
+            let v = finite(power_for_hr(bpm, ftp, athlete))?;
             [v, v]
         }
         PowerTarget::Free => [0.5 * ftp, 0.5 * ftp],
@@ -130,7 +147,7 @@ pub fn target_watts(
 /// HR, free and HR-recovery steps never receive progression.
 ///
 /// # Errors
-/// Nonfinite intensity returns a typed error.
+/// Nonfinite input parameters return a typed error; NaN intensity compares false.
 pub fn is_work_step(s: &StepNode, ftp: f64) -> Result<bool, CompileError> {
     Ok(!matches!(s.end, StepEnd::HrRecovery { .. })
         && !matches!(s.target, PowerTarget::Free | PowerTarget::Hr { .. })
@@ -189,14 +206,17 @@ impl<'a> Flatten<'a> {
                 if iteration.len() >= MAX_NESTING_DEPTH {
                     return Err(CompileError::NestingTooDeep);
                 }
-                finite(r.count)?;
+                input_finite(r.count)?;
                 if r.count.fract() != 0. || r.count < 1. {
                     issue(
                         &mut self.issues,
                         ValidationKind::InvalidRepeatCount,
                         Severity::Error,
                         Some(&r.id),
-                        format!("Repeat count must be a whole number ≥ 1 (got {})", r.count),
+                        format!(
+                            "Repeat count must be a whole number ≥ 1 (got {})",
+                            display_number(r.count)
+                        ),
                     );
                     return Ok(());
                 }
@@ -214,8 +234,8 @@ impl<'a> Flatten<'a> {
                     return Err(CompileError::ExpansionLimit);
                 }
                 let progression = r.progression.clone().unwrap_or_default();
-                let watts = finite(progression.watts_per_rep.unwrap_or(0.))?;
-                let pct = finite(progression.pct_per_rep.unwrap_or(0.))?;
+                let watts = input_finite(progression.watts_per_rep.unwrap_or(0.))?;
+                let pct = input_finite(progression.pct_per_rep.unwrap_or(0.))?;
                 // Bounded conversion via iteration avoids unchecked float-to-integer casts.
                 let mut rep = 0u32;
                 while f64::from(rep) < r.count {
@@ -254,7 +274,7 @@ fn phases(raws: &[Raw<'_>], ftp: f64) -> Result<Vec<Phase>, CompileError> {
             .iter()
             .map(|r| target_pct(&r.step.target, ftp, &Athlete::default()))
             .collect::<Result<Vec<_>, _>>()?;
-        let max = pcts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let max = pcts.iter().copied().fold(f64::NEG_INFINITY, js_max);
         for (i, p) in pcts.iter().enumerate() {
             work[i] = *p >= max * 0.95 && !matches!(raws[i].step.target, PowerTarget::Free);
         }
@@ -314,7 +334,7 @@ impl Timeline<'_> {
         let mut range = None;
         let dur = match s.end {
             StepEnd::Time { s: seconds } => {
-                finite(seconds)?;
+                input_finite(seconds)?;
                 if seconds <= 0. {
                     self.diagnostic(
                         ValidationKind::InvalidDuration,
@@ -326,7 +346,7 @@ impl Timeline<'_> {
                 seconds
             }
             StepEnd::Kj { kj } => {
-                finite(kj)?;
+                input_finite(kj)?;
                 if kj <= 0. {
                     self.diagnostic(
                         ValidationKind::InvalidKilojoules,
@@ -348,7 +368,7 @@ impl Timeline<'_> {
                 ..
             } => {
                 for x in [target_bpm, min_s, max_s] {
-                    finite(x)?;
+                    input_finite(x)?;
                 }
                 if min_s > max_s {
                     self.diagnostic(
@@ -364,21 +384,27 @@ impl Timeline<'_> {
                         Severity::Error,
                         s,
                         format!(
-                            "HR recovery target {target_bpm} bpm is outside {}–{}",
-                            self.athlete.rest_hr, self.athlete.max_hr
+                            "HR recovery target {} bpm is outside {}–{}",
+                            display_number(target_bpm),
+                            display_number(self.athlete.rest_hr),
+                            display_number(self.athlete.max_hr)
                         ),
                     );
                 }
-                let hr_inf = finite(hr_steady(pf, self.ftp, self.athlete))?;
-                finite(self.hr)?;
+                let hr_inf = hr_steady(pf, self.ftp, self.athlete);
                 let est = if hr_inf >= target_bpm - 1. {
-                    self.diagnostic(ValidationKind::UnreachableRecovery,Severity::Warning,s,format!("HR < {target_bpm} is likely unreachable at {} W (steady HR ≈ {}); block will run to its max",js_round(pf),js_round(hr_inf)));
+                    self.diagnostic(ValidationKind::UnreachableRecovery,Severity::Warning,s,format!("HR < {} is likely unreachable at {} W (steady HR ≈ {}); block will run to its max",display_number(target_bpm),display_number(js_round(pf)),display_number(js_round(hr_inf))));
                     max_s
                 } else if self.hr <= target_bpm {
                     min_s
                 } else {
-                    finite(self.tau * ((self.hr - hr_inf) / (target_bpm - hr_inf)).ln())?
+                    self.tau * ((self.hr - hr_inf) / (target_bpm - hr_inf)).ln()
                 };
+                // An infinite estimate is capped by the finite bounds in TS.
+                // NaN propagates through Math.min/Math.max rather than choosing a bound.
+                if est.is_nan() {
+                    return Err(CompileError::InvalidArithmetic);
+                }
                 range = Some([min_s.min(max_s), min_s.max(max_s)]);
                 max_s.min(min_s.max(est))
             }
@@ -402,8 +428,8 @@ impl Timeline<'_> {
                 s,
                 format!(
                     "Target {} W exceeds max {} W",
-                    js_round(pf.max(pt)),
-                    js_round(max)
+                    display_number(js_round(pf.max(pt))),
+                    display_number(js_round(max))
                 ),
             );
         } else if pf.max(pt) > 1.5 * self.ftp && dur > 60. {
@@ -413,8 +439,8 @@ impl Timeline<'_> {
                 s,
                 format!(
                     "{} % FTP for {} s is beyond sprint range",
-                    js_round((pf.max(pt) / self.ftp) * 100.),
-                    js_round(dur)
+                    display_number(js_round((pf.max(pt) / self.ftp) * 100.)),
+                    display_number(js_round(dur))
                 ),
             );
         }
@@ -454,7 +480,7 @@ pub fn normalized_power(power: &[f64]) -> Result<f64, CompileError> {
     let mut s4 = 0.;
     let mut count = 0u32;
     for (i, p) in power.iter().enumerate() {
-        finite(*p)?;
+        input_finite(*p)?;
         roll = finite(roll + p)?;
         if i >= 30 {
             roll = finite(roll - power[i - 30])?;
@@ -515,7 +541,7 @@ fn reserve_diagnostic(
         }
     }
     if minimum < 3000. {
-        let pct = js_round(minimum / 20_000. * 100.);
+        let pct = display_number(js_round(minimum / 20_000. * 100.));
         let (kind, severity, message) = if minimum < 0. {
             (
                 ValidationKind::DepletedReserve,
@@ -544,20 +570,23 @@ fn reserve_diagnostic(
 }
 /// Flatten and estimate a workout using the frozen reference algorithms (ADR-0001 §3).
 /// Invalid prescriptions remain typed diagnostics; unsafe arithmetic/size returns an error.
-/// Limits: 32 enclosing repeats, 100,000 visits, 604,800 duration seconds per block and
+/// Limits: 32 enclosing repeats, 100,000 expanded node visits (each visit to a repeat
+/// or step counts once, including revisits of the same source node; skipped children
+/// are not visited), 604,800 duration seconds per block and
 /// rounded trace samples overall. Finite-input divergences, including precision loss:
 /// <https://github.com/gerchowl/crank/issues/160>. No clock, I/O or global state.
 ///
 /// # Errors
-/// Returns [`CompileError`] for nonfinite inputs/results or exceeded safety bounds.
+/// Returns [`CompileError`] for nonfinite inputs, nonfinite arithmetic needed in output,
+/// or exceeded safety bounds. Comparison-only NaN/Infinity retains TS semantics.
 pub fn compile_workout(
     w: &Workout,
     opts: &CompileOptions,
 ) -> Result<CompiledWorkout, CompileError> {
-    finite(w.ftp)?;
+    input_finite(w.ftp)?;
     let a = opts.athlete.clone().unwrap_or_default();
     athlete_finite(&a)?;
-    let tau = finite(opts.usual_tau_s.unwrap_or(55.))?;
+    let tau = input_finite(opts.usual_tau_s.unwrap_or(55.))?;
     let mut flat = Flatten {
         raws: Vec::new(),
         issues: Vec::new(),

@@ -170,11 +170,14 @@ pub struct CompiledWorkout {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "snake_case")]
 pub enum CompileError {
-    /// An input or intermediate calculation is nonfinite.
+    /// A supplied numeric input is NaN or infinite.
     NonFinite,
+    /// Finite inputs produce nonfinite arithmetic required in the output.
+    InvalidArithmetic,
     /// Repeat nesting exceeds the DSL's bound.
     NestingTooDeep,
-    /// More than 100,000 expanded node visits.
+    /// More than 100,000 expanded node visits, counting repeats and step occurrences.
+    /// A repeat with one child and 100,000 iterations requires 100,001 visits.
     ExpansionLimit,
     /// More than 604,800 rounded one-second samples, or duration seconds.
     TraceLimit,
