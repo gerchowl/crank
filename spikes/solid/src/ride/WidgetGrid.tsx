@@ -58,11 +58,12 @@ export function WidgetGrid(props: { page: Page; editing: boolean }) {
     const dx = Math.round((e.clientX - drag.startX) / drag.cellW);
     const dy = Math.round((e.clientY - drag.startY) / drag.cellH);
     const o = drag.orig;
-    if (drag.mode === "move") {
-      layoutState.actions.updateWidget(drag.id, { x: Math.max(0, Math.min(GRID_COLS - o.w, o.x + dx)), y: Math.max(0, o.y + dy) });
-    } else {
-      layoutState.actions.updateWidget(drag.id, { w: Math.max(1, Math.min(GRID_COLS - o.x, o.w + dx)), h: Math.max(1, o.h + dy) });
-    }
+    const next =
+      drag.mode === "move"
+        ? { x: Math.max(0, Math.min(GRID_COLS - o.w, o.x + dx)), y: Math.max(0, o.y + dy), w: o.w, h: o.h }
+        : { x: o.x, y: o.y, w: Math.max(1, Math.min(GRID_COLS - o.x, o.w + dx)), h: Math.max(1, o.h + dy) };
+    const cur = props.page.widgets.find((w) => w.id === drag?.id);
+    if (cur && (cur.x !== next.x || cur.y !== next.y || cur.w !== next.w || cur.h !== next.h)) layoutState.actions.updateWidget(drag.id, next);
   };
   const end = () => {
     drag = null;

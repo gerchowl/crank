@@ -130,7 +130,9 @@ export function paintProfile(ctx: CanvasRenderingContext2D, rects: readonly Prof
       ctx.setLineDash([]);
     }
     if (o.selected?.has(id)) {
-      ctx.strokeStyle = t.accent;
+      ctx.fillStyle = withAlpha(t.accent, 0.3);
+      ctx.fillRect(x0, Math.min(r.yFrom, r.yTo), Math.max(1, x1 - x0), r.base - Math.min(r.yFrom, r.yTo));
+      ctx.strokeStyle = t.ink;
       ctx.lineWidth = 2;
       ctx.strokeRect(x0 + 1, Math.min(r.yFrom, r.yTo) + 1, Math.max(1, x1 - x0 - 2), r.base - Math.min(r.yFrom, r.yTo) - 2);
     }

@@ -155,18 +155,25 @@ function FatigueScatter(props: { record: RideRecord }) {
     paintScatter(ctx, w, h, t, pts(), maxK(), PAD);
   };
   const tooltip = (p: Hover, w: number, h: number) => {
-    const xs = pts();
-    if (!xs.length) return null;
-    const pw = (p.x - PAD.l) / (w - PAD.l - PAD.r);
-    const ph = 1 - (p.y - PAD.t) / (h - PAD.t - PAD.b);
-    const watts = pw * 500;
-    const bpm = 80 + ph * 120;
+    // nearest point within 12 px (per-mark tooltip)
+    const X = (v: number) => PAD.l + (Math.min(v, 500) / 500) * (w - PAD.l - PAD.r);
+    const Y = (b: number) => PAD.t + (1 - (b - 80) / 120) * (h - PAD.t - PAD.b);
+    let best: { p: number; h: number; k: number } | null = null;
+    let bd = 144;
+    for (const pt of pts()) {
+      const d = (X(pt.p) - p.x) ** 2 + (Y(pt.h) - p.y) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = pt;
+      }
+    }
+    if (!best) return null;
     return (
       <>
         <b>
-          {Math.round(watts)} W · {Math.round(bpm)} bpm
+          {Math.round(best.p)} W · {Math.round(best.h)} bpm
         </b>
-        <div class="muted">colour = kJ spent (light → dark)</div>
+        <div class="muted">after {Math.round(best.k)} kJ</div>
       </>
     );
   };

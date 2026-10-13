@@ -1174,7 +1174,7 @@ input.num.tiny {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
   line-height: 1.5;
-  white-space: pre;
+  white-space: pre-wrap;
 }
 .dsl-error {
   border: 1px solid var(--status-critical);

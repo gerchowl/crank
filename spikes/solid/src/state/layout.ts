@@ -1,6 +1,6 @@
 // Ride layout as a store: widgets are store proxies, so moving/resizing/re-configuring one
 // widget only re-runs the computations that read that widget's changed fields.
-import { batch, createEffect, createRoot, createSignal, on } from "solid-js";
+import { batch, createEffect, createMemo, createRoot, createSignal, on } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import type { Layout, MetricId, Page, Widget, WidgetKind } from "@neo/shared";
 import { backend } from "../backend";
@@ -66,13 +66,20 @@ export const layoutState = createRoot(() => {
 
   const page = (): Page | undefined => layout.pages[pageIdx()];
 
-  // context-aware page switch on phase change (not while editing)
+  // Context-aware page switch. Short rests (< 60 s, e.g. the 15 s in 30/15s) don't count as
+  // "recovery" — flipping pages every 15 s is unreadable; HR-guided / long recoveries do.
+  const phaseClass = createMemo(() => {
+    const phase = ride.status.phase;
+    if (phase !== "recovery") return phase;
+    const b = ride.current()?.compiled.blocks[ride.status.blockIndex];
+    return b && (b.durRangeS !== undefined || b.durS >= 60) ? "recovery" : "short-recovery";
+  });
   createEffect(
     on(
-      () => ride.status.phase,
-      (phase) => {
-        if (!autoSwitch() || editing()) return;
-        const i = layout.pages.findIndex((p) => p.autoPhase?.includes(phase));
+      phaseClass,
+      (cls) => {
+        if (cls === "short-recovery" || !autoSwitch() || editing()) return;
+        const i = layout.pages.findIndex((p) => p.autoPhase?.includes(cls));
         if (i >= 0) setPageIdx(i);
       },
       { defer: true },

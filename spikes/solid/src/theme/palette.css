@@ -297,7 +297,7 @@
     --status-critical: #e05ab0;
     }
 }
-:root[data-zones="classic"] {
+:root[data-zones="classic"][data-theme][data-mode] {
   --zone-1: #8a94a6;
   --zone-2: #3b82f6;
   --zone-3: #22c55e;
