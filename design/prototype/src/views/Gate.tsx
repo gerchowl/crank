@@ -2,7 +2,7 @@
 // if it hasn't been answered, or the medical stop if one is active. Same rule for every start path.
 import { useState } from "react";
 import { HEALTH_QS, RED_FLAGS, type HealthAnswer, type HealthId } from "../mock/ext";
-import { pendingStart, recordRedFlagCheck, requestStart, START_PATH_NAME, stopActive } from "../safety";
+import { capViolations, pendingStart, recordRedFlagCheck, requestStart, START_PATH_NAME, stopActive } from "../safety";
 import { navigate, useRoute } from "../session";
 import { useStore } from "../store";
 
@@ -43,6 +43,24 @@ export function Gate() {
   const pending = useStore(pendingStart);
   const blocked = r.sub === "blocked" || stopActive();
   const from = pending ? START_PATH_NAME[pending.from] : "this screen";
+  if (r.sub === "capped" && pending)
+    return (
+      <div className="page gate">
+        <section className="card cap-gate" role="alert" aria-label="Ride blocked by the health cap">
+          <span className="eyebrow">Ride not started · from {from}</span>
+          <h2>Above your injury cap</h2>
+          <p>
+            <b>“{pending.workout.name}”</b> has {capViolations(pending.workout).join(", and ")}. While the cap is on, crank only starts ERG rides that stay at or below it, so your power can't pass it.
+          </p>
+          <div className="actions">
+            <button className="primary" autoFocus onClick={() => navigate("today")}>
+              Back to Today
+            </button>
+            <button onClick={() => navigate("settings", "health")}>Health settings</button>
+          </div>
+        </section>
+      </div>
+    );
   return (
     <div className="page gate">
       {blocked ? (

@@ -4,6 +4,8 @@
 // (ride scenes: any overflow — the ride screen must fit the window, #7), and on any [data-fit]
 // element whose text is clipped (reserved rows never wrap or cut text, DESIGN §6.1). Runs the
 // contrast check first (DESIGN §6.3), and checks every rendered chart mark's composited contrast.
+// Saddle scenes (Today after the check-in, §15.2) are captured as the viewport, not the full page, and fail
+// when the wish, the session, its reason or the actions leave the viewport or fall below their type tier.
 // Also renders the cold-start screen (start-*.png: frames of the launch motion, reduced motion, slow boot,
 // hand-off, boot failure; BRAND.md §Start screen) on the fake clock of scripts/start-page.mjs.
 import { execFileSync } from "node:child_process";
@@ -59,11 +61,25 @@ try {
           sw: document.documentElement.scrollWidth,
           sh: document.documentElement.scrollHeight,
           ride: !!document.querySelector(".ride"),
+          // the saddle proposal (DESIGN §15.2): wish, session, one reason and the actions inside the viewport, at T3+
+          saddle: !!document.querySelector("[data-saddle]"),
+          belowFold: [...document.querySelectorAll("[data-above-fold]")]
+            .filter((el) => el.getBoundingClientRect().bottom > innerHeight || el.getBoundingClientRect().top < 0)
+            .map((el) => `"${el.textContent?.trim().slice(0, 40)}" (bottom ${Math.round(el.getBoundingClientRect().bottom)} > ${innerHeight})`),
+          small: [...document.querySelectorAll("[data-tier]")]
+            .filter((el) => {
+              const t3 = Math.min(36, Math.max(27, 0.037 * innerHeight));
+              const min = el.getAttribute("data-tier") === "t3plus" ? Math.min(44, Math.max(34, 0.045 * innerHeight)) : t3;
+              return parseFloat(getComputedStyle(el).fontSize) < min - 0.5;
+            })
+            .map((el) => `"${el.textContent?.trim().slice(0, 40)}" ${getComputedStyle(el).fontSize}`),
           clipped: [...document.querySelectorAll("[data-fit]")]
             .filter((el) => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1)
             .map((el) => `"${el.textContent?.trim().slice(0, 50)}" (${el.scrollWidth}×${el.scrollHeight} in ${el.clientWidth}×${el.clientHeight})`),
         }));
         for (const c of m.clipped) failures.push(`${name}: clipped text ${c}`);
+        for (const c of m.belowFold) failures.push(`${name}: saddle element outside the viewport ${c}`);
+        for (const c of m.small) failures.push(`${name}: saddle text below its tier ${c}`);
         // rendered chart marks: effective stroke (opacity inherited from every ancestor) composited over
         // the real background must reach 3:1 (DESIGN §6.3, WCAG 1.4.11) — token checks alone miss this
         const weak = await page.evaluate(() => {
@@ -100,7 +116,7 @@ try {
         for (const w of weak) failures.push(`${name}: chart mark below 3:1 — ${w}`);
         if (m.sw > width) failures.push(`${name}: horizontal overflow (${m.sw} > ${width})`);
         if (m.ride && m.sh > height) failures.push(`${name}: ride screen overflows vertically (${m.sh} > ${height})`);
-        await page.screenshot({ path: `${out}${name}.png`, fullPage: !m.ride, animations: "disabled" });
+        await page.screenshot({ path: `${out}${name}.png`, fullPage: !m.ride && !m.saddle, animations: "disabled" });
         console.log(`  ${name}.png`);
         await page.close();
       }

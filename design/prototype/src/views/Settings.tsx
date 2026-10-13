@@ -245,6 +245,7 @@ const SOUND_LABEL: Record<SoundEvent, [string, () => void]> = {
   applied: ["Change applied / undone", () => play.applied()],
   warning: ["Sensor lost, ERG released", () => play.warning()],
   reconnected: ["Reconnected", () => play.reconnected()],
+  wish: ["Wish answered (granted / changed)", () => play.wish(true)],
 };
 const showKey = (k: string) => (k === " " ? "Space" : k);
 

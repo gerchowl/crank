@@ -381,5 +381,11 @@ export interface SceneFixture {
   checkin?: Partial<import("@crank/shared").Checkin>;
   /** Today: the rider's wish (DESIGN §15.2) */
   wish?: import("./wish").Cell;
+  /** Today: the check-in and today's red-flag check are done → the saddle proposal */
+  ready?: boolean;
+  /** Today: a deferred wish carried over from an earlier day */
+  carried?: boolean;
+  /** Today: the remote wish mode is open at this cell */
+  remote?: import("./wish").Cell;
 }
 export const sceneFixture = createStore<SceneFixture>({});
