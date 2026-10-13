@@ -1,0 +1,22 @@
+{
+  "name": "@crank/design-brand",
+  "private": true,
+  "type": "module",
+  "description": "Start screen + CRANK wordmark design spike (docs/design/BRAND.md; design artifact, not the production UI)",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc -p .",
+    "outline": "node scripts/outline.ts && node scripts/slice.ts",
+    "export": "node scripts/export.ts",
+    "screens": "pnpm outline && node scripts/export.ts && node scripts/screens.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/opentype.js": "^1.3.10",
+    "opentype.js": "^1.3.4",
+    "paper": "^0.12.18",
+    "playwright": "^1.64.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.4"
+  }
+}
