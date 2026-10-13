@@ -50,12 +50,12 @@
       });
       checks = {
         build = desktop "";
-        fmt = craneLib.cargoFmt { src = source cargoFiles; };
+        fmt = craneLib.cargoFmt { pname = "crank"; version = "0.1.0"; src = source cargoFiles; };
         clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--all-targets -- -D warnings"; });
         nextest = craneLib.cargoNextest rustCheck;
         doctest = craneLib.cargoDocTest rustCheck;
         doc = craneLib.cargoDoc (rustCheck // { RUSTDOCFLAGS = "-D warnings"; });
-        deny = craneLib.cargoDeny { src = source cargoFiles; cargoDenyChecks = "bans licenses sources"; };
+        deny = craneLib.cargoDeny { pname = "crank"; version = "0.1.0"; src = source cargoFiles; cargoDenyChecks = "bans licenses sources"; };
         bindings-drift = craneLib.mkCargoDerivation (rustCheck // {
           src = source (lib.fileset.unions [ rustFiles ./app/src/bindings.ts ]);
           buildPhaseCargoCommand = ''
