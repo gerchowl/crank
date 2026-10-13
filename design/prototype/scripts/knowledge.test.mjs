@@ -31,7 +31,7 @@ try {
   check("every topic-file citation resolves in references.bib", missingCite.length === 0, [...new Set(missingCite)].join(", "));
   const unlinked = [...k.refs.values()].filter((r) => !r.doi && !r.pmid && !/OpenAlex: W\d+/.test(readFileSync(pack + "references.bib", "utf8").split(`{${r.key},`)[1]?.split("\n@")[0] ?? ""));
   check("every reference has a DOI, PMID or OpenAlex ID", unlinked.length === 0, unlinked.map((r) => r.key).join(", "));
-  check("every topic has a title, an overall confidence and graded findings", k.topics.length === 13 && k.topics.every((t) => t.title && t.confidence && t.findings.length > 0), k.topics.filter((t) => !t.findings.length).map((t) => t.no).join(","));
+  check("every topic has a title, an overall confidence and graded findings", k.topics.length === 14 && k.topics.every((t) => t.title && t.confidence && t.findings.length > 0), k.topics.filter((t) => !t.findings.length).map((t) => t.no).join(","));
   check("every rule belongs to a topic (general R-GEN rules may cut across)", k.rules.every((r) => r.topics.length > 0 || r.id.startsWith("R-GEN-")), k.rules.filter((r) => !r.topics.length && !r.id.startsWith("R-GEN-")).map((r) => r.id).join(", "));
 
   const src = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? src(`${dir}/${d.name}`) : /\.tsx?$/.test(d.name) ? [`${dir}/${d.name}`] : []));
