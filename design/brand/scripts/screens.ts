@@ -35,7 +35,9 @@ const server = await createServer({ root, logLevel: "warn", server: { port: 0 } 
 await server.listen();
 const base = server.resolvedUrls?.local[0];
 if (!base) throw new Error("vite did not report a local URL");
-const browser = await chromium.launch();
+// Byte-identical captures (#189): partial raster and multi-threaded raster make the same page rasterise to
+// different PNGs (1-level anti-aliasing noise) from run to run; one raster thread painting every tile fresh does not.
+const browser = await chromium.launch({ args: ["--disable-gpu", "--disable-partial-raster", "--num-raster-threads=1"] });
 const failures: string[] = [];
 /** Static start screens, kept for the A-vs-F exactness check: `${id}.${w}x${h}.${theme}`. */
 const shots = new Map<string, Buffer>();
@@ -193,6 +195,24 @@ async function spinStoryboards() {
   }
 }
 
+/** Pin a hand-off frame to its nominal time before a screenshot: F's frame at `t` and the fade's opacity at `fade`
+ *  (0 … 1 into the 200 ms). The page paints from performance.now(), which Playwright's fake clock reports with ±1 ms
+ *  of real-time jitter after a paused install, so the painted t and fade phase differ by a frame from run to run
+ *  (#189); the assertions read the page's own state first, the PNG shows the exact nominal frame. Nothing runs
+ *  after this: the fake clock only moves with runFor. */
+async function pin(page: Page, t: number, fade: number) {
+  await page.evaluate(
+    async ({ t, fade, end, mod }) => {
+      const { frame, paint } = await import(/* @vite-ignore */ mod); // the page's own module, as its dev server serves it
+      const start = document.querySelector<HTMLElement>(".start")!;
+      paint(start.querySelector("svg")!, frame(Math.min(t, end)), { ink: "var(--ink)", accent: "var(--accent)" });
+      start.dataset.t = String(Math.min(t, end));
+      start.style.opacity = String(1 - fade);
+    },
+    { t, fade, end: SPIN.end, mod: "/src/spin.ts" },
+  );
+}
+
 /** F's boot behaviours on the fake clock (BRAND.md §F · Spin-up → Boot): (a) on ready the motion runs on at 1:1
  *  under the 200 ms hand-off fade (early readiness: `spinEarly`); (b) a slow boot plays through and rests,
  *  status at 1.2 s; (b′, ?hold) the closed ring holds until ready. Destination live + focused and the
@@ -256,6 +276,7 @@ async function spinBoot() {
       s = await state(p);
       if (s.t === null || Math.abs(s.t - 700) > 17 || s.opacity === null || s.opacity < 0.4 || s.opacity > 0.6)
         fail(`100 ms into the hand-off: t = ${s.t}, opacity = ${s.opacity} (expected ≈ 700, half faded)`);
+      await pin(p, 700, 0.5);
       await p.screenshot({ path: `${out}spin.handoff-100ms.1440x900.${theme}.png` });
       await p.clock.runFor(120);
       if (await p.locator(".start").count()) fail("start screen still there 220 ms after ready");
@@ -315,6 +336,7 @@ async function spinEarly() {
           // rAF on the fake clock paints every ~16 ms: the painted t trails the clock by less than a frame.
           if (a > 0 && (Math.abs(s.t - (r + a)) > 17 || s.opacity === null || Math.abs(s.opacity - (1 - a / 200)) > 0.1))
             fail(`ready ${r} ms, +${a} ms: t = ${s.t} (expected ≈ ${r + a}), opacity = ${s.opacity} (expected ≈ ${1 - a / 200})`);
+          await pin(p, r + a, a / 200);
           const png = await p.screenshot();
           if (a === 100) mid.set(r, png);
           cells.push({ label: `ready ${r} ms · +${a} ms`, png });

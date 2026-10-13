@@ -632,7 +632,7 @@ non-functional rules) still applies.
 | #1 | AI rewrite accept loses/misplaces edits | Editor **locks** during pending and diff (banner, all inputs disabled); Accept verifies node id + content hash, else re-requests (§5.7). Prototype: `editor/model.ts` (`lock`, hash check in `accept`). |
 | #2 | Physiology in the UI | P8: every derived number comes from the backend; missing ones are contract additions (#12, #13, #14, #15, #18, #29) stood in by **one** fixture module (`mock/ext.ts`), never computed in a view. |
 | #3 | Per-ride state not reset | One `RideSession` object (status, nudges, compiled, undo windows, sensor gaps, pause time) created on `ride.load` and disposed when the next ride loads (§5.2). Prototype: `session.ts`. |
-| #4 | Unvalidated persisted data | Everything persisted (ride-screen config, theme, sound, bindings, onboarding progress) lives in SQLite behind the core (ADR-0001 §6) and is read through the core's settings commands (#34); the UI parses what the core returns with a schema; invalid → default + notice (#90); error boundaries at the top and around the ride (§6.6). Prototype only: `persist.ts` uses localStorage as a stand-in, `App.tsx`. |
+| #4 | Unvalidated persisted data | Everything persisted (ride-screen config, theme, sound, bindings, onboarding progress) lives in SQLite behind the core (ADR-0001 §6) and is read and written through the core's commands (layouts, settings; #34); the UI parses what the core returns with a schema; invalid → default + notice (#90); Settings forms read a draft, Save validates, and Cancel / Reset never touch the saved state (#90); error boundaries at the top and around the ride (§6.6). In the prototype `persist.ts` (localStorage, read in `App.tsx`) stands in for the core's commands; it is not the production path. |
 | #5 | structuredClone on reactive proxies | React state holds plain immutable values; the only snapshot path is `snapshot()` (production lint rule). Prototype: no clone of state anywhere. |
 | #6 | Finished ride doesn't reach Review | `state: finished` → Review automatically, owned by the ride session (§3, §5.2). |
 | #7 | 1024×768 unusable, layout ignores resize | Fixed anatomy and rows scaled by the tiers (§6.2, §8); strings in reserved rows have maximum lengths (§6.1); the harness renders every scene at 1024×768 and fails on overflow. |
@@ -1238,7 +1238,7 @@ Key glyphs, on every key hint (Today, the ride's `?` list and hints, wish mode, 
 | Decision | What it is | Why |
 |---|---|---|
 | **Labelled icon rail** | 72 px at every size (the accepted 72–76 px range's lower end): icon over a 12.5 px word, 62 px items, ≥ 48 px targets, never an icon alone. Replaces the 184 px text rail (148 px at ≤ 1100). The page's max width rises from 1240 to 1368 px (= 1440 − rail). | Content width: 1304 px at 1440 (was 1176, +128 — the old max width capped the rail's gain), **912 px at 1024** (was 836). The words stay, so the rail is as findable as before. |
-| **Workouts library drawer** | Below 1280 px the library is a drawer: **☰ Library** in the editor header opens it over the panes and a dimming scrim; its items are ≥ 48 px. While open it is **modal**: focus moves to its first item, Tab and Shift+Tab wrap inside it, and the editor behind it is inert. A pick, ✕, Esc or a click on the scrim closes it, and focus returns to ☰ Library. Growing the window to ≥ 1280 px closes it too, so it cannot come back as a modal when the window shrinks. ≥ 1280 px keeps the 200 px column (not modal). | Outline · Text · Summary stay in one row at 1024 (#111), instead of the summary moving under them; the library is used once per edit session, the panes all the time. |
+| **Workouts library drawer** | Below 1280 px the library is a drawer: **☰ Library** in the editor header opens it over the panes and a dimming scrim; its items are ≥ 48 px. While open it is **modal**: focus moves to its first item, Tab and Shift+Tab wrap inside it, and the editor behind it is inert. A pick, ✕, Esc or a click on the scrim closes it, and focus returns to ☰ Library. Growing the window to ≥ 1280 px closes it too — whichever place is showing when the window crosses 1280 px, so it cannot come back as a modal when the window shrinks or when Workouts is opened again. ≥ 1280 px keeps the 200 px column (not modal). | Outline · Text · Summary stay in one row at 1024 (#111), instead of the summary moving under them; the library is used once per edit session, the panes all the time. |
 
 ### 16.4 Prototype, screens, checks
 
@@ -1268,9 +1268,12 @@ Key glyphs, on every key hint (Today, the ride's `?` list and hints, wish mode, 
   under Start names what is missing in each case. It also drives the Workouts library drawer at 1024 **keyboard
   only**: Enter on ☰ Library opens it with focus inside; Tab / Shift+Tab stay inside, the editor is inert; Esc and
   Enter on an item close it with focus back on ☰ Library; the scrim closes it too.
-- `pnpm test:layout` (#179) checks Start is inside 1440×900 with no empty band under the desk card in `today`,
+- `pnpm test:layout` (#179) checks Start is inside 1440×900 with no empty band above the desk card's actions in `today`,
   `today-health-cap`, `today-checkin-edit` and `today-wish-carried`; and that opening the library drawer at 1024,
-  growing the window to 1440 and shrinking it again leaves the drawer closed (crossing 1280 px closes it).
+  growing the window to 1440 and shrinking it again leaves the drawer closed (crossing 1280 px closes it), also when the crossing happens while another place is showing.
+- `pnpm screens` (here and `design/brand`) is byte-reproducible (#189): Chromium runs with one raster thread and no
+  partial raster, and the hand-off frames are pinned to their nominal time (the fake clock's `performance.now()` jitters
+  by 1 ms between runs). Two runs on an unchanged tree produce identical files.
 - Not changed here, filed: the lane's buttons (58 / 49 px) are below §7.2's 64 px, and the status bar's fault words
   are 16 px, below T3 — both pre-date §16 (#177).
 
