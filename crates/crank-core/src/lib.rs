@@ -1,5 +1,4 @@
 //! Application facade and Rust↔UI contract (ADR-0001 §4).
-#![cfg_attr(test, allow(clippy::unwrap_used))]
 
 /// Placeholder response used to exercise generated bindings before #34.
 #[derive(serde::Serialize, serde::Deserialize, specta::Type)]

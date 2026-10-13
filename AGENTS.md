@@ -15,15 +15,17 @@ Run everything in `nix develop`; first run `pnpm install --frozen-lockfile`.
 doctests, app Vitest, and the frozen shared tests. `just lint` runs clippy and
 ESLint/Prettier; `just fmt` formats Rust and app files. `just bindings` exports
 Rust types and command wrappers to `app/src/bindings.ts`; commit that file.
-The drift check must fail after an unexported contract change. `cargo metadata
---locked --format-version 1 | python3 scripts/deps-edges.py` checks boundaries.
+The drift check must fail after an unexported contract change. The `deps-edges`
+flake check checks all-feature crate boundaries and separately walks the production
+feature graph, failing if expected crates are missing or e2e is enabled.
 `cargo deny check bans licenses sources` checks dependency policy.
 
-`just dev` starts the placeholder window. `just bundle` is the Nix package
-hook for the signing implementation in #37; #37 owns `crank-app` assembly,
+`just dev` starts the placeholder window. `just bundle` fails with an explicit
+message pending the signing implementation in #37; #37 owns `crank-app` assembly,
 installation at `~/Applications/crank.app`, and stable nix-tcc signing.
 `just e2e` and `just screens` await the embedded macOS WebDriver gate #35;
-they fail explicitly until it lands. Screenshots will go to
+they fail explicitly until it lands. Playwright browsers are excluded from the
+devShell until #35 provides the harness. Screenshots will go to
 `docs/design/screens/` as ADR-0001 §8 specifies. Default Tauri icons are used
 until the app icon source lands in #48; regenerate using `tauri icon` then.
 

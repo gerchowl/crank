@@ -509,8 +509,10 @@ agent assumes a hardware result it did not see.
   `just check` is a local alias for it.
 - **Binary cache:** anvil's atticd is a substituter, URL `http://anvil.tail22bd7c.ts.net:8091/fleet`, key
   `fleet:XhYN63AUcQY42UsuNq5cjrSeDmXMbf1Znx52Qw8kucw=` (g-fleet `lib/fleet-cache.nix`). sage already has it
-  in `/etc/nix/nix.conf` (g-fleet's `nixPullCache`); the flake also declares it in `nixConfig`
-  (`extra-substituters`, `extra-trusted-public-keys`) for other hosts. Pushing build results to attic is
+  in `/etc/nix/nix.conf` via host configuration (g-fleet's `nixPullCache`). The flake declares
+  **no `nixConfig`**, per the architect's #28 round 2 decision: fleet hosts receive the substituter
+  and key from host config; non-fleet hosts use cache.nixos.org and source. Never use
+  `--accept-flake-config` or change nix.conf for this project. Pushing build results to attic is
   the runners' job (#25).
 
 ### 9.2 Frontend and generated bindings in Nix
@@ -617,7 +619,7 @@ agent assumes a hardware result it did not see.
 
 Scaffold (#28) acceptance gains: crate list of §2, pinned specta trio, bindings drift test, dependency-edge
 check, `clippy::unwrap_used` deny outside tests, and the flake of §9.1–9.2 (crane checks, `fetchPnpmDeps`,
-attic substituter in `nixConfig`) with `nix flake check` green.
+attic substituter via fleet host configuration, no `nixConfig`) with `nix flake check` green.
 
 ## 13. References
 
