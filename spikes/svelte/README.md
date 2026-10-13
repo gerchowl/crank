@@ -42,6 +42,8 @@ On top of that, `typescript-eslint` runs `strictTypeChecked`. TypeScript is stri
 - **uplot** handles the time-series and line charts (log-time panels, sparklines, MMP, HR
   recovery, review stack).
 - **playwright** (dev only) drives `pnpm shots`.
+- `typescript-eslint` is pinned to exactly 8.71.1. 8.71.2 is younger than pnpm's
+  `minimumReleaseAge`, and I didn't want to add policy exclusions.
 
 That's all. There is no drag-and-drop or grid library. Grid drag and resize is a 60-line
 attachment over pointer events (`src/ride/gridDrag.ts`). Outline reordering uses native HTML5
