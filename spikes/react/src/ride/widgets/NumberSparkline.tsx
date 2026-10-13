@@ -1,5 +1,6 @@
-import { useRef } from "react";
-import { useMetricCallback } from "../../lib/live";
+import { useEffect, useRef } from "react";
+import { backend } from "../../backend";
+import { getStatus, useMetricCallback } from "../../lib/live";
 import { fmtValue } from "../../lib/format";
 import { useCanvas } from "../../charts/useCanvas";
 import { useChartTheme } from "../../theme/theme";
@@ -52,12 +53,21 @@ export function NumberSparkline({ widget }: WidgetProps) {
     ctx.stroke();
   }, theme);
 
+  // Seed from the multi-resolution history so a remounted widget (page switch) isn't empty.
+  useEffect(() => {
+    const now = getStatus()?.t ?? 0;
+    const hist = backend.history({ metric: m.id, spanS, buckets: 120, scale: "fisheye" });
+    buf.current = hist.map((b) => ({ t: now - b.tAgo - b.dur / 2, v: b.mean }));
+    redraw();
+  }, [m.id, spanS, redraw]);
+
   // The line gets its own subscription at ≥ 4 Hz so it stays dense at 10×/60×;
   // the number updates at the widget's display rate.
   useMetricCallback(m.id, Math.max(4, widget.rateHz), widget.filter, (s) => {
     const pts = buf.current;
     const prev = pts[pts.length - 1];
-    if (prev && s.t < prev.t) pts.length = 0; // workout reloaded
+    if (prev && s.t < prev.t - 5) pts.length = 0; // workout reloaded
+    if (prev && s.t <= prev.t) return;
     pts.push(s);
     while (pts.length > 2 && (pts[0]?.t ?? 0) < s.t - spanS) pts.shift();
     redraw();

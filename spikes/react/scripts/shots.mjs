@@ -23,7 +23,10 @@ const clockS = async (page) => {
 async function waitRide(page, minS, phase) {
   for (let i = 0; i < 600; i++) {
     const ph = await page.locator(".topbar").getAttribute("data-phase");
-    if ((await clockS(page)) >= minS && ph === phase) return;
+    if ((await clockS(page)) >= minS && ph === phase) {
+      await page.keyboard.press("2"); // drop to 10× so the state holds while we shoot
+      return;
+    }
     await page.waitForTimeout(100);
   }
   throw new Error(`timeout waiting for ${phase} after ${minS}s`);
@@ -48,13 +51,13 @@ async function tour(mode) {
 
   // ---- ride: recovery → interval → nerd → layout edit → review ----
   const ride = await open("ride", "speed=60");
-  await waitRide(ride, 15 * 60 + 30, "recovery");
-  await ride.waitForTimeout(1200);
+  await waitRide(ride, 15 * 60 + 20, "recovery");
+  await ride.waitForTimeout(1500);
   await shot(ride, "ride-recovery");
+  await ride.keyboard.press("3"); // fast-forward to the threshold block
   await waitRide(ride, 33 * 60 + 50, "work");
   await ride.waitForTimeout(800);
   await shot(ride, "ride-interval");
-  await ride.keyboard.press("2"); // back to 10× so the remaining shots are stable
   await ride.keyboard.press("ArrowLeft"); // interval → nerd (wraps)
   await ride.waitForTimeout(2600);
   await shot(ride, "ride-nerd");
