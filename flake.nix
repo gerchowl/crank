@@ -26,7 +26,8 @@
       pnpmDeps = pkgs.fetchPnpmDeps {
         pname = "crank"; src = frontendSrc; pnpm = pkgs.pnpm_12;
         # pnpm 12 --force still filters optional dependencies by host platform.
-        # Fetch both supported targets so one hash works on macOS and Linux.
+        # Fetch both supported targets so one hash works on macOS and Linux. The platform-list form (pnpm >= 12.5)
+        # prepares exactly these two; the os/cpu mapping would fetch their cross product (4 targets, #64).
         prePnpmInstall = ''pnpm config set --location=project --json supportedArchitectures '["darwin-arm64","linux-x64"]' '';
         # pnpm leaves an empty v11/links directory on macOS but not Linux.
         # Empty store directories carry no cache data; normalize before packing.
@@ -148,7 +149,12 @@
         '';
         # Window config follows DESIGN §8 (#123); every package.json is Apache-2.0 (#125).
         window-config = pkgs.runCommand "window-config" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          python3 ${./scripts/check-window-config.py} ${source (lib.fileset.unions [ ./docs/design/DESIGN.md ./app/src-tauri/tauri.conf.json ])}
+          python3 ${./scripts/check-window-config.py} ${source (lib.fileset.unions [ ./docs/design/DESIGN.md ./docs/design/sizes.json ./app/src-tauri/tauri.conf.json ])}
+          touch $out
+        '';
+        # Regression test: the window-config check must fail on mismatched sources (#170).
+        window-config-test = pkgs.runCommand "window-config-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          python3 ${./scripts/test-window-config.py} ${source (lib.fileset.unions [ ./docs/design/DESIGN.md ./docs/design/sizes.json ./app/src-tauri/tauri.conf.json ])} ${./scripts/check-window-config.py}
           touch $out
         '';
         package-licenses = pkgs.runCommand "package-licenses" { nativeBuildInputs = [ pkgs.python3 ]; } ''
@@ -158,6 +164,13 @@
         # Executable model of the trainer-following machine (ADR-0002 §4.4.1, #54).
         following-model = pkgs.runCommand "following-model" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md}
+          touch $out
+        '';
+      } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+        # just bundle is macOS-only (ADR-0001 §9.3): exercise its atomic install against a temp target (#165).
+        install-app = pkgs.runCommand "install-app" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          cp -r ${source (lib.fileset.unions [ ./scripts/install-app.sh ./scripts/test-install-app.sh ])} src
+          cd src && bash scripts/test-install-app.sh
           touch $out
         '';
       } // lib.genAttrs [ "app-typecheck" "app-lint" "app-test" "shared-test" "shared-typecheck" "vectors-drift" ] (name:

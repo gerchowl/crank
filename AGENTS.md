@@ -23,17 +23,23 @@ pinned `advisory-db` input (bump: `nix flake update advisory-db`; ADR-0001 §9.5
 `advisory-db-3157b0e258782691` in flake.nix is cargo-deny's hash of the default db URL.
 
 `just dev` starts the placeholder window. `just bundle` (sage only, outside the sandbox) builds
-`.#crank-app` (an unsigned, Nix-assembled `crank.app`), installs it at `~/Applications/crank.app` and signs
-it inside-out with the local `nix-tcc` identity so the Bluetooth TCC grant survives rebuilds (ADR-0001
-§9.3, ADR-0002 §8). It reads the identity's SHA-1 from the keychain at run time, never creates or changes
-identities, and uses no hardened runtime or App Sandbox (library validation rejects the unsigned nix-store
-dylibs; distribution signing is #47). `just e2e` and `just screens` await the embedded macOS WebDriver
+`.#crank-app` (an unsigned, Nix-assembled `crank.app`), signs a copy inside-out with the local `nix-tcc`
+identity (by its SHA-1, the identity the requirement check verifies) and swaps it atomically into
+`~/Applications/crank.app` (`scripts/install-app.sh`), so the Bluetooth TCC grant survives rebuilds
+(ADR-0001 §9.3, ADR-0002 §8). The install logic is tested by `scripts/test-install-app.sh` (stub
+`codesign`, temp target), the `install-app` flake check on aarch64-darwin only: it uses `renamex_np`
+and the recipe is macOS-only, so on Linux the script skips with a message. `just bundle` reads the
+identity's SHA-1 from the keychain at run time, never creates or changes identities, and uses no
+hardened runtime or App Sandbox (library validation rejects the unsigned nix-store dylibs;
+distribution signing is #47). `just e2e` and `just screens` await the embedded macOS WebDriver
 gate #35; they fail explicitly until it lands. Playwright browsers are excluded from the devShell until #35
 provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
 
 App icons are generated from `assets/icon/icon-1024.png`: run `just icons` after changing the mark. It runs
 `tauri icon` and records every hash in `app/src-tauri/icons/MANIFEST.sha256`; the `icons-drift` flake check
-fails when the source or any generated icon differs from the manifest.
+fails when the source or any generated icon differs from the manifest. It proves the files match the
+recorded hashes, not that `tauri icon` produced them: `icon.icns` is not reproducible (two runs on the
+same input differ), so regenerate-and-compare is not possible (#165).
 
 Every pnpm lockfile update must update the `fetchPnpmDeps` hash in flake.nix.
 The fetch phase explicitly prepares darwin-arm64 and linux-x64 optional packages
