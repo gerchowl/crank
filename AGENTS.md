@@ -54,10 +54,10 @@ responsible process is sshd-keygen-wrapper. Never modify TCC. See
 [TRAINER-BLE](spec/TRAINER-BLE.md). The NEO has FE-C over BLE, no FTMS, and
 allows one central at a time. Batch pedalling requests for the owner.
 
-The fleet cache is provided by host configuration (g-fleet
-`modules/fleet-cache.nix`). Non-fleet machines build using cache.nixos.org
-and source. The flake declares no nixConfig; never use --accept-flake-config
-or change nix.conf for this project (architect decision, #28 round 2).
+The flake declares no nixConfig and CI uses GitHub-hosted runners (ADR-0001
+§9.4); a host-level binary cache, if any, comes from that host's own Nix
+configuration. Never use --accept-flake-config or change nix.conf for this
+project (architect decision, #28 round 2).
 
 Tauri ACL JSON lists contain absolute generated paths. Rust derivations run
 `scripts/relocate-tauri-permissions.py` after restoring crane artifacts:
