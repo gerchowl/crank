@@ -109,8 +109,9 @@ the UI asks the core over IPC at ≤ 10 Hz, see §4).
 
 Rust types are the contract. DTOs derive `serde::{Serialize, Deserialize}` and `specta::Type`; commands are
 annotated `#[tauri::command] #[specta::specta]`; **tauri-specta** generates `app/src/bindings.ts` (types,
-typed command wrappers, typed `Channel<T>` parameters). The file is committed; a Rust test regenerates it
-in CI and fails on any diff.
+typed command wrappers, typed `Channel<T>` parameters) through a small export binary
+(`export-bindings`, §9.2). The file is committed; the `bindings-drift` flake check regenerates it and fails
+on any diff (§9.1).
 
 Versions (checked on crates.io 2026-10-13): `tauri` 2.12.3 stable (3.0 is alpha; stay on 2.x),
 `tauri-specta` 2.0.0-rc.25, `specta` 2.0.0-rc.25, `specta-typescript` 0.0.12. tauri-specta v2 has been a
@@ -142,7 +143,7 @@ are what Tauri itself uses for download progress and child-process output
 
 | Mechanism | Used for |
 |---|---|
-| **Commands** (request/response, async) | every query and mutation: `history`, `histogram`, `heatmap`, `mmp`, `hr_recovery`, `streams`, `recoveries`, `laps`, `compile_workout`, `parse_dsl`, `print_dsl`, ride control (`ride_load/start/pause/resume/stop/adjust/skip_block`), `ride_status`, `coach_decisions`, `device_links`, `stream_ack`, layouts, snippets, workouts, athlete model, coach respond/rate, planner propose/rewrite, devices, settings |
+| **Commands** (request/response, async) | every query and mutation: `history`, `histogram`, `heatmap`, `mmp`, `hr_recovery`, `streams`, `recoveries`, `laps`, `compile_workout`, `parse_dsl`, `print_dsl`, ride control (`ride_load/start/pause/resume/stop/adjust/skip_block`), `ride_status`, `coach_decisions`, `device_links`, `stream_ack`, `stream_snapshot`, layouts, snippets, workouts, athlete model, coach respond/rate, planner propose/rewrite, devices, settings |
 | **One `Channel<StreamFrame>` per window** | all live data: subscribed samples, ride status, nudge changes, device link changes |
 | **Events** | only low-rate, app-wide invalidation hints for multiple windows: `store_changed { table }` |
 
@@ -189,13 +190,20 @@ the send rate therefore does not bound queued work if the page stalls (busy main
 devtools pause). crank bounds it explicitly:
 
 - The UI calls `stream_ack(stream, seq)` after it has applied a frame. The core keeps **at most 3
-  unacknowledged frames** per stream. While the window is full it sends nothing and **coalesces**: per
-  subscription only the latest sample, per `callId` the latest nudge, the latest status and link state.
-  The next frame after an ack carries the coalesced state with `resync: true`.
-- Discrete state is durable and queryable, so a coalesced or missed frame never loses information: on
-  `resync` or a `seq` gap the UI re-reads `ride_status()`, `coach_decisions()` and `device_links()`.
-- Frames stay under 8 KiB of JSON (≈ 30 subscriptions plus status), so they take Tauri's direct path.
-  The core counts frames over the limit as a metric and splits samples across frames rather than exceed it.
+  unacknowledged frames** per stream. While the window is full it sends nothing and **coalesces** into
+  bounded pending state: per subscription only the latest sample, the latest status, the latest state of
+  each of the two links, and **at most 8** changed nudges (latest per `callId`).
+- **Resync path.** When the window reopens, the next frame carries the coalesced state with
+  `resync: true` — unless more than 8 distinct nudges changed while coalescing, in which case the pending
+  nudges are dropped and the frame is a **bare resync** (`resync: true`, no nudges). On any `resync` or
+  `seq` gap the UI re-reads the durable state by query: `ride_status()`, `coach_decisions()`,
+  `device_links()`, and `stream_snapshot(stream)` (latest sample per subscription). Discrete state lives in
+  the engine and store, so a coalesced, bare or missed frame never loses information.
+- **Frame size is bounded by construction**, not by splitting: ≤ 64 subscriptions per stream (`subscribe`
+  returns `Conflict` beyond that) with at most one sample each (~40 B), one status (< 1 KiB), two link
+  states, ≤ 8 nudges with `message` capped at 280 characters in the contract (~0.5 KiB each). The worst
+  case is under 8 KiB of JSON, so every frame takes Tauri's direct path; a unit test serializes the
+  worst-case frame and asserts it.
 - **Cleanup:** streams belong to a window label. `open_stream` from a window drops that window's previous
   streams (page reload); the window's `Destroyed` event drops them; a failed `send` drops the stream.
   Subscriptions die with their stream.
@@ -457,7 +465,7 @@ agent assumes a hardware result it did not see.
 
   | Derivation | Source fileset |
   |---|---|
-  | `buildDepsOnly` | `craneLib.fileset.cargoTomlAndLock` (+ `.cargo/config.toml`) |
+  | `buildDepsOnly` | `craneLib.fileset.commonCargoSources`; crane's `mkDummySrc` (the default inside `buildDepsOnly`) replaces every `.rs` file with a stub but needs to see which `src/lib.rs`, `src/main.rs`, `src/bin/*`, tests, benches and examples exist to keep Cargo's implicit targets, so Rust edits don't invalidate `cargoArtifacts` ([mkDummySrc.nix](https://github.com/ipetkov/crane/blob/master/lib/mkDummySrc.nix)) |
   | Rust checks (`clippy`, `nextest`, `doctest`, `doc`) | `craneLib.fileset.commonCargoSources` + `crates/*/migrations` + `crates/*/tests/fixtures` + `spec/knowledge-pack/rules.md` + `app/src-tauri/{tauri.conf.json,capabilities,icons,Info.plist}` (read by `tauri::generate_context!`) |
   | `bindings-drift` | the Rust check set + **`app/src/bindings.ts`** (the committed file it compares against) |
   | `crank-desktop`, `crank-desktop-e2e` | the Rust check set + the `app-dist` output (`frontendDist`) |
