@@ -656,6 +656,17 @@ sizing (#52), remote test (#53).
   start path is blocked under a stop (only the ticked free ride starts), the re-check asks all five flags with no
   default, and the in-ride symptom action stops the workout and sets the stop. `?stop=1` starts the prototype with
   a stop on record.
+- Start screen (cold start, #62, #138): shown only while the core boots (`?boot=<ms>`, `?boot=fail[:<ms>]`; the
+  mock core is otherwise ready at once, so without them no start screen is shown). Its launch motion is **F · Spin-up**
+  ([BRAND.md](BRAND.md) §F · Spin-up, chosen over A · Slice's letter settle in #131): the app mark spins up into a
+  ring, which opens into the wordmark's C; R A N K come out and one slice cuts the word. It plays once from the
+  first frame and rests on the wordmark whatever the boot does — never gated on readiness, never held (the
+  `?hold` variant is a record in design/brand only), never restarted by "Try again". Ready at any time: the
+  destination is live and focused at once, the start screen is inert and cross-fades out over 200 ms while the
+  motion runs on at 1:1 (no cut at ≤ 150 ms, no rush after it). Reduced motion: no script, the settled
+  wordmark, removed at once. The settled frame is A · Slice's, pixel for pixel. Status line at 1.2 s from boot;
+  a failed boot replaces it with the alert (P6). `pnpm -C design/prototype test:start`
+  drives all of it on a fake clock, including the ring's slit (no hairline before the faces are 1 px apart, #142).
 - Interactive: `pnpm -C design/prototype dev` (real-time mock with sound; `?speed=10` or `60` for a faster
   ride; `?first=1` starts in onboarding).
 - Scenes: `?scene=<id>&theme=dark|light` builds a seeded mock (seed 42) on a virtual clock, advances it to the

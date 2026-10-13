@@ -1,7 +1,9 @@
 // Shared by `pnpm screens` and `pnpm test:start`: opens the prototype as a cold start on Playwright's fake
-// clock, so boot timers (src/boot.ts, the 1.2 s status) are deterministic. Time is paused at load and only
-// moves with page.clock.runFor(). CSS launch motion and WAAPI run on the document timeline, not the fake
-// clock, so they are stepped by hand (freezeMotion): every animation the app creates starts paused.
+// clock, so boot timers (src/boot.ts, the 1.2 s status) and F's requestAnimationFrame driver are deterministic.
+// Time is paused at load and only moves with page.clock.runFor(). WAAPI (the hand-off fade) and the status
+// line's CSS fade run on the document timeline, not the fake clock: every animation the app creates starts
+// paused. A motion frame at an exact t is painted with paintAt.
+import { fileURLToPath } from "node:url";
 export async function openStart(browser, base, { query, width = 1440, height = 900, reducedMotion = "no-preference", onError }) {
   const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, reducedMotion });
   const page = await ctx.newPage();
@@ -27,17 +29,19 @@ export async function openStart(browser, base, { query, width = 1440, height = 9
   return { page, close: () => ctx.close() };
 }
 
-/** Put the launch motion at `t` ms (the document timeline is not the fake clock) and hold it there. */
-export function freezeMotion(page, t) {
-  return page.evaluate((at) => {
-    let longest = 0;
-    for (const a of document.getAnimations()) {
-      if (a.effect?.target?.classList?.contains("start")) continue; // the cross-fade, if any
-      const end = a.effect?.getComputedTiming().endTime;
-      if (typeof end === "number") longest = Math.max(longest, end);
-      a.pause();
-      a.currentTime = at;
-    }
-    return longest;
-  }, t);
+/** F · Spin-up's pure module (design/brand/src/spin.ts), as the page's own dev server serves it. */
+export const SPIN_MODULE = "/@fs" + fileURLToPath(new URL("../../brand/src/spin.ts", import.meta.url));
+
+/** Paint F's frame at exactly `t` ms onto the start screen's SVG (the page's own rAF driver only advances with
+ *  the fake clock, so the frame stays where it is put). Returns the frame's `morph` summary, or null. */
+export async function paintAt(page, t) {
+  await page.evaluate(
+    async ({ mod, t }) => {
+      const { frame, paint } = await import(mod);
+      const svg = document.querySelector(".start svg");
+      paint(svg, frame(t), { ink: "var(--start-ink)", accent: "var(--start-accent)" });
+      document.querySelector(".start").dataset.t = String(t);
+    },
+    { mod: SPIN_MODULE, t },
+  );
 }

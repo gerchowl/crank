@@ -1,5 +1,5 @@
 // pnpm video — F · Spin-up as H.264 video in docs/design/brand/ (BRAND.md §F · Spin-up): real time at 60 fps
-// for both themes, plus a 4× slow-motion cut (dark) for review. Every frame is the deterministic ?t= frame,
+// for both themes, plus a 4× slow-motion cut for review in both themes. Every frame is the deterministic ?t= frame,
 // so the video is exactly what the storyboard shows. Needs ffmpeg on PATH, which the devShell does not carry:
 //   nix develop -c nix shell nixpkgs#ffmpeg-headless -c pnpm -C design/brand video
 import { spawn } from "node:child_process";
@@ -40,6 +40,7 @@ try {
   await render("spin.1440x900.dark.mp4", "dark", 1);
   await render("spin.1440x900.light.mp4", "light", 1);
   await render("spin.slowmo-4x.1440x900.dark.mp4", "dark", 4);
+  await render("spin.slowmo-4x.1440x900.light.mp4", "light", 4);
 } finally {
   await browser.close();
   await server.close();

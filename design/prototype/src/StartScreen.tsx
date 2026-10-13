@@ -1,7 +1,9 @@
-// Cold-start screen, concept A · Slice (docs/design/BRAND.md §Start screen, issue #62). Shown only while the
-// core boots; the wordmark is the brand spike's outlined SVG (design/brand/src, no font); the launch motion is
-// CSS (start.css) and is the final frame under prefers-reduced-motion.
-import { useEffect, useRef, useState } from "react";
+// Cold-start screen: F · Spin-up (docs/design/BRAND.md §F · Spin-up, issues #83 / #138). Shown only while the
+// core boots; the wordmark is the brand spike's outlined SVG (design/brand/src, no font). The launch motion is
+// F's pure `frame(t)` painted per animation frame from the clock; the markup at rest is the settled wordmark
+// (A · Slice), so under prefers-reduced-motion nothing is driven and the final frame is what shows.
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { SPIN, frame, paint } from "../../brand/src/spin.ts";
 import { svg } from "../../brand/src/wordmark.ts";
 import { retryBoot, type Boot } from "./boot";
 
@@ -11,12 +13,36 @@ export const STATUS_AFTER_MS = 1200;
 export const HANDOFF_MS = 200;
 
 // Colours stay CSS custom properties (start.css): the wordmark paints with roles, not hex.
-const WORDMARK = svg("slice", { ink: "var(--start-ink)", accent: "var(--start-accent)" });
+const COLOURS = { ink: "var(--start-ink)", accent: "var(--start-accent)" };
+const WORDMARK = svg("spin", COLOURS, "start");
 
 export function StartScreen({ boot, mode, onGone }: { boot: Boot; mode: "dark" | "light"; onGone: () => void }) {
   const el = useRef<HTMLElement>(null);
   const [slowAttempt, setSlowAttempt] = useState(0);
   const attempt = boot.phase === "booting" ? boot.attempt : 0;
+
+  // The launch motion plays once from the first frame and rests on the wordmark, whatever the boot does: it is
+  // never gated on readiness, held or restarted (BRAND.md §Boot behaviours (a), (b), failure). A hand-off lets
+  // it run on at 1:1 under the fade. `data-t` reports the painted t (tests, screenshots).
+  useLayoutEffect(() => {
+    const start = el.current;
+    const art = start?.querySelector("svg");
+    if (!start || !art || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const draw = (t: number) => {
+      paint(art, frame(t), COLOURS);
+      start.dataset.t = String(Math.round(t));
+    };
+    const t0 = performance.now();
+    let raf = 0;
+    const tick = () => {
+      const t = Math.min(performance.now() - t0, SPIN.end);
+      draw(t);
+      if (t < SPIN.end) raf = requestAnimationFrame(tick);
+    };
+    draw(0); // before the first paint: never a flash of the settled wordmark
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   // Timed from the boot attempt, not from the motion; inserted (so announced) only on a slow boot.
   useEffect(() => {
@@ -25,13 +51,12 @@ export function StartScreen({ boot, mode, onGone }: { boot: Boot; mode: "dark" |
     return () => clearTimeout(t);
   }, [attempt]);
 
-  // Core ready: the destination is live and focused at once; this screen stops taking input, freezes its
-  // launch motion where it is and fades out (removed at once under reduced motion).
+  // Core ready: the destination is live and focused at once; this screen stops taking input and fades out,
+  // its launch motion running on underneath (removed at once under reduced motion).
   useEffect(() => {
     if (boot.phase !== "ready" || !el.current) return;
     const start = el.current;
     start.inert = true;
-    for (const a of start.getAnimations({ subtree: true })) a.pause();
     document.querySelector<HTMLElement>("[data-destination]")?.focus();
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return onGone();
     const fade = start.animate([{ opacity: 1 }, { opacity: 0 }], { duration: HANDOFF_MS, easing: "linear", fill: "forwards" });
