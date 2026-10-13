@@ -10,7 +10,7 @@ use proptest::prelude::*;
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -683,7 +683,7 @@ async fn startup_capture_fault_is_nonfatal_and_rx_capture_keeps_arrival_time() {
 struct WakeClock {
     base: MonotonicClock,
     early: AtomicBool,
-    late_us: u64,
+    late_us: AtomicU64,
 }
 impl Clock for WakeClock {
     fn now(&self) -> MonoTime {
@@ -693,7 +693,8 @@ impl Clock for WakeClock {
         if self.early.swap(false, Ordering::SeqCst) {
             Box::pin(async {})
         } else {
-            self.base.sleep_until(MonoTime(at.0 + self.late_us))
+            self.base
+                .sleep_until(MonoTime(at.0 + self.late_us.load(Ordering::SeqCst)))
         }
     }
 }
@@ -702,7 +703,7 @@ async fn early_wake_cannot_underflow_and_late_wakes_do_not_drift_the_tick_grid()
     let clock = Arc::new(WakeClock {
         base: MonotonicClock::default(),
         early: AtomicBool::new(false),
-        late_us: 20_000,
+        late_us: AtomicU64::new(20_000),
     });
     let fake = Fake::new(clock.clone());
     let link = FecTrainer::new(Arc::new(fake.clone()), clock.clone())
@@ -728,6 +729,47 @@ async fn early_wake_cannot_underflow_and_late_wakes_do_not_drift_the_tick_grid()
             fake.writes.lock().unwrap().last().unwrap().0.0,
             epoch + (u64::from(i) + 1) * 250_000 + 20_000
         );
+    }
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovering_from_a_late_wake_cannot_write_less_than_250ms_apart() {
+    let clock = Arc::new(WakeClock {
+        base: MonotonicClock::default(),
+        early: AtomicBool::new(false),
+        late_us: AtomicU64::new(0),
+    });
+    let fake = Fake::new(clock.clone());
+    let link = FecTrainer::new(Arc::new(fake.clone()), clock.clone())
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    clock.late_us.store(20_000, Ordering::SeqCst);
+    settle().await;
+    link.control
+        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 100 }))
+        .await
+        .unwrap();
+    // Remove jitter before the writer schedules the next nominal wake.
+    clock.late_us.store(0, Ordering::SeqCst);
+    tokio::time::advance(Duration::from_millis(270)).await;
+    settle().await;
+    let count = fake.writes.lock().unwrap().len();
+    link.control
+        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        .await
+        .unwrap();
+    tokio::time::advance(Duration::from_millis(230)).await;
+    settle().await;
+    assert_eq!(fake.writes.lock().unwrap().len(), count);
+    tokio::time::advance(Duration::from_millis(20)).await;
+    settle().await;
+    {
+        let writes = fake.writes.lock().unwrap();
+        assert_eq!(writes.len(), count + 1);
+        assert_eq!(writes[count].0.0 - writes[count - 1].0.0, 250_000);
     }
     link.control.send(TrainerCommand::Disconnect).await.unwrap();
     tick().await;
