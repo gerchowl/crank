@@ -1,0 +1,10 @@
+# prek (workspace mode: hooks run with cwd = spikes/react, file paths relative to it)
+repos:
+  - repo: local
+    hooks:
+      - id: spike-react-check
+        name: spike-react pnpm check (tsc -b + eslint react-hooks/compiler rules)
+        entry: pnpm check
+        language: system
+        pass_filenames: false
+        files: ^(src/|eslint\.config\.js|tsconfig.*\.json|vite\.config\.ts|package\.json)
