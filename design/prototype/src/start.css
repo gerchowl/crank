@@ -1,0 +1,72 @@
+/* Start screen (docs/design/BRAND.md §Colour, §Start screen, §Motion). Linked from index.html, not imported
+   by the app, so the pre-paint window background below is render-blocking. Brand roles are --start-*: they
+   are the mark's graphite + brass, deliberately not the app's THEMES tokens (the rider's theme is not
+   loaded yet), and must not shadow --accent. */
+:root[data-start="dark"], .start[data-mode="dark"] {
+  --start-bg: #1a1d22;
+  --start-ink: #ece6dc;
+  --start-accent: #c08a4a;
+  --start-muted: #9ba0a8;
+}
+:root[data-start="light"], .start[data-mode="light"] {
+  --start-bg: #f4f1ea;
+  --start-ink: #1a1d22;
+  --start-accent: #94642d;
+  --start-muted: #5b6068;
+}
+/* The web analogue of the native window background (#28): equal to the start screen, so no flash. */
+:root[data-start] { background: var(--start-bg); }
+
+:root {
+  --start-settle: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.start {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: var(--start-bg);
+  color: var(--start-ink);
+  color-scheme: dark;
+}
+.start[data-mode="light"] { color-scheme: light; }
+.start[inert] { pointer-events: none; }
+.start .wm { width: min(52vw, 820px); }
+.start .wm svg { display: block; width: 100%; height: auto; overflow: visible; transform: translateX(var(--focus-shift, 0%)); }
+
+.start-status, .start-error {
+  position: absolute;
+  bottom: 48px;
+  margin: 0;
+  color: var(--start-muted);
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+.start-status { animation: start-fade 300ms linear backwards; } /* inserted by a boot timer, never by CSS delay */
+.start-error { max-width: min(640px, 86vw); text-align: center; color: var(--start-ink); }
+.start-error p { margin: 0 0 6px; }
+.start-error b { font-weight: 600; }
+.start-error p:last-child { display: flex; gap: 16px; align-items: center; justify-content: center; margin: 12px 0 0; color: var(--start-muted); }
+.start-retry {
+  font: inherit; color: var(--start-ink); background: transparent; border: 1px solid var(--start-muted);
+  border-radius: 6px; padding: 8px 18px; min-height: 40px; cursor: pointer;
+}
+.start-retry:hover { border-color: var(--start-ink); }
+.start-retry:focus-visible { outline: 3px solid var(--start-accent); outline-offset: 2px; }
+
+/* Launch motion: every keyframe states only `from`; the resting state is the element's own style, so
+   reduced motion (animation: none) is the final frame. Budget ≤ 1.2 s (letters end 700 ms, lines 930 ms). */
+.start .wm-l, .start .wm-speed { transform-box: fill-box; }
+.start .wm-l { animation: start-settle 520ms var(--start-settle) calc(var(--i) * 45ms) backwards; }
+/* Lines are revealed by a clip (not scaleX), so the 50° chamfer never changes angle mid-draw. */
+.start .wm-speed { animation: start-reveal 700ms var(--start-settle) 150ms backwards; }
+.start .wm-speed.s1 { animation-delay: 230ms; }
+@keyframes start-settle { from { opacity: 0; transform: translateX(-60px); } }
+@keyframes start-reveal { from { clip-path: inset(0 0 0 100%); } }
+@keyframes start-fade { from { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .start, .start * { animation: none !important; }
+}

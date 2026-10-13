@@ -6,6 +6,7 @@ import { App } from "./App";
 import { applyScene, scenes } from "./scenes";
 import { navigate, sceneId } from "./session";
 import { safety } from "./safety";
+import { startBoot } from "./boot";
 
 const params = new URLSearchParams(location.search);
 const t = params.get("theme");
@@ -36,4 +37,5 @@ if (sceneError) {
       <App forcedTheme={forcedTheme} />
     </StrictMode>,
   );
+  startBoot();
 }
