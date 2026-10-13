@@ -9,6 +9,7 @@ import {
   DEFAULT_BINDINGS,
   DEFAULT_RIDE_SCREEN,
   distanceM,
+  keyGlyph,
   persistNotices,
   rideScreen,
   saveBindings,
@@ -247,7 +248,6 @@ const SOUND_LABEL: Record<SoundEvent, [string, () => void]> = {
   reconnected: ["Reconnected", () => play.reconnected()],
   wish: ["Wish answered (granted / changed)", () => play.wish(true)],
 };
-const showKey = (k: string) => (k === " " ? "Space" : k);
 
 function ControlsForm() {
   const saved = useStore(bindings);
@@ -276,7 +276,7 @@ function ControlsForm() {
               <td>{ACTION_LABEL[a]}</td>
               <td>
                 {saved[a].map((k) => (
-                  <kbd key={k}>{showKey(k)}</kbd>
+                  <kbd key={k}>{keyGlyph(k)}</kbd>
                 ))}
               </td>
               <td>

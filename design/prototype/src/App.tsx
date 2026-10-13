@@ -1,4 +1,5 @@
-// Shell: four places + the ride mode (DESIGN §3), a top-level error boundary (#4).
+// Shell: four places + the ride mode (DESIGN §3), a top-level error boundary (#4). The rail is a labelled
+// icon rail at every size (DESIGN §16.3): icon over its word, never an icon alone.
 import { Component, useCallback, useEffect, useState, type ReactNode } from "react";
 import { boot } from "./boot";
 import { StartScreen } from "./StartScreen";
@@ -110,8 +111,10 @@ function Destination() {
         <span className="brand">crank</span>
         {PLACES.map(([v, label, icon]) => (
           <button key={v} className={place === v ? "on" : ""} aria-current={place === v ? "page" : undefined} onClick={() => navigate(v)}>
-            <span aria-hidden>{icon}</span>
-            {label}
+            <span className="rail-icon" aria-hidden>
+              {icon}
+            </span>
+            <span className="rail-label">{label}</span>
           </button>
         ))}
       </nav>

@@ -5,6 +5,8 @@
 // under a stop, no cell above the injury cap can be chosen or reached, and only readiness deviations offer
 // "ride my wish". The cap is on actual power: non-ERG formats are not choices under it, a workout above it is
 // refused at start, and power above it in a ride is flagged and logged. The remote reaches every wish cell.
+// The Workouts library drawer (DESIGN §16.3) is driven keyboard-only: focus moves in, Tab stays inside, Esc and a pick
+// close it and return focus to ☰ Library; the scrim closes it too.
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
@@ -17,8 +19,8 @@ const browser = await chromium.launch();
 const results = [];
 const check = (name, ok, detail = "") => results.push({ name, ok, detail });
 const errors = [];
-async function page(q) {
-  const p = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+async function page(q, viewport = { width: 1440, height: 900 }) {
+  const p = await browser.newPage({ viewport });
   p.on("pageerror", (e) => errors.push(`${q}: ${e.message}`));
   await p.goto(base + q);
   await p.waitForTimeout(300);
@@ -73,6 +75,29 @@ try {
   for (let i = 0; i < 5; i++) await gateRows.nth(i).getByRole("radio", { name: "no" }).click();
   await p.getByRole("button", { name: "Done" }).click();
   check("All 'no' → the ride reaches the Ready check", await atReady(p));
+
+  // the check-in collapses to one summary line once done; Edit re-opens it in place and the card returns to its desk form
+  // until "Use these answers" (DESIGN §16.2) — Start is gated exactly as before
+  p = await page("");
+  const idle = () => p.waitForFunction(() => !document.querySelector("[data-pending]") && document.querySelector(".proposal-card"));
+  await idle();
+  const footer = async () => (await p.locator(".proposal-card.desk > p.small").textContent()) ?? "";
+  check("Check-in open: the card is the desk card, Start disabled, says confirm and answer", (await p.locator(".proposal-card.desk").count()) === 1 && (await p.locator(".proposal-card").getByRole("button", { name: /Start/ }).isDisabled()) && (await footer()).startsWith("Confirm how you feel and answer the health check"));
+  await p.getByRole("button", { name: "✓ Same as yesterday" }).click();
+  check("Same as yesterday without the red flags: still open, no saddle card", (await p.locator(".checkin-summary").count()) === 0 && (await p.locator("[data-saddle]").count()) === 0);
+  const flagRows = p.locator('.redflag-check [role="radiogroup"]');
+  for (let i = 0; i < 5; i++) await flagRows.nth(i).getByRole("radio", { name: "no" }).click();
+  await p.getByRole("button", { name: "Done", exact: true }).click();
+  await idle();
+  check("Confirmed + red flags answered: one summary line and the saddle card", ((await p.locator(".checkin-summary").textContent()) ?? "").includes("no red flags") && (await p.locator("[data-saddle]").count()) === 1 && (await p.locator('[aria-label="How are you today"]').count()) === 0);
+  await p.locator(".checkin-summary").getByRole("button", { name: "Edit" }).click();
+  await idle();
+  check("Edit re-opens the check-in in place; the card is the desk card again, Start disabled, says use these answers", (await p.locator('[aria-label="How are you today"]').count()) === 1 && (await p.locator(".proposal-card.desk").count()) === 1 && (await p.locator(".proposal-card").getByRole("button", { name: /Start/ }).isDisabled()) && (await footer()).startsWith("Use these answers to finish editing and enable Start"));
+  await p.getByRole("radio", { name: "short" }).click();
+  check("Changing an answer keeps it open (no collapse mid-edit)", (await p.locator(".checkin-summary").count()) === 0);
+  await p.getByRole("button", { name: "✓ Use these answers" }).click();
+  await idle();
+  check("Use these answers collapses it again with the new answer", ((await p.locator(".checkin-summary").textContent()) ?? "").includes("sleep short") && (await p.locator("[data-saddle]").count()) === 1);
 
   // 3. in-ride symptom: its own binding, and the End dialog
   p = await page("?scene=ride-threshold");
@@ -184,7 +209,7 @@ try {
   // 6. readiness deviations: explained with a pack rule; the rider may override (and only then)
   p = await page("?scene=today-wish-deviates");
   const line = p.locator(".outcome-line");
-  check("Deviation: explained with a pack rule and its cut-off grade", (await line.getAttribute("data-relation")) === "deferred" && (await p.locator(".saddle-proposal .why").count()) === 1 && (await prop(p).getAttribute("data-delivered")) === "tempo");
+  check("Deviation: explained with a pack rule and its cut-off grade", (await line.getAttribute("data-relation")) === "deferred" && (await p.locator("[data-saddle] .why").count()) === 1 && (await prop(p).getAttribute("data-delivered")) === "tempo");
   await p.getByRole("button", { name: "Ride my wish" }).click();
   await settled(p);
   check("…'ride my wish' gives the rider's wish, logged", (await prop(p).getAttribute("data-delivered")) === "vo2max" && (await line.getAttribute("data-relation")) === "anyway");
@@ -192,6 +217,30 @@ try {
   await p.getByRole("button", { name: /Easier/ }).click();
   await settled(p);
   check("Easier = wish − from what is proposed (one outcome table)", (await prop(p).getAttribute("data-delivered")) === "easy");
+
+  // 7. the Workouts library drawer at 1024, keyboard only (DESIGN §16.3)
+  p = await page("?scene=workouts", { width: 1024, height: 768 });
+  const inDrawer = () => p.evaluate(() => !!document.activeElement?.closest(".library[data-open]"));
+  const onToggle = () => p.evaluate(() => document.activeElement?.classList.contains("lib-toggle") ?? false);
+  const drawerOpen = async () => (await p.locator(".library[data-open]").count()) === 1;
+  await p.locator(".lib-toggle").focus();
+  await p.keyboard.press("Enter");
+  check("Drawer: ☰ Library + Enter opens it and focus moves into it", (await drawerOpen()) && (await inDrawer()) && (await p.locator(".lib-scrim").count()) === 1);
+  const items = await p.locator(".library button:not(:disabled)").count();
+  let stayed = true;
+  for (let i = 0; i < items + 2; i++) (await p.keyboard.press("Tab"), (stayed &&= await inDrawer()));
+  for (let i = 0; i < items + 2; i++) (await p.keyboard.press("Shift+Tab"), (stayed &&= await inDrawer()));
+  check("Drawer: Tab and Shift+Tab stay inside while it overlays the editor", stayed && (await p.locator(".editor[inert]").count()) === 1, `${items} focusable`);
+  await p.keyboard.press("Escape");
+  check("Drawer: Esc closes it and focus returns to ☰ Library", !(await drawerOpen()) && (await onToggle()));
+  await p.keyboard.press("Enter");
+  await p.keyboard.press("Tab"); // the first snippet: a pick loads it under its own name
+  const picked = (await p.evaluate(() => document.activeElement?.textContent ?? "")).trim();
+  await p.keyboard.press("Enter");
+  check("Drawer: Enter on a library item loads it, closes the drawer, focus returns to ☰ Library", !(await drawerOpen()) && (await onToggle()) && (await p.locator(".editor-head h1").textContent()) === picked, picked);
+  await p.keyboard.press("Enter");
+  await p.locator(".lib-scrim").click({ position: { x: 900, y: 600 } });
+  check("Drawer: a click on the scrim closes it, focus returns to ☰ Library", !(await drawerOpen()) && (await onToggle()));
 } finally {
   await browser.close();
   await server.close();
