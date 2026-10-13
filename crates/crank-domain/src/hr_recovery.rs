@@ -220,11 +220,13 @@ fn fit_parameters(
 
 /// Fit `hr(t)=hr_inf+amp*exp(-(t-t0)/tau)` from timestamps in seconds and HR in bpm.
 /// No sample filtering occurs. Fewer than three points or mismatched arrays yield
-/// `None`. Constant times/HR remain regularised by the amplitude and HR priors.
+/// `None` after configuration validation. Constant times/HR remain regularised
+/// by the amplitude and HR priors.
 /// Negative nonzero standard deviations retain TS's squared-prior semantics.
 /// # Errors
 /// Rejects nonfinite inputs, nonpositive τ, zero noise/prior deviations, grids
 /// outside 2..=4096, and nonfinite or singular intermediate calculations.
+/// Configuration errors are checked even on empty/insufficient input (#169).
 pub fn fit_mono_exp(
     ts: &[f64],
     ys: &[f64],
@@ -232,10 +234,10 @@ pub fn fit_mono_exp(
     prior: &RecoveryPrior,
     opts: &FitOptions,
 ) -> Result<Option<MonoExpFit>, MetricError> {
+    let (tau_min, tau_max, g, mut sigma) = fit_parameters(t0, prior, opts)?;
     if ts.len() < 3 || ts.len() != ys.len() {
         return Ok(None);
     }
-    let (tau_min, tau_max, g, mut sigma) = fit_parameters(t0, prior, opts)?;
     if ts.iter().chain(ys).any(|x| !x.is_finite()) {
         return Err(MetricError::NonFiniteCalculation);
     }
@@ -465,7 +467,8 @@ pub fn empty_recovery_state() -> HrRecoveryState {
 /// Fractional horizons retain the TS loop's integer steps and endpoint behaviour.
 /// # Errors
 /// Rejects nonfinite inputs/calculations and horizons over 86400 s (one day),
-/// preventing unbounded loops. See [`fit_mono_exp`] for fitting errors.
+/// preventing unbounded loops. Nonfinite configuration is rejected even before
+/// a peak or fit is available. See [`fit_mono_exp`] for fitting errors.
 pub fn build_hr_recovery_state(inp: &RecoveryInput) -> Result<HrRecoveryState, MetricError> {
     let peak_search = inp.peak_search_s.unwrap_or(60.);
     finite_parameters(&[
@@ -475,6 +478,10 @@ pub fn build_hr_recovery_state(inp: &RecoveryInput) -> Result<HrRecoveryState, M
         ("targetBpm", inp.target_bpm),
         ("now", inp.now),
         ("peakSearchS", peak_search),
+        ("usualTauS", inp.usual_tau_s),
+        ("priorHrInf", inp.prior_hr_inf),
+        ("priorHrInfSd", inp.prior_hr_inf_sd.unwrap_or(8.)),
+        ("tauLogSd", inp.tau_log_sd.unwrap_or(0.35)),
     ])?;
     if inp
         .observed
