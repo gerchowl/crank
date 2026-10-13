@@ -101,9 +101,9 @@ impl TrainerDriver for FecTrainer {
             let (commands, control) = mpsc::channel(64);
             let result = async {
                 emit(&events, TrainerEvent::Link(LinkState::Connecting)).await?;
-                write(&transport, &clock, capture.as_ref(), config).await?;
+                write(&transport, &clock, capture.as_ref(), config, None).await?;
                 clock.sleep_until(MonoTime(clock.now().0 + 250_000)).await;
-                write(&transport, &clock, capture.as_ref(), request(54)?).await?;
+                write(&transport, &clock, capture.as_ref(), request(54)?, None).await?;
                 let deadline = MonoTime(clock.now().0 + 2_000_000);
                 loop {
                     tokio::select! {
@@ -180,7 +180,7 @@ fn record_capture(
     {
         capture
             .record_current(clock.as_ref(), rx, bytes)
-            .map_err(|e| DeviceError::Gatt(e.to_string()))?;
+            .map_err(|e| DeviceError::Capture(e.to_string()))?;
     }
     Ok(())
 }
@@ -189,8 +189,15 @@ async fn write(
     clock: &Arc<dyn Clock>,
     capture: Option<&Arc<Capture>>,
     bytes: [u8; 13],
+    events: Option<&mpsc::Sender<TrainerEvent>>,
 ) -> Result<(), DeviceError> {
-    record_capture(capture, clock, false, &bytes)?;
+    if let Err(error) = record_capture(capture, clock, false, &bytes) {
+        if let Some(events) = events {
+            emit(events, TrainerEvent::Fault(error)).await?;
+        } else {
+            return Err(error);
+        }
+    }
     transport.write(bytes).await
 }
 async fn read(
@@ -260,7 +267,7 @@ async fn run(
             return Ok(());
         }
         if let Some(frame) = pacer.tick(tick)? {
-            write(&transport, &clock, capture.as_ref(), frame).await?;
+            write(&transport, &clock, capture.as_ref(), frame, Some(&events)).await?;
             if frame[4] != 70
                 && let Some(mode) = pacer.mode
             {

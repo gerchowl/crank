@@ -495,3 +495,62 @@ async fn real_writer_coalesces_adversarial_erg_changes_with_two_tick_latency() {
         }
     }
 }
+
+struct Trace;
+impl tracing::Subscriber for Trace {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+#[tokio::test(start_paused = true)]
+async fn trace_capture_failure_is_reported_without_misreporting_gatt_or_stopping_control() {
+    tracing::subscriber::set_global_default(Trace).unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "crank-43-capture-fault-{}.fecap",
+        std::process::id()
+    ));
+    let capture = Arc::new(Capture::create(&path, MonoTime(0)).unwrap());
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let fake = Fake::new(clock.clone());
+    let driver = FecTrainer::new(Arc::new(fake.clone()), clock).with_capture(capture.clone());
+    let mut link = driver
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    settle().await;
+    // Make subsequent append timestamps invalid to exercise capture's I/O error
+    // path without relying on host filesystem permissions or a Linux /dev/full.
+    capture.record(MonoTime(1_000_000_000), true, &[]).unwrap();
+    link.control
+        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        .await
+        .unwrap();
+    tick().await;
+    let mut events = Vec::new();
+    while let Ok(event) = link.events.try_recv() {
+        events.push(event);
+    }
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, TrainerEvent::Fault(DeviceError::Capture(_))))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, TrainerEvent::Delivered { .. }))
+    );
+    assert!(!events.contains(&TrainerEvent::Link(LinkState::Lost)));
+    assert_eq!(fake.writes.lock().unwrap().last().unwrap().1[4], 49);
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+    std::fs::remove_file(path).unwrap();
+}
