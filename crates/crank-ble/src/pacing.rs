@@ -47,6 +47,7 @@ pub(crate) struct Pacer {
     pending: std::collections::VecDeque<[u8; 13]>,
     pair_tail: bool,
     pair_completed: bool,
+    tail_continuation: bool,
     poll: Option<u64>,
     last_poll: Option<u64>,
     keep: u64,
@@ -59,6 +60,7 @@ impl Pacer {
         if !same_kind {
             self.sent.clear();
             self.pair_tail = false;
+            self.tail_continuation = false;
         }
         let mut changed: std::collections::VecDeque<_> = next
             .iter()
@@ -69,6 +71,7 @@ impl Pacer {
             changed.retain(|p| p[4] != 51);
             changed.push_front(next[1]);
         }
+        self.tail_continuation &= changed.iter().any(|p| p[4] == 50);
         if self.poll.is_none() {
             self.poll = Some(tick + 4);
         }
@@ -93,6 +96,7 @@ impl Pacer {
         let pair = self.pending.len() == 2 && !self.pair_tail;
         if due
             && ((!pair && !self.pair_tail) || self.pair_completed)
+            && (!self.tail_continuation || self.pair_completed)
             && self.last_poll != tick.checked_sub(1)
         {
             self.last_poll = Some(tick);
@@ -105,8 +109,13 @@ impl Pacer {
             return Ok(Some(request(71)?));
         }
         if let Some(frame) = self.pending.pop_front() {
+            if self.tail_continuation && due && !pair {
+                self.pair_completed = true;
+            }
+            self.tail_continuation = false;
             if self.pair_tail {
                 self.pair_completed = due;
+                self.tail_continuation = !self.pending.is_empty();
                 let mut poll = self.poll.unwrap_or(tick + 4);
                 while poll <= tick + 1 {
                     poll += 4;

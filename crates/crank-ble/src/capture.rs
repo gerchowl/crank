@@ -27,18 +27,6 @@ impl Capture {
             .map_err(|_| io::Error::other("capture lock poisoned"))?;
         append(&mut state, at, rx, bytes)
     }
-    pub(crate) fn record_current(
-        &self,
-        clock: &dyn crate::Clock,
-        rx: bool,
-        bytes: &[u8],
-    ) -> io::Result<()> {
-        let mut state = self
-            .0
-            .lock()
-            .map_err(|_| io::Error::other("capture lock poisoned"))?;
-        append(&mut state, clock.now(), rx, bytes)
-    }
 }
 fn append(
     state: &mut (File, MonoTime, u64),
