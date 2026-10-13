@@ -5,7 +5,7 @@ import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import { findNode, NUDGE_TTL_S, type CoachNudge, type CompiledWorkout, type FlatBlock, type RideStatus, type StepNode, type Workout } from "@crank/shared";
 import { Profile, Recovery } from "../charts";
 import { blockName, blockTitle, mmss, num, signed } from "../format";
-import { blockKind, CAP_PCT_CP, cadenceState, proposedWatts, resumePlan, RESUME, coachOffsetPct, coachReason, cursorS, recoveryRead, revertNudge, sceneFixture, settling, SETTLE_S, targetBand, type BlockKind, type CadenceState, type CoreFacts } from "../mock/ext";
+import { blockKind, CAP_PCT_CP, cadenceState, proposedWatts, resumePlan, RESUME, coachOffsetPct, coachReason, cursorS, recoveryRead, revertNudge, sceneFixture, settling, SETTLE_S, targetBand, type BlockKind, type CadenceState, type CapExceeded, type CoreFacts } from "../mock/ext";
 import { actionFor, bindings, rideScreen, type SlotMetric } from "../persist";
 import { backend, coreFacts, navigate, RECONNECT_NOTICE_S, sceneId, UNDO_WINDOW_S, useMetric, usePoll, useSession, type RideSession } from "../session";
 import { play, useRideSounds } from "../sound";
@@ -127,6 +127,10 @@ function RideScreen({ s }: { s: RideSession }) {
   const raw = useStore(s.status);
   const current = useStore(s.current);
   const nudges = useStore(s.nudges);
+  const cap = useStore(s.cap);
+  useEffect(() => {
+    if (cap.over) play.warning(); // §15.2: the over-cap status comes with the warning tone
+  }, [cap.over?.at]);
   const reverted = useStore(s.reverted);
   useStore(s.gaps);
   useStore(s.pausedSinceMs);
@@ -195,10 +199,10 @@ function RideScreen({ s }: { s: RideSession }) {
   const offset = coachOffsetPct(nudges, reverted);
 
   return (
-    <div className="ride" data-kind={kind} data-state={facts.trainerLost ? "held" : status.state} data-density={config.density}>
+    <div className="ride" data-cap-log={cap.log.length} data-kind={kind} data-state={facts.trainerLost ? "held" : status.state} data-density={config.density}>
       <StatusBar status={status} facts={facts} onHelp={() => setDialog("keys")} />
       <section className="hero" aria-label="Now">
-        <HeroHeader workout={workout} block={block} kind={kind} step={step} capped={!!fx.healthCap} showCadence={config.density === "focus" || (config.slotA !== "cadence" && config.slotB !== "cadence")} />
+        <HeroHeader workout={workout} block={block} kind={kind} step={step} capped={!!fx.healthCap} capOver={cap.over} showCadence={config.density === "focus" || (config.slotA !== "cadence" && config.slotB !== "cadence")} />
         <Rows status={status} facts={facts} kind={kind} block={block} prev={compiled.blocks[status.blockIndex - 1]} step={step} offset={offset} left={left} onEnd={() => setDialog("end")} />
         <Next compiled={compiled} workout={workout} index={status.blockIndex} kind={kind} />
       </section>
@@ -400,12 +404,20 @@ function useCadenceState(step: StepNode | undefined) {
   return { rpm, cs };
 }
 
-function HeroHeader({ workout, block, kind, step, capped }: { workout: Workout; block: FlatBlock; kind: BlockKind; step: StepNode | undefined; showCadence: boolean; capped: boolean }) {
+function HeroHeader({ workout, block, kind, step, capped, capOver }: { workout: Workout; block: FlatBlock; kind: BlockKind; step: StepNode | undefined; showCadence: boolean; capped: boolean; capOver: CapExceeded | null }) {
   const t = blockTitle(workout.nodes, block);
   const inherited = !step?.label && block.phase !== "work" && kind !== "hr_recovery";
   const easyRep = kind === "onoff" && block.phase !== "work";
   const reps = t.reps.at(-1);
   const { cs } = useCadenceState(step);
+  const capW = Math.round((workout.ftp * CAP_PCT_CP.threshold) / 100);
+  // over the cap (§15.2 point 3): row 1 becomes the status at the ride tier — what, how much, what to do
+  if (capOver)
+    return (
+      <div className="row1 t3 cap-over" data-fit role="alert">
+        ⚠ {capOver.watts} W · over your {capW} W cap · ease off
+      </div>
+    );
   return (
     <div className="row1 t3" data-fit>
       <span className="phase-word">{easyRep ? "Off" : PHASE_WORD[kind]}</span>
@@ -424,7 +436,7 @@ function HeroHeader({ workout, block, kind, step, capped }: { workout: Workout; 
       )}
       {/* out-of-range cadence is the ERG lever: always a chip in row 1, in every density (§5.2) */}
       {cs !== "in" && cs !== "none" && <span className={`chip cad-chip cad-${cs}`}>{CADENCE_WORD[cs]}</span>}
-      {capped && <span className="chip cap-chip">capped ≤ {Math.round((workout.ftp * CAP_PCT_CP.threshold) / 100)} W</span>}
+      {capped && <span className="chip cap-chip">capped ≤ {capW} W</span>}
     </div>
   );
 }

@@ -4,7 +4,7 @@
 // DESIGN §10 #6: the session routes to Review when the ride finishes.
 import { useEffect, useState } from "react";
 import { createMockBackend, type CoachNudge, type MetricId, type MockBackend, type RideStatus, type Sample, type Workout } from "@crank/shared";
-import { DETECT_S, reconnectAttempt, sceneFixture, type CoreFacts } from "./mock/ext";
+import { CAP_PCT_CP, CapMonitor, DETECT_S, reconnectAttempt, sceneFixture, type CapExceeded, type CoreFacts } from "./mock/ext";
 import { createStore, useStore } from "./store";
 
 const params = new URLSearchParams(location.search);
@@ -45,6 +45,12 @@ export class RideSession {
   readonly gaps = createStore<SensorGap[]>([]);
   /** wall-clock ms when the rider paused (ride time stops while paused) */
   readonly pausedSinceMs = createStore<number | null>(null);
+  /** the core's CapState / CapExceeded stream (§15.2): the episode in progress and the ride's log */
+  readonly cap = createStore<{ over: CapExceeded | null; log: CapExceeded[] }>({ over: null, log: [] });
+  private capMonitor: CapMonitor | null = null;
+  private lastFedT = 0;
+  /** once a trace is injected it stands in for measured power: later mock samples don't overwrite it */
+  private injected = false;
   private readonly offs: (() => void)[] = [];
   private currentKey = "";
 
@@ -60,6 +66,7 @@ export class RideSession {
         this.refreshCurrent();
         if (s.state === "finished" && route.get().view === "ride") navigate("review");
       }),
+      backend.subscribe("power_3s", { rateHz: 4 }, (s) => this.injected || this.feedPower(s.t, s.v)),
       backend.onNudge((n) => {
         this.nudges.set((prev) => {
           const i = prev.findIndex((p) => p.callId === n.callId);
@@ -85,6 +92,34 @@ export class RideSession {
       if (s[sensor] !== "connected" && !open) this.gaps.set((g) => [...g, { sensor, lostAtT: s.t, backAtT: null }]);
       if (s[sensor] === "connected" && open) this.gaps.set((g) => g.map((x) => (x === open ? { ...x, backAtT: s.t } : x)));
     }
+  }
+
+  /** Measured power → the cap monitor; an exceedance raises a strong ease_off once per episode (§15.2 point 3). */
+  feedPower(t: number, w: number | null) {
+    this.lastFedT = Math.max(this.lastFedT, t);
+    if (!sceneFixture.get().healthCap) return;
+    this.capMonitor ??= new CapMonitor(Math.round((this.workout.ftp * CAP_PCT_CP.threshold) / 100));
+    const wasOver = this.cap.get().over !== null;
+    const e = this.capMonitor.feed(t, w);
+    this.cap.set({ over: e ? { ...e } : null, log: this.capMonitor.log.map((x) => ({ ...x })) });
+    if (e && !wasOver)
+      this.nudges.set((prev) => [...prev, { callId: `cap-${e.at}`, t, verdict: "ease_off", band: "strong", p: 1, message: "Above your injury cap", proposedPctChange: -3, status: "pending" }]);
+  }
+
+  /** Scenes and the safety test: a measured-power trace ([watts, seconds] steps at 4 Hz), as the core would stream it. */
+  injectPower(trace: [number, number][]) {
+    this.injected = true;
+    let t = Math.max(this.status.get()?.t ?? 0, this.lastFedT);
+    let last = 0;
+    for (const [w, s] of trace)
+      for (let i = 0; i < s * 4; i++) {
+        t += 0.25;
+        last = w;
+        this.feedPower(t, w);
+      }
+    const c = this.current.get();
+    const target = c?.compiled.blocks[this.status.get()?.blockIndex ?? 0]?.powerFrom ?? last;
+    sceneFixture.set((f) => ({ ...f, metrics: { ...f.metrics, power_3s: last, delta_target: Math.round(last - target) } }));
   }
 
   markReverted(callId: string) {
@@ -139,7 +174,7 @@ export const useSession = () => useStore(session);
 export function useMetric(metric: MetricId, rateHz: number): number | null {
   const [sample, setSample] = useState<Sample | null>(null);
   useEffect(() => backend.subscribe(metric, { rateHz }, setSample), [metric, rateHz]);
-  const fixed = sceneFixture.get().metrics; // scene fixture: what the core would send in this state
+  const fixed = useStore(sceneFixture).metrics; // scene fixture: what the core would send in this state
   if (fixed && metric in fixed) return fixed[metric] ?? null;
   return sample?.v ?? null;
 }

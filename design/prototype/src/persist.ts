@@ -113,7 +113,7 @@ export function saveBindings(b: Bindings): string | null {
 export const actionFor = (b: Bindings, key: string): Action | null => ACTIONS.find((a) => b[a].includes(key) || b[a].includes(key.toLowerCase())) ?? null;
 
 // ---------- sound (DESIGN §7.3) ----------
-export const SOUND_EVENTS = ["block", "countdown", "coach", "applied", "warning", "reconnected"] as const;
+export const SOUND_EVENTS = ["block", "countdown", "coach", "applied", "warning", "reconnected", "wish"] as const;
 export type SoundEvent = (typeof SOUND_EVENTS)[number];
 export interface SoundConfig { volume: number; muted: SoundEvent[] }
 export const DEFAULT_SOUND: SoundConfig = { volume: 0.6, muted: [] };
@@ -140,7 +140,7 @@ export function setDistance(m: number) {
 }
 
 // ---------- onboarding progress (DESIGN §5.8) ----------
-export const ONBOARDING_STEPS = ["about", "background", "numbers", "health", "devices", "baseline", "result"] as const;
+export const ONBOARDING_STEPS = ["about", "background", "numbers", "health", "profile", "devices", "baseline", "result"] as const;
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
 export const onboardingStep = createStore<OnboardingStep | null>(
   load("crank.design.onboarding.v1", (v) => (ONBOARDING_STEPS.includes(v as OnboardingStep) ? (v as OnboardingStep) : null), null),

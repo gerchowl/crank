@@ -3,6 +3,7 @@
 Status: **proposed** (#24), round 5 — the final design round (after three rounds of astra and opus reviews; items
 still open after this round are filed as issues, not further rounds; the PR body maps every
 finding to its resolution). It drives the M1 UI issues once the reviews accept it.
+**Addendum §15** (#87, round 3): training profile, planner wish, Why?/Background.
 Prototype: `design/prototype/` (`pnpm -C design/prototype dev`). Screenshots: `docs/design/screens/`
 (`pnpm -C design/prototype screens`). Where this document conflicts with `spec/UX-SPEC.md` or
 `spec/VIEWS.md`, this document wins; §9 lists every such place. Engine behaviour (pauses, reconnects, ERG
@@ -89,7 +90,7 @@ without wasting sessions, and wants to trust that the plan fits how they feel to
 | Rainbow zone colours (TrainingPeaks, Zwift) | **Keep as opt-in only** | Already decided in THEMES: sequential ramp by default, rainbow behind a toggle, never the only carrier (zone labels are text). |
 | Mandatory FTP/ramp test before training (Zwift, TrainerRoad) | **Change** | Testing tired riders on day 1 is bad advice and bad onboarding. Start with priors ± uncertainty, ride today, refine from rides or an optional assessment week (spec/ONBOARDING.md, P7). |
 | A calendar as the home screen (TrainerRoad, TrainingPeaks) | **Change** | The home question is "what do I ride now?". Home = **Today**: check-in and one proposal. The last days are context under it. |
-| "Regenerate" for a new random plan | **Change** | Random re-rolls teach nothing. Directed alternatives: **Shorter · Easier · Harder · Other type**, each with a reason (planner variants, #15). |
+| "Regenerate" for a new random plan | **Change** | Random re-rolls teach nothing. Directed alternatives: **Shorter** (the time choice) · **Easier / Harder** (the wish one row down / up, §15.2) · **Other wish** (the matrix or the remote's wish mode), each answered with the same outcome table and reasons (§15.2; planner variants, #15). |
 | A readiness score as the reason (WHOOP-style, TrainerRoad AI) | **Change** | "Readiness 3.8/5" can't be checked. The reason lists facts the rider can verify: what they answered, the last similar session, recent load, time available (§5.1). |
 | ERG intensity ± (TrainerRoad, Zwift) | **Keep** | A real need (bad day, good day). Fixed-width, shows the rider's own cumulative offset; the coach's change is shown separately, at the target (§5.2). |
 | Coach pop-ups / toasts (SYSTM tips, Zwift messages) | **Change** | Toasts cover data and vanish. The coach has a reserved **lane** on the ride screen (P4, P5) and a decision log in Review. |
@@ -116,7 +117,7 @@ Four places plus two modes. The coach is not a place: it acts in Today (proposal
  │   coach, controls+sound, │
  │   screen, appearance)    │
  └───────────────────────────┘
- First run: Onboarding (7 steps, no rail, resumable) → Today
+ First run: Onboarding (8 steps, no rail, resumable) → Today
 ```
 
 - **Ride is a mode, not a page.** No rail, no navigation; exits only via finish (→ Review) or End ride
@@ -134,7 +135,7 @@ Four places plus two modes. The coach is not a place: it acts in Today (proposal
 1. **Daily ride (the 95 % path):** Today → check-in (pre-filled from the last answer; one tap "Same as
    yesterday", or change what differs) → proposal with reasons → **Start** → Ready check (trainer green → Start)
    → Ride → auto Review → RPE + rate calls → History.
-2. **First run:** Onboarding (7 steps) → "Your starting model" (CP 255 ± 35 W, self-report) → Today with a
+2. **First run:** Onboarding (8 steps) → "Your starting model" (CP 255 ± 35 W, self-report) → Today with a
    conservative proposal (P7).
 3. **Build/edit:** Workouts → pick or new → edit in profile / outline / text → AI on selection → read the
    change summary and before/after → accept (verified, #1) → Ride this.
@@ -160,7 +161,9 @@ keyboard access (`?` lists keys). Issue numbers and fixture notes never appear i
 - **Proposal card** (the hero): name, duration, what it is for, a profile (P13) with zones, and **why today
   as checkable facts** (bullets: what you answered, the last similar session and when, load over the last 7
   days vs usual, time available) plus the confidence of the athlete model used. Actions: **Start** (primary,
-  Enter), **Shorter / Easier / Harder / Other** (directed variants, #15), **Edit** (opens the editor on a copy).
+  Enter), **Shorter** (time), **Easier / Harder** (= the wish − / +, one outcome table, §15.2), **Edit** (opens the
+  editor on a copy); "Other" is the wish matrix / wish mode (§15.2). After the check-in the proposal becomes the
+  **saddle proposal** (§15.2).
   Structured reasons need a planner contract change (#29).
 - **Model card**: CP / W′ / HRmax with the **± at the same size as the value** (secondary ink), and under each
   its provenance and age ("from 9 rides · 2 d ago"); older than 6 weeks → stale styling; what is still
@@ -344,9 +347,9 @@ suggestion is explained before it is accepted:
 Undo/redo spans all three views; tree ops, undo/redo and DSL ↔ tree sync are unit-tested in production (#9).
 
 ### 5.8 Onboarding (first run)
-Seven steps (spec/ONBOARDING §1): About you · Background · Current numbers · Health check · Devices ·
-Baseline · Your starting model. A mode without the rail (§3); progress persisted after every step, so a
-relaunch shows **"Welcome back — continue at Health check (4 of 7)"**.
+Eight steps (spec/ONBOARDING §1; §15.1 added *Training for*): About you · Background · Current numbers · Health
+check · Training for · Devices · Baseline · Your starting model. A mode without the rail (§3); progress
+persisted after every step, so a relaunch shows **"Welcome back — continue at Health check (4 of 8)"**.
 - Every step states what **Skip** does ("Skipping keeps wide priors: CP ± 60 W, the coach stays conservative").
 - **Current numbers**: value, *what it came from* (ramp test / 20-min test / app estimate / guess) and
   *when* (a date); the uncertainty shown grows with age and source.
@@ -376,6 +379,9 @@ relaunch shows **"Welcome back — continue at Health check (4 of 7)"**.
   silent** — there is no capped plan and no one-click override. Riding stays possible only as a **deliberate,
   logged free ride** (no plan, no targets, coach off, flat-road resistance): "Ride without a plan…" opens a
   confirmation that must be ticked ("I understand crank isn't advising this ride, and I'll stop at any symptom").
+  **A medical stop plus a health cap means no ride at all**: the free ride has no targets, so the trainer can't
+  hold the cap; "Ride without a plan…" is not offered and the guard refuses it on every path (the medical-stop
+  gate wins, `today-stop-and-cap`).
   The stop is lifted only by **recording a medical clearance** in Settings → Health — the date of the check (not
   in the future), who cleared the rider, and an explicit statement — and every change is kept in a log.
   **Re-check:** once a day, before the first start, the rider answers **all five red flags** again (the same
@@ -395,9 +401,10 @@ relaunch shows **"Welcome back — continue at Health check (4 of 7)"**.
 
 ### 5.9 Settings
 Sections: **Devices** (trainer + HR, protocol, status, battery, pair / forget; one-central note),
+**Training profile** (§15.1),
 **Athlete model** (estimates ± source, manual override with provenance "self-report"), **Coach** (autonomy,
 §7.1), **Controls & sound** (the five actions and their bindings with *Learn* for a remote, §7.2; tones and
-volume, §7.3), **Ride screen** (§5.3), **Appearance** (mode dark / light / auto, preset, classic zones).
+volume, §7.3), **Ride screen** (§5.3), **Appearance** (mode dark / light / auto, preset, classic zones), **Background** (§15.3).
 
 ---
 
@@ -565,6 +572,7 @@ Settings → Controls & sound and one master volume:
 | Coach change applied / undone | one soft confirmation / one low note |
 | Trainer or HR lost, ERG released | warning (two low notes), repeated every 15 s while it lasts |
 | Reconnected | one confirmation |
+| Wish answered (Today, §15.2) | **granted**: three rising notes · **changed** (adapted, deferred, capped): two short notes and a low one — then the saddle proposal states what changed |
 Sounds never carry information that is not also on screen. The prototype plays them in interactive mode
 (Web Audio); production uses the same table (M1 UI).
 
@@ -597,6 +605,7 @@ Sounds never carry information that is not also on screen. The prototype plays t
 | VIEWS §4 tablet: strip moves into top bar | different layout at 1024 | same anatomy, scaled (§8) |
 | UX-SPEC §1 "Regenerate" | random re-roll | directed variants (§5.1, #15) |
 | UX-SPEC §4 Review "minimal" | numbers + chart + decisions | intent verdict, two inputs with context, evidence, all numbers, analytics (§5.5) |
+| ONBOARDING §1.4 Goals | focus incl. weight, time per session, preferred ride types | training profile (§15.1): six foci (weight dropped), weekly budget, formats in the wish vocabulary |
 
 Everything else in UX-SPEC / VIEWS (plot catalogue P01–P24, visual conventions, editor capabilities, the
 non-functional rules) still applies.
@@ -626,7 +635,8 @@ live cursor (#14); planner variants (#15); athlete model, "how did that feel" ta
 revert, short coach reason, coach offset, autonomy + bounds, pause reason / reconnect attempt / gap / soft
 start / ERG released in `RideStatus`, ride library, post-ride RPE, devices with live readings, structured
 planner reasons and rewrite rationale, fit quality, health-cap state, onboarding progress, ride-screen config,
-a non-ERG sprint and long sensor losses in the mock. Engine/ADR: resume (#50), sleep (#51), physical type
+a non-ERG sprint and long sensor losses in the mock; training profile, wish, wish outcome and structured
+reasons with rule IDs (§15.4, #59). Engine/ADR: resume (#50), sleep (#51), physical type
 sizing (#52), remote test (#53).
 
 ## 12. Prototype and screenshots
@@ -648,7 +658,7 @@ sizing (#52), remote test (#53).
   and metric values the core would send, labelled as such. The mock keeps the block timer running during a
   trainer loss (the ADR freezes it), so consecutive loss/reconnect scenes show a few seconds of drift — a mock
   limit tracked in #78, not the design.
-- Known prototype limits (all tracked): Easier / Harder / Other are disabled (#15); past rides in History
+- Known prototype limits (all tracked): Easier / Harder act on the wish (§15.2), production variants are #15; past rides in History
   cannot be opened (#29); the sprint scene runs in ERG (#29); per-interval stats, intent verdicts, proposal
   reasons, the athlete model, devices and the week strip are fixtures (#12, #18, #29); onboarding answers
   are not persisted except the step reached.
@@ -682,3 +692,444 @@ Reviewers should judge, with the screenshots open:
 - Which bar remotes to recommend and their default binding (#53).
 - Resume after a process restart needs the ADR-0001 amendment (#50).
 - A referenced knowledge-pack entry for the health screen (#77); the mock's frozen timer on trainer loss (#78).
+
+---
+
+## 15. Addendum (#87): training profile, planner wish, Why? and Background
+
+Status: **proposed**, round 3 (#87; round-1 reviews by astra and opus, the round-2 re-review by opus; resolution in §15.9). It is the design
+gate for the owner requests #85 (training profile), #86 (planner wish) and #84 (help / about / background). It
+extends §1–§14 and changes them only where §15.6 says so. Screens: `docs/design/screens/` (§15.7). The planner
+and the coach behind these screens are #59; §15.4 records the contract fields they need.
+
+### 15.0 Rider jobs and moments
+
+| Moment | The rider's job | What they can give | What they need back |
+|---|---|---|---|
+| **First run** (onboarding) | "Know what I'm training for, without a plan builder." | one choice; optionally an event, a weekly budget, formats | what that choice changes, and how sure crank is about each part |
+| **Life changes** (desk, any time) | "I signed up for a gran fondo / I'm back from a break." | edit the profile in Settings | before → after of what it changes; the next proposal uses it |
+| **Before, at the bike** (kit on, remote in hand) | "I feel like hills today" / "just give me something" | one gesture, or nothing | the wish, the session, one reason and Start — readable from the bike, above the fold |
+| **Before, at the desk** | "What would a long steady ride look like today?" | one click in the matrix, a time choice | the same, with every reason and its *Why?* |
+| **After / any time** | "Why did the coach do that? Should I believe it?" | one tap on *Why?* | the claim, the evidence and its grade, the cut-off and its grade, sources — offline |
+| **Curious** (rare) | "What does crank base its coaching on?" | browsing | the whole evidence base, by topic, with grades |
+
+A wish is for **today's ride**. There is no "plan tomorrow": a wish the planner can't grant today is *deferred*
+with a fixed expiry and is shown again on the day it was moved to (§15.2 lifecycle).
+
+Constraints from §1 hold (glance, distance, hands on the bars, a probabilistic coach). Two more:
+
+8. **A wish is a request, not a command.** The planner combines it with the check-in, the profile, the recent
+   load and the athlete model; it may change it, and then says what it changed and why. **Safety is applied
+   before the wish and never yields to it** (§5.8, #81).
+9. **Evidence strength is part of the claim**, and so is the strength of the *cut-off* crank applies. A C or D
+   rule, or a D cut-off, must look like one wherever it is shown.
+
+### 15.1 Training profile — *"What am I training for?"* (#85)
+
+**What it is.** The planner's **prior** for the mix of sessions and their progression: it shapes the week, it
+does not fix a calendar. Each day the check-in, the wish and the load decide the ride (R-RDY-01 · A).
+
+| Field | Values | Why this shape |
+|---|---|---|
+| **Focus** (one) | Endurance base · Climbing · Racing (crits, road) · Long events (gran fondo, sportive) · Time trial · General fitness & health | One prior is interpretable; several foci dilute each other. Each choice has a one-line description in rider words. |
+| **Event** (optional) | name + date ("39 weeks away") | Orders the blocks; never a taper from fitness/fatigue curves (R-LOAD-01 · B). |
+| **Your week, from now** | days (2–6) · **hours you can ride per week** (h / week) | A **budget**, not a target; each day's time comes from Today. It is *future availability*, unlike Background's "hours in the last 3 months", which pre-fills it in onboarding (one question, not two). |
+| **Formats you enjoy** | the wish matrix's formats: Steady · Intervals · Hills · Race sim · Open ride | One vocabulary for profile and wish; enjoyed formats break ties between equivalent sessions. |
+| **Coming back after 10+ days off** | on/off (+ since) | A temporary modifier, not a goal: a return block with widened uncertainty that ends by itself. **10 days is the athlete model's gap threshold** (spec/ONBOARDING §3) — one number everywhere; the model also detects it itself. |
+
+**"What this changes"** (screens `settings-profile`, `onboarding-profile`) lists the prior one effect per line,
+each with its evidence (*Why?* + grade where a pack rule exists, **D · convention** where it doesn't) and **the
+conditions it needs** ("when: on days with 2 h+ to ride, budget 7 h/week"). **A C-grade line is worded as a
+suggestion, never as a commitment**: "Optional: now and then a quality effort after 2 h or more, fuelled —
+suggested, never scheduled on its own" (R-DUR-01 · C). When the budget or the return status removes the condition,
+the line says so in place ("Not now: … needs 5 h/week or more (yours: 3 h)" / "not during a return block"). While
+editing, the panel shows **before → after** against the saved version: new lines are tagged *new*, lines that
+disappear are struck through as *no longer*. The goal-specific part is labelled convention (#143 for evidence).
+
+**Versions.** Every Save creates a new profile version (*Save as version 4*); proposals record the version they
+were planned with, and Review shows it ("planned with profile v3 · Long events"), so a later edit never rewrites
+why an old ride was planned (§15.4).
+
+**Onboarding** — step 5 of 8, **Training for**, *after* the Health check (a red flag makes goals moot) and before
+Devices. It shows only the focus choice, the effects panel and Back / Skip / Continue in the first viewport at
+1024×768; event, week, formats and "coming back" are behind **"Add an event, your week and formats (optional)"**.
+Continue saves; **Skip** keeps general fitness & health ("a balanced week"). The draft is saved on every change
+(like the step reached, §5.8), separately from the committed answers: relaunching restores the draft on this
+step; Skip discards it.
+
+**Reconciling spec/ONBOARDING.md §1.4 ("Goals")**
+
+| ONBOARDING §1.4 | Now |
+|---|---|
+| event and date (optional) | **Event**, unchanged |
+| focus: endurance / climbing / crits / general fitness / weight | **Focus**, six choices; *crits* → "Racing (crits, road)"; added *long events* and *time trial* (#85); **weight dropped** as a focus (below) |
+| days per week and time per session available | **Your week** (days + hours per week, future); time *per session* is Today's daily time choice |
+| preferred ride types | **Formats you enjoy**, in the wish vocabulary |
+
+**Conventions challenged**
+
+| Convention (where) | Verdict | Reason |
+|---|---|---|
+| Plan builder → fixed calendar to the event (TrainerRoad, TrainingPeaks) | **Change** | A calendar computed months ahead ignores how the rider is; the evidence supports a structure modulated daily (R-RDY-01 · A). |
+| Rider "type" / phenotype labels (Xert, TrainerRoad) | **Drop** | Profiling uses CP, W′, Pmax, durability (R-VLA-01 · B); a label adds no information. |
+| Weight loss as a training goal (ONBOARDING §1.4) | **Drop as a focus** | It doesn't change the session mix differently from general fitness; crank gives no diet, weight-loss or medical advice (the in-ride fuelling target is a training guideline, R-CHO-01 · A). |
+| Taper scheduled from the form curve (CTL/TSB) | **Change** | R-LOAD-01 · B; a lighter final week is labelled convention until #143. |
+| "Return from injury/break" as a plan type | **Change** | A state with an end, not a goal; injury goes through the health check (§5.8). |
+| Hours-per-week budget | **Keep** | The cheapest honest input to the weekly structure. |
+| Several concurrent goals | **Drop for v1** | One focus + one optional event keeps the prior explainable. |
+
+### 15.2 The planner wish — *"I'd like to ride this today"* (#86)
+
+**Three separate choices.** *How long* is Today's **time** (30 min · 45 min · 60 min · 1:30 h · 2 h · 3 h — 2 h and
+3 h reach the profile's long rides); *how hard* and *how structured* are the matrix. Duration is never a format.
+
+- **Intensity of the main effort** (rows, harder upwards): **Easy** (below VT1) · **Tempo** (VT1 to below CP) ·
+  **Threshold** (at CP) · **VO2max** (above CP) · **Sprint** (all-out ≤ 30 s). The row names the main effort, not
+  every minute (a threshold ride still warms up). Anchored on the rider's thresholds (R-GEN-01 · B), never zone
+  numbers; "sweet spot" is a convention (D) inside Tempo.
+- **Format** (columns): **Steady** (one continuous effort, ERG) · **Intervals** (repeats, ERG) · **Hills** (climbs
+  in SIM) · **Race sim** (surges and finales, ERG) · **Open ride** (no targets, the rider sets the power; the coach
+  watches the row as a ceiling — not the medical-stop free ride of §5.8, which is never offered here).
+
+**19 of 25 cells are choices**; the six that describe no session (e.g. *VO2max · Steady*, *Easy · Race sim*) are an
+empty dot, not a disabled button. Each cell is one session family the planner sizes to the time (e.g. *Easy ·
+Intervals* → easy spin with cadence drills; *VO2max · Intervals* → 30/15 sets, R-INT-01 · B).
+
+**At the desk** (before or after the check-in): the full matrix, **one click per wish** (again, or *Let the coach
+pick*, clears it); every reason with its *Why?*; Shorter / Easier / Harder / Edit on the proposal card. The cells
+are plain buttons in reading order (Tab), each with a 48 px target and a spoken label that includes its state
+("Tempo · Intervals: plan", "… : adapted", "… — above your cap").
+
+**At the bike: the saddle proposal.** Once the check-in is confirmed and today's red flags are answered, the
+proposal moves to the top of Today as one card with the ride tiers (§6.2), which the harness **checks inside the
+viewport** at 1440×900 and 1024×768 (scenes `today-wish-*`, viewport captures):
+
+```
+┌ saddle proposal (full width, above the fold) ─────────────────────────────────────┐
+│ ▌Wish VO2max → Tempo · Intervals, 2 steps easier        T3+  (the outcome line)    │
+│  Tempo 2×10′ · 40:00                                    T3+  (the session)          │
+│  Legs dead, sleep short: two signals against hard work today.  [Why? B · good | D cut-off] │ T3
+│  ▁▁▂▂██▂▂██▂▁  (profile, cap line when capped)                                     │
+│  [⏎ Start]  [Ride my wish]  [S Other wish]  [− Easier]  [+ Harder]   72 px class   │
+└────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**One gesture, every cell, from the bars** (the §7.2 actions, same meanings):
+
+| Where | Action | Effect |
+|---|---|---|
+| Saddle proposal | **Coach** | Start (ignored for 1.5 s after a wish change, §7.2 debounce) |
+| | **Intensity − / +** = **Easier / Harder** | the wish one row down / up from **what is proposed**, within its format (bounded, skipping non-choices) |
+| | **Keep** | back to the coach's pick |
+| | **Skip** or **Pause** | open **wish mode** |
+| Wish mode (sheet, ride tiers) | **− / +** | cursor one row (effort) |
+| | **Skip** | next format (wraps: it is a picker, nothing applies until Coach), nearest intensity |
+| | **Pause** | next choice in reading order (wraps) — a **two-button remote (Coach + Pause) reaches all 19 cells** |
+| | **Coach** | use this wish → re-plan → tone (§7.3) → back to the saddle proposal |
+| | **Keep** / **End** | cancel; the wish is unchanged |
+
+Wish mode shows the cursor's name at T3+ ("Threshold · Hills"), the matrix with the cursor outlined (outline + the
+name, never colour alone), and the grammar line with the bound keys. Focus sits on the sheet, not on a button,
+so Space steps instead of pressing *Use* (§7.2: focused controls win). **Easier / Harder are the wish's − / +**:
+one mechanism, one outcome table; the former *Other* variant is wish mode. Silence keeps the coach's pick.
+
+**Two marks, one grid.** The wish is outlined ("wish"), the proposal filled ("plan"; "coach" without a wish). A
+granted wish reads **"✓ wish"**; an **adapted** wish reads **"≈ wish"** (same cell, smaller dose) — never ✓.
+
+**How the planner answers** (the outcome line + one reason on the saddle card, all reasons on the desk card):
+
+| Outcome | When | Outcome line | Rider's way out |
+|---|---|---|---|
+| **No wish** | — | "Coach's pick: VO2max · Intervals" | Easier / Harder / Other wish |
+| **As wished** | nothing argues against it | "✓ Your wish: Threshold · Intervals" (+ a session note with its rule) | Start |
+| **Adapted** | same cell, smaller dose, for a readiness reason | "≈ Wish, shortened: 60 min, not 2 h" · "Sleep short: long continuous efforts are cut first" (R-RDY-03 · A, cut-off D); *Why today* says "Shortened to 60 of your 120 min" | **Ride the full 2 h** (one tap, logged) |
+| **Deferred** | readiness or load argues against hard work | "Wish VO2max → Tempo · Intervals, 2 steps easier" · "Legs dead, sleep short: two signals against hard work today" (R-RDY-02 · B, cut-off D) · "Your wish moves to Thu 15 Oct" | **Ride my wish** (logged) |
+| **Blocked by safety** | medical stop; health cap | stop: **no matrix, no proposal** (§5.8); cap: the cell is not a choice ("cap"), Harder stops at the cap; an API request for it → "⚠ Cap: …" | none — lifted only in Settings → Health |
+
+Rules: facts first, then the rule (ID + evidence grade + cut-off grade, *Why?*), never a score. **A deviation needs
+an A/B rule for its direction; its cut-off (how many signals, how many minutes) may be convention (D) and is shown
+as such** — this is how "C/D alone may not deviate" squares with D cut-offs: the evidence says *which way*, the
+convention says *where*, and because the *where* is convention the rider can override it. "Ride my wish" is gated
+like Start (check-in and red flags done), is logged with the reasons shown, keeps the in-ride bounds of §7.1, and
+exists **only for readiness/load deviations, never for safety**. The rider's time choice is an input, never
+adapted for convenience; only a readiness rule shortens it, and then it is overridable.
+
+**The health cap is on actual power, not just targets** (architect decision; §5.8 cap = threshold, 100 % of CP,
+no sprints). Option chosen: **(a) non-ERG formats are unavailable under a cap** — only ERG holds the rider's power,
+so *Hills* (SIM) and *Open ride* (free) are "cap" cells, and so is *Race sim* (its surges are above CP). Rejected:
+(b) an engine-enforced ERG takeover at the cap in SIM/free, because it changes the trainer's mode under effort
+without the rider's action (a surprise at the worst moment, §1 constraint 6), needs new ADR-0002 §7 behaviour for
+a temporary state, and a capped rider loses little by riding ERG for a few weeks. The invariant — **actual power
+above the cap is prevented, or else flagged and logged** — is enforced at three points:
+1. **Plan:** the planner clips the wish space before planning; every delivered block is ERG and **every planned
+   target is ≤ 97 % of the cap** (272 W under a 280 W cap; `test:safety` checks every cell and every "ride my wish").
+   The margin exists so that a threshold session doesn't sit exactly on the cap, where normal ERG ripple would
+   trip the flag below.
+2. **Start:** the single start guard (§5.8, #81) refuses any workout with a target above the cap or a non-ERG
+   block, from every path including Workouts and the free ride ("Above your injury cap", `workouts-start-capped`);
+   it never edits a workout silently. The medical stop outranks it.
+3. **Ride:** the core clamps every ERG target to the cap (defence in depth) and watches measured power. **An
+   exceedance is power above cap + 3 % (288 W) sustained for 3 s**; one sample at or below that ends it. Why these
+   numbers: with targets ≤ 97 % the flag needs ≥ 6 % (~17 W) over the highest target, well above the few-percent
+   ripple of a trainer holding ERG; 3 s is the window of the 3-s power the rider sees, so a flag never fires on a
+   number the screen hasn't shown, and a single overshoot sample can't trip it. Both are conventions (D) to be
+   checked against measured NEO ripple in the hardware tests (#23). On an exceedance, in the same frame:
+   - **row 1 becomes the status** at the ride tier (T3, warning fill + ⚠ + words): "⚠ 312 W · over your 280 W cap
+     · ease off" — what, how much, what to do, readable at 1 m;
+   - **the gauge shows the same measured power** (band marker pinned high, "▲ 74 W" to the target);
+   - **the coach lane asks a strong `ease_off`** ("Ease off to 231 W? · Above your injury cap"), the only verdict
+     allowed while it lasts; the **warning tone** plays;
+   - **a `CapExceeded { at, watts, forS }` entry is logged** with the ride (one per episode; a dip below the
+     threshold ends the episode) and listed in Review.
+   `test:safety` feeds measured power over time and checks both sides: 10 s at 288 W (+2.9 %) and 2.5 s at 300 W
+   raise nothing; 3.5 s at 300 W raises the status, the call and exactly one log entry; a second episode adds a
+   second entry (`ride-cap-exceeded`). Engine requirement: #32; core safety tests: #81.
+
+**Deferred wish lifecycle.** A wish is a record (§15.4) with a stable id, the day it was for, and an **expiry fixed
+at creation (7 days), never renewed**. States: `open` → `fulfilled` (a ride delivering the cell was *completed*) ·
+`overridden` (ridden anyway) · `replaced` (the rider set another wish) · `deferred` (moved to a date by the
+planner; may be deferred again, but not past its expiry) · `expired`. On the day it was moved to, Today shows it
+pre-set in the matrix with "↻ Carried over from Sun 11 Oct: VO2max · Intervals · expires Sun 18 Oct" and *Drop
+it* (`today-wish-carried`); the planner treats it like a fresh wish. **Until the check-in is confirmed nothing reads
+as granted** — the cell says "↻ wish" and the card "↻ Your wish, after your check-in: …", because the answer
+depends on today's check-in. One open wish at a time. Each outcome stores
+the knowledge-pack version its reasons came from, so Review can show the explanation that was shown then.
+
+**Conventions challenged**
+
+| Convention (where) | Verdict | Reason |
+|---|---|---|
+| Browsing a workout library to pick today's ride (Zwift, TrainerRoad) | **Change** on Today, **keep** in Workouts | On Today the rider states the flavour; picking a specific workout stays in Workouts (§5.7), through the same guard. |
+| Zone numbers Z1–Z7 as the intensity choice | **Change** | Words anchored on CP / VT1 (R-GEN-01 · B). |
+| A continuous "level" slider (TrainerRoad levels) | **Change** | A level can't be checked; five named rows can. |
+| Silent adaptation when tired (TrainerRoad Adaptive Training) | **Change** | Shown on the grid, explained with facts, rule and cut-off grades; the rider can ride the wish. |
+| Duration as a workout category ("long ride") | **Change** | Time is its own choice; the matrix says how hard and how structured. |
+| A free-form duration picker | **Drop** | Six time choices cover 30 min–3 h; anything else is Edit (§5.7), not a picker at the bike. |
+| Disabled buttons for impossible combinations | **Drop** | Not drawn as choices at all. |
+| A wish mid-ride | **Drop for v1** | Changes the session's intent under effort; in-ride levers stay ±, Skip, End (§7.2). |
+| "Plan tomorrow" | **Drop** | The wish is about how the rider feels *today*; deferral covers "not today". |
+| "Coach decides" as the default | **Keep** | Silence is safe; the 95 % path of §4 is unchanged. |
+
+### 15.3 Why? and Background — *"Why this, and how sure is it?"* (#84)
+
+**Contextual *Why?*** A button next to any claim that rests on the pack: "Why? **B · good**" and, when crank
+applied a cut-off of its own, "**D · convention** cut-off". The chip always shows letter **and** word; C/D have a
+dashed outline. The visual chip is compact; its hit area is 48 px (§6.7). It opens a **sheet that never hides the
+claim**: at ≥ 1440 px wide it **pushes the page aside** (the page reflows to the left of it; this is not the ride
+screen, P4 doesn't apply); below that it overlays and **repeats the claim verbatim with the rider's facts** at its
+top. The sheet, in order (`today-why`):
+1. **crank told you** — "Legs dead, sleep short: two signals against hard work today." · From: legs: dead · sleep: short
+2. **The evidence** — grade chip + what it means for the rider, then the rule's rationale (verbatim from the pack)
+3. **The cut-off crank applied** — its grade (usually D) and what it is ("two signals"), and why that makes an
+   override legitimate
+4. **What the pack recommends** — the rule text, verbatim and labelled as the pack's, *not* as crank's behaviour
+5. **What crank uses here** — only inputs crank has (its input registry: check-in answers, time, rides, injury
+   answer, profile); anything the pack mentions that crank lacks is named as not used ("heart-rate variability
+   (HRV): crank doesn't measure it"; DFA-α1; lactate)
+6. **Safety comes first** — "Chest pain, fainting, a racing heartbeat with dizziness or unusual breathlessness
+   are not a readiness question: they stop every plan until a doctor clears you." The medical stop (§5.8) is
+   evaluated before any rule in the pack; a rule's own wording ("severe flag → easy/rest") never applies to the
+   red flags.
+7. **Sources** (authors, year, title, journal, DOI link) · "Read the background: <topic> →" · footer: pack date,
+   works offline (source links need a connection), *training guidance for healthy riders, not medical advice*.
+
+Entry points: Today (outcome and reasons), Settings → Training profile (effects), Review (each coach call, with
+the judge rule that fired), the model card (why CP not FTP, why ±; topic 03, R-PD-01), and — once #77 adds the
+screening entry — the health check. **Mid-ride: no *Why?*** (constraint 1); every call's *Why?* is in Review.
+Rider-friendlier wording per rule: #144.
+
+**Background** (Settings → Background; `settings-background`, `settings-background-topic`): the grade legend
+(A–D, plus the pack's qualifiers "A-" and "(observational)"); the 13 topics with their rules counted per grade
+(letter + word); a topic shows *How sure*, **what the research says** (each finding's grade chip, headline,
+number of sources) and **what the pack recommends** (its rules with *Why?*); **How the coach decides** and **Your
+athlete model**, generated from the sources the coach's prompt is built from (#59; not in the prototype, built
+with #84); **About** (version, pack date, not a medical device). It lives in Settings: reference for a rare job.
+
+**Single source of truth.** Nothing from the pack is copied into the UI. At build time the app generates a
+`knowledge` bundle (rules, topics with graded findings, references, the grade policy) and a **pack version**
+(content hash + compiled date) that every planner reason records.
+
+**Build-time check** (fails the build; `pnpm test:knowledge` is its executable form):
+1. every rule parses into all fields, grade A–D, belongs to a topic (section or own `# (NN)` note; `R-GEN-*` may cut across);
+2. every rule citation and every topic-file `[@key]` resolves in `references.bib`;
+3. every reference has a DOI, PMID or OpenAlex ID;
+4. every topic has a title, a how-sure line and at least one graded finding;
+5. every rule ID the UI, the planner or the judge can emit resolves; every reason's **inputs** are in crank's input
+   registry, which names nothing crank can't measure (HRV, α1, lactate); every deviation rests on an **A/B** rule
+   and every cut-off carries a grade.
+
+**Conventions challenged**
+
+| Convention (where) | Verdict | Reason |
+|---|---|---|
+| Help centre / FAQ on a website | **Change** | Offline, in the app, opened from the claim. |
+| Hover tooltips | **Change** | No hover on touch, remote or at 1 m; an explicit *Why?* with a sheet. |
+| A modal that covers what it explains | **Change** | Push aside ≥ 1440; repeat the claim below. |
+| Tips during the ride (SYSTM) | **Drop** | Attention under effort; *Why?* lives in Review. |
+| "Science-backed" without grades | **Drop** | Every claim carries grade and sources; C/D and D cut-offs say so. |
+| Articles written apart from the logic | **Change** | Generated from the pack the coach uses; build-time check. |
+
+### 15.4 Contract fields for the planner and the coach (#59, M2)
+
+Recorded on #59 (round-2 update there). A sketch for the ADR; names follow the contract's style.
+
+```ts
+type Focus = "base" | "climbing" | "racing" | "long_events" | "tt" | "fitness";
+type Intensity = "easy" | "tempo" | "threshold" | "vo2max" | "sprint";       // main effort, anchored on CP / VT1
+type Format = "steady" | "intervals" | "hills" | "race" | "open";           // structure only; never duration
+interface TrainingProfile {
+  version: number;                                   // every Save = new version; proposals record it
+  focus: Focus; event: { name: string; date: string } | null;
+  daysPerWeek: number; hoursPerWeek: number;          // future budget, not target
+  likes: Format[]; returning: { since: string } | null;   // returning = after ≥ 10 days off (model's gap threshold)
+  savedAt: string; source: "onboarding" | "settings";
+}
+interface Cell { intensity: Intensity; format: Format }
+interface WishRecord {
+  id: string; cell: Cell;
+  setAt: string; via: "desk" | "saddle" | "carried";
+  forDate: string;                                   // the day it is for (today, or the date it was deferred to)
+  expiresAt: string;                                 // setAt + 7 d, fixed at creation, never renewed
+  status: "open" | "deferred" | "fulfilled" | "overridden" | "replaced" | "expired";
+  history: { at: string; status: WishRecord["status"]; proposalId: string | null }[];
+}
+type InputId = "legs" | "sleep" | "stress" | "motivation" | "time" | "load7d" | "cap" | "profile" | "history" | "power" | "hr" | "cadence";
+interface Reason {
+  kind: "readiness" | "load" | "safety" | "session" | "profile";
+  text: string;                                      // rider words; the saddle shows the first, ≤ 90 chars
+  facts: { label: string; value: string }[];         // "legs: dead" — what crank saw
+  uses: InputId[];                                   // registry only (§15.3 check 5)
+  ruleIds: string[];                                 // resolve in the knowledge bundle
+  evidenceGrade: "A" | "B" | "C" | "D" | null;       // weakest of ruleIds; deviations need A/B
+  cutoff: { grade: "A" | "B" | "C" | "D"; what: string } | null;   // the threshold crank applied
+}
+interface WishOutcome {
+  wishId: string | null; wish: Cell | null;
+  delivered: Cell; minutes: number;                  // minutes < asked only for an "adapted" readiness reason
+  relation: "no_wish" | "as_wished" | "adapted" | "deferred" | "blocked_by_safety";
+  reasons: Reason[];
+  deferredTo: string | null;                         // ≤ the wish's expiresAt
+  overridable: boolean;                              // readiness/load only; false for any safety reason
+  packVersion: string; profileVersion: number;       // so Review can reproduce what was shown
+}
+// Proposal gains: cell, wishOutcome, reasons: Reason[] (replaces prose, #29), profileVersion.
+// Commands (all through the core's single guard, #81): wish.set(cell | null), wish.drop(id),
+//   proposal.rideAsWished(proposalId) → logged { at, wishId, reasonsShown }; refused unless overridable.
+// Health cap (§15.2, option a):
+//   CapState { active; capW; ergOnly: true; planPct: 97; tolPct: 3; windowS: 3; log: CapExceeded[] }
+//   - the planner clips the wish space and keeps every target ≤ capW × planPct / 100
+//   - ride.start refuses non-ERG blocks or targets > capW (`cap_requires_erg` / `cap_exceeded_target`);
+//     with a medical stop as well, every start including the free ride is refused (§5.8)
+//   - the engine clamps ERG targets to capW and emits CapExceeded { at, watts, forS } once per episode when
+//     measured power > capW × (1 + tolPct / 100) for ≥ windowS; the judge may then only ease_off (#32, #81).
+```
+
+Invariants for the ADR and the golden evals (#59):
+- **Safety first.** Under a medical stop the planner is not called. Under a cap the wish space is clipped before
+  planning; no output has a target above the cap or a non-ERG block; `overridable` is false for any safety reason.
+- **Every deviation has a reason** whose `ruleIds` resolve, whose evidence is A/B, and whose cut-off has a grade.
+- **The wish never raises the load beyond what readiness allows**; a wish above it is deferred, not granted
+  silently; riding it anyway is the rider's logged decision.
+- **Profile, wish and reasons leave the machine only under #59's privacy rules.**
+- Offline (no provider): the rule-based fallback implements the same outcome table with the same reasons.
+
+### 15.5 Glanceability and tone check
+The saddle proposal is the bike-distance read: outcome line and session at T3+, reason at T3, 64–72 px buttons
+with their bound keys, all inside the viewport at both sizes (checked by the harness, which fails otherwise). The
+desk matrix, the profile and the sheet are desk reading. Copy is calm and factual — no streaks, no "crush it", no
+badges. Colour never carries meaning alone: wish = outline + "wish", plan = fill + "plan", adapted = "≈ wish",
+cap = dashed edge + "cap", cursor = outline + its name at T3+, C/D = dashed chip + word.
+
+### 15.6 Changes to §1–§14
+| Where | Change |
+|---|---|
+| §2 "Regenerate" row, §5.1 Today | Shorter = time; Easier / Harder = the wish's − / +; "Other" = wish mode; one outcome table. Time choices add 2 h and 3 h. After the check-in the proposal is the **saddle proposal** at the top. "Why today" lists facts without interpretation. |
+| §5.8 Onboarding | **eight** steps; *Training for* is step 5, after the Health check |
+| §5.8 health cap | the cap is on actual power: ERG only under a cap; the start guard refuses workouts above it; over-cap power in a ride is flagged and logged (§15.2) |
+| §5.9 Settings | sections gain **Training profile** (after Devices) and **Background** (last) |
+| §7.2 | on Today: − / + = Easier / Harder, Keep = coach's pick, Skip / Pause = wish mode (§15.2) |
+| §7.3 | a **Wish answered** row: granted vs changed tones |
+| §9 | ONBOARDING §1.4 "Goals" is superseded by §15.1 |
+| §11 | contract additions: §15.4 (#59, #85, #86; engine cap #32) |
+
+### 15.7 Prototype, screens, tests
+- Scenes (both themes, 1440×900 and 1024×768):
+  - **desk:** `today` (no wish), `today-wish-carried`, `onboarding-profile`, `settings-profile`,
+    `settings-background`, `settings-background-topic`
+  - **saddle**, captured as the viewport (not the full page): `today-wish-granted`, `today-wish-deviates`,
+    `today-wish-adapted`, `today-wish-capped`, `today-wish-remote`, `today-why`
+  - **cap:** `workouts-start-capped`, `ride-cap-exceeded` (measured power fed through the cap monitor),
+    `today-stop-and-cap`
+  - **profile draft:** `settings-profile-editing` (before → after: *new*, *no longer*, "Not now")
+  - `today-wish-long` from round 1 is removed (duration is no longer a format).
+- Intentionally changed: `today`, `today-health-cap`, `today-medical-stop`, `today-free-ride-confirm` (wish card
+  and/or the six time choices in the check-in); `start-handoff-100ms` (Today underneath); every `onboarding-*`
+  (eight steps, new order); every `settings-*` (two sections, the wish sound row); `ride-capped` at 1024 (the cap
+  chip became a component that can also flag over-cap power: 79 px of anti-aliasing, same text).
+  Every other screen is byte-identical; `start-motion-*` frames are restored from the base commit (#127).
+- `src/knowledge.ts` reads `spec/knowledge-pack/` directly (Vite `?raw`); `src/mock/wish.ts` stands in for the
+  planner (labelled). Hills run as ERG targets in the prototype (SIM is not in the mock, #29).
+- `pnpm screens` additionally fails when a saddle element leaves the viewport or falls below its tier.
+- `pnpm test:knowledge` — the §15.3 build-time check; every wish cell compiles at every time choice; reasons use
+  only registered inputs and A/B rules; cut-offs are graded.
+- `pnpm test:safety` adds:
+  - no matrix and no proposal under a medical stop
+  - under the cap, every VO2max, sprint, race-sim, hills and open cell is disabled
+  - under the cap, no cell, override or format delivers a target above the cap or a free block (checked on the delivered workout)
+  - Harder stops at the cap
+  - a workout above the cap is refused at start
+  - every planned target under the cap is ≤ 97 % of it
+  - over-cap power fed over time: within tolerance (+2.9 % for 10 s) and shorter than the window (2.5 s) raise
+    nothing; 3.5 s at 300 W raises the row-1 status, the coach's ease-off and one log entry; the gauge shows the
+    same power; a second episode is a second entry
+  - a medical stop plus a cap: no free-ride offer, and the guard refuses the free ride
+  - Pause alone reaches all 19 cells
+  - Skip changes the format, − reaches Easy, and Coach uses the wish
+  - an adapted wish is "≈ wish" and has a one-tap fix
+  - a deviation cites its rule and cut-off, and the override delivers the wish
+  - Easier = wish −
+
+### 15.8 Review guide (round 2)
+1. **Saddle** (`today-wish-*` viewport captures): wish, session, one reason, actions — readable at 1 m, above the
+   fold at both sizes? Can a two-button remote reach any cell?
+2. **Matrix** (`today`, `today-wish-adapted`, `today-wish-remote`): are effort, structure and duration separate,
+   and is an adaptation never drawn as granted?
+3. **Cap** (`today-wish-capped`, `workouts-start-capped`, `ride-cap-exceeded`): can actual power pass the cap?
+4. **Deferral** (`today-wish-deviates`, `today-wish-carried`): is the lifecycle complete and the promise bounded?
+5. **Why?** (`today-why` at both sizes): is the claim always visible, the pack's recommendation separate from what
+   crank does, the cut-off graded, safety precedence explicit?
+6. **Profile** (`settings-profile`, `onboarding-profile`): is no C line a promise? Before → after clear?
+
+### 15.9 Round-1 findings → resolution
+| Finding | Resolution |
+|---|---|
+| opus B1 · cap not enforced on SIM / open | **Fixed** — option (a), §15.2: non-ERG and race cells locked, start guard, in-ride flag + log, engine clamp (#32), tests (#81) |
+| opus M2 · astra 2 · outcome not readable from the saddle | **Fixed** — saddle proposal at T3/T3+, viewport-checked; wish tones in §7.3 |
+| opus M3 · astra 6 · sheet hides the claim | **Fixed** — push-aside ≥ 1440, claim + facts repeated at the top |
+| opus M4 · "what crank does" overclaims (HRV) | **Fixed** — "What the pack recommends" vs "What crank uses here" (registry), "Not used: HRV …", check 5 |
+| opus M5 · grade overstates the decision | **Fixed** — evidence grade and cut-off grade shown separately; A/B direction + D cut-off rule stated |
+| opus M6 · Easier/Harder vs wish; "Other" | **Fixed** — Easier/Harder = wish ∓, one outcome table; Other = wish mode |
+| opus M7 · astra 5 · deferral / plan tomorrow | **Fixed** — "plan tomorrow" dropped; WishRecord lifecycle, fixed expiry, carry-over on Today, pack version stored |
+| opus M8 · astra 3 · adapted drawn as granted; format mixes duration | **Fixed** — time is separate (2 h, 3 h added), Long → Steady, "≈ wish" + one-tap fix |
+| astra 1 · opus m9 · remote can't reach format / Easy | **Fixed** — wish mode: Skip = format, Pause = every cell; *Easy · Intervals* added |
+| astra 4 · C line presented as commitment | **Fixed** — "Optional … never scheduled on its own", conditions, before → after |
+| opus m10 · "Ride my wish anyway" gating | **Fixed** — gated like Start, logged, readiness/load only |
+| opus m11 · astra 7 · onboarding duplication / gap / order / length | **Fixed** — budget pre-filled from Background (future vs past), one 10-day threshold, step after Health check, details collapsed, draft restore specified |
+| opus m12 · profile Save/Cancel, before→after, unit, D link | **Fixed** — actions under the form, before → after, "h / week"; D line names #143 in this document (rider text never shows issue numbers, §5) |
+| opus m13 · grade chips; "(observational)"; jargon | **Fixed** — letter + word everywhere, qualifiers in the legend; jargon remains #144 |
+| opus m14 · astra 8 · grid role without arrows; contrast; cap copy | **Fixed** — plain buttons with state labels, 48 px targets; cap edge/text/cursor pairs in `contrast.mjs`; one cap sentence everywhere |
+| opus m15 · profile versioning; time non-overridable | **Fixed** — `TrainingProfile.version`, `profileVersion` on proposals; time is never adapted except by a readiness rule (overridable) |
+| astra 3 · custom duration | **Decided against** — six time choices to 3 h; anything else via Edit (no picker at the bike) |
+
+**Round-2 re-review (opus, at `e3cc5e7`) → round 3**
+
+| Finding | Resolution |
+|---|---|
+| r2-1 · over-cap warning is a 14 px chip, not consistent, single sample, "logged" without a log | **Fixed** — row-1 status at T3 with warning fill; gauge and coach `ease_off` agree; `CapMonitor` applies > cap + 3 % for 3 s over a measured-power stream; one `CapExceeded` log entry per episode; trace-driven tests on both sides of the rule |
+| r2-2 · threshold targets the cap exactly → false flags from ERG ripple | **Fixed** — planned targets ≤ 97 % of the cap; flag at cap + 3 % for 3 s (justified in §15.2, checked on hardware in #23); in `CapState` (§15.4); both tested |
+| r2-3 · carried wish shows ✓ before the check-in | **Fixed** — "↻ wish" / "↻ Your wish, after your check-in" until confirmed |
+| r2-4 · "Why today" ignores the adapted minutes | **Fixed** — "Shortened to 60 of your 120 min: …" |
+| r2-5 · "no nutrition advice" vs a carbohydrate target | **Fixed** — "no diet, weight-loss or medical advice"; the cue reads "Fuelling guideline (training, not diet)" with R-CHO-01 · A |
+| r2-6 · no scene for the profile draft | **Fixed** — `settings-profile-editing` |
+| r2-7 · medical stop + cap: free ride | **Fixed** — stop + cap = no ride (§5.8), no offer, guard refuses; tested |
+| r2-8 · "▼2"; 1440 Why? layout | **Fixed** — "2 steps easier"; the outcome line wraps inside the pushed-aside layout (checked in `today-why` at 1440) |

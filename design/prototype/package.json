@@ -9,7 +9,8 @@
     "typecheck": "tsc -b",
     "screens": "node scripts/screens.mjs",
     "test:safety": "node scripts/safety.test.mjs",
-    "test:start": "node scripts/start.test.mjs"
+    "test:start": "node scripts/start.test.mjs",
+    "test:knowledge": "node scripts/knowledge.test.mjs"
   },
   "dependencies": {
     "@crank/shared": "workspace:*",
