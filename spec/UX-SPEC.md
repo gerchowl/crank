@@ -24,9 +24,9 @@ bindings". Semantics that differ from the mock and that every screen below assum
   `RideStatus` carries `sessionS`, `workoutS` and the current block's actual start (in both
   coordinates); the UI never derives position from planned durations (ADR-0001 §5, #14).
 - **`setSpeed(10|60)` is simulated-trainer only**; with a real trainer speed is fixed at 1× and the
-  command returns `InvalidInput` (ADR-0001 §5). The speed control is absent (not disabled) with a real trainer.
+  command returns `InvalidInput` (ADR-0001 §5). The speed control is absent (not disabled) with a real trainer (spec-owned UX decision).
 - **Persistence is SQLite**: layouts, snippets, workouts and settings live in the database
-  (`layout`, `snippet`, `workout`, `setting`; ADR-0001 §6), validated on read (#4); not `localStorage`
+  (`layout`, `snippet`, `workout`, `setting`; ADR-0001 §6), `snippet`/`layout` and `workout.tree_json` are validated on read (#4); settings are parsed against a UI-owned schema with default + notice on failure (#90); none of it is `localStorage`
   (the mock's `localStorage["crank.layouts.v1"]` is spike-only).
 
 ## Defaults for open questions (v0)
@@ -64,7 +64,7 @@ optional free-text "how do you feel". Submit → mock planner returns a proposed
   - `workout_strip` — full profile, "you are here" marker, AI-changed blocks highlighted
   - `hr_recovery` — live HR recovery with fitted exponential, dotted prediction, uncertainty
     band, target line, "ready in ≈ m:ss (lo–hi)", τ vs usual τ, unreachable warning
-  - `coach_card` — s1 nudge text (≤ 512 UTF-8 bytes, capped by the core when the nudge is created,
+  - `coach_card` — s1 nudge text (≤ 512 UTF-8 bytes, a longer message is rejected when the nudge is created, `MessageTooLong`,
     ADR-0001 §4.3) + band (strong/lean) + accept/decline (keys: Y / N)
 - **Display rate** is per widget and drives a **subscription** at that rate
   (`subscribe(stream, metric, {rateHz, filter})` on the window's single `StreamFrame` channel, ADR-0001 §4.3;
@@ -76,9 +76,12 @@ optional free-text "how do you feel". Submit → mock planner returns a proposed
 - **Trainer-following** (`RideStatus.trainerFollowing`, ADR-0002 §4.4.1): `following` and `checking` show
   nothing; `not_following` shows "Trainer is not following the target", naming the component; `suspect`
   and `unknown` make no claim. (`unknown` also covers the machine being inactive, e.g. trainer lost.)
-- **Compliance** is a backend number (never computed in the UI): ±5 % of the controlled target, excluding
-  settle seconds after discontinuities (block-boundary step, manual/coach ±, ERG re-engagement), released,
-  paused and not-following seconds (ADR-0002 §7.8).
+- **Compliance** is a backend number, computed only in the engine (never in the UI), defined by ADR-0002 §7.8:
+  the share of **ERG** seconds with `power_3s` within ±5 % of the controlled target, excluding *settle*
+  seconds (the first 5 s of a block whose start target differs from the previous block's end target; 5 s after
+  a manual ± or coach change; 5 s plus the soft start after an ERG (re-)engagement), released (§7.4) and
+  paused seconds, and every second with a `suspect` or `not_following` tick (ADR-0002 §4.4.1, aggregate
+  rows A3/A5). Ramp and HR-steered targets are compared second by second with no settle.
 - Default layout (page "Interval"): power 3s big + target/Δ, interval countdown + block x/n,
   HR + zone sparkline, cadence + target, W'bal bar, log-time chart (power/HR/target, 2 h span),
   workout strip, coach card. Page "Recovery": hr_recovery large, next-block preview, HR, power.
@@ -105,7 +108,7 @@ optional free-text "how do you feel". Submit → mock planner returns a proposed
 
 ### 4. Post-ride review (minimal)
 Summary numbers, log-time chart of the whole ride, list of coach decisions (time, verdict, band,
-accepted?) each rateable 👍/👎 (`coach_rate(callId, ...)` command), τ per recovery block chart.
+accepted?) each rateable 👍/👎 (coach respond/rate commands, ADR-0001 §4.2; exact names provisional until #34's bindings), τ per recovery block chart.
 Series come from the async `streams()` / `recoveries()` queries in **session seconds**; pauses and
 dropouts are gaps, and `workout_s` maps each session second to its workout position (ADR-0001 §5).
 
