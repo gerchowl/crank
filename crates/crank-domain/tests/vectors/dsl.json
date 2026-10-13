@@ -1,0 +1,1217 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "dsl-0",
+      "input": {
+        "text": "",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [],
+        "printed": ""
+      }
+    },
+    {
+      "name": "dsl-1",
+      "input": {
+        "text": "  \n# nothing\n",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [],
+        "printed": ""
+      }
+    },
+    {
+      "name": "dsl-2",
+      "input": {
+        "text": "\"Warm-up\" 8m ramp 45-75% 90rpm\n3m 60%\n\"VO2 sets\" 3x[+5w](5x(30s 125%, 15s 50%), \"Recover\" hr<118 2m..4m 40%)\n\"Threshold\" 2x[!last](4m 95% 90-95rpm, 2m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 480
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 45,
+              "to": 75
+            },
+            "label": "Warm-up",
+            "cadence": {
+              "lo": 90,
+              "hi": 90
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 180
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 60
+            }
+          },
+          {
+            "type": "repeat",
+            "count": 3,
+            "label": "VO2 sets",
+            "progression": {
+              "wattsPerRep": 5
+            },
+            "children": [
+              {
+                "type": "repeat",
+                "count": 5,
+                "children": [
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 30
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 125
+                    }
+                  },
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 15
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 50
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "hr_recovery",
+                  "targetBpm": 118,
+                  "minS": 120,
+                  "maxS": 240,
+                  "onUnreachable": "lower_power"
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 40
+                },
+                "label": "Recover"
+              }
+            ]
+          },
+          {
+            "type": "repeat",
+            "count": 2,
+            "label": "Threshold",
+            "skipLastRest": true,
+            "children": [
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 240
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 95
+                },
+                "cadence": {
+                  "lo": 90,
+                  "hi": 95
+                }
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 120
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 55
+                }
+              }
+            ]
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 300
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 60,
+              "to": 40
+            },
+            "label": "Cool-down"
+          }
+        ],
+        "printed": "\"Warm-up\" 8m ramp 45-75% 90rpm\n3m 60%\n\"VO2 sets\" 3x[+5w](5x(30s 125%, 15s 50%), \"Recover\" hr<118 2m..4m 40%)\n\"Threshold\" 2x[!last](4m 95% 90-95rpm, 2m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+      }
+    },
+    {
+      "name": "dsl-3",
+      "input": {
+        "text": "\"30/15s\" 3x[!last](13x(30s 120%, 15s 50%), 3m 50%)",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "repeat",
+            "count": 3,
+            "label": "30/15s",
+            "skipLastRest": true,
+            "children": [
+              {
+                "type": "repeat",
+                "count": 13,
+                "children": [
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 30
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 120
+                    }
+                  },
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 15
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 50
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 180
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 50
+                }
+              }
+            ]
+          }
+        ],
+        "printed": "\"30/15s\" 3x[!last](13x(30s 120%, 15s 50%), 3m 50%)"
+      }
+    },
+    {
+      "name": "dsl-4",
+      "input": {
+        "text": "\"4×4\" 4x[!last](4m 110%, 3m 50%)",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "repeat",
+            "count": 4,
+            "label": "4×4",
+            "skipLastRest": true,
+            "children": [
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 240
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 110
+                }
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 180
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 50
+                }
+              }
+            ]
+          }
+        ],
+        "printed": "\"4×4\" 4x[!last](4m 110%, 3m 50%)"
+      }
+    },
+    {
+      "name": "dsl-5",
+      "input": {
+        "text": "\"Over-unders\" 3x[!last](3x(2m 95%, 1m 108%), 4m 50%)",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "repeat",
+            "count": 3,
+            "label": "Over-unders",
+            "skipLastRest": true,
+            "children": [
+              {
+                "type": "repeat",
+                "count": 3,
+                "children": [
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 120
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 95
+                    }
+                  },
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 60
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 108
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 240
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 50
+                }
+              }
+            ]
+          }
+        ],
+        "printed": "\"Over-unders\" 3x[!last](3x(2m 95%, 1m 108%), 4m 50%)"
+      }
+    },
+    {
+      "name": "dsl-6",
+      "input": {
+        "text": "\"Tabata\" 8x(20s 170%, 10s 30%)",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "repeat",
+            "count": 8,
+            "label": "Tabata",
+            "children": [
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 20
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 170
+                }
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 10
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 30
+                }
+              }
+            ]
+          }
+        ],
+        "printed": "\"Tabata\" 8x(20s 170%, 10s 30%)"
+      }
+    },
+    {
+      "name": "dsl-7",
+      "input": {
+        "text": "10m ramp 50-75%; 3x[+5w, !last](4x(30s 120%, 15s 50%), 3m 50%); hr<120 2m..4m 40%; 10m 55%",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 600
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 50,
+              "to": 75
+            }
+          },
+          {
+            "type": "repeat",
+            "count": 3,
+            "skipLastRest": true,
+            "progression": {
+              "wattsPerRep": 5
+            },
+            "children": [
+              {
+                "type": "repeat",
+                "count": 4,
+                "children": [
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 30
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 120
+                    }
+                  },
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 15
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 50
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 180
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 50
+                }
+              }
+            ]
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "hr_recovery",
+              "targetBpm": 120,
+              "minS": 120,
+              "maxS": 240,
+              "onUnreachable": "lower_power"
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 40
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 600
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 55
+            }
+          }
+        ],
+        "printed": "10m ramp 50-75%\n3x[+5w, !last](4x(30s 120%, 15s 50%), 3m 50%)\nhr<120 2m..4m 40%\n10m 55%"
+      }
+    },
+    {
+      "name": "dsl-8",
+      "input": {
+        "text": "\"A \\\"q\\\"\" 1h5m30s 250w 85-95rpm; 10kj 52.5-60.5%; lap free; 20m 140bpm; hr<115 0s..5m 35% !coach; hr<115 1m..2m 35% !cap; 2x[-3%, +10w](1m 100% 90rpm, 30s 40%)",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 3930
+            },
+            "target": {
+              "kind": "watts",
+              "value": 250
+            },
+            "label": "A \"q\"",
+            "cadence": {
+              "lo": 85,
+              "hi": 95
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "kj",
+              "kj": 10
+            },
+            "target": {
+              "kind": "range",
+              "lo": 52.5,
+              "hi": 60.5
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "lap"
+            },
+            "target": {
+              "kind": "free"
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 1200
+            },
+            "target": {
+              "kind": "hr",
+              "bpm": 140
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "hr_recovery",
+              "targetBpm": 115,
+              "minS": 0,
+              "maxS": 300,
+              "onUnreachable": "ask_coach"
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 35
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "hr_recovery",
+              "targetBpm": 115,
+              "minS": 60,
+              "maxS": 120,
+              "onUnreachable": "cap"
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 35
+            }
+          },
+          {
+            "type": "repeat",
+            "count": 2,
+            "progression": {
+              "pctPerRep": -3,
+              "wattsPerRep": 10
+            },
+            "children": [
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 60
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 100
+                },
+                "cadence": {
+                  "lo": 90,
+                  "hi": 90
+                }
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 30
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 40
+                }
+              }
+            ]
+          }
+        ],
+        "printed": "\"A \\\"q\\\"\" 1h5m30s 250w 85-95rpm\n10kj 52.5-60.5%\nlap free\n20m 140bpm\nhr<115 0s..5m 35% !coach\nhr<115 1m..2m 35% !cap\n2x[+10w, -3%](1m 100% 90rpm, 30s 40%)"
+      }
+    },
+    {
+      "name": "dsl-9",
+      "input": {
+        "text": "# warm up\n10m 50%\n\n3x(1m 120%;1m 50%) # sets\n",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 600
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 50
+            }
+          },
+          {
+            "type": "repeat",
+            "count": 3,
+            "children": [
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 60
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 120
+                }
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 60
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 50
+                }
+              }
+            ]
+          }
+        ],
+        "printed": "10m 50%\n3x(1m 120%, 1m 50%)"
+      }
+    },
+    {
+      "name": "dsl-10",
+      "input": {
+        "text": "90s 100%; 3600s 50%; 3661s 50%",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 90
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 100
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 3600
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 50
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 3661
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 50
+            }
+          }
+        ],
+        "printed": "1m30s 100%\n1h 50%\n1h1m1s 50%"
+      }
+    },
+    {
+      "name": "dsl-11",
+      "input": {
+        "text": "\"back\\\\slash 🚲\" 4M RAMP 75-50% 90RPM; LAP FREE",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 240
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 75,
+              "to": 50
+            },
+            "label": "back\\slash 🚲",
+            "cadence": {
+              "lo": 90,
+              "hi": 90
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "lap"
+            },
+            "target": {
+              "kind": "free"
+            }
+          }
+        ],
+        "printed": "\"back\\\\slash 🚲\" 4m ramp 75-50% 90rpm\nlap free"
+      }
+    },
+    {
+      "name": "dsl-12",
+      "input": {
+        "text": "2x[+5w +2% !last](1m 100%, 30s 40%)",
+        "ftp": 280
+      },
+      "output": {
+        "nodes": [
+          {
+            "type": "repeat",
+            "count": 2,
+            "skipLastRest": true,
+            "progression": {
+              "wattsPerRep": 5,
+              "pctPerRep": 2
+            },
+            "children": [
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 60
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 100
+                }
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 30
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 40
+                }
+              }
+            ]
+          }
+        ],
+        "printed": "2x[+5w, +2%, !last](1m 100%, 30s 40%)"
+      }
+    },
+    {
+      "name": "dsl-13",
+      "input": {
+        "text": "10m 50%; 3x(1m 120%, 1m 50%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unclosed '(' — missing ')'",
+          "offset": 11,
+          "length": 1
+        }
+      }
+    },
+    {
+      "name": "dsl-14",
+      "input": {
+        "text": "10m 50%)",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unexpected ')'",
+          "offset": 7,
+          "length": 1
+        }
+      }
+    },
+    {
+      "name": "dsl-15",
+      "input": {
+        "text": "10m 50%; 5q 120%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Expected a duration (30s, 4m, 1m30s), kJ (10kj), 'lap', 'hr<N' or a repeat (3x(...)); got '5q'",
+          "offset": 9,
+          "length": 2
+        }
+      }
+    },
+    {
+      "name": "dsl-16",
+      "input": {
+        "text": "10m",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Missing power target (e.g. 120%, 250w, 50-75%, ramp 50-75%, 140bpm, free)",
+          "offset": 0,
+          "length": 3
+        }
+      }
+    },
+    {
+      "name": "dsl-17",
+      "input": {
+        "text": "10m 50% 60%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Duplicate power target",
+          "offset": 8,
+          "length": 3
+        }
+      }
+    },
+    {
+      "name": "dsl-18",
+      "input": {
+        "text": "10m 50% zzz",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unknown token 'zzz'",
+          "offset": 8,
+          "length": 3
+        }
+      }
+    },
+    {
+      "name": "dsl-19",
+      "input": {
+        "text": "3x[+5q](1m 50%)",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unknown repeat option '+5q' (use +5w, +2%, !last)",
+          "offset": 3,
+          "length": 3
+        }
+      }
+    },
+    {
+      "name": "dsl-20",
+      "input": {
+        "text": "3x 1m 50%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Expected '(' after '3x'",
+          "offset": 3,
+          "length": 2
+        }
+      }
+    },
+    {
+      "name": "dsl-21",
+      "input": {
+        "text": "0x(1m 50%)",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Repeat count must be ≥ 1",
+          "offset": 0,
+          "length": 2
+        }
+      }
+    },
+    {
+      "name": "dsl-22",
+      "input": {
+        "text": "hr<120 4m 40%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Expected min..max duration after 'hr<120', e.g. 2m..4m",
+          "offset": 7,
+          "length": 2
+        }
+      }
+    },
+    {
+      "name": "dsl-23",
+      "input": {
+        "text": "hr<120 4m..2m 40%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Min duration is longer than max",
+          "offset": 7,
+          "length": 6
+        }
+      }
+    },
+    {
+      "name": "dsl-24",
+      "input": {
+        "text": "5m 50% !cap",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "'!cap' only applies to hr< recovery steps",
+          "offset": 7,
+          "length": 4
+        }
+      }
+    },
+    {
+      "name": "dsl-25",
+      "input": {
+        "text": "5m 900%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "900 % FTP is implausible (max 400 %)",
+          "offset": 3,
+          "length": 4
+        }
+      }
+    },
+    {
+      "name": "dsl-26",
+      "input": {
+        "text": "5m 75-50%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Range low end is above high end (use 'ramp 75-50%' for a descending ramp)",
+          "offset": 3,
+          "length": 6
+        }
+      }
+    },
+    {
+      "name": "dsl-27",
+      "input": {
+        "text": "\"unterminated 5m 50%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unterminated label string",
+          "offset": 0,
+          "length": 20
+        }
+      }
+    },
+    {
+      "name": "dsl-28",
+      "input": {
+        "text": "10 50%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "'10' needs a unit: 30s, 4m, 1h, 10kj — or '10x(...)' for a repeat",
+          "offset": 0,
+          "length": 2
+        }
+      }
+    },
+    {
+      "name": "dsl-29",
+      "input": {
+        "text": "5m 50% 2x(1m 50%)",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unknown token '2x'",
+          "offset": 7,
+          "length": 2
+        }
+      }
+    },
+    {
+      "name": "dsl-30",
+      "input": {
+        "text": "10m 50%\n\"label\"",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Expected a step or repeat after the label",
+          "offset": 15,
+          "length": 0
+        }
+      }
+    },
+    {
+      "name": "dsl-31",
+      "input": {
+        "text": "5m 50%; 3x()",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Empty repeat",
+          "offset": 8,
+          "length": 4
+        }
+      }
+    },
+    {
+      "name": "dsl-32",
+      "input": {
+        "text": "0s 50%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Duration must be > 0",
+          "offset": 0,
+          "length": 2
+        }
+      }
+    },
+    {
+      "name": "dsl-33",
+      "input": {
+        "text": "5m ramp",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Expected a range after 'ramp', e.g. ramp 50-75%",
+          "offset": 3,
+          "length": 4
+        }
+      }
+    },
+    {
+      "name": "dsl-34",
+      "input": {
+        "text": "5m ramp 50%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Expected a range after 'ramp', e.g. ramp 50-75%",
+          "offset": 8,
+          "length": 3
+        }
+      }
+    },
+    {
+      "name": "dsl-35",
+      "input": {
+        "text": "5m 50% 90rpm 95rpm",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Duplicate cadence",
+          "offset": 13,
+          "length": 5
+        }
+      }
+    },
+    {
+      "name": "dsl-36",
+      "input": {
+        "text": "5m 50% 95-90rpm",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Cadence range low end is above high end",
+          "offset": 7,
+          "length": 8
+        }
+      }
+    },
+    {
+      "name": "dsl-37",
+      "input": {
+        "text": "3x[+5w",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unclosed '[' — missing ']'",
+          "offset": 2,
+          "length": 1
+        }
+      }
+    },
+    {
+      "name": "dsl-38",
+      "input": {
+        "text": "3x[(](1m 50%)",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unexpected '(' in repeat options",
+          "offset": 3,
+          "length": 1
+        }
+      }
+    },
+    {
+      "name": "dsl-39",
+      "input": {
+        "text": "(",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unexpected '('",
+          "offset": 0,
+          "length": 1
+        }
+      }
+    },
+    {
+      "name": "dsl-40",
+      "input": {
+        "text": "1m 50% (",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unexpected '(' — separate items with ',', ';' or a newline",
+          "offset": 7,
+          "length": 1
+        }
+      }
+    },
+    {
+      "name": "dsl-41",
+      "input": {
+        "text": "\"line\nbreak\" 1m 50%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Unterminated label string",
+          "offset": 0,
+          "length": 5
+        }
+      }
+    },
+    {
+      "name": "dsl-42",
+      "input": {
+        "text": "hr<120",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "Expected min..max duration after 'hr<120', e.g. 2m..4m",
+          "offset": 0,
+          "length": 6
+        }
+      }
+    },
+    {
+      "name": "dsl-43",
+      "input": {
+        "text": "5m 1500w",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "536 % FTP is implausible (max 400 %)",
+          "offset": 3,
+          "length": 5
+        }
+      }
+    },
+    {
+      "name": "dsl-44",
+      "input": {
+        "text": "\"🚲\" 5m 900%",
+        "ftp": 280
+      },
+      "output": {
+        "error": {
+          "message": "900 % FTP is implausible (max 400 %)",
+          "offset": 8,
+          "length": 4
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,3602 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "compile-0",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 480
+              },
+              "target": {
+                "kind": "ramp",
+                "from": 45,
+                "to": 75
+              },
+              "label": "Warm-up",
+              "cadence": {
+                "lo": 90,
+                "hi": 90
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:1",
+              "end": {
+                "kind": "time",
+                "s": 180
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 60
+              }
+            },
+            {
+              "type": "repeat",
+              "id": "n:2",
+              "count": 3,
+              "children": [
+                {
+                  "type": "repeat",
+                  "id": "n:2.0",
+                  "count": 5,
+                  "children": [
+                    {
+                      "type": "step",
+                      "id": "n:2.0.0",
+                      "end": {
+                        "kind": "time",
+                        "s": 30
+                      },
+                      "target": {
+                        "kind": "pct_ftp",
+                        "value": 125
+                      }
+                    },
+                    {
+                      "type": "step",
+                      "id": "n:2.0.1",
+                      "end": {
+                        "kind": "time",
+                        "s": 15
+                      },
+                      "target": {
+                        "kind": "pct_ftp",
+                        "value": 50
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "step",
+                  "id": "n:2.1",
+                  "end": {
+                    "kind": "hr_recovery",
+                    "targetBpm": 118,
+                    "minS": 120,
+                    "maxS": 240,
+                    "onUnreachable": "lower_power"
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 40
+                  },
+                  "label": "Recover"
+                }
+              ],
+              "label": "VO2 sets",
+              "progression": {
+                "wattsPerRep": 5
+              }
+            },
+            {
+              "type": "repeat",
+              "id": "n:3",
+              "count": 2,
+              "children": [
+                {
+                  "type": "step",
+                  "id": "n:3.0",
+                  "end": {
+                    "kind": "time",
+                    "s": 240
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 95
+                  },
+                  "cadence": {
+                    "lo": 90,
+                    "hi": 95
+                  }
+                },
+                {
+                  "type": "step",
+                  "id": "n:3.1",
+                  "end": {
+                    "kind": "time",
+                    "s": 120
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 55
+                  }
+                }
+              ],
+              "label": "Threshold",
+              "skipLastRest": true
+            },
+            {
+              "type": "step",
+              "id": "n:4",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "ramp",
+                "from": 60,
+                "to": 40
+              },
+              "label": "Cool-down"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 480,
+            "powerFrom": 126,
+            "powerTo": 210,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1
+            ],
+            "iteration": [],
+            "nodeId": "n:1",
+            "startS": 480,
+            "durS": 180,
+            "powerFrom": 168,
+            "powerTo": 168,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              0,
+              0
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 660,
+            "durS": 30,
+            "powerFrom": 350,
+            "powerTo": 350,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              0,
+              0
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 690,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              0,
+              1
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 705,
+            "durS": 30,
+            "powerFrom": 350,
+            "powerTo": 350,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              0,
+              1
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 735,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              0,
+              2
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 750,
+            "durS": 30,
+            "powerFrom": 350,
+            "powerTo": 350,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              0,
+              2
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 780,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              0,
+              3
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 795,
+            "durS": 30,
+            "powerFrom": 350,
+            "powerTo": 350,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              0,
+              3
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 825,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              0,
+              4
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 840,
+            "durS": 30,
+            "powerFrom": 350,
+            "powerTo": 350,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              0,
+              4
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 870,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              1
+            ],
+            "iteration": [
+              0
+            ],
+            "nodeId": "n:2.1",
+            "startS": 885,
+            "durS": 120,
+            "powerFrom": 112,
+            "powerTo": 112,
+            "phase": "recovery",
+            "durRangeS": [
+              120,
+              240
+            ]
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              1,
+              0
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 1005,
+            "durS": 30,
+            "powerFrom": 355,
+            "powerTo": 355,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              1,
+              0
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 1035,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              1,
+              1
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 1050,
+            "durS": 30,
+            "powerFrom": 355,
+            "powerTo": 355,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              1,
+              1
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 1080,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              1,
+              2
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 1095,
+            "durS": 30,
+            "powerFrom": 355,
+            "powerTo": 355,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              1,
+              2
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 1125,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              1,
+              3
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 1140,
+            "durS": 30,
+            "powerFrom": 355,
+            "powerTo": 355,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              1,
+              3
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 1170,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              1,
+              4
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 1185,
+            "durS": 30,
+            "powerFrom": 355,
+            "powerTo": 355,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              1,
+              4
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 1215,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              1
+            ],
+            "iteration": [
+              1
+            ],
+            "nodeId": "n:2.1",
+            "startS": 1230,
+            "durS": 120,
+            "powerFrom": 112,
+            "powerTo": 112,
+            "phase": "recovery",
+            "durRangeS": [
+              120,
+              240
+            ]
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              2,
+              0
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 1350,
+            "durS": 30,
+            "powerFrom": 360,
+            "powerTo": 360,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              2,
+              0
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 1380,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              2,
+              1
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 1395,
+            "durS": 30,
+            "powerFrom": 360,
+            "powerTo": 360,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              2,
+              1
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 1425,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              2,
+              2
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 1440,
+            "durS": 30,
+            "powerFrom": 360,
+            "powerTo": 360,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              2,
+              2
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 1470,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              2,
+              3
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 1485,
+            "durS": 30,
+            "powerFrom": 360,
+            "powerTo": 360,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              2,
+              3
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 1515,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0,
+              0
+            ],
+            "iteration": [
+              2,
+              4
+            ],
+            "nodeId": "n:2.0.0",
+            "startS": 1530,
+            "durS": 30,
+            "powerFrom": 360,
+            "powerTo": 360,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              0,
+              1
+            ],
+            "iteration": [
+              2,
+              4
+            ],
+            "nodeId": "n:2.0.1",
+            "startS": 1560,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              1
+            ],
+            "iteration": [
+              2
+            ],
+            "nodeId": "n:2.1",
+            "startS": 1575,
+            "durS": 120,
+            "powerFrom": 112,
+            "powerTo": 112,
+            "phase": "recovery",
+            "durRangeS": [
+              120,
+              240
+            ]
+          },
+          {
+            "path": [
+              3,
+              0
+            ],
+            "iteration": [
+              0
+            ],
+            "nodeId": "n:3.0",
+            "startS": 1695,
+            "durS": 240,
+            "powerFrom": 266,
+            "powerTo": 266,
+            "phase": "work"
+          },
+          {
+            "path": [
+              3,
+              1
+            ],
+            "iteration": [
+              0
+            ],
+            "nodeId": "n:3.1",
+            "startS": 1935,
+            "durS": 120,
+            "powerFrom": 154,
+            "powerTo": 154,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              3,
+              0
+            ],
+            "iteration": [
+              1
+            ],
+            "nodeId": "n:3.0",
+            "startS": 2055,
+            "durS": 240,
+            "powerFrom": 266,
+            "powerTo": 266,
+            "phase": "work"
+          },
+          {
+            "path": [
+              4
+            ],
+            "iteration": [],
+            "nodeId": "n:4",
+            "startS": 2295,
+            "durS": 300,
+            "powerFrom": 168,
+            "powerTo": 112,
+            "phase": "cooldown"
+          }
+        ],
+        "totalS": 2595,
+        "totalRangeS": [
+          2595,
+          2955
+        ],
+        "tss": 50.9,
+        "if": 0.841,
+        "timeInZoneS": [
+          970,
+          695,
+          0,
+          480,
+          0,
+          450,
+          0
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "compile-1",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 600
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            },
+            {
+              "type": "repeat",
+              "id": "n:1",
+              "count": 2,
+              "children": [
+                {
+                  "type": "repeat",
+                  "id": "n:1.0",
+                  "count": 3,
+                  "children": [
+                    {
+                      "type": "step",
+                      "id": "n:1.0.0",
+                      "end": {
+                        "kind": "time",
+                        "s": 30
+                      },
+                      "target": {
+                        "kind": "pct_ftp",
+                        "value": 120
+                      }
+                    },
+                    {
+                      "type": "step",
+                      "id": "n:1.0.1",
+                      "end": {
+                        "kind": "time",
+                        "s": 15
+                      },
+                      "target": {
+                        "kind": "pct_ftp",
+                        "value": 50
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "step",
+                  "id": "n:1.1",
+                  "end": {
+                    "kind": "time",
+                    "s": 180
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 50
+                  }
+                }
+              ],
+              "skipLastRest": true
+            },
+            {
+              "type": "step",
+              "id": "n:2",
+              "end": {
+                "kind": "time",
+                "s": 600
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 600,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1,
+              0,
+              0
+            ],
+            "iteration": [
+              0,
+              0
+            ],
+            "nodeId": "n:1.0.0",
+            "startS": 600,
+            "durS": 30,
+            "powerFrom": 336,
+            "powerTo": 336,
+            "phase": "work"
+          },
+          {
+            "path": [
+              1,
+              0,
+              1
+            ],
+            "iteration": [
+              0,
+              0
+            ],
+            "nodeId": "n:1.0.1",
+            "startS": 630,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              1,
+              0,
+              0
+            ],
+            "iteration": [
+              0,
+              1
+            ],
+            "nodeId": "n:1.0.0",
+            "startS": 645,
+            "durS": 30,
+            "powerFrom": 336,
+            "powerTo": 336,
+            "phase": "work"
+          },
+          {
+            "path": [
+              1,
+              0,
+              1
+            ],
+            "iteration": [
+              0,
+              1
+            ],
+            "nodeId": "n:1.0.1",
+            "startS": 675,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              1,
+              0,
+              0
+            ],
+            "iteration": [
+              0,
+              2
+            ],
+            "nodeId": "n:1.0.0",
+            "startS": 690,
+            "durS": 30,
+            "powerFrom": 336,
+            "powerTo": 336,
+            "phase": "work"
+          },
+          {
+            "path": [
+              1,
+              0,
+              1
+            ],
+            "iteration": [
+              0,
+              2
+            ],
+            "nodeId": "n:1.0.1",
+            "startS": 720,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              1,
+              1
+            ],
+            "iteration": [
+              0
+            ],
+            "nodeId": "n:1.1",
+            "startS": 735,
+            "durS": 180,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              1,
+              0,
+              0
+            ],
+            "iteration": [
+              1,
+              0
+            ],
+            "nodeId": "n:1.0.0",
+            "startS": 915,
+            "durS": 30,
+            "powerFrom": 336,
+            "powerTo": 336,
+            "phase": "work"
+          },
+          {
+            "path": [
+              1,
+              0,
+              1
+            ],
+            "iteration": [
+              1,
+              0
+            ],
+            "nodeId": "n:1.0.1",
+            "startS": 945,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              1,
+              0,
+              0
+            ],
+            "iteration": [
+              1,
+              1
+            ],
+            "nodeId": "n:1.0.0",
+            "startS": 960,
+            "durS": 30,
+            "powerFrom": 336,
+            "powerTo": 336,
+            "phase": "work"
+          },
+          {
+            "path": [
+              1,
+              0,
+              1
+            ],
+            "iteration": [
+              1,
+              1
+            ],
+            "nodeId": "n:1.0.1",
+            "startS": 990,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              1,
+              0,
+              0
+            ],
+            "iteration": [
+              1,
+              2
+            ],
+            "nodeId": "n:1.0.0",
+            "startS": 1005,
+            "durS": 30,
+            "powerFrom": 336,
+            "powerTo": 336,
+            "phase": "work"
+          },
+          {
+            "path": [
+              1,
+              0,
+              1
+            ],
+            "iteration": [
+              1,
+              2
+            ],
+            "nodeId": "n:1.0.1",
+            "startS": 1035,
+            "durS": 15,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown"
+          },
+          {
+            "path": [
+              2
+            ],
+            "iteration": [],
+            "nodeId": "n:2",
+            "startS": 1050,
+            "durS": 600,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown"
+          }
+        ],
+        "totalS": 1650,
+        "totalRangeS": [
+          1650,
+          1650
+        ],
+        "tss": 20.9,
+        "if": 0.676,
+        "timeInZoneS": [
+          1470,
+          0,
+          0,
+          0,
+          0,
+          180,
+          0
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "compile-2",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "repeat",
+              "id": "n:0",
+              "count": 3,
+              "children": [
+                {
+                  "type": "repeat",
+                  "id": "n:0.0",
+                  "count": 2,
+                  "children": [
+                    {
+                      "type": "step",
+                      "id": "n:0.0.0",
+                      "end": {
+                        "kind": "time",
+                        "s": 60
+                      },
+                      "target": {
+                        "kind": "pct_ftp",
+                        "value": 100
+                      }
+                    },
+                    {
+                      "type": "step",
+                      "id": "n:0.0.1",
+                      "end": {
+                        "kind": "time",
+                        "s": 60
+                      },
+                      "target": {
+                        "kind": "pct_ftp",
+                        "value": 50
+                      }
+                    }
+                  ],
+                  "progression": {
+                    "pctPerRep": 1
+                  }
+                }
+              ],
+              "progression": {
+                "wattsPerRep": 5
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0,
+              0,
+              0
+            ],
+            "iteration": [
+              0,
+              0
+            ],
+            "nodeId": "n:0.0.0",
+            "startS": 0,
+            "durS": 60,
+            "powerFrom": 280,
+            "powerTo": 280,
+            "phase": "work"
+          },
+          {
+            "path": [
+              0,
+              0,
+              1
+            ],
+            "iteration": [
+              0,
+              0
+            ],
+            "nodeId": "n:0.0.1",
+            "startS": 60,
+            "durS": 60,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              0,
+              0,
+              0
+            ],
+            "iteration": [
+              0,
+              1
+            ],
+            "nodeId": "n:0.0.0",
+            "startS": 120,
+            "durS": 60,
+            "powerFrom": 282.8,
+            "powerTo": 282.8,
+            "phase": "work"
+          },
+          {
+            "path": [
+              0,
+              0,
+              1
+            ],
+            "iteration": [
+              0,
+              1
+            ],
+            "nodeId": "n:0.0.1",
+            "startS": 180,
+            "durS": 60,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              0,
+              0,
+              0
+            ],
+            "iteration": [
+              1,
+              0
+            ],
+            "nodeId": "n:0.0.0",
+            "startS": 240,
+            "durS": 60,
+            "powerFrom": 285,
+            "powerTo": 285,
+            "phase": "work"
+          },
+          {
+            "path": [
+              0,
+              0,
+              1
+            ],
+            "iteration": [
+              1,
+              0
+            ],
+            "nodeId": "n:0.0.1",
+            "startS": 300,
+            "durS": 60,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              0,
+              0,
+              0
+            ],
+            "iteration": [
+              1,
+              1
+            ],
+            "nodeId": "n:0.0.0",
+            "startS": 360,
+            "durS": 60,
+            "powerFrom": 287.8,
+            "powerTo": 287.8,
+            "phase": "work"
+          },
+          {
+            "path": [
+              0,
+              0,
+              1
+            ],
+            "iteration": [
+              1,
+              1
+            ],
+            "nodeId": "n:0.0.1",
+            "startS": 420,
+            "durS": 60,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              0,
+              0,
+              0
+            ],
+            "iteration": [
+              2,
+              0
+            ],
+            "nodeId": "n:0.0.0",
+            "startS": 480,
+            "durS": 60,
+            "powerFrom": 290,
+            "powerTo": 290,
+            "phase": "work"
+          },
+          {
+            "path": [
+              0,
+              0,
+              1
+            ],
+            "iteration": [
+              2,
+              0
+            ],
+            "nodeId": "n:0.0.1",
+            "startS": 540,
+            "durS": 60,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              0,
+              0,
+              0
+            ],
+            "iteration": [
+              2,
+              1
+            ],
+            "nodeId": "n:0.0.0",
+            "startS": 600,
+            "durS": 60,
+            "powerFrom": 292.8,
+            "powerTo": 292.8,
+            "phase": "work"
+          },
+          {
+            "path": [
+              0,
+              0,
+              1
+            ],
+            "iteration": [
+              2,
+              1
+            ],
+            "nodeId": "n:0.0.1",
+            "startS": 660,
+            "durS": 60,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown"
+          }
+        ],
+        "totalS": 720,
+        "totalRangeS": [
+          720,
+          720
+        ],
+        "tss": 14.2,
+        "if": 0.842,
+        "timeInZoneS": [
+          360,
+          0,
+          0,
+          360,
+          0,
+          0,
+          0
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "compile-3",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 600
+              },
+              "target": {
+                "kind": "ramp",
+                "from": 40,
+                "to": 70
+              }
+            },
+            {
+              "type": "repeat",
+              "id": "n:1",
+              "count": 3,
+              "children": [
+                {
+                  "type": "step",
+                  "id": "n:1.0",
+                  "end": {
+                    "kind": "time",
+                    "s": 180
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 110
+                  }
+                },
+                {
+                  "type": "step",
+                  "id": "n:1.1",
+                  "end": {
+                    "kind": "time",
+                    "s": 120
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 50
+                  }
+                }
+              ]
+            },
+            {
+              "type": "step",
+              "id": "n:2",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 55
+              },
+              "label": "Easy"
+            },
+            {
+              "type": "step",
+              "id": "n:3",
+              "end": {
+                "kind": "time",
+                "s": 120
+              },
+              "target": {
+                "kind": "free"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 600,
+            "powerFrom": 112,
+            "powerTo": 196,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1,
+              0
+            ],
+            "iteration": [
+              0
+            ],
+            "nodeId": "n:1.0",
+            "startS": 600,
+            "durS": 180,
+            "powerFrom": 308,
+            "powerTo": 308,
+            "phase": "work"
+          },
+          {
+            "path": [
+              1,
+              1
+            ],
+            "iteration": [
+              0
+            ],
+            "nodeId": "n:1.1",
+            "startS": 780,
+            "durS": 120,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              1,
+              0
+            ],
+            "iteration": [
+              1
+            ],
+            "nodeId": "n:1.0",
+            "startS": 900,
+            "durS": 180,
+            "powerFrom": 308,
+            "powerTo": 308,
+            "phase": "work"
+          },
+          {
+            "path": [
+              1,
+              1
+            ],
+            "iteration": [
+              1
+            ],
+            "nodeId": "n:1.1",
+            "startS": 1080,
+            "durS": 120,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              1,
+              0
+            ],
+            "iteration": [
+              2
+            ],
+            "nodeId": "n:1.0",
+            "startS": 1200,
+            "durS": 180,
+            "powerFrom": 308,
+            "powerTo": 308,
+            "phase": "work"
+          },
+          {
+            "path": [
+              1,
+              1
+            ],
+            "iteration": [
+              2
+            ],
+            "nodeId": "n:1.1",
+            "startS": 1380,
+            "durS": 120,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown"
+          },
+          {
+            "path": [
+              2
+            ],
+            "iteration": [],
+            "nodeId": "n:2",
+            "startS": 1500,
+            "durS": 300,
+            "powerFrom": 154,
+            "powerTo": 154,
+            "phase": "cooldown"
+          },
+          {
+            "path": [
+              3
+            ],
+            "iteration": [],
+            "nodeId": "n:3",
+            "startS": 1800,
+            "durS": 120,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "free"
+          }
+        ],
+        "totalS": 1920,
+        "totalRangeS": [
+          1920,
+          1920
+        ],
+        "tss": 36.2,
+        "if": 0.824,
+        "timeInZoneS": [
+          780,
+          600,
+          0,
+          0,
+          540,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "warning",
+            "message": "No cool-down (≥ 3 min easy) at the end"
+          }
+        ]
+      }
+    },
+    {
+      "name": "compile-4",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 3600
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 100
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 3600,
+            "powerFrom": 280,
+            "powerTo": 280,
+            "phase": "work"
+          }
+        ],
+        "totalS": 3600,
+        "totalRangeS": [
+          3600,
+          3600
+        ],
+        "tss": 100,
+        "if": 1,
+        "timeInZoneS": [
+          0,
+          0,
+          0,
+          3600,
+          0,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "warning",
+            "message": "No cool-down (≥ 3 min easy) at the end"
+          }
+        ]
+      }
+    },
+    {
+      "name": "compile-5",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 600
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:1",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 110
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:2",
+              "end": {
+                "kind": "hr_recovery",
+                "targetBpm": 120,
+                "minS": 60,
+                "maxS": 240,
+                "onUnreachable": "lower_power"
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 40
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:3",
+              "end": {
+                "kind": "lap"
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:4",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 600,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1
+            ],
+            "iteration": [],
+            "nodeId": "n:1",
+            "startS": 600,
+            "durS": 300,
+            "powerFrom": 308,
+            "powerTo": 308,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2
+            ],
+            "iteration": [],
+            "nodeId": "n:2",
+            "startS": 900,
+            "durS": 91.7005286896176,
+            "powerFrom": 112,
+            "powerTo": 112,
+            "phase": "recovery",
+            "durRangeS": [
+              60,
+              240
+            ]
+          },
+          {
+            "path": [
+              3
+            ],
+            "iteration": [],
+            "nodeId": "n:3",
+            "startS": 991.7005286896176,
+            "durS": 300,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown",
+            "durRangeS": [
+              30,
+              1800
+            ]
+          },
+          {
+            "path": [
+              4
+            ],
+            "iteration": [],
+            "nodeId": "n:4",
+            "startS": 1291.7005286896176,
+            "durS": 300,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown"
+          }
+        ],
+        "totalS": 1591.7005286896176,
+        "totalRangeS": [
+          1290,
+          3240
+        ],
+        "tss": 25,
+        "if": 0.752,
+        "timeInZoneS": [
+          1292,
+          0,
+          0,
+          0,
+          300,
+          0,
+          0
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "compile-6",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "kj",
+                "kj": 100
+              },
+              "target": {
+                "kind": "watts",
+                "value": 250
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 400,
+            "powerFrom": 250,
+            "powerTo": 250,
+            "phase": "work"
+          }
+        ],
+        "totalS": 400,
+        "totalRangeS": [
+          400,
+          400
+        ],
+        "tss": 8.9,
+        "if": 0.893,
+        "timeInZoneS": [
+          0,
+          0,
+          400,
+          0,
+          0,
+          0,
+          0
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "compile-7",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:1",
+              "end": {
+                "kind": "time",
+                "s": 600
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 130
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:2",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 300,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1
+            ],
+            "iteration": [],
+            "nodeId": "n:1",
+            "startS": 300,
+            "durS": 600,
+            "powerFrom": 364,
+            "powerTo": 364,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2
+            ],
+            "iteration": [],
+            "nodeId": "n:2",
+            "startS": 900,
+            "durS": 300,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown"
+          }
+        ],
+        "totalS": 1200,
+        "totalRangeS": [
+          1200,
+          1200
+        ],
+        "tss": 40.4,
+        "if": 1.1,
+        "timeInZoneS": [
+          600,
+          0,
+          0,
+          0,
+          0,
+          600,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "nodeId": "n:1",
+            "message": "W'bal drops to -152 % — not sustainable as prescribed"
+          }
+        ]
+      }
+    },
+    {
+      "name": "compile-8",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:1",
+              "end": {
+                "kind": "time",
+                "s": 360
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 118
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:2",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 300,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1
+            ],
+            "iteration": [],
+            "nodeId": "n:1",
+            "startS": 300,
+            "durS": 360,
+            "powerFrom": 330.4,
+            "powerTo": 330.4,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2
+            ],
+            "iteration": [],
+            "nodeId": "n:2",
+            "startS": 660,
+            "durS": 300,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown"
+          }
+        ],
+        "totalS": 960,
+        "totalRangeS": [
+          960,
+          960
+        ],
+        "tss": 23.3,
+        "if": 0.936,
+        "timeInZoneS": [
+          600,
+          0,
+          0,
+          0,
+          360,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "warning",
+            "nodeId": "n:1",
+            "message": "W'bal drops to 9 % — very hard, little reserve"
+          }
+        ]
+      }
+    },
+    {
+      "name": "compile-9",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 600
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:1",
+              "end": {
+                "kind": "time",
+                "s": 1200
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 90
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 600,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1
+            ],
+            "iteration": [],
+            "nodeId": "n:1",
+            "startS": 600,
+            "durS": 1200,
+            "powerFrom": 252,
+            "powerTo": 252,
+            "phase": "work"
+          }
+        ],
+        "totalS": 1800,
+        "totalRangeS": [
+          1800,
+          1800
+        ],
+        "tss": 33.9,
+        "if": 0.823,
+        "timeInZoneS": [
+          600,
+          0,
+          0,
+          1200,
+          0,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "warning",
+            "message": "No cool-down (≥ 3 min easy) at the end"
+          }
+        ]
+      }
+    },
+    {
+      "name": "compile-10",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 600
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:1",
+              "end": {
+                "kind": "time",
+                "s": 1200
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 90
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:2",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 600,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1
+            ],
+            "iteration": [],
+            "nodeId": "n:1",
+            "startS": 600,
+            "durS": 1200,
+            "powerFrom": 252,
+            "powerTo": 252,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2
+            ],
+            "iteration": [],
+            "nodeId": "n:2",
+            "startS": 1800,
+            "durS": 300,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown"
+          }
+        ],
+        "totalS": 2100,
+        "totalRangeS": [
+          2100,
+          2100
+        ],
+        "tss": 37.1,
+        "if": 0.797,
+        "timeInZoneS": [
+          900,
+          0,
+          0,
+          1200,
+          0,
+          0,
+          0
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "compile-11",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 600
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:1",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 110
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:2",
+              "end": {
+                "kind": "hr_recovery",
+                "targetBpm": 100,
+                "minS": 60,
+                "maxS": 180,
+                "onUnreachable": "lower_power"
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 60
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:3",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 600,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1
+            ],
+            "iteration": [],
+            "nodeId": "n:1",
+            "startS": 600,
+            "durS": 300,
+            "powerFrom": 308,
+            "powerTo": 308,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2
+            ],
+            "iteration": [],
+            "nodeId": "n:2",
+            "startS": 900,
+            "durS": 180,
+            "powerFrom": 168,
+            "powerTo": 168,
+            "phase": "recovery",
+            "durRangeS": [
+              60,
+              180
+            ]
+          },
+          {
+            "path": [
+              3
+            ],
+            "iteration": [],
+            "nodeId": "n:3",
+            "startS": 1080,
+            "durS": 300,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown"
+          }
+        ],
+        "totalS": 1380,
+        "totalRangeS": [
+          1260,
+          1380
+        ],
+        "tss": 23.4,
+        "if": 0.782,
+        "timeInZoneS": [
+          900,
+          180,
+          0,
+          0,
+          300,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "warning",
+            "nodeId": "n:2",
+            "message": "HR < 100 is likely unreachable at 168 W (steady HR ≈ 127); block will run to its max"
+          }
+        ]
+      }
+    },
+    {
+      "name": "compile-12",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": []
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [],
+        "totalS": 0,
+        "totalRangeS": [
+          0,
+          0
+        ],
+        "tss": 0,
+        "if": 0,
+        "timeInZoneS": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "message": "Workout is empty"
+          }
+        ]
+      }
+    },
+    {
+      "name": "compile-13",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 600
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:1",
+              "end": {
+                "kind": "time",
+                "s": 1200
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 65
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:2",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 40
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 600,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1
+            ],
+            "iteration": [],
+            "nodeId": "n:1",
+            "startS": 600,
+            "durS": 1200,
+            "powerFrom": 182,
+            "powerTo": 182,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2
+            ],
+            "iteration": [],
+            "nodeId": "n:2",
+            "startS": 1800,
+            "durS": 300,
+            "powerFrom": 112,
+            "powerTo": 112,
+            "phase": "cooldown"
+          }
+        ],
+        "totalS": 2100,
+        "totalRangeS": [
+          2100,
+          2100
+        ],
+        "tss": 20.6,
+        "if": 0.594,
+        "timeInZoneS": [
+          900,
+          1200,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "compile-14",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 120
+              },
+              "target": {
+                "kind": "hr",
+                "bpm": 140
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:1",
+              "end": {
+                "kind": "time",
+                "s": 60
+              },
+              "target": {
+                "kind": "range",
+                "lo": 50,
+                "hi": 75
+              }
+            },
+            {
+              "type": "repeat",
+              "id": "n:2",
+              "count": 2,
+              "children": [
+                {
+                  "type": "step",
+                  "id": "n:2.0",
+                  "end": {
+                    "kind": "time",
+                    "s": 60
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 100
+                  }
+                },
+                {
+                  "type": "step",
+                  "id": "n:2.1",
+                  "end": {
+                    "kind": "time",
+                    "s": 60
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 50
+                  }
+                }
+              ],
+              "progression": {
+                "wattsPerRep": -10
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 120,
+            "powerFrom": 200.4,
+            "powerTo": 200.4,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              1
+            ],
+            "iteration": [],
+            "nodeId": "n:1",
+            "startS": 120,
+            "durS": 60,
+            "powerFrom": 175,
+            "powerTo": 175,
+            "phase": "warmup"
+          },
+          {
+            "path": [
+              2,
+              0
+            ],
+            "iteration": [
+              0
+            ],
+            "nodeId": "n:2.0",
+            "startS": 180,
+            "durS": 60,
+            "powerFrom": 280,
+            "powerTo": 280,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              1
+            ],
+            "iteration": [
+              0
+            ],
+            "nodeId": "n:2.1",
+            "startS": 240,
+            "durS": 60,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "recovery"
+          },
+          {
+            "path": [
+              2,
+              0
+            ],
+            "iteration": [
+              1
+            ],
+            "nodeId": "n:2.0",
+            "startS": 300,
+            "durS": 60,
+            "powerFrom": 270,
+            "powerTo": 270,
+            "phase": "work"
+          },
+          {
+            "path": [
+              2,
+              1
+            ],
+            "iteration": [
+              1
+            ],
+            "nodeId": "n:2.1",
+            "startS": 360,
+            "durS": 60,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "cooldown"
+          }
+        ],
+        "totalS": 420,
+        "totalRangeS": [
+          420,
+          420
+        ],
+        "tss": 7,
+        "if": 0.775,
+        "timeInZoneS": [
+          120,
+          180,
+          0,
+          120,
+          0,
+          0,
+          0
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "invalid-0",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 0,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 60
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 50
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 60,
+            "powerFrom": 0,
+            "powerTo": 0,
+            "phase": "work"
+          }
+        ],
+        "totalS": 60,
+        "totalRangeS": [
+          60,
+          60
+        ],
+        "tss": 0,
+        "if": 0,
+        "timeInZoneS": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          60
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "message": "FTP must be positive"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid-1",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "repeat",
+              "id": "r",
+              "count": 0,
+              "children": []
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [],
+        "totalS": 0,
+        "totalRangeS": [
+          0,
+          0
+        ],
+        "tss": 0,
+        "if": 0,
+        "timeInZoneS": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "nodeId": "r",
+            "message": "Repeat count must be a whole number ≥ 1 (got 0)"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid-2",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "repeat",
+              "id": "r",
+              "count": 1,
+              "children": []
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [],
+        "totalS": 0,
+        "totalRangeS": [
+          0,
+          0
+        ],
+        "tss": 0,
+        "if": 0,
+        "timeInZoneS": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "nodeId": "r",
+            "message": "Repeat has no steps"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid-3",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "s",
+              "end": {
+                "kind": "time",
+                "s": 0
+              },
+              "target": {
+                "kind": "watts",
+                "value": 1500
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "s",
+            "startS": 0,
+            "durS": 0,
+            "powerFrom": 1500,
+            "powerTo": 1500,
+            "phase": "work"
+          }
+        ],
+        "totalS": 0,
+        "totalRangeS": [
+          0,
+          0
+        ],
+        "tss": 0,
+        "if": 0,
+        "timeInZoneS": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "nodeId": "s",
+            "message": "Duration must be > 0"
+          },
+          {
+            "severity": "error",
+            "nodeId": "s",
+            "message": "Target 1500 W exceeds max 1120 W"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid-4",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "s",
+              "end": {
+                "kind": "time",
+                "s": -10
+              },
+              "target": {
+                "kind": "watts",
+                "value": 1500
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "s",
+            "startS": 0,
+            "durS": 0,
+            "powerFrom": 1500,
+            "powerTo": 1500,
+            "phase": "work"
+          }
+        ],
+        "totalS": 0,
+        "totalRangeS": [
+          0,
+          0
+        ],
+        "tss": 0,
+        "if": 0,
+        "timeInZoneS": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "nodeId": "s",
+            "message": "Duration must be > 0"
+          },
+          {
+            "severity": "error",
+            "nodeId": "s",
+            "message": "Target 1500 W exceeds max 1120 W"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid-5",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "s",
+              "end": {
+                "kind": "kj",
+                "kj": 0
+              },
+              "target": {
+                "kind": "free"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "s",
+            "startS": 0,
+            "durS": 0,
+            "powerFrom": 140,
+            "powerTo": 140,
+            "phase": "free"
+          }
+        ],
+        "totalS": 0,
+        "totalRangeS": [
+          0,
+          0
+        ],
+        "tss": 0,
+        "if": 0,
+        "timeInZoneS": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "nodeId": "s",
+            "message": "kJ target must be > 0"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid-6",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "s",
+              "end": {
+                "kind": "hr_recovery",
+                "minS": 120,
+                "maxS": 60,
+                "targetBpm": 20,
+                "onUnreachable": "cap"
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 40
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "s",
+            "startS": 0,
+            "durS": 60,
+            "powerFrom": 112,
+            "powerTo": 112,
+            "phase": "recovery",
+            "durRangeS": [
+              60,
+              120
+            ]
+          }
+        ],
+        "totalS": 60,
+        "totalRangeS": [
+          60,
+          120
+        ],
+        "tss": 0.3,
+        "if": 0.4,
+        "timeInZoneS": [
+          60,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "nodeId": "s",
+            "message": "HR recovery: min duration exceeds max"
+          },
+          {
+            "severity": "error",
+            "nodeId": "s",
+            "message": "HR recovery target 20 bpm is outside 50–190"
+          },
+          {
+            "severity": "warning",
+            "nodeId": "s",
+            "message": "HR < 20 is likely unreachable at 112 W (steady HR ≈ 106); block will run to its max"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid-7",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "s",
+              "end": {
+                "kind": "hr_recovery",
+                "minS": 120,
+                "maxS": 60,
+                "targetBpm": 200,
+                "onUnreachable": "cap"
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 40
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "s",
+            "startS": 0,
+            "durS": 60,
+            "powerFrom": 112,
+            "powerTo": 112,
+            "phase": "recovery",
+            "durRangeS": [
+              60,
+              120
+            ]
+          }
+        ],
+        "totalS": 60,
+        "totalRangeS": [
+          60,
+          120
+        ],
+        "tss": 0.3,
+        "if": 0.4,
+        "timeInZoneS": [
+          60,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "issues": [
+          {
+            "severity": "error",
+            "nodeId": "s",
+            "message": "HR recovery: min duration exceeds max"
+          },
+          {
+            "severity": "error",
+            "nodeId": "s",
+            "message": "HR recovery target 200 bpm is outside 50–190"
+          }
+        ]
+      }
+    },
+    {
+      "name": "custom-athlete",
+      "input": {
+        "workout": {
+          "id": "w",
+          "name": "vector",
+          "ftp": 280,
+          "nodes": [
+            {
+              "type": "step",
+              "id": "n:0",
+              "end": {
+                "kind": "time",
+                "s": 300
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 110
+              }
+            },
+            {
+              "type": "step",
+              "id": "n:1",
+              "end": {
+                "kind": "hr_recovery",
+                "targetBpm": 120,
+                "minS": 60,
+                "maxS": 240,
+                "onUnreachable": "lower_power"
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 40
+              }
+            }
+          ]
+        },
+        "options": {
+          "athlete": {
+            "ftp": 300,
+            "weightKg": 80,
+            "restHr": 60,
+            "maxHr": 180
+          },
+          "usualTauS": 80
+        }
+      },
+      "output": {
+        "blocks": [
+          {
+            "path": [
+              0
+            ],
+            "iteration": [],
+            "nodeId": "n:0",
+            "startS": 0,
+            "durS": 300,
+            "powerFrom": 308,
+            "powerTo": 308,
+            "phase": "work"
+          },
+          {
+            "path": [
+              1
+            ],
+            "iteration": [],
+            "nodeId": "n:1",
+            "startS": 300,
+            "durS": 132.6339457721462,
+            "powerFrom": 112,
+            "powerTo": 112,
+            "phase": "recovery",
+            "durRangeS": [
+              60,
+              240
+            ]
+          }
+        ],
+        "totalS": 432.6339457721462,
+        "totalRangeS": [
+          360,
+          540
+        ],
+        "tss": 12.2,
+        "if": 1.005,
+        "timeInZoneS": [
+          133,
+          0,
+          0,
+          0,
+          300,
+          0,
+          0
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "normalizedPower",
+      "input": {
+        "power": []
+      },
+      "output": {
+        "np": 0
+      }
+    },
+    {
+      "name": "normalizedPower",
+      "input": {
+        "power": [
+          100,
+          200
+        ]
+      },
+      "output": {
+        "np": 150
+      }
+    },
+    {
+      "name": "normalizedPower",
+      "input": {
+        "power": [
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280,
+          280
+        ]
+      },
+      "output": {
+        "np": 280
+      }
+    },
+    {
+      "name": "normalizedPower",
+      "input": {
+        "power": [
+          0,
+          10,
+          20,
+          30,
+          40,
+          50,
+          60,
+          70,
+          80,
+          90,
+          100,
+          110,
+          120,
+          130,
+          140,
+          150,
+          160,
+          170,
+          180,
+          190,
+          200,
+          210,
+          220,
+          230,
+          240,
+          250,
+          260,
+          270,
+          280,
+          290,
+          300,
+          310,
+          320,
+          330,
+          340,
+          350,
+          360,
+          370,
+          380,
+          390,
+          400,
+          410,
+          420,
+          430,
+          440,
+          450,
+          460,
+          470,
+          480,
+          490,
+          500,
+          510,
+          520,
+          530,
+          540,
+          550,
+          560,
+          570,
+          580,
+          590,
+          600,
+          610,
+          620,
+          630,
+          640
+        ]
+      },
+      "output": {
+        "np": 362.80385850925535
+      }
+    }
+  ]
+}
