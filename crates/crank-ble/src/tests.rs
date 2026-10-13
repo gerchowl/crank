@@ -78,11 +78,12 @@ proptest! {
         pacer.set(ControlMode::Erg { target_w: 100 }, 8).unwrap();
         let mut previous_poll = None;
         let mut pending = None;
+        let mut delivered = None;
         for (index, target) in changes.into_iter().enumerate() {
             let tick = u64::try_from(index).unwrap() + 8;
             if let Some(target_w) = target {
                 pacer.set(ControlMode::Erg { target_w }, tick).unwrap();
-                pending = Some((tick, target_w));
+                pending = (delivered != Some(target_w)).then_some((tick, target_w));
             }
             if let Some(written) = pacer.tick(tick).unwrap() {
                 if written[4] == 70 {
@@ -90,9 +91,13 @@ proptest! {
                     prop_assert_eq!((tick - 8) % 4, 0);
                     if let Some(last) = previous_poll { prop_assert_eq!(tick - last, 4); }
                     previous_poll = Some(tick);
-                } else if let Some((since, target)) = pending.take() {
-                    prop_assert!(tick - since <= 1);
-                    prop_assert_eq!(u16::from_le_bytes([written[10], written[11]]), target * 4);
+                } else {
+                    let quarter_w = u16::from_le_bytes([written[10], written[11]]);
+                    if let Some((since, target)) = pending.take() {
+                        prop_assert!(tick - since <= 1);
+                        prop_assert_eq!(quarter_w, target * 4);
+                    }
+                    delivered = Some(quarter_w / 4);
                 }
             }
             if let Some((since, _)) = pending { prop_assert!(tick - since <= 1); }

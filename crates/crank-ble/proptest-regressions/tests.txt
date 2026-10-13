@@ -4,6 +4,7 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
+cc 319a633fdd2157694e39a323f8c4eeda8e87a0327f67825adee9d756bbba8b8c # CI: identical ERG target repeated after its successful write
 cc ab7428bd76bff47545f7625e36ba5680d2b151fc3695227cd61e100c57a0e83a # shrinks to values = [(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)]
 cc 16411d04f6b8e328b431d59623d3ecb185553408c6d3cd77916c01227f005c28 # shrinks to values = [(0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (2, 0, 0), (0, 0, 0), (0, 0, 0)]
 cc 241fae2b74cb019539bae93e9658b8a39b990d5e191fdcd3a06e6f38f3a0632a # shrinks to values = [(0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (2, 0, 0), (2, 0, 0), (0, 0, 0), (2, 0, 0), (2, 0, 1)]
