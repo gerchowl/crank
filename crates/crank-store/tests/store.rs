@@ -4,6 +4,8 @@ use rusqlite::{Connection, params};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
+const WORKOUT_JSON: &str = r#"{"v":1,"id":"w","name":"Ride","ftp":250,"nodes":[{"type":"step","id":"s","label":null,"end":{"kind":"time","s":60},"target":{"kind":"pct_ftp","value":75},"cadence":null}]}"#;
+
 // Frozen shared MetricId catalog, plus the workout mapping in ADR-0001 §5.
 const METRICS: &[&str] = &[
     "power",
@@ -46,7 +48,7 @@ fn ride() -> NewRide {
     NewRide {
         id: "ride".into(),
         started_at: 1_700_000_000,
-        workout: RideWorkoutJson::parse(r#"{"v":1}"#).expect("valid test setup"),
+        workout: RideWorkoutJson::parse(WORKOUT_JSON).expect("valid test setup"),
         compiled: CompiledJson::parse(r#"{"v":1}"#).expect("valid test setup"),
         trainer_device_id: None,
         hr_device_id: None,
@@ -264,7 +266,7 @@ fn lockless_process_never_recovers_or_writes() {
 }
 
 fn invalid_column<T: JsonColumn>(store: &Store, db: &Connection, insert: &str, key: &[&str]) {
-    let valid = r#"{"v":1,"payload":true}"#;
+    let valid = WORKOUT_JSON;
     db.execute(insert, [valid])
         .expect("write valid persisted envelope");
     assert_eq!(
@@ -350,6 +352,50 @@ fn every_json_column_validated_on_read() {
         store.ride("ride"),
         Err(StoreError::InvalidJson { .. })
     ));
+}
+
+#[test]
+fn workout_columns_validate_the_domain_owner_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_owner(dir.path()).unwrap();
+    store.start_ride(ride()).unwrap();
+    let db = Connection::open(dir.path().join("crank.db")).unwrap();
+    db.execute(
+        "INSERT INTO workout(id,name,dsl,tree_json,created_at) VALUES('w','Ride','',?1,0)",
+        [WORKOUT_JSON],
+    )
+    .unwrap();
+    let tree = store.load_json::<WorkoutTreeJson>(&["w"]).unwrap().unwrap();
+    assert_eq!(tree.workout().nodes.len(), 1);
+    assert_eq!(
+        store.ride("ride").unwrap().unwrap().workout.workout(),
+        tree.workout()
+    );
+    for invalid in [
+        r#"{"v":1}"#,
+        r#"{"v":1,"id":"w","name":"Ride","ftp":250,"nodes":[{"type":"unknown"}]}"#,
+    ] {
+        db.execute("UPDATE workout SET tree_json=?1", [invalid])
+            .unwrap();
+        db.execute("UPDATE ride SET workout_json=?1", [invalid])
+            .unwrap();
+        assert!(matches!(
+            store.load_json::<WorkoutTreeJson>(&["w"]),
+            Err(StoreError::InvalidJson {
+                table: "workout",
+                column: "tree_json",
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.ride("ride"),
+            Err(StoreError::InvalidJson {
+                table: "ride",
+                column: "workout_json",
+                ..
+            })
+        ));
+    }
 }
 
 #[test]
