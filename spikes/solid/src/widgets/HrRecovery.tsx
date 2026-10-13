@@ -2,7 +2,7 @@ import { createMemo, Show } from "solid-js";
 import type uPlot from "uplot";
 import type { HrRecoveryState } from "@neo/shared";
 import { backend } from "../backend";
-import { axis, UPlot } from "../charts/UPlot";
+import { axis, tooltipPlugin, UPlot } from "../charts/UPlot";
 import { clock } from "../lib/format";
 import { createPoll } from "../lib/primitives";
 import { ride } from "../state/ride";
@@ -74,6 +74,7 @@ export function HrRecovery(props: WidgetProps) {
             data={data}
             options={(t) => ({
               legend: { show: false },
+              plugins: [tooltipPlugin((x) => `${Math.round(x)} s into block`, (v) => `${Math.round(v)} bpm`, [1, 3])],
               cursor: { y: false, drag: { x: false, y: false }, points: { size: 6 } },
               padding: [10, 12, 0, 0],
               scales: { x: { time: false }, y: { range: (_u, lo, hi) => [Math.floor((lo - 5) / 10) * 10, Math.ceil((hi + 5) / 10) * 10] } },

@@ -945,3 +945,20 @@ th {
     padding: 6px 4px;
   }
 }
+
+.tt-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.chip-dash.solid {
+  border-top-color: var(--ink-secondary);
+}
+.chip-dots.muted-ink {
+  border-top-color: var(--ink-muted);
+}
+.u-over .tooltip {
+  z-index: 20;
+}

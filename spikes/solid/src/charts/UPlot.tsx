@@ -64,3 +64,51 @@ export function axis(t: ThemeTokens, extra: uPlot.Axis = {}): uPlot.Axis {
     ...extra,
   };
 }
+
+/**
+ * Hover tooltip plugin (crosshair + values at the cursor). Plain DOM inside uPlot's `over`
+ * layer, so hovering never touches the Solid tree.
+ */
+export function tooltipPlugin(fmtX: (x: number) => string, fmtY: (v: number, seriesIdx: number) => string, only?: number[]): uPlot.Plugin {
+  let tip: HTMLDivElement | null = null;
+  return {
+    hooks: {
+      init: (u) => {
+        tip = document.createElement("div");
+        tip.className = "tooltip";
+        tip.style.display = "none";
+        u.over.appendChild(tip);
+        u.over.addEventListener("mouseleave", () => {
+          if (tip) tip.style.display = "none";
+        });
+      },
+      setCursor: (u) => {
+        const i = u.cursor.idx;
+        const left = u.cursor.left ?? -1;
+        if (!tip || i == null || left < 0) {
+          if (tip) tip.style.display = "none";
+          return;
+        }
+        const x = u.data[0][i];
+        if (x == null) return;
+        const rows: string[] = [];
+        u.series.forEach((s, si) => {
+          if (si === 0 || s.show === false || (only && !only.includes(si))) return;
+          const v = u.data[si]?.[i];
+          if (v == null) return;
+          const color = typeof s.stroke === "string" ? s.stroke : "";
+          rows.push(`<div><span class="tt-swatch" style="background:${color}"></span>${typeof s.label === "string" ? s.label : ""} <b>${fmtY(v, si)}</b></div>`);
+        });
+        if (!rows.length) {
+          tip.style.display = "none";
+          return;
+        }
+        tip.innerHTML = `<div class="muted">${fmtX(x)}</div>${rows.join("")}`;
+        tip.style.display = "block";
+        const w = u.over.clientWidth;
+        tip.style.left = `${Math.min(left + 12, w - 150)}px`;
+        tip.style.top = `${Math.max(0, (u.cursor.top ?? 0) - 20)}px`;
+      },
+    },
+  };
+}
