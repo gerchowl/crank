@@ -87,6 +87,10 @@ export const DEFAULT_BINDINGS: Bindings = {
   end: ["Escape"],
   symptom: ["!"],
 };
+/** How a bound key is drawn on every key hint (DESIGN §16.2): ⏎ Enter, ⌫ Backspace, Esc, Space; others as typed. */
+export function keyGlyph(k: string): string {
+  return k === "Enter" ? "⏎" : k === "Backspace" ? "⌫" : k === "Escape" ? "Esc" : k === " " ? "Space" : k;
+}
 function parseBindings(v: unknown): Bindings | null {
   if (typeof v !== "object" || v === null) return null;
   const o = v as Record<string, unknown>;

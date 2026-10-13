@@ -3,8 +3,9 @@
 // An open suggestion is explained before it can be accepted: change summary, stacked
 // Current / Proposed profiles, text + outline diff, and a labelled before → after summary.
 // Below 1280 px the library is a drawer over the panes (☰ Library), so Outline | Text | Summary stay in one row
-// (DESIGN §16.3, #111).
-import { useEffect } from "react";
+// (DESIGN §16.3, #111). The open drawer is modal: focus moves into it, Tab stays inside, and Esc, ✕, a pick or the
+// scrim close it and return focus to ☰ Library.
+import { useEffect, useRef, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { demoWorkout, type CompiledWorkout, type RewriteIntent, type WorkoutNode } from "@crank/shared";
 import { Profile } from "../charts";
 import { editor, editorStore, type EditorState } from "../editor/model";
@@ -16,6 +17,19 @@ import { createStore, useStore } from "../store";
 
 /** The library drawer (< 1280 px). At ≥ 1280 px the library is a column and this has no effect. */
 export const libraryOpen = createStore(false);
+
+const DRAWER_MEDIA = "(max-width: 1279px)";
+/** True while the library is a drawer (the window is below 1280 px). */
+function useDrawerMode() {
+  return useSyncExternalStore(
+    (cb) => {
+      const m = matchMedia(DRAWER_MEDIA);
+      m.addEventListener("change", cb);
+      return () => m.removeEventListener("change", cb);
+    },
+    () => matchMedia(DRAWER_MEDIA).matches,
+  );
+}
 
 const INTENTS: [RewriteIntent, string][] = [
   ["vary", "Vary"],
@@ -103,7 +117,32 @@ export function Workouts() {
   const diffPath = s.lock?.kind === "diff" ? s.lock.path : null;
   const span = Math.max(compiled.totalS, after?.totalS ?? 0);
   const drawer = useStore(libraryOpen);
-  const load = (w: Parameters<typeof editor.load>[0]) => (editor.load(w), libraryOpen.set(false));
+  const drawerMode = useDrawerMode();
+  const modal = drawer && drawerMode;
+  const libRef = useRef<HTMLElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const closeLibrary = () => libraryOpen.set(false);
+  const load = (w: Parameters<typeof editor.load>[0]) => (editor.load(w), closeLibrary());
+  const focusables = () => [...(libRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
+  // the open drawer takes focus (its first item, else ✕); once closed (and the editor no longer inert), ☰ Library has it
+  const wasModal = useRef(false);
+  useEffect(() => {
+    if (modal) {
+      const f = focusables();
+      (f.find((b) => b.classList.contains("lib-item")) ?? f[0])?.focus();
+    } else if (wasModal.current) toggleRef.current?.focus();
+    wasModal.current = modal;
+  }, [modal]);
+  // Tab and Shift+Tab wrap inside the drawer while it overlays the editor
+  const trapTab = (e: ReactKeyboardEvent) => {
+    if (!modal || e.key !== "Tab") return;
+    const f = focusables();
+    if (!f.length) return;
+    const i = f.indexOf(document.activeElement as HTMLButtonElement);
+    const next = e.shiftKey ? (i <= 0 ? f.length - 1 : i - 1) : i === f.length - 1 ? 0 : i + 1;
+    e.preventDefault();
+    f[next]?.focus();
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -119,10 +158,11 @@ export function Workouts() {
 
   return (
     <div className="page workouts">
-      <aside className="library" aria-label="Library" data-open={drawer || undefined}>
+      {modal && <div className="lib-scrim" aria-hidden onClick={closeLibrary} />}
+      <aside ref={libRef} className="library" aria-label="Library" data-open={drawer || undefined} role={modal ? "dialog" : undefined} aria-modal={modal || undefined} onKeyDown={trapTab}>
         <h2>
           Library{" "}
-          <button className="lib-close" onClick={() => libraryOpen.set(false)} aria-label="Close the library">
+          <button className="lib-close" onClick={closeLibrary} aria-label="Close the library">
             ✕
           </button>
         </h2>
@@ -135,9 +175,9 @@ export function Workouts() {
           </button>
         ))}
       </aside>
-      <div className="editor">
+      <div className="editor" inert={modal || undefined}>
         <header className="editor-head">
-          <button className="lib-toggle" aria-expanded={drawer} onClick={() => libraryOpen.set(!drawer)}>
+          <button ref={toggleRef} className="lib-toggle" aria-expanded={drawer} onClick={() => libraryOpen.set(!drawer)}>
             ☰ Library
           </button>
           <div>

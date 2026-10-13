@@ -124,11 +124,13 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 /* DESIGN §16.2: check-in (or its summary line) · the proposal card 7fr beside the wish matrix 4fr · Last 7 days and
    Model in a strip under each column; stacked when the page is narrow (1024, or 1440 with the Why? sheet open) */
 .today { container-type: inline-size; }
-.today .page-head { margin-bottom: 14px; }
+.today .page-head { margin-bottom: 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px; }
+.today .page-head h1 { margin: 0; }
+.today .page-head .cap { flex: 1 1 520px; margin: 0; padding: 8px 14px; font-size: 15px; }
 .today .page-head .date { font-size: 18px; font-weight: 400; margin-left: 8px; }
 .today-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 7fr) minmax(0, 4fr); grid-template-areas: "card wish" "week model"; align-items: start; }
 .today-grid[data-stop] { grid-template-areas: "card card" "week model"; }
-.today-card { grid-area: card; display: flex; flex-direction: column; min-width: 0; }
+.today-card { grid-area: card; display: flex; flex-direction: column; min-width: 0; align-self: stretch; }
 .today-card > .card { flex: 1; }
 .today-wish { grid-area: wish; min-width: 0; }
 .today-week { grid-area: week; min-width: 0; }
@@ -140,7 +142,6 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .checkin-summary { display: flex; align-items: center; gap: 16px; padding: 8px 12px 8px 22px; margin-bottom: 16px; font-size: 17px; }
 .checkin-summary > span { flex: 1; white-space: nowrap; }
 .checkin-summary button { min-height: 48px; }
-.today .cap { margin-bottom: 16px; }
 @container (max-width: 1000px) {
   .today-grid, .today-grid[data-stop] { grid-template-columns: minmax(0, 1fr); grid-template-areas: "card" "wish" "week" "model"; }
 }
@@ -204,6 +205,8 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
   grid-area: bar; display: flex; align-items: center; gap: 16px; padding: 0 16px;
   background: var(--surface-1); border-bottom: 1px solid var(--border); white-space: nowrap;
 }
+/* no group ever shrinks: the widest pill (ride-reconnected-hr-lost) must fit at 1024 as it is, or the harness fails */
+.statusbar > * { flex-shrink: 0; }
 /* groups are sized to their content (§16.1); a value that changes reserves its widest form, so nothing moves */
 .statusbar .pause { display: flex; gap: 10px; justify-content: center; align-items: center; min-height: 48px; font-weight: 700; font-size: 20px; padding: 0 16px; }
 .swap { display: inline-grid; }
@@ -214,7 +217,7 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .statusbar .intensity { display: flex; gap: 8px; align-items: center; }
 .statusbar .intensity .you { font-size: 0.55em; }
 .statusbar .intensity b { width: 2.6em; text-align: center; }
-.statusbar .intensity button { width: 44px; min-height: 44px; padding: 0; font-size: 24px; }
+.statusbar .intensity button { width: 48px; min-height: 48px; padding: 0; font-size: 24px; } /* §6.7: ≥ 48 px targets */
 .chip { border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; font-size: 15px; font-weight: 700; }
 .chip.mode { min-width: 4.2em; text-align: center; } /* the widest mode word (FREE), so the mode never moves its neighbours */
 /* one device pill, right-aligned: it grows leftwards into free space on a fault, so no other group moves */
@@ -304,7 +307,7 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .lane-deadline { display: grid; grid-template-rows: auto 6px; gap: 4px; align-content: start; }
 .deadline.reserved { visibility: hidden; }
 .coach .verb { font-size: var(--t3p); font-weight: 800; white-space: nowrap; display: block; }
-.band-word { position: absolute; top: 6px; right: 18px; text-transform: uppercase; font-weight: 700; font-size: 14px; letter-spacing: 0.08em; color: var(--ink-secondary); }
+.band-word { margin-left: auto; padding-left: 14px; align-self: flex-start; text-transform: uppercase; font-weight: 700; font-size: 13px; letter-spacing: 0.06em; color: var(--ink-secondary); }
 .coach .reason { margin: 0; color: var(--ink-secondary); white-space: nowrap; }
 .coach.ask { background: color-mix(in srgb, var(--status-info) 13%, var(--surface-1)); box-shadow: inset 6px 0 0 var(--status-info); }
 .coach.applied { background: color-mix(in srgb, var(--status-good) 11%, var(--surface-1)); box-shadow: inset 6px 0 0 var(--status-good); }
@@ -326,6 +329,9 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 /* the notch marks the next block's start on the road below it */
 .road-notch { position: absolute; bottom: 0; width: 0; height: 0; margin-left: -8px; border: 8px solid transparent; border-bottom: 0; border-top: 8px solid var(--ink-primary); }
 .road-next .lbl { color: var(--ink-secondary); }
+/* a label too wide for either side of its notch sheds "next", then the watts (§16.1) */
+.road-next[data-level="1"] .lbl, .road-next[data-level="2"] .lbl, .road-next[data-level="2"] .watts { display: none; }
+.road-leader { position: absolute; bottom: 6px; height: 2px; background: var(--ink-primary); }
 .road-near { position: relative; min-height: 0; }
 .road-near .profile { height: 100% !important; }
 .road-all { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; }
@@ -386,6 +392,8 @@ button.ride-row:hover { background: var(--surface-2); }
   .workouts { grid-template-columns: minmax(0, 1fr); }
   .library { display: none; }
   .library[data-open] { display: flex; position: absolute; z-index: 10; top: 20px; left: 20px; bottom: 0; width: 280px; padding: 16px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; box-shadow: 12px 0 32px rgb(0 0 0 / 0.35); }
+  .lib-scrim { position: fixed; inset: 0; z-index: 9; background: rgb(0 0 0 / 0.45); }
+  .lib-item { min-height: 48px; }
   .lib-toggle, .lib-close { display: inline-flex; align-items: center; min-height: 48px; }
   .lib-close { min-width: 48px; justify-content: center; }
 }
@@ -471,7 +479,7 @@ pre.dsl ins { text-decoration: none; background: color-mix(in srgb, var(--status
   .history .two { grid-template-columns: minmax(0, 1fr); }
   .ride-row { grid-template-columns: 90px minmax(0, 1.4fr) 130px 60px 110px; }
   .ride-row > .mini { display: none; }
-  .statusbar { gap: 12px; padding: 0 10px; }
+  .statusbar { gap: 8px; padding: 0 10px; } /* the widest pill (ride-reconnected-hr-lost) fits with ≈ 13 px to spare */
   .statusbar .pause { font-size: 18px; gap: 8px; padding: 0 12px; }
   .statusbar .intensity { gap: 6px; }
   .device-pill { gap: 10px; padding: 2px 10px; }
@@ -549,7 +557,6 @@ svg .between { fill: var(--status-warning); fill-opacity: 0.3; stroke: none; }
 .slot-above { box-shadow: inset 6px 0 0 var(--div-pos); }
 .slot.reserved { visibility: hidden; }
 .grammar { font-size: 16px; color: var(--ink-secondary); white-space: nowrap; }
-.band-word { display: inline-flex; gap: 6px; }
 .road-proposal { position: absolute; top: 4px; left: 18%; z-index: 1; font-size: var(--t3); font-weight: 800; color: var(--status-info); background: var(--surface-1); padding: 0 8px; border: 2px dashed var(--status-info); border-radius: 6px; }
 kbd.keyhint { font-size: 0.6em; padding: 2px 6px; margin-right: 8px; vertical-align: middle; }
 /* screens read from the saddle use ride tiers (§6.2) */
@@ -606,7 +613,7 @@ main[data-destination]:focus { outline: none; }
 .cell.adapted { background: var(--surface-2); color: var(--ink-primary); border: 3px solid var(--accent); }
 .cell.cursor { outline: 4px solid var(--focus); outline-offset: 1px; }
 .cell:disabled:not(.locked) { opacity: 1; cursor: default; }
-.carried { border-left: 4px solid var(--status-info); padding-left: 10px; }
+.carried { border-left: 4px solid var(--status-info); padding-left: 10px; margin: 10px 0 0; }
 .carried button { min-height: 48px; margin-left: 6px; }
 /* the one proposal card (§16.2): desk while the check-in is open, saddle (ride tiers, 72 px actions pinned to its
    bottom edge) once it is done */
@@ -616,9 +623,13 @@ main[data-destination]:focus { outline: none; }
 .proposal-card.desk h2 { font-size: 26px; }
 .proposal-card.saddle h2 { font-weight: 800; }
 .card-profile { margin: 4px 0; }
-.card-keys { font-size: 15px; color: var(--ink-secondary); }
+/* the remote's way into wish mode, at T3 so it reads from the saddle (§16.2) */
+.card-keys { color: var(--ink-secondary); white-space: nowrap; }
+.card-keys kbd { font-size: 0.6em; vertical-align: middle; }
 .proposal-card .actions { flex-wrap: nowrap; gap: 8px; margin-top: 10px; }
 .proposal-card.saddle .actions.saddle { margin-top: auto; padding-top: 8px; }
+/* the desk card stretches to the matrix beside it; its actions sit at the bottom (§16.2) */
+.proposal-card.desk .actions { margin-top: auto; padding-top: 4px; }
 .proposal-card.saddle .actions.saddle button { min-height: 72px; font-size: var(--t3); padding: 0 12px; flex: 1 1 auto; white-space: nowrap; }
 .proposal-card.saddle .actions.saddle kbd { font-size: 0.55em; padding: 1px 4px; vertical-align: middle; }
 .outcome-line { font-weight: 700; border-left: 6px solid var(--border); padding-left: 12px; }

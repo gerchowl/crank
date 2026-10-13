@@ -223,11 +223,11 @@ screen says which event the number is about (core flags, #13; prototype `recover
 | Situation | ~~Row 2~~ superseded by §16.1: Row-1 caption | T1 | Row 4 sub-line |
 |---|---|---|---|
 | fit not ready yet | HR below 118 in | "fitting…" | block ends in m:ss–m:ss |
-| HR predicted below target before the minimum | ~~**block ends at its minimum in**~~ superseded by §16.1: **block ends at min in** | time to the minimum | HR due below 118 before then |
+| HR predicted below target before the minimum | ~~**block ends at its minimum in**~~ superseded by §16.1: **block's minimum in** | time to the minimum | HR due below 118 before then |
 | prediction inside the block's limits, band ≤ 30 s | HR below 118 in | ≈ mean, band "1:01–1:12" under it (the backend's interval, never widened or narrowed for display) | block ends in m:ss–m:ss |
 | band > 30 s | HR below 118 in | the band ("1:40–3:40") at range size (§6.2) | block ends in m:ss–m:ss |
-| band reaches the maximum | ~~HR below 118 in · or at the block maximum~~ superseded by §16.1: HR below 118 · or max in | the band | block ends in m:ss–m:ss |
-| HR lost (ADR-0001 §5) | ~~HR lost · block ends at its maximum in~~ superseded by §16.1: HR lost · ends at max in | time to the maximum | the chart stops its forecast; the last HR is drawn hollow (stale) |
+| band reaches the maximum | ~~HR below 118 in · or at the block maximum~~ superseded by §16.1: HR < 118 · or block max | the band | block ends in m:ss–m:ss |
+| HR lost (ADR-0001 §5) | ~~HR lost · block ends at its maximum in~~ superseded by §16.1: HR lost · block max in | time to the maximum | the chart stops its forecast; the last HR is drawn hollow (stale) |
 
 All times count **from now** (the sub-line too), so two numbers on screen never use different origins.
 
@@ -265,7 +265,7 @@ target ("90rpm") counts as 85–95 (#13).
 |---|---|---|
 | Coach asks (`pending`) | Tone (§7.3). Lane: verb and the **result in watts** on one line ("Ease off to 245 W?"), the band and % in the grammar line ("lean −3 % · Coach = accept · Keep = keep plan"), one short reason (≤ 24 characters), band word as a small tag, two **equal-weight** buttons, **numeric deadline** ("keeps plan in 24 s"); on the road the affected work blocks get a **thick dashed outline at their proposed height**, on top of any solid (already applied) outline, and a T3 label on the road states it ("proposed −3 % · 1 block") — readable from the saddle, not 13 px chrome | Coach = accept · Keep = keep · silence = keep |
 | Coach applied (`auto_applied`, opt-in) | Tone. Lane: "Eased off −5 %" + reason + "**Back to plan · 11 s**"; applied blocks **solid** outline; the target's sub-line shows "coach −5 %" on the changed blocks | Keep (within the window) = back to plan · Coach does nothing |
-| Trainer lost | Warning tone. Chip ⚠ NEO "lost"; row 4: "**⚠ Trainer lost 0:12**" / "paused 2:47 into block · ride saved" / "reconnecting (try 3)"; an HR-recovery forecast is frozen (~~"paused · then ends at its maximum in"~~ superseded by §16.1: "paused · ends at max in"); actual power, cadence and W′ balance "—"; countdown frozen and dimmed (ADR-0002 §6) | — |
+| Trainer lost | Warning tone. Chip ⚠ NEO "lost"; row 4: "**⚠ Trainer lost 0:12**" / "paused 2:47 into block · ride saved" / "reconnecting (try 3)"; an HR-recovery forecast is frozen (~~"paused · then ends at its maximum in"~~ superseded by §16.1: "paused · block max in"); actual power, cadence and W′ balance "—"; countdown frozen and dimmed (ADR-0002 §6) | — |
 | Trainer lost ≥ 30 s | Row 4 adds what to try ("power-cycle NEO · close Zwift") and **End…**, which opens the End dialog (Keep riding focused); reconnecting continues behind it | End (bindable) → End dialog |
 | Trainer back after ≥ 2 min | The re-entry policy (§6.6) applies: row 4 "↻ Back after 3:10" / "re-warm-up 2:48 · then this interval from its start" | — |
 | Trainer reconnected | Row 4 for the 5 s soft start: "Reconnected · easing in to 253 W" / "workout resumed" (or "pedal to resume" at 0 rpm); then the chip shows "NEO back · 0:14 gap" for 10 s | — |
@@ -831,14 +831,14 @@ viewport** at 1440×900 and 1024×768 (scenes `today-wish-*`, viewport captures)
 
 | Where | Action | Effect |
 |---|---|---|
-| Saddle proposal | **Coach** | Start (ignored for 1.5 s after a wish change, §7.2 debounce) |
+| ~~Saddle proposal~~ superseded by §16.2: the proposal card's saddle form | **Coach** | Start (ignored for 1.5 s after a wish change, §7.2 debounce) |
 | | **Intensity − / +** = **Easier / Harder** | the wish one row down / up from **what is proposed**, within its format (bounded, skipping non-choices) |
 | | **Keep** | back to the coach's pick |
 | | **Skip** or **Pause** | open **wish mode** |
 | Wish mode (sheet, ride tiers) | **− / +** | cursor one row (effort) |
 | | **Skip** | next format (wraps: it is a picker, nothing applies until Coach), nearest intensity |
 | | **Pause** | next choice in reading order (wraps) — a **two-button remote (Coach + Pause) reaches all 19 cells** |
-| | **Coach** | use this wish → re-plan → tone (§7.3) → back to the saddle proposal |
+| | **Coach** | use this wish → re-plan → tone (§7.3) → back to ~~the saddle proposal~~ superseded by §16.2: the card's saddle form |
 | | **Keep** / **End** | cancel; the wish is unchanged |
 
 Wish mode shows the cursor's name at T3+ ("Threshold · Hills"), the matrix with the cursor outlined (outline + the
@@ -1178,12 +1178,12 @@ Today #94, ride anatomy #96, #97, editor #111, layout shift #10.
 
 | Decision | What it is | Why |
 |---|---|---|
-| **Status bar groups sized to content** | Left: Pause · time left · mode chip with − / ±% / + (44 px targets at both sizes; the 40 px buttons at 1024 are gone). Right: **one device pill** "NEO ● │ HR ●"; a device expands to its status only on a fault or a reconnect note ("⚠ NEO lost", "↻ NEO back · 0:14 gap"), then `?`. | The old fixed widths summed to 1118 px (932 at 1024) and reserved room for statuses that are almost always "connected". **No layout shift (P4):** every value that changes reserves its widest form — Pause and Resume share one box, the clock reserves `h:mm:ss`, ±% a fixed width, the mode chip its widest word — and the pill is right-aligned, so it grows leftwards into free space and nothing else moves. |
+| **Status bar groups sized to content** | Left: Pause · time left · mode chip with − / ±% / + (**48 × 48 px** targets at both sizes, §6.7 — the issue's "≥ 44 px" floor raised to the app-wide rule; the 40 px buttons at 1024 are gone). Right: **one device pill** "NEO ● │ HR ●"; a device expands to its status only on a fault or a reconnect note ("⚠ NEO lost", "↻ NEO back · 0:14 gap"), then `?`. | The old fixed widths summed to 1118 px (932 at 1024) and reserved room for statuses that are almost always "connected". **No layout shift (P4):** every value that changes reserves its widest form — Pause and Resume share one box, the clock reserves `h:mm:ss`, ±% a fixed width, the mode chip its widest word — and the pill is right-aligned, so it grows leftwards into free space and nothing else moves. No group may shrink; the widest pill — the trainer's reconnect note with the widest gap and HR lost ("↻ NEO back · 59:59 gap │ ⚠ HR lost", scene `ride-reconnected-hr-lost`) — fits at 1024 with ≈ 13 px to spare (8 px group gaps at ≤ 1100). |
 | **Hero rows `auto \| 1fr \| band`** | The old row-2 caption moves onto row 1, right-aligned; the old row 5 leaves the hero. Row 1 is a fixed T3 line plus 10 px, so a chip (cadence, cap) never grows it. | Two rows of chrome (≈ 100 px) go to the number the rider reads most. The geometry check (§16.4) found that row 1 grew by 10 px when the cadence chip appeared — a #10 shift in the old anatomy too; the fixed height closes it. |
 | **T1 re-derived** | `clamp(150px, min(24.5vh, 17.2vw), 260px)` → **220 px at 1440×900 (109′), 176 px at 1024×768 (105′)**, was 189 / 161 (94′ / 96′); T1r = 0.62 × T1 → 137 / 109 (68′ / 65′). | The freed rows give row 3 382 px at 1440 and 303 px at 1024, so height no longer bounds T1. At 1024 the hero's width (62 % of the window) bounds the widest T1 strings ("≈ 1:05" with its range, "312 W"), hence the vw term; the two terms meet the accepted 220 / 176. Both stay ≥ 90′ (§6.2); the vh/vw rule still holds only for the reference devices (production computes px from physical size, #52). |
-| **Captions fit row 1** | A caption shares its line with the block's identity, so it is ≤ 27 characters: "block ends at min in", "HR below 118 · or max in", "HR lost · ends at max in", "paused · ends at max in" (were 28–41). | The long forms clipped at 1024 ("RECOVER rep 1/3" + caption, 603–781 px in 594 px). The caption still names the event (HR crossing vs the block's rule, P7); the times stay on the row-4 sub-line ("block ends in 2:00–4:00", "HR due below 118 before then"). The T3 tier is unchanged. |
-| **"Next" on the road** | A T3+ label in a label lane above the near road, pinned to its block's start: it begins at the start when it fits, else ends there, else sits right-aligned over it; a ▼ notch always marks the start. On the last block it marks the ride's end: "ride complete → Review". | The forward look is in one place: the label sits on the block it names, at the time it begins. The label lane costs the near road ≈ 30 px (95 / 77 px tall at 1440 / 1024), the price of not overlaying the profile. The "now" tick stays; the time scale moves to the overview line. |
-| **Coach lane = fixed grid row** | The side column is `auto auto 1fr`; the lane is the 1fr row with a 3 px top rule (border colour by state). Inside, five fixed rows: head (T3+) · reason (T3) · actions (button height) · deadline text + bar · grammar. Idle reserves the button and deadline rows; Detail density's T2 metric spans head–actions and its note takes the deadline row. | An ask, an applied change or the feel prompt fills rows that already exist, so no state moves any geometry (#10). The deadline bar is drawn in every timed state (ask, undo window, feel save). The idle note is ≤ 28 characters ("last call −3 %: not taken"; the call's time is in Review), which the new `ride-cooldown` scene showed was needed. |
+| **Captions fit row 1** | A caption shares its line with the block's identity, so it is ≤ 27 characters: "block's minimum in", "HR < 118 · or block max", "HR lost · block max in", "paused · block max in" (were 28–41). "min" and "max" never stand alone, so they can't be read as minutes. | The long forms clipped at 1024 ("RECOVER rep 1/3" + caption, 603–781 px in 594 px). The caption still names the event (HR crossing vs the block's rule, P7); the times stay on the row-4 sub-line ("block ends in 2:00–4:00", "HR due below 118 before then"). The T3 tier is unchanged. |
+| **"Next" on the road** | A T3+ label in a label lane above the near road, pinned to its block's start: it begins at the start when it fits, else ends there, so it never straddles the ▼ notch that always marks the start. When neither fits it sheds the word "next", then the watts; only if it still can't, it is right-aligned over the start with a 2 px leader under it from its left edge to the notch. On the last block it marks the ride's end: "ride complete → Review". | The forward look is in one place: the label sits on the block it names, at the time it begins. The label lane costs the near road ≈ 30 px (95 / 77 px tall at 1440 / 1024), the price of not overlaying the profile. The "now" tick stays; the time scale moves to the overview line. |
+| **Coach lane = fixed grid row** | The side column is `auto auto 1fr`; the lane is the 1fr row with a 3 px top rule (border colour by state). Inside, five fixed rows: head (T3+) · reason (T3) · actions (button height) · deadline text + bar · grammar. Idle reserves the button and deadline rows; Detail density's T2 metric spans head–actions and its note takes the deadline row. A band word ("CALIBRATING", "AUTO") ends the head line after a 14 px gutter, never under the headline. | An ask, an applied change or the feel prompt fills rows that already exist, so no state moves any geometry (#10). The deadline bar is drawn in every timed state (ask, undo window, feel save). The idle note is ≤ 28 characters ("last call −3 %: not taken"; the call's time is in Review), which the new `ride-cooldown` scene showed was needed. |
 
 Unchanged: the states of §5.2, the cap status in row 1 (§15.2 — during an exceedance row 1 is the status alone, the
 T1 below it is still the block countdown), Focus keeps the second slot's exact box (now a hidden real slot, so even a
@@ -1196,38 +1196,40 @@ T1 below it is still the block countdown), Focus keeps the second slot's exact b
 ┌ sleep short · legs heavy · … · 60 min · no red flags  [Edit] ┐  ┌ summary line              [Edit] ┐
 ├──────────── proposal card 7fr ───────────┬─ wish matrix 4fr ─┤  ├ proposal card ────────────────────┤
 │ ▌outcome line (6 px edge)          T3+   │ Wish: …           │  │ ▌outcome · session · profile ·    │
-│ Tempo 2×10′ · 40:00                T3+   │ ▢▢■▢▢ (matrix)    │  │ reason + Why? · S / ⌫ hints       │
+│ Tempo 2×10′ · 40:00                T3+   │ ▢▢■▢▢ (matrix)    │  │ reason + Why? · S / N hints (T3)  │
 │ ▁▂██▂██▂▁ profile                        │                   │  │ [⏎ Start][− Easier][+ Harder][…]  │ 72 px
 │ one reason + Why?                  T3    │                   │  ├ wish matrix ──────────────────────┤
-│ S other wish · N coach's pick      T4    │                   │  ├ Last 7 days ──────────────────────┤
+│ S other wish · N coach's pick      T3    │                   │  ├ Last 7 days ──────────────────────┤
 │ [⏎ Start][− Easier][+ Harder][Ride my wish]  72 px, pinned   │  └ Model ────────────────────────────┘
 ├──────────── Last 7 days ─────────────────┼────── Model ──────┤
 ```
 
 | Decision | What it is | Why |
 |---|---|---|
-| **Check-in collapses** | Once confirmed (Same as yesterday, or any change) **and** today's red flags answered, the check-in is one summary line: "sleep short · legs heavy · stress some · motivation keen · 60 min · no red flags" + *Edit*. *Edit* re-opens it in place; while open, a change never collapses it mid-edit — **✓ Use these answers** closes it (disabled until the red flags are answered). | After confirming, the check-in is history; one line keeps it checkable without pushing the card down. **Start needs the check-in done and closed**: confirmed (Same as yesterday, or a change, §5.1), today's red flags answered (§5.8), and not open for editing — so Start, and Enter, only ever act on the saddle card the rider can see, above the fold. This is stricter than §5.1 alone (a change used to enable Start while the answers were still open), never looser. "Use these answers" is named differently from the red-flag check's *Done* so the two never read as one action. |
-| **One proposal surface** | The full-width saddle proposal and the desk proposal card are one card with two forms. **Desk** (check-in open): outcome line, session · duration, profile, one reason + *Why?*, actions Start ⏎ · − Easier · + Harder · Ride my wish / Ride the full X; "Why today: every fact" discloses the other reasons (each with *Why?*), the facts and the model's confidence, and *Edit a copy in Workouts*. **Saddle** (check-in done): the same card at T3+ / T3 with **72 px actions pinned to its bottom edge**, always above the fold; the same "Why today: every fact" disclosure (desk-size type, collapsed) above the key hints; S (Skip) / Pause open wish mode, Keep returns to the coach's pick, hinted on the card. | Two cards said the same thing twice. Information is kept, not cut: the §5.1 facts, the §15.2 reasons and *Edit a copy* are one click away in both forms, and the first reason's *Why?* is on the card. **Shorter** is dropped from the card because the time is a check-in answer (§15.2: how long is Today's time) — it was a duplicate control. *Other wish* is dropped as a button: the matrix is beside the card at 1440, and wish mode is the bars' path (§15.2). One cursor: − / + on the card, Intensity − / + and the matrix all move the same wish (one outcome table, §15.2). |
-| **1440 layout** | Card 7fr | matrix 4fr, above the fold; Last 7 days and Model in a strip under each column. Under a medical stop there is no matrix (§15.2), so the stop card spans both columns. | The proposal and the wish are the decision; history and the model are context. |
+| **Check-in collapses** | Once confirmed (Same as yesterday, or any change) **and** today's red flags answered, the check-in is one summary line: "sleep short · legs heavy · stress some · motivation keen · 60 min · no red flags" + *Edit*. *Edit* re-opens it in place; while open, a change never collapses it mid-edit — **✓ Use these answers** closes it (disabled until the red flags are answered). | After confirming, the check-in is history; one line keeps it checkable without pushing the card down. **Start needs the check-in done and closed**: confirmed (Same as yesterday, or a change, §5.1), today's red flags answered (§5.8), and not open for editing — so Start, and Enter, only ever act on the saddle card the rider can see, above the fold. This is stricter than §5.1 alone (a change used to enable Start while the answers were still open), never looser. "Use these answers" is named differently from the red-flag check's *Done* so the two never read as one action. Under the disabled Start the desk card says what is missing: "Confirm how you feel and answer the health check to start" before the first confirmation, "Answer the health check to start" when only the red flags are left, and "Use these answers to finish editing and enable Start" while a done check-in is re-opened. |
+| **One proposal surface** | The full-width saddle proposal and the desk proposal card are one card with two forms. **Desk** (check-in open): outcome line, session · duration, profile, one reason + *Why?*, actions Start ⏎ · − Easier · + Harder · Ride my wish / Ride the full X; "Why today: every fact" discloses the other reasons (each with *Why?*), the facts and the model's confidence, and *Edit a copy in Workouts*. **Saddle** (check-in done): the same card at T3+ / T3 with **72 px actions pinned to its bottom edge**, always above the fold; the same "Why today: every fact" disclosure (desk-size type, collapsed) above the key hints; S (Skip) / Pause open wish mode, Keep returns to the coach's pick, hinted on the card **at T3** ("S other wish · N coach's pick"), above the fold — it is the only saddle cue for wish mode, so it must read at 1 m. The desk card stretches to the height of the matrix beside it, its actions at its bottom edge. | Two cards said the same thing twice. Information is kept, not cut: the §5.1 facts, the §15.2 reasons and *Edit a copy* are one click away in both forms, and the first reason's *Why?* is on the card. **Shorter** is dropped from the card because the time is a check-in answer (§15.2: how long is Today's time) — it was a duplicate control. *Other wish* is dropped as a button: the matrix is beside the card at 1440, and wish mode is the bars' path (§15.2). One cursor: − / + on the card, Intensity − / + and the matrix all move the same wish (one outcome table, §15.2). |
+| **1440 layout** | Card 7fr | matrix 4fr, above the fold — the **complete** matrix, in every desk and saddle state. To keep it there with the check-in open: the injury-cap notice shares the date's line (one line at 1440: "⚠ Capped at threshold (100 % of CP, 280 W) · no sprints · ERG only — from your injury answer; lift it in Settings → Health"), and a carried-over wish's note sits under the matrix (the ↻ cell marks the wish itself). Last 7 days and Model in a strip under each column. Under a medical stop there is no matrix (§15.2), so the stop card spans both columns. | The proposal and the wish are the decision; history and the model are context. |
 | **1024 layout** | Stacked: summary line, the card (actions pinned at its bottom), then the matrix, Last 7 days, Model. The layout switches on the page's own width (CSS container query, < 1000 px), so 1440 with the *Why?* sheet pushed aside stacks too and the card keeps its full width. | A 4fr matrix in 912 px is too narrow for its five formats; the card must stay above the fold. |
 
 Above the fold: the saddle card (outcome, session, reason, actions) at both sizes, including `today-why`; the desk
 card's outcome line and session at both sizes (its Start is disabled while the check-in above it is open, so its
 actions are not required above the fold; `test:safety` checks Start is disabled after *Edit*). The open check-in lays its answers and the red-flag check side by side.
-Key glyphs: Enter is shown as ⏎ on every key hint.
+Key glyphs, on every key hint (Today, the ride's `?` list and hints, wish mode, Settings → Controls): Enter ⏎, Backspace
+⌫, Escape "Esc", the space bar "Space"; any other key as typed.
 
 ### 16.3 Shell
 
 | Decision | What it is | Why |
 |---|---|---|
 | **Labelled icon rail** | 72 px at every size (the accepted 72–76 px range's lower end): icon over a 12.5 px word, 62 px items, ≥ 48 px targets, never an icon alone. Replaces the 184 px text rail (148 px at ≤ 1100). The page's max width rises from 1240 to 1368 px (= 1440 − rail). | Content width: 1304 px at 1440 (was 1176, +128 — the old max width capped the rail's gain), **912 px at 1024** (was 836). The words stay, so the rail is as findable as before. |
-| **Workouts library drawer** | Below 1280 px the library is a drawer: **☰ Library** in the editor header opens it over the panes; a pick, ✕ or Esc closes it. ≥ 1280 px keeps the 200 px column. | Outline · Text · Summary stay in one row at 1024 (#111), instead of the summary moving under them; the library is used once per edit session, the panes all the time. |
+| **Workouts library drawer** | Below 1280 px the library is a drawer: **☰ Library** in the editor header opens it over the panes and a dimming scrim; its items are ≥ 48 px. While open it is **modal**: focus moves to its first item, Tab and Shift+Tab wrap inside it, and the editor behind it is inert. A pick, ✕, Esc or a click on the scrim closes it, and focus returns to ☰ Library. ≥ 1280 px keeps the 200 px column (not modal). | Outline · Text · Summary stay in one row at 1024 (#111), instead of the summary moving under them; the library is used once per edit session, the panes all the time. |
 
 ### 16.4 Prototype, screens, checks
 
 - New scenes (both themes, both sizes): `today-checked-in` (summary line + saddle card, no wish), `today-checkin-edit`
   (the done check-in re-opened: desk card), `ride-cooldown` (the cool-down template; "next" at the ride's end),
-  `workouts-library-drawer` (the drawer at 1024; at 1440 the column, as `workouts`).
+  `workouts-library-drawer` (the drawer at 1024; at 1440 the column, as `workouts`), `ride-reconnected-hr-lost` (the
+  widest device pill).
 - Regenerated: every `ride-*` scene with the ride screen (status bar, hero, lane, road), every Today scene, every
   railed view (`ready*`, `review*`, `history*`, `workouts*`, `settings-*`, the start gates), `start-handoff-100ms`
   (Today underneath). Unchanged: `onboarding-*`, `resume`, `resume-stale` (no rail), `ride-screen-restarted`,
@@ -1239,9 +1241,16 @@ Key glyphs: Enter is shown as ⏎ on every key hint.
   - any **ride region moves, appears or disappears**: the set of `[data-geom]` boxes (Pause, clock, intensity, `?`,
     rows 1/T1/band, both slots, the lane and its five rows, the road's three rows) and each box must equal
     `ride-threshold`'s at the same size and theme, in every phase template and state (#10).
+  - at 1440, the **complete** Today wish matrix beside the card leaves the viewport (every desk and saddle state —
+    a full-page PNG alone does not prove the fold);
+  - a status-bar group shrinks: no group may, so the widest device pill (`ride-reconnected-hr-lost`) must fit at
+    1024 as it is (the geometry check catches the `?` moving).
 - `pnpm test:safety` adds the check-in flow: desk card with Start disabled while open; Same as yesterday alone does
   not collapse it; confirmed + red flags → one summary line and the saddle card; *Edit* re-opens it with the desk
-  card and Start disabled; a change keeps it open; *Use these answers* collapses it with the new answer.
+  card and Start disabled; a change keeps it open; *Use these answers* collapses it with the new answer; the footer
+  under Start names what is missing in each case. It also drives the Workouts library drawer at 1024 **keyboard
+  only**: Enter on ☰ Library opens it with focus inside; Tab / Shift+Tab stay inside, the editor is inert; Esc and
+  Enter on an item close it with focus back on ☰ Library; the scrim closes it too.
 - Not changed here, filed: the lane's buttons (58 / 49 px) are below §7.2's 64 px, and the status bar's fault words
   are 16 px, below T3 — both pre-date §16 (#177).
 
