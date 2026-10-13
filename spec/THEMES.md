@@ -1,4 +1,4 @@
-# neo-trainer — theming (colour schemes, dark/light)
+# crank — theming (colour schemes, dark/light)
 
 All colour comes from **CSS custom properties (design tokens)**. Components and charts reference
 roles, never hex. A theme = values for the token layers below × mode (dark / light).

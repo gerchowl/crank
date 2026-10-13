@@ -1,4 +1,4 @@
-// @neo/shared — mock backend for the neo-trainer UI spikes.
+// @crank/shared — mock backend for the crank UI spikes.
 // The contract types are the only API the spikes should depend on; the helpers below are
 // pure functions the UIs may use for presentation (axis mapping, formatting, ids).
 

@@ -1,4 +1,4 @@
-# neo-trainer — UX spec for UI spikes (v0)
+# crank — UX spec for UI spikes (v0)
 
 Indoor-cycling training app for a Tacx NEO (BLE FTMS) + BLE HR strap, with an AI coach
 (System-1 judge in-ride, LLM planner pre/post-ride). Final app: Rust core + Tauri v2.
