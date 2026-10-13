@@ -246,19 +246,40 @@ negative masses) are `EncodeError`s; clamping to trainer capabilities is the eng
   HIL check 7 measures whether the NEO needs it.
 - **Transport acknowledgement:** writes use GATT write-with-response; a GATT error becomes
   `TrainerEvent::Fault(DeviceError::Gatt)`. One write in flight at a time.
-- **Application acknowledgement (correlated).** Every control write gets a local `CommandId`; at most one
-  control command is *outstanding*. After writing it, the writer requests page 71 (page 70, byte 6 = 71)
-  on the next free tick. A page-71 response **matches** only if byte 1 equals the command's page **and**
-  the echoed data bytes 4–7 equal the bytes we wrote (for page 49 that includes the target in bytes 6–7)
-  **and** the sequence byte differs from the last page-71 sequence seen before the write. Then:
-  *pass* → `Applied`; *fail / not supported / rejected* → `Rejected` (shown in the UI); *pending* → request
-  page 71 again on the next tick. Non-matching responses are stale (an older target) and are ignored with a
-  debug log. If no matching response arrives within 1 s (4 ticks) → `Unconfirmed`, shown as "trainer not
-  confirming"; the keep-alive keeps sending the same target, nothing else is retried. A newer `SetMode`
-  **supersedes** the outstanding command: its correlation is dropped and late responses for it count as
-  stale. Keep-alive re-sends are not new commands. Whether the NEO implements page 71 and echoes the data
-  bytes is HIL check 3; if it does not, this ADR is amended to "GATT acknowledgement only" before #43
-  implements the step.
+- **Application acknowledgement (correlated by a data tag).** What FE-C gives us: page 71 reports the
+  last received command page (byte 1), a sequence byte (byte 2), a status (byte 3) and an echo of that
+  command's data bytes 4–7 (field layout as implemented by pycycling; the ANT+ profile text defining the
+  sequence byte's semantics was not retrievable, so crank **does not rely on the sequence byte**). Echoed
+  data alone is ambiguous when targets repeat (200 W → 250 W → 200 W), so the driver makes every new command's
+  bytes unique:
+  - **Command tag.** The driver owns a 2-bit epoch `e` that increments with every *new* control command
+    (keep-alive re-sends reuse the current command's bytes). For page 49 the raw target is `4·W + e`
+    (W in whole watts, 0.25 W units), i.e. a bias of 0–0.75 W; for page 51 the grade's raw value carries `e`
+    in its two low bits (≤ 0.03 % grade). Both are below anything the rider or the power meter can resolve.
+    The engine sees whole watts and grades; the tag is internal to the FE-C driver.
+  - **Rate rule.** The writer starts at most **one new control command per second** (the `control` slot
+    still coalesces: the newest mode wins; keep-alives don't count). Ramps (1 Hz), soft starts (1 Hz) and
+    HR steering (0.2 Hz) fit; block boundaries fall on whole block seconds, so a boundary step replaces
+    that second's ramp update instead of queueing behind it. Only a manual ± or coach change sent less
+    than 1 s earlier can delay a step or another manual change, by at most 1 s. A tag
+    value is therefore reused no sooner than 4 s later.
+  - **Matching.** One page-70 request for page 71 is outstanding at a time, written only after the
+    command's GATT write-with-response completed. A response matches the outstanding `CommandId` iff byte
+    1 is the command's page **and** bytes 4–7 equal the tagged bytes we wrote. Responses are valid for 1 s
+    after their request; with tag reuse ≥ 4 s apart, a late response for an older command can never carry
+    the current command's bytes. *pass* → `Applied`; *fail / not supported / rejected* → `Rejected` (shown
+    in the UI); *pending* → one new request on the next tick (still within the 1 s budget). Non-matching
+    responses are stale and ignored with a debug log. No match within 1 s → `Unconfirmed` ("trainer not
+    confirming"); the keep-alive keeps sending the same bytes, nothing else is retried.
+  - **Supersession.** A newer command drops the outstanding correlation; responses for the old tag are
+    stale.
+  - Pages 48, 50 and 55 are not acknowledged individually (resistance release, wind and rider config are
+    observed through page 25 / page 54 behaviour); `Sim` is acknowledged through its tagged page 51.
+  - **Hardware gate (#44, check 3):** the NEO must (i) accept 0.25 W target resolution in page 49,
+    (ii) answer page 70 → page 71, (iii) echo bytes 4–7 exactly, including the tag bits. The check also
+    records the sequence byte's behaviour for the record. If (ii) or (iii) fails, this ADR is amended to
+    "GATT acknowledgement only" (no `Applied`/`Unconfirmed`) before #43 implements the step; if only (i)
+    fails, the tag moves to page 51-only and ERG uses GATT acknowledgement.
 - **Connect sequence:** connect → discover → subscribe `fec2` → read DIS → page 55 (rider config) →
   request page 54 (capabilities) → `TrainerLink` returned with `Link(Ready)` → engine sets the mode. The
   driver never chooses a control mode itself; restoring control is always the engine's `SetMode`.
@@ -328,7 +349,9 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
 1. **Controlled target** = block target × (1 + manual offset + coach change), rounded to 1 W, clamped to
    `[0, caps.max_target_w]` with the clamp shown as a validation warning in the editor (compile time) and a
    status flag in the ride. The controlled target is never smoothed and never derived from measured power.
-2. **Steps:** the new target is sent on the block-boundary tick. Smoothing a step is the trainer's job; its
+2. **Steps:** the new target is sent on the block-boundary tick (subject to the one-new-command-per-second
+   rule of §4.4: a boundary replaces that second's ramp update, and is delayed by at most 1 s only when
+   a manual ± or coach change went out less than 1 s before it). Smoothing a step is the trainer's job; its
    response time (t90 for 100→150→250→100 W) is measured in HIL check 6. A "lead" (send the next target L
    seconds early) defaults to 0 and is set to the measured trainer latency only by an ADR amendment
    backed by the HIL numbers.
