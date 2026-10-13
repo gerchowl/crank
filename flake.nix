@@ -43,13 +43,13 @@
       };
       cargoArtifacts = craneLib.buildDepsOnly (common // { src = source cargoFiles; });
       rustCheck = common // { inherit cargoArtifacts; };
-      desktop = craneLib.buildPackage (rustCheck // {
-        pname = "crank-desktop"; cargoExtraArgs = "--locked -p crank-desktop --bin crank-desktop --features custom-protocol";
+      desktop = features: craneLib.buildPackage (rustCheck // {
+        pname = "crank-desktop"; cargoExtraArgs = "--locked -p crank-desktop --bin crank-desktop --features custom-protocol${features}";
         doCheck = false;
         preBuild = ''export TAURI_CONFIG='{"build":{"frontendDist":"${appDist}"}}' '';
       });
       checks = {
-        build = desktop;
+        build = desktop "";
         fmt = craneLib.cargoFmt { src = source cargoFiles; };
         clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--all-targets -- -D warnings"; });
         nextest = craneLib.cargoNextest rustCheck;
@@ -77,16 +77,14 @@
           });
     in {
       inherit checks;
-      packages = { app-dist = appDist; crank-desktop = desktop;
-        crank-desktop-e2e = desktop.overrideAttrs {
-          cargoExtraArgs = "--locked -p crank-desktop --bin crank-desktop --features custom-protocol,e2e";
-        };
+      packages = { app-dist = appDist; crank-desktop = desktop "";
+        crank-desktop-e2e = desktop ",e2e";
         crank-cli = craneLib.buildPackage (rustCheck // {
           pname = "crank-cli"; cargoExtraArgs = "--locked -p crank-cli"; doCheck = false;
         });
       };
       devShells.default = craneLib.devShell {
-        inputsFrom = [ desktop ];
+        inputsFrom = [ (desktop "") ];
         packages = [ toolchain pkgs.nodejs pkgs.pnpm_12 pkgs.just pkgs.cargo-nextest
           pkgs.cargo-deny pkgs.cargo-fuzz pkgs.python3 pkgs.playwright-driver.browsers ];
         CARGO_BUILD_JOBS = "8";
