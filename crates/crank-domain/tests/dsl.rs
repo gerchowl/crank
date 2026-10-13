@@ -1,11 +1,19 @@
 //! Frozen TypeScript DSL parity and the reference tests (ADR-0001 §3).
 use crank_domain::workout::{
-    Cadence, OnUnreachable, PowerTarget, Progression, RepeatNode, StepEnd, StepNode, WorkoutNode,
-    format_duration, parse_dsl, parse_duration_word, print_dsl,
+    Cadence, DslError, DslErrorKind as K, OnUnreachable, PowerTarget, Progression, RepeatNode,
+    StepEnd, StepNode, WorkoutNode, format_duration, parse_dsl, parse_duration_word, print_dsl,
 };
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::collections::HashSet;
+
+fn parse(text: &str, ftp: f64) -> Result<Vec<WorkoutNode>, DslError> {
+    let mut next = 0;
+    parse_dsl(text, ftp, &mut || {
+        next += 1;
+        format!("n:{next}")
+    })
+}
 
 fn without_ids(nodes: &[WorkoutNode]) -> Value {
     fn strip(value: &mut Value) {
@@ -106,23 +114,71 @@ fn parity(a: &Value, b: &Value, path: &str, float: bool) -> Result<(), String> {
 
 #[test]
 fn frozen_vectors() {
+    let error_kinds = [
+        ("dsl-13", K::UnclosedRepeat),
+        ("dsl-14", K::UnexpectedToken),
+        ("dsl-15", K::InvalidStepEnd),
+        ("dsl-16", K::MissingPowerTarget),
+        ("dsl-17", K::DuplicatePowerTarget),
+        ("dsl-18", K::UnknownToken),
+        ("dsl-19", K::UnknownRepeatOption),
+        ("dsl-20", K::MissingRepeatBody),
+        ("dsl-21", K::InvalidRepeatCount { count: 0.0 }),
+        ("dsl-22", K::MissingRecoveryBounds),
+        (
+            "dsl-23",
+            K::ReversedRecoveryBounds {
+                min_s: 240.0,
+                max_s: 120.0,
+            },
+        ),
+        ("dsl-24", K::RecoveryFlagNotApplicable),
+        ("dsl-25", K::ImplausiblePower { pct: 900.0 }),
+        ("dsl-26", K::ReversedPowerRange),
+        ("dsl-27", K::UnterminatedLabel),
+        ("dsl-28", K::MissingUnit),
+        ("dsl-29", K::UnknownToken),
+        ("dsl-30", K::MissingItemAfterLabel),
+        ("dsl-31", K::EmptyRepeat),
+        ("dsl-32", K::NonPositiveDuration),
+        ("dsl-33", K::MissingRampRange),
+        ("dsl-34", K::MissingRampRange),
+        ("dsl-35", K::DuplicateCadence),
+        ("dsl-36", K::ReversedCadenceRange),
+        ("dsl-37", K::UnclosedOptions),
+        ("dsl-38", K::UnexpectedRepeatOption),
+        ("dsl-39", K::UnexpectedToken),
+        ("dsl-40", K::MissingSeparator),
+        ("dsl-41", K::UnterminatedLabel),
+        ("dsl-42", K::MissingRecoveryBounds),
+        (
+            "dsl-43",
+            K::ImplausiblePower {
+                pct: 1500.0 / 280.0 * 100.0,
+            },
+        ),
+        ("dsl-44", K::ImplausiblePower { pct: 900.0 }),
+    ];
     let vectors: Value = serde_json::from_str(include_str!("vectors/dsl.json")).unwrap();
     assert_eq!(vectors["schemaVersion"], 1);
     for case in vectors["cases"].as_array().unwrap() {
         let input = &case["input"];
-        let result = parse_dsl(
+        let result = parse(
             input["text"].as_str().unwrap(),
             input["ftp"].as_f64().expect("finite numeric fixture"),
         );
         let context = case["name"].as_str().unwrap();
         if let Some(error) = case["output"].get("error") {
-            parity(
-                &serde_json::to_value(result.unwrap_err()).unwrap(),
-                error,
-                context,
-                false,
-            )
-            .unwrap();
+            let actual = result.unwrap_err();
+            let expected_kind = &error_kinds
+                .iter()
+                .find(|(name, _)| *name == context)
+                .unwrap()
+                .1;
+            assert_eq!(&actual.kind, expected_kind, "{context}");
+            let mut reference_fields = serde_json::to_value(&actual).unwrap();
+            reference_fields.as_object_mut().unwrap().remove("kind");
+            parity(&reference_fields, error, context, false).unwrap();
         } else {
             let nodes = result.unwrap();
             let mut expected = case["output"]["nodes"].clone();
@@ -134,7 +190,7 @@ fn frozen_vectors() {
                 case["output"]["printed"].as_str().unwrap(),
                 "{context}"
             );
-            let back = parse_dsl(
+            let back = parse(
                 &text,
                 input["ftp"].as_f64().expect("finite numeric fixture"),
             )
@@ -226,12 +282,20 @@ fn ids_are_fresh_and_unique_and_separators_equivalent() {
         }
     }
     let mut all = HashSet::new();
+    let mut next = 0;
+    let mut source = || {
+        next += 1;
+        format!("shared:{next}")
+    };
     for _ in 0..2 {
-        ids(&parse_dsl("2x(1m 100%, 1m 50%)", 280.0).unwrap(), &mut all);
+        ids(
+            &parse_dsl("2x(1m 100%, 1m 50%)", 280.0, &mut source).unwrap(),
+            &mut all,
+        );
     }
     assert_eq!(all.len(), 6);
-    let a = parse_dsl("# warm up\n10m 50%\n\n3x(1m 120%;1m 50%) # sets\n", 280.0).unwrap();
-    let b = parse_dsl("10m 50%, 3x(1m 120%, 1m 50%)", 280.0).unwrap();
+    let a = parse("# warm up\n10m 50%\n\n3x(1m 120%;1m 50%) # sets\n", 280.0).unwrap();
+    let b = parse("10m 50%, 3x(1m 120%, 1m 50%)", 280.0).unwrap();
     assert_eq!(without_ids(&a), without_ids(&b));
 }
 
@@ -245,19 +309,19 @@ fn label() -> impl Strategy<Value = Option<String>> {
 }
 fn target() -> impl Strategy<Value = PowerTarget> {
     prop_oneof![
-        (0..=2000u32).prop_map(|v| PowerTarget::PctFtp {
-            value: f64::from(v) / 10.0
+        (0..=200_000u32).prop_map(|v| PowerTarget::PctFtp {
+            value: f64::from(v) / 1000.0
         }),
         (0..=900u32).prop_map(|v| PowerTarget::Watts {
             value: f64::from(v)
         }),
-        (30..=120u32, 0..=30u32).prop_map(|(lo, d)| PowerTarget::Range {
-            lo: f64::from(lo),
-            hi: f64::from(lo + d)
+        (30_000..=120_000u32, 0..=30_000u32).prop_map(|(lo, d)| PowerTarget::Range {
+            lo: f64::from(lo) / 1000.0,
+            hi: f64::from(lo + d) / 1000.0
         }),
-        (30..=150u32, 30..=150u32).prop_map(|(from, to)| PowerTarget::Ramp {
-            from: f64::from(from),
-            to: f64::from(to)
+        (30_000..=150_000u32, 30_000..=150_000u32).prop_map(|(from, to)| PowerTarget::Ramp {
+            from: f64::from(from) / 1000.0,
+            to: f64::from(to) / 1000.0
         }),
         (100..=180u32).prop_map(|bpm| PowerTarget::Hr {
             bpm: f64::from(bpm)
@@ -268,7 +332,9 @@ fn target() -> impl Strategy<Value = PowerTarget> {
 fn end() -> impl Strategy<Value = StepEnd> {
     prop_oneof![
         (1..=7200u32).prop_map(|s| StepEnd::Time { s: f64::from(s) }),
-        (1..=300u32).prop_map(|kj| StepEnd::Kj { kj: f64::from(kj) }),
+        (1..=300_000u32).prop_map(|kj| StepEnd::Kj {
+            kj: f64::from(kj) / 1000.0
+        }),
         Just(StepEnd::Lap),
         (
             90..=150u32,
@@ -344,7 +410,7 @@ proptest! {
     #[test]
     fn generated_workouts_round_trip(nodes in tree()) {
         let text = print_dsl(&nodes);
-        let back = parse_dsl(&text,280.0).unwrap();
+        let back = parse(&text,280.0).unwrap();
         prop_assert_eq!(without_ids(&back),without_ids(&nodes));
         prop_assert_eq!(print_dsl(&back),text);
     }
@@ -367,17 +433,11 @@ fn durations_and_additional_error_edges() {
     ] {
         assert_eq!(format_duration(s), word);
     }
-    assert_eq!(
-        parse_dsl("1m 50% ramp 60-70%", 280.0).unwrap_err().offset,
-        12
-    );
-    assert!(parse_dsl("1m 100000w", 0.0).is_ok());
-    assert!(parse_dsl("1m 400%", 280.0).is_ok());
-    assert!(parse_dsl("1m 400.001%", 280.0).is_err());
-    assert!(parse_dsl("\u{feff}1m\u{a0}50%", 280.0).is_ok());
-    assert_eq!(parse_dsl("1m\u{85}50%", 280.0).unwrap_err().offset, 0);
-    assert_eq!(
-        parse_dsl("\"🚲\" 1m 50%; \"é\"", 280.0).unwrap_err().offset,
-        16
-    );
+    assert_eq!(parse("1m 50% ramp 60-70%", 280.0).unwrap_err().offset, 12);
+    assert!(parse("1m 100000w", 0.0).is_ok());
+    assert!(parse("1m 400%", 280.0).is_ok());
+    assert!(parse("1m 400.001%", 280.0).is_err());
+    assert!(parse("\u{feff}1m\u{a0}50%", 280.0).is_ok());
+    assert_eq!(parse("1m\u{85}50%", 280.0).unwrap_err().offset, 0);
+    assert_eq!(parse("\"🚲\" 1m 50%; \"é\"", 280.0).unwrap_err().offset, 16);
 }

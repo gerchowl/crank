@@ -1,13 +1,7 @@
 use super::{
-    Cadence, DslError, OnUnreachable, PowerTarget, Progression, RepeatNode, StepEnd, StepNode,
-    WorkoutNode,
+    Cadence, DslError, DslErrorKind, OnUnreachable, PowerTarget, Progression, RepeatNode, StepEnd,
+    StepNode, WorkoutNode,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
-
-fn id(prefix: char) -> String {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    format!("{prefix}{}", NEXT.fetch_add(1, Ordering::Relaxed))
-}
 #[derive(Clone)]
 struct Token {
     kind: char,
@@ -16,8 +10,9 @@ struct Token {
     length: usize,
 }
 impl Token {
-    fn error(&self, message: impl Into<String>) -> DslError {
+    fn error(&self, kind: DslErrorKind, message: impl Into<String>) -> DslError {
         DslError {
+            kind,
             message: message.into(),
             offset: self.offset,
             length: self.length,
@@ -71,7 +66,7 @@ fn lex(src: &str) -> Result<Vec<Token>, DslError> {
                             offset: start,
                             length: offset - start,
                         }
-                        .error("Unterminated label string"));
+                        .error(DslErrorKind::UnterminatedLabel, "Unterminated label string"));
                     }
                     Some('"') => {
                         chars.next();
@@ -155,12 +150,13 @@ pub fn parse_duration_word(word: &str) -> Option<f64> {
     }
     (!word.is_empty() && rest.is_empty()).then_some(total)
 }
-struct Parser {
+struct Parser<'a> {
+    ids: &'a mut dyn FnMut() -> String,
     tokens: Vec<Token>,
     i: usize,
     ftp: f64,
 }
-impl Parser {
+impl Parser<'_> {
     fn peek(&self) -> &Token {
         &self.tokens[self.i]
     }
@@ -180,23 +176,28 @@ impl Parser {
             let t = self.peek();
             match t.kind {
                 'e' => {
-                    return open.map_or(Ok(nodes), |o| Err(o.error("Unclosed '(' — missing ')'")));
+                    return open.map_or(Ok(nodes), |o| {
+                        Err(o.error(DslErrorKind::UnclosedRepeat, "Unclosed '(' — missing ')'"))
+                    });
                 }
                 ')' => {
                     return if open.is_some() {
                         Ok(nodes)
                     } else {
-                        Err(t.error("Unexpected ')'"))
+                        Err(t.error(DslErrorKind::UnexpectedToken, "Unexpected ')'"))
                     };
                 }
                 _ => nodes.push(self.item()?),
             }
             let after = self.peek();
             if !matches!(after.kind, ',' | 'e' | ')') {
-                return Err(after.error(format!(
-                    "Unexpected '{}' — separate items with ',', ';' or a newline",
-                    after.text
-                )));
+                return Err(after.error(
+                    DslErrorKind::MissingSeparator,
+                    format!(
+                        "Unexpected '{}' — separate items with ',', ';' or a newline",
+                        after.text
+                    ),
+                ));
             }
         }
     }
@@ -205,11 +206,18 @@ impl Parser {
         let t = self.next();
         if t.kind != 'w' {
             // Bare EOF is excluded by seq; only a dangling label reaches EOF here.
-            return Err(t.error(if t.kind == 'e' {
-                "Expected a step or repeat after the label".into()
-            } else {
-                format!("Unexpected '{}'", t.text)
-            }));
+            return Err(t.error(
+                if t.kind == 'e' {
+                    DslErrorKind::MissingItemAfterLabel
+                } else {
+                    DslErrorKind::UnexpectedToken
+                },
+                if t.kind == 'e' {
+                    "Expected a step or repeat after the label".into()
+                } else {
+                    format!("Unexpected '{}'", t.text)
+                },
+            ));
         }
         if let Some(count) = suffix(&t.text.to_ascii_lowercase(), "x", false) {
             self.repeat(count, &t, label).map(WorkoutNode::Repeat)
@@ -224,10 +232,13 @@ impl Parser {
         label: Option<String>,
     ) -> Result<RepeatNode, DslError> {
         if count < 1.0 {
-            return Err(t.error("Repeat count must be ≥ 1"));
+            return Err(t.error(
+                DslErrorKind::InvalidRepeatCount { count },
+                "Repeat count must be ≥ 1",
+            ));
         }
         let mut node = RepeatNode {
-            id: id('r'),
+            id: (self.ids)(),
             label,
             count,
             children: Vec::new(),
@@ -242,9 +253,18 @@ impl Parser {
                 match o.kind {
                     ']' => break,
                     ',' => continue,
-                    'e' => return Err(open.error("Unclosed '[' — missing ']'")),
+                    'e' => {
+                        return Err(
+                            open.error(DslErrorKind::UnclosedOptions, "Unclosed '[' — missing ']'")
+                        );
+                    }
                     'w' => {}
-                    _ => return Err(o.error(format!("Unexpected '{}' in repeat options", o.text))),
+                    _ => {
+                        return Err(o.error(
+                            DslErrorKind::UnexpectedRepeatOption,
+                            format!("Unexpected '{}' in repeat options", o.text),
+                        ));
+                    }
                 }
                 let x = o.text.to_ascii_lowercase();
                 let signed = |unit| {
@@ -263,10 +283,10 @@ impl Parser {
                 } else if x == "!last" {
                     node.skip_last_rest = Some(true);
                 } else {
-                    return Err(o.error(format!(
-                        "Unknown repeat option '{}' (use +5w, +2%, !last)",
-                        o.text
-                    )));
+                    return Err(o.error(
+                        DslErrorKind::UnknownRepeatOption,
+                        format!("Unknown repeat option '{}' (use +5w, +2%, !last)", o.text),
+                    ));
                 }
             }
             if prog != Progression::default() {
@@ -275,12 +295,16 @@ impl Parser {
         }
         let open = self.next();
         if open.kind != '(' {
-            return Err(open.error(format!("Expected '(' after '{}'", t.text)));
+            return Err(open.error(
+                DslErrorKind::MissingRepeatBody,
+                format!("Expected '(' after '{}'", t.text),
+            ));
         }
         node.children = self.seq(Some(&open))?;
         let close = self.next();
         if node.children.is_empty() {
             return Err(DslError {
+                kind: DslErrorKind::EmptyRepeat,
                 message: "Empty repeat".into(),
                 offset: t.offset,
                 length: close.offset + 1 - t.offset,
@@ -292,7 +316,7 @@ impl Parser {
         let w = t.text.to_ascii_lowercase();
         if let Some(s) = parse_duration_word(&w) {
             return if s <= 0.0 {
-                Err(t.error("Duration must be > 0"))
+                Err(t.error(DslErrorKind::NonPositiveDuration, "Duration must be > 0"))
             } else {
                 Ok(StepEnd::Time { s })
             };
@@ -310,14 +334,17 @@ impl Parser {
                 .split_once("..")
                 .and_then(|(lo, hi)| Some((parse_duration_word(lo)?, parse_duration_word(hi)?)));
             let Some((min_s, max_s)) = bounds.filter(|_| rt.kind == 'w') else {
-                return Err(if rt.kind == 'w' { rt } else { t }.error(format!(
-                    "Expected min..max duration after '{}', e.g. 2m..4m",
-                    t.text
-                )));
+                return Err(if rt.kind == 'w' { rt } else { t }.error(
+                    DslErrorKind::MissingRecoveryBounds,
+                    format!("Expected min..max duration after '{}', e.g. 2m..4m", t.text),
+                ));
             };
             let rt = self.next();
             if min_s > max_s {
-                return Err(rt.error("Min duration is longer than max"));
+                return Err(rt.error(
+                    DslErrorKind::ReversedRecoveryBounds { min_s, max_s },
+                    "Min duration is longer than max",
+                ));
             }
             return Ok(StepEnd::HrRecovery {
                 target_bpm,
@@ -326,9 +353,24 @@ impl Parser {
                 on_unreachable: OnUnreachable::LowerPower,
             });
         }
-        Err(t.error(if number(&w, false).is_some() {
-            format!("'{}' needs a unit: 30s, 4m, 1h, 10kj — or '{}x(...)' for a repeat", t.text, t.text)
-        } else { format!("Expected a duration (30s, 4m, 1m30s), kJ (10kj), 'lap', 'hr<N' or a repeat (3x(...)); got '{}'", t.text) }))
+        let (kind, message) = if number(&w, false).is_some() {
+            (
+                DslErrorKind::MissingUnit,
+                format!(
+                    "'{}' needs a unit: 30s, 4m, 1h, 10kj — or '{}x(...)' for a repeat",
+                    t.text, t.text
+                ),
+            )
+        } else {
+            (
+                DslErrorKind::InvalidStepEnd,
+                format!(
+                    "Expected a duration (30s, 4m, 1m30s), kJ (10kj), 'lap', 'hr<N' or a repeat (3x(...)); got '{}'",
+                    t.text
+                ),
+            )
+        };
+        Err(t.error(kind, message))
     }
     fn step(&mut self, t: &Token, label: Option<String>) -> Result<StepNode, DslError> {
         let mut end = self.end(t)?;
@@ -341,14 +383,17 @@ impl Parser {
             let pt = if x == "ramp" {
                 let r = self.next();
                 let Some((from, to)) = range(&r.text, "%", true).filter(|_| r.kind == 'w') else {
-                    return Err(if r.kind == 'e' { &a } else { &r }
-                        .error("Expected a range after 'ramp', e.g. ramp 50-75%"));
+                    return Err(if r.kind == 'e' { &a } else { &r }.error(
+                        DslErrorKind::MissingRampRange,
+                        "Expected a range after 'ramp', e.g. ramp 50-75%",
+                    ));
                 };
                 target_tok = r;
                 PowerTarget::Ramp { from, to }
             } else if let Some((lo, hi)) = range(&x, "%", true) {
                 if lo > hi {
                     return Err(a.error(
+                        DslErrorKind::ReversedPowerRange,
                         "Range low end is above high end (use 'ramp 75-50%' for a descending ramp)",
                     ));
                 }
@@ -365,16 +410,22 @@ impl Parser {
                 range(&x, "rpm", false).or_else(|| suffix(&x, "rpm", false).map(|n| (n, n)))
             {
                 if cadence.is_some() {
-                    return Err(a.error("Duplicate cadence"));
+                    return Err(a.error(DslErrorKind::DuplicateCadence, "Duplicate cadence"));
                 }
                 if lo > hi {
-                    return Err(a.error("Cadence range low end is above high end"));
+                    return Err(a.error(
+                        DslErrorKind::ReversedCadenceRange,
+                        "Cadence range low end is above high end",
+                    ));
                 }
                 cadence = Some(Cadence { lo, hi });
                 continue;
             } else if matches!(x.as_str(), "!cap" | "!lower" | "!coach") {
                 let StepEnd::HrRecovery { on_unreachable, .. } = &mut end else {
-                    return Err(a.error(format!("'{}' only applies to hr< recovery steps", a.text)));
+                    return Err(a.error(
+                        DslErrorKind::RecoveryFlagNotApplicable,
+                        format!("'{}' only applies to hr< recovery steps", a.text),
+                    ));
                 };
                 *on_unreachable = match x.as_str() {
                     "!cap" => OnUnreachable::Cap,
@@ -383,12 +434,14 @@ impl Parser {
                 };
                 continue;
             } else {
-                return Err(a.error(format!("Unknown token '{}'", a.text)));
+                return Err(a.error(
+                    DslErrorKind::UnknownToken,
+                    format!("Unknown token '{}'", a.text),
+                ));
             };
             if target.is_some() {
-                return Err(
-                    if x == "ramp" { &target_tok } else { &a }.error("Duplicate power target")
-                );
+                return Err(if x == "ramp" { &target_tok } else { &a }
+                    .error(DslErrorKind::DuplicatePowerTarget, "Duplicate power target"));
             }
             if x != "ramp" {
                 target_tok = a;
@@ -396,23 +449,20 @@ impl Parser {
             target = Some(pt);
         }
         let target = target.ok_or_else(|| {
-            t.error("Missing power target (e.g. 120%, 250w, 50-75%, ramp 50-75%, 140bpm, free)")
+            t.error(
+                DslErrorKind::MissingPowerTarget,
+                "Missing power target (e.g. 120%, 250w, 50-75%, ramp 50-75%, 140bpm, free)",
+            )
         })?;
-        let pct = match target {
-            PowerTarget::PctFtp { value } => value,
-            PowerTarget::Watts { value } if self.ftp > 0.0 => value / self.ftp * 100.0,
-            PowerTarget::Range { hi, .. } => hi,
-            PowerTarget::Ramp { from, to } => from.max(to),
-            _ => 0.0,
-        };
+        let pct = max_pct(&target, self.ftp);
         if pct > 400.0 {
-            return Err(target_tok.error(format!(
-                "{:.0} % FTP is implausible (max 400 %)",
-                js_round(pct)
-            )));
+            return Err(target_tok.error(
+                DslErrorKind::ImplausiblePower { pct },
+                format!("{:.0} % FTP is implausible (max 400 %)", js_round(pct)),
+            ));
         }
         Ok(StepNode {
-            id: id('s'),
+            id: (self.ids)(),
             label,
             end,
             target,
@@ -420,17 +470,34 @@ impl Parser {
         })
     }
 }
-/// Parse text into a tree with fresh IDs. Error spans use JavaScript UTF-16 offsets.
+/// Parse text using an explicit ID source; the crate has no global state.
+/// Reuse a caller-owned source across documents for unique IDs, or reset it for
+/// reproducible trees. Parsing errors may consume IDs; lexical errors consume none.
+/// Error spans use JavaScript UTF-16 offsets.
 ///
 /// # Errors
 /// Returns the first lexical or grammatical error, matching the frozen TS reference.
-pub fn parse_dsl(text: &str, ftp: f64) -> Result<Vec<WorkoutNode>, DslError> {
+pub fn parse_dsl(
+    text: &str,
+    ftp: f64,
+    ids: &mut impl FnMut() -> String,
+) -> Result<Vec<WorkoutNode>, DslError> {
     Parser {
+        ids,
         tokens: lex(text)?,
         i: 0,
         ftp,
     }
     .seq(None)
+}
+fn max_pct(target: &PowerTarget, ftp: f64) -> f64 {
+    match *target {
+        PowerTarget::PctFtp { value } => value,
+        PowerTarget::Watts { value } if ftp > 0.0 => value / ftp * 100.0,
+        PowerTarget::Range { hi, .. } => hi,
+        PowerTarget::Ramp { from, to } => from.max(to),
+        _ => 0.0,
+    }
 }
 // Math.round breaks ties towards positive infinity. Adding 0.5 first loses
 // precision immediately below a half-integer (and for large integers).
@@ -440,6 +507,9 @@ fn js_round(n: f64) -> f64 {
     } else {
         n.ceil()
     }
+}
+fn fmt_whole(n: f64) -> String {
+    (js_round(n) + 0.0).to_string()
 }
 fn fmt_num(n: f64) -> String {
     (js_round(n * 1000.0) / 1000.0 + 0.0).to_string()
@@ -524,8 +594,8 @@ fn print_node(node: &WorkoutNode) -> String {
                         OnUnreachable::LowerPower => "",
                     };
                     format!(
-                        "hr<{:.0} {}..{}",
-                        js_round(target_bpm),
+                        "hr<{} {}..{}",
+                        fmt_whole(target_bpm),
                         format_duration(min_s),
                         format_duration(max_s)
                     )
@@ -533,19 +603,19 @@ fn print_node(node: &WorkoutNode) -> String {
             };
             let target = match n.target {
                 PowerTarget::PctFtp { value } => format!("{}%", fmt_num(value)),
-                PowerTarget::Watts { value } => format!("{:.0}w", js_round(value)),
+                PowerTarget::Watts { value } => format!("{}w", fmt_whole(value)),
                 PowerTarget::Range { lo, hi } => format!("{}-{}%", fmt_num(lo), fmt_num(hi)),
                 PowerTarget::Ramp { from, to } => {
                     format!("ramp {}-{}%", fmt_num(from), fmt_num(to))
                 }
-                PowerTarget::Hr { bpm } => format!("{:.0}bpm", js_round(bpm)),
+                PowerTarget::Hr { bpm } => format!("{}bpm", fmt_whole(bpm)),
                 PowerTarget::Free => "free".into(),
             };
             let cad = n.cadence.as_ref().map_or_else(String::new, |c| {
-                if c.lo.total_cmp(&c.hi).is_eq() {
-                    format!(" {}rpm", c.lo)
+                if c.lo.partial_cmp(&c.hi) == Some(std::cmp::Ordering::Equal) {
+                    format!(" {}rpm", c.lo + 0.0)
                 } else {
-                    format!(" {}-{}rpm", c.lo, c.hi)
+                    format!(" {}-{}rpm", c.lo + 0.0, c.hi + 0.0)
                 }
             });
             format!("{label}{end} {target}{cad}{flag}")
@@ -554,6 +624,7 @@ fn print_node(node: &WorkoutNode) -> String {
 }
 /// Canonical DSL: one top-level item per line, nested items comma-separated.
 /// Numeric values are rounded as in the TS printer; round trips require DSL-representable trees.
+/// Canonical numeric parity covers finite rounded magnitudes below 1e21; see `docs/DSL.md`.
 #[must_use]
 pub fn print_dsl(nodes: &[WorkoutNode]) -> String {
     nodes.iter().map(print_node).collect::<Vec<_>>().join("\n")
