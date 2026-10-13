@@ -43,9 +43,9 @@ const pad = (t: number) => String(t).padStart(4, "0");
 /** F's storyboard frames by `${w}x${h}.${theme}`, reused by the A-vs-F sheet. */
 const spinFrames = new Map<string, { label: string; png: Buffer }[]>();
 
-// F's budget, from its own timing table: everything at rest by SPIN.end ≤ 1.2 s.
-const spinEnds = [...LETTER_START.map((s) => s + SPIN.letter), ...SPIN.lines.map(([s, d]) => s + d), SPIN.cuts[0] + SPIN.cuts[1], SPIN.morph[1]];
-if (SPIN.end > 1200 || Math.max(...spinEnds) > SPIN.end) failures.push(`spin: motion ends at ${Math.max(...spinEnds)} ms (end ${SPIN.end}, budget 1200)`);
+// F's budget, from its own timing table: everything at rest by SPIN.end ≤ 1100 ms (headroom under the 1.2 s budget).
+const spinEnds = [...LETTER_START.map((s) => s + SPIN.letter), SPIN.slice[0] + SPIN.slice[1], SPIN.morph[1]];
+if (SPIN.end > 1100 || Math.max(...spinEnds) > SPIN.end) failures.push(`spin: motion ends at ${Math.max(...spinEnds)} ms (end ${SPIN.end}, target 1100)`);
 console.log(`  spin: R A N K start at ${LETTER_START.join(" / ")} ms; at rest by ${Math.max(...spinEnds)} ms`);
 
 /** `paused`: the fake clock moves only by `runFor` (installed clocks otherwise also flow in real time). */
@@ -106,6 +106,7 @@ try {
   await ctx.close();
   await bootAndHandOff();
   await spinBoot();
+  await spinEarly();
   for (const theme of THEMES) await spinSmall(theme);
   for (const theme of THEMES) await compareSheet(theme);
   for (const theme of THEMES) await sizeSheet(theme);
@@ -192,9 +193,9 @@ async function spinStoryboards() {
   }
 }
 
-/** F's boot behaviours on the fake clock (BRAND.md §F · Spin-up → Boot): (a) a boot within SPIN.cut cuts to the
- *  settled wordmark, a later one fast-forwards it inside the 200 ms hand-off; (b) a slow boot plays through and
- *  rests, status at 1.2 s; (b′, ?hold) the closed ring holds until ready. Destination live + focused and the
+/** F's boot behaviours on the fake clock (BRAND.md §F · Spin-up → Boot): (a) on ready the motion runs on at 1:1
+ *  under the 200 ms hand-off fade (early readiness: `spinEarly`); (b) a slow boot plays through and rests,
+ *  status at 1.2 s; (b′, ?hold) the closed ring holds until ready. Destination live + focused and the
  *  start screen inert as every hand-off begins; under reduced motion: no motion, status at 1.2 s, removed at once. */
 async function spinBoot() {
   const state = (page: Page) =>
@@ -229,17 +230,20 @@ async function spinBoot() {
 
       // (b) slow boot: plays through, rests settled; the status line comes from the boot timer at 1.2 s.
       let p = await page(`spin-slow.${tag}`, `theme=${theme}`);
-      await p.clock.runFor(1150);
+      await p.clock.runFor(SPIN.end - 60);
       let s = await state(p);
+      if (reducedMotion === "reduce" ? s.t !== null : s.t === null || s.t < SPIN.end - 80 || s.t >= SPIN.end) fail(`painted t = ${s.t} at ${SPIN.end - 60} ms`);
+      await p.clock.runFor(1150 - (SPIN.end - 60));
+      s = await state(p);
       if (s.status) fail("status before 1.2 s");
-      if (reducedMotion === "reduce" ? s.t !== null : s.t === null || s.t < 1100 || s.t >= SPIN.end) fail(`painted t = ${s.t} at 1150 ms`);
+      if (reducedMotion === "no-preference" && s.t !== SPIN.end) fail(`not settled at 1150 ms (t = ${s.t})`);
       await p.clock.runFor(100);
       s = await state(p);
       if (!s.status) fail("no status after 1.2 s");
-      if (reducedMotion === "no-preference" && s.t !== SPIN.end) fail(`not settled at 1250 ms (t = ${s.t})`);
+      if (reducedMotion === "no-preference" && s.t !== SPIN.end) fail(`not at rest at 1250 ms (t = ${s.t})`);
       await p.close();
 
-      // (a) ready at 600 ms: fast-forward inside the fade (removed at once under reduced motion).
+      // (a) ready at 600 ms: runs on at 1:1 under the fade (removed at once under reduced motion).
       p = await page(`spin-handoff.${tag}`, `theme=${theme}&ready=600`);
       await p.clock.runFor(600);
       s = await handOffBegins(p, "ready at 600 ms");
@@ -250,25 +254,14 @@ async function spinBoot() {
       }
       await p.clock.runFor(100);
       s = await state(p);
-      if (s.t === null || s.t <= 600 || s.t >= SPIN.end || s.opacity === null || s.opacity < 0.3 || s.opacity > 0.7)
-        fail(`100 ms into the hand-off: t = ${s.t}, opacity = ${s.opacity} (expected fast-forwarding, half faded)`);
+      if (s.t === null || Math.abs(s.t - 700) > 17 || s.opacity === null || s.opacity < 0.4 || s.opacity > 0.6)
+        fail(`100 ms into the hand-off: t = ${s.t}, opacity = ${s.opacity} (expected ≈ 700, half faded)`);
       await p.screenshot({ path: `${out}spin.handoff-100ms.1440x900.${theme}.png` });
       await p.clock.runFor(120);
       if (await p.locator(".start").count()) fail("start screen still there 220 ms after ready");
       await p.close();
 
-      // (a) ready at 100 ms (≤ SPIN.cut): cut straight to the settled wordmark, then the same fade.
-      p = await page(`spin-cut.${tag}`, `theme=${theme}&ready=100`);
-      await p.clock.runFor(100);
-      await handOffBegins(p, "ready at 100 ms");
-      await p.clock.runFor(20);
-      s = await state(p);
-      if (s.t !== SPIN.end) fail(`ready at 100 ms did not cut to the settled wordmark (t = ${s.t})`);
-      await p.clock.runFor(200);
-      if (await p.locator(".start").count()) fail("start screen still there 320 ms after a 100 ms boot");
-      await p.close();
-
-      // (b′) ?hold: the closed ring holds (t stays at SPIN.up) past 1.2 s, then finishes inside the hand-off.
+      // (b′) ?hold: the closed ring holds (t stays at SPIN.up) past 1.2 s; on ready it runs on under the fade.
       p = await page(`spin-hold.${tag}`, `theme=${theme}&hold&ready=2000`);
       await p.clock.runFor(1900);
       s = await state(p);
@@ -285,6 +278,60 @@ async function spinBoot() {
     await ctx.close();
   }
   console.log("  spin.handoff-100ms.*.png, spin.hold.*.png (boot behaviours checked)");
+}
+
+/** Early readiness (BRAND.md §F · Spin-up → Boot): ready at 149 / 151 / 300 / 450 ms — either side of round 1's
+ *  150 ms cut, mid spin-up, the ring closing — at both sizes and themes, real-time frames 0 / 50 / 100 / 150 ms
+ *  into the hand-off. Fails unless the destination is live + focused at once, t runs on at 1:1 (no snap, no
+ *  fast-forward), the fade is linear, the screen is gone after 200 ms, and 149 vs 151 differ only by 2 ms of motion. */
+async function spinEarly() {
+  const READY = [149, 151, 300, 450];
+  const AFTER = [0, 50, 100, 150];
+  for (const [width, height] of SIZES) {
+    const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, reducedMotion: "no-preference" });
+    for (const theme of THEMES) {
+      const size = `${width}x${height}.${theme}`;
+      const fail = (m: string) => failures.push(`spin-early.${size}: ${m}`);
+      const cells: { label: string; png: Buffer }[] = [];
+      const mid = new Map<number, Buffer>();
+      for (const r of READY) {
+        const p = await ctx.newPage();
+        await open(p, `spin-early.${size}.${r}`, `concept=spin&theme=${theme}&ready=${r}`, true);
+        await p.clock.runFor(r);
+        let elapsed = 0;
+        for (const a of AFTER) {
+          await p.clock.runFor(a - elapsed);
+          elapsed = a;
+          const s = await p.evaluate(() => {
+            const el = document.querySelector<HTMLElement>(".start");
+            return {
+              t: Number(el?.dataset.t),
+              opacity: el ? Number(getComputedStyle(el).opacity) : null,
+              inert: !!el?.inert,
+              live: document.activeElement?.closest(".dest") !== null,
+            };
+          });
+          if (!s.live || !s.inert) fail(`ready ${r} ms, +${a} ms: destination not live + focused or start screen not inert`);
+          // rAF on the fake clock paints every ~16 ms: the painted t trails the clock by less than a frame.
+          if (a > 0 && (Math.abs(s.t - (r + a)) > 17 || s.opacity === null || Math.abs(s.opacity - (1 - a / 200)) > 0.1))
+            fail(`ready ${r} ms, +${a} ms: t = ${s.t} (expected ≈ ${r + a}), opacity = ${s.opacity} (expected ≈ ${1 - a / 200})`);
+          const png = await p.screenshot();
+          if (a === 100) mid.set(r, png);
+          cells.push({ label: `ready ${r} ms · +${a} ms`, png });
+        }
+        await p.clock.runFor(220 - elapsed);
+        if (await p.locator(".start").count()) fail(`ready ${r} ms: start screen still there after 220 ms`);
+        await p.close();
+      }
+      // No threshold: a boot at 149 ms and one at 151 ms look alike 100 ms into the hand-off — < 1 % of pixels
+      // differ visibly (> 16/255; the fade's rAF phase alone shifts every pixel by a level or two).
+      const d = await pixelDiff(mid.get(149)!, mid.get(151)!, 16);
+      if (d < 0 || d > 0.01 * width * height) fail(`ready 149 vs 151 ms differ in ${d} px at +100 ms`);
+      await sheet(`${out}spin.early-handoff.${size}.png`, `F · Spin-up — core ready early: 0 / 50 / 100 / 150 ms into the 200 ms hand-off, ${width}×${height}, ${theme}`, theme, 4, 300, cells);
+      console.log(`  spin.early-handoff.${size}.png (149 vs 151 ms: ${d} px differ)`);
+    }
+    await ctx.close();
+  }
 }
 
 /** Small sizes: F at the full form's floor — wordmark 160 px wide (BRAND.md §Sizes) — every 100 ms, at 2×. */
@@ -325,10 +372,11 @@ async function compareSheet(theme: (typeof THEMES)[number]) {
   console.log(`  compare.slice-vs-spin.${theme}.png`);
 }
 
-/** Number of pixels that differ between two PNGs (decoded in the browser; −1 if their sizes differ). */
-async function pixelDiff(a: Buffer, b: Buffer) {
+/** Number of pixels that differ by more than `tol` (0–255, any channel) between two PNGs (decoded in the browser;
+ *  −1 if their sizes differ). */
+async function pixelDiff(a: Buffer, b: Buffer, tol = 0) {
   const page = await browser.newPage();
-  const d = await page.evaluate(async ([a, b]) => {
+  const d = await page.evaluate(async ([a, b, tol]) => {
     const pixels = async (b64: string) => {
       const img = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
       const g = new OffscreenCanvas(img.width, img.height).getContext("2d")!;
@@ -338,9 +386,10 @@ async function pixelDiff(a: Buffer, b: Buffer) {
     const [x, y] = await Promise.all([pixels(a), pixels(b)]);
     if (x.length !== y.length) return -1;
     let n = 0;
-    for (let i = 0; i < x.length; i += 4) if (x[i] !== y[i] || x[i + 1] !== y[i + 1] || x[i + 2] !== y[i + 2]) n++;
+    for (let i = 0; i < x.length; i += 4)
+      if (Math.max(Math.abs(x[i]! - y[i]!), Math.abs(x[i + 1]! - y[i + 1]!), Math.abs(x[i + 2]! - y[i + 2]!)) > tol) n++;
     return n;
-  }, [a.toString("base64"), b.toString("base64")] as const);
+  }, [a.toString("base64"), b.toString("base64"), tol] as const);
   await page.close();
   return d;
 }
