@@ -22,7 +22,10 @@
         ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ]);
       pnpmDeps = pkgs.fetchPnpmDeps {
         pname = "crank"; src = frontendSrc; pnpm = pkgs.pnpm_12;
-        fetcherVersion = 4; hash = "sha256-5COScyIoYRxzEA36gwea0CUnA6nqi72MsKjltMkzclQ=";
+        # pnpm 12 --force still filters optional dependencies by host platform.
+        # Fetch both supported targets so one hash works on macOS and Linux.
+        prePnpmInstall = ''pnpm config set --location=project --json supportedArchitectures '["darwin-arm64","linux-x64"]' '';
+        fetcherVersion = 4; hash = "sha256-pvLZ9SQxeQ2BR9mY051ma2J7giQ0/Jk61c6j1sQuG1U=";
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
         pname = name; version = "0.1.0"; src = frontendSrc;
