@@ -63,7 +63,9 @@ fn size(n: usize) -> f64 {
 /// Short-term DFA exponent (dimensionless), with box sizes in beats and optional
 /// centred detrending in beats (`0` disables). Defaults in the mock are 4, 16, 25.
 /// Requires at least `3*max_box` beats and three positive fluctuation scales.
-/// Constant/degenerate series return `None`; no RR artefacts are removed.
+/// Zero fluctuation or fewer than three positive scales returns `None`. Constant
+/// RR values can retain floating-point detrending residuals, as in TS. No RR
+/// artefacts are removed.
 /// Nonfinite arithmetic follows TS (a nonfinite slope may be `Some(NaN)`).
 /// # Errors
 /// A zero minimum box size, computational box sizes over 4096, or windows outside JS's signed

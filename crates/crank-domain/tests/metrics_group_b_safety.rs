@@ -195,3 +195,62 @@ fn large_series_and_equal_peaks_are_bounded() {
     assert!((state.peak_t - 9.).abs() < 1e-12);
     assert!(state.fit.is_none());
 }
+
+#[test]
+fn nonfinite_configuration_is_rejected_before_insufficient_data() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let priors = [
+            prior(value),
+            RecoveryPrior {
+                tau_log_sd: value,
+                ..prior(50.)
+            },
+            RecoveryPrior {
+                hr_inf: value,
+                ..prior(50.)
+            },
+            RecoveryPrior {
+                hr_inf_sd: value,
+                ..prior(50.)
+            },
+        ];
+        for p in priors {
+            assert!(matches!(
+                fit_mono_exp(&[], &[], 0., &p, &FitOptions::default()),
+                Err(MetricError::InvalidMetricParameter(_))
+            ));
+        }
+        for options in [
+            FitOptions {
+                tau_min: Some(value),
+                ..FitOptions::default()
+            },
+            FitOptions {
+                tau_max: Some(value),
+                ..FitOptions::default()
+            },
+            FitOptions {
+                sigma: Some(value),
+                ..FitOptions::default()
+            },
+        ] {
+            assert!(matches!(
+                fit_mono_exp(&[0., 1.], &[150., 149.], 0., &prior(50.), &options),
+                Err(MetricError::InvalidMetricParameter(_))
+            ));
+        }
+        for field in 0..4 {
+            let mut inp = input(240., Vec::new());
+            match field {
+                0 => inp.usual_tau_s = value,
+                1 => inp.prior_hr_inf = value,
+                2 => inp.prior_hr_inf_sd = Some(value),
+                _ => inp.tau_log_sd = Some(value),
+            }
+            assert!(matches!(
+                build_hr_recovery_state(&inp),
+                Err(MetricError::InvalidMetricParameter(_))
+            ));
+        }
+    }
+}
