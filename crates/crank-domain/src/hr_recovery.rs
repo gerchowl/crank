@@ -2,8 +2,12 @@
 //! Times are absolute ride seconds, heart rates bpm, covariances bpm².
 //! Unsupported work bounds and nonfinite/singular finite-input divergences from
 //! TS are recorded in <https://github.com/gerchowl/crank/issues/169>.
-//! Recovery exponentials use pure Rust `libm` to avoid platform-libc rounding
-//! differences amplified by the subtractive SSE and posterior weights.
+//! Exponentials and logarithms use pure Rust `libm`, never the platform libc behind
+//! `f64::{exp, ln}`, to avoid rounding differences that the subtractive SSE and the posterior
+//! weights amplify across platforms (#169). The one exception is the τ grid's power: with
+//! `libm::pow` a single grid point differs from the frozen TS reference by an ulp and the
+//! weights amplify that past the vectors' 1e-12 tolerance (`recovery.json`), whereas `powf`
+//! matches it on every CI libc (linux and macOS), so the grid keeps `f64::powf`.
 use crate::metric_error::{MetricError, finite_parameters};
 use serde::{Deserialize, Serialize};
 
@@ -138,12 +142,12 @@ impl FitContext<'_> {
             + 2. * a * b * sx
             + b * b * sxx)
             .max(0.);
-        let lt = (tau.ln() - self.prior.tau_s.ln()) / self.prior.tau_log_sd;
+        let lt = (libm::log(tau) - libm::log(self.prior.tau_s)) / self.prior.tau_log_sd;
         let j = sse * is2
             + (a - self.prior.hr_inf).powi(2) * ia2
             + (b - self.amp0).powi(2) * ib2
             + lt * lt
-            + det.ln();
+            + libm::log(det);
         let result = Solution {
             a,
             b,
@@ -153,9 +157,13 @@ impl FitContext<'_> {
             c01: -a01 / det,
             c11: a00 / det,
         };
-        if [a, b, sse, j, result.c00, result.c01, result.c11]
+        // `j` may be +inf (a squared prior term overflowed): TS then gives that grid point zero
+        // posterior weight, so only NaN is unusable here. `fit_mono_exp` rejects a fit whose
+        // *minimum* cost is not finite (#169).
+        if [a, b, sse, result.c00, result.c01, result.c11]
             .iter()
             .any(|v| !v.is_finite())
+            || j.is_nan()
         {
             return Err(MetricError::NonFiniteCalculation);
         }
@@ -227,6 +235,12 @@ fn fit_parameters(
 /// Rejects nonfinite inputs, nonpositive τ, zero noise/prior deviations, grids
 /// outside 2..=4096, and nonfinite or singular intermediate calculations.
 /// Configuration errors are checked even on empty/insufficient input (#169).
+///
+/// A grid point whose cost overflows to +∞ (for example a tiny `tau_log_sd` far from the prior
+/// `tau_s`) gets zero posterior weight and drops out of the grid, exactly as in TS, so the fit
+/// stays finite. If the *minimum* cost overflows, or the parabolic refinement of the best
+/// time constant meets an overflowed neighbour, TS's fit is NaN and this returns
+/// [`MetricError::NonFiniteCalculation`].
 pub fn fit_mono_exp(
     ts: &[f64],
     ys: &[f64],
@@ -268,11 +282,15 @@ pub fn fit_mono_exp(
         (sol, jmin) = ctx.run(&taus, sigma)?;
     }
     let minimum_cost = sol[jmin].j;
+    if !minimum_cost.is_finite() {
+        // Every grid point overflowed: TS's weights are NaN and its fit is nonfinite.
+        return Err(MetricError::NonFiniteCalculation);
+    }
     let mut wsum = 0.;
     let ws: Vec<_> = sol
         .iter()
         .map(|s| {
-            let w = (-(s.j - minimum_cost) / 2.).exp();
+            let w = libm::exp(-(s.j - minimum_cost) / 2.);
             wsum += w;
             w
         })
@@ -302,8 +320,8 @@ pub fn fit_mono_exp(
         let den = y0 - 2. * y1 + y2;
         if den > 0. {
             let off = (0.5 * (y0 - y2)) / den;
-            let step = (tau_max / tau_min).ln() / f64::from(g - 1);
-            tau_hat = (tau_hat.ln() + off.clamp(-0.5, 0.5) * step).exp();
+            let step = libm::log(tau_max / tau_min) / f64::from(g - 1);
+            tau_hat = libm::exp(libm::log(tau_hat) + off.clamp(-0.5, 0.5) * step);
         }
     }
     let best = ctx.solve(tau_hat, sigma)?;

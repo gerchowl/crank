@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "definitions": {
     "node": {
       "fields": {
@@ -188,7 +188,10 @@
                     "items": {
                       "fields": {
                         "t": "float",
-                        "v": "float"
+                        "v": {
+                          "kind": "float",
+                          "nullable": true
+                        }
                       }
                     }
                   },
@@ -207,7 +210,10 @@
                 }
               },
               "output": {
-                "items": "float"
+                "items": {
+                  "kind": "float",
+                  "nullable": true
+                }
               }
             }
           }
@@ -227,7 +233,10 @@
                     "items": {
                       "fields": {
                         "t": "float",
-                        "v": "float"
+                        "v": {
+                          "kind": "float",
+                          "nullable": true
+                        }
                       }
                     }
                   },
@@ -320,8 +329,14 @@
               },
               "output": {
                 "fields": {
-                  "rmssd": "float",
-                  "dfaAlpha1": "float"
+                  "rmssd": {
+                    "kind": "float",
+                    "nullable": true
+                  },
+                  "dfaAlpha1": {
+                    "kind": "float",
+                    "nullable": true
+                  }
                 }
               }
             }
@@ -356,7 +371,10 @@
                     "items": {
                       "fields": {
                         "t": "float",
-                        "v": "float"
+                        "v": {
+                          "kind": "float",
+                          "nullable": true
+                        }
                       }
                     }
                   },
@@ -383,7 +401,10 @@
                     "items": {
                       "fields": {
                         "t": "float",
-                        "v": "float"
+                        "v": {
+                          "kind": "float",
+                          "nullable": true
+                        }
                       }
                     }
                   },
@@ -409,7 +430,8 @@
                           }
                         }
                       }
-                    }
+                    },
+                    "nullable": true
                   },
                   "predicted": {
                     "items": {
@@ -433,7 +455,8 @@
                       "mean": "float",
                       "lo": "float",
                       "hi": "float"
-                    }
+                    },
+                    "nullable": true
                   }
                 }
               }
@@ -631,7 +654,10 @@
                       "fields": {
                         "metric": "exact",
                         "t": "float",
-                        "v": "float",
+                        "v": {
+                          "kind": "float",
+                          "nullable": true
+                        },
                         "reset": "exact"
                       }
                     }
@@ -665,7 +691,10 @@
                               "items": {
                                 "fields": {
                                   "t": "float",
-                                  "v": "float"
+                                  "v": {
+                                    "kind": "float",
+                                    "nullable": true
+                                  }
                                 }
                               }
                             },
@@ -691,7 +720,8 @@
                                     }
                                   }
                                 }
-                              }
+                              },
+                              "nullable": true
                             },
                             "predicted": {
                               "items": {
@@ -722,10 +752,16 @@
                             "target": "float",
                             "cadence10s": "float",
                             "compliance": "float",
-                            "decoupling": "float",
-                            "hrDrift": "float",
                             "hrVsTypical": "float",
-                            "wbalPct": "float"
+                            "wbalPct": "float",
+                            "decoupling": {
+                              "kind": "float",
+                              "nullable": true
+                            },
+                            "hrDrift": {
+                              "kind": "float",
+                              "nullable": true
+                            }
                           }
                         }
                       }
@@ -761,7 +797,10 @@
                               "items": {
                                 "fields": {
                                   "t": "float",
-                                  "v": "float"
+                                  "v": {
+                                    "kind": "float",
+                                    "nullable": true
+                                  }
                                 }
                               }
                             },
@@ -787,7 +826,8 @@
                                     }
                                   }
                                 }
-                              }
+                              },
+                              "nullable": true
                             },
                             "predicted": {
                               "items": {
@@ -821,7 +861,10 @@
                               "items": {
                                 "fields": {
                                   "t": "float",
-                                  "v": "float"
+                                  "v": {
+                                    "kind": "float",
+                                    "nullable": true
+                                  }
                                 }
                               }
                             },
@@ -847,7 +890,8 @@
                                     }
                                   }
                                 }
-                              }
+                              },
+                              "nullable": true
                             },
                             "predicted": {
                               "items": {

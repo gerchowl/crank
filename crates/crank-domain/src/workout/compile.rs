@@ -576,6 +576,28 @@ fn reserve_diagnostic(
 /// rounded trace samples overall. Finite-input divergences, including precision loss:
 /// <https://github.com/gerchowl/crank/issues/160>. No clock, I/O or global state.
 ///
+/// # Extreme values
+/// Distinct classes, all documented here (#160). The frozen TS compiler has no bounds and may
+/// hang or allocate without limit; none of the following changes a frozen vector.
+/// - *Invalid prescriptions* (zero or negative FTP, out-of-range targets) are typed diagnostics
+///   in `issues`, never errors. Comparison-only NaN/Infinity produced by finite inputs
+///   (including watts/HR percentages at zero FTP) keeps JS semantics, and `Math.max`
+///   propagates NaN during phase classification.
+/// - [`CompileError::NonFinite`] is reserved for supplied numbers that are NaN or infinite.
+/// - [`CompileError::InvalidArithmetic`] is nonfinite arithmetic *needed for output* from finite
+///   inputs: overflow or undefined calculations, where TS may emit NaN or infinity. Example:
+///   FTP 0, a hard step, then an HR-recovery step: TS reports NaN `durS`/`totalS`; this
+///   returns the error. Guards also bound intermediates before their consumers, such as
+///   expanded progression offsets that rest/HR targets would discard, so these remain safety
+///   divergences even when TS eventually emits finite data. Public helpers validate supplied
+///   athlete and offset parameters even when a target does not consume them.
+/// - An infinite HR-recovery estimate is clamped to the finite duration bounds as in TS; an
+///   unused NaN HR state does not reject an otherwise finite compile.
+/// - Positive durations that cannot advance the `f64` timeline are
+///   [`CompileError::TimelinePrecision`].
+/// - Diagnostic text normalises signed zero to `0` as JS does; other extreme finite values use
+///   Rust shortest-decimal formatting, which can differ from JS exponent notation.
+///
 /// # Errors
 /// Returns [`CompileError`] for nonfinite inputs, nonfinite arithmetic needed in output,
 /// or exceeded safety bounds. Comparison-only NaN/Infinity retains TS semantics.
