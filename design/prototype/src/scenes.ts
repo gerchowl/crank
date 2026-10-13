@@ -7,6 +7,7 @@ import { athleteModel, cappedProposal, freeRide, sceneFixture, type SceneFixture
 import { rideScreen } from "./persist";
 import { pendingStart, reportSymptomInRide } from "./safety";
 import { backend, loadRide, navigate, session, type View } from "./session";
+import { openTopic, whyOpen } from "./views/Why";
 
 const CP = athleteModel[0]?.value ?? 280;
 
@@ -131,6 +132,16 @@ export const scenes: Record<string, Scene> = {
   "ride-end-dialog": fixture(atThreshold, { endDialog: true }),
   "ride-symptom-stop": ride(() => (atThreshold(), backend.ride.pause(), reportSymptomInRide())),
   "settings-health": { view: "settings", sub: "health", setup: () => sceneFixture.set({ medicalStop: true }) },
+  // training profile, wish matrix, Why?/Background (DESIGN §15)
+  "onboarding-profile": { view: "onboarding", sub: "profile" },
+  "settings-profile": { view: "settings", sub: "profile" },
+  "today-wish-granted": { view: "today", setup: () => sceneFixture.set({ wish: { intensity: "vo2max", format: "intervals" } }) },
+  "today-wish-deviates": { view: "today", setup: () => sceneFixture.set({ wish: { intensity: "vo2max", format: "intervals" }, checkin: { legs: 1, sleep: 2 } }) },
+  "today-wish-capped": { view: "today", setup: () => sceneFixture.set({ healthCap: true, wish: { intensity: "threshold", format: "hills" } }) },
+  "today-wish-long": { view: "today", setup: () => sceneFixture.set({ wish: { intensity: "easy", format: "long" } }) },
+  "today-why": { view: "today", setup: () => (sceneFixture.set({ wish: { intensity: "vo2max", format: "intervals" }, checkin: { legs: 1, sleep: 2 } }), whyOpen.set("R-RDY-02")) },
+  "settings-background": { view: "settings", sub: "background" },
+  "settings-background-topic": { view: "settings", sub: "background", setup: () => openTopic.set("06") },
 };
 
 export function applyScene(id: string) {

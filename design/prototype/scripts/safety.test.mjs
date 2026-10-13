@@ -1,7 +1,9 @@
 // pnpm test:safety — the medical stop is a global invariant (DESIGN §5.8). Drives the prototype with
 // Playwright and fails unless: every start path is blocked under a stop (only the ticked free ride
 // starts), the daily re-check asks every red flag with no default, and the in-ride symptom action
-// stops the workout and sets the stop.
+// stops the workout and sets the stop. The planner wish (DESIGN §15.2) never overrides safety: no wish
+// under a stop, no cell above the injury cap can be chosen or reached, and only readiness deviations offer
+// "ride my wish anyway".
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
@@ -84,6 +86,46 @@ try {
   await p.getByRole("button", { name: /Save and close the ride/ }).click();
   await p.getByRole("button", { name: "Today" }).click();
   check("…and sets the medical stop (Today shows the stop)", (await p.locator(".medical-stop").count()) === 1);
+
+  // 4. the wish never overrides safety
+  const settled = (q) => q.waitForFunction(() => !document.querySelector("[data-pending]"));
+  const delivered = (q) => q.locator('[aria-label="Today\'s proposal"]').getAttribute("data-delivered");
+  const ABOVE_CAP = ["vo2max", "sprint"];
+  p = await page("?stop=1");
+  check("Medical stop: no wish matrix and no proposal", (await p.locator('[aria-label="Your wish"]').count()) === 0 && (await p.locator('[aria-label="Today\'s proposal"]').count()) === 0);
+  p = await page("?scene=today-wish-capped");
+  const lockedCells = p.locator('.matrix [data-cell^="vo2max."], .matrix [data-cell^="sprint."]');
+  const nLocked = await lockedCells.count();
+  let allLocked = nLocked > 0;
+  for (let i = 0; i < nLocked; i++) allLocked &&= await lockedCells.nth(i).isDisabled();
+  check("Cap: every VO2max and sprint cell is disabled", allLocked, `${nLocked} cells`);
+  const open = p.locator(".matrix button.cell:not([disabled])");
+  const above = [];
+  for (let i = 0; i < (await open.count()); i++) {
+    await open.nth(i).click();
+    await settled(p);
+    const d = await delivered(p);
+    if (ABOVE_CAP.includes(d)) above.push(`${await open.nth(i).getAttribute("data-cell")} → ${d}`);
+    const anyway = p.getByRole("button", { name: "Ride my wish anyway" });
+    if (await anyway.count()) {
+      await anyway.click();
+      await settled(p);
+      if (ABOVE_CAP.includes(await delivered(p))) above.push(`'anyway' after ${await open.nth(i).getAttribute("data-cell")} → above the cap`);
+    }
+  }
+  check("Cap: no wish yields a proposal above the cap", above.length === 0, above.join(", "));
+  if (await p.getByRole("button", { name: "Let the coach pick" }).count()) await p.getByRole("button", { name: "Let the coach pick" }).click();
+  await settled(p);
+  for (let i = 0; i < 8; i++) await p.keyboard.press("+"); // from the coach's pick (tempo · intervals) upwards
+  await settled(p);
+  const wished = (await p.locator(".matrix .cell.wished").getAttribute("data-cell")) ?? "";
+  check("Cap: Intensity + from the saddle stops at the cap", wished === "threshold.intervals" && (await delivered(p)) === "threshold", wished);
+  p = await page("?scene=today-wish-deviates");
+  const outcome = p.locator(".wish-outcome");
+  check("Readiness deviation: explained with a pack rule, rider may override", (await outcome.getAttribute("data-relation")) === "deferred" && (await outcome.locator(".why").count()) > 0 && (await delivered(p)) === "tempo");
+  await p.getByRole("button", { name: "Ride my wish anyway" }).click();
+  await settled(p);
+  check("…'ride my wish anyway' gives the rider's wish, logged", (await delivered(p)) === "vo2max" && (await outcome.getAttribute("data-relation")) === "anyway");
 } finally {
   await browser.close();
   await server.close();

@@ -186,7 +186,7 @@ export function proposalReasons(p: Proposal, minutes: number, legs: string, slee
   return [
     `You said: legs ${legs}, sleep ${sleep}.`,
     `Last threshold work: over-unders on Fri 9 Oct, 4 days ago.`,
-    `Load over 7 days: 164 TSS — below your usual 210, so there is room.`,
+    `Load over 7 days: 164 TSS (your usual: 210).`,
     `Fits your ${minutes} min: ${p.workout.name}.`,
   ];
 }
@@ -377,5 +377,9 @@ export interface SceneFixture {
   freeRide?: boolean;
   /** Ride: the End dialog is open */
   endDialog?: boolean;
+  /** Today: the check-in answers differ from yesterday's (#85/#86 scenes) */
+  checkin?: Partial<import("@crank/shared").Checkin>;
+  /** Today: the rider's wish (DESIGN §15.2) */
+  wish?: import("./wish").Cell;
 }
 export const sceneFixture = createStore<SceneFixture>({});
