@@ -1,6 +1,7 @@
 {
   "name": "@crank/design-prototype",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "Hi-fi UX prototype for docs/design/DESIGN.md (design artifact, not the production UI)",
   "scripts": {

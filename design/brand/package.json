@@ -1,6 +1,7 @@
 {
   "name": "@crank/design-brand",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "Start screen + CRANK wordmark design spike (docs/design/BRAND.md; design artifact, not the production UI)",
   "scripts": {
