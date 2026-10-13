@@ -148,6 +148,12 @@ Separately, ESLint core's `no-unassigned-vars` misread the `ref` idiom once (too
 - `planner.propose` is deterministic per check-in, so **Regenerate** returns an identical proposal. The UI just re-calls it.
 - `coach.rate(callId, rating, useful)`: the UI maps 👍 to `right`/useful and 👎 to `wrong`/not useful.
 
+## Repo-level note
+
+- `pnpm-workspace.yaml` got a `minimumReleaseAgeExclude` list for typescript-eslint 8.71.2, added by pnpm on install
+  because that release was under 24 h old. It can be dropped after 2026-10-13T17:10Z. Pinning 8.70 didn't work: its
+  transitive deps still resolve to 8.71.2.
+
 ## LOC
 
 `find src -name '*.*' | xargs wc -l` → **6788 total**: 4956 TS/TSX, 1444 hand-written CSS and 308 lines of generated
