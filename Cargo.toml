@@ -1,0 +1,33 @@
+[workspace]
+members = ["crates/*", "app/src-tauri"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.96"
+
+[workspace.lints.rust]
+missing_docs = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+pedantic = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+specta-typescript = "=0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+tauri = "2.12.3"
+crank-domain = { path = "crates/crank-domain" }
+crank-devices = { path = "crates/crank-devices" }
+crank-fec = { path = "crates/crank-fec" }
+crank-ble = { path = "crates/crank-ble" }
+crank-engine = { path = "crates/crank-engine" }
+crank-store = { path = "crates/crank-store" }
+crank-coach = { path = "crates/crank-coach" }
+crank-intervals = { path = "crates/crank-intervals" }
+crank-core = { path = "crates/crank-core" }
+crank-mcp = { path = "crates/crank-mcp" }
