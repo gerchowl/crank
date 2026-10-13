@@ -34,6 +34,9 @@ The fetch phase explicitly prepares darwin-arm64 and linux-x64 optional packages
 with `supportedArchitectures`: pnpm 12's `--force` alone no longer fetches other
 platforms (https://pnpm.io/settings/dependency-resolution#forceignoresplatform).
 Keep these targets aligned with the flake systems so the store hash is portable.
+The fetch phase also removes empty store directories before packing: pnpm leaves
+an empty `v11/links/` on macOS only, changing the archive hash without changing
+cache data (#28 cross-platform build verification).
 The flake uses explicit source filesets: add each new input to the appropriate
 set, including migrations, fixtures, and icons read by Tauri. New public Rust
 items require documentation. Clippy pedantic warnings fail the gate; unwrap
