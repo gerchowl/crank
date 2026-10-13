@@ -132,13 +132,20 @@ fn lex(src: &str) -> Result<Vec<Token>, DslError> {
     });
     Ok(tokens)
 }
-// Only tokens shaped like a DSL number can overflow: an optional sign or `hr<`, then digits,
-// `.`/`-`/`h`/`m`/`s` (ranges, durations), then an optional unit. Other words with long digit
-// runs must reach the parser, which reports `UnknownToken` as in TS.
+// Only tokens shaped like a DSL number can overflow; any other word must reach the parser, which
+// reports `UnknownToken` as TS does (#174). A sign is legal only on a repeat-progression
+// increment (`+5w`, `-2%`: digits and `.` before `w`/`%`); an unsigned token is digits, `.`/`-`/
+// `h`/`m`/`s` (ranges, durations), an optional `hr<` prefix, then an optional unit. TS also
+// accepts an overflowing `hr<999…` and carries an infinite target; Rust reports it as
+// `NumericOverflow` because compiled output must be finite (#160).
 fn is_numeric_token(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    let body = lower.strip_prefix(['+', '-']).unwrap_or(&lower);
-    let body = body.strip_prefix("hr<").unwrap_or(body);
+    if let Some(body) = lower.strip_prefix(['+', '-']) {
+        let digits = body.strip_suffix(['w', '%']).unwrap_or("");
+        return digits.starts_with(|c: char| c.is_ascii_digit())
+            && digits.chars().all(|c| c.is_ascii_digit() || c == '.');
+    }
+    let body = lower.strip_prefix("hr<").unwrap_or(&lower);
     let body = ["kj", "bpm", "rpm", "x", "w", "%"]
         .iter()
         .find_map(|unit| body.strip_suffix(unit))

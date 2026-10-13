@@ -27,6 +27,14 @@ pub fn numbers(v: &Value) -> Vec<f64> {
         .collect()
 }
 
+/// A scalar node is the string shorthand, `{"kind": ..}` (with modifiers such as `nullable`), or
+/// `{"number": "float"}` for a node shared with object/array variants.
+fn scalar_kind(schema: &Value) -> Option<&str> {
+    schema
+        .as_str()
+        .or_else(|| schema["kind"].as_str())
+        .or_else(|| schema["number"].as_str())
+}
 fn resolved<'a>(schema: &'a Value, root: &'a Value) -> &'a Value {
     if let Some(name) = schema.get("ref").and_then(Value::as_str) {
         resolved(&root["definitions"][name], root)
@@ -39,10 +47,7 @@ fn validate(v: &Value, schema: &Value, root: &Value, path: &str) {
     assert!(!schema.is_null(), "missing schema: {path}");
     match v {
         Value::Number(n) => {
-            let kind = schema
-                .as_str()
-                .or_else(|| schema["number"].as_str())
-                .expect("valid vector schema and fixture");
+            let kind = scalar_kind(schema).expect("valid vector schema and fixture");
             assert!(
                 matches!(kind, "integer" | "float"),
                 "unclassified number: {path}"
@@ -74,17 +79,18 @@ fn validate(v: &Value, schema: &Value, root: &Value, path: &str) {
                 validate(x, child, root, &format!("{path}.{key}"));
             }
         }
-        _ => {} // Missing samples and encoded nonfinite values compare exactly.
+        Value::Null => assert!(
+            schema["nullable"] == true,
+            "null at a node not declared nullable: {path}"
+        ),
+        _ => {} // Encoded nonfinite values compare exactly.
     }
 }
 fn compare(a: &Value, b: &Value, schema: &Value, root: &Value, path: &str) {
     let schema = resolved(schema, root);
     match (a, b) {
         (Value::Number(a), Value::Number(b)) => {
-            let kind = schema
-                .as_str()
-                .or_else(|| schema["number"].as_str())
-                .expect("valid vector schema and fixture");
+            let kind = scalar_kind(schema).expect("valid vector schema and fixture");
             if kind == "integer" {
                 assert_eq!(a, b, "{path}");
             } else {
@@ -173,5 +179,12 @@ mod tests {
         expected["schemaVersion"] = serde_json::json!(2);
         expected["cases"][0]["input"]["unknown"] = serde_json::json!(1.);
         assert_vectors("filters", &actual, &expected);
+    }
+    #[test]
+    #[should_panic(expected = "not declared nullable")]
+    fn rejects_null_at_a_non_nullable_node() {
+        let mut document = load("filters");
+        document["cases"][0]["name"] = serde_json::Value::Null;
+        assert_vectors("filters", &document, &document);
     }
 }

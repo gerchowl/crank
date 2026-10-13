@@ -22,8 +22,10 @@ pub enum Filter {
         #[serde(rename = "tauS")]
         tau_s: f64,
     },
-    /// Median of the most recent non-missing samples; NaN entries are ignored
-    /// when selecting the median, but still occupy window slots.
+    /// Median of the most recent `n` non-missing samples. A NaN sample occupies a window
+    /// slot (it is a received sample, unlike `None`) but is never selected as the median;
+    /// a window holding only NaN yields NaN. TS sorts NaN with an inconsistent comparator, so
+    /// there is no reference result; this definition is the deterministic one (#155).
     Median {
         /// Sample count, rounded like JS and clamped to at least one.
         n: f64,
@@ -64,6 +66,23 @@ impl Stage {
             last_t: 0.,
         }
     }
+    /// Keep `sorted` ordered by `total_cmp`, excluding NaN: a binary search finds the slot, so a
+    /// push costs O(log n) comparisons plus one memmove instead of a full re-sort.
+    fn sorted_insert(sorted: &mut Vec<f64>, v: f64) {
+        if !v.is_nan() {
+            let at = sorted.partition_point(|x| x.total_cmp(&v).is_lt());
+            sorted.insert(at, v);
+        }
+    }
+    fn sorted_remove(sorted: &mut Vec<f64>, v: f64) {
+        if !v.is_nan() {
+            let at = sorted.partition_point(|x| x.total_cmp(&v).is_lt());
+            debug_assert!(sorted.get(at).is_some_and(|x| x.total_cmp(&v).is_eq()));
+            if at < sorted.len() {
+                sorted.remove(at);
+            }
+        }
+    }
     fn push(&mut self, t: f64, v: Option<f64>) -> Option<f64> {
         if matches!(self.filter, Filter::Hold) {
             if v.is_some() {
@@ -100,14 +119,13 @@ impl Stage {
             Filter::Median { n } => {
                 self.values.push_back((t, v));
                 self.count += 1.;
+                Self::sorted_insert(&mut self.sorted, v);
                 if self.count > crate::js_round(n).max(1.) {
-                    self.values.pop_front();
+                    if let Some((_, evicted)) = self.values.pop_front() {
+                        Self::sorted_remove(&mut self.sorted, evicted);
+                    }
                     self.count -= 1.;
                 }
-                self.sorted.clear();
-                self.sorted
-                    .extend(self.values.iter().map(|p| p.1).filter(|v| !v.is_nan()));
-                self.sorted.sort_unstable_by(f64::total_cmp);
                 let m = self.sorted.len() / 2;
                 if self.sorted.is_empty() {
                     f64::NAN
@@ -147,7 +165,9 @@ impl Stage {
 /// only NaN. Other filters propagate IEEE arithmetic (NaN may poison state);
 /// hold retains any value, including NaN/infinity. Use `None` for dropouts.
 /// Timestamps may be any f64; NaN does not trigger a backwards-time reset.
-/// Median reuses its sorting buffer, allocating only as the window grows.
+/// Median keeps its window sorted incrementally (binary search plus one memmove per push, not a
+/// re-sort); a strictly O(log n) update needs an order-statistic tree, which window sizes of a
+/// few dozen samples do not justify.
 /// Empty chains are identity; backwards time resets every stage before the sample.
 #[derive(Debug)]
 pub struct FilterChain {
