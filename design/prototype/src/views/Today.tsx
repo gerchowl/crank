@@ -5,7 +5,9 @@ import { Profile } from "../charts";
 import { editor } from "../editor/model";
 import { blockName, mmss } from "../format";
 import { ageDays, athleteModel, calibration, CAP_PCT_CP, cappedProposal, devices, freeRide, lastCheckin, proposalReasons, sceneFixture, STALE_DAYS, week } from "../mock/ext";
-import { backend, loadRide, navigate, noStatus, settle, useSession } from "../session";
+import { backend, navigate, noStatus, settle, useRoute, useSession } from "../session";
+import { requestStart, safety, stopActive } from "../safety";
+import { RedFlagCheck } from "./Gate";
 import { useStore } from "../store";
 import { KeyHint } from "./Ride";
 
@@ -26,9 +28,9 @@ const word = (row: Row, v: number) => {
 
 const cpW = athleteModel[0]?.value ?? backend.athlete.ftp;
 
+/** Every start goes through the shared guard (safety.ts), never straight to the Ready check. */
 function start(p: Proposal) {
-  loadRide(p.workout);
-  navigate("ready");
+  requestStart(p.workout, "today");
 }
 
 export function Today() {
@@ -37,11 +39,12 @@ export function Today() {
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [pending, setPending] = useState(true);
   const fx = useStore(sceneFixture);
-  // every check-in re-asks the red-flag symptoms (no default, DESIGN §5.8)
-  const [symptoms, setSymptoms] = useState<"yes" | "no" | null>(fx.medicalStop ? "yes" : null);
-  const [freeConfirm, setFreeConfirm] = useState(!!fx.freeConfirm);
-  const stop = !!fx.medicalStop || symptoms === "yes";
-  const ready = !!proposal && !pending && confirmed !== null && symptoms === "no";
+  // every check-in re-asks all red flags (no default, DESIGN §5.8); the answer lives in the shared guard
+  const safe = useStore(safety);
+  const route = useRoute();
+  const [freeConfirm, setFreeConfirm] = useState(!!fx.freeConfirm || route.sub === "free");
+  const stop = stopActive() || safe.stop;
+  const ready = !!proposal && !pending && confirmed !== null && safe.checkedToday;
 
   useEffect(() => {
     let live = true;
@@ -111,18 +114,11 @@ export function Today() {
             <button className={confirmed === "same" ? "confirm on" : "confirm"} disabled={confirmed === "changed"} onClick={() => setConfirmed("same")}>
               ✓ Same as yesterday
             </button>
-            <div className={symptoms ? "yn symptoms" : "yn symptoms unanswered"} role="radiogroup" aria-label="Red-flag symptoms since your last ride">
-              <span>
-                <b>Since your last ride:</b> chest pain or pressure, fainting, or a racing heartbeat with dizziness?
-              </span>
-              <span className="choices">
-                {(["no", "yes"] as const).map((v) => (
-                  <button key={v} role="radio" aria-checked={symptoms === v} className={symptoms === v ? "tap wide on" : "tap wide"} onClick={() => setSymptoms(v)}>
-                    {v}
-                  </button>
-                ))}
-              </span>
-            </div>
+            {stop ? null : safe.checkedToday ? (
+              <p className="small status-good rf-done">✓ Health check done: none of the red-flag symptoms since your last ride.</p>
+            ) : (
+              <RedFlagCheck compact onDone={() => undefined} />
+            )}
           </section>
           <WeekCard />
         </div>
@@ -171,7 +167,7 @@ export function Today() {
                 Edit
               </button>
             </div>
-            {(!confirmed || symptoms === null) && <p className="small muted">Confirm how you feel and answer the symptom question to start.</p>}
+            {(!confirmed || !safe.checkedToday) && <p className="small muted">Confirm how you feel and answer the health check to start.</p>}
           </section>
             </>
           )}
@@ -240,7 +236,7 @@ function MedicalStop({ open, onOpen, onClose }: { open: boolean; onOpen: () => v
             <button autoFocus onClick={onClose}>
               Cancel
             </button>
-            <button disabled={!understood} onClick={() => (loadRide(freeRide(cpW)), navigate("ready"))}>
+            <button disabled={!understood} onClick={() => requestStart(freeRide(cpW), "today")}>
               Start free ride
             </button>
           </div>
@@ -273,6 +269,20 @@ export function Ready() {
   const raw = useStore(s?.status ?? noStatus);
   const fx = useStore(sceneFixture);
   if (!s || !raw) return <p className="empty">Nothing to ride. Pick a workout on Today.</p>;
+  // defence in depth: the Ready check never starts a planned ride under a medical stop
+  if (stopActive() && s.workout.id !== "free")
+    return (
+      <div className="page gate">
+        <section className="card medical-stop" role="alert" aria-label="Ride blocked by the medical stop">
+          <h2>Medical stop: no planned or coached ride</h2>
+          <div className="actions">
+            <button className="primary" autoFocus onClick={() => navigate("today")}>
+              Back to Today
+            </button>
+          </div>
+        </section>
+      </div>
+    );
   const status = { ...raw, ...fx.status };
   const compiled = backend.compileWorkout(s.workout);
   const trainerOk = status.trainer === "connected";

@@ -9,6 +9,7 @@ import { blockKind, CAP_PCT_CP, cadenceState, proposedWatts, resumePlan, RESUME,
 import { actionFor, bindings, rideScreen, type SlotMetric } from "../persist";
 import { backend, coreFacts, navigate, RECONNECT_NOTICE_S, sceneId, UNDO_WINDOW_S, useMetric, usePoll, useSession, type RideSession } from "../session";
 import { play, useRideSounds } from "../sound";
+import { reportSymptomInRide, safety } from "../safety";
 import { useStore } from "../store";
 
 const PHASE_WORD: Record<BlockKind, string> = { ramp: "Ramp", steady: "Work", onoff: "On", sprint: "Sprint", hr_recovery: "Recover", easy: "Easy", cooldown: "Cool-down", free: "Free ride" };
@@ -106,7 +107,7 @@ function ScreenRestarted({ onBack, repeated = false }: { onBack: () => void; rep
 }
 
 /** The bound key/remote button for an action, shown on the control it triggers (saddle screens). */
-export function KeyHint({ a }: { a: "coach" | "keep" | "end" | "pause" }) {
+export function KeyHint({ a }: { a: "coach" | "keep" | "end" | "pause" | "symptom" }) {
   const b = useStore(bindings);
   const k = b[a][0] ?? "";
   return <kbd className="keyhint">{k === " " ? "Space" : k === "Escape" ? "Esc" : k}</kbd>;
@@ -132,12 +133,13 @@ function RideScreen({ s }: { s: RideSession }) {
   const fx = useStore(sceneFixture);
   const config = useStore(rideScreen);
   const keys = useStore(bindings);
-  const [dialog, setDialog] = useState<"keys" | "end" | null>(null);
+  const [dialog, setDialog] = useState<"keys" | "end" | null>(fx.endDialog ? "end" : null);
   const status = raw ? { ...raw, ...fx.status } : null;
   const now = useNow(status?.state === "paused" || status?.trainer !== "connected");
   const facts = status ? coreFacts(s, status, now) : null;
   const left = useMetric("block_remaining", 4);
   const feel = useFeel();
+  const safe = useStore(safety);
 
   const pending = nudges.find((n) => n.status === "pending");
   const undoable = status ? nudges.findLast((n) => n.status === "auto_applied" && !reverted.has(n.callId) && status.t - n.t < UNDO_WINDOW_S) : undefined;
@@ -160,6 +162,7 @@ function RideScreen({ s }: { s: RideSession }) {
       if (!a) return;
       e.preventDefault();
       if (a === "end") return setDialog("end");
+      if (a === "symptom") return stopForSymptom();
       if ((a === "coach" || a === "keep") && performance.now() - laneSince.current.at < DEBOUNCE_MS) return;
       if (a === "pause") {
         if (status.state === "riding") backend.ride.pause();
@@ -182,6 +185,7 @@ function RideScreen({ s }: { s: RideSession }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [s, status, pending, undoable, dialog, keys, fx.feelPrompt, feel]);
 
+  if (safe.symptomInRide) return <SymptomStopped />;
   if (!status || !current || !facts) return null;
   const { workout, compiled } = current;
   const block = compiled.blocks[status.blockIndex];
@@ -217,6 +221,9 @@ function RideScreen({ s }: { s: RideSession }) {
           <button onClick={() => setDialog(null)}>Keep riding</button>
           <button className="primary" onClick={() => (backend.ride.stop(), navigate("review"))}>
             End ride
+          </button>
+          <button className="symptom-btn" onClick={() => (setDialog(null), stopForSymptom())}>
+            <KeyHint a="symptom" /> Stopping because of chest pain, dizziness or feeling unwell
           </button>
         </Dialog>
       )}
@@ -265,6 +272,37 @@ function useFeel(): Feel {
     cycle: () => touch(FEEL_WORDS[(choice ? FEEL_WORDS.indexOf(choice) + 1 : 0) % FEEL_WORDS.length] ?? "easy"),
     skip: () => (setChoice(null), setCommitted(true)),
   };
+}
+
+/**
+ * In-ride symptom (DESIGN §5.2, §5.8): one deliberate action — its own binding, or the End dialog's
+ * symptom button — stops the workout safely. Production: the core releases ERG to 0 % resistance at
+ * once and closes the workout (#81); the prototype pauses the mock, which leaves the trainer free.
+ */
+function stopForSymptom() {
+  backend.ride.pause();
+  reportSymptomInRide();
+  play.warning();
+}
+
+function SymptomStopped() {
+  const elapsed = useMetric("elapsed", 1);
+  return (
+    <div className="symptom-stop" role="alertdialog" aria-label="Workout stopped for a symptom">
+      <span className="eyebrow">Workout stopped · trainer released</span>
+      <h1>Stop riding and rest</h1>
+      <p className="emergency">Chest pain or pressure, fainting, or a racing heart with dizziness: call emergency services now (112 / 911).</p>
+      <ul>
+        <li>The trainer has no resistance now. Stop pedalling, unclip, sit down somewhere safe.</li>
+        <li>Your ride ({mmss(elapsed)}) is saved. crank won't plan or coach rides until a doctor has checked you and you record the clearance.</li>
+      </ul>
+      <div className="actions saddle">
+        <button className="primary" autoFocus onClick={() => (backend.ride.stop(), navigate("review"))}>
+          <KeyHint a="coach" /> Save and close the ride
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function undo(s: RideSession, n: CoachNudge) {
@@ -851,6 +889,8 @@ function KeysList() {
     ["skip", "Skip block"],
     ["minus", "Intensity −5 %"],
     ["plus", "Intensity +5 %"],
+    ["end", "End ride (asks first)"],
+    ["symptom", "Report a symptom: stops the workout and releases the trainer"],
   ];
   return (
     <>

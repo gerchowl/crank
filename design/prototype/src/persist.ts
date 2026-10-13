@@ -74,7 +74,7 @@ export function setAutonomy(a: Autonomy) {
 }
 
 // ---------- controls: five abstract ride actions (DESIGN §7.2) ----------
-export const ACTIONS = ["coach", "keep", "pause", "skip", "minus", "plus", "end"] as const;
+export const ACTIONS = ["coach", "keep", "pause", "skip", "minus", "plus", "end", "symptom"] as const;
 export type Action = (typeof ACTIONS)[number];
 export type Bindings = Record<Action, string[]>;
 export const DEFAULT_BINDINGS: Bindings = {
@@ -85,6 +85,7 @@ export const DEFAULT_BINDINGS: Bindings = {
   minus: ["-"],
   plus: ["+", "="],
   end: ["Escape"],
+  symptom: ["!"],
 };
 function parseBindings(v: unknown): Bindings | null {
   if (typeof v !== "object" || v === null) return null;

@@ -375,5 +375,7 @@ export interface SceneFixture {
   freeConfirm?: boolean;
   /** Ride: a free ride chosen under a medical stop */
   freeRide?: boolean;
+  /** Ride: the End dialog is open */
+  endDialog?: boolean;
 }
 export const sceneFixture = createStore<SceneFixture>({});

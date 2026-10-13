@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
-    "screens": "node scripts/screens.mjs"
+    "screens": "node scripts/screens.mjs",
+    "test:safety": "node scripts/safety.test.mjs"
   },
   "dependencies": {
     "@crank/shared": "workspace:*",

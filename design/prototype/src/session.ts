@@ -20,7 +20,7 @@ export const backend: MockBackend = createMockBackend({
 });
 
 // ---------- routing ----------
-export type View = "onboarding" | "resume" | "today" | "ready" | "ride" | "review" | "history" | "workouts" | "settings";
+export type View = "onboarding" | "resume" | "gate" | "today" | "ready" | "ride" | "review" | "history" | "workouts" | "settings";
 export interface Route { view: View; sub?: string }
 export const route = createStore<Route>({ view: "today" });
 export const navigate = (view: View, sub?: string) => {

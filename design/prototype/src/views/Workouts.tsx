@@ -8,7 +8,8 @@ import { Profile } from "../charts";
 import { editor, editorStore, type EditorState } from "../editor/model";
 import { mmss, signed } from "../format";
 import { humanToken } from "../mock/ext";
-import { backend, loadRide, navigate } from "../session";
+import { backend } from "../session";
+import { requestStart } from "../safety";
 import { useStore } from "../store";
 
 const INTENTS: [RewriteIntent, string][] = [
@@ -144,7 +145,7 @@ export function Workouts() {
           <button disabled={locked || !s.future.length} onClick={editor.redo} aria-label="Redo">
             Redo <kbd>⇧⌘Z</kbd>
           </button>
-          <button className="primary" disabled={locked || !!s.error} onClick={() => (loadRide(s.workout), navigate("ready"))}>
+          <button className="primary" disabled={locked || !!s.error} onClick={() => requestStart(s.workout, "workouts")}>
             Ride this
           </button>
         </header>

@@ -9,6 +9,7 @@ import { Ride } from "./views/Ride";
 import { Settings } from "./views/Settings";
 import { Ready, Today } from "./views/Today";
 import { Resume } from "./views/Resume";
+import { Gate } from "./views/Gate";
 import { Workouts } from "./views/Workouts";
 
 const PLACES: [View, string, string][] = [
@@ -43,6 +44,8 @@ function Screen({ view }: { view: View }) {
       return <Onboarding />;
     case "resume":
       return <Resume />;
+    case "gate":
+      return <Gate />;
     case "today":
       return <Today />;
     case "ready":

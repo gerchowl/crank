@@ -5,12 +5,16 @@ import "./app.css";
 import { App } from "./App";
 import { applyScene, scenes } from "./scenes";
 import { navigate, sceneId } from "./session";
+import { safety } from "./safety";
 
 const params = new URLSearchParams(location.search);
 const t = params.get("theme");
 const forcedTheme = t === "dark" || t === "light" ? t : null;
 
 if (params.has("list-scenes")) document.body.dataset.scenes = JSON.stringify(Object.keys(scenes));
+
+// ?stop=1: start with a medical stop on record (DESIGN §5.8; used by scripts/safety.test.mjs)
+if (params.get("stop") === "1") safety.set((s) => ({ ...s, stop: true }));
 
 let sceneError: string | null = null;
 if (sceneId) {

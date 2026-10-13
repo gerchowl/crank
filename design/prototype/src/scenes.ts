@@ -5,6 +5,7 @@ import { editor } from "./editor/model";
 import { pathNodes } from "./format";
 import { athleteModel, cappedProposal, freeRide, sceneFixture, type SceneFixture } from "./mock/ext";
 import { rideScreen } from "./persist";
+import { pendingStart, reportSymptomInRide } from "./safety";
 import { backend, loadRide, navigate, session, type View } from "./session";
 
 const CP = athleteModel[0]?.value ?? 280;
@@ -122,6 +123,13 @@ export const scenes: Record<string, Scene> = {
   "settings-coach": { view: "settings", sub: "coach" },
   "settings-controls": { view: "settings", sub: "controls" },
   "settings-ride-screen": { view: "settings", sub: "ride-screen" },
+  // the medical stop is global: every start path is blocked by the same guard (DESIGN §5.8)
+  "workouts-start-blocked": { view: "gate", sub: "blocked", setup: () => (sceneFixture.set({ medicalStop: true }), pendingStart.set({ workout: demoWorkout(CP), from: "workouts" })) },
+  "resume-start-blocked": { view: "gate", sub: "blocked", setup: () => (sceneFixture.set({ medicalStop: true }), pendingStart.set({ workout: demoWorkout(CP), from: "resume" })) },
+  "history-start-blocked": { view: "gate", sub: "blocked", setup: () => (sceneFixture.set({ medicalStop: true }), pendingStart.set({ workout: { ...demoWorkout(CP), name: "Over-unders 3×9′" }, from: "history" })) },
+  "start-recheck": { view: "gate", sub: "check", setup: () => pendingStart.set({ workout: demoWorkout(CP), from: "workouts" }) },
+  "ride-end-dialog": fixture(atThreshold, { endDialog: true }),
+  "ride-symptom-stop": ride(() => (atThreshold(), backend.ride.pause(), reportSymptomInRide())),
   "settings-health": { view: "settings", sub: "health", setup: () => sceneFixture.set({ medicalStop: true }) },
 };
 

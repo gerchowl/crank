@@ -265,6 +265,7 @@ target ("90rpm") counts as 85–95 (#13).
 | ERG released (cadence < 40 rpm 2 s) | Row 4: "⚠ ERG released · spin up to 60 rpm" / "timer runs · target returns at 60 rpm" (the block timer keeps running, ADR-0002 §7.4); cadence slot "▲ spin faster" | — |
 | Paused (user) | The plan dims (countdown, next, road); **the body stays live** (HR, cadence); row 4: "Paused 0:42" / "Resume continues the plan · trainer free". While paused the trainer is at 0 % resistance; ERG re-engages with the soft start. **A pause ≥ 2 min goes through the re-entry policy** (§6.6): "Paused 6:10" / "Resume: 3-min re-warm-up first" / "then this interval from its start" | Pause |
 | "How did that feel?" (calibrating, after a hard block) | Lane: "How was that?" with **nothing preselected**. **One mapping, no inversion:** a click or tap selects exactly the word it shows; the Coach button (key or remote) steps easy → right → hard; Keep skips. The choice **saves 3 s after the last input**, with a live countdown ("saves “hard” in 2 s") and the confirmation tone; no input within 12 s records nothing. Feeds the athlete model (#18) | click = that word · Coach = next · Keep = skip |
+| Symptom reported (§5.8) | The ride screen is replaced by "Workout stopped · trainer released": "Stop riding and rest", the emergency line, what to do, the ride is saved; the only action is **Save and close the ride**. The medical stop is now active everywhere | Report symptom (binding) or End dialog |
 | Free ride (medical stop, §5.8) | Phase word FREE RIDE; row 4 "No targets · coach off" / "your choice, logged · flat-road resistance" / "stop at any chest pain or dizziness"; the lane says "Coach off: free ride" | Pause, End |
 | Finished | Auto-navigate to Review (#6) | — |
 
@@ -363,16 +364,29 @@ relaunch shows **"Welcome back — continue at Health check (4 of 7)"**.
   | Medication that changes your heart rate? | HR | HR zones, HR-guided recoveries and HR-vs-usual coaching off; targets by power and feel; no power cap |
   | An injury that limits hard efforts? | cap | cap at threshold (100 % of CP) and no sprints |
 
-  **Medical stop** (any red flag, at onboarding or at any check-in): the screen says *see a doctor before
+  **Medical stop — a global invariant, not a Today feature.** Any red flag (at onboarding, at a re-check, or a
+  symptom reported in a ride) puts the stop on record. **While it is active, no planned or coached ride starts
+  from any path**, and the coach proposes nothing anywhere. Start paths, all routed through one guard (prototype
+  `requestStart()` in `safety.ts`; the Ready check refuses a planned ride under a stop as a second layer):
+  Today's proposal · Workouts "Ride this" · the Resume sheet (Resume and "Ride the rest") · History "Ride again"
+  · any coach or planner proposal · MCP and CLI starts. In production the **core enforces it** at its single
+  ride-start command, so no client can bypass it (**#81**). Blocked starts show why (`workouts-start-blocked`,
+  `resume-start-blocked`, `history-start-blocked`). The screen says *see a doctor before
   training*, with "if you have chest pain now, call emergency services". **The coach proposes nothing and stays
   silent** — there is no capped plan and no one-click override. Riding stays possible only as a **deliberate,
   logged free ride** (no plan, no targets, coach off, flat-road resistance): "Ride without a plan…" opens a
   confirmation that must be ticked ("I understand crank isn't advising this ride, and I'll stop at any symptom").
   The stop is lifted only by **recording a medical clearance** in Settings → Health — the date of the check (not
   in the future), who cleared the rider, and an explicit statement — and every change is kept in a log.
-  **Re-check:** every Today check-in asks the red-flag question again ("Since your last ride: chest pain or
-  pressure, fainting, or a racing heartbeat with dizziness?"), with no default; Start stays disabled until it is
-  answered, and "yes" puts the stop back. Screens `onboarding-health-stop`, `today-medical-stop`,
+  **Re-check:** once a day, before the first start, the rider answers **all five red flags** again (the same
+  list as above, each yes/no, no default; "Answer all 5" until complete). It is part of the Today check-in, and
+  any other start path that comes first (Workouts, Resume, History) shows the same check before the ride
+  (`start-recheck`). Any "yes" puts the stop back.
+  **During a ride:** a symptom is reported with one deliberate action — the **Report symptom** binding (default
+  `!`, bindable to a remote button) or "Stopping because of chest pain, dizziness or feeling unwell" in the End
+  dialog. The workout stops at once and the trainer is released (production: ERG to 0 % resistance, workout
+  closed, #81), the medical stop is set, and the screen gives the guidance: emergency line, "stop pedalling, sit
+  down", the ride is saved (`ride-symptom-stop`, `ride-end-dialog`). Nothing on that screen resumes the ride. Screens `onboarding-health-stop`, `today-medical-stop`,
   `today-free-ride-confirm`, `ready-free-ride`, `ride-free`, `settings-health`.
 - **Devices**: pairing shows **live readings** (W, rpm, bpm) so "pedal a few strokes" visibly works.
 - **Baseline**: import / assessment week / passive learning, each with what it costs and how soon it is confident.
@@ -509,8 +523,9 @@ contrast per §6.3.
   at 300 W").
 
 ### 7.2 Hands-free input and the decision model (decided)
-Ride input is **six abstract actions**: **Coach**, **Keep**, **Pause**, **Skip**, **Intensity − / +**, **End**
-(always asks first; Keep riding is focused). They work on every ride-time screen, including the restart and
+Ride input is **seven abstract actions**: **Coach**, **Keep**, **Pause**, **Skip**, **Intensity − / +**, **End**
+(always asks first; Keep riding is focused), and **Report symptom** (stops the workout at once — it is a safety
+action, so it is never shared with another binding; §5.8). They work on every ride-time screen, including the restart and
 long-loss states.
 
 **Decision model — no input can reverse a rider's coach decision by accident:**
@@ -529,7 +544,7 @@ long-loss states.
   nothing**.
 
 **Bindings**: keyboard `Enter` / `Y` (Coach), `N` / `Backspace` (Keep), `Space` (Pause), `S` (Skip), `−` / `+`,
-`Esc` (End). The lane shows the grammar for its state ("Coach = accept · Keep = keep plan").
+`Esc` (End), `!` (Report symptom). The lane shows the grammar for its state ("Coach = accept · Keep = keep plan").
 Any HID device can be bound in Settings → Controls with *Learn*, so a remote that sends media keys or arrows
 works without code changes. **Minimum remote grammar: two buttons = Coach + Pause** (Keep then only via
 silence for questions, on screen for "back to plan"); a one-button remote binds Coach only and everything
@@ -617,6 +632,10 @@ sizing (#52), remote test (#53).
 ## 12. Prototype and screenshots
 - `design/prototype/`: Vite + React 19 + React Compiler + TypeScript strict, against `@crank/shared`. A design
   artifact; components may be reused by the production UI, the fixtures in `src/mock/ext.ts` may not.
+- Safety: `pnpm -C design/prototype test:safety` drives the prototype with Playwright and fails unless every
+  start path is blocked under a stop (only the ticked free ride starts), the re-check asks all five flags with no
+  default, and the in-ride symptom action stops the workout and sets the stop. `?stop=1` starts the prototype with
+  a stop on record.
 - Interactive: `pnpm -C design/prototype dev` (real-time mock with sound; `?speed=10` or `60` for a faster
   ride; `?first=1` starts in onboarding).
 - Scenes: `?scene=<id>&theme=dark|light` builds a seeded mock (seed 42) on a virtual clock, advances it to the
