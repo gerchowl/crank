@@ -28,11 +28,10 @@
         fetcherVersion = 4; hash = "";
         # Temporary archive-header diagnostics for #28; removed after comparison.
         postFixup = ''
-          echo PNPM_DIAGNOSTIC_HEADER_BEGIN
-          zstd -dc "$out/pnpm-store.tar.zst" > "$TMPDIR/store.tar"
-          head -c 32768 "$TMPDIR/store.tar" | base64 -w0
+          echo PNPM_DIAGNOSTIC_LIST_BEGIN
+          tar --zstd --full-time --numeric-owner -tvf "$out/pnpm-store.tar.zst" | gzip -nc | base64 -w0
           echo
-          echo PNPM_DIAGNOSTIC_HEADER_END
+          echo PNPM_DIAGNOSTIC_LIST_END
         '';
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
