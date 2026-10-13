@@ -79,7 +79,7 @@ impl Pacer {
         self.pair_tail = self
             .pair_tail
             .filter(|page| changed.iter().any(|(p, _)| p[4] == *page));
-        changed.sort_by_key(|(p, since)| (*since, self.pair_tail.is_some_and(|page| p[4] != page)));
+        changed.sort_by_key(|(_, since)| *since);
         self.continuation = self
             .continuation
             .filter(|page| changed.iter().any(|(p, _)| p[4] == *page));
