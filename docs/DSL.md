@@ -110,14 +110,27 @@ let nodes = crank_domain::workout::parse_dsl("1m 50%", 280.0, &mut ids)?;
 ## Tree-helper ownership
 
 When syncing text → tree in an editor, carry selection by tree path, not by ID.
-The reference's `reId(nodes)` deep-copies with fresh identities when inserting a
-snippet or duplicating a subtree; `findNode` performs a depth-first ID lookup.
-These are editor/tree utilities rather than compiler dependencies: the reference
-compiler imports neither. Their production port belongs with the remaining
-workout/compiler/editor tree work tracked by [#152](https://github.com/gerchowl/crank/issues/152)
-(under #69 and #31). `withoutIds` is a private
-Rust test helper; it is not a production API. #69 owns helpers required by the
-compiler and can promote a shared tree utility if compilation needs it.
+`re_id` and `find_node` (#152) are ported from the reference `reId` / `findNode`
+and live in `workout/tree.rs`. They are editor/tree utilities, not compiler
+dependencies: the reference compiler imports neither.
+
+- `re_id(nodes, &mut ids) -> Result<Vec<WorkoutNode>, TreeError>` deep-copies a
+  subtree (snippet insertion, duplication) and replaces the ID of every step and
+  repeat with one drawn from the caller-owned `ids` source, requested in
+  pre-order (a repeat before its children, siblings in order). Everything but IDs
+  is preserved exactly. The helper does not check uniqueness: supply a source that
+  is fresh across the whole workout (the reference's `uid` is a global counter;
+  the Rust port has none). Repeats nested deeper than `MAX_NESTING_DEPTH` return
+  `TreeError::NestingTooDeep` before any ID is consumed, as the compiler does.
+- `find_node(nodes, id) -> Option<&WorkoutNode>` is a depth-first pre-order
+  lookup. With duplicate IDs the first match in that order wins (a repeat is
+  tested before its children), as in the reference; a missing ID gives `None`.
+  It is iterative and safe on trees of any depth.
+
+`withoutIds` is a private Rust test helper; it is not a production API.
+Reference parity is tested against `tests/fixtures/tree_helpers.json`, generated
+from the frozen TS by `tests/fixtures/export-tree-reference.test.ts` (random TS
+IDs are reduced to their `s`/`r` kind prefix).
 
 ## Rust port notes (ADR-0001 §3–4, #68)
 
@@ -163,9 +176,12 @@ The Rust parser accepts at most `MAX_NESTING_DEPTH` (32) enclosing repeats;
 `DslErrorKind::NestingTooDeep { max: 32 }` at that repeat's count token.
 This is a Rust-side stack-safety bound absent from the frozen TS reference.
 Both the maximum-depth success and a 2,000-level rejection are tested on a
-256 KB worker stack in the default nextest gate. Sibling items do not consume
-nesting depth. The bound also limits the depth of trees returned by the parser;
-callers constructing trees directly must manage their own traversal depth.
+256 KB worker stack in the default nextest gate. That guarantee is measured on
+debug builds (the worst case for frame size); a 64 KB stack overflows.
+Sibling items do not consume nesting depth. The bound also limits the depth of
+trees returned by the parser; callers constructing trees directly must manage
+their own traversal depth (`re_id` rejects trees past the bound; `find_node` is
+iterative).
 
 Numeric literals that overflow `f64` and duration arithmetic that produces
 infinity return `DslErrorKind::NumericOverflow` instead of an infinite AST
