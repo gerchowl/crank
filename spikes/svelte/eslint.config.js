@@ -44,6 +44,13 @@ export default ts.config(
     },
   },
   {
+    files: ["**/*.svelte"],
+    rules: {
+      // `{@render snippet()}` is typed as a void call by the parser → false positives in markup
+      "@typescript-eslint/no-confusing-void-expression": "off",
+    },
+  },
+  {
     files: ["*.config.js", "*.config.ts", "scripts/*.mjs"],
     ...ts.configs.disableTypeChecked,
   },
