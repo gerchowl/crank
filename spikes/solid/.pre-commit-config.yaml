@@ -1,0 +1,10 @@
+# prek (workspace mode: hooks run with this directory as cwd) — guardrails on every commit.
+repos:
+  - repo: local
+    hooks:
+      - id: solid-check
+        name: pnpm check (typecheck + eslint-plugin-solid)
+        entry: pnpm check
+        language: system
+        pass_filenames: false
+        types_or: [ts, tsx, javascript, json]

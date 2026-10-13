@@ -1,0 +1,80 @@
+/* Neutral token layers (surfaces, ink, diverging, status) per mode. Preset-dependent tokens
+   (accent, series steps, zone + fatigue ramps) live in the generated palette.css.
+   Mode: data-mode="dark" | "light" | "auto" (auto follows prefers-color-scheme). */
+
+:root {
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --gap: 8px;
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+}
+
+/* dark = default "pain cave" */
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --surface-0: #0d0d0d;
+  --surface-1: #1a1a19;
+  --surface-2: #262624;
+  --ink-primary: #f0efec;
+  --ink-secondary: #c3c2b7;
+  --ink-muted: #898781;
+  --border: rgba(255, 255, 255, 0.1);
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --focus: #8fb8ff;
+  --target: #a3a29c;
+  --div-neg: #5598e7;
+  --div-mid: #5a5a56;
+  --div-pos: #e66767;
+  --good-ink: #0ca30c;
+}
+
+:root[data-mode="light"],
+:root[data-mode="auto"] {
+  color-scheme: light;
+  --surface-0: #f2f1ee;
+  --surface-1: #fcfcfb;
+  --surface-2: #ecebe7;
+  --ink-primary: #0b0b0b;
+  --ink-secondary: #52514e;
+  --ink-muted: #75736e;
+  --border: rgba(11, 11, 11, 0.12);
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --focus: #1c5cab;
+  --target: #6e6c66;
+  --div-neg: #256abf;
+  --div-mid: #c9c8c2;
+  --div-pos: #c63a3a;
+  --good-ink: #006300;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where([data-mode="auto"]) {
+    color-scheme: dark;
+    --surface-0: #0d0d0d;
+    --surface-1: #1a1a19;
+    --surface-2: #262624;
+    --ink-primary: #f0efec;
+    --ink-secondary: #c3c2b7;
+    --ink-muted: #898781;
+    --border: rgba(255, 255, 255, 0.1);
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --focus: #8fb8ff;
+    --target: #a3a29c;
+    --div-neg: #5598e7;
+    --div-mid: #5a5a56;
+    --div-pos: #e66767;
+    --good-ink: #0ca30c;
+  }
+}
+
+:root[data-oled="true"]:where([data-mode="dark"]) {
+  --surface-0: #000;
+  --surface-1: #0a0a0a;
+}
