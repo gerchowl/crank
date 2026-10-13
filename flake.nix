@@ -25,14 +25,10 @@
         # pnpm 12 --force still filters optional dependencies by host platform.
         # Fetch both supported targets so one hash works on macOS and Linux.
         prePnpmInstall = ''pnpm config set --location=project --json supportedArchitectures '["darwin-arm64","linux-x64"]' '';
-        fetcherVersion = 4; hash = "";
-        # Temporary archive-header diagnostics for #28; removed after comparison.
-        postFixup = ''
-          echo PNPM_DIAGNOSTIC_LIST_BEGIN
-          tar --zstd --full-time --numeric-owner -tvf "$out/pnpm-store.tar.zst" | gzip -nc | base64 -w0
-          echo
-          echo PNPM_DIAGNOSTIC_LIST_END
-        '';
+        # pnpm leaves an empty v11/links directory on macOS but not Linux.
+        # Empty store directories carry no cache data; normalize before packing.
+        postInstall = ''find "$storePath" -type d -empty -delete'';
+        fetcherVersion = 4; hash = "sha256-zMwMh5giTYjr/vo8Lj7qdADJVXJmS9dYnErMrVH2R04=";
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
         pname = name; version = "0.1.0"; src = frontendSrc;
