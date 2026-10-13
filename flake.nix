@@ -79,6 +79,23 @@
       # cargo-deny needs a git checkout it can lock, so the pinned input is copied into one at build time.
       denyConfig = (pkgs.formats.toml { }).generate "deny.toml" (let cfg = builtins.fromTOML (builtins.readFile ./deny.toml); in
         cfg // { advisories = cfg.advisories // { db-path = "@advisoryDbRoot@"; }; });
+      # RustSec advisories run offline against the pinned `advisory-db` input (ADR-0001 §9.5, #124).
+      # The directory name is cargo-deny's hash of the default db URL (see AGENTS.md).
+      denyCheck = { pname, src, cargoDenyChecks, manifest ? "Cargo.toml", cargoVendorDir ? null }:
+        craneLib.cargoDeny ({
+          inherit pname; version = "0.1.0"; inherit src cargoDenyChecks;
+          cargoDenyExtraArgs = "--offline --manifest-path ${manifest} --config $TMPDIR/deny.toml";
+          nativeBuildInputs = [ pkgs.git ];
+          preBuild = ''
+            export advisoryDbRoot=$TMPDIR/advisory-dbs
+            db=$advisoryDbRoot/advisory-db-3157b0e258782691
+            mkdir -p $db && cp -R ${advisory-db}/. $db && chmod -R u+w $db
+            substitute ${denyConfig} $TMPDIR/deny.toml --subst-var advisoryDbRoot
+            export GIT_AUTHOR_NAME=nix GIT_AUTHOR_EMAIL=nix@invalid GIT_COMMITTER_NAME=nix GIT_COMMITTER_EMAIL=nix@invalid
+            export GIT_AUTHOR_DATE="@${toString advisory-db.lastModified}" GIT_COMMITTER_DATE="@${toString advisory-db.lastModified}"
+            git -C $db init -q && git -C $db add -A && git -C $db commit -q -m pinned
+          '';
+        } // lib.optionalAttrs (cargoVendorDir != null) { inherit cargoVendorDir; });
       checks = {
         build = desktop "";
         fmt = craneLib.cargoFmt { pname = "crank"; version = "0.1.0"; src = source cargoFiles; };
@@ -88,22 +105,23 @@
         doc = craneLib.cargoDoc (rustCheck // { RUSTDOCFLAGS = "-D warnings"; });
         # RustSec advisories run offline against the pinned `advisory-db` input (ADR-0001 §9.5, #124).
         # The directory name is cargo-deny's hash of the default db URL (see AGENTS.md).
-        deny = craneLib.cargoDeny {
-          pname = "crank"; version = "0.1.0"; src = source cargoFiles;
+        deny = denyCheck {
+          pname = "crank";
+          src = source cargoFiles;
           cargoDenyChecks = "advisories bans licenses sources -A index-failure";
           # Yanked releases need the crates.io index, which the sandbox cannot reach: that
           # lint is silenced here and enforced by .github/workflows/advisories.yml (#181).
-          cargoDenyExtraArgs = "--offline --config $TMPDIR/deny.toml";
-          nativeBuildInputs = [ pkgs.git ];
-          preBuild = ''
-            export advisoryDbRoot=$TMPDIR/advisory-dbs
-            db=$advisoryDbRoot/advisory-db-3157b0e258782691
-            mkdir -p $db && cp -R ${advisory-db}/. $db && chmod -R u+w $db
-            substituteAll ${denyConfig} $TMPDIR/deny.toml
-            export GIT_AUTHOR_NAME=nix GIT_AUTHOR_EMAIL=nix@invalid GIT_COMMITTER_NAME=nix GIT_COMMITTER_EMAIL=nix@invalid
-            export GIT_AUTHOR_DATE="@${toString advisory-db.lastModified}" GIT_COMMITTER_DATE="@${toString advisory-db.lastModified}"
-            git -C $db init -q && git -C $db add -A && git -C $db commit -q -m pinned
-          '';
+        };
+        # crates/crank-fec/fuzz is its own workspace (dev-only, never shipped) with its own lockfile, so the
+        # root `deny` never sees it. Same offline advisory gate, advisories only: bans/licenses/sources
+        # are policy for shipped code and the fuzz workspace's libfuzzer-sys tree is not (#185).
+        deny-fuzz = denyCheck {
+          pname = "crank-fec-fuzz";
+          src = source (lib.fileset.unions [ ./Cargo.toml ./crates/crank-fec/Cargo.toml ./crates/crank-fec/src
+            ./crates/crank-fec/fuzz/Cargo.toml ./crates/crank-fec/fuzz/Cargo.lock ./crates/crank-fec/fuzz/fuzz_targets ]);
+          cargoVendorDir = craneLib.vendorCargoDeps { cargoLock = ./crates/crank-fec/fuzz/Cargo.lock; };
+          cargoDenyChecks = "advisories -A index-failure";
+          manifest = "crates/crank-fec/fuzz/Cargo.toml";
         };
         bindings-drift = craneLib.mkCargoDerivation (rustCheck // {
           src = source (lib.fileset.unions [ rustFiles ./app/src/bindings.ts ]);
