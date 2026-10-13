@@ -4,6 +4,7 @@
 import { useState, type ReactNode } from "react";
 import { defaultProfile, FOCI, FORMAT_NAME, FORMATS, profileEffects, profileFixture, RETURN_GAP_DAYS, type Effect, type TrainingProfile } from "../mock/wish";
 import { GradeChip, WhyChip } from "./Why";
+import { sceneFixture } from "../mock/ext";
 
 const weeksTo = (date: string) => Math.round((Date.parse(date) - Date.UTC(2026, 9, 13)) / (7 * 86400000));
 
@@ -20,7 +21,9 @@ export function ProfileForm({ inOnboarding = false }: { inOnboarding?: boolean }
   // onboarding starts from the default (general fitness), with the budget pre-filled from the Background step
   const initial = inOnboarding ? { ...defaultProfile, hoursPerWeek: 6 } : profileFixture;
   const [saved, setSaved] = useState<TrainingProfile>(initial);
-  const [p, setP] = useState<TrainingProfile>(inOnboarding ? initial : profileFixture);
+  // scene `settings-profile-editing`: an unsaved draft that adds, removes and suspends lines
+  const draft: TrainingProfile = { ...profileFixture, focus: "base", hoursPerWeek: 3, event: null, returning: { since: "2026-10-13" } };
+  const [p, setP] = useState<TrainingProfile>(inOnboarding ? initial : sceneFixture.get().profileDraft ? draft : profileFixture);
   const dirty = JSON.stringify(p) !== JSON.stringify(saved);
   const set = (patch: Partial<TrainingProfile>) => setP((x) => ({ ...x, ...patch }));
   const before = profileEffects(saved);

@@ -35,8 +35,14 @@ export function capViolations(workout: Workout): string[] {
 
 /** The one guard every start path calls. */
 export function requestStart(workout: Workout, from: StartPath) {
-  // the medical stop outranks everything for planned rides; the cap then binds every ride, the free ride too (§15.2)
-  if (capViolations(workout).length && (!stopActive() || isFreeRide(workout))) {
+  // the medical stop wins everywhere; with a cap as well even the free ride is refused (§5.8: stop + cap = no ride)
+  if (stopActive() && (!isFreeRide(workout) || sceneFixture.get().healthCap)) {
+    pendingStart.set({ workout, from });
+    navigate("gate", "blocked");
+    return;
+  }
+  // the cap binds every other start: nothing above it, nothing the trainer can't hold (§15.2)
+  if (capViolations(workout).length) {
     pendingStart.set({ workout, from });
     navigate("gate", "capped");
     return;
@@ -45,11 +51,6 @@ export function requestStart(workout: Workout, from: StartPath) {
     // reached only through the ticked free-ride confirmation; logged with its reason
     loadRide(workout);
     navigate("ready");
-    return;
-  }
-  if (stopActive()) {
-    pendingStart.set({ workout, from });
-    navigate("gate", "blocked");
     return;
   }
   if (!safety.get().checkedToday) {

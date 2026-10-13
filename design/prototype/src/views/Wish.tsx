@@ -14,7 +14,7 @@ export function Key({ a }: { a: Action }) {
 }
 
 /** The grid: plain buttons in reading order (Tab / arrow-free), each announcing its state in words. */
-function Matrix({ o, capped, cursor, onPick }: { o: WishOutcome; capped: boolean; cursor?: Cell; onPick?: (c: Cell) => void }) {
+function Matrix({ o, capped, cursor, onPick, provisional = false }: { o: WishOutcome; capped: boolean; cursor?: Cell; onPick?: (c: Cell) => void; provisional?: boolean }) {
   const adapted = o.relation === "adapted";
   return (
     <div className={cursor ? "matrix big" : "matrix"} role="group" aria-label="Wish: main effort × format">
@@ -36,7 +36,7 @@ function Matrix({ o, capped, cursor, onPick }: { o: WishOutcome; capped: boolean
             const locked = lockedByCap(c, capped);
             const isWish = sameCell(o.wish, c);
             const isPlan = sameCell(o.delivered, c);
-            const word = locked ? "cap" : isWish && isPlan ? (adapted ? "≈ wish" : "✓ wish") : isWish ? "wish" : isPlan ? (o.wish ? "plan" : "coach") : "";
+            const word = locked ? "cap" : isWish && isPlan ? (adapted ? "≈ wish" : provisional ? "↻ wish" : "✓ wish") : isWish ? "wish" : isPlan ? (o.wish ? "plan" : "coach") : "";
             return (
               <button
                 key={f}
@@ -58,7 +58,8 @@ function Matrix({ o, capped, cursor, onPick }: { o: WishOutcome; capped: boolean
 }
 
 /** Desk: the full matrix, one click per wish; a carried-over wish is shown with its expiry. */
-export function WishCard({ o, capped, carried, onWish, onDropCarried }: { o: WishOutcome; capped: boolean; carried: WishRecord | null; onWish: (w: Wish) => void; onDropCarried: () => void }) {
+/** `provisional`: the check-in isn't confirmed yet, so nothing reads as granted (↻, not ✓). */
+export function WishCard({ o, capped, carried, provisional, onWish, onDropCarried }: { o: WishOutcome; capped: boolean; carried: WishRecord | null; provisional: boolean; onWish: (w: Wish) => void; onDropCarried: () => void }) {
   return (
     <section className="card wish" aria-label="Your wish">
       <h2>Anything you'd like to ride?</h2>
@@ -70,7 +71,7 @@ export function WishCard({ o, capped, carried, onWish, onDropCarried }: { o: Wis
           ↻ Carried over from {carried.setOn}: <b>{cellName(carried.cell)}</b> · expires {carried.expires}. <button onClick={onDropCarried}>Drop it</button>
         </p>
       )}
-      <Matrix o={o} capped={capped} onPick={(c) => onWish(sameCell(o.wish, c) ? null : c)} />
+      <Matrix o={o} capped={capped} provisional={provisional} onPick={(c) => onWish(sameCell(o.wish, c) ? null : c)} />
       <p className="small muted">
         {capped ? "Your injury cap: nothing above threshold, ERG only — no hills in SIM, open rides or race surges. " : ""}How long is set by Time above. From the saddle: <Key a="skip" /> wish mode.
       </p>
@@ -79,9 +80,10 @@ export function WishCard({ o, capped, carried, onWish, onDropCarried }: { o: Wis
   );
 }
 
-export function outcomeHead(o: WishOutcome, anyway: boolean, askedMin: number): string {
+export function outcomeHead(o: WishOutcome, anyway: boolean, askedMin: number, provisional = false): string {
   const w = o.wish ?? o.delivered;
   if (anyway) return `Your call: ${cellName(w)} · logged`;
+  if (provisional && o.relation === "as_wished") return `↻ Your wish, after your check-in: ${cellName(w)}`;
   const steps = INTENSITIES.indexOf(w.intensity) - INTENSITIES.indexOf(o.delivered.intensity);
   // one line at T3+ (≤ ~36 characters): the format is named once when it didn't change
   const change = w.format === o.delivered.format ? `${INTENSITY_NAME[w.intensity][0]} → ${cellName(o.delivered)}` : `${cellName(w)} → ${cellName(o.delivered)}`;
@@ -93,7 +95,7 @@ export function outcomeHead(o: WishOutcome, anyway: boolean, askedMin: number): 
     case "adapted":
       return `≈ Wish, shortened: ${fmtMin(o.minutes)}, not ${fmtMin(askedMin)}`;
     case "deferred":
-      return `Wish ${change} ▼${steps}`;
+      return `Wish ${change}, ${steps} step${steps === 1 ? "" : "s"} easier`;
     case "blocked_by_safety":
       return `⚠ Cap: ${change}`;
   }

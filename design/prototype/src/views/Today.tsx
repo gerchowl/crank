@@ -75,7 +75,7 @@ export function Today() {
       // the planner respects the health cap first, then the wish (stand-ins until the planner knows both)
       const o = planWish(wish, { legs: c.legs, sleep: c.sleep, minutes: c.minutes, capped: !!cap, coachPick });
       const own = anyway && o.overridable;
-      setProposal(wish ? proposalFor(own ? wish : o.delivered, own ? c.minutes : o.minutes, cpW) : cap ? cappedProposal(cpW, c.minutes) : p);
+      setProposal(wish ? proposalFor(own ? wish : o.delivered, own ? c.minutes : o.minutes, cpW, !!cap) : cap ? cappedProposal(cpW, c.minutes) : p);
       setPending(false);
       if (wish && wishAt.current) play.wish(o.relation === "as_wished" || own); // §7.3: granted vs changed
     });
@@ -124,7 +124,13 @@ export function Today() {
     "data-max-w": compiled ? Math.round(Math.max(...compiled.blocks.map((b) => Math.max(b.powerFrom, b.powerTo)))) : undefined,
     "data-free": compiled ? compiled.blocks.filter((b) => b.phase === "free").length : undefined,
   };
-  const facts = proposal ? proposalReasons(proposal, c.minutes, word("legs", c.legs), word("sleep", c.sleep), capped && !wish) : [];
+  // "Why today" reports the minutes the proposal actually uses (an adapted wish is shorter than the time chosen)
+  const shortened = outcome.relation === "adapted" && !rideAnyway;
+  const facts = proposal
+    ? proposalReasons(proposal, shortened ? outcome.minutes : c.minutes, word("legs", c.legs), word("sleep", c.sleep), capped && !wish).map((f) =>
+        shortened && f.startsWith("Fits your") ? `Shortened to ${outcome.minutes} of your ${c.minutes} min: ${proposal.workout.name}.` : f,
+      )
+    : [];
   const profile = compiled && <Profile blocks={compiled.blocks} zones={backend.zones.power} height={checkinDone ? 64 : 100} capW={capped ? capW : undefined} label="Proposed workout profile" />;
 
   return (
@@ -188,13 +194,13 @@ export function Today() {
               <RedFlagCheck compact onDone={() => undefined} />
             )}
           </section>
-          {!stop && <WishCard o={outcome} capped={capped} carried={carried} onWish={setWish} onDropCarried={() => (setCarried(null), setWish(null))} />}
+          {!stop && <WishCard o={outcome} capped={capped} carried={carried} provisional={!checkinDone} onWish={setWish} onDropCarried={() => (setCarried(null), setWish(null))} />}
           <WeekCard />
         </div>
 
         <div className="col">
           {stop ? (
-            <MedicalStop open={freeConfirm} onOpen={() => setFreeConfirm(true)} onClose={() => setFreeConfirm(false)} />
+            <MedicalStop open={freeConfirm && !capped} capped={capped} onOpen={() => setFreeConfirm(true)} onClose={() => setFreeConfirm(false)} />
           ) : (
             <>
               {capped && !checkinDone && (
@@ -280,7 +286,7 @@ function OutcomeDesk({ o, anyway, askedMin }: { o: WishOutcome; anyway: boolean;
   return (
     <div className={`wish-outcome rel-${anyway ? "anyway" : o.relation}`} data-relation={anyway ? "anyway" : o.relation} aria-live="polite">
       <p className="wish-line">
-        <b>{outcomeHead(o, anyway, askedMin)}</b>
+        <b>{outcomeHead(o, anyway, askedMin, true)}</b>
       </p>
       {!anyway && o.reasons.length > 0 && (
         <ul className="reasons">
@@ -301,7 +307,7 @@ function OutcomeDesk({ o, anyway, askedMin }: { o: WishOutcome; anyway: boolean;
  * Medical stop (DESIGN §5.8): a red-flag answer means see a doctor first. The coach proposes nothing;
  * riding is still possible only as a deliberate, logged choice without plan, targets or coach.
  */
-function MedicalStop({ open, onOpen, onClose }: { open: boolean; onOpen: () => void; onClose: () => void }) {
+function MedicalStop({ open, onOpen, onClose, capped }: { open: boolean; onOpen: () => void; onClose: () => void; capped: boolean }) {
   const [understood, setUnderstood] = useState(false);
   return (
     <section className="card medical-stop" role="alert" aria-label="See a doctor before training">
@@ -315,13 +321,14 @@ function MedicalStop({ open, onOpen, onClose }: { open: boolean; onOpen: () => v
         <li>The coach proposes nothing and stays silent.</li>
         <li>To lift this, record the clearance (date and who cleared you) in Settings → Health. It is not a one-click switch.</li>
         <li>Every check-in asks about these symptoms again.</li>
+        {capped && <li className="status-warning">With your injury cap on as well, there is no ride at all — not even a free ride: without a plan the trainer can't hold the cap.</li>}
       </ul>
       {!open ? (
         <div className="actions">
           <button className="primary big" onClick={() => navigate("settings", "health")}>
             Record a medical clearance
           </button>
-          <button onClick={onOpen}>Ride without a plan…</button>
+          {!capped && <button onClick={onOpen}>Ride without a plan…</button>}
         </div>
       ) : (
         <div className="free-confirm" role="dialog" aria-label="Ride without a plan">
