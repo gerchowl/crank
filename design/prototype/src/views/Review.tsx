@@ -5,6 +5,7 @@ import { Bars, gaps, Panel, PdCurve, Profile, TimeAxis, Trend } from "../charts"
 import { mmss, num, signed } from "../format";
 import { ageDays, athleteModel, calibration, coachOffsetPct, coachReason, cpTrend, intentVerdict, metricValid, ON_TARGET_DEF, pastRides, planTarget, sceneFixture, tauClass, tauSd, TAU_SLOWER_FACTOR, USUAL_TAU_SD_S, usualHr, workIntervals } from "../mock/ext";
 import { backend, navigate, noStatus, usePoll, useMetric, useSession, type RideSession } from "../session";
+import { requestStart } from "../safety";
 import { useStore } from "../store";
 
 export function Review() {
@@ -531,7 +532,8 @@ export function History() {
           )}
           {pastRides.map((r) => {
             const parsed = backend.parseDsl(r.dsl, backend.athlete.ftp);
-            const blocks = "error" in parsed ? [] : backend.compileWorkout({ id: r.id, name: r.name, ftp: backend.athlete.ftp, nodes: parsed.nodes }).blocks;
+            const workout = "error" in parsed ? null : { id: r.id, name: r.name, ftp: backend.athlete.ftp, nodes: parsed.nodes };
+            const blocks = workout ? backend.compileWorkout(workout).blocks : [];
             return (
               <li key={r.id}>
                 <div className="ride-row">
@@ -544,6 +546,12 @@ export function History() {
                     {mmss(r.seconds)} · TSS {r.tss}
                   </span>
                   <span className="muted">RPE {r.rpe}</span>
+                  {/* repeating a past ride is a start path too: it goes through the shared guard */}
+                  {workout && (
+                    <button className="ride-again" onClick={() => requestStart(workout, "history")}>
+                      Ride again
+                    </button>
+                  )}
                 </div>
               </li>
             );

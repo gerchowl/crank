@@ -4,7 +4,8 @@
 import { demoWorkout } from "@crank/shared";
 import { mmss } from "../format";
 import { devices, interruptedRide, resumePlan, RESUME, sceneFixture } from "../mock/ext";
-import { backend, loadRide, navigate } from "../session";
+import { backend, navigate } from "../session";
+import { requestStart } from "../safety";
 import { useStore } from "../store";
 import { KeyHint } from "./Ride";
 
@@ -16,7 +17,7 @@ export function Resume() {
   const agoS = fx.stoppedAgoS ?? 240;
   const plan = resumePlan(agoS, r.inWork);
   const trainerOk = fx.status?.trainer !== "lost";
-  const resume = () => (loadRide(demoWorkout(backend.athlete.ftp)), navigate("ready"));
+  const resume = () => requestStart(demoWorkout(backend.athlete.ftp), "resume");
   return (
     <div className="page resume saddle-screen">
       <section className="card ready-card" role="alertdialog" aria-label="Unfinished ride">

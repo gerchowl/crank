@@ -231,7 +231,7 @@ function DistanceField() {
   );
 }
 
-const ACTION_LABEL: Record<Action, string> = { coach: "Coach (accept · choose)", keep: "Keep (decline · back to plan)", end: "End ride (asks first)", pause: "Pause / resume", skip: "Skip block", minus: "Intensity −5 %", plus: "Intensity +5 %" };
+const ACTION_LABEL: Record<Action, string> = { coach: "Coach (accept · choose)", keep: "Keep (decline · back to plan)", end: "End ride (asks first)", symptom: "Report a symptom (stops the workout)", pause: "Pause / resume", skip: "Skip block", minus: "Intensity −5 %", plus: "Intensity +5 %" };
 const SOUND_LABEL: Record<SoundEvent, [string, () => void]> = {
   block: ["Block change", () => play.block(true)],
   countdown: ["Last 3 seconds", () => play.tick()],
@@ -261,7 +261,7 @@ function ControlsForm() {
   return (
     <>
       <h2>Controls</h2>
-      <p className="muted">Five ride actions. Bind a handlebar remote by pressing Learn, then its button. Doing nothing is always safe: questions keep the plan.</p>
+      <p className="muted">Seven ride actions, including Report symptom (stops the workout). Bind a handlebar remote by pressing Learn, then its button. Doing nothing is always safe: questions keep the plan.</p>
       <table className="bindings">
         <tbody>
           {ACTIONS.map((a) => (
