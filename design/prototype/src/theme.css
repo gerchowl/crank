@@ -1,0 +1,80 @@
+/* Design tokens (spec/THEMES.md, Ocean preset). Components reference roles, never hex.
+   Values are a starting point; validation with the dataviz validator is #30. */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #0a0e13;
+  --surface-1: #121920;
+  --surface-2: #1a232d;
+  --border: #283441;
+  --ink-primary: #edf2f7;
+  --ink-secondary: #b8c4d0;
+  --ink-muted: #7f8d9b;
+  --focus: #8cc2ff;
+  --accent: #3d8bfd;
+  --accent-ink: #ffffff;
+  --accent-soft: #15304f;
+
+  --series-power: #8ab8ff;
+  --series-hr: #ff7a59;
+  --series-cadence: #c3a0ff;
+  --series-muted: #6b7a89;
+  --target: #c8d2dc;
+
+  --zone-1: #1b3150;
+  --zone-2: #22446c;
+  --zone-3: #2a598c;
+  --zone-4: #3470ad;
+  --zone-5: #4b8bcb;
+  --zone-6: #72a8df;
+  --zone-7: #a5c9f0;
+
+  --div-neg: #3fc1ad;
+  --div-mid: #8b96a1;
+  --div-pos: #ff9f45;
+
+  --status-good: #46c25a;
+  --status-info: #6cb6ff;
+  --status-warning: #e3b341;
+  --status-serious: #f0883e;
+  --status-critical: #ff5c6c;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --surface-0: #f3f5f8;
+  --surface-1: #ffffff;
+  --surface-2: #e9edf2;
+  --border: #d3dae2;
+  --ink-primary: #141a21;
+  --ink-secondary: #3d4752;
+  --ink-muted: #66717d;
+  --focus: #0b5fd3;
+  --accent: #0b63d6;
+  --accent-ink: #ffffff;
+  --accent-soft: #dbe9fb;
+
+  --series-power: #1f5fbf;
+  --series-hr: #d2442a;
+  --series-cadence: #7a4fd0;
+  --series-muted: #9aa5b1;
+  --target: #4a5560;
+
+  --zone-1: #d7e6f8;
+  --zone-2: #b5d0f1;
+  --zone-3: #8db6e6;
+  --zone-4: #6198d8;
+  --zone-5: #3c79c2;
+  --zone-6: #255ea1;
+  --zone-7: #15457e;
+
+  --div-neg: #0f8f7e;
+  --div-mid: #7b8590;
+  --div-pos: #c4610d;
+
+  --status-good: #1a7f37;
+  --status-info: #0969da;
+  --status-warning: #9a6700;
+  --status-serious: #bc4c00;
+  --status-critical: #cf222e;
+}
