@@ -135,7 +135,7 @@ export function TimeAxis({ n, fromS = 0 }: { n: number; fromS?: number }) {
 }
 
 /** One panel of a stacked linear-time chart. Panels share x by sharing `n` (seconds) and `fromS`. */
-export function Panel({ series, height, unit, markers = [], n, fromS = 0 }: { series: Series[]; height: number; unit: string; markers?: number[]; n: number; fromS?: number }) {
+export function Panel({ series, height, unit, markers = [], markerNo, n, fromS = 0 }: { series: Series[]; height: number; unit: string; markers?: number[]; markerNo?: number[]; n: number; fromS?: number }) {
   const all = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
   const hi = niceMax(Math.max(...all, 1) * 1.05);
   const X = (i: number) => (i / Math.max(1, n - 1)) * 1000;
@@ -170,7 +170,7 @@ export function Panel({ series, height, unit, markers = [], n, fromS = 0 }: { se
       </svg>
       {markers.map((m, i) => (
         <span key={m} className="marker-label" style={{ left: `${((m - fromS) / Math.max(1, n - 1)) * 100}%` }}>
-          {i + 1}
+          {markerNo?.[i] ?? i + 1}
         </span>
       ))}
     </div>

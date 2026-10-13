@@ -3,7 +3,7 @@ import { useState } from "react";
 import type { CoachNudge, MetricId, RideStreams } from "@crank/shared";
 import { Bars, gaps, Panel, PdCurve, Profile, TimeAxis, Trend } from "../charts";
 import { mmss, num, signed } from "../format";
-import { athleteModel, calibration, coachReason, cpTrend, intentVerdict, metricValid, pastRides, tauSlower, workIntervals } from "../mock/ext";
+import { athleteModel, calibration, coachReason, cpTrend, intentVerdict, metricValid, pastRides, sceneFixture, tauSlower, workIntervals } from "../mock/ext";
 import { backend, navigate, noStatus, usePoll, useMetric, useSession, type RideSession } from "../session";
 import { useStore } from "../store";
 
@@ -38,15 +38,15 @@ function Tile({ metric, label, unit, digits }: { metric: MetricId; label: string
 }
 
 /** The 3 minutes around a coach call (1 min before, 2 after), so the rating has context. */
-function CallContext({ streams, n }: { streams: RideStreams; n: CoachNudge }) {
+function CallContext({ streams, n, no }: { streams: RideStreams; n: CoachNudge; no: number }) {
   const from = Math.max(0, Math.round(n.t) - 60);
   const to = Math.min(streams.toS, Math.round(n.t) + 120);
   const cut = (m: MetricId) => (streams.series[m] ?? []).slice(from, to);
   return (
     <div className="call-context">
       <p className="muted">{n.message}</p>
-      <Panel n={to - from} fromS={from} unit="W" height={60} markers={[Math.round(n.t)]} series={[{ values: cut("target_power"), cls: "target", label: "target", area: true }, { values: cut("power"), cls: "series-power", label: "power" }]} />
-      <Panel n={to - from} fromS={from} unit="bpm" height={44} markers={[Math.round(n.t)]} series={[{ values: cut("hr"), cls: "series-hr", label: "heart rate" }]} />
+      <Panel n={to - from} fromS={from} unit="W" height={60} markers={[Math.round(n.t)]} markerNo={[no]} series={[{ values: cut("target_power"), cls: "target", label: "target", area: true }, { values: cut("power"), cls: "series-power", label: "power" }]} />
+      <Panel n={to - from} fromS={from} unit="bpm" height={44} markers={[Math.round(n.t)]} markerNo={[no]} series={[{ values: cut("hr"), cls: "series-hr", label: "heart rate" }]} />
       <TimeAxis n={to - from} fromS={from} />
     </div>
   );
@@ -89,7 +89,10 @@ function RideReview({ s }: { s: RideSession }) {
   const status = useStore(s.status);
   const [rpe, setRpe] = useState<number | null>(null);
   const [rated, setRated] = useState<Record<string, string>>({});
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(() => {
+    const i = sceneFixture.get().openCall;
+    return i === undefined ? null : (s.nudges.get()[i]?.callId ?? null);
+  });
   const [table, setTable] = useState(false);
   const [allNumbers, setAllNumbers] = useState(false);
   const streams = usePoll(1, () => backend.streams(["power", "target_power", "hr", "cadence"]), []);
@@ -177,7 +180,7 @@ function RideReview({ s }: { s: RideSession }) {
                     ))}
                   </span>
                 </div>
-                {open === x.callId && <CallContext streams={streams} n={x} />}
+                {open === x.callId && <CallContext streams={streams} n={x} no={i + 1} />}
               </li>
             ))}
           </ol>

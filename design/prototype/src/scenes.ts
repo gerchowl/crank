@@ -89,6 +89,7 @@ export const scenes: Record<string, Scene> = {
   "ride-screen-restarted": fixture(atThreshold, { screenCrashed: true }),
   resume: { view: "resume" },
   review: { view: "review", setup: () => (startRide(), rideUntil(backend, (s) => s.state === "finished", 4000)) },
+  "review-call-open": { view: "review", setup: () => (startRide(), rideUntil(backend, (s) => s.state === "finished", 4000), sceneFixture.set({ openCall: 1 })) },
   history: { view: "history", setup: () => (startRide(), rideUntil(backend, (s) => s.state === "finished", 4000)) },
   workouts: { view: "workouts", setup: () => editor.select(2) },
   "workouts-ai-diff": { view: "workouts", setup: () => (editor.select(2), editor.requestRewrite("harder")) },
