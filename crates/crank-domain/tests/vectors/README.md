@@ -21,12 +21,38 @@ fields follow the mock's JSON shape (undefined fields are absent). Exported
 numbers retain JavaScript's full JSON precision; the export never rounds.
 
 ADR-0001 §3's float parity tolerance applies to the reproducibility comparator:
-integers, strings, booleans, nulls, object keys, structure and array lengths
-must match exactly (object key order is immaterial). If either numeric operand
-is an integer, equality is exact. Otherwise, floats compare equal only when
-`|a−b| ≤ max(1e-12·max(|a|,|b|), 1e-15)`. Non-finite values use the exact string
-encoding above, and cannot silently compare equal as numeric NaN/infinities.
-The comparator reports the first mismatching JSON path.
+integer fields, strings, booleans, nulls, object keys, structure and array lengths
+must match exactly (object key order is immaterial). Float fields compare equal
+only when `|a−b| ≤ max(1e-12·max(|a|,|b|), 1e-15)`, including whole-valued
+floats such as `250` versus `250.00000000000003`. Non-finite values use the exact
+string encoding above. The comparator reports the first mismatching JSON path.
+
+`schema.json` is the portable classification schema for every vector file,
+exported from the explicit declarations in `shared/scripts/vector-schema.ts`.
+The schema's version is independent of the vector envelope version. It is a
+comparison type map, not a JSON Schema document or a full domain validator:
+
+- `float` declares a physical quantity, duration, timestamp, or continuous
+  calculation result. No classification depends on whether its value is whole.
+- `integer` declares counts, indices, seeds, ticks, parser UTF-16 offsets/lengths,
+  zone codes, or the simulator speed enum. Integer values must also be integral.
+- `exact` declares nonnumeric discrete data (strings, booleans, null).
+- `fields` enumerates allowed object keys; `items` declares array elements;
+  `ref` resolves through `definitions` for recursive workout nodes.
+- `number` allows a float scalar at a node also used for object/array variants.
+  `indexed` declares decimal index keys in typed-array JSON objects (W′bal).
+  Optional fields and operation variants share declarations; the compared
+  documents must still have identical keys, types, and array lengths.
+
+Null and encoded non-finite strings compare exactly wherever they occur.
+Both complete documents are checked for schema coverage before comparison,
+even if they are equal or an earlier field differs. An unknown field, missing
+numeric classification, or unresolved reference throws a comparator error.
+Adding a field requires an explicit schema declaration and regeneration with
+`just vectors`; `vectors-drift` checks the exported schema byte for byte as well
+as checking reference values semantically. Rust ports can load `schema.json`
+without interpreting TypeScript. This implements #74's schema-based exactness
+under ADR-0001 §3 without changing the tolerance.
 
 JS transcendental functions are implementation-approximated rather than
 correctly rounded, so platform/libm differences make bit-exact float parity
