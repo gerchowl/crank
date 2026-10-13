@@ -59,6 +59,19 @@
         doCheck = false;
         preBuild = ''export TAURI_CONFIG='{"build":{"frontendDist":"${appDist}"}}' '';
       });
+      cli = craneLib.buildPackage (rustCheck // {
+        pname = "crank-cli"; cargoExtraArgs = "--locked -p crank-cli"; doCheck = false;
+      });
+      # ADR-0001 §9.3: file layout only. Tauri's bundler and codesign do not run in the
+      # sandbox; `just bundle` copies this to ~/Applications and signs it with nix-tcc.
+      crankApp = pkgs.runCommand "crank-app" { } ''
+        app=$out/crank.app/Contents
+        mkdir -p $app/MacOS $app/Resources
+        install -m755 ${desktop ""}/bin/crank-desktop $app/MacOS/crank-desktop
+        install -m755 ${cli}/bin/crank $app/MacOS/crank
+        install -m644 ${./app/src-tauri/icons/icon.icns} $app/Resources/icon.icns
+        install -m644 ${./app/src-tauri/Info.plist} $app/Info.plist
+      '';
       checks = {
         build = desktop "";
         fmt = craneLib.cargoFmt { pname = "crank"; version = "0.1.0"; src = source cargoFiles; };
@@ -98,6 +111,12 @@
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
+        # The Tauri icon set must be the output of `just icons` for the committed /C/ mark (#121).
+        icons-drift = pkgs.runCommand "icons-drift" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          cp -r ${source (lib.fileset.unions [ ./scripts/icons.py ./assets/icon/icon-1024.png ./app/src-tauri/icons ])} src
+          cd src && python3 -I scripts/icons.py check
+          touch $out
+        '';
         # Executable model of the trainer-following machine (ADR-0002 §4.4.1, #54).
         following-model = pkgs.runCommand "following-model" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md}
@@ -113,10 +132,8 @@
       inherit checks;
       packages = { app-dist = appDist; crank-desktop = desktop "";
         crank-desktop-e2e = desktop ",e2e";
-        crank-cli = craneLib.buildPackage (rustCheck // {
-          pname = "crank-cli"; cargoExtraArgs = "--locked -p crank-cli"; doCheck = false;
-        });
-      };
+        crank-cli = cli;
+      } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin { crank-app = crankApp; };
       devShells.fuzz = pkgs.mkShell {
         packages = [ (pkgs.rust-bin.selectLatestNightlyWith (t: t.minimal.override {
           extensions = [ "rust-src" ];
