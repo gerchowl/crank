@@ -3,7 +3,8 @@
 Issue: [#55](https://github.com/gerchowl/crank/issues/55). Date: 2026-10-13. Status: **round 2**. Both UX
 reviews of round 1 (astra, opus) ranked **A · Slice** first, so it is the chosen direction; round 2 fixes its
 construction and size rules (see "Review resolution"). Follow-up: [#62](https://github.com/gerchowl/crank/issues/62)
-builds the start screen into `design/prototype` once #49 has merged.
+builds the start screen into `design/prototype` once #49 has merged. **Launch motion:** F · Spin-up (#83) is
+adopted in place of A's letter settle — see "F · Spin-up"; A's static form is unchanged.
 
 Owner's brief: *"for the start screen — get some fancy design spike, e.g. CRANK slightly italic with lines
 through it to make it look fast — or sth."* Constraints from the product: precise, calm under effort, a coach
@@ -32,6 +33,7 @@ you trust; not Zwift-cartoon, not gamer-neon (DESIGN.md, PR #49). It must sit wi
 | `docs/design/brand/compare.slice-vs-spin.{dark,light}.png` | **A vs F side by side**, 1440×900, every 100 ms |
 | `docs/design/brand/spin.{1440x900,1024x768}.*.png` | F under reduced motion (= A at rest, checked pixel for pixel) |
 | `docs/design/brand/spin.handoff-100ms.*`, `spin.hold.*`, `spin.small.*` | F 100 ms into a hand-off; the `?hold` variant at 1.9 s; F at a 160 px wordmark |
+| `docs/design/brand/spin.early-handoff.<w>x<h>.<theme>.png` | F handed off at readiness 149 / 151 / 300 / 450 ms, 0–150 ms into the fade |
 | `docs/design/brand/spin*.mp4` | F in real time (60 fps, both themes) and at 4× slow motion (`pnpm video`, needs ffmpeg) |
 
 `pnpm -C design/brand screens` regenerates the outlines, re-exports the assets and renders every PNG (Vite +
@@ -190,7 +192,7 @@ The spike demonstrates all of this: `?concept=slice&ready=<ms>` simulates the co
 
 ## Motion
 
-One curve: **settle** = `cubic-bezier(0.16, 1, 0.3, 1)` (fast start, long decelerating tail, no overshoot).
+A's launch motion, kept as the record; the adopted launch motion is **F · Spin-up** (below). One curve: **settle** = `cubic-bezier(0.16, 1, 0.3, 1)` (fast start, long decelerating tail, no overshoot).
 Every keyframe states only its `from`; the resting state is the element's own style, so
 **`prefers-reduced-motion: reduce` = `animation: none` = the final frame**. Budget **≤ 1.2 s**, enforced by
 `pnpm screens`.
@@ -229,36 +231,54 @@ start-screen rules above.
 
 Out of scope for this PR: building it into `design/prototype` (#62) and the production app (#28).
 
-## F · Spin-up (#83, round 1)
+## F · Spin-up — adopted launch motion (#83)
 
 Owner's idea (2026-10-13): *the app mark rotates, spinning faster and faster until it becomes a circle, then
 forms into "crank"*. F is a **launch motion only**: its settled frame and every static asset are A · Slice,
-unchanged. It is built for a head-to-head review against A's launch motion (gate: astra + opus, #83); the
-winner goes into `design/prototype` and later the production shell. `design/prototype` is not touched here.
+unchanged. **Decision (round 2): F is the start screen's launch motion**, replacing A's letter settle. Both
+independent reviews of the A-vs-F round chose F (astra, opus; summary below). Integration into
+`design/prototype` and later the production shell is [#138](https://github.com/gerchowl/crank/issues/138);
+`design/prototype` is not touched here.
 
 **Sequence.** The mark (`logo.svg` without the squircle, ring outer diameter 1.5 H ≈ 190 px at 1440×900,
 centred on the letters) spins up on its hub; the arms' sweep closes the C's gap into a solid brass ring
 (**O**); the ring glides left into the C's place and opens into the wordmark's C, turning from brass to
-ink; R A N K come out of the C left → right; the speed lines draw out leftwards and the two cuts open
-through the C. It lands on A at rest — `pnpm screens` fails unless F's final frame **and** F under reduced
-motion are pixel-identical to A's start screen (both sizes, both themes).
+ink; R A N K come out of the C left → right, still **uncut**; then **one slice** on the 50° crank axis runs
+right → left through the word, opening the two cuts behind it, and on along the speed lines until it stops
+on their chamfers. It lands on A at rest — `pnpm screens` fails unless F's final frame **and** F under
+reduced motion are pixel-identical to A's start screen (both sizes, both themes).
+
+### Reviews (round 1 → 2)
+
+Both independent reviews of PR #131 (astra, opus) chose **F**: the dock icon's mark continues into
+the window and turns into the name in one gesture; it reads as a crank winding up (rest at the 50° pose,
+visible acceleration, ~2 turns, a definite end), not a spinner; tone stays precise and calm (one curve
+family, no bounce, no glow). Both confirmed the slow-boot default (b) and keeping `?hold` (b′) as a record
+only. Findings and their resolution:
+
+| # | Finding | Resolution (round 2) |
+| --- | --- | --- |
+| 1 | MAJOR (opus): the cuts crossfade (830–980 ms) left grey translucent bars across the C; (astra) the uncut C looked heavier than the already-cut RANK at 700–800 ms | No crossfade, no translucent ink. R A N K come out **uncut** like the C, so the word has one weight; one slice front on the 50° axis opens the cuts geometrically (A's cut letters shown behind the front, the uncut ones ahead of it) and continues as the speed lines, ending exactly on their chamfers. Each letter's cut + uncut paths fade in as one group, so cut bands never show through. |
+| 2 | MAJOR (astra): early hand-offs need visual proof — no snap or rushed morph over the destination | Round 1 cut to the wordmark at ≤ 150 ms and fast-forwarded later (a snap at 149 ms, a rush at 151 ms). Now the motion **runs on at 1:1 under the 200 ms fade** for every readiness. `spin.early-handoff.*` shows ready at 149 / 151 / 300 / 450 ms, both sizes and themes; `screens` checks t runs at 1:1, the fade is linear, the screen is gone after 200 ms and 149 vs 151 ms differ visibly in < 1 % of pixels |
+| 3 | MINOR (opus): 1–2 px step on the O at 3 o'clock, 450–500 ms (the overlapped faces crossed) | The ring's two faces start **collinear** on one radius and part without crossing; the zero-width slit is closed by a stroke in the shape's colour (6 units → 0 over the first 10 % of the glide) |
+| 4 | MINOR (both): ghost arms + pedal eyes beyond the ring; 3 ghosts read as fan blades / a ship's wheel | Ghosts are clipped to the ring's outer radius, **2** of them (opacity 0.35 / 0.15, lag ≤ 60°); the crank's own pedal end beyond the ring blurs out first (gone by 60 % speed), so no translucent bead |
+| 5 | MINOR (opus): 20 ms headroom under the budget | At rest by **1080 ms**; `screens` now fails above **1100 ms** |
 
 ### Timing (ms from the first frame; `SPIN` in `src/spin.ts`)
 
 | Phase | Start → end | Curve | What moves |
 | --- | --- | --- | --- |
-| spin-up | 0 → 450 | constant angular acceleration | crank turns clockwise (forward pedalling, drive side); trails grow; arms dissolve from half speed |
-| ring closed | 450 | — | trails (2 × 186°) cover the gap: a solid O; arms gone |
-| glide + open | 450 → 830 | `glide` cubic-bezier(0.3, 0, 0, 1) | ring → C outline, centre → C's place, 1.5 H → cap height, brass → ink (Oklab) |
-| R A N K | 690 / 730 / 770 / 810, 300 ms each | `settle` (A's) | from −60 units, opacity 0 — R only once the ring has cleared it |
-| speed lines | 830 / 860, 320 ms each | `settle` | A's right → left `clip-path` reveal |
-| cuts open | 830 → 980 | linear | the uncut C fades off A's cut C |
-| at rest | **1180** (budget 1200, checked) | — | the DOM is A's paths only |
+| spin-up | 0 → 420 | constant angular acceleration | crank turns clockwise (forward pedalling, drive side); trails grow; tip blurs out by 60 % speed, arms from 45 % |
+| ring closed | 420 | — | trails (2 × 186°) cover the gap: a solid O; arms gone |
+| glide + open | 420 → 760 | `glide` cubic-bezier(0.3, 0, 0, 1) | ring → C outline, centre → C's place, 1.5 H → cap height, brass → ink (Oklab) |
+| R A N K | 635 / 670 / 705 / 740, 260 ms each | `settle` (A's) | uncut, from −60 units, opacity 0 — R only once the ring has cleared it |
+| slice | 780 → 1080 | `settle` | front x = f − y/tan 50° from right of all ink to the chamfer line (f = left − lead): cuts open behind it, then the speed lines draw out behind it |
+| at rest | **1080** (target ≤ 1100, checked) | — | the DOM is A's paths only |
 
 ### Physics and rendering
 
-- **Angular acceleration:** θ(t) = ½ α t² from rest, α = ω_max / 450 ms = 6 890 °/s² (19.1 rev/s²);
-  ω_max = 3 100 °/s (8.6 rev/s). About **1.9 revolutions** in the spin-up — enough turns to read as a
+- **Angular acceleration:** θ(t) = ½ α t² from rest, α = ω_max / 420 ms = 7 380 °/s² (20.5 rev/s²);
+  ω_max = 3 100 °/s (8.6 rev/s). About **1.8 revolutions** in the spin-up — enough turns to read as a
   crank wound up under constant torque, not a dial flicking once. Speed s = ω/ω_max rises linearly.
 - **Motion blur = arc trails, no raster blur.** Each arm drags a trail through the ring band (radii
   287.5–412.5, the C's stroke) spanning ω·τ behind it, τ = **60 ms** persistence, capped at **186°**: two
@@ -266,17 +286,22 @@ motion are pixel-identical to A's start screen (both sizes, both themes).
   trail is **4 nested sectors** (the nearest lag covered by all four, the oldest by one) of opacity
   0.3 + 0.7 s², so it is stepped and fades with lag at low speed and saturates to solid brass at ω_max.
   τ is 3.6 frames at 60 Hz and every frame's step (≤ 52°) lies inside the trail: **no wagon-wheel strobe**.
-- **Arms:** three stepped ghost copies of the crank (lags up to 90°, opacity 0.5 / 0.3 / 0.15 × s; solid
-  tips — a hole in a translucent copy reads as a bead) blur the arms; arms and ghosts fade with
-  1 − ((s − 0.45)/0.55)², gone at ω_max: at full speed a crank *is* a steady blur.
-- **Ring → C:** the ring (as placed at 450 ms) and the C are each a 616-vertex outline in four matched
-  runs — outer arc (320), top terminal face (48), inner arc (200), bottom terminal face (48); the ring's
-  "faces" start overlapped by 6° (a closed O) and part into the C's opening. Every C vertex lies **on**
-  Barlow's outline; `pnpm outline` fails if a chord strays by more than 0.5 units (actual 0.34 ≈ 0.06 px at 1440×900),
-  so the shape that lands is the C, and A's cut C replaces it under cover of the same pixels.
+- **Arms:** two ghost copies of the crank inside the ring (lags up to 60°, opacity 0.35 / 0.15 × s) blur
+  the arms; arms and ghosts fade with 1 − ((s − 0.45)/0.55)², gone at ω_max: at full speed a crank *is* a
+  steady blur. The crank is split at the ring's outer radius; its tip (pedal end + eye), the fastest point,
+  fades out between 30 % and 60 % speed.
+- **Ring → C:** the ring (as placed at 420 ms) and the C are each a 616-vertex outline in four matched
+  runs — outer arc (320), top terminal face (48), inner arc (200), bottom terminal face (48). Both ring
+  faces start on the 3 o'clock radius and part into the C's opening. Every C vertex lies **on** Barlow's
+  outline; `pnpm outline` fails if a chord strays by more than 0.5 units (actual 0.34 ≈ 0.06 px at
+  1440×900), so the shape that lands is the C, and A's (uncut) C outline takes over under the same pixels.
+- **Slice:** two `clipPath`s (page-only; the exported assets stay id-free) hold the half-planes ahead of and
+  behind the front: the uncut letters are clipped to the half-plane ahead, the speed lines to the one
+  behind; A's cut letters are always drawn. The front is parallel to the chamfers and ends on them, so at
+  rest both clips are removed with no visible change.
 - **Deterministic:** `frame(t)` is pure; the page paints it per `requestAnimationFrame` from
-  `performance.now()` (a fake clock drives it in `pnpm screens`), and `?t=<ms>` renders any instant. No
-  CSS animation, no WAAPI: path morphing by CSS `d` does not run in WKWebView (the production webview).
+  `performance.now()` (a paused fake clock drives it in `pnpm screens`), and `?t=<ms>` renders any instant.
+  No CSS animation, no WAAPI: path morphing by CSS `d` does not run in WKWebView (the production webview).
 - **Why plain TS here too:** the same constraints as A (see "Why plain TS + Vite"); integration only
   needs `frame` + `paint` and a clock.
 
@@ -284,37 +309,32 @@ motion are pixel-identical to A's start screen (both sizes, both themes).
 
 | Boot | Behaviour (checked on the fake clock) |
 | --- | --- |
-| ready ≤ **150 ms** | cut straight to the settled wordmark, then A's 200 ms fade (a quarter-spun crank fading out reads as a glitch) |
-| (a) ready during the motion | hand-off as A: destination live + focused, start screen `inert`, 200 ms fade — but F **fast-forwards** its remaining timeline into the wordmark during the fade (`settle`) instead of freezing a blur |
+| (a) ready during the motion — any time, including the first frames | hand-off as A: destination live + focused at once, start screen `inert`, 200 ms linear fade; F's motion **runs on at its own pace** under the fade — no freeze (a frozen blur reads as a glitch), no cut, no fast-forward (round 1's snap at ≤ 150 ms and rush after it were conspicuous over the live destination) |
 | (b) slow boot — **default** | the sequence plays through and **rests** on the wordmark (as A); status line from the boot timer at 1.2 s; fade on ready |
-| (b′) slow boot, `?hold` | the spin **sustains at ω_max** (no further acceleration) until ready — at full speed that is the steady closed ring; status at 1.2 s; on ready the glide + letters run inside the 200 ms fade |
+| (b′) slow boot, `?hold` (record only) | the spin **sustains at ω_max** (no further acceleration) until ready — at full speed that is the steady closed ring; status at 1.2 s; on ready it runs on under the fade. Not ported (#138) |
 | reduced motion | no motion, no script: the markup at rest is the wordmark; status at 1.2 s; removed at once on ready |
-| boot failure | as "Boot failure" above: the alert replaces the status at once; F's motion is not cut — it plays through and rests on the wordmark (with `?hold`, it too finishes instead of holding). Wiring this into F is integration work, done only if F wins (#62's start screen owns the failure path) |
+| boot failure | as "Boot failure" above: the alert replaces the status at once; F's motion is not cut — it plays through and rests on the wordmark. Wiring it is part of #138 |
 
-**Why (b) and not (b′) as default.** A held spin is a progress spinner, which the start screen rules out
-("no progress bar"); and since the hand-off begins the moment the core is ready, a morph gated on
-readiness could only ever play compressed inside the 200 ms fade — on every boot slower than 450 ms the
-rider would never see the C form at its designed pace. (b′) is built so the reviewers can see that.
+**Why (b) and not (b′) as default** (confirmed by both reviews). A held spin is a progress spinner, which
+the start screen rules out ("no progress bar"); and since the hand-off begins the moment the core is
+ready, a morph gated on readiness could only ever play inside the 200 ms fade — on every boot slower than
+420 ms the rider would never see the C form at its designed pace.
 
 ### Small sizes
 
 F only ever runs as the start screen, whose wordmark is ≥ 532 px wide at the smallest supported window
 (1024×768, DESIGN §8). `spin.small.*.png` shows it at the full form's 160 px floor at 2×: the ring band is
 ≈ 6 px, the stepped trails and the O still read, and the settled frame is the full form. Below 160 px the
-start screen would use A's small form **without motion** (cut-free letters cannot carry the cuts' reveal;
-a ring band under ~6 px closes into a blob). Static size rules are A's, unchanged.
+start screen would use A's small form **without motion** (cut-free letters cannot carry the slice; a ring
+band under ~6 px closes into a blob). Static size rules are A's, unchanged.
 
-### Review guide (A vs F)
+### Review guide (round 2)
 
 1. `compare.slice-vs-spin.dark.png` / `.light.png` — the two launches side by side every 100 ms.
-2. `spin.slowmo-4x.1440x900.dark.mp4`, then `spin.1440x900.dark.mp4` at real speed — does the spin-up
-   read as a crank winding up (acceleration, trails) rather than a loading spinner? Does the O → C land
-   without a jump?
-3. `spin.storyboard.1024x768.*`, `spin.small.*` — the smaller window and the 160 px floor.
-4. `spin.handoff-100ms.*` (fast-forward inside the fade) and `spin.hold.*` (the (b′) variant).
-5. Weigh: F carries the mark into the name (one system, owner's idea) and spends ~1.2 s of motion
-   doing it, ~250 ms longer than A's 930 ms; A is calmer and starts on the word. Both rest on the same
-   wordmark and obey the same start-screen rules.
+2. `spin.slowmo-4x.1440x900.dark.mp4`, then `spin.1440x900.dark.mp4` — the slice through the uncut word at
+   780–1080 ms (finding 1), the clean O and slit at 420–480 ms (3), the two ghosts at 200–400 ms (4).
+3. `spin.early-handoff.{1440x900,1024x768}.{dark,light}.png` — readiness at 149 / 151 / 300 / 450 ms (2).
+4. `spin.storyboard.*`, `spin.small.*`, `spin.handoff-100ms.*`, `spin.hold.*`.
 
 Reproduce: `pnpm -C design/brand screens` (checks + all PNGs); videos with
 `nix develop -c nix shell nixpkgs#ffmpeg-headless -c pnpm -C design/brand video`.
