@@ -153,8 +153,8 @@ fn two_hour_ride_round_trip() {
     drop(store);
     let reader = Store::open_read_only(dir.path()).unwrap();
     assert_eq!(
-        reader.ride("ride").unwrap().unwrap().state.as_deref(),
-        Some("finished")
+        reader.ride("ride").unwrap().unwrap().state,
+        RideState::Finished
     );
     for (metric, name) in METRICS.iter().enumerate() {
         let chunks = reader.chunks("ride", name).unwrap();
@@ -226,8 +226,8 @@ fn kill_during_ride_recovers_only_with_lock() {
     assert!(reader.ride("ride").unwrap().unwrap().ended_at.is_none());
     let owner = Store::open_owner(dir.path()).unwrap();
     assert_eq!(
-        owner.ride("ride").unwrap().unwrap().state.as_deref(),
-        Some("aborted")
+        owner.ride("ride").unwrap().unwrap().state,
+        RideState::Aborted
     );
     for (metric, name) in METRICS.iter().enumerate() {
         let chunks = owner.chunks("ride", name).unwrap();
@@ -540,9 +540,8 @@ fn lock_release_new_ride_reset_and_foreign_keys() {
             .ride("ride")
             .unwrap()
             .unwrap()
-            .state
-            .as_deref(),
-        Some("finished")
+            .state,
+        RideState::Finished
     );
 }
 #[test]
@@ -555,11 +554,60 @@ fn future_schema_rejected_by_owner_without_downgrade() {
         Store::open_owner(dir.path()),
         Err(StoreError::Migration(_))
     ));
-    assert_eq!(
-        Store::open_read_only(dir.path())
-            .unwrap()
-            .schema_version()
-            .unwrap(),
-        999
-    );
+    // The owner refusal must not have downgraded the database.
+    let version: u32 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 999);
+}
+#[test]
+fn read_only_refuses_a_newer_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    drop(Store::open_owner(dir.path()).unwrap());
+    let db = Connection::open(dir.path().join("crank.db")).unwrap();
+    db.pragma_update(None, "user_version", 999).unwrap();
+    assert!(matches!(
+        Store::open_read_only(dir.path()),
+        Err(StoreError::SchemaTooNew {
+            found: 999,
+            supported: 1
+        })
+    ));
+}
+#[test]
+fn ride_state_is_typed_and_unknown_values_are_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_owner(dir.path()).unwrap();
+    store.start_ride(ride()).unwrap();
+    assert_eq!(store.ride("ride").unwrap().unwrap().state, RideState::Open);
+    let db = Connection::open(dir.path().join("crank.db")).unwrap();
+    // The CHECK constraint forbids unknown strings; bypass it to model a
+    // database written by other software.
+    db.pragma_update(None, "ignore_check_constraints", true)
+        .unwrap();
+    db.execute("UPDATE ride SET state='paused', ended_at=1", [])
+        .unwrap();
+    assert!(matches!(
+        store.ride("ride"),
+        Err(StoreError::UnknownRideState(s)) if s == "paused"
+    ));
+    for (state, text) in [
+        (RideState::Open, "\"open\""),
+        (RideState::Finished, "\"finished\""),
+        (RideState::Aborted, "\"aborted\""),
+    ] {
+        assert_eq!(serde_json::to_string(&state).unwrap(), text);
+        assert_eq!(RideState::from_column(state.as_column()).unwrap(), state);
+    }
+}
+#[test]
+fn workout_constructor_adds_the_version_envelope() {
+    let workout: crank_domain::workout::Workout = serde_json::from_str(WORKOUT_JSON).unwrap();
+    let json = serde_json::to_value(&workout).unwrap();
+    assert!(json.get("v").is_none(), "domain type has no v of its own");
+    let tree = WorkoutTreeJson::new(&workout).unwrap();
+    assert_eq!(tree.workout(), &workout);
+    let stored: serde_json::Value = serde_json::from_str(tree.as_str()).unwrap();
+    assert_eq!(stored["v"], 1);
+    assert_eq!(RideWorkoutJson::new(&workout).unwrap().workout(), &workout);
 }

@@ -8,10 +8,23 @@ use std::path::Path;
 use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
+/// Forward-only migrations; the schema version is their count.
+const MIGRATIONS: [&str; 1] = [include_str!("../migrations/0001_initial.sql")];
+/// Newest `user_version` this build reads or writes.
+pub(crate) const SCHEMA_VERSION: u32 = 1;
 type Job = Box<dyn FnOnce(&mut Writer) + Send>;
+/// Owns the worker thread and the advisory `ride.lock`.
+///
+/// The lock lives here, not on the worker thread: if a job panics the worker
+/// unwinds and dies, but the lock stays held until the `Store` is dropped.
+/// Releasing it while `Store` is alive would let another process acquire
+/// ownership and abort, via recovery, a ride this process still believes is
+/// live. Every later write reports `WorkerStopped` instead.
 pub(crate) struct WriterHandle {
     sender: Option<SyncSender<Job>>,
     thread: Option<JoinHandle<()>>,
+    /// Declared last so it is released after `Drop` has joined the worker.
+    _lock: File,
 }
 impl WriterHandle {
     pub(crate) fn open(dir: &Path) -> Result<Self, StoreError> {
@@ -36,7 +49,7 @@ impl WriterHandle {
                     db.pragma_update(None, "journal_mode", "WAL")?;
                     db.pragma_update(None, "synchronous", "FULL")?;
                     db.pragma_update(None, "foreign_keys", true)?;
-                    Migrations::new(vec![M::up(include_str!("../migrations/0001_initial.sql"))])
+                    Migrations::new(MIGRATIONS.iter().map(|sql| M::up(sql)).collect())
                         .to_latest(&mut db)?;
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -48,11 +61,7 @@ impl WriterHandle {
                         "UPDATE ride SET ended_at=?1,state='aborted' WHERE ended_at IS NULL",
                         [now],
                     )?;
-                    Ok(Writer {
-                        db,
-                        active: None,
-                        _lock: lock,
-                    })
+                    Ok(Writer { db, active: None })
                 };
                 match init() {
                     Ok(mut writer) => {
@@ -70,6 +79,7 @@ impl WriterHandle {
         let handle = Self {
             sender: Some(sender),
             thread: Some(thread),
+            _lock: lock,
         };
         ready_rx.recv().map_err(|_| StoreError::WorkerStopped)??;
         Ok(handle)
@@ -100,7 +110,6 @@ impl Drop for WriterHandle {
 pub(crate) struct Writer {
     pub(crate) db: Connection,
     active: Option<Active>,
-    _lock: File,
 }
 struct Active {
     id: String,
@@ -291,7 +300,37 @@ pub(crate) fn decode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Store;
     use proptest::prelude::*;
+    #[test]
+    fn schema_version_matches_migrations() {
+        assert_eq!(usize::try_from(SCHEMA_VERSION), Ok(MIGRATIONS.len()));
+    }
+    #[test]
+    fn worker_panic_keeps_the_ride_lock_until_store_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_owner(dir.path()).unwrap();
+        let lock = || {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(dir.path().join("ride.lock"))
+                .unwrap();
+            file.try_lock().map(|()| file)
+        };
+        // Test-only fault injection: a job that panics on the writer thread.
+        let panicked: Result<(), _> = store.write(|_| panic!("injected writer panic"));
+        assert!(matches!(panicked, Err(StoreError::WorkerStopped)));
+        assert!(matches!(lock(), Err(TryLockError::WouldBlock)));
+        assert!(matches!(
+            Store::open_owner(dir.path()),
+            Err(StoreError::LockBusy)
+        ));
+        let write = store.put_setting("k", crate::SettingJson::parse(r#"{"v":1}"#).unwrap());
+        assert!(matches!(write, Err(StoreError::WorkerStopped)));
+        drop(store);
+        assert!(lock().is_ok());
+    }
     proptest! {
         #[test]
         fn arbitrary_float_bits_preserved(bits in proptest::collection::vec(any::<u32>(),1..=60)) {
