@@ -311,6 +311,9 @@ pub enum DeviceError {
         /// Diagnostic detail.
         detail: String,
     },
+    /// Raw capture failed; this does not mean the peripheral disconnected (#43).
+    #[error("capture: {0}")]
+    Capture(String),
     /// Connection closed.
     #[error("disconnected")]
     Disconnected,
