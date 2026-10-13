@@ -2,8 +2,9 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import type uPlot from "uplot";
 import { type Bucket, type MetricId, timeAgoTicks, timeAgoToU, type TimeScale } from "@neo/shared";
 import { backend, metricInfo } from "../backend";
-import { axis, UPlot } from "../charts/UPlot";
+import { axis, tooltipPlugin, UPlot } from "../charts/UPlot";
 import { fmtTimeAgo } from "../lib/format";
+import { uToTimeAgo } from "@neo/shared";
 import { createPoll } from "../lib/primitives";
 import { ride } from "../state/ride";
 import type { ThemeTokens } from "../theme/theme";
@@ -105,8 +106,11 @@ export function LogTimeChart(props: WidgetProps) {
     ];
     if (p.overlay) series.push({ label: "target", stroke: t.target, width: 1.5, dash: [6, 4], points: { show: false } });
     const tk = ticks();
+    const sp = span();
+    const sc = scale();
     return {
       legend: { show: false },
+      plugins: [tooltipPlugin((x) => `${fmtTimeAgo(Math.round(uToTimeAgo(1 - x, sp, sc)))} ago`, (v) => `${Math.round(v)} ${metricInfo(p.metric).unit}`, [3, 4])],
       cursor: { sync: { key: syncKey }, points: { size: 6 }, y: false, drag: { x: false, y: false } },
       padding: [6, 8, last ? 0 : 2, 0],
       bands: [{ series: [2, 1], fill: withAlpha(color, 0.18) }],
