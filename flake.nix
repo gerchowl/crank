@@ -128,7 +128,7 @@
           touch $out
         '';
         package-licenses = pkgs.runCommand "package-licenses" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          python3 ${./scripts/check-licenses.py} ${source (lib.fileset.fileFilter (f: f.name == "package.json") (lib.fileset.gitTracked ./.))}
+          python3 ${./scripts/check-licenses.py} ${source (lib.fileset.intersection (lib.fileset.gitTracked ./.) (lib.fileset.fileFilter (f: f.name == "package.json") ./.))}
           touch $out
         '';
         # Executable model of the trainer-following machine (ADR-0002 §4.4.1, #54).
