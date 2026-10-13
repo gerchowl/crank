@@ -1,3 +1,7 @@
 packages:
   - shared
+  - app
+  - design/prototype
   - spikes/*
+allowBuilds:
+  esbuild: true
