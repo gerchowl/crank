@@ -2,6 +2,10 @@
 check:
     nix flake check -L
 
+# Same gate as the `public-hygiene` flake check (#122).
+hygiene:
+    scripts/check-public-hygiene.sh
+
 test:
     cargo nextest run --workspace
     cargo test --workspace --doc
