@@ -89,7 +89,7 @@ try {
   check("Confirmed + red flags answered: one summary line and the saddle card", ((await p.locator(".checkin-summary").textContent()) ?? "").includes("no red flags") && (await p.locator("[data-saddle]").count()) === 1 && (await p.locator('[aria-label="How are you today"]').count()) === 0);
   await p.locator(".checkin-summary").getByRole("button", { name: "Edit" }).click();
   await idle();
-  check("Edit re-opens the check-in in place; the card is the desk card again", (await p.locator('[aria-label="How are you today"]').count()) === 1 && (await p.locator(".proposal-card.desk").count()) === 1);
+  check("Edit re-opens the check-in in place; the card is the desk card again, Start disabled", (await p.locator('[aria-label="How are you today"]').count()) === 1 && (await p.locator(".proposal-card.desk").count()) === 1 && (await p.locator(".proposal-card").getByRole("button", { name: /Start/ }).isDisabled()));
   await p.getByRole("radio", { name: "short" }).click();
   check("Changing an answer keeps it open (no collapse mid-edit)", (await p.locator(".checkin-summary").count()) === 0);
   await p.getByRole("button", { name: "✓ Use these answers" }).click();

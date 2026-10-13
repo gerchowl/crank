@@ -104,8 +104,8 @@ export function outcomeHead(o: WishOutcome, anyway: boolean, askedMin: number, p
 
 /**
  * The one proposal surface (§16.2): outcome line (6 px edge) · session · duration · profile · one reason + Why? ·
- * Start / Easier / Harder / Ride my wish. `desk` (check-in open) keeps every other reason and fact behind a disclosure;
- * `saddle` (check-in done) is the same card at ride-tier type with 72 px actions pinned to its bottom edge.
+ * Start / Easier / Harder / Ride my wish; every other reason and fact sits behind a disclosure. `desk` while the
+ * check-in is open; `saddle` (check-in done) is the same card at ride-tier type with 72 px actions pinned to its bottom.
  */
 export function ProposalCard(p: {
   mode: "desk" | "saddle";
@@ -143,26 +143,24 @@ export function ProposalCard(p: {
         {r ? r.text : p.fallbackReason} {r?.rule && <WhyChip id={r.rule} reason={r} />}
         {!p.anyway && p.o.deferredTo && <span className="muted"> Your wish moves to {p.o.deferredTo}{saddle ? "." : ", if your check-in is ok; it expires after 7 days."}</span>}
       </p>
-      {!saddle && (
-        <details className="more">
-          <summary>
-            Why today: every fact{more.length ? ` and ${more.length} more reason${more.length === 1 ? "" : "s"}` : ""}
-          </summary>
-          <ul className="reasons">
-            {more.map((x) => (
-              <li key={x.text}>
-                {x.text} {x.rule && <WhyChip id={x.rule} reason={x} />}
-              </li>
-            ))}
-            {p.facts.map((f) => (
-              <li key={f}>{f}</li>
-            ))}
-          </ul>
-          <button className="link" onClick={p.onEdit}>
-            Edit a copy in Workouts
-          </button>
-        </details>
-      )}
+      <details className="more">
+        <summary>
+          Why today: every fact{more.length ? ` and ${more.length} more reason${more.length === 1 ? "" : "s"}` : ""}
+        </summary>
+        <ul className="reasons">
+          {more.map((x) => (
+            <li key={x.text}>
+              {x.text} {x.rule && <WhyChip id={x.rule} reason={x} />}
+            </li>
+          ))}
+          {p.facts.map((f) => (
+            <li key={f}>{f}</li>
+          ))}
+        </ul>
+        <button className="link" onClick={p.onEdit}>
+          Edit a copy in Workouts
+        </button>
+      </details>
       {saddle && (
         <p className="card-keys">
           <Key a="skip" /> other wish · <Key a="keep" /> coach's pick

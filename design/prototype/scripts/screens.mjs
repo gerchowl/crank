@@ -9,7 +9,7 @@
 // Above-the-fold elements ([data-above-fold]: the saddle card, the desk card's outcome and session, the ride's "next"
 // label on the road, DESIGN §16) fail when they leave the viewport in either direction. Ride geometry is fixed (P4,
 // #10): every [data-geom] box (status-bar groups, hero rows, side slots, the coach lane and its reserved rows, the road
-// rows) must match the first ride scene at the same size, in every phase and state.
+// rows) must exist and match ride-threshold at the same size, in every phase and state.
 // `SCENES=a,b pnpm screens` renders only those scenes (development; keeps the other PNGs and skips the start screen).
 // Also renders the cold-start screen (start-*.png: frames of the launch motion, reduced motion, slow boot,
 // hand-off, boot failure; BRAND.md §Start screen) on the fake clock of scripts/start-page.mjs.
@@ -43,7 +43,10 @@ const failures = [];
 try {
   const lister = await browser.newPage();
   await lister.goto(`${base}?list-scenes=1`);
-  const ids = JSON.parse((await lister.locator("body").getAttribute("data-scenes")) ?? "[]").filter((id) => !only || only.has(id));
+  // ride-threshold first: it is the geometry reference for every other ride scene
+  const ids = JSON.parse((await lister.locator("body").getAttribute("data-scenes")) ?? "[]")
+    .filter((id) => !only || only.has(id))
+    .sort((a, b) => (b === "ride-threshold") - (a === "ride-threshold"));
   await lister.close();
   if (!ids.length) throw new Error("no scenes listed");
 
@@ -101,9 +104,12 @@ try {
         for (const c of m.belowFold) failures.push(`${name}: above-the-fold element outside the viewport ${c}`);
         if (m.ride && m.geom.length) {
           if (!geomRef) geomRef = { id, boxes: new Map(m.geom) };
+          const keys = new Set(m.geom.map(([k]) => k));
+          for (const k of geomRef.boxes.keys()) if (!keys.has(k)) failures.push(`${name}: ride region missing — ${k} (present in ${geomRef.id})`);
           for (const [k, box] of m.geom) {
             const ref = geomRef.boxes.get(k);
-            if (ref && ref.some((v, i) => Math.abs(v - box[i]) > 0.5)) failures.push(`${name}: ride geometry moved — ${k} at ${box.join(",")} vs ${ref.join(",")} in ${geomRef.id}`);
+            if (!ref) failures.push(`${name}: ride region not in ${geomRef.id} — ${k}`);
+            else if (ref.some((v, i) => Math.abs(v - box[i]) > 0.5)) failures.push(`${name}: ride geometry moved — ${k} at ${box.join(",")} vs ${ref.join(",")} in ${geomRef.id}`);
           }
         }
         for (const c of m.small) failures.push(`${name}: saddle text below its tier ${c}`);

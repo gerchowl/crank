@@ -91,7 +91,7 @@ without wasting sessions, and wants to trust that the plan fits how they feel to
 | Rainbow zone colours (TrainingPeaks, Zwift) | **Keep as opt-in only** | Already decided in THEMES: sequential ramp by default, rainbow behind a toggle, never the only carrier (zone labels are text). |
 | Mandatory FTP/ramp test before training (Zwift, TrainerRoad) | **Change** | Testing tired riders on day 1 is bad advice and bad onboarding. Start with priors ± uncertainty, ride today, refine from rides or an optional assessment week (spec/ONBOARDING.md, P7). |
 | A calendar as the home screen (TrainerRoad, TrainingPeaks) | **Change** | The home question is "what do I ride now?". Home = **Today**: check-in and one proposal. The last days are context under it. |
-| "Regenerate" for a new random plan | **Change** | Random re-rolls teach nothing. Directed alternatives: **Shorter** (the time choice) · **Easier / Harder** (the wish one row down / up, §15.2) · **Other wish** (the matrix or the remote's wish mode), each answered with the same outcome table and reasons (§15.2; planner variants, #15). |
+| "Regenerate" for a new random plan | **Change** | Random re-rolls teach nothing. Directed alternatives: ~~**Shorter** (the time choice) ·~~ superseded by §16.2: the time choice in the check-in · **Easier / Harder** (the wish one row down / up, §15.2) · **Other wish** (the matrix or the remote's wish mode; ~~a button on the card~~ superseded by §16.2: no card button, S / Pause), each answered with the same outcome table and reasons (§15.2; planner variants, #15). |
 | A readiness score as the reason (WHOOP-style, TrainerRoad AI) | **Change** | "Readiness 3.8/5" can't be checked. The reason lists facts the rider can verify: what they answered, the last similar session, recent load, time available (§5.1). |
 | ERG intensity ± (TrainerRoad, Zwift) | **Keep** | A real need (bad day, good day). Fixed-width, shows the rider's own cumulative offset; the coach's change is shown separately, at the target (§5.2). |
 | Coach pop-ups / toasts (SYSTM tips, Zwift messages) | **Change** | Toasts cover data and vanish. The coach has a reserved **lane** on the ride screen (P4, P5) and a decision log in Review. |
@@ -853,7 +853,7 @@ granted wish reads **"✓ wish"**; an **adapted** wish reads **"≈ wish"** (sam
 
 | Outcome | When | Outcome line | Rider's way out |
 |---|---|---|---|
-| **No wish** | — | "Coach's pick: VO2max · Intervals" | Easier / Harder / Other wish |
+| **No wish** | — | "Coach's pick: VO2max · Intervals" | Easier / Harder / ~~Other wish~~ superseded by §16.2: the matrix or wish mode (S / Pause) |
 | **As wished** | nothing argues against it | "✓ Your wish: Threshold · Intervals" (+ a session note with its rule) | Start |
 | **Adapted** | same cell, smaller dose, for a readiness reason | "≈ Wish, shortened: 60 min, not 2 h" · "Sleep short: long continuous efforts are cut first" (R-RDY-03 · A, cut-off D); *Why today* says "Shortened to 60 of your 120 min" | **Ride the full 2 h** (one tap, logged) |
 | **Deferred** | readiness or load argues against hard work | "Wish VO2max → Tempo · Intervals, 2 steps easier" · "Legs dead, sleep short: two signals against hard work today" (R-RDY-02 · B, cut-off D) · "Your wish moves to Thu 15 Oct" | **Ride my wish** (logged) |
@@ -1199,21 +1199,21 @@ T1 below it is still the block countdown), Focus keeps the second slot's exact b
 │ Tempo 2×10′ · 40:00                T3+   │ ▢▢■▢▢ (matrix)    │  │ reason + Why? · S / ⌫ hints       │
 │ ▁▂██▂██▂▁ profile                        │                   │  │ [⏎ Start][− Easier][+ Harder][…]  │ 72 px
 │ one reason + Why?                  T3    │                   │  ├ wish matrix ──────────────────────┤
-│ S other wish · ⌫ coach's pick      T4    │                   │  ├ Last 7 days ──────────────────────┤
+│ S other wish · N coach's pick      T4    │                   │  ├ Last 7 days ──────────────────────┤
 │ [⏎ Start][− Easier][+ Harder][Ride my wish]  72 px, pinned   │  └ Model ────────────────────────────┘
 ├──────────── Last 7 days ─────────────────┼────── Model ──────┤
 ```
 
 | Decision | What it is | Why |
 |---|---|---|
-| **Check-in collapses** | Once confirmed (Same as yesterday, or any change) **and** today's red flags answered, the check-in is one summary line: "sleep short · legs heavy · stress some · motivation keen · 60 min · no red flags" + *Edit*. *Edit* re-opens it in place; while open, a change never collapses it mid-edit — **✓ Use these answers** closes it (disabled until the red flags are answered). | After confirming, the check-in is history; one line keeps it checkable without pushing the card down. Start gating is unchanged (§5.1: a change confirms today; the red flags are still required, §5.8); "Use these answers" is presentational and is named differently from the red-flag check's *Done* so the two never read as one action. |
-| **One proposal surface** | The full-width saddle proposal and the desk proposal card are one card with two forms. **Desk** (check-in open): outcome line, session · duration, profile, one reason + *Why?*, actions Start ⏎ · − Easier · + Harder · Ride my wish / Ride the full X; "Why today: every fact" discloses the other reasons (each with *Why?*), the facts and the model's confidence, and *Edit a copy in Workouts*. **Saddle** (check-in done): the same card at T3+ / T3 with **72 px actions pinned to its bottom edge**, always above the fold; S (Skip) / Pause open wish mode, Keep returns to the coach's pick, hinted on the card. | Two cards said the same thing twice. Information is kept, not cut: the §5.1 facts and §15.2 reasons are one click away at the desk and in *Why?* at the bike. **Shorter** is dropped from the card because the time is a check-in answer (§15.2: how long is Today's time) — it was a duplicate control. *Other wish* is dropped as a button: the matrix is beside the card at 1440, and wish mode is the bars' path (§15.2). One cursor: − / + on the card, Intensity − / + and the matrix all move the same wish (one outcome table, §15.2). |
+| **Check-in collapses** | Once confirmed (Same as yesterday, or any change) **and** today's red flags answered, the check-in is one summary line: "sleep short · legs heavy · stress some · motivation keen · 60 min · no red flags" + *Edit*. *Edit* re-opens it in place; while open, a change never collapses it mid-edit — **✓ Use these answers** closes it (disabled until the red flags are answered). | After confirming, the check-in is history; one line keeps it checkable without pushing the card down. **Start needs the check-in done and closed**: confirmed (Same as yesterday, or a change, §5.1), today's red flags answered (§5.8), and not open for editing — so Start, and Enter, only ever act on the saddle card the rider can see, above the fold. This is stricter than §5.1 alone (a change used to enable Start while the answers were still open), never looser. "Use these answers" is named differently from the red-flag check's *Done* so the two never read as one action. |
+| **One proposal surface** | The full-width saddle proposal and the desk proposal card are one card with two forms. **Desk** (check-in open): outcome line, session · duration, profile, one reason + *Why?*, actions Start ⏎ · − Easier · + Harder · Ride my wish / Ride the full X; "Why today: every fact" discloses the other reasons (each with *Why?*), the facts and the model's confidence, and *Edit a copy in Workouts*. **Saddle** (check-in done): the same card at T3+ / T3 with **72 px actions pinned to its bottom edge**, always above the fold; the same "Why today: every fact" disclosure (desk-size type, collapsed) above the key hints; S (Skip) / Pause open wish mode, Keep returns to the coach's pick, hinted on the card. | Two cards said the same thing twice. Information is kept, not cut: the §5.1 facts, the §15.2 reasons and *Edit a copy* are one click away in both forms, and the first reason's *Why?* is on the card. **Shorter** is dropped from the card because the time is a check-in answer (§15.2: how long is Today's time) — it was a duplicate control. *Other wish* is dropped as a button: the matrix is beside the card at 1440, and wish mode is the bars' path (§15.2). One cursor: − / + on the card, Intensity − / + and the matrix all move the same wish (one outcome table, §15.2). |
 | **1440 layout** | Card 7fr | matrix 4fr, above the fold; Last 7 days and Model in a strip under each column. Under a medical stop there is no matrix (§15.2), so the stop card spans both columns. | The proposal and the wish are the decision; history and the model are context. |
 | **1024 layout** | Stacked: summary line, the card (actions pinned at its bottom), then the matrix, Last 7 days, Model. The layout switches on the page's own width (CSS container query, < 1000 px), so 1440 with the *Why?* sheet pushed aside stacks too and the card keeps its full width. | A 4fr matrix in 912 px is too narrow for its five formats; the card must stay above the fold. |
 
 Above the fold: the saddle card (outcome, session, reason, actions) at both sizes, including `today-why`; the desk
-card's outcome line and session at both sizes (its Start is disabled until the open check-in above it is done, so its
-actions are not required above the fold). The open check-in lays its answers and the red-flag check side by side.
+card's outcome line and session at both sizes (its Start is disabled while the check-in above it is open, so its
+actions are not required above the fold; `test:safety` checks Start is disabled after *Edit*). The open check-in lays its answers and the red-flag check side by side.
 Key glyphs: Enter is shown as ⏎ on every key hint.
 
 ### 16.3 Shell
@@ -1236,12 +1236,14 @@ Key glyphs: Enter is shown as ⏎ on every key hint.
 - `pnpm screens` additionally fails when:
   - an above-the-fold element (`[data-above-fold]`: the saddle card, the desk card's outcome and session, the ride's
     "next" label) leaves the viewport in **any** direction, or a tiered one falls below its tier;
-  - any **ride region moves**: every `[data-geom]` box (Pause, clock, intensity, `?`, rows 1/T1/band, both slots, the
-    lane and its five rows, the road's three rows) must equal the first ride scene's at the same size and theme, in
-    every phase template and state (#10).
+  - any **ride region moves, appears or disappears**: the set of `[data-geom]` boxes (Pause, clock, intensity, `?`,
+    rows 1/T1/band, both slots, the lane and its five rows, the road's three rows) and each box must equal
+    `ride-threshold`'s at the same size and theme, in every phase template and state (#10).
 - `pnpm test:safety` adds the check-in flow: desk card with Start disabled while open; Same as yesterday alone does
   not collapse it; confirmed + red flags → one summary line and the saddle card; *Edit* re-opens it with the desk
-  card; a change keeps it open; *Use these answers* collapses it with the new answer.
+  card and Start disabled; a change keeps it open; *Use these answers* collapses it with the new answer.
+- Not changed here, filed: the lane's buttons (58 / 49 px) are below §7.2's 64 px, and the status bar's fault words
+  are 16 px, below T3 — both pre-date §16 (#177).
 
 ### 16.5 Review guide
 
