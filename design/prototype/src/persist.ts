@@ -140,7 +140,7 @@ export function setDistance(m: number) {
 }
 
 // ---------- onboarding progress (DESIGN §5.8) ----------
-export const ONBOARDING_STEPS = ["about", "background", "numbers", "health", "devices", "baseline", "result"] as const;
+export const ONBOARDING_STEPS = ["about", "background", "profile", "numbers", "health", "devices", "baseline", "result"] as const;
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
 export const onboardingStep = createStore<OnboardingStep | null>(
   load("crank.design.onboarding.v1", (v) => (ONBOARDING_STEPS.includes(v as OnboardingStep) ? (v as OnboardingStep) : null), null),

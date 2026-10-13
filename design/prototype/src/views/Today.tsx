@@ -1,5 +1,5 @@
 // Today (DESIGN §5.1) and the Ready check (§5.4).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Checkin, Proposal } from "@crank/shared";
 import { Profile } from "../charts";
 import { editor } from "../editor/model";
@@ -10,6 +10,9 @@ import { requestStart, safety, stopActive } from "../safety";
 import { RedFlagCheck } from "./Gate";
 import { useStore } from "../store";
 import { KeyHint } from "./Ride";
+import { bindings } from "../persist";
+import { planWish, proposalFor, stepWish, type Cell, type Wish } from "../mock/wish";
+import { WishCard, WishOutcomeBlock } from "./Wish";
 
 type Score = 1 | 2 | 3 | 4 | 5;
 type Row = "sleep" | "legs" | "stress" | "motivation";
@@ -34,8 +37,14 @@ function start(p: Proposal) {
 }
 
 export function Today() {
-  const [c, setC] = useState<Checkin>({ ...lastCheckin });
-  const [confirmed, setConfirmed] = useState<"same" | "changed" | null>(null);
+  const fx0 = sceneFixture.get();
+  const [c, setC] = useState<Checkin>({ ...lastCheckin, ...fx0.checkin });
+  const [confirmed, setConfirmed] = useState<"same" | "changed" | null>(fx0.checkin ? "changed" : null);
+  // the wish (DESIGN §15.2): null = the coach picks; safety is applied by the planner before the wish
+  const [wish, setWishState] = useState<Wish>(fx0.wish ?? null);
+  const [anyway, setAnyway] = useState(false);
+  const wishAt = useRef(0);
+  const setWish = (w: Wish) => ((wishAt.current = performance.now()), setAnyway(false), setWishState(w));
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [pending, setPending] = useState(true);
   const fx = useStore(sceneFixture);
@@ -45,31 +54,41 @@ export function Today() {
   const [freeConfirm, setFreeConfirm] = useState(!!fx.freeConfirm || route.sub === "free");
   const stop = stopActive() || safe.stop;
   const ready = !!proposal && !pending && confirmed !== null && safe.checkedToday;
+  const capped = !!fx.healthCap;
+  const coachPick: Cell = capped ? { intensity: "tempo", format: "intervals" } : { intensity: "vo2max", format: "intervals" };
+  const outcome = planWish(wish, { legs: c.legs, sleep: c.sleep, minutes: c.minutes, capped, coachPick });
 
   useEffect(() => {
     let live = true;
     setPending(true);
-    const capped = sceneFixture.get().healthCap;
+    const cap = sceneFixture.get().healthCap;
     void settle(backend.planner.propose(c)).then((p) => {
       if (!live) return;
-      // the planner respects the health cap (stand-in until the planner knows about it)
-      setProposal(capped ? cappedProposal(cpW, c.minutes) : p);
+      // the planner respects the health cap first, then the wish (stand-ins until the planner knows both)
+      const o = planWish(wish, { legs: c.legs, sleep: c.sleep, minutes: c.minutes, capped: !!cap, coachPick });
+      setProposal(wish ? proposalFor(anyway && o.overridable ? wish : o.delivered, c.minutes, cpW) : cap ? cappedProposal(cpW, c.minutes) : p);
       setPending(false);
     });
     return () => {
       live = false;
     };
-  }, [c]);
+  }, [c, wish, anyway]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Enter" || !ready || !proposal || e.target instanceof HTMLButtonElement) return;
+      if (e.target instanceof HTMLInputElement) return;
+      const b = bindings.get();
+      // saddle gesture: Intensity −/+ move the wish along intensity, Keep returns to the coach's pick (§15.2)
+      if (!stop && (b.minus.includes(e.key) || b.plus.includes(e.key))) return setWish(stepWish(wish ?? coachPick, b.minus.includes(e.key) ? -1 : 1, capped));
+      if (!stop && b.keep.includes(e.key) && !(e.target instanceof HTMLButtonElement)) return setWish(null);
+      // a start within 1.5 s of a wish change could start a plan the rider hasn't seen (§7.2 debounce)
+      if (e.key !== "Enter" || !ready || !proposal || e.target instanceof HTMLButtonElement || performance.now() - wishAt.current < 1500) return;
       e.preventDefault(); // the Ready check's focused button must not receive this same Enter
       start(proposal);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [proposal, ready]);
+  }, [proposal, ready, wish, stop, capped]);
 
   const set = (patch: Partial<Checkin>) => {
     setConfirmed("changed");
@@ -120,6 +139,7 @@ export function Today() {
               <RedFlagCheck compact onDone={() => undefined} />
             )}
           </section>
+          {!stop && <WishCard wish={wish} outcome={outcome} capped={capped} onWish={setWish} />}
           <WeekCard />
         </div>
 
@@ -134,17 +154,18 @@ export function Today() {
               <span className="muted"> — from your injury answer. Lift it in Settings → Health when the injury allows hard efforts.</span>
             </section>
           )}
-          <section className="card proposal" aria-label="Today's proposal" aria-busy={pending}>
+          <section className="card proposal" aria-label="Today's proposal" aria-busy={pending} data-delivered={anyway && outcome.overridable && wish ? wish.intensity : outcome.delivered.intensity}>
             <div className="proposal-head">
               <span className="eyebrow">Coach proposes {pending && <span className="pending-dot">· re-planning…</span>}</span>
               <h2>{proposal?.workout.name ?? " "}</h2>
               <p className="big-meta">{compiled ? `${mmss(compiled.totalS)} · TSS ${Math.round(compiled.tss)} · IF ${compiled.if.toFixed(2)}` : " "}</p>
             </div>
             <div className="proposal-profile">{compiled && <Profile blocks={compiled.blocks} zones={backend.zones.power} height={100} capW={fx.healthCap ? capW : undefined} label="Proposed workout profile" />}</div>
+            <WishOutcomeBlock o={outcome} anyway={anyway && outcome.overridable} onAnyway={() => setAnyway(true)} />
             <h3>Why today</h3>
             <ul className="reasons">
               {proposal &&
-                proposalReasons(proposal, c.minutes, word("legs", c.legs), word("sleep", c.sleep), !!fx.healthCap).map((r) => <li key={r}>{r}</li>)}
+                proposalReasons(proposal, c.minutes, word("legs", c.legs), word("sleep", c.sleep), !!fx.healthCap && !wish).map((r) => <li key={r}>{r}</li>)}
               {fx.healthCap && <li>Every target stays under the dashed cap line.</li>}
               <li className="muted">
                 Planned on CP {cp?.value} ± {cp?.sd} W ({calibration.confidence} confidence, {calibration.rides} rides).

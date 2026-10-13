@@ -13,6 +13,7 @@ import { Ready, Today } from "./views/Today";
 import { Resume } from "./views/Resume";
 import { Gate } from "./views/Gate";
 import { Workouts } from "./views/Workouts";
+import { WhySheet } from "./views/Why";
 
 const PLACES: [View, string, string][] = [
   ["today", "Today", "◉"],
@@ -118,6 +119,7 @@ function Destination() {
           <Screen view={r.view} />
         </ErrorBoundary>
       </main>
+      <WhySheet />
     </div>
   );
 }

@@ -539,3 +539,50 @@ kbd.keyhint { font-size: 0.6em; padding: 2px 6px; margin-right: 8px; vertical-al
 .dialog .symptom-btn { border: 2px solid var(--status-serious); color: var(--status-serious); font-weight: 700; width: 100%; }
 .redflag-check .choices { flex-wrap: nowrap; margin: 4px 0; }
 main[data-destination]:focus { outline: none; }
+
+/* ---------- wish matrix, Why? sheet, Background, training profile (DESIGN §15) ---------- */
+.wish h2 { margin-bottom: 2px; }
+.wish-now { font-size: clamp(22px, 3vh, 28px); margin: 0 0 10px; white-space: nowrap; overflow: hidden; }
+.matrix { display: grid; grid-template-columns: 92px repeat(5, minmax(0, 1fr)); gap: 4px; align-items: stretch; }
+.matrix-row { display: contents; }
+.matrix .axis { font-size: 13px; font-weight: 600; color: var(--ink-secondary); align-self: end; text-align: center; line-height: 1.15; }
+.matrix [role="rowheader"] { text-align: left; align-self: center; display: grid; }
+.matrix [role="rowheader"] small { font-weight: 400; color: var(--ink-muted); font-size: 11px; }
+.cell { min-height: 44px; min-width: 0; padding: 0 2px; font-size: 13px; font-weight: 700; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border); }
+.cell.none { background: none; border: none; display: grid; place-items: center; color: var(--ink-muted); }
+.cell.none::after { content: "·"; }
+.cell.wished { outline: 3px solid var(--accent-text); outline-offset: -3px; color: var(--accent-text); }
+.cell.planned { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.cell.locked { background: none; border: 2px dashed var(--status-warning); color: var(--ink-muted); font-weight: 600; }
+.wish-line { margin: 10px 0 4px; }
+.wish-outcome { border-left: 4px solid var(--border); padding: 2px 0 6px 12px; margin: 10px 0; }
+.wish-outcome.rel-as_wished, .wish-outcome.rel-anyway { border-left-color: var(--status-good); }
+.wish-outcome.rel-adapted, .wish-outcome.rel-deferred { border-left-color: var(--status-info); }
+.wish-outcome.rel-blocked_by_safety { border-left-color: var(--status-warning); }
+.wish-outcome .actions { margin-top: 8px; }
+.grade { display: inline-block; font-size: 12px; font-weight: 700; padding: 0 6px; border-radius: 6px; border: 1.5px solid var(--ink-secondary); color: var(--ink-primary); white-space: nowrap; }
+.grade.g-C, .grade.g-D { border-style: dashed; color: var(--ink-secondary); }
+.why { min-height: 28px; padding: 0 6px; font-size: 13px; font-weight: 600; display: inline-flex; gap: 6px; align-items: center; vertical-align: baseline; }
+.shell { position: relative; }
+/* the sheet spans the page (so it covers it in any scroll position); its content sticks to the viewport */
+.why-sheet { position: absolute; top: 0; right: 0; min-height: 100%; width: min(480px, 46vw); z-index: 20; background: var(--surface-1); border-left: 1px solid var(--border); box-shadow: -12px 0 32px rgb(0 0 0 / 0.35); padding: 20px 24px; }
+.why-body { position: sticky; top: 0; max-height: 100vh; overflow: auto; padding-bottom: 20px; }
+.why-sheet header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.why-sheet h3 { margin: 16px 0 4px; }
+.why-sheet p { margin: 0; }
+.grade-line { margin-top: 14px !important; display: flex; gap: 10px; align-items: baseline; }
+.sources { padding-left: 20px; font-size: 14px; display: grid; gap: 6px; color: var(--ink-secondary); }
+.sources a, button.link { color: var(--accent-text); }
+button.link { background: none; border: none; padding: 0; min-height: 36px; text-align: left; font-weight: 600; display: block; }
+.why-sheet .foot { margin-top: 18px; }
+.findings { padding-left: 0; list-style: none; display: grid; gap: 8px; }
+.grades { display: grid; gap: 6px; margin: 12px 0; }
+.grades div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.grades dd { margin: 0; color: var(--ink-secondary); }
+.topics { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.topics button { width: 100%; text-align: left; display: grid; gap: 4px; padding: 8px 12px; }
+.grades-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.profile { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 24px; align-items: start; }
+.onboarding-card .profile .choices.column, .settings-card .profile .choices.column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.effects { position: sticky; top: 16px; }
+.profile .field input { max-width: 100%; width: 100%; }
