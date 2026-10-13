@@ -50,8 +50,12 @@ const HUB = [SLICE_ART.focus, -H / 2] as const;
 /** The slice front x = f − y / tan 50°: from right of all ink (f at the drawing's right edge) to the line through
  *  the speed lines' chamfers (f = left − lead, BRAND.md §Construction), where it stops on A's geometry. */
 const FRONT = [SLICE_ART.box[0] + SLICE_ART.box[2], layout().left - SLICE.lead] as const;
-/** Stroke (units, in the shape's colour) that closes the ring's slit while its two faces still touch. */
-const SEAM = 6;
+/** The ring's two faces start collinear and part into the C's opening. Until they are `SEAM_PX` apart on screen
+ *  the slit between them is filled by `morph.seam` (in the shape's colour), so two abutting edges never show as an
+ *  anti-aliasing hairline that opens, closes and opens again (#142). The fill is stroked in its own colour
+ *  `SEAM_PX + 1` px wide, so it overlaps each face by ≥ ½ px instead of abutting it (abutting edges conflate to
+ *  a crack of their own, and a stroke under a pixel wide cannot cover a whole pixel row). */
+export const SEAM_PX = 1;
 
 /** CSS cubic-bezier(x1, y1, x2, y2) as a function of progress 0…1. */
 function bezier(x1: number, y1: number, x2: number, y2: number) {
@@ -102,14 +106,35 @@ const ring: [number, number][] = [];
 }
 const cPts = runs.flat();
 
-function morphPath(u: number) {
-  let d = "";
-  for (let i = 0; i < ring.length; i++) {
-    const [x0, y0] = ring[i]!;
+/** Where the four runs start in the vertex list (outer arc, top face, inner arc, bottom face). */
+const FACE_TOP = runs[0].length;
+const FACE_BOTTOM = FACE_TOP + runs[1].length + runs[2].length;
+const FACE_VERTS = runs[1].length;
+
+/** Both faces run between the same two radii: top face outer → inner, bottom face inner → outer, so top vertex
+ *  i and bottom vertex FACE_VERTS − i sit on one radius (vertex 0 pairs with the outer arc's first, via the
+ *  wrap). Their distance is zero for the ring and u · (the C's face separation) on the way. */
+const facePair = (i: number) => [FACE_TOP + i, (FACE_BOTTOM + FACE_VERTS - i) % ring.length] as const;
+/** Smallest separation of the two faces along their length, per unit of morph progress u (the faces are collinear
+ *  in the ring, so it is linear in u). The slit stays filled until even the narrowest point is `SEAM_PX` apart. */
+const FACE_GAP = Math.min(
+  ...Array.from({ length: FACE_VERTS }, (_, i) => {
+    const [a, b] = facePair(i);
+    return Math.hypot(cPts[a]![0] - cPts[b]![0], cPts[a]![1] - cPts[b]![1]);
+  }),
+);
+
+function morphShape(u: number) {
+  const pts = ring.map(([x0, y0], i): [number, number] => {
     const [x1, y1] = cPts[i]!;
-    d += `${i ? "L" : "M"}${n(x0 + (x1 - x0) * u)} ${n(y0 + (y1 - y0) * u)}`;
-  }
-  return `${d}Z`;
+    return [n(x0 + (x1 - x0) * u), n(y0 + (y1 - y0) * u)];
+  });
+  const poly = (list: [number, number][]) => `${list.map(([x, y], i) => `${i ? "L" : "M"}${x} ${y}`).join("")}Z`;
+  // The slit: down the top face (outer → inner) and back up the bottom face (inner → outer).
+  const slit = Array.from({ length: FACE_VERTS }, (_, i) => pts[facePair(i)[0]]!).concat(
+    Array.from({ length: FACE_VERTS }, (_, i) => pts[facePair(FACE_VERTS - i)[1]]!),
+  );
+  return { d: poly(pts), seam: poly(slit), gap: n(FACE_GAP * u) };
 }
 
 /** When each of R A N K starts: never before the gliding shape's right edge has passed the letter's left ink
@@ -129,8 +154,9 @@ export type Frame = {
   t: number;
   /** The spinning mark (until the ring is closed), else null. */
   mark: { theta: number; sweep: number; trail: number; crank: number; tip: number; ghosts: { lag: number; opacity: number }[] } | null;
-  /** The ring → C shape while it glides, with its seam stroke (units), else null. */
-  morph: { d: string; u: number; seam: number } | null;
+  /** The ring → C shape while it glides, else null; `seam` is the slit between its faces (outline of the area
+   *  to fill) and `gap` their smallest separation (units), which `paint` weighs against `SEAM_PX`. */
+  morph: { d: string; u: number; seam: string; gap: number } | null;
   /** C (from the moment it has landed) then R A N K: x offset (units) and opacity. */
   letters: { dx: number; opacity: number }[];
   /** The slice front (x at y = 0) while it runs; null before (word uncut) and after (A at rest). */
@@ -167,7 +193,7 @@ export function frame(t: number): Frame {
   return {
     t,
     mark,
-    morph: t >= m0 && !landed ? { d: morphPath(u), u, seam: SEAM * (1 - clamp(u / 0.1)) } : null,
+    morph: t >= m0 && !landed ? { ...morphShape(u), u } : null,
     letters: [
       { dx: 0, opacity: landed ? 1 : 0 },
       ...LETTER_START.map((s) => {
@@ -180,6 +206,9 @@ export function frame(t: number): Frame {
     settled: t >= SPIN.end,
   };
 }
+
+/** Is the slit still filled? True until the faces are `SEAM_PX` apart on screen (`px` = screen px per unit). */
+export const seamFilled = (gapUnits: number, px: number) => gapUnits * px < SEAM_PX;
 
 // --- markup + painting -----------------------------------------------------------------------------------
 
@@ -217,7 +246,7 @@ export function spin(paint: Paint, id: string): Art {
             `<path class="sp-uncut" display="none" data-clip="url(#${id}-ahead)" d="${small[i]}"/></g>`,
         )
         .join("")}</g>` +
-      `<path class="sp-morph" display="none"/>` +
+      `<path class="sp-morph" display="none"/><path class="sp-seam" display="none"/>` +
       `<g class="sp-mark" display="none" fill="${paint.accent}" transform="translate(${n(HUB[0])} ${HUB[1]}) scale(${n(SPIN.scale)})">` +
       `<path d="M164.32 -309.03A350 350 0 1 0 164.32 309.03" fill="none" stroke="${paint.accent}" stroke-width="125"/>` +
       `${trails}${ghosts}<path class="sp-crank" d="${SPIN_ART.crank}"/><path class="sp-tip" d="${SPIN_ART.tip}"/></g>`,
@@ -257,14 +286,23 @@ export function paint(svg: SVGSVGElement, f: Frame, colours: Paint) {
   }
 
   const [morph] = q<SVGPathElement>(".sp-morph");
+  const [seam] = q<SVGPathElement>(".sp-seam");
   show(morph!, f.morph !== null);
+  show(seam!, false);
   if (f.morph) {
     // Brass ring → ink letter, mixed in Oklab along the same curve as the shape.
     const fill = `color-mix(in oklab, ${colours.ink} ${n(100 * f.morph.u)}%, ${colours.accent})`;
     morph!.setAttribute("d", f.morph.d);
     morph!.style.fill = fill;
-    morph!.style.stroke = f.morph.seam > 0 ? fill : "";
-    morph!.style.strokeWidth = f.morph.seam > 0 ? `${n(f.morph.seam)}` : "";
+    // The slit stays filled until the faces are visibly (SEAM_PX) apart; the scale is the drawing's on screen.
+    const px = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+    if (seamFilled(f.morph.gap, px)) {
+      show(seam!, true);
+      seam!.setAttribute("d", f.morph.seam);
+      seam!.style.fill = fill;
+      seam!.style.stroke = fill;
+      seam!.style.strokeWidth = `${n((SEAM_PX + 1) / px)}`;
+    }
   }
 
   const sliced = f.front !== null;

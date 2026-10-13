@@ -19,7 +19,7 @@ import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
-import { freezeMotion, openStart } from "./start-page.mjs";
+import { openStart, paintAt } from "./start-page.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const out = fileURLToPath(new URL("../../../docs/design/screens/", import.meta.url));
@@ -174,17 +174,17 @@ try {
 
 /** The cold-start screen, every state at each size and theme (BRAND.md §Start screen; checks in start.test.mjs). */
 async function startScreens() {
-  const MOTION_FRAMES = [0, 300, 750, 1200]; // ms into the launch motion; 1200 = the budget, all at rest
+  // ms into F's launch motion: spin-up, the ring closed and gliding, the word out and the slice running, at rest
+  const MOTION_FRAMES = [0, 300, 450, 600, 750, 900, 1080];
   const STATES = [
-    ...MOTION_FRAMES.map((t) => ({ id: `start-motion-${String(t).padStart(4, "0")}ms`, query: "boot=5000", async prepare(page) { await freezeMotion(page, t); } })),
+    ...MOTION_FRAMES.map((t) => ({ id: `start-motion-${String(t).padStart(4, "0")}ms`, query: "boot=5000", async prepare(page) { await paintAt(page, t); } })),
     { id: "start-reduced-motion", query: "boot=5000", reducedMotion: "reduce", async prepare() {} },
     { id: "start-slow-boot", query: "boot=5000", reducedMotion: "reduce", async prepare(page) { await page.clock.runFor(1250); } },
     {
       id: "start-handoff-100ms",
       query: "boot=600",
       async prepare(page) {
-        await page.clock.runFor(600); // the core is ready: destination live underneath, start screen frozen and fading
-        await freezeMotion(page, 600);
+        await page.clock.runFor(600); // the core is ready: destination live underneath, F running on under the fade
         await page.evaluate(() => {
           const fade = document.getAnimations().find((a) => a.effect?.target?.classList.contains("start"));
           fade.currentTime = 100;
