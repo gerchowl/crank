@@ -1,0 +1,112 @@
+/* Brand roles for the start screen (BRAND.md §Colour). Graphite + brass come from the app mark
+   (docs/design/ICON.md); the light pair is chosen for contrast, not inverted. */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1a1d22;
+  --ink: #ece6dc;
+  --accent: #c08a4a;
+  --muted: #9ba0a8;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f1ea;
+  --ink: #1a1d22;
+  --accent: #94642d;
+  --muted: #5b6068;
+}
+
+/* Motion tokens (BRAND.md §Motion). One curve: a decelerating settle with no overshoot. */
+:root {
+  --settle: cubic-bezier(0.16, 1, 0.3, 1);
+  --turn: cubic-bezier(0.35, 0, 0.15, 1);
+}
+
+* { box-sizing: border-box; margin: 0; }
+html, body, #root { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+/* --- start screen --- */
+.start {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+.start .wm { width: min(var(--w), var(--max)); }
+.start[data-concept="slice"] { --w: 52vw; --max: 820px; }
+.start[data-concept="blur"] { --w: 50vw; --max: 800px; }
+.start[data-concept="lockup"] { --w: 36vw; --max: 560px; }
+.start[data-concept="kinetic"] { --w: 44vw; --max: 700px; }
+.start[data-concept="instrument"] { --w: 36vw; --max: 560px; }
+.status {
+  position: absolute;
+  bottom: 48px;
+  color: var(--muted);
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  animation: status 300ms linear 1200ms backwards;
+}
+@keyframes status { from { opacity: 0; } }
+
+/* --- launch motion: every keyframe states only `from`; the resting state is the element's own style,
+   so reduced motion (animation: none) is simply the final frame. --- */
+.wm-l, .wm-speed, .wm-echo, .crank, .in-scale, .in-index { transform-box: fill-box; }
+
+[data-concept="slice"] .wm-l { animation: settle 520ms var(--settle) calc(var(--i) * 45ms) backwards; }
+[data-concept="slice"] .wm-speed { transform-origin: right center; animation: draw 700ms var(--settle) 150ms backwards; }
+[data-concept="slice"] .wm-speed.s1 { animation-delay: 230ms; }
+
+[data-concept="blur"] svg > .wm-letters { animation: arrive 800ms var(--settle) backwards; }
+[data-concept="blur"] .e0 { animation: unfold0 800ms var(--settle) 100ms backwards; }
+[data-concept="blur"] .e1 { animation: unfold1 800ms var(--settle) 100ms backwards; }
+[data-concept="blur"] .e2 { animation: unfold2 800ms var(--settle) 100ms backwards; }
+
+[data-concept="lockup"] .crank,
+[data-concept="kinetic"] .crank {
+  transform-box: view-box;
+  transform-origin: 0 0; /* the hub */
+  animation: turn 1000ms var(--turn) backwards;
+}
+[data-concept="kinetic"] .crank { animation-duration: 1100ms; }
+[data-concept="lockup"] .wm-l { animation: settle 600ms var(--settle) calc(200ms + var(--i) * 50ms) backwards; }
+[data-concept="kinetic"] .wm-l { animation: settle-far 700ms var(--settle) calc(100ms + var(--i) * 60ms) backwards; }
+[data-concept="kinetic"] .mk-ring { animation: fade 300ms linear backwards; }
+
+[data-concept="instrument"] .wm-letters { animation: fade 500ms linear backwards; }
+[data-concept="instrument"] .in-scale { transform-origin: left center; animation: grow 700ms var(--settle) backwards; }
+[data-concept="instrument"] .in-index { animation: index 800ms var(--settle) 300ms backwards; }
+
+@keyframes settle { from { opacity: 0; transform: translateX(-60px); } }
+@keyframes settle-far { from { opacity: 0; transform: translateX(-160px); } }
+@keyframes draw { from { transform: scaleX(0); } }
+@keyframes grow { from { transform: scaleX(0); } }
+@keyframes fade { from { opacity: 0; } }
+@keyframes arrive { from { opacity: 0; transform: translateX(-280px); } }
+@keyframes unfold0 { from { opacity: 0; transform: translateX(150px); } }
+@keyframes unfold1 { from { opacity: 0; transform: translateX(300px); } }
+@keyframes unfold2 { from { opacity: 0; transform: translateX(450px); } }
+@keyframes turn { from { transform: rotate(-360deg); } }
+@keyframes index { from { opacity: 0; transform: translateX(-600px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .start *, .start { animation: none !important; }
+}
+
+/* --- overview (contact sheet for review) --- */
+.overview {
+  min-height: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 56px 64px;
+  padding: 64px;
+  align-content: center;
+}
+.overview figure { display: grid; gap: 20px; justify-items: center; }
+.overview .wm { width: 100%; max-width: 420px; }
+.overview figcaption { color: var(--muted); }
