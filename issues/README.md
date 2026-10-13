@@ -8,3 +8,5 @@ Spike code lives on branches `spike/react`, `spike/svelte`, `spike/solid`.
 - `backend.md` — contract/backend gaps surfaced by the spikes
 
 Status markers: `[ ]` open · `[x]` fixed · `[-]` won't fix (spike-only).
+
+GitHub: https://github.com/gerchowl/crank/issues (#1–#11 cross-cutting, #12–#19 backend, #20–#22 spike tracking). GitHub is now the source of truth; these files are the snapshot they were filed from.
