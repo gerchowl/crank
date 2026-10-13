@@ -1,0 +1,10 @@
+# prek / pre-commit: run the Svelte spike guardrails before every commit touching it.
+repos:
+  - repo: local
+    hooks:
+      - id: svelte-spike-check
+        name: pnpm check (svelte-check + eslint-plugin-svelte)
+        entry: pnpm -C spikes/svelte check
+        language: system
+        pass_filenames: false
+        files: ^spikes/svelte/
