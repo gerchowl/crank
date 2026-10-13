@@ -50,12 +50,26 @@ const spinEnds = [...LETTER_START.map((s) => s + SPIN.letter), SPIN.slice[0] + S
 if (SPIN.end > 1100 || Math.max(...spinEnds) > SPIN.end) failures.push(`spin: motion ends at ${Math.max(...spinEnds)} ms (end ${SPIN.end}, target 1100)`);
 console.log(`  spin: R A N K start at ${LETTER_START.join(" / ")} ms; at rest by ${Math.max(...spinEnds)} ms`);
 
-/** `paused`: the fake clock moves only by `runFor` (installed clocks otherwise also flow in real time). */
-async function open(page: Page, name: string, query: string, paused = false) {
+/** `paused`: the fake clock moves only by `runFor` (installed clocks otherwise also flow in real time).
+ *  `freezeCss`: every CSS animation is created paused at its start. CSS animations run on the document timeline, which
+ *  the fake clock does not drive: without this a 300–800 ms `backwards`-fill animation can finish during a slow load,
+ *  drop out of `document.getAnimations()` and render at rest, so a frame set "to t" is a blank or settled frame (#189). */
+async function open(page: Page, name: string, query: string, paused = false, freezeCss = false) {
   page.on("pageerror", (e) => failures.push(`${name}: ${e.message}`));
   page.on("console", (m) => m.type() === "error" && failures.push(`${name}: console: ${m.text()}`));
   await page.clock.install({ time: 0 });
   if (paused) await page.clock.pauseAt(1000);
+  if (freezeCss)
+    await page.addInitScript(() => {
+      const style = document.createElement("style");
+      style.textContent = "*, ::before, ::after { animation-play-state: paused !important; }";
+      // the document element does not exist yet when init scripts run
+      new MutationObserver((_, o) => {
+        if (!document.head) return;
+        document.head.append(style);
+        o.disconnect();
+      }).observe(document, { childList: true, subtree: true });
+    });
   await page.goto(`${base}?${query}`);
   await page.waitForSelector("svg");
   const m = await page.evaluate(() => {
@@ -88,7 +102,7 @@ try {
     for (const t of FRAMES) {
       const name = `motion.${id}.${String(t).padStart(4, "0")}ms`;
       const page = await ctx.newPage();
-      await open(page, name, `concept=${id}&theme=dark`);
+      await open(page, name, `concept=${id}&theme=dark`, false, true);
       const over = await page.evaluate((at) => {
         let longest = 0;
         for (const a of document.getAnimations()) {
@@ -132,7 +146,7 @@ async function bootAndHandOff() {
       await page.close();
 
       page = await ctx.newPage();
-      await open(page, `handoff.${tag}`, `concept=slice&theme=${theme}&ready=600`);
+      await open(page, `handoff.${tag}`, `concept=slice&theme=${theme}&ready=600`, false, true);
       await page.clock.runFor(600);
       const s = await page.evaluate(() => ({
         start: !!document.querySelector(".start"),
@@ -379,7 +393,7 @@ async function compareSheet(theme: (typeof THEMES)[number]) {
   const cells: { label: string; png: Buffer }[] = [];
   for (const [i, t] of STORY.entries()) {
     const page = await ctx.newPage();
-    await open(page, `compare.${theme}.${t}`, `concept=slice&theme=${theme}`);
+    await open(page, `compare.${theme}.${t}`, `concept=slice&theme=${theme}`, false, true);
     await page.evaluate((at) => {
       for (const a of document.getAnimations()) {
         a.pause();
