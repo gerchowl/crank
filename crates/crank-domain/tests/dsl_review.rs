@@ -86,3 +86,12 @@ fn id_consumption_on_errors_is_explicit() {
     }
     assert_eq!(next, 0);
 }
+
+#[test]
+fn implausible_power_messages_use_shortest_decimal() {
+    let err = parse_dsl("1m 1000000000000000128%", 280.0, &mut source()).unwrap_err();
+    assert_eq!(
+        err.message,
+        "1000000000000000100 % FTP is implausible (max 400 %)"
+    );
+}
