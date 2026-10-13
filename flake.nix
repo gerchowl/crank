@@ -14,8 +14,8 @@
       toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
-      cargoFiles = craneLib.fileset.commonCargoSources ./.;
-      rustFiles = lib.fileset.unions [ cargoFiles ./clippy.toml ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
+      cargoFiles = lib.fileset.difference (craneLib.fileset.commonCargoSources ./.) ./crates/crank-fec/fuzz;
+      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-fec/tests/fixtures ./clippy.toml ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
         (lib.fileset.difference ./app ./app/src-tauri) ./shared
@@ -104,6 +104,12 @@
         crank-cli = craneLib.buildPackage (rustCheck // {
           pname = "crank-cli"; cargoExtraArgs = "--locked -p crank-cli"; doCheck = false;
         });
+      };
+      devShells.fuzz = pkgs.mkShell {
+        packages = [ (pkgs.rust-bin.selectLatestNightlyWith (t: t.minimal.override {
+          extensions = [ "rust-src" ];
+        })) pkgs.cargo-fuzz ];
+        CARGO_BUILD_JOBS = "8";
       };
       devShells.default = craneLib.devShell {
         inputsFrom = [ (desktop "") ];
