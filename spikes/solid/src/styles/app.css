@@ -1256,3 +1256,189 @@ button.issue {
   padding: 2px 0;
   font-size: 13px;
 }
+
+/* ---------- check-in ---------- */
+.checkin {
+  max-width: 980px;
+}
+.checkin-form {
+  gap: 14px;
+}
+.ci-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.ci-label {
+  width: 110px;
+  font-weight: 600;
+  font-size: 16px;
+}
+.ci-scale {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ci-dot {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  font-size: 18px;
+  font-weight: 700;
+}
+.ci-chip {
+  min-height: 48px;
+  min-width: 64px;
+  border-radius: 999px;
+  font-size: 16px;
+}
+.ci-dot.on,
+.ci-chip.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+.ci-note {
+  flex: 1;
+}
+.ci-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.proposal-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.proposal-name {
+  font-size: 20px;
+  font-weight: 700;
+}
+.proposal-profile {
+  height: 140px;
+  display: flex;
+}
+.rationale {
+  margin: 0;
+  font-size: 15px;
+}
+.skeleton {
+  height: 100px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--surface-2), var(--surface-1), var(--surface-2));
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+}
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* ---------- review ---------- */
+.review-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+.tile {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+}
+.p05-panels {
+  display: flex;
+  flex-direction: column;
+}
+.p05-panel {
+  height: 110px;
+  display: flex;
+  position: relative;
+}
+.p05-panel:first-child {
+  height: 150px;
+}
+.p05-panel:last-child {
+  height: 128px;
+}
+.p05-label {
+  position: absolute;
+  left: 48px;
+  top: 2px;
+  z-index: 2;
+  font-size: 11px;
+  color: var(--ink-secondary);
+  pointer-events: none;
+}
+.p05-label .chip-line {
+  margin-left: 0;
+}
+.sel-stats {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+.u-select {
+  background: var(--accent-soft);
+}
+.decisions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.decision {
+  display: grid;
+  grid-template-columns: 70px 110px auto auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--grid);
+}
+.dec-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-secondary);
+}
+.dec-verdict {
+  font-weight: 600;
+}
+.dec-msg {
+  font-size: 13px;
+  color: var(--ink-secondary);
+}
+.dec-rate button {
+  font-size: 15px;
+}
+.review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 12px;
+}
+.chart-card {
+  height: 300px;
+}
+.fatigue-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 10px;
+  margin-right: 1px;
+  vertical-align: middle;
+}
+.laps .table-view {
+  max-height: 360px;
+}

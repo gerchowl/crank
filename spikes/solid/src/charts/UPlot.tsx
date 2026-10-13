@@ -13,6 +13,8 @@ interface Props {
   data: Accessor<uPlot.AlignedData>;
   class?: string;
   onCreate?: (u: uPlot) => void;
+  /** Optional x zoom kept across data updates (null = auto). */
+  xRange?: Accessor<[number, number] | null>;
 }
 
 /**
@@ -47,7 +49,10 @@ export function UPlot(props: Props) {
   createEffect(() => {
     const u = plot();
     const d = props.data();
-    if (u) u.setData(d);
+    const r = props.xRange?.();
+    if (!u) return;
+    u.setData(d, !r);
+    if (r) u.setScale("x", { min: r[0], max: r[1] });
   });
 
   return <div class={`uplot-host ${props.class ?? ""}`} ref={setEl} />;
