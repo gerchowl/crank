@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc -p .",
-    "outline": "node scripts/outline.ts && node scripts/slice.ts",
+    "outline": "node scripts/outline.ts && node scripts/slice.ts && node scripts/spin.ts",
     "export": "node scripts/export.ts",
-    "screens": "pnpm outline && node scripts/export.ts && node scripts/screens.ts"
+    "screens": "pnpm outline && node scripts/export.ts && node scripts/screens.ts",
+    "video": "node scripts/video.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
