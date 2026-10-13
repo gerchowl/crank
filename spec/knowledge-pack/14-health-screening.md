@@ -5,9 +5,9 @@
 
 ## Key findings
 
-- **[A (consensus)] PAR-Q+ is the Canadian evidence-based consensus replacement for PAR-Q/PARmed-X.** It uses a 7-item general section, follow-up questions per condition and a decision tree, built from systematic reviews with the AGREE instrument [@warburton2011consensus; @jamnik2011; @bredin2013]. A "yes" to a general item leads to the follow-up pages (and ePARmed-X+ or a qualified exercise professional), not automatically to a physician [@bredin2013].
-- **[A (consensus)] ACSM 2015 screens on three factors:** current physical-activity level, presence of signs/symptoms and/or known cardiovascular, metabolic or renal disease, and desired exercise intensity. Risk-factor profiling was dropped from screening to remove unnecessary barriers; the aim is to identify people at elevated risk of exercise-related sudden cardiac death or acute MI [@riebe2015]. Only the abstract was available in the search; the symptom list and the decision boxes were not read from the primary text.
-- **[A (consensus)] PAR-Q+ clearance is time-limited.** The current form (2025 edition) has the participant declare that clearance is valid for a maximum of 12 months from the date of completion and becomes invalid if their condition changes [PAR-Q+ form, see References].
+- **[A (consensus)] PAR-Q+ is the Canadian evidence-based consensus replacement for PAR-Q/PARmed-X.** It uses a 7-item general section, follow-up questions per condition and a decision tree, built from systematic reviews with the AGREE instrument [@warburton2011consensus; @jamnik2011; @bredin2013]. A "yes" to a general item leads to the follow-up pages (and ePARmed-X+ or a qualified exercise professional), not automatically to a physician [@bredin2013]. The 2011 series' aim was to make clearance more effective and let qualified exercise professionals take a direct role [@warburton2011intro].
+- **[A (consensus)] ACSM 2015 screens on three factors:** current physical-activity level, presence of signs/symptoms and/or known cardiovascular, metabolic or renal disease, and desired exercise intensity. Risk-factor profiling was dropped from screening to remove unnecessary barriers; the aim is to identify people at elevated risk of exercise-related sudden cardiac death or acute MI [@riebe2015]. Only the abstract was available; the symptom list and the decision boxes were not read from the primary text (#197). The paper has a published erratum (*Med Sci Sports Exerc* 2016;48(3):579, doi 10.1249/MSS.0000000000000851, listed as "Erratum in" on PubMed); its content was not read, so the abstract-level statements here should be re-checked against it with #197.
+- **[D (form statement, not a study)] PAR-Q+ clearance is time-limited.** The current form (2025 edition) has the participant declare that clearance is valid for a maximum of 12 months from the date of completion and becomes invalid if their condition changes [PAR-Q+ form, p. 1 declaration; see References]. This is the form's own wording, not a consensus-paper finding; the consensus document [@warburton2011consensus] is the basis of the tool, not of this number.
 - **[D] Crank's hard medical stop is stricter than the sources.** Any red-flag "yes" stops plan and coach; the sources send the person to follow-up questions or an exercise professional first. This is a deliberate product choice (DESIGN §5.8), not a literature finding.
 - **[D] Crank's daily re-check of the five red flags is stricter than the sources' 12-month validity.** No source found asks for daily re-screening; it is a convention chosen because each ride is a start of exertion on a trainer with no supervisor.
 
@@ -16,8 +16,8 @@
 The PAR-Q+ is © PAR-Q+ Collaboration and states: "You are encouraged to photocopy the PAR-Q+. You must use the entire questionnaire and NO changes are permitted." (2025 form, p. 4.) Consequences for crank:
 
 1. crank **does not reproduce** PAR-Q+ item text. The table below paraphrases the *content* of each source item and cites it; the exact wording is on the form.
-2. crank's items are **its own questions**. They are modified, shortened and re-ordered, so they are **not the PAR-Q+** and the UI/docs must say "informed by", never "PAR-Q+" or "PAR-Q+ screening". (`spec/ONBOARDING.md` §1.5 already says "PAR-Q-style".)
-3. If the owner wants a screen that may be called PAR-Q+, it must be the unmodified full form (or ePARmed-X+ through its operators); that is a different feature. Raised as an open question in the PR.
+2. crank's items are **its own questions**. They are modified, shortened and re-ordered, so they are **not the PAR-Q+** and the UI/docs must say "informed by", never "PAR-Q+" or "PAR-Q+ screening" (DESIGN §5.8 currently says "follows the PAR-Q+": #193). (`spec/ONBOARDING.md` §1.5 already says "PAR-Q-style".)
+3. If the owner wants a screen that may be called PAR-Q+, it must be the unmodified full form (or ePARmed-X+ through its operators); that is a different feature. Tracked as #193.
 
 ## Item wording, derivation and deliberate differences
 
@@ -27,9 +27,9 @@ Crank wording is the DESIGN §5.8 table, verbatim. "Source item" paraphrases the
 |---|---|---|---|
 | R1 | Chest pain, pressure or tightness — at rest or when exercising? | PAR-Q+ Q2: pain in the chest at rest, during daily activities or when physically active. ACSM: signs/symptoms factor [@riebe2015]. | Adds "pressure or tightness" (how angina is described by laypeople); drops "during daily activities" because "at rest or when exercising" covers it for a rider. |
 | R2 | Fainting, or dizziness that made you lose balance, in the last 12 months? | PAR-Q+ Q3: losing balance because of dizziness, or losing consciousness, in the last 12 months. | PAR-Q+ says to answer NO if the dizziness came from over-breathing (including vigorous exercise). **crank omits that exception**: a self-screen cannot judge the cause, so it errs towards stopping. |
-| R3 | A racing or irregular heartbeat together with dizziness or breathlessness? | **No matching PAR-Q+ 2025 general item.** ACSM symptom factor covers palpitations/tachycardia as a sign/symptom class [@riebe2015] (class named in the abstract; the specific list not verified here). | crank-added item; source is the ACSM factor, not a questionnaire line. Paired with dizziness/breathlessness so common post-effort heartbeat awareness is not a red flag. |
-| R4 | Unusual breathlessness at light effort? | **No matching PAR-Q+ 2025 general item.** ACSM symptom factor, as R3. | crank-added item; "unusual" and "light effort" keep normal exertional breathlessness out. |
-| R5 | A heart condition a doctor told you to limit exercise for? | PAR-Q+ Q1: a heart condition or high blood pressure ever diagnosed; Q7: a doctor said only medically supervised activity. ACSM: known cardiovascular disease factor. | Narrower than Q1 (no blood pressure; needs a doctor's *limit*) and broader than Q7 (a limit, not only "supervised"). High blood pressure alone does not stop a ride. |
+| R3 | A racing or irregular heartbeat together with dizziness or breathlessness? | **No matching PAR-Q+ 2025 general item** (the seven general items were all read; none concerns heartbeat or palpitations). The Riebe 2015 abstract names only "signs or symptoms" generally [@riebe2015]; it does not list palpitations. | **Rests on crank's judgement** (grade D), derived from the general idea of the ACSM signs/symptoms factor, not from a verified source line. Paired with dizziness/breathlessness so normal post-effort heartbeat awareness is not a red flag. Full-text grounding is #197. |
+| R4 | Unusual breathlessness at light effort? | **No matching PAR-Q+ 2025 general item.** Same position as R3 [@riebe2015] (abstract names only "signs or symptoms"). | **Rests on crank's judgement** (grade D), as R3 (#197); "unusual" and "light effort" keep normal exertional breathlessness out. |
+| R5 | A heart condition a doctor told you to limit exercise for? | PAR-Q+ Q1: a heart condition or high blood pressure ever diagnosed; Q7: a doctor said only medically supervised activity. ACSM: "known cardiovascular, metabolic or renal disease" factor [@riebe2015] (abstract). | Narrower than Q1 (no blood pressure; needs a doctor's *limit*) and broader than Q7 (a limit, not only "supervised"). High blood pressure alone does not stop a ride. |
 
 Impact items (not red flags; no medical stop):
 
@@ -48,13 +48,14 @@ PAR-Q+ items on other chronic conditions (Q4) and the follow-up pages (arthritis
 | Medical stop lifted | Only by **recording a clearance**: date of the check (not in the future), who cleared the rider, an explicit statement; every change logged. | PAR-Q+ clearance is the participant's declaration, valid ≤ 12 months [PAR-Q+ form]. |
 | Medication "yes" | HR zones, HR-guided recovery, HR-vs-usual off; power/feel targets. | None (coaching decision). |
 | Injury "yes" | Cap at 100 % of CP, no sprints. | None (coaching decision). |
+| Medical stop **and** injury cap | **No ride at all**: a free ride has no targets, so the cap cannot be held; "Ride without a plan…" is not offered and the guard refuses it on every path (DESIGN §5.8). | None (product invariant). |
 | Unanswered item | Continue disabled; no plan proposed. | None (product invariant). |
 
 ## Re-screening
 
 - **Sources:** PAR-Q+ clearance valid at most 12 months from the date completed and void on a change in condition (also "Your health changes" is a delay-and-ask trigger on the form). Temporary illness (cold, fever) and pregnancy are listed delay triggers [PAR-Q+ form]. ACSM 2015: screening depends on *current activity level* and *desired intensity*, so a change in either changes the outcome [@riebe2015] (abstract-level).
 - **crank:** all five red flags again once a day before the first start (DESIGN §5.8), a symptom in a ride at once, and the periodic check-in about every 6 weeks or when goals change (`spec/ONBOARDING.md` §3).
-- **Gap:** the daily re-check asks only the five red flags. A new medication or injury (I1, I2) is only caught at the periodic check-in or by the athlete editing Settings. Reported in the PR.
+- **Gap:** the daily re-check asks only the five red flags. A new medication or injury (I1, I2) is only caught at the periodic check-in or by the athlete editing Settings. Tracked as #194. Not screened at all: age > 45 and unaccustomed to vigorous exercise (#195); temporary illness and pregnancy (#196).
 
 ## Not a medical device
 
