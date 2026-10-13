@@ -9,8 +9,8 @@ export function ThemeMenu() {
   const [open, setOpen] = useState(false);
   return (
     <div className="popover-anchor">
-      <button type="button" className="btn" aria-expanded={open} onClick={() => { setOpen(!open); }} title="Theme">
-        ◑ Theme
+      <button type="button" className="btn" aria-expanded={open} onClick={() => { setOpen(!open); }} title="Theme" aria-label="Theme">
+        ◑<span className="lbl"> Theme</span>
       </button>
       {open && (
         <div className="popover" role="dialog" aria-label="Theme">

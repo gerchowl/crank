@@ -48,18 +48,20 @@ export function TopBar(props: { editing: boolean; onEdit: () => void; onHelp: ()
         <span className="offset">{offset > 0 ? "+" : ""}{offset}%</span>
         <button type="button" className="btn big" onClick={() => { backend.ride.adjust(5); }} title="+5 % (key +)">+5%</button>
       </div>
-      <button type="button" className="btn big" onClick={() => { backend.ride.skipBlock(); }} title="Skip block (S)">Skip ⏭</button>
+      <button type="button" className="btn big" onClick={() => { backend.ride.skipBlock(); }} title="Skip block (S)" aria-label="Skip block">⏭︎<span className="lbl"> Skip</span></button>
       <button
         type="button"
         className="btn big primary"
         title="Pause / resume (space)"
+        aria-label={riding ? "Pause" : "Ride"}
         onClick={() => {
           if (riding) backend.ride.pause();
           else if (state === "paused") backend.ride.resume();
           else if (state === "idle") backend.ride.start();
         }}
       >
-        {riding ? "⏸ Pause" : state === "finished" ? "Done" : "▶ Ride"}
+        {riding ? "⏸\uFE0E" : state === "finished" ? "✓" : "▶\uFE0E"}
+        <span className="lbl">{riding ? " Pause" : state === "finished" ? " Done" : " Ride"}</span>
       </button>
       <div className="seg" aria-label="simulation speed">
         {([1, 10, 60] as const).map((s) => (
@@ -68,8 +70,8 @@ export function TopBar(props: { editing: boolean; onEdit: () => void; onHelp: ()
           </button>
         ))}
       </div>
-      <button type="button" className={`btn ${props.editing ? "primary" : ""}`} onClick={props.onEdit} title="Edit layout (E)">
-        ✎ Layout
+      <button type="button" className={`btn ${props.editing ? "primary" : ""}`} onClick={props.onEdit} title="Edit layout (E)" aria-label="Edit layout">
+        ✎<span className="lbl"> Layout</span>
       </button>
       <ThemeMenu />
       <button type="button" className="btn" onClick={props.onHelp} title="Shortcuts (?)">?</button>

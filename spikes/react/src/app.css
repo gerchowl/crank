@@ -1498,3 +1498,22 @@ label.inline input {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+.popover {
+  max-width: calc(100vw - 16px);
+}
+@media (max-width: 1200px) {
+  .topbar {
+    flex-wrap: nowrap;
+    gap: 6px;
+    padding: 6px 8px;
+  }
+  .topbar .lbl {
+    display: none;
+  }
+  .topbar .btn.big {
+    padding: 8px 10px;
+  }
+  .topbar .conn .small {
+    display: none;
+  }
+}
