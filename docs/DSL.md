@@ -122,9 +122,12 @@ The frozen reference remains in `shared/`; this document is the production gramm
 The domain contract derives serde and, with feature `specta`, `specta::Type`.
 Optional fields serialize as `null` as §4 requires; the frozen mock omits them.
 Parity tests normalize only those schema-defined optional fields on the reference.
-All numbers use `f64` to retain JavaScript numeric semantics; grammar-constrained
-integers compare exactly, and decimal-capable fields use §3's relative `1e-12` /
-absolute `1e-15` tolerance, including integer-valued decimals (#74).
+All numbers use `f64` to retain JavaScript numeric semantics. Parity tests load
+`tests/vectors/schema.json` from #74 directly: repeat counts and UTF-16 spans
+compare as exact integral integers; physical quantities (including whole-valued
+durations, watts, HR and cadence) use §3's relative `1e-12` / absolute `1e-15`
+tolerance. Both compared documents must have full schema coverage before any
+mismatch is returned; unknown fields and numeric classifications fail loudly.
 Error spans count UTF-16 code units, not UTF-8 bytes or Unicode scalar values.
 IDs come only from the explicit caller-owned source; identical source state and input yield identical trees.
 

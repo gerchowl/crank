@@ -52,35 +52,84 @@ fn contract_options(nodes: &mut Value) {
     }
 }
 
-// #74: classify by DSL schema, not JSON number spelling or fract()==0.
-// Decimal-capable fields use ADR-0001 §3's tolerance EVEN at integer values;
-// count, durations, watts, HR, cadence and error spans are exact integers.
-fn parity(a: &Value, b: &Value, path: &str, float: bool) -> Result<(), String> {
+// Load #74's portable DSL schema: physical quantities are floats even when
+// whole-valued; counts and UTF-16 spans are exact, integral integers.
+fn schema() -> Value {
+    serde_json::from_str(include_str!("vectors/schema.json")).expect("portable vector schema")
+}
+fn resolve<'a>(shape: &'a Value, defs: &'a Value, path: &str) -> Result<&'a Value, String> {
+    if let Some(name) = shape.get("ref").and_then(Value::as_str) {
+        defs.get(name)
+            .ok_or_else(|| format!("{path}: unknown schema reference {name}"))
+    } else if shape.is_null() {
+        Err(format!("{path}: missing schema declaration"))
+    } else {
+        Ok(shape)
+    }
+}
+fn validate(value: &Value, shape: &Value, defs: &Value, path: &str) -> Result<(), String> {
+    let shape = resolve(shape, defs, path)?;
+    match value {
+        Value::Number(_) if shape != "float" && shape != "integer" => {
+            return Err(format!("{path}: numeric classification missing"));
+        }
+        Value::Array(items) => {
+            let item_shape = shape
+                .get("items")
+                .ok_or_else(|| format!("{path}: array schema missing"))?;
+            for (i, item) in items.iter().enumerate() {
+                validate(item, item_shape, defs, &format!("{path}[{i}]"))?;
+            }
+        }
+        Value::Object(fields) => {
+            let declarations = shape
+                .get("fields")
+                .ok_or_else(|| format!("{path}: object schema missing"))?;
+            for (key, value) in fields {
+                let field = declarations
+                    .get(key)
+                    .ok_or_else(|| format!("{path}.{key}: unclassified field"))?;
+                validate(value, field, defs, &format!("{path}.{key}"))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+fn parity(a: &Value, b: &Value, shape: &Value, defs: &Value, path: &str) -> Result<(), String> {
+    // Validate both COMPLETE documents first: an early mismatch must not hide
+    // an unknown or unclassified field elsewhere (same rule as the TS loader).
+    validate(a, shape, defs, path)?;
+    validate(b, shape, defs, path)?;
+    compare(a, b, shape, defs, path)
+}
+fn compare(a: &Value, b: &Value, shape: &Value, defs: &Value, path: &str) -> Result<(), String> {
+    let shape = resolve(shape, defs, path)?;
     let mismatch = || Err(format!("{path}: {a} != {b}"));
     match (a, b) {
         (Value::Number(a), Value::Number(b)) => {
-            if !float {
-                // Converting both integers to f64 would equate adjacent values
-                // above 2^53. Only canonicalize floats from the Rust schema.
+            if shape == "integer" {
+                // Preserve adjacent JSON integers above 2^53. Canonicalize only
+                // floats emitted by the Rust schema, requiring integrality.
                 let exact = |n: &serde_json::Number| {
                     if n.is_f64() {
-                        (n.as_f64().expect("finite numeric fixture") + 0.0).to_string()
+                        let value = n.as_f64().expect("finite numeric fixture");
+                        (value.fract().abs() <= 0.0).then(|| (value + 0.0).to_string())
                     } else {
-                        n.to_string()
+                        Some(n.to_string())
                     }
                 };
-                return if exact(a) == exact(b) {
-                    Ok(())
-                } else {
-                    mismatch()
+                return match (exact(a), exact(b)) {
+                    (Some(a), Some(b)) if a == b => Ok(()),
+                    _ => mismatch(),
                 };
             }
             let (a, b) = (
                 a.as_f64().expect("finite numeric fixture"),
                 b.as_f64().expect("finite numeric fixture"),
             );
-            let tolerance = (1e-12 * a.abs().max(b.abs())).max(1e-15);
-            if (a - b).abs() <= tolerance {
+            // ADR-0001 §3: rel 1e-12 / abs 1e-15, including whole-valued floats.
+            if (a - b).abs() <= (1e-12 * a.abs().max(b.abs())).max(1e-15) {
                 Ok(())
             } else {
                 mismatch()
@@ -88,22 +137,21 @@ fn parity(a: &Value, b: &Value, path: &str, float: bool) -> Result<(), String> {
         }
         (Value::Array(a), Value::Array(b)) if a.len() == b.len() => {
             for (i, (a, b)) in a.iter().zip(b).enumerate() {
-                parity(a, b, &format!("{path}[{i}]"), false)?;
+                compare(a, b, &shape["items"], defs, &format!("{path}[{i}]"))?;
             }
             Ok(())
         }
-        (Value::Object(a), Value::Object(b)) if a.keys().eq(b.keys()) => {
-            let kind = b.get("kind").and_then(Value::as_str);
+        (Value::Object(a), Value::Object(b))
+            if a.len() == b.len() && a.keys().all(|key| b.contains_key(key)) =>
+        {
             for (key, a) in a {
-                let float = matches!(
-                    (kind, key.as_str()),
-                    (Some("pct_ftp"), "value")
-                        | (Some("range"), "lo" | "hi")
-                        | (Some("ramp"), "from" | "to")
-                        | (Some("kj"), "kj")
-                        | (None, "wattsPerRep" | "pctPerRep")
-                );
-                parity(a, &b[key], &format!("{path}.{key}"), float)?;
+                compare(
+                    a,
+                    &b[key],
+                    &shape["fields"][key],
+                    defs,
+                    &format!("{path}.{key}"),
+                )?;
             }
             Ok(())
         }
@@ -112,9 +160,8 @@ fn parity(a: &Value, b: &Value, path: &str, float: bool) -> Result<(), String> {
     }
 }
 
-#[test]
-fn frozen_vectors() {
-    let error_kinds = [
+fn vector_error_kinds() -> [(&'static str, K); 32] {
+    [
         ("dsl-13", K::UnclosedRepeat),
         ("dsl-14", K::UnexpectedToken),
         ("dsl-15", K::InvalidStepEnd),
@@ -158,9 +205,19 @@ fn frozen_vectors() {
             },
         ),
         ("dsl-44", K::ImplausiblePower { pct: 900.0 }),
-    ];
+    ]
+}
+
+#[test]
+fn frozen_vectors() {
+    let schema = schema();
+    assert_eq!(schema["schemaVersion"], 1);
+    let defs = &schema["definitions"];
+    let output_shape = &schema["areas"]["dsl"]["fields"]["cases"]["items"]["fields"]["output"];
+    let error_kinds = vector_error_kinds();
     let vectors: Value = serde_json::from_str(include_str!("vectors/dsl.json")).unwrap();
     assert_eq!(vectors["schemaVersion"], 1);
+    validate(&vectors, &schema["areas"]["dsl"], defs, "$").unwrap();
     for case in vectors["cases"].as_array().unwrap() {
         let input = &case["input"];
         let result = parse(
@@ -178,12 +235,26 @@ fn frozen_vectors() {
             assert_eq!(&actual.kind, expected_kind, "{context}");
             let mut reference_fields = serde_json::to_value(&actual).unwrap();
             reference_fields.as_object_mut().unwrap().remove("kind");
-            parity(&reference_fields, error, context, false).unwrap();
+            parity(
+                &reference_fields,
+                error,
+                &output_shape["fields"]["error"],
+                defs,
+                context,
+            )
+            .unwrap();
         } else {
             let nodes = result.unwrap();
             let mut expected = case["output"]["nodes"].clone();
             contract_options(&mut expected);
-            parity(&without_ids(&nodes), &expected, context, false).unwrap();
+            parity(
+                &without_ids(&nodes),
+                &expected,
+                &output_shape["fields"]["nodes"],
+                defs,
+                context,
+            )
+            .unwrap();
             let text = print_dsl(&nodes);
             assert_eq!(
                 text,
@@ -208,63 +279,89 @@ fn frozen_vectors() {
 
 #[test]
 fn comparator_uses_schema_and_preserves_structure() {
-    assert!(
-        parity(
-            &json!({"kind":"pct_ftp","value":1.0+5e-13}),
-            &json!({"kind":"pct_ftp","value":1}),
-            "$",
-            false
-        )
-        .is_ok()
-    );
-    assert!(
-        parity(
-            &json!({"kind":"watts","value":1.0+5e-13}),
-            &json!({"kind":"watts","value":1}),
-            "$",
-            false
-        )
-        .is_err()
-    );
-    assert!(
-        parity(
-            &json!({"kind":"kj","kj":5e-16}),
-            &json!({"kind":"kj","kj":0}),
-            "$",
-            false
-        )
-        .is_ok()
-    );
-    assert!(
-        parity(
-            &json!({"kind":"kj","kj":2e-15}),
-            &json!({"kind":"kj","kj":0}),
-            "$",
-            false
-        )
-        .is_err()
-    );
+    let schema = schema();
+    let defs = &schema["definitions"];
+    let fields = &defs["node"]["fields"];
+    let check = |a: Value, b: Value, shape: &Value| parity(&a, &b, shape, defs, "$");
+    for target in ["pct_ftp", "watts"] {
+        assert!(
+            check(
+                json!({"kind":target,"value":1.0+5e-13}),
+                json!({"kind":target,"value":1}),
+                &fields["target"]
+            )
+            .is_ok()
+        );
+    }
+    for (field, value_shape) in [
+        ("s", &fields["end"]),
+        ("bpm", &fields["target"]),
+        ("lo", &fields["cadence"]),
+    ] {
+        assert!(check(json!({field:1.0+5e-13}), json!({field:1}), value_shape).is_ok());
+    }
+    assert!(check(json!({"kj":5e-16}), json!({"kj":0}), &fields["end"]).is_ok());
+    assert!(check(json!({"kj":2e-15}), json!({"kj":0}), &fields["end"]).is_err());
     for (a, b) in [
-        (json!(1.01), json!(1)),
+        (json!(1.0 + 5e-13), json!(1)),
+        (json!(1.5), json!(1.5)),
         (
             json!(9_007_199_254_740_992u64),
             json!(9_007_199_254_740_993u64),
         ),
-        (json!([1]), json!([])),
-        (json!({"label":null}), json!({})),
-        (json!("a"), json!("b")),
     ] {
-        assert!(parity(&a, &b, "$", false).is_err());
+        assert!(check(a, b, &fields["count"]).is_err());
     }
+    assert!(check(json!([{}]), json!([]), &fields["children"]).is_err());
+    assert!(check(json!({"label":null}), json!({}), &defs["node"]).is_err());
+    assert!(check(json!("a"), json!("b"), &fields["label"]).is_err());
     assert!(
-        parity(
-            &json!({"kind":"pct_ftp","value":1.0+2e-12}),
-            &json!({"kind":"pct_ftp","value":1}),
-            "$",
-            false
+        check(
+            json!({"label":"a","count":1}),
+            json!({"count":1,"label":"a"}),
+            &defs["node"]
+        )
+        .is_ok()
+    );
+    assert!(
+        check(
+            json!({"value":1.0+2e-12}),
+            json!({"value":1}),
+            &fields["target"]
         )
         .unwrap_err()
         .contains("$.value")
+    );
+    for value in [
+        json!({"newField":1}),
+        json!({"newField":null}),
+        json!({"count":0,"newField":1}),
+    ] {
+        assert!(
+            check(value.clone(), value, &defs["node"])
+                .unwrap_err()
+                .contains("unclassified")
+        );
+    }
+    assert!(check(json!(1), json!(1), &json!("exact")).is_err());
+    assert!(check(json!({}), json!({}), &json!({"ref":"missing"})).is_err());
+    assert!(
+        check(
+            json!({"count":1,"newField":0}),
+            json!({"count":2}),
+            &defs["node"]
+        )
+        .unwrap_err()
+        .contains("newField")
+    );
+    assert!(
+        check(
+            json!({"count":2}),
+            json!({"count":1,"newField":0}),
+            &defs["node"]
+        )
+        .unwrap_err()
+        .contains("newField")
     );
 }
 
