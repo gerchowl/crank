@@ -10,3 +10,5 @@ pub use compile::{
     normalized_power, target_pct, target_watts,
 };
 pub use compiled::*;
+mod tree;
+pub use tree::{TreeError, find_node, re_id};
