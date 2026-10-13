@@ -8,6 +8,7 @@ import { Review, History } from "./views/Review";
 import { Ride } from "./views/Ride";
 import { Settings } from "./views/Settings";
 import { Ready, Today } from "./views/Today";
+import { Resume } from "./views/Resume";
 import { Workouts } from "./views/Workouts";
 
 const PLACES: [View, string, string][] = [
@@ -40,6 +41,8 @@ function Screen({ view }: { view: View }) {
   switch (view) {
     case "onboarding":
       return <Onboarding />;
+    case "resume":
+      return <Resume />;
     case "today":
       return <Today />;
     case "ready":
@@ -65,11 +68,15 @@ export function App({ forcedTheme }: { forcedTheme: "dark" | "light" | null }) {
     document.documentElement.dataset.theme = mode;
   }, [mode]);
   const place = r.view === "ready" ? "today" : r.view === "review" ? "history" : r.view;
-  if (r.view === "ride")
+  if (r.view === "ride") return <Ride />;
+  // Onboarding and the Resume sheet are modes: no rail, so there is nowhere half-set-up to wander (§3).
+  if (r.view === "onboarding" || r.view === "resume")
     return (
-      <ErrorBoundary>
-        <Ride />
-      </ErrorBoundary>
+      <main className="mode">
+        <ErrorBoundary key={r.view}>
+          <Screen view={r.view} />
+        </ErrorBoundary>
+      </main>
     );
   return (
     <div className="shell">

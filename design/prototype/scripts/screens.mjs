@@ -1,7 +1,10 @@
 // pnpm screens — renders every scene (src/scenes.ts) at each window size and theme into
 // docs/design/screens/<scene>.<w>x<h>.<theme>.png (DESIGN §12). Scenes are seeded and frozen,
 // so the output is deterministic. Fails on page errors, scene errors and horizontal overflow
-// (ride scenes: any overflow — the ride screen must fit the window, #7).
+// (ride scenes: any overflow — the ride screen must fit the window, #7), and on any [data-fit]
+// element whose text is clipped (reserved rows never wrap or cut text, DESIGN §6.1). Runs the
+// contrast check first (DESIGN §6.3).
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -15,6 +18,7 @@ const SIZES = [
 ];
 const THEMES = ["dark", "light"];
 
+execFileSync(process.execPath, [fileURLToPath(new URL("./contrast.mjs", import.meta.url))], { stdio: "inherit" });
 mkdirSync(out, { recursive: true });
 for (const f of readdirSync(out)) if (f.endsWith(".png")) rmSync(out + f);
 
@@ -48,7 +52,15 @@ try {
         const sceneError = await page.locator("#root").getAttribute("data-scene-error");
         if (sceneError) failures.push(`${name}: scene error: ${sceneError}`);
         await page.evaluate(() => document.fonts.ready);
-        const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, sh: document.documentElement.scrollHeight, ride: !!document.querySelector(".ride") }));
+        const m = await page.evaluate(() => ({
+          sw: document.documentElement.scrollWidth,
+          sh: document.documentElement.scrollHeight,
+          ride: !!document.querySelector(".ride"),
+          clipped: [...document.querySelectorAll("[data-fit]")]
+            .filter((el) => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1)
+            .map((el) => `"${el.textContent?.trim().slice(0, 50)}" (${el.scrollWidth}×${el.scrollHeight} in ${el.clientWidth}×${el.clientHeight})`),
+        }));
+        for (const c of m.clipped) failures.push(`${name}: clipped text ${c}`);
         if (m.sw > width) failures.push(`${name}: horizontal overflow (${m.sw} > ${width})`);
         if (m.ride && m.sh > height) failures.push(`${name}: ride screen overflows vertically (${m.sh} > ${height})`);
         await page.screenshot({ path: `${out}${name}.png`, fullPage: !m.ride, animations: "disabled" });

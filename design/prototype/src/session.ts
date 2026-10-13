@@ -4,6 +4,7 @@
 // DESIGN §10 #6: the session routes to Review when the ride finishes.
 import { useEffect, useState } from "react";
 import { createMockBackend, type CoachNudge, type MetricId, type MockBackend, type RideStatus, type Sample, type Workout } from "@crank/shared";
+import { DETECT_S, reconnectAttempt, sceneFixture, type CoreFacts } from "./mock/ext";
 import { createStore, useStore } from "./store";
 
 const params = new URLSearchParams(location.search);
@@ -19,7 +20,7 @@ export const backend: MockBackend = createMockBackend({
 });
 
 // ---------- routing ----------
-export type View = "onboarding" | "today" | "ready" | "ride" | "review" | "history" | "workouts" | "settings";
+export type View = "onboarding" | "resume" | "today" | "ready" | "ride" | "review" | "history" | "workouts" | "settings";
 export interface Route { view: View; sub?: string }
 export const route = createStore<Route>({ view: "today" });
 export const navigate = (view: View, sub?: string) => {
@@ -42,6 +43,8 @@ export class RideSession {
   readonly current = createStore<ReturnType<MockBackend["ride"]["current"]>>(null);
   readonly reverted = createStore<ReadonlySet<string>>(new Set());
   readonly gaps = createStore<SensorGap[]>([]);
+  /** wall-clock ms when the rider paused (ride time stops while paused) */
+  readonly pausedSinceMs = createStore<number | null>(null);
   private readonly offs: (() => void)[] = [];
   private currentKey = "";
 
@@ -51,6 +54,8 @@ export class RideSession {
     this.offs.push(
       backend.onStatus((s) => {
         this.trackGaps(s);
+        if (s.state === "paused" && this.pausedSinceMs.get() === null) this.pausedSinceMs.set(performance.now());
+        if (s.state !== "paused") this.pausedSinceMs.set(null);
         this.status.set(s);
         this.refreshCurrent();
         if (s.state === "finished" && route.get().view === "ride") navigate("review");
@@ -89,6 +94,30 @@ export class RideSession {
   dispose() {
     for (const off of this.offs) off();
   }
+}
+
+/**
+ * What the core will put in RideStatus (ADR-0001 §5, ADR-0002 §6; #29), derived here from the mock's
+ * status and this session's gap log, with scene fixtures layered on top.
+ */
+export function coreFacts(s: RideSession, status: RideStatus, nowMs: number): CoreFacts {
+  const gaps = s.gaps.get();
+  const tr = gaps.findLast((g) => g.sensor === "trainer");
+  const open = tr && tr.backAtT === null ? tr : undefined;
+  const lostForS = open ? status.t - open.lostAtT : 0;
+  const paused = s.pausedSinceMs.get();
+  const fx = sceneFixture.get().facts ?? {};
+  return {
+    trainerLost: !!open && lostForS >= DETECT_S,
+    hrLost: status.hrSensor !== "connected",
+    lostForS,
+    reconnectAttempt: reconnectAttempt(lostForS),
+    sinceReconnectS: tr && tr.backAtT !== null ? status.t - tr.backAtT : null,
+    lastGapS: tr && tr.backAtT !== null ? tr.backAtT - tr.lostAtT : null,
+    ergReleased: false,
+    pausedForS: paused === null ? null : (nowMs - paused) / 1000,
+    ...fx,
+  };
 }
 
 export const session = createStore<RideSession | null>(null);

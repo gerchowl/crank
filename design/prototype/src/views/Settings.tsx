@@ -1,8 +1,33 @@
 // Settings (DESIGN §5.9). The ride-screen section edits a draft (#8, #11): controls read the
 // draft only, Save validates and persists, Cancel/Reset never touch the saved value until Save.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { athleteModel, devices } from "../mock/ext";
-import { DEFAULT_RIDE_SCREEN, persistNotices, rideScreen, saveRideScreen, setTheme, SLOT_METRICS, theme, type RideScreenConfig, type SlotMetric } from "../persist";
+import {
+  ACTIONS,
+  autonomy,
+  bindings,
+  DEFAULT_BINDINGS,
+  DEFAULT_RIDE_SCREEN,
+  distanceM,
+  persistNotices,
+  rideScreen,
+  saveBindings,
+  saveRideScreen,
+  saveSound,
+  setAutonomy,
+  setDistance,
+  setTheme,
+  SLOT_METRICS,
+  sound,
+  SOUND_EVENTS,
+  theme,
+  type Action,
+  type Autonomy,
+  type RideScreenConfig,
+  type SlotMetric,
+  type SoundEvent,
+} from "../persist";
+import { play } from "../sound";
 import { navigate, useRoute } from "../session";
 import { useStore } from "../store";
 
@@ -10,6 +35,7 @@ const SECTIONS = [
   ["devices", "Devices"],
   ["athlete", "Athlete model"],
   ["coach", "Coach"],
+  ["controls", "Controls & sound"],
   ["ride-screen", "Ride screen"],
   ["appearance", "Appearance"],
 ] as const;
@@ -55,6 +81,7 @@ function RideScreenForm() {
               </button>
             ))}
           </div>
+          <DistanceField />
           {slot("slotA", "Side slot 1")}
           {slot("slotB", "Side slot 2")}
           {draft.slotA === draft.slotB && <p className="status-serious small">⚠ The two slots must show different metrics.</p>}
@@ -79,7 +106,7 @@ export function Settings() {
   const sec = SECTIONS.find(([id]) => id === r.sub)?.[0] ?? "devices";
   const mode = useStore(theme);
   const notices = useStore(persistNotices);
-  const [autonomy, setAutonomy] = useState("auto-apply strong calls");
+  const auto = useStore(autonomy);
   return (
     <div className="page settings">
       <nav className="subnav" aria-label="Settings sections">
@@ -142,16 +169,23 @@ export function Settings() {
         {sec === "coach" && (
           <>
             <h2>Coach autonomy</h2>
-            <div className="choices" role="radiogroup" aria-label="Autonomy">
-              {["auto-apply strong calls", "always ask", "off (log only)"].map((o) => (
-                <button key={o} role="radio" aria-checked={autonomy === o} className={autonomy === o ? "tap wide on" : "tap wide"} onClick={() => setAutonomy(o)}>
-                  {o}
+            <div className="choices column" role="radiogroup" aria-label="Autonomy">
+              {AUTONOMY.map(([v, l, d]) => (
+                <button key={v} role="radio" aria-checked={auto === v} className={auto === v ? "tap wide on" : "tap wide"} onClick={() => setAutonomy(v)}>
+                  <b>{l}</b>
+                  <span>{d}</span>
                 </button>
               ))}
             </div>
-            <p className="muted small">Strong calls auto-apply with a 15 s undo (U). Unanswered questions keep the plan. Persisted via #29.</p>
+            <h3>Limits (always on)</h3>
+            <ul className="small">
+              <li>One call changes the remaining work by at most −5 % or +3 %.</li>
+              <li>All coach changes together stay within −10 % … +5 % of the plan.</li>
+              <li>Increases always ask; silence never raises the load. No push without HR or while the health cap is on.</li>
+            </ul>
           </>
         )}
+        {sec === "controls" && <ControlsForm />}
         {sec === "ride-screen" && <RideScreenForm />}
         {sec === "appearance" && (
           <>
@@ -168,5 +202,109 @@ export function Settings() {
         )}
       </section>
     </div>
+  );
+}
+
+const AUTONOMY: [Autonomy, string, string][] = [
+  ["ask", "Always ask (default)", "Every call asks; no answer keeps the plan."],
+  ["auto_decreases", "Auto-apply strong decreases", "Strong ease-off calls apply at once with a 15 s undo; increases still ask."],
+  ["off", "Off", "The coach logs calls for Review but stays silent in the ride."],
+];
+
+function DistanceField() {
+  const d = useStore(distanceM);
+  return (
+    <label className="field">
+      <span>Screen distance</span>
+      <select value={d} onChange={(e) => setDistance(Number(e.target.value))}>
+        {[0.6, 0.8, 1.0, 1.2, 1.5, 2.0].map((m) => (
+          <option key={m} value={m}>
+            {m.toFixed(1)} m
+          </option>
+        ))}
+      </select>
+      <small>Type sizes follow the distance and your display.</small>
+    </label>
+  );
+}
+
+const ACTION_LABEL: Record<Action, string> = { coach: "Coach (accept · undo)", keep: "Keep plan", pause: "Pause / resume", skip: "Skip block", minus: "Intensity −5 %", plus: "Intensity +5 %" };
+const SOUND_LABEL: Record<SoundEvent, [string, () => void]> = {
+  block: ["Block change", () => play.block(true)],
+  countdown: ["Last 3 seconds", () => play.tick()],
+  coach: ["Coach asks", () => play.ask()],
+  applied: ["Change applied / undone", () => play.applied()],
+  warning: ["Sensor lost, ERG released", () => play.warning()],
+  reconnected: ["Reconnected", () => play.reconnected()],
+};
+const showKey = (k: string) => (k === " " ? "Space" : k);
+
+function ControlsForm() {
+  const saved = useStore(bindings);
+  const snd = useStore(sound);
+  const [learning, setLearning] = useState<Action | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!learning) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      setLearning(null);
+      setError(saveBindings({ ...saved, [learning]: [...new Set([e.key, ...saved[learning]])] }));
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [learning, saved]);
+  const learn = (a: Action) => setLearning(a);
+  return (
+    <>
+      <h2>Controls</h2>
+      <p className="muted">Five ride actions. Bind a handlebar remote by pressing Learn, then its button. Doing nothing is always safe: questions keep the plan.</p>
+      <table className="bindings">
+        <tbody>
+          {ACTIONS.map((a) => (
+            <tr key={a}>
+              <td>{ACTION_LABEL[a]}</td>
+              <td>
+                {saved[a].map((k) => (
+                  <kbd key={k}>{showKey(k)}</kbd>
+                ))}
+              </td>
+              <td>
+                <button onClick={() => learn(a)}>{learning === a ? "Press a button…" : "Learn"}</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {error && <p className="status-serious small">⚠ {error}</p>}
+      <div className="actions">
+        <button onClick={() => setError(saveBindings(DEFAULT_BINDINGS))}>Reset bindings</button>
+      </div>
+      <h2>Sound</h2>
+      <label className="field">
+        <span>Volume</span>
+        <input type="range" min={0} max={1} step={0.1} value={snd.volume} onChange={(e) => saveSound({ ...snd, volume: Number(e.target.value) })} />
+      </label>
+      <table className="bindings">
+        <tbody>
+          {SOUND_EVENTS.map((ev) => {
+            const on = !snd.muted.includes(ev);
+            return (
+              <tr key={ev}>
+                <td>{SOUND_LABEL[ev][0]}</td>
+                <td>
+                  <button role="switch" aria-checked={on} className={on ? "tap wide on" : "tap wide"} onClick={() => saveSound({ ...snd, muted: on ? [...snd.muted, ev] : snd.muted.filter((m) => m !== ev) })}>
+                    {on ? "on" : "muted"}
+                  </button>
+                </td>
+                <td>
+                  <button onClick={SOUND_LABEL[ev][1]}>Play</button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </>
   );
 }

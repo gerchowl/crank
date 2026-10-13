@@ -3,6 +3,7 @@
 import { demoWorkout, parseDsl, type MockBackend, type RideStatus, type Workout } from "@crank/shared";
 import { editor } from "./editor/model";
 import { pathNodes } from "./format";
+import { sceneFixture, type SceneFixture } from "./mock/ext";
 import { backend, loadRide, navigate, session, type View } from "./session";
 
 const SPRINT_DSL = `"Warm-up" 6m ramp 45-70% 90rpm
@@ -49,14 +50,24 @@ function startRide(w: Workout = demoWorkout(backend.athlete.ftp)) {
 
 interface Scene { view: View; sub?: string; setup?: () => void }
 const ride = (setup: () => void): Scene => ({ view: "ride", setup: () => (startRide(), setup()) });
+/** A state the mock cannot produce: ride to a moment, then overlay what the core would send (labelled fixture). */
+const fixture = (setup: () => void, fx: SceneFixture): Scene => ({ view: "ride", setup: () => (startRide(), setup(), sceneFixture.set(fx)) });
+const atThreshold = () => (rideUntil(backend, (s) => labelled(s, "Threshold") && s.phase === "work"), rideFor(backend, 40));
 
 export const scenes: Record<string, Scene> = {
   "onboarding-about": { view: "onboarding", sub: "about" },
+  "onboarding-background": { view: "onboarding", sub: "background" },
   "onboarding-numbers": { view: "onboarding", sub: "numbers" },
+  "onboarding-health": { view: "onboarding", sub: "health" },
   "onboarding-devices": { view: "onboarding", sub: "devices" },
+  "onboarding-baseline": { view: "onboarding", sub: "baseline" },
   "onboarding-result": { view: "onboarding", sub: "result" },
+  "onboarding-resume": { view: "onboarding", sub: "resume" },
   today: { view: "today" },
+  "today-health-cap": { view: "today", setup: () => sceneFixture.set({ healthCap: true }) },
   ready: { view: "ready", setup: () => loadRide(demoWorkout(backend.athlete.ftp)) },
+  "ready-no-trainer": { view: "ready", setup: () => (loadRide(demoWorkout(backend.athlete.ftp)), sceneFixture.set({ status: { trainer: "lost" } })) },
+  "ready-no-hr": { view: "ready", setup: () => (loadRide(demoWorkout(backend.athlete.ftp)), sceneFixture.set({ status: { hrSensor: "lost" } })) },
   "ride-warmup-ramp": ride(() => rideUntil(backend, (s) => s.t >= 300)),
   "ride-vo2-on": ride(() => (rideUntil(backend, (s) => s.t > 1000 && s.phase === "work" && blockOf(s)?.durS === 30), rideFor(backend, 9))),
   "ride-threshold": ride(() => (rideUntil(backend, (s) => labelled(s, "Threshold") && s.phase === "work"), rideFor(backend, 95))),
@@ -67,15 +78,23 @@ export const scenes: Record<string, Scene> = {
   "ride-hr-recovery": ride(() => (rideUntil(backend, (s) => labelled(s, "Recover")), rideFor(backend, 55))),
   "ride-coach-ask": ride(() => (rideUntil(backend, (s) => s.t > 2000 && nudgeIs("pending")()), rideFor(backend, 6))),
   "ride-coach-applied": ride(() => (rideUntil(backend, nudgeIs("auto_applied")), rideFor(backend, 4))),
-  "ride-dropout": ride(() => (rideUntil(backend, (s) => s.trainer !== "connected"), rideFor(backend, 2))),
-  "ride-reconnected": ride(() => (rideUntil(backend, (s) => s.trainer !== "connected"), rideUntil(backend, (s) => s.trainer === "connected"), rideFor(backend, 3))),
+  "ride-trainer-lost": ride(() => (rideUntil(backend, (s) => s.trainer !== "connected"), rideFor(backend, 3))),
+  "ride-reconnected": ride(() => (rideUntil(backend, (s) => s.trainer !== "connected"), rideUntil(backend, (s) => s.trainer === "connected"), rideFor(backend, 2))),
+  "ride-both-lost": fixture(atThreshold, { status: { trainer: "lost", hrSensor: "lost" }, facts: { trainerLost: true, hrLost: true, lostForS: 14, reconnectAttempt: 5 } }),
+  "ride-erg-released": fixture(atThreshold, { facts: { ergReleased: true } }),
   "ride-hr-lost": ride(() => (rideUntil(backend, (s) => s.t > 1150 && s.hrSensor !== "connected"), rideFor(backend, 1))),
-  "ride-paused": ride(() => (rideUntil(backend, (s) => labelled(s, "Threshold") && s.phase === "work"), rideFor(backend, 40), backend.ride.pause())),
+  "ride-hr-lost-recovery": ride(() => (rideUntil(backend, (s) => labelled(s, "Recover") && s.hrSensor !== "connected"), rideFor(backend, 1))),
+  "ride-paused": fixture(() => (atThreshold(), backend.ride.pause()), { facts: { pausedForS: 42 } }),
+  "ride-feel-prompt": fixture(() => (rideUntil(backend, (s) => labelled(s, "Threshold") && s.phase !== "work"), rideFor(backend, 4)), { feelPrompt: true }),
+  "ride-screen-restarted": fixture(atThreshold, { screenCrashed: true }),
+  resume: { view: "resume" },
   review: { view: "review", setup: () => (startRide(), rideUntil(backend, (s) => s.state === "finished", 4000)) },
   history: { view: "history", setup: () => (startRide(), rideUntil(backend, (s) => s.state === "finished", 4000)) },
   workouts: { view: "workouts", setup: () => editor.select(2) },
   "workouts-ai-diff": { view: "workouts", setup: () => (editor.select(2), editor.requestRewrite("harder")) },
   "settings-devices": { view: "settings", sub: "devices" },
+  "settings-coach": { view: "settings", sub: "coach" },
+  "settings-controls": { view: "settings", sub: "controls" },
   "settings-ride-screen": { view: "settings", sub: "ride-screen" },
 };
 
