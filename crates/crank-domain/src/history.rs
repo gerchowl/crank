@@ -1,7 +1,7 @@
 //! Fixed-capacity multi-resolution metric history, in ride seconds.
 use crate::scales::{TimeScale, time_ago_edges};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Slot widths in seconds and ring capacities (20 min, 2 h, 4 h, 24 h).
 pub const HISTORY_LEVELS: [(u32, u32); 4] = [(1, 1200), (5, 1440), (30, 480), (300, 288)];
@@ -37,23 +37,24 @@ struct Level {
     cap: f64,
     // Integer-valued doubles preserve the TS slot arithmetic without narrowing
     // timestamps to machine integers. Remainders identify fixed ring positions.
-    slots: HashMap<u64, (u64, Acc)>,
+    positions: HashMap<u64, u64>,
+    slots: BTreeMap<u64, Acc>,
     latest: f64,
 }
 impl Level {
     fn add(&mut self, t: f64, v: f64) {
         let s = (t / self.res).floor() + 0.;
-        let entry = self
-            .slots
-            .entry((s % self.cap).to_bits())
-            .or_insert_with(|| (s.to_bits(), Acc::default()));
-        if entry.0 != s.to_bits() {
-            *entry = (s.to_bits(), Acc::default());
+        let slot = s.to_bits();
+        if let Some(old) = self.positions.insert((s % self.cap).to_bits(), slot)
+            && old != slot
+        {
+            self.slots.remove(&old);
         }
-        entry.1.sum += v;
-        entry.1.count += 1.;
-        entry.1.min = entry.1.min.min(v);
-        entry.1.max = entry.1.max.max(v);
+        let entry = self.slots.entry(slot).or_default();
+        entry.sum += v;
+        entry.count += 1.;
+        entry.min = entry.min.min(v);
+        entry.max = entry.max.max(v);
         self.latest = self.latest.max(s);
     }
     fn oldest_t(&self) -> f64 {
@@ -67,10 +68,19 @@ impl Level {
         if s < 0. {
             return;
         }
-        if let Some((slot, data)) = self.slots.get(&(s % self.cap).to_bits())
-            && *slot == s.to_bits()
-        {
+        if let Some(data) = self.slots.get(&s.to_bits()) {
             acc.merge(data);
+        }
+    }
+    fn accumulate_range(&self, lo: f64, hi: f64, acc: &mut Acc) {
+        // Nonnegative finite IEEE encodings sort in numerical order. Walking
+        // retained slots preserves TS summation order and bounds work by capacity,
+        // even when adding one to a huge timestamp would stop making progress.
+        let lo = lo + 0.; // Canonicalize negative zero before ordering bit keys.
+        if lo >= 0. && hi > lo {
+            for (_, data) in self.slots.range(lo.to_bits()..hi.to_bits()) {
+                acc.merge(data);
+            }
         }
     }
 }
@@ -103,7 +113,8 @@ impl Default for MultiResSeries {
                 .map(|(res, cap)| Level {
                     res: res.into(),
                     cap: cap.into(),
-                    slots: HashMap::new(),
+                    positions: HashMap::new(),
+                    slots: BTreeMap::new(),
                     latest: -1.,
                 })
                 .collect(),
@@ -112,9 +123,9 @@ impl Default for MultiResSeries {
 }
 impl MultiResSeries {
     /// Add a source sample in ride seconds. Missing/nonfinite values and negative
-    /// times are ignored. Time must be finite and nonnegative; gaps are not filled.
+    /// or non-finite times are ignored. Gaps are not filled.
     pub fn add(&mut self, t: f64, v: Option<f64>) {
-        if t < 0. {
+        if !t.is_finite() || t < 0. {
             return;
         }
         if let Some(v) = v.filter(|v| v.is_finite()) {
@@ -158,21 +169,13 @@ impl MultiResSeries {
         }
         let lv = &self.levels[level];
         if level == 0 {
-            let mut s = lo;
-            while s < hi {
-                lv.accumulate(s, acc);
-                s += 1.;
-            }
+            lv.accumulate_range(lo, hi, acc);
             return;
         }
         let a = (lo / lv.res).ceil();
         let b = (hi / lv.res).floor();
         if a < b {
-            let mut s = a;
-            while s < b {
-                lv.accumulate(s, acc);
-                s += 1.;
-            }
+            lv.accumulate_range(a, b, acc);
             self.ragged(lo, a * lv.res, level, acc);
             self.ragged(b * lv.res, hi, level, acc);
         } else {
@@ -180,11 +183,20 @@ impl MultiResSeries {
         }
     }
     /// Query oldest-to-newest buckets over a positive finite span in seconds.
+    /// Non-finite `now`/span, negative `now`, and nonpositive spans return empty.
+    /// NaN edges are skipped, matching TS rather than coercing them to zero.
+    /// Work is bounded by retained slots and at most 2000 buckets, even at extreme
+    /// finite timestamps (the reference can fail to terminate there; tracked in
+    /// <https://github.com/gerchowl/crank/issues/150>). Missing samples stay gaps;
+    /// IEEE overflow can produce NaN or infinite means.
     /// Bucket count is clamped to 1..2000. Edges snap to whole seconds and then
     /// to the finest retained grid; narrow buckets merge. Expired ragged edges
     /// use the coarse slot when its midpoint lies inside the edge range (TS parity).
     #[must_use]
     pub fn query(&self, now: f64, span_s: f64, buckets: u32, scale: TimeScale) -> Vec<Bucket> {
+        if !now.is_finite() || !span_s.is_finite() || now < 0. || span_s <= 0. {
+            return vec![];
+        }
         let now_edge = now.floor() + 1.;
         let mut hi = now_edge;
         let mut out = Vec::new();
@@ -192,6 +204,9 @@ impl MultiResSeries {
             .into_iter()
             .skip(1)
         {
+            if edge.is_nan() {
+                continue;
+            }
             let mut lo = crate::js_round(now_edge - edge).max(0.);
             if let Some(cover) = self.levels.iter().find(|lv| lv.oldest_t() <= lo) {
                 lo = (lo / cover.res).floor() * cover.res;

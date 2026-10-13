@@ -1,9 +1,11 @@
 //! Display filtering in ride seconds, ported from `shared/src/filters.ts`.
+use crate::metric_error::MetricError;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 /// A display filter. Parameters use seconds or Hz; median uses a sample count.
-/// Finite parameters are expected. Negative windows/tau/beta are clamped to zero.
+/// Non-finite parameters are rejected by `FilterChain::new`. Finite negative
+/// windows/tau/beta are clamped to zero, preserving the TS normalization.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -20,7 +22,8 @@ pub enum Filter {
         #[serde(rename = "tauS")]
         tau_s: f64,
     },
-    /// Median of the most recent valid samples; even counts average the middle pair.
+    /// Median of the most recent non-missing samples; NaN entries are ignored
+    /// when selecting the median, but still occupy window slots.
     Median {
         /// Sample count, rounded like JS and clamped to at least one.
         n: f64,
@@ -41,6 +44,7 @@ pub enum Filter {
 struct Stage {
     filter: Filter,
     values: VecDeque<(f64, f64)>,
+    sorted: Vec<f64>,
     sum: f64,
     count: f64,
     value: Option<f64>,
@@ -52,6 +56,7 @@ impl Stage {
         Self {
             filter,
             values: VecDeque::new(),
+            sorted: Vec::new(),
             sum: 0.,
             count: 0.,
             value: None,
@@ -99,18 +104,19 @@ impl Stage {
                     self.values.pop_front();
                     self.count -= 1.;
                 }
-                let mut sorted: Vec<_> = self.values.iter().map(|p| p.1).collect();
-                // JS's comparator treats NaN differences as equal.
-                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                let m = sorted.len() / 2;
-                if sorted.len() % 2 == 1 {
-                    sorted[m]
+                self.sorted.clear();
+                self.sorted
+                    .extend(self.values.iter().map(|p| p.1).filter(|v| !v.is_nan()));
+                self.sorted.sort_unstable_by(f64::total_cmp);
+                let m = self.sorted.len() / 2;
+                if self.sorted.is_empty() {
+                    f64::NAN
+                } else if self.sorted.len() % 2 == 1 {
+                    self.sorted[m]
                 } else {
-                    {
-                        // Keep TS sum-then-divide overflow behaviour.
-                        let sum = sorted[m - 1] + sorted[m];
-                        sum / 2.
-                    }
+                    // Preserve TS sum-then-divide overflow for finite samples.
+                    let sum = self.sorted[m - 1] + self.sorted[m];
+                    sum / 2.
                 }
             }
             Filter::OneEuro { min_cutoff, beta } => {
@@ -137,7 +143,11 @@ impl Stage {
 
 /// Left-to-right display filters, fed at source rate, with independent state.
 /// `None` passes through all stages except hold, without advancing their state.
-/// NaN is a value (and may poison state), as in TS; callers use `None` for gaps.
+/// Median excludes NaN from selection and returns NaN if its window contains
+/// only NaN. Other filters propagate IEEE arithmetic (NaN may poison state);
+/// hold retains any value, including NaN/infinity. Use `None` for dropouts.
+/// Timestamps may be any f64; NaN does not trigger a backwards-time reset.
+/// Median reuses its sorting buffer, allocating only as the window grows.
 /// Empty chains are identity; backwards time resets every stage before the sample.
 #[derive(Debug)]
 pub struct FilterChain {
@@ -146,14 +156,34 @@ pub struct FilterChain {
 }
 impl FilterChain {
     /// Construct an initially empty chain state from filter descriptions.
-    #[must_use]
-    pub fn new(filters: impl IntoIterator<Item = Filter>) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// Returns `MetricError::InvalidFilterParameter` for any non-finite numeric
+    /// parameter, consistently across SMA, EMA, median and one-euro stages.
+    pub fn new(filters: impl IntoIterator<Item = Filter>) -> Result<Self, MetricError> {
+        let filters: Vec<_> = filters.into_iter().collect();
+        for filter in &filters {
+            let parameters: &[(&str, f64)] = match *filter {
+                Filter::Sma { window_s } => &[("window_s", window_s)],
+                Filter::Ema { tau_s } => &[("tau_s", tau_s)],
+                Filter::Median { n } => &[("n", n)],
+                Filter::OneEuro { min_cutoff, beta } => {
+                    &[("min_cutoff", min_cutoff), ("beta", beta)]
+                }
+                Filter::Hold => &[],
+            };
+            for &(name, value) in parameters {
+                if !value.is_finite() {
+                    return Err(MetricError::InvalidFilterParameter(name));
+                }
+            }
+        }
+        Ok(Self {
             stages: filters.into_iter().map(Stage::new).collect(),
             last_t: f64::NEG_INFINITY,
-        }
+        })
     }
-    /// Feed one sample at finite ride time `t` in seconds.
+    /// Feed one sample at ride time `t` in seconds, including IEEE non-finite values.
     pub fn push(&mut self, t: f64, mut value: Option<f64>) -> Option<f64> {
         if t < self.last_t {
             self.reset();

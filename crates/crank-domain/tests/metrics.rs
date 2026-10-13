@@ -26,7 +26,7 @@ proptest! {
     #[test]
     fn filters_stay_in_input_range(xs in prop::collection::vec(-10000_i32..10000, 1..200), dt in 1_u32..100) {
         for filter in filters() {
-            let mut c = FilterChain::new([filter.clone()]);
+            let mut c = FilterChain::new([filter.clone()]).unwrap();
             let mut lo = f64::INFINITY;
             let mut hi = f64::NEG_INFINITY;
             for (k, v) in (0_u32..).zip(&xs) {
@@ -41,7 +41,7 @@ proptest! {
     #[test]
     fn reset_and_backwards_time_are_fresh(xs in prop::collection::vec(-10000_i32..10000, 1..100)) {
         for filter in filters() {
-            let mut c = FilterChain::new([filter.clone()]);
+            let mut c = FilterChain::new([filter.clone()]).unwrap();
             for (k,v) in (1_u32..).zip(&xs) { c.push(f64::from(k),Some(f64::from(*v))); }
             prop_assert_eq!(c.push(0.,Some(123.)),Some(123.));
             c.reset();
@@ -53,7 +53,7 @@ proptest! {
 #[test]
 fn ema_time_constant_and_nulls() {
     for dt in [0.25, 1.] {
-        let mut c = FilterChain::new([Filter::Ema { tau_s: 10. }]);
+        let mut c = FilterChain::new([Filter::Ema { tau_s: 10. }]).unwrap();
         c.push(0., Some(0.));
         let mut t = dt;
         let mut y = 0.;
@@ -70,7 +70,8 @@ fn one_euro_jitter_and_step_response() {
     let mut c = FilterChain::new([Filter::OneEuro {
         min_cutoff: 0.3,
         beta: 0.01,
-    }]);
+    }])
+    .unwrap();
     for i in 0..200 {
         let y = c
             .push(
@@ -181,11 +182,11 @@ fn scale_inverse_and_monotonicity() {
 #[test]
 fn median_rounds_and_clamps_sample_count() {
     for n in [-1., 0., 1.49] {
-        let mut chain = FilterChain::new([Filter::Median { n }]);
+        let mut chain = FilterChain::new([Filter::Median { n }]).unwrap();
         chain.push(0., Some(1.));
         assert_eq!(chain.push(1., Some(9.)), Some(9.));
     }
-    let mut chain = FilterChain::new([Filter::Median { n: 1.5 }]);
+    let mut chain = FilterChain::new([Filter::Median { n: 1.5 }]).unwrap();
     chain.push(0., Some(1.));
     assert_eq!(chain.push(1., Some(9.)), Some(5.));
 }

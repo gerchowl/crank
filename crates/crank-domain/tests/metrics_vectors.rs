@@ -26,7 +26,8 @@ fn filter_vectors() {
     for c in actual["cases"].as_array_mut().unwrap() {
         let input = &c["input"];
         let mut chain =
-            FilterChain::new(serde_json::from_value::<Vec<_>>(input["filters"].clone()).unwrap());
+            FilterChain::new(serde_json::from_value::<Vec<_>>(input["filters"].clone()).unwrap())
+                .unwrap();
         c["output"] = json!(
             input["samples"]
                 .as_array()
@@ -94,6 +95,7 @@ fn history_vectors() {
 #[test]
 fn distribution_vectors() {
     let expected = load("distributions");
+    assert_vectors("distributions", &expected, &expected);
     let mut actual = expected.clone();
     for c in actual["cases"].as_array_mut().unwrap() {
         let i = &c["input"];
@@ -103,21 +105,39 @@ fn distribution_vectors() {
                     i["metric"].as_str().unwrap(),
                     number(&i["athlete"]["ftp"]),
                 );
-                json!(histogram_from(
-                    i["metric"].as_str().unwrap(),
-                    &numbers(&i["series"]),
-                    number(&i["binWidth"]),
-                    typical.as_ref().map(|f| f as &dyn Fn(f64, f64) -> f64)
-                ))
+                if number(&i["binWidth"]) <= 0. {
+                    assert!(
+                        histogram_from(
+                            "power",
+                            &numbers(&i["series"]),
+                            number(&i["binWidth"]),
+                            None
+                        )
+                        .is_err()
+                    );
+                    continue;
+                }
+                json!(
+                    histogram_from(
+                        i["metric"].as_str().unwrap(),
+                        &numbers(&i["series"]),
+                        number(&i["binWidth"]),
+                        typical.as_ref().map(|f| f as &dyn Fn(f64, f64) -> f64)
+                    )
+                    .unwrap()
+                )
             }
-            "heatmap" => json!(heatmap_from(
-                i["x"].as_str().unwrap(),
-                i["y"].as_str().unwrap(),
-                &numbers(&i["xs"]),
-                &numbers(&i["ys"]),
-                number(&i["xBin"]),
-                number(&i["yBin"])
-            )),
+            "heatmap" => json!(
+                heatmap_from(
+                    i["x"].as_str().unwrap(),
+                    i["y"].as_str().unwrap(),
+                    &numbers(&i["xs"]),
+                    &numbers(&i["ys"]),
+                    number(&i["xBin"]),
+                    number(&i["yBin"])
+                )
+                .unwrap()
+            ),
             "mmp" => json!(mmp_from(
                 &numbers(&i["power"]),
                 &serde_json::from_value::<Vec<u16>>(i["durations"].clone()).unwrap()
@@ -130,5 +150,14 @@ fn distribution_vectors() {
             name => panic!("unhandled vector {name}"),
         };
     }
+    let valid = |v: &mut Value| {
+        v["cases"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|c| c["name"] != "histogram" || number(&c["input"]["binWidth"]) > 0.);
+    };
+    let mut expected = expected;
+    valid(&mut actual);
+    valid(&mut expected);
     assert_vectors("distributions", &actual, &expected);
 }
