@@ -19,7 +19,7 @@ export function BigNumber(props: WidgetProps) {
   const sample = createSample(() => ({ metric: metric(), rateHz: props.widget.rateHz, filter: filter() }));
   const target = createSample(() => {
     const m = targetMetric();
-    return m ? { metric: m, rateHz: Math.min(props.widget.rateHz, 2) } : null;
+    return m ? { metric: m, rateHz: props.widget.rateHz } : null;
   });
   const info = () => metricInfo(metric());
   const value = () => sample()?.v ?? null;

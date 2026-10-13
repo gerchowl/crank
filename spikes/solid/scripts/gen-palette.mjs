@@ -98,7 +98,7 @@ for (const mode of ["light", "dark"]) {
     else css += `${auto} {\n${body}}\n`;
   }
 }
-css += `:root[data-zones="classic"] {\n${CLASSIC.map((c, i) => `  --zone-${i + 1}: ${c};`).join("\n")}\n}\n`;
+css += `:root[data-zones="classic"][data-theme][data-mode] {\n${CLASSIC.map((c, i) => `  --zone-${i + 1}: ${c};`).join("\n")}\n}\n`;
 
 writeFileSync(new URL("../src/theme/palette.css", import.meta.url), css);
 console.log(failed ? "palette: FAILED" : "palette: all validated sets pass → src/theme/palette.css");

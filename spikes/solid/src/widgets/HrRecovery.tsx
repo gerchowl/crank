@@ -56,7 +56,7 @@ export function HrRecovery(props: WidgetProps) {
   const ready = () => state()?.readyInS;
 
   return (
-    <div class="hrrec">
+    <div class="hrrec" data-active={state()?.active === true && (state()?.observed.length ?? 0) > 5}>
       <div class="w-label">
         <span>
           HR recovery <Show when={state() && !state()?.active}>
@@ -65,7 +65,7 @@ export function HrRecovery(props: WidgetProps) {
         </span>
         <span class="legend-inline">
           <span class="chip-dot" /> observed <span class="chip-line" style={{ background: "var(--series-hr)" }} /> fit <span class="chip-dots" /> prediction{" "}
-          <span class="chip-dash" /> target {state()?.targetBpm ?? "—"}
+          <span class="chip-dash" /> target {state()?.observed.length ? state()?.targetBpm : "—"}
         </span>
       </div>
       <Show when={(state()?.observed.length ?? 0) > 0} fallback={<div class="empty">Waiting for an HR-guided recovery block…</div>}>

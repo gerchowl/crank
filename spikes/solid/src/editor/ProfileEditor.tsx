@@ -6,7 +6,7 @@ import { layoutProfile, paintProfile, type ProfileRect, type ProfileView, profil
 import { clock, formatTarget } from "../lib/format";
 import type { ThemeTokens } from "../theme/theme";
 import { editor } from "./state";
-import { findById } from "./tree";
+import { allIds, findById } from "./tree";
 
 const PAD = { l: 40, r: 10, t: 12, b: 20 };
 const EDGE = 7;
@@ -62,6 +62,16 @@ export function ProfileEditor() {
     return profileView(all, { pad: PAD });
   };
 
+  // a selected repeat highlights every step inside it
+  const selectedDeep = createMemo(() => {
+    const out = new Set<string>();
+    for (const id of editor.selection()) {
+      const n = findById(editor.nodes(), id);
+      if (n) allIds([n], out);
+    }
+    return out;
+  });
+
   const rects = (w: number, h: number): ProfileRect[] => layoutProfile(compiled().blocks, w, h, view());
 
   const draw = (ctx: CanvasRenderingContext2D, w: number, h: number, t: ThemeTokens) => {
@@ -70,7 +80,7 @@ export function ProfileEditor() {
     paintAxes(ctx, w, h, t, v);
     const g = ghost();
     paintProfile(ctx, rects(w, h), t, w, v, {
-      selected: editor.selection(),
+      selected: selectedDeep(),
       ftpLine: true,
       ...(g ? { ghost: layoutProfile(g, w, h, v), changed: diff()?.changed ?? new Set<string>() } : {}),
     });
