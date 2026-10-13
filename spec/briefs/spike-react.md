@@ -1,6 +1,6 @@
 # Delegate brief: React 19 UI spike
 
-You are the **React 19** spike agent for neo-trainer. You work in your own git worktree on branch
+You are the **React 19** spike agent for crank. You work in your own git worktree on branch
 `spike/react`. Build the app under `spikes/react/`.
 
 Read, in order: `spec/SPIKE-BRIEF.md` (your actual task and definition of done), `spec/UX-SPEC.md`,

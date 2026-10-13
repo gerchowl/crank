@@ -1,4 +1,4 @@
-# neo-trainer knowledge pack (v1)
+# crank knowledge pack (v1)
 
 Evidence base for the **LLM planner** (designs and rewrites workouts from history, readiness and the pre-ride check-in) and the **System-1 judge** (in-ride `ease_off | hold | push | replan` nudges with `strong | lean | uncertain` bands). Domain: indoor cycling on a Tacx NEO (ERG / sim / free) with a chest strap delivering RR intervals.
 

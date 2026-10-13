@@ -198,7 +198,7 @@ export function browserStorage(): StorageLike | null {
   }
 }
 
-export const LAYOUT_STORAGE_KEY = "neo-trainer.layouts.v1";
+export const LAYOUT_STORAGE_KEY = "crank.layouts.v1";
 
 /** Saved layouts overlay the built-ins by id; custom ids are appended. */
 export class LayoutStore {

@@ -1,4 +1,4 @@
-# neo-trainer — first run, cold start & the athlete model
+# crank — first run, cold start & the athlete model
 
 Principle: **every athlete parameter is an estimate with uncertainty and provenance.** Onboarding gives
 priors; imported history and rides refine them; the coach is conservative in proportion to uncertainty.

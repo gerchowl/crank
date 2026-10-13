@@ -1,13 +1,13 @@
 # UI spike brief (identical for React / Svelte 5 / Solid)
 
 You build the full UI described in `spec/UX-SPEC.md` in **one** framework, going all in on that
-framework's idioms, against the mock backend `@neo/shared` (`shared/`, read its README, DSL.md
+framework's idioms, against the mock backend `@crank/shared` (`shared/`, read its README, DSL.md
 and `src/contract.ts`). Three agents do this in parallel in different frameworks; the results are
 compared head-to-head, so build the best version **this framework** can produce. Don't hedge
 toward a lowest common denominator.
 
 ## Fixed stack (same for all)
-- `spikes/<framework>/`, a pnpm workspace member depending on `@neo/shared` (`workspace:*`)
+- `spikes/<framework>/`, a pnpm workspace member depending on `@crank/shared` (`workspace:*`)
 - Vite + TypeScript strict (`noUncheckedIndexedAccess` on), no `any` in app code
 - Charts: **uPlot** for time-series and line charts; plain canvas/SVG for heatmap, profile and strip
 - Styling: plain CSS (CSS modules or the framework's scoped styles). **No component/UI kit**

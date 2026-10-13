@@ -1,6 +1,6 @@
 # Delegate brief: Svelte 5 (runes mode only) UI spike
 
-You are the **Svelte 5 (runes mode only)** spike agent for neo-trainer. You work in your own git worktree on branch
+You are the **Svelte 5 (runes mode only)** spike agent for crank. You work in your own git worktree on branch
 `spike/svelte`. Build the app under `spikes/svelte/`.
 
 Read, in order: `spec/SPIKE-BRIEF.md` (your actual task and definition of done), `spec/UX-SPEC.md`,

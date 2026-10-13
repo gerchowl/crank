@@ -1,11 +1,11 @@
-# @neo/shared — mock backend
+# @crank/shared — mock backend
 
 Framework-agnostic TypeScript implementation of `Backend` (`src/contract.ts`) for the UI
 spikes. It stands in for the future Rust core: all metrics, filters, aggregation, fitting,
 DSL and compilation live here. The UI only subscribes, arranges and edits. No runtime deps.
 
 ```ts
-import { createMockBackend, type Backend } from "@neo/shared";
+import { createMockBackend, type Backend } from "@crank/shared";
 
 const backend: Backend = createMockBackend();      // demo 45′ workout loaded, idle
 backend.ride.setSpeed(10);
@@ -16,7 +16,7 @@ const off = backend.subscribe("power_3s", { rateHz: 4, filter: [{ kind: "ema", t
 // on unmount: off()
 ```
 
-Consume it as `"@neo/shared": "workspace:*"`. The package exports TypeScript source
+Consume it as `"@crank/shared": "workspace:*"`. The package exports TypeScript source
 (`src/index.ts`), so Vite compiles it directly; use `moduleResolution: "bundler"`. It typechecks
 under `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes` and `erasableSyntaxOnly`.
 
@@ -103,7 +103,7 @@ peak; τ is profiled on a 10–200 s grid with (hrInf, amp) solved linearly per 
   wobble by ±20–30 s before converging (as they would on real data).
 - Coach changes are applied to the ride's compiled blocks (`aiChanged: true`); the workout tree
   returned by `ride.current()` is the original.
-- Layouts persist under `localStorage["neo-trainer.layouts.v1"]` (in-memory fallback).
+- Layouts persist under `localStorage["crank.layouts.v1"]` (in-memory fallback).
 - Run tests: `pnpm -C shared test`, types: `pnpm -C shared typecheck`.
 
 ## Ride record for review views

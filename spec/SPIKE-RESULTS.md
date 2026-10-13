@@ -1,7 +1,7 @@
 # UI framework spike results (2026-10-13)
 
 Three Opus agents built the same scope (spec/SPIKE-BRIEF.md) in React 19, Svelte 5 and SolidJS against
-`@neo/shared`. Each was then reviewed by an independent adversarial agent (Playwright probes) and
+`@crank/shared`. Each was then reviewed by an independent adversarial agent (Playwright probes) and
 measured identically (production build, headless Chromium, 60× ride, forced GC).
 
 | | React 19 + Compiler | Svelte 5 (runes) | SolidJS |
@@ -16,7 +16,7 @@ measured identically (production build, headless Chromium, 60× ride, forced GC)
 | Lint/type catches during build | 8 | 6 | 7 |
 | Tokens to build | 28M | 34M | 31M |
 
-**Recommendation: React** (Svelte a close second). Quality ties with Svelte. React's remaining bugs are
+**Decision (2026-10-13): React 19 + React Compiler** (user-confirmed). **Recommendation was: React** (Svelte a close second). Quality ties with Svelte. React's remaining bugs are
 ordinary app logic, while Svelte and Solid both produced silent framework-specific runtime bugs (proxy
 cloning and mutation, untracked reads) that clean checks didn't catch. Bundle size is irrelevant under Tauri.
 

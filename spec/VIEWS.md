@@ -1,4 +1,4 @@
-# neo-trainer — views, panels, plot types & wireframes (v0)
+# crank — views, panels, plot types & wireframes (v0)
 
 Companion to `UX-SPEC.md`. Defines **every screen (V-xx), panel and plot type (P-xx)**, what
 data each binds to, and wireframes. Data comes from the backend (`shared/` mock → Rust core);
