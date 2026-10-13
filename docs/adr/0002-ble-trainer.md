@@ -300,258 +300,290 @@ negative masses) are `EncodeError`s; clamping to trainer capabilities is the eng
 
 #### 4.4.1 Trainer-following state machine (amendment, #54)
 
-The previous rule (round 3 of the #46 pre-mortem) had two defects found by the astra pre-mortem: the 2 s
-mismatch grace restarted on every desired-mode change, so during a ramp (1 Hz target updates) a trainer that
-ignored every command never reached `no`; and "observed = desired → `yes`" let one stale agreeing reply flip
-the state at once. Its claim that a stale reply costs at most one second was unsupported, since nothing
-bounds a reply's age. The machine below replaces it. It lives in `crank-engine::erg::following`. It is a
-pure function of its inputs (events in tick order, timestamps from the `Clock`, ADR-0001 §5), with no I/O.
-The machine has **no grace period**. A reply that shows a value desired within the last `L` is *Lagging*
-(neutral), so a trainer that is still applying an earlier value never counts as disagreeing. Because nothing
-can be renewed, frequent transitions cannot postpone detection (#54 review, round 2).
+**Why it was restructured.** The first rule (round 3 of the #46 pre-mortem) had two defects found by the
+astra pre-mortem. The mismatch grace restarted on every 1 Hz ramp update, and one stale agreeing reply
+flipped the state. Its fixes in rounds 1–2 of #54 kept one aggregate machine with per-component clauses
+added in prose, and the review kept finding interactions between them:
+
+- grace renewed by transition storms;
+- stale SIM components blocking each other's recovery;
+- lagging replies bypassing the missing-component check;
+- a verification deadline that assumed quiet segments.
+
+The design is therefore split in two:
+
+- **one small machine per commanded component**, with its own evidence, expiry and verdict;
+- an **aggregate verdict that is a pure function** of the component verdicts and holds no memory of its own.
+
+The transition tables below are implemented literally by an executable model,
+`docs/adr/models/trainer_following.py` (Python, stdlib only). The model explores the discretised state
+space exhaustively and replays every pre-mortem counterexample as a named scenario. The `following-model`
+flake check runs it in CI. The Rust implementation (`crank-engine::erg::following`, #32) must agree with
+it.
 
 **What it can and cannot claim.** A reply's content cannot show how old it is (§4.4). The machine therefore
-never decides on one reply. `following` means *at least 3 consecutive agreeing replies about the current
-segment, spread over at least 2 s, covering every component of the desired mode*. `not_following` means
-*disagreement that has lasted at least 2 s, confirmed by a second disagreeing reply, with no verification in
-between*. Stale replies are not detected. A trainer that keeps sending stale agreeing replies for 2 s or
-more is reported `following`. Only a verified sequence byte (§4.4 enhancement, gated on #44) could close this
-gap, and v1 claims nothing beyond the two definitions.
+never decides on one reply.
 
-**Activity.** The machine is *active* exactly while two things hold: the trainer link is `Ready`, and the
-engine has a current desired `ControlMode` (`Some`). It becomes active whenever both start to hold, whatever
-the cause: first connect, reconnect (§6), the start of a ride on a connection that stayed open, or control
-resuming after "Release trainer". It becomes inactive the moment either stops holding. The engine derives
-`Activate`/`Deactivate` from these two facts alone, so a second ride on the same connection activates the
-machine like the first.
+- A component is `following` after at least 3 consecutive agreeing replies about it, spread over at least
+  2 s.
+- It is `not_following` after a disagreement that has lasted at least 2 s, confirmed by a second
+  disagreeing reply, with no verification in between.
+- The aggregate is `following` only when every component of the desired mode is.
 
-**Comparison grid and components.** Desired and observed values are compared as integers at the wire
-resolution, never as floats. `ControlMode::grid_key()` in `crank-devices` gives ERG in 0.25 W, grade in 0.01 %
-(offset as on page 51), Crr in 5×10⁻⁵, resistance in 0.5 %, and wind in 0.01 kg/m, 1 km/h and 0.01. The
-engine emits desired modes already on that grid (§7.1 rounds ERG to 1 W, which is exact in 0.25 W; grade,
-Crr, resistance and wind are rounded to the grid where the engine produces them). A desired mode has
-**components**, one per control page that carries it: ERG has `target` (page 49), resistance has `resistance`
-(page 48), and SIM and `Free` (flat-road SIM, §7.9) have `track` (page 51: grade + Crr) and `wind` (page 50).
-A page-71 echo describes one page, so it says something about exactly one component. The engine compares
-the echo with the desired mode *projected onto that component*. An echo of a page that is not a component of
-the desired mode (an ERG echo while SIM is desired) matches no value of the current segment.
+Stale replies are not detected. A trainer that keeps sending stale agreeing replies for 2 s or more is
+reported `following`. Only a verified sequence byte (§4.4 enhancement, gated on #44) could close this gap,
+and v1 claims nothing beyond these definitions.
 
-**SIM echo schedule (driver, §4.4).** So that both SIM components produce evidence, in SIM the writer
-alternates the keep-alive pages: page 50 and page 51 each every 2 s, 1 s apart, and the 1 s page-71 request
-follows each of these writes on the next free tick. In steady SIM the replies therefore alternate between
-wind and track echoes. A changed SIM page is still written at once (on consecutive ticks if both changed),
-and the alternation continues from there.
+**Components and grid.**
 
-**Inputs.**
+- Values are compared as integers at the wire resolution, never as floats. `ControlMode::grid_key()` in
+  `crank-devices` gives ERG in 0.25 W, grade in 0.01 % (offset as on page 51), Crr in 5×10⁻⁵, resistance in
+  0.5 %, and wind in 0.01 kg/m, 1 km/h and 0.01.
+- The engine emits desired modes already on that grid. §7.1 rounds ERG to 1 W, which is exact in 0.25 W.
+  Grade, Crr, resistance and wind are rounded to the grid where the engine produces them.
+- A desired mode has one **component** per control page that carries it:
 
-1. *Desired-state changes* from the engine, each classified exactly once:
+  | Desired mode | Components (page) | Reply period `P_c` |
+  |---|---|---|
+  | ERG | `erg` (49) | 1 s |
+  | resistance | `resistance` (48) | 1 s |
+  | SIM and `Free` (flat-road SIM, §7.9) | `track` (51: grade + Crr), `wind` (50) | 2 s each |
 
-   | Change | Class |
-   |---|---|
-   | The machine becomes active (see Activity) | `Activate` |
-   | Mode kind change (ERG ↔ SIM ↔ resistance ↔ `Free`), including ERG release to `Resistance { pct: 0 }` (§7.4) and ERG (re-)engagement, which starts the soft start | `Transition` |
-   | Block boundary whose start target differs from the previous block's end target (§7.8 a) | `Transition` |
-   | Manual ± or coach change (§7.8 b) | `Transition` |
-   | Rider-set SIM grade or resistance from the free-ride/sim control (§7.9) | `Transition` |
-   | Ramp update inside a block (§7.3), soft-start update after its engagement (§7.4–7.5), HR-steering update (§7.7) | `Continuous` |
-   | Block boundary with an equal target, keep-alive re-send, `SetRider` (page 55) | none (the desired control mode is unchanged) |
-   | The machine stops being active: link `Lost`/`Connecting`, `Disconnect`, "Release trainer", or the engine has no desired mode any more | `Deactivate` |
+- A page-71 echo describes one page, so it is a reply about exactly one component.
 
-   `Transition` is the §7.8 discontinuity set plus mode-kind and rider-set changes. Settle (§7.8) and this
-   machine use the same classification, which the engine computes once per change. A `Transition` starts a
-   new **segment** (`seg_start` = now).
-2. *Observations* (`TrainerEvent::Observed`), classified when they arrive, at time `t` = `at`:
-   - **Neutral**: page-25 flags, `control = None` or `NotControl`, status `Pending` or `Other`. A neutral
-     observation changes no state and no timer.
-   - **Disagree**: status `Fail`, `NotSupported` or `Rejected` (even when the echo equals the desired
-     value); or status `Pass` with an echo that matches no desired value at any instant in `[t − L, t]`; or
-     an *incomplete* reply (below).
-   - **Agree**: status `Pass` and the echo equals the component projection of some desired mode that was
-     current at some instant in `[max(seg_start, t − L), t]`, **and** the desired mode is complete (below).
-     The lag window `L` lets a trainer that echoes the previous ramp step agree.
-   - **Lagging**: status `Pass` and the echo equals the projection of a desired value from before
-     `seg_start` that was current at some instant in `[t − L, t]`. The trainer is still applying the
-     previous segment. Lagging changes neither the streak nor the episode. It refreshes `last_decisive` and
-     the component's `last_evidence`.
-   - **Complete / incomplete** (multi-component modes, i.e. SIM and `Free`): a required component c is
-     *stale* at t when `t − max(required_since[c], last_evidence[c]) ≥ T_component`, where `last_evidence[c]`
-     is the arrival of the last Agree or Lagging reply for c. `required_since[c]` is set when c becomes
-     required (on `Activate`, or a `Transition` into a mode that has c), **unless c was already required at
-     some instant in the last `T_component`**, in which case it keeps its value. Neither a storm of grade
-     changes nor rapid mode-kind toggling can therefore restart the clock. A reply that would be Agree while
-     another required component is stale is *incomplete* and counts as Disagree. A trainer that applied the
-     wind page but never the track page goes to `not_following`; it never stays `checking`.
-3. *Ticks* (4 Hz, ADR-0001 §5) for the timeouts.
+**SIM echo schedule (driver, §4.4).** In SIM the writer alternates the keep-alive pages: page 50 and page 51,
+each every 2 s and 1 s apart. The 1 s page-71 request follows each of these writes on the next free tick.
+Each SIM component therefore gets a reply every 2 s. A changed SIM page is still written at once (on
+consecutive ticks if both changed), and the alternation continues from there.
 
-`TrainerEvent::Delivered` and `Fault(Gatt)` are not inputs. Delivery says nothing about what the trainer
-does (§4.4).
+**Activity.** The machine is *active* exactly while two things hold:
 
-**State and variables.** State ∈ {`Inactive`, `Unverified`, `Following`, `Mismatch`, `Unknown`}. Variables:
-`seg_start` (time of the last `Activate`/`Transition`), the desired history over the last `L` with its
-segment boundaries, `streak` (the consecutive Agree replies since the last Disagree: count, arrival time of
-the first, and the set of components seen), `last_evidence[c]` and `required_since[c]` per component,
-`dis_since` (start of the open
-disagreement episode, or none), and `last_decisive` (arrival time of the last Agree/Disagree/Lagging reply,
-or the activation time).
+- the trainer link is `Ready`;
+- the engine has a current desired `ControlMode` (`Some`).
+
+`Activate` fires whenever both start to hold, whatever the cause: first connect, reconnect (§6), the start of
+a ride on a connection that stayed open, or control resuming after "Release trainer". `Deactivate` fires the
+moment either stops holding, and clears every component. A second ride on the same connection therefore
+activates exactly like the first.
+
+**Desired history.** For each component the engine keeps the values it desired in the last `L`, with the
+instant each stopped being desired. A changed desired mode updates that history and runs C8/C9 for
+components that stop or start being required. **Desired-state changes are not otherwise an input to any
+machine.** Transitions and continuous updates are treated identically: lag acceptance runs from when a value
+stopped being desired, never from a transition, so neither a storm of transitions nor a ramp can defer or
+renew anything.
 
 **Constants.**
 
 | Constant | Value | Source |
 |---|---|---|
-| `T_poll` page-71 request period | 1 s | §4.4 |
-| `L` lag window: how long a superseded desired value is still accepted as the trainer catching up | 2 s | Budget: desired change → control write (≤ 2 writer ticks, 0.5 s; SIM may need two pages), plus the trainer applying it, plus the reply latency. **HIL calibration (#44 check 3)**: L ≥ p99 of (desired change → arrival of the first reply that echoes it), measured end to end through the writer, so the slot and coalescing delay are included |
-| `N_follow` agreeing replies to verify | 3 | Design: more than one reply, so a single or duplicated reply never decides |
-| `T_verify` minimum span from first to last of those replies | 2 s | Design: three replies at `T_poll` = 1 s. A burst of delayed replies arriving together never verifies |
-| `T_component` maximum age of a SIM component's last evidence | 4 s | The SIM echo schedule gives each component a reply every 2 s, plus `L`. **HIL calibration (#44 check 3)**: SIM replies must alternate, as the schedule above requires |
-| `T_mismatch` disagreement duration | 2 s | The previous 2 s rule (8 ticks) |
-| `T_unknown` without a decisive reply | 5 s | The previous 5 s rule |
+| `T_poll` page-71 request period | 1 s | §4.4. Gives `P_c` above (SIM: alternation) |
+| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Budget: desired change → control write (≤ 2 writer ticks, 0.5 s), plus the trainer applying it, plus the reply latency. **HIL calibration (#44 check 3)**: `L` ≥ p99 of (desired change → arrival of the first reply that echoes it), measured end to end, so slot and coalescing delay are included |
+| `N_follow` agreeing replies to verify a component | 3 | Design: a single or duplicated reply never decides |
+| `T_verify` minimum span of those replies | 2 s | Design: a burst of delayed replies arriving together never verifies |
+| `T_mismatch` minimum span of a disagreement episode before `not_following` | 2 s | The previous 2 s rule (8 ticks) |
+| `T_unknown` silence: required time without a reply about a component | 5 s | The previous 5 s rule. More than two SIM reply periods. **HIL check (#44 check 3)**: SIM replies alternate as the schedule requires |
+| `T_decide(c)` decision deadline (derived, not tuned) | `T_verify + T_mismatch + 3·P_c` = 7 s (ERG, resistance), 10 s (SIM components) | Checked by the model's fair walk |
 
-A change to a value in this table is an ADR amendment backed by #44 numbers.
+A change to `L`, `T_unknown` or the reply periods is an ADR amendment backed by #44 numbers. The model's
+constants must be changed in the same commit.
 
-**Transition table.** Rows are applied in order. The first matching row wins.
+**Reply routing.** A reply (`TrainerEvent::Observed`) arrives at `t` = `at`. It is routed by the first
+matching rule:
 
-| # | State | Input | Guard | Next state | Actions |
-|---|---|---|---|---|---|
-| 1 | any | `Deactivate` | none | `Inactive` | clear all variables |
-| 2 | `Inactive` | `Activate(D)` | none | `Unverified` | `seg_start` = now, history = [D], `streak` = empty, `last_evidence` = none, `required_since[c]` = now for D's components, `dis_since` = none, `last_decisive` = now |
-| 3 | `Inactive` | any other | none | `Inactive` | ignore. `Transition`/`Continuous` cannot reach an inactive machine, because the first desired mode while the link is `Ready` is `Activate` (see Activity). Observations are ignored |
-| 4 | `Following` | `Transition(D)` | none | `Unverified` | `seg_start` = now, append D to history, `streak` = empty, update `required_since` per the rule above |
-| 5 | `Unverified`, `Mismatch`, `Unknown` | `Transition(D)` | none | unchanged | as row 4. `dis_since` is **kept**: a disagreement episode ends only through verification, silence or `Deactivate`, so neither a new target nor a storm of them can hide a trainer that ignores commands, and `Mismatch` is not cleared by a new target |
-| 6 | any active | `Continuous(D)` | none | unchanged | append D to history. **No timer, streak or episode is reset** |
-| 7 | any active | Agree | after adding it, `streak` has ≥ `N_follow` replies spanning ≥ `T_verify` and covers every component of the current desired mode | `Following` | add to `streak`, `last_evidence[c]` = t, `dis_since` = none, `last_decisive` = t |
-| 8 | any active | Agree | otherwise | `Unknown` → `Unverified`; others unchanged | add to `streak` (first = t if it was empty), `last_evidence[c]` = t, `last_decisive` = t |
-| 9 | any active | Lagging | none | `Unknown` → `Unverified`; others unchanged | `last_decisive` = t, `last_evidence[c]` = t |
-| 10 | any active | Disagree | `dis_since` ≠ none and `t − dis_since ≥ T_mismatch` | `Mismatch` | `streak` = empty, `last_decisive` = t |
-| 11 | any active | Disagree | otherwise | `Mismatch` stays; others → `Unverified` | `streak` = empty, `last_decisive` = t, `dis_since` = `dis_since` or t |
-| 12 | any active | Neutral | none | unchanged | none |
-| 13 | `Unverified`, `Following`, `Mismatch` | tick | `now − last_decisive ≥ T_unknown` | `Unknown` | `streak` = empty, `dis_since` = none |
+| # | Reply | Effect |
+|---|---|---|
+| R1 | Page-25 flags, `control = None` or `NotControl` (e.g. page 55 was the last page received; it says nothing about any component), status `Pending` or `Other` | Neutral: no effect on anything |
+| R2 | About a required component c: status `Pass` and the echo equals c's current desired value, or a value c had at some instant in `[t − L, t]` | **Agree** for c |
+| R3 | About a required component c: anything else (other value; status `Fail`, `NotSupported` or `Rejected`, even with an equal echo) | **Disagree** for c |
+| R4 | About a component that is not required but was required at some instant in `[t − L, t]` | Neutral: the trainer still reports the previous mode |
+| R5 | About a component that was not required at any instant in `[t − L, t]` | **Disagree** for every required component. The trainer reports a control page crank is not sending |
 
-Transitions only move the segment boundary. The time a value stays acceptable is measured from when it
-stopped being desired, never from a transition, so a transition storm cannot extend it.
+`TrainerEvent::Delivered` and `Fault(Gatt)` are not inputs. Delivery says nothing about what the trainer
+does (§4.4).
 
-**Outputs.** The engine maps state to `TrainerFollowing`, a field of `RideStatus`. The UI sees it in the
+**Component machine.** Each component c has:
+
+- a state ∈ {`unverified`, `following`, `not_following`, `silent`};
+- `streak`: the consecutive Agree replies since the last Disagree, as a count and the arrival time of the
+  first;
+- `dis_since`: the start of the open disagreement episode, or none;
+- `last_evidence`: the arrival of the last Agree/Disagree, or the start, counted in required time;
+- `not_required_since`: none while c is required.
+
+Rows are applied in order, and the first match wins. Valid evidence for c is recorded whatever the other
+components are doing.
+
+| # | When | Guard | Next state | Actions |
+|---|---|---|---|---|
+| C1 | c starts: `Activate`, or required again after more than `T_unknown` not required | none | `unverified` | `streak` = empty, `dis_since` = none, `last_evidence` = now |
+| C2 | Agree | after adding it, `streak` has ≥ `N_follow` replies and `t − streak.first ≥ T_verify` | `following` | add to `streak`, `last_evidence` = t, `dis_since` = none |
+| C3 | Agree | otherwise | unchanged | add to `streak` (first = t if it was empty), `last_evidence` = t |
+| C4 | Disagree | `t − (dis_since or t) ≥ T_mismatch` | `not_following` | `streak` = empty, `last_evidence` = t, `dis_since` = `dis_since` or t |
+| C5 | Disagree | otherwise | `following` → `unverified`; others unchanged | as C4 |
+| C6 | any Agree/Disagree while `silent`, or when `t − last_evidence ≥ T_unknown` (evidence too old even if C7 has not run, e.g. c stopped being required at that instant) | none | `unverified` first, then C2–C5 | `streak` = empty, `dis_since` = none before applying it |
+| C7 | tick, c required and not `silent` | `now − last_evidence ≥ T_unknown` | `silent` | `streak` = empty, `dis_since` = none |
+| C8 | c stops being required | none | `following` → `unverified`; others unchanged | `streak` = empty, `not_required_since` = now. `dis_since` and `not_following` are **kept** |
+| C9 | c required again within `T_unknown` | none | unchanged | `last_evidence` += now − `not_required_since` (silence counts required time only), `not_required_since` = none |
+
+Properties of this table:
+
+- Verification never carries over to a new requirement (C8).
+- A disagreement episode survives short mode toggles (C8/C9).
+- Only C2 ends an episode (or silence and C1 reset it). No transition can.
+
+**Aggregate verdict.** The engine maps the required components' states to `TrainerFollowing`, a field of
+`RideStatus`. The mapping is a pure function with no memory of its own:
+
+| # | Condition (first match) | `TrainerFollowing` (serde) | UI | Compliance (§7.8) |
+|---|---|---|---|---|
+| A1 | machine inactive | `unknown` | no claim | counted |
+| A2 | every required component `silent` | `unknown` | no claim | counted |
+| A3 | any required component `not_following` or `silent` | `not_following` | "Trainer is not following the target", naming the component (e.g. "grade not confirmed") | **excluded** |
+| A4 | every required component `following` | `following` | none needed (normal state) | counted |
+| A5 | any required component with an open episode (`dis_since` ≠ none) | `suspect` | no claim | **excluded** |
+| A6 | otherwise | `checking` | no claim | counted |
+
+`RideStatus` carries the verdict and the per-component states (`components: Vec<(Component,
+ComponentState)>`), so the UI can name the missing or disagreeing component. The UI sees them in the
 `status` of a `StreamFrame` (ADR-0001 §4.3): sent on change, so within one frame, coalesced to the latest
 value, and re-read by `ride_status()` after a `resync`.
 
-| State | `TrainerFollowing` (serde) | UI | Compliance (§7.8) |
-|---|---|---|---|
-| `Inactive`, `Unknown` | `unknown` | no claim | counted |
-| `Unverified`, `dis_since` = none | `checking` | no claim | counted |
-| `Unverified`, `dis_since` ≠ none | `suspect` | no claim | **excluded** |
-| `Following` | `following` | none needed (normal state) | counted |
-| `Mismatch` | `not_following` | "Trainer is not following the target" in the ride status | **excluded** |
-
 A record second is excluded from compliance when any of its four ticks is `suspect` or `not_following`.
-Excluding `suspect` covers the detection delay before `not_following`, so nothing is rewritten afterwards
-(no rollback, ADR-0001 §5). The page-25 target-limit flags are a separate `RideStatus` field (§7.6) and
-never enter this machine.
+Excluding `suspect` covers the detection delay, so nothing is rewritten afterwards (no rollback, ADR-0001
+§5). The page-25 target-limit flags are a separate `RideStatus` field (§7.6) and never enter this machine.
 
-**Guarantees.** These assume a reply arrives every `T_poll` with latency ≤ r. They are what the tests
-assert.
+**Guarantees.** These hold for replies arriving with latency ≤ r. Each one is checked by the model, either
+as an invariant over every reachable state or as a named scenario.
 
-- **Stuck trainer.** Let V be the value its echo shows. It reaches `not_following` no later than
-  `L + 2·T_poll + T_mismatch + r` (6 s + r) after the later of activation and the last instant V was
-  desired. Any number of `Transition` and `Continuous` inputs in between changes nothing, including a
-  `Transition` every tick.
-- **SIM component never applied.** With SIM or `Free` desired, a trainer that never echoes an agreeing
-  value for one component reaches `not_following` no later than
-  `T_component + T_mismatch + 2·T_poll + r` (8 s + r) after `required_since` for that component. It never
-  reaches `following` in between, because verification needs every component. Grade changes and mode-kind
-  toggles do not move `required_since` (rule above).
-- **Lagging trainer.** A trainer whose echo lags the desired value by less than `L` never produces a
-  Disagree. It reaches `following` no later than `2 ticks + 2·T_poll + T_verify + r` after a `Transition`
-  in ERG or resistance (4.5 s + r), and one `T_poll` later in SIM (5.5 s + r). During `Continuous` updates
-  it never leaves `following`.
-- **Single replies.** One observation never produces `following`, from any state and whatever its
-  content. Agreeing observations that all arrive within less than `T_verify` never produce it either. One
-  disagreeing observation never produces `not_following`. That needs two Disagree observations at least
-  `T_mismatch` apart, with no verification between them.
-- **Leaving `not_following`.** It ends only through verification (`following`), `T_unknown` of silence, or
-  `Deactivate`. A new target does not end it.
-- **Silence.** A trainer that sends no decisive reply is `checking` for `T_unknown` (5 s) after each
-  `Activate`. It is then `unknown` until a decisive reply arrives or the machine deactivates; `Transition`
-  inputs do not leave `unknown`. A trainer that never answers page 70 (the #44 check-3 fallback) therefore
-  shows `checking` for the first 5 s of every activation and `unknown` after that.
-- **Repeated rides.** Every activation starts from the same initial state, so the second ride on an open
-  connection behaves exactly like the first.
+1. **Stuck component.** Suppose replies about c arrive every `P_c` and echo a value V that c has not
+   desired in the last `L`. Then the aggregate is `not_following` no later than `L + 2·P_c + T_mismatch + r`
+   after the later of activation and the last instant c desired V: 6 s + r for ERG, 8 s + r for a SIM
+   component. Desired changes in between, at any rate, change nothing.
+2. **Missing component.** A required component without a reply for `T_unknown` of required time is
+   `silent`. The aggregate is then `not_following` if any sibling is not silent, and `unknown` if all are.
+   It is never `following` (A3/A4).
+   - Mode toggling cannot restart this clock (C9) unless the component stays unrequired for more than
+     `T_unknown`. Then it is a new requirement and must verify from scratch, so it can still never be
+     masked as `following`.
+   - Lagging replies are not a separate class: an echo of a value desired within `L` is an Agree for its
+     own component. It never refreshes another component.
+3. **Decision deadline.** A required component that receives a reply at least every `P_c` reaches
+   `following` or `not_following` within `T_decide(c)` of becoming undecided. That moment is its start, or
+   the first unmet desired value after it was `following`. Since desired changes are not inputs, no
+   transition rate can defer the deadline. The model's fair component walks measure a maximum of 6 s
+   (`P_c` = 1 s) and 10 s (`P_c` = 2 s) against bounds of 7 s and 10 s.
+4. **Recovery.** From any state, once every required component again gets agreeing replies at its period,
+   the aggregate is `following` no later than `max(2·P_c, T_verify + P_c)` after the first of them, taking
+   the largest over the components (4 s in SIM). Stale or silent components do not block each other, because
+   each records its own evidence (C6).
+5. **Single replies.**
+   - One observation never produces `following`, from any state and whatever its content.
+   - Agreeing observations that all arrive within less than `T_verify` never produce it either.
+   - One Disagree never produces `not_following`.
+6. **Leaving `not_following`.** A component leaves `not_following` only through its own verification (C2),
+   silence (C7) or `Deactivate`. A new target does not end it.
+7. **Silence.** A trainer that sends no reply is `checking` for `T_unknown` (5 s) after each `Activate`, then
+   `unknown` (A2) until a reply arrives or the machine deactivates. A trainer that never answers page 70
+   (the #44 check-3 fallback) therefore shows `checking` for the first 5 s of every activation and
+   `unknown` after that.
+8. **Repeated rides.** Activity depends only on the link and the desired mode, so a second ride on an open
+   connection activates and verifies exactly like the first.
+
+**Desired-state classes (for settle only).** The engine still classifies each desired change once, but
+only §7.8 settle uses the class. The following machine ignores it (see Desired history above).
+
+| Change | Class |
+|---|---|
+| Mode kind change (ERG ↔ SIM ↔ resistance ↔ `Free`), including ERG release to `Resistance { pct: 0 }` (§7.4) and ERG (re-)engagement, which starts the soft start | `Transition` |
+| Block boundary whose start target differs from the previous block's end target (§7.8 a) | `Transition` |
+| Manual ± or coach change (§7.8 b) | `Transition` |
+| Rider-set SIM grade or resistance from the free-ride/sim control (§7.9) | `Transition` |
+| Ramp update inside a block (§7.3), soft-start update after its engagement (§7.4–7.5), HR-steering update (§7.7) | `Continuous` |
+| Block boundary with an equal target, keep-alive re-send, `SetRider` (page 55) | none (the desired mode is unchanged) |
 
 **Tests required.** These are listed on #32 (machine and engine) and #43 (driver), and form the acceptance
-for those issues:
+for those issues.
 
-- *#32, property tests on the pure machine (proptest, `VirtualClock`), with generated desired-change
-  sequences (all classes) and generated observation streams (arrival jitter, latency 0..r, neutral
-  observations interleaved):*
-  1. **Ramp, stuck trainer.** For any ramp whose segment values never equal the stuck echo, the state is
-     `not_following` within the stuck-trainer bound. `Continuous` updates never delay it.
-  2. **Transition storm.** From `Unverified` (with or without an open episode) and from `Following`, a
-     `Transition` every 1 s or every tick, with a stuck echo, reaches `not_following` within the stuck-trainer
-     bound and never returns to `checking`.
-  3. **Single stale agreeing observation.** In any stream where at most one observation agrees (the rest
-     disagree, lag, are neutral or absent), `following` never occurs.
-  4. **Burst.** Any number of agreeing observations whose arrivals span less than `T_verify` never causes
-     `following` on their own.
-  5. **Verification shape.** Every entry into `following` is preceded by ≥ `N_follow` consecutive Agree
-     observations (neutral and lagging ones skipped) about the current segment, spanning ≥ `T_verify` and
-     covering every component of the desired mode.
-  6. **Single disagreeing observation.** In any stream with at most one Disagree, `not_following` never
-     occurs. Every entry into `not_following` is preceded by two Disagree observations ≥ `T_mismatch`
-     apart, with no verification between them.
-  7. **Lagging but following trainer.** If the echo lags desired by less than `L`, across any mix of
-     `Transition` and `Continuous` (ramp, soft start, HR steering, rapid manual ±), no Disagree is produced
-     and the output is never `suspect` or `not_following`.
-  8. **Time to verify.** After any `Transition`, a lagging-but-following trainer reaches `following` within
-     the bounds above (ERG/resistance and SIM).
-  9. **Transitions do not clear an episode.** In `Mismatch`, any sequence of `Transition`/`Continuous`
-     without verification stays `not_following`. Transitions never reset `dis_since`.
-  10. **SIM components.** ERG → SIM (and ERG → `Free`) where only page-50 echoes agree and page 51 is never
-      echoed, or is echoed with a wrong grade: never `following`, and `not_following` within the SIM
-      component bound. The same holds under a storm of grade `Transition`s every 1 s and under ERG ↔ SIM
-      toggling faster than `T_component`. With alternating agreeing echoes of both pages it reaches
-      `following` within the SIM bound, including right after ERG → SIM when ERG lasted ≥ `T_component`.
-  11. **Neutral and silence.** Neutral observations change no state or variable. After `T_unknown` without
-      a decisive observation, any active state becomes `unknown` and stays there across `Transition`s. A
-      silent trainer is `checking` for exactly `T_unknown` after `Activate`.
-  12. **Activity and lifecycle.** `Deactivate` gives `unknown` (`Inactive`) at once from any state.
-      Observations while inactive are ignored. Activation happens on any start of (link `Ready` ∧ desired
-      mode `Some`): connect, reconnect, a new ride on an open connection, control after "Release trainer".
-  13. **Status codes.** `Fail`/`NotSupported`/`Rejected` disagree even with an equal echo. `Pending`/`Other`
-      are neutral.
-  14. **Grid comparison.** For every `ControlMode` the engine can emit, `grid_key` matches its FE-C
-      projection exactly, per component.
-  15. **Determinism and catch-up.** The same timestamped inputs give the same outputs whether ticks run
-      live or as a catch-up burst after a stall (ADR-0001 §5).
-  16. **Classification.** For generated workouts with manual and coach changes, every desired change gets
-      exactly one class per the table above, and the `Transition` set equals the settle triggers of §7.8.
-  17. **Compliance.** Seconds with a `suspect` or `not_following` tick are excluded. No other second is
-      affected by the machine.
-- *#32, engine scenarios with `SimTrainer`* (its `Observed` emission gets fault modes: stuck echo, echo
-  lag d, injected stale replies, silent page 71, SIM page 51 dropped):
-  - A 20-min ramp with a stuck echo reaches `not_following` within the bound of test 1, and compliance
-    excludes it. The same ramp with lag < `L` stays `following`.
-  - A reconnect mid-ramp goes `unknown` → `checking` → `following`.
-  - **Second ride without reconnecting:** finish ride 1, keep the link `Ready`, load and start ride 2. The
-    machine deactivates when the engine drops its desired mode (if it does) and activates on ride 2's first
-    `SetMode`, reaching `following`. If the engine keeps a desired mode between rides, the change is a
-    `Transition` and the machine stays active.
-  - ERG → free ride (SIM) with page 51 dropped reaches `not_following`.
+- *Model (this PR):* `python3 docs/adr/models/trainer_following.py` (about 40 s). CI runs it as the
+  `following-model` flake check; locally it is `just model`. Because the components are independent by
+  construction, it verifies the design compositionally, and every walk is exhaustive:
+  - **Component walk.** One component machine (C1–C9) runs to the fixpoint. At every step the requirement
+    can start, stop or resume, and the reply can be none, Agree or Disagree. An independent monitor, driven
+    only by the raw inputs, checks in every reachable state:
+    - **(a)** two Disagree replies `T_mismatch` apart with no verification between them give
+      `not_following`;
+    - **(b)** `following` requires `N_follow` Agree replies spanning `T_verify` since the last
+      disagreement, silence or re-requirement, so a single stale reply or a burst never verifies;
+    - **(c)** that evidence while the component is required and not silent gives `following`, so
+      recovery always completes;
+    - **(d)** `silent` holds exactly after `T_unknown` of required time without a reply, and requirement
+      toggles cannot restart that clock;
+    - a single Disagree never gives `not_following`;
+    - `not_following` ends only through verification, silence or a fresh start.
+  - **Fair component walks**, with replies every `P_c` = 1 s and 2 s, check the decision deadline. The
+    maximum measured is 6 s against a bound of 7 s, and 10 s against 10 s.
+  - **Aggregate check.** A1–A6 hold over every combination of component states. `following` is reached
+    only when every component is; a silent component next to a talking one gives `not_following`; all
+    silent gives `unknown`.
+  - **Routing check.** R2–R5 hold over every pair of modes, every history age and every reply: a reply
+    changes only its own component (R2/R3), every required component (R5) or none (R4), and it agrees
+    exactly when its value is current or was desired within `L`.
+  - **Whole-machine walks** compose the components. In every state they check activity **(e)**, the
+    end-to-end versions of (a)–(d), and the deadline:
+    - "erg" runs to the fixpoint, with link loss and `Ready`, ride start and stop, ERG changes, failing
+      replies, foreign pages and silence;
+    - "erg" fair also runs to the fixpoint;
+    - "sim" fair runs to the fixpoint, with grade changes, ERG ↔ SIM toggles and per-component replies;
+    - "sim" free covers every input sequence of length ≤ 6. The free SIM space has about 1 M states at
+      the fixpoint, too slow for CI. The components it composes are each covered to the fixpoint above.
+  - **Named regression scenarios**, one per pre-mortem counterexample:
+    - #46 r2 `200→250→200` stale reply;
+    - #54 r1 ramp with a stuck trainer, single stale reply, and burst;
+    - #54 r2 transition storm, second ride without reconnect, and SIM with wind echoes only;
+    - #54 r3 stale components recover, lagging track echoes cannot mask missing wind, and transitions do
+      not block verification;
+    - ERG ↔ SIM toggling cannot mask track, silent trainer, and reconnect mid-ramp.
+  - **Mutation check (done once, for this PR):** a single reply verifying, dropping the evidence-age half
+    of C6, and C8 clearing the episode are each caught by the walks.
+- *#32, Rust implementation of the machine:*
+  1. The model's named scenarios, ported as unit tests with the same inputs and the same expected
+     verdict sequence.
+  2. Proptest refinement: for generated input sequences (the model's alphabets, plus sub-second jitter and
+     latency 0..r), the Rust verdict sequence equals the model's. The model is invoked as a test oracle
+     through a fixture file generated by the model, not at run time.
+  3. Every guarantee above (1–8) as a property, including transition storms at every tick, ERG ↔ SIM
+     toggles faster than `T_unknown`, and recovery after silence.
+  4. Compliance: exactly the seconds with a `suspect` or `not_following` tick are excluded.
+  5. Classification: every desired change gets exactly one class, and the `Transition` set equals the §7.8
+     settle triggers.
+  6. Determinism and catch-up: the same timestamped inputs give the same outputs whether ticks run live or
+     as a burst after a stall (ADR-0001 §5).
+- *#32, engine scenarios with `SimTrainer`.* Its `Observed` emission gets fault modes: stuck echo, echo lag
+  d, injected stale replies, silent page 71, and a dropped SIM page 50 or 51. The scenarios:
+  - a ramp with a stuck echo reaches `not_following`, and compliance excludes it;
+  - with lag < `L` the ramp stays `following`;
+  - a reconnect mid-ramp goes `unknown` → `checking` → `following`;
+  - a second ride without reconnecting verifies;
+  - ERG → free ride with page 51 dropped reaches `not_following` naming `track`.
 - *#43, driver (FE-C):*
-  1. **Poll cadence.** For arbitrary command sequences through the 4 Hz writer, a page-70 request for page 71
-     is written every `T_poll` (± one tick) while a controlled mode is active, never otherwise. It is never
-     written more than once per tick and never delays a `control` write.
+  1. **Poll cadence.** For arbitrary command sequences through the 4 Hz writer, a page-70 request for page
+     71 is written every `T_poll` (± one tick) while a controlled mode is active, never otherwise. It is
+     never written more than once per tick and never delays a `control` write.
   2. **SIM echo schedule.** In steady SIM, page 50 and page 51 are each written every 2 s, 1 s apart, and
-     each is followed by the page-71 request on the next free tick. Consecutive replies from a faithful fake
-     transport alternate between wind and track echoes.
-  3. **Write latency.** For any command sequence, a desired-mode change reaches its control write within
-     2 ticks (both SIM pages within 2 ticks when both changed). This is the writer's share of the `L` budget.
+     each is followed by the request on the next free tick. Replies from a faithful fake transport alternate
+     between wind and track echoes.
+  3. **Write latency.** A desired-mode change reaches its control write within 2 ticks (both SIM pages
+     within 2 ticks when both changed). This is the writer's share of the `L` budget.
   4. **One reply, one observation.** Every received page 71 gives exactly one `Observed`, in arrival order,
      with `at` = arrival `MonoTime`. The driver never synthesizes, deduplicates, reorders or drops
      observations.
   5. **Echo decoding round trip.** For pages 48/49/50/51, `encode(page)` → echo bytes 4–7 →
      `ObservedControl` equals the `grid_key` projection of the mode that produced the page. Page 55 and
      unknown pages give `NotControl(page)`. All status byte values decode, and unknown ones become `Other`.
-  6. **Replay.** The #44 check-3 capture replayed through `ReplayTrainer` into the machine gives `following`
-     for its steady ERG and SIM segments. Its measured desired-change → echo latency is below `L`, and its SIM
-     replies alternate within `T_component`.
+  6. **Replay.** The #44 check-3 capture, replayed through `ReplayTrainer` into the machine, gives
+     `following` for its steady ERG and SIM segments. Its desired-change → echo latency is below `L`, and
+     each SIM component gets a reply within `T_unknown`.
 
 ## 5. Decision: sensor sources, discovery, pairing memory
 
@@ -645,8 +677,8 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    *settle* seconds. Settle is triggered only by **discontinuities**, never by continuous target updates:
    (a) the first 5 s of each block whose start target differs from the previous block's end target (the
    mock's per-block settle); (b) a manual ± or coach change: 5 s; (c) an ERG (re-)engagement: the soft
-   start's 5 s plus 5 s. These are the `Transition` inputs of the trainer-following machine (§4.4.1), from
-   the same classification. Within `ramp` blocks and HR-steered steps the target moves continuously
+   start's 5 s plus 5 s. These are the `Transition` class of §4.4.1, which only settle uses (the
+   trainer-following machine ignores the class). Within `ramp` blocks and HR-steered steps the target moves continuously
    (`Continuous`) and is compared second by second with no settle. Released (§7.4) and paused seconds are
    excluded, and so is every second with a `suspect` or `not_following` tick (§4.4.1). Compliance consumes
    the state machine's output, never command acknowledgements or single replies. Compliance
@@ -693,7 +725,7 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
     relies on it), whether its sequence byte advances (the gated enhancement of §4.4), and the
     distribution of the latency from a desired change, through the writer's slot delay and the control write,
     to the first reply echoing it (end to end). It also checks that SIM replies alternate between pages 50
-    and 51. These calibrate `L` and `T_component` (§4.4.1).
+    and 51, which gives the SIM reply periods behind `T_unknown`. These calibrate the constants of §4.4.1.
   - Check 10 (single central) needs a second central device; done with the owner's phone in the same
     sitting.
   - Results go to `docs/hil/<date>-fec.md`; any contradiction with this ADR amends it before #43 merges.
