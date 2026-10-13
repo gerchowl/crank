@@ -1,0 +1,38 @@
+name: Advisories
+
+# Live supply-chain checks that cannot run in the Nix sandbox (ADR-0001 §9.5, #181).
+# The flake `deny` check gates RustSec advisories offline against the pinned
+# advisory-db input; this workflow catches what the pin cannot see: advisories
+# published since the last lock bump, yanked crates (crates.io index), and
+# `pnpm audit`. It is not part of `CI Summary`: an upstream advisory must not
+# block unrelated PRs. A red run means: bump advisory-db or fix the dependency.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths: [Cargo.lock, pnpm-lock.yaml, deny.toml, .github/workflows/advisories.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - run: nix develop -c cargo deny check advisories
+
+  pnpm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - run: nix develop -c pnpm audit --prod
