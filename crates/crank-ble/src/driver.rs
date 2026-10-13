@@ -244,12 +244,19 @@ async fn run(
     let mut pacer = Pacer::default();
     let mut tick = 0;
     let start = clock.now().0;
+    let mut last_write = start;
     let mut next = start + 250_000;
     loop {
         clock.sleep_until(MonoTime(next)).await;
-        let now = clock.now().0;
+        let mut now = clock.now().0;
         if now < next {
             continue;
+        }
+        while now.saturating_sub(last_write) < 250_000 {
+            clock
+                .sleep_until(MonoTime(last_write.saturating_add(250_000)))
+                .await;
+            now = clock.now().0;
         }
         tick = tick.max(
             now.saturating_sub(start)
@@ -285,6 +292,7 @@ async fn run(
             return Ok(());
         }
         if let Some(frame) = pacer.tick(tick)? {
+            last_write = clock.now().0;
             write(&transport, &clock, capture.as_ref(), frame, &events).await?;
             if frame[4] != 70
                 && let Some(mode) = pacer.mode
