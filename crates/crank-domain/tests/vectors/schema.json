@@ -157,7 +157,7 @@
                     "items": "float"
                   },
                   "timeInZoneS": {
-                    "items": "float"
+                    "items": "integer"
                   },
                   "issues": {
                     "items": {
@@ -570,7 +570,7 @@
                     "items": {
                       "fields": {
                         "lo": "float",
-                        "seconds": "float"
+                        "seconds": "integer"
                       }
                     }
                   },
@@ -578,7 +578,7 @@
                     "items": "float"
                   },
                   "seconds": {
-                    "items": "float"
+                    "items": "integer"
                   }
                 }
               }
