@@ -5,13 +5,13 @@
 // through the wish mode. Safety is never one of the choices.
 import { useStore } from "../store";
 import { mmss } from "../format";
-import { bindings, type Action } from "../persist";
+import { bindings, keyGlyph, type Action } from "../persist";
 import { cellName, coherent, FORMAT_NAME, FORMATS, fmtMin, INTENSITIES, INTENSITY_NAME, lockedByCap, sameCell, type Cell, type Wish, type WishOutcome, type WishRecord } from "../mock/wish";
 import { WhyChip } from "./Why";
 
 export function Key({ a }: { a: Action }) {
   const k = useStore(bindings)[a][0] ?? "";
-  return <kbd>{k === "Backspace" ? "⌫" : k === "Enter" ? "⏎" : k === " " ? "Space" : k}</kbd>;
+  return <kbd>{keyGlyph(k)}</kbd>;
 }
 
 /** The grid: plain buttons in reading order (Tab / arrow-free), each announcing its state in words. */
@@ -67,12 +67,13 @@ export function WishCard({ o, capped, carried, provisional, onWish, onDropCarrie
       <p className="wish-now" data-fit>
         {o.wish ? <>Wish: <b>{cellName(o.wish)}</b></> : <>No wish — <b>the coach picks</b></>}
       </p>
+      <Matrix o={o} capped={capped} provisional={provisional} onPick={(c) => onWish(sameCell(o.wish, c) ? null : c)} />
+      {/* under the matrix, so the matrix stays above the fold at the desk (§16.2); the ↻ cell marks the wish itself */}
       {carried && (
         <p className="carried small" role="status">
           ↻ Carried over from {carried.setOn}: <b>{cellName(carried.cell)}</b> · expires {carried.expires}. <button onClick={onDropCarried}>Drop it</button>
         </p>
       )}
-      <Matrix o={o} capped={capped} provisional={provisional} onPick={(c) => onWish(sameCell(o.wish, c) ? null : c)} />
       <p className="small muted">
         {capped ? "Your injury cap: nothing above threshold, ERG only — no hills in SIM, open rides or race surges. " : ""}How long is set by Time above. From the saddle: <Key a="skip" /> wish mode.
       </p>
@@ -117,6 +118,8 @@ export function ProposalCard(p: {
   fallbackReason: string;
   facts: string[];
   ready: boolean;
+  /** Why Start is disabled at the desk: not yet confirmed · red flags unanswered · confirmed, check-in still open (§16.2). */
+  startHint: "confirm" | "flags" | "close";
   pending: boolean;
   onStart: () => void;
   onAnyway: () => void;
@@ -162,7 +165,7 @@ export function ProposalCard(p: {
         </button>
       </details>
       {saddle && (
-        <p className="card-keys">
+        <p className="card-keys t3" data-tier="t3" data-above-fold data-fit>
           <Key a="skip" /> other wish · <Key a="keep" /> coach's pick
         </p>
       )}
@@ -182,7 +185,12 @@ export function ProposalCard(p: {
           </button>
         )}
       </div>
-      {!saddle && !p.ready && <p className="small muted">Confirm how you feel and answer the health check to start{p.o.overridable ? ", or to ride your wish anyway" : ""}.</p>}
+      {!saddle && !p.ready && (
+        <p className="small muted">
+          {{ confirm: "Confirm how you feel and answer the health check to start", flags: "Answer the health check to start", close: "Use these answers to finish editing and enable Start" }[p.startHint]}
+          {p.o.overridable ? (p.startHint === "close" ? " or ride your wish anyway" : ", or to ride your wish anyway") : ""}.
+        </p>
+      )}
     </section>
   );
 }

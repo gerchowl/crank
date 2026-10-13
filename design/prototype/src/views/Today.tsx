@@ -145,6 +145,13 @@ export function Today() {
         <h1>
           Tuesday <span className="muted date">13 October</span>
         </h1>
+        {/* the cap notice shares the date's line, so the matrix stays above the fold at the desk (§16.2) */}
+        {capped && !collapsed && !stop && (
+          <section className="card cap status-warning" role="status" aria-label="Intensity cap">
+            <b>⚠ Capped at threshold ({CAP_PCT_CP.threshold} % of CP, {Math.round(capW)} W) · no sprints · ERG only</b>
+            <span className="muted"> — from your injury answer; lift it in Settings → Health.</span>
+          </section>
+        )}
       </header>
       {collapsed ? (
         <section className="card checkin-summary" aria-label="How you are today">
@@ -200,12 +207,6 @@ export function Today() {
           </div>
         </section>
       )}
-      {capped && !collapsed && !stop && (
-        <section className="card cap status-warning" role="status" aria-label="Intensity cap">
-          <b>⚠ Capped at threshold ({CAP_PCT_CP.threshold} % of CP, {Math.round(capW)} W) · no sprints · ERG only</b>
-          <span className="muted"> — from your injury answer. Lift it in Settings → Health when the injury allows hard efforts.</span>
-        </section>
-      )}
       {remote && <RemoteWish o={outcome} cursor={remote} capped={capped} onUse={() => (setWish(remote), setRemote(null))} onCancel={() => setRemote(null)} />}
       <div className="today-grid" data-stop={stop || undefined}>
         <div className="today-card" {...delivered}>
@@ -224,6 +225,7 @@ export function Today() {
                 fallbackReason={capped ? `Capped at threshold (${Math.round(capW)} W), ERG only — from your injury answer.` : (facts[0] ?? "")}
                 facts={whyFacts}
                 ready={ready}
+                startHint={confirmed === null ? "confirm" : !safe.checkedToday ? "flags" : "close"}
                 pending={pending}
                 onStart={() => start(proposal)}
                 onAnyway={() => setAnyway(true)}

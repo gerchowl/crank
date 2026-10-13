@@ -7,7 +7,7 @@ import { findNode, NUDGE_TTL_S, type CoachNudge, type CompiledWorkout, type Flat
 import { Profile, Recovery } from "../charts";
 import { blockName, blockTitle, mmss, num, signed } from "../format";
 import { blockKind, CAP_PCT_CP, cadenceState, proposedWatts, resumePlan, RESUME, coachOffsetPct, coachReason, cursorS, recoveryRead, revertNudge, sceneFixture, settling, SETTLE_S, targetBand, type BlockKind, type CadenceState, type CapExceeded, type CoreFacts } from "../mock/ext";
-import { actionFor, bindings, rideScreen, type SlotMetric } from "../persist";
+import { actionFor, bindings, keyGlyph, rideScreen, type SlotMetric } from "../persist";
 import { backend, coreFacts, navigate, RECONNECT_NOTICE_S, sceneId, UNDO_WINDOW_S, useMetric, usePoll, useSession, type RideSession } from "../session";
 import { play, useRideSounds } from "../sound";
 import { reportSymptomInRide, safety } from "../safety";
@@ -111,7 +111,7 @@ function ScreenRestarted({ onBack, repeated = false }: { onBack: () => void; rep
 export function KeyHint({ a }: { a: "coach" | "keep" | "end" | "pause" | "symptom" }) {
   const b = useStore(bindings);
   const k = b[a][0] ?? "";
-  return <kbd className="keyhint">{k === " " ? "Space" : k === "Escape" ? "Esc" : k}</kbd>;
+  return <kbd className="keyhint">{keyGlyph(k)}</kbd>;
 }
 
 function useNow(active: boolean) {
@@ -477,12 +477,12 @@ function Rows({ children, ...props }: RowProps & { children: (caption: string) =
       : read
         ? read.kind === "hr_lost"
           ? facts.trainerLost
-            ? "paused · ends at max in"
-            : "HR lost · ends at max in"
+            ? "paused · block max in"
+            : "HR lost · block max in"
           : read.kind === "ends_at_min"
-            ? "block ends at min in"
+            ? "block's minimum in"
             : read.kind === "estimate" && read.capped
-              ? `HR below ${rec?.targetBpm} · or max in`
+              ? `HR < ${rec?.targetBpm} · or block max`
               : `HR below ${rec?.targetBpm} in`
         : kind === "onoff"
           ? "left in rep"
@@ -771,6 +771,8 @@ function Lane(p: { cls: "idle" | "ask" | "applied"; alert?: boolean; head?: Reac
       {/* the rows always exist; Detail's metric lies over the first three (§16.1) */}
       <div className="lane-head" data-fit data-geom="lane-head">
         {p.head}
+        {/* the band word ends the head line, after a gutter, never under the headline (§16.1) */}
+        {p.band && <span className="band-word">{p.band}</span>}
       </div>
       <p className="t3 reason" data-fit data-geom="lane-reason">
         {p.reason}
@@ -779,7 +781,6 @@ function Lane(p: { cls: "idle" | "ask" | "applied"; alert?: boolean; head?: Reac
         {p.actions}
       </div>
       {p.metric && <div className="lane-metric">{p.metric}</div>}
-      {p.band && <span className="band-word">{p.band}</span>}
       <div className="lane-deadline" data-geom="lane-deadline">
         <span className="t3 deadline-text" data-fit>
           {p.deadline}
@@ -899,26 +900,39 @@ const ROAD_BACK_S = 120;
 const ROAD_AHEAD_S = 600;
 /**
  * Where the "next" label goes on the label lane (§16.1): it begins at its block's start when it fits, else it ends there,
- * else it is right-aligned over it; a notch always marks the start. Measured, because the label's width is its text's.
+ * so it never straddles the notch that marks the start. If neither fits, it drops the word "next" (level 1), then the
+ * watts (level 2); if it still can't, it is right-aligned over the start and a 2 px leader under it runs from its left
+ * edge to the notch. Measured, because the label's width is its text's.
  */
-function useLabelLeft(at: number) {
+function useLabelPlace(at: number) {
   const lane = useRef<HTMLDivElement>(null);
   const label = useRef<HTMLSpanElement>(null);
-  const [left, setLeft] = useState<number | null>(null);
+  const [place, setPlace] = useState<{ left: number; level: 0 | 1 | 2; leader: number | null } | null>(null);
   useLayoutEffect(() => {
-    const place = () => {
+    let level: 0 | 1 | 2 = 0;
+    const fit = () => {
       const W = lane.current?.clientWidth ?? 0;
-      const w = label.current?.offsetWidth ?? 0;
-      const x = at * W;
-      setLeft(x + w <= W ? x : x - w >= 0 ? x - w : Math.max(0, W - w));
+      const el = label.current;
+      if (!el) return;
+      for (;;) {
+        el.dataset.level = String(level);
+        const w = el.offsetWidth;
+        const x = at * W;
+        if (x + w <= W) return setPlace({ left: x, level, leader: null });
+        if (x - w >= 0) return setPlace({ left: x - w, level, leader: null });
+        if (level === 2) {
+          const left = Math.max(0, W - w);
+          return setPlace({ left, level, leader: x - left });
+        }
+        level = (level + 1) as 1 | 2;
+      }
     };
-    place();
-    const ro = new ResizeObserver(place);
+    fit();
+    const ro = new ResizeObserver(() => ((level = 0), fit()));
     if (lane.current) ro.observe(lane.current);
-    if (label.current) ro.observe(label.current);
     return () => ro.disconnect();
   }, [at]);
-  return { lane, label, left };
+  return { lane, label, place };
 }
 
 function Road({ compiled, workout, block, kind, status, pending }: { compiled: CompiledWorkout; workout: Workout; block: FlatBlock; kind: BlockKind; status: RideStatus; pending: CoachNudge | undefined }) {
@@ -933,7 +947,7 @@ function Road({ compiled, workout, block, kind, status, pending }: { compiled: C
   // "next" is pinned to its block's start on the near road (§16.1); after the last block it marks the ride's end
   const atS = kind === "cooldown" || !next ? (last ? last.startS + last.durS : now) : next.startS;
   const at = Math.max(0, Math.min(1, (atS - fromS) / span));
-  const { lane, label, left: labelLeft } = useLabelLeft(at);
+  const { lane, label, place } = useLabelPlace(at);
   const watts = next ? (next.powerFrom === next.powerTo ? `${Math.round(next.powerFrom)} W` : `${Math.round(next.powerFrom)}→${Math.round(next.powerTo)} W`) : "";
   return (
     <section className="road" aria-label="Road ahead">
@@ -942,13 +956,15 @@ function Road({ compiled, workout, block, kind, status, pending }: { compiled: C
           now
         </span>
         <span className="road-notch" style={{ left: `${at * 100}%` }} aria-hidden />
-        <span ref={label} className="road-next t3p" style={{ left: labelLeft ?? 0, visibility: labelLeft === null ? "hidden" : undefined }} data-above-fold data-tier="t3plus" data-fit>
-          <span className="lbl">next</span>{" "}
+        {place?.leader != null && <span className="road-leader" style={{ left: place.left, width: place.leader }} aria-hidden />}
+        <span ref={label} className="road-next t3p" style={{ left: place?.left ?? 0, visibility: place ? undefined : "hidden" }} data-level={place?.level ?? 0} data-above-fold data-tier="t3plus" data-fit>
+          <span className="lbl">next </span>
           {kind === "cooldown" || !next ? (
             "ride complete → Review"
           ) : (
             <>
-              <b>{blockName(workout.nodes, next)}</b> {next.durRangeS ? `${mmss(next.durRangeS[0])}–${mmss(next.durRangeS[1])}` : mmss(next.durS)} @ {watts}
+              <b>{blockName(workout.nodes, next)}</b> {next.durRangeS ? `${mmss(next.durRangeS[0])}–${mmss(next.durRangeS[1])}` : mmss(next.durS)}
+              <span className="watts"> @ {watts}</span>
             </>
           )}
         </span>
@@ -973,7 +989,6 @@ function Road({ compiled, workout, block, kind, status, pending }: { compiled: C
 
 function KeysList() {
   const b = useStore(bindings);
-  const show = (k: string) => (k === " " ? "Space" : k);
   const rows: [keyof typeof b, string][] = [
     ["coach", "Coach: accept a question · choose in the feel prompt (never undoes)"],
     ["keep", "Keep: keep the plan · back to plan after an auto change"],
@@ -989,7 +1004,7 @@ function KeysList() {
       {rows.map(([a, label]) => (
         <p key={a}>
           {b[a].map((k) => (
-            <kbd key={k}>{show(k)}</kbd>
+            <kbd key={k}>{keyGlyph(k)}</kbd>
           ))}{" "}
           {label}
         </p>

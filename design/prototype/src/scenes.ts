@@ -116,6 +116,8 @@ export const scenes: Record<string, Scene> = {
   "ride-hr-lost-recovery": ride(() => (rideUntil(backend, (s) => labelled(s, "Recover") && s.hrSensor !== "connected"), rideFor(backend, 1))),
   "ride-paused-long": fixture(() => (atThreshold(), backend.ride.pause()), { facts: { pausedForS: 6 * 60 + 10 } }),
   "ride-reconnected-long": fixture(atThreshold, { facts: { sinceReconnectS: 12, lastGapS: 190 } }),
+  // the widest device pill (§16.1): the trainer's reconnect note with the widest mm:ss gap while HR is lost
+  "ride-reconnected-hr-lost": fixture(atThreshold, { status: { hrSensor: "lost" }, facts: { sinceReconnectS: 12, lastGapS: 3599, hrLost: true } }),
   "ride-paused": fixture(() => (atThreshold(), backend.ride.pause()), { facts: { pausedForS: 42 } }),
   "ride-feel-prompt": fixture(() => (rideUntil(backend, (s) => labelled(s, "Threshold") && s.phase !== "work"), rideFor(backend, 4)), { feelPrompt: true }),
   "ride-screen-restarted": fixture(atThreshold, { screenCrashed: true }),
