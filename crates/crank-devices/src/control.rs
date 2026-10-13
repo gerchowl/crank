@@ -46,6 +46,7 @@ pub enum ControlMode {
     Free,
 }
 /// One echoed control page as integers; never a full SIM mode (ADR-0002 §4.4.1).
+/// Exhaustive for engine routing R1–R5 (ADR-0002 §4.4.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObservedControl {
     /// Page 49.

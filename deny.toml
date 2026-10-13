@@ -15,7 +15,7 @@ unmaintained = "all"
 unsound = "all"
 yanked = "deny"
 ignore = [
-  { id = "RUSTSEC-2024-0429", reason = "glib 0.18 via tauri's Linux gtk3 stack; fix needs glib 0.20, we never call VariantStrIter (gerchowl/crank#180)" },
+  { id = "RUSTSEC-2024-0429", reason = "glib 0.18 via tauri's Linux gtk3 stack, a Linux RUNTIME dependency; unsound-only (VariantStrIter), fix needs glib 0.20, we never call VariantStrIter (gerchowl/crank#180)" },
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error via gtk3-macros/glib-macros, Linux build-time only (gerchowl/crank#180)" },
   { id = "RUSTSEC-2024-0436", reason = "paste via specta 2.0.0-rc.25, build-time proc macro (gerchowl/crank#180)" },
 ]

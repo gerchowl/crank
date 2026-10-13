@@ -38,7 +38,7 @@ One Cargo workspace (edition 2024, toolchain pinned in `rust-toolchain.toml` by 
 | Crate | Kind | Owns | May depend on |
 |---|---|---|---|
 | `crank-domain` | lib, **pure** (no I/O, no async, no clock) | units, metric catalog and zones, filters, multi-resolution history, W′bal, rMSSD/DFA-α1, HR-recovery fit, histogram/heatmap/MMP, athlete model (`Estimate`), lap stats, workout model + DSL + compiler + deterministic rewrite, `Judge` trait + coach feature/verdict types | `serde`, `thiserror`, `specta` (feature `specta`) |
-| `crank-devices` | lib | `TrainerDriver` / `HeartRateDriver` traits and their types (ADR-0002), `sim` module: simulated rider + trainer + HR strap (port of `sim.ts`) | `crank-domain`, `tokio` (sync, time) |
+| `crank-devices` | lib | `TrainerDriver` / `HeartRateDriver` traits and their types (ADR-0002), `sim` module: simulated rider + trainer + HR strap (port of `sim.ts`) | `crank-domain`, `tokio` (sync, time), `futures-util`, `smallvec`, `thiserror` |
 | `crank-fec` | lib, pure | ANT message framing + FE-C page codec (ADR-0002 §4) | none |
 | `crank-ble` | lib | btleplug discovery, FE-C trainer driver, HRS driver, reconnect, raw-frame capture (ADR-0002) | `crank-devices`, `crank-fec`, `btleplug` |
 | `crank-engine` | lib | ride engine actor: tick clock, ride state machine, metric bus, subscriptions + filter chains, ride record, laps, status, ERG policy, judge hook | `crank-domain`, `crank-devices` |
@@ -49,6 +49,9 @@ One Cargo workspace (edition 2024, toolchain pinned in `rust-toolchain.toml` by 
 | `crank-mcp` | lib | MCP tools over `Core` (`rmcp`) | `crank-core` |
 | `crank-cli` | bin `crank` | `clap` CLI: `ride --sim`, `workout parse/compile/print`, `devices scan`, `import intervals`, `mcp` (stdio server), `devserver` | `crank-core`, `crank-mcp` |
 | `crank-desktop` | bin (Tauri v2) | thin `#[tauri::command]` wrappers over `Core`, bindings export, window/menu | `crank-core`, `tauri`, `tauri-specta` |
+
+`crank-devices` uses `futures-util` for object-safe boxed connection futures and discovery streams,
+`smallvec` for inline HR RR intervals, and `thiserror` for transport-neutral device errors (#43).
 
 Rules:
 
@@ -599,15 +602,26 @@ agent assumes a hardware result it did not see.
   and is fixed or ignored there. `deny.toml` stays the single policy file; Nix only injects the db path.
 - **Policy.** Vulnerabilities, `unmaintained = "all"` and `unsound = "all"` (transitive included) and
   `yanked = "deny"` all fail. There are no blanket ignores: every `ignore` entry in `deny.toml` carries a
-  reason and a tracking issue. Today that is three transitive build-time/Linux-only entries (glib, paste,
-  proc-macro-error) tracked in #180, which must be empty before it closes.
+  reason and a tracking issue. Today that is three Linux-only transitive entries tracked in #180, which
+  must be empty before it closes: `glib` 0.18 (RUSTSEC-2024-0429) is a Linux **runtime** dependency
+  (tauri's gtk3 stack) whose advisory is *unsound*-only (`VariantStrIter`, never called by crank), not a
+  build-time crate; `paste` (RUSTSEC-2024-0436, via specta) and `proc-macro-error`
+  (RUSTSEC-2024-0370, via gtk3-macros/glib-macros) are *unmaintained* proc-macro crates that exist at
+  build time only and are not linked into the app.
+- **Fuzz workspace.** `crates/crank-fec/fuzz` is a separate workspace with its own `Cargo.lock`, so the root
+  `deny` never sees it. The flake check `deny-fuzz` runs `advisories` against that lockfile, offline
+  against the same pinned `advisory-db`, and `advisories.yml` runs `cargo deny --manifest-path` on it
+  live. Only advisories: the fuzz workspace is dev-only and never shipped, so bans/licenses/sources
+  (policy for shipped code) are not applied to it, but a vulnerable dev dependency still fails.
 - **What the sandbox cannot see.** Yanked releases need the crates.io index, so the in-gate run silences
   `index-failure` (`-A`) and the pin means advisories published after the last bump are invisible to PRs.
   `.github/workflows/advisories.yml` (#181) runs weekly, on lockfile/`deny.toml` PRs and on demand against
   the live db and index, outside `CI Summary` so an upstream advisory cannot block unrelated work.
   An automated "bump the lock and open a PR" job was rejected: PRs opened with `GITHUB_TOKEN` do not
   trigger the required CI, and a GitHub App for that is not worth it for one input. A red weekly run is
-  the prompt for a manual bump.
+  the prompt for a manual bump. To make that prompt visible, a failed *scheduled* run opens (or comments
+  on) a single GitHub issue labelled `security` with the run link (`report-failure` job, `issues: write`
+  scoped to that job only, `GITHUB_TOKEN`, GitHub-hosted runner).
 - **Frontend.** `pnpm audit` queries the registry, so it cannot run in the sandbox. Decision: run
   `pnpm audit --prod` in the same workflow (production dependencies only: dev tooling never ships in the
   app). Rejected: a pinned offline npm advisory database (no maintained Nix-packaged source) and gating

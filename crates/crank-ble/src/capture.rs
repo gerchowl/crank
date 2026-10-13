@@ -1,0 +1,44 @@
+//! Exact `.fecap` format from crank-fec/tests/fixtures/README.md (#141).
+use crank_devices::MonoTime;
+use std::{
+    fs::File,
+    io::{self, Write},
+    path::Path,
+    sync::Mutex,
+};
+/// Per-ride raw capture, preserving complete payloads including malformed bytes.
+pub struct Capture(Mutex<(File, MonoTime)>);
+impl Capture {
+    /// Create a new capture without overwriting an existing ride.
+    /// # Errors
+    /// Returns filesystem errors.
+    pub fn create(path: &Path, start: MonoTime) -> io::Result<Self> {
+        let mut file = File::create_new(path)?;
+        writeln!(file, "# elapsed_us direction complete_frame_hex")?;
+        Ok(Self(Mutex::new((file, start))))
+    }
+    /// Append a complete payload in processing order; flush for crash diagnostics.
+    /// RX arrival stamps can precede a TX processed earlier. Replay stably sorts
+    /// by stamp, retaining file order for ties, without altering arrival times.
+    /// # Errors
+    /// Rejects timestamps before the capture epoch or poisoned/file errors.
+    pub fn record(&self, at: MonoTime, rx: bool, bytes: &[u8]) -> io::Result<()> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| io::Error::other("capture lock poisoned"))?;
+        append(&mut state, at, rx, bytes)
+    }
+}
+fn append(state: &mut (File, MonoTime), at: MonoTime, rx: bool, bytes: &[u8]) -> io::Result<()> {
+    let elapsed =
+        at.0.checked_sub(state.1.0)
+            .ok_or_else(|| io::Error::other("capture time before epoch"))?;
+    write!(state.0, "{elapsed} {}", if rx { "rx" } else { "tx" })?;
+    for byte in bytes {
+        write!(state.0, " {byte:02X}")?;
+    }
+    writeln!(state.0)?;
+    state.0.flush()?;
+    Ok(())
+}
