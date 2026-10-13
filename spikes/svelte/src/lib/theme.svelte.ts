@@ -46,12 +46,25 @@ function load(): Stored {
   const fallback: Stored = { mode: "dark", preset: "ocean", classicZones: false, oled: false };
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return fallback;
+    if (!raw) return withUrl(fallback);
     const v = JSON.parse(raw) as Partial<Stored>;
-    return { ...fallback, ...v };
+    return withUrl({ ...fallback, ...v });
   } catch {
     return fallback;
   }
+}
+
+/** ?mode=light|dark|auto&preset=ocean|graphite|ember&zones=classic (demos, screenshots). */
+function withUrl(s: Stored): Stored {
+  const q = new URLSearchParams(location.search);
+  const mode = q.get("mode");
+  const preset = q.get("preset");
+  return {
+    ...s,
+    ...(mode === "dark" || mode === "light" || mode === "auto" ? { mode } : {}),
+    ...(preset === "ocean" || preset === "graphite" || preset === "ember" ? { preset } : {}),
+    ...(q.get("zones") === "classic" ? { classicZones: true } : {}),
+  };
 }
 
 function read(): ChartColors {
@@ -126,7 +139,9 @@ export const theme = new Theme();
 /** Fixed series identity by metric (VIEWS §0): power→1, HR→2, cadence→3, DFA→4, torque→5. */
 export function seriesColor(c: ChartColors, metric: string): string {
   if (metric === "target_power" || metric === "target_cadence") return c.target;
-  if (metric.startsWith("power") || metric === "np" || metric === "w_per_kg" || metric === "pct_ftp" || metric === "wbal_pct" || metric === "kj") return c.power;
+  // W'bal is derived from power but must not reuse its identity colour next to it (P05/P11)
+  if (metric === "wbal_pct") return c.inkSecondary;
+  if (metric.startsWith("power") || metric === "np" || metric === "w_per_kg" || metric === "pct_ftp" || metric === "kj") return c.power;
   if (metric.startsWith("hr") || metric === "rr" || metric === "rmssd") return c.hr;
   if (metric === "cadence") return c.cadence;
   if (metric === "dfa_a1") return c.dfa;

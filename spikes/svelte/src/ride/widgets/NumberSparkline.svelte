@@ -86,8 +86,8 @@
     display: flex;
     gap: 0.5rem;
     font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.02em;
+    font-weight: 600;
     color: var(--ink-secondary);
   }
   .label {

@@ -83,8 +83,8 @@
     color: var(--ink-secondary);
   }
   .label {
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.02em;
+    font-weight: 600;
   }
   .value {
     font-size: 1.6rem;

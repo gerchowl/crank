@@ -124,8 +124,8 @@
     overflow: hidden;
   }
   .title {
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.02em;
+    font-weight: 600;
     color: var(--ink-secondary);
   }
   .cv {

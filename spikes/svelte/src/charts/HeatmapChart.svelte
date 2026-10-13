@@ -124,7 +124,7 @@
 
 <ChartFrame {title} {controls}>
   {#snippet legend()}
-    {#if map}<span class="muted">{label(map.x)} × {label(map.y)} · fill = time</span>{/if}
+    {#if map}<span class="muted">fill = time</span>{/if}
   {/snippet}
   {#snippet chart()}
     <canvas class="cv" {@attach canvas2d(draw)} onpointermove={onMove} onpointerleave={() => (hover = null)}></canvas>

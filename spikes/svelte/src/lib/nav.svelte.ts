@@ -27,9 +27,12 @@ class Nav {
 
 export const nav = new Nav();
 
+const NON_TEXT = new Set(["checkbox", "radio", "range", "button", "submit", "reset", "color"]);
+
 /** True when a key event targets a text field (shortcuts must not fire while typing). */
 export function isTyping(e: KeyboardEvent): boolean {
   const t = e.target;
   if (!(t instanceof HTMLElement)) return false;
-  return t.isContentEditable || t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement;
+  if (t instanceof HTMLInputElement) return !NON_TEXT.has(t.type); // checkboxes etc. keep shortcuts working
+  return t.isContentEditable || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement;
 }
