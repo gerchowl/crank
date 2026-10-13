@@ -1,0 +1,30 @@
+{
+  "name": "@crank/design-prototype",
+  "private": true,
+  "type": "module",
+  "description": "Hi-fi UX prototype for docs/design/DESIGN.md (design artifact, not the production UI)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "screens": "node scripts/screens.mjs",
+    "test:safety": "node scripts/safety.test.mjs"
+  },
+  "dependencies": {
+    "@crank/shared": "workspace:*",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.0.7",
+    "@rolldown/plugin-babel": "^0.2.4",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "playwright": "^1.64.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.4"
+  }
+}
