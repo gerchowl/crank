@@ -1,0 +1,24 @@
+PASS  graphite/dark zones
+PASS  graphite/dark fatigue
+PASS  graphite/dark series (adjacent, 5)
+PASS  graphite/dark series (all pairs, first 3)
+PASS  graphite/light zones
+PASS  graphite/light fatigue
+PASS  graphite/light series (adjacent, 5)
+PASS  graphite/light series (all pairs, first 3)
+PASS  ocean/dark zones
+PASS  ocean/dark fatigue
+PASS  ocean/dark series (adjacent, 5)
+PASS  ocean/dark series (all pairs, first 3)
+PASS  ocean/light zones
+PASS  ocean/light fatigue
+PASS  ocean/light series (adjacent, 5)
+PASS  ocean/light series (all pairs, first 3)
+PASS  ember/dark zones
+PASS  ember/dark fatigue
+PASS  ember/dark series (adjacent, 5)
+PASS  ember/dark series (all pairs, first 3)
+PASS  ember/light zones
+PASS  ember/light fatigue
+PASS  ember/light series (adjacent, 5)
+PASS  ember/light series (all pairs, first 3)
