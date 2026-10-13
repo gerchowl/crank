@@ -411,17 +411,23 @@ does (§4.4).
 - `last_evidence`: the arrival of the last Agree/Disagree, or the start, counted in required time;
 - `not_required_since`: none while c is required.
 
-Rows are applied in order, and the first match wins. Valid evidence for c is recorded whatever the other
-components are doing.
+Each Agree or Disagree for c is evaluated in row order:
+
+1. **C2 is a pre-step.** If its guard holds it applies, and evaluation continues.
+2. Then **the first matching row among C3–C6** for the reply's class wins.
+
+Valid evidence for c is recorded whatever the other components are doing. The model evaluates exactly this
+order: it walks `REPLY_ROWS` in sequence, and `check_table_order` fails CI if the row order of this table
+and the model's ever diverge.
 
 | # | When | Guard | Next state | Actions |
 |---|---|---|---|---|
 | C1 | c starts: `Activate`, or required again after more than `T_unknown` not required | none | `unverified` | `streak` = empty, `dis_since` = none, `last_evidence` = now |
-| C2 | Agree | after adding it, `streak` has ≥ `N_follow` replies and `t − streak.first ≥ T_verify` | `following` | add to `streak`, `last_evidence` = t, `dis_since` = none |
-| C3 | Agree | otherwise | unchanged | add to `streak` (first = t if it was empty), `last_evidence` = t |
-| C4 | Disagree | `t − (dis_since or t) ≥ T_mismatch` | `not_following` | `streak` = empty, `last_evidence` = t, `dis_since` = `dis_since` or t |
-| C5 | Disagree | otherwise | `following` → `unverified`; others unchanged | as C4 |
-| C6 | any Agree/Disagree while `silent`, or when `t − last_evidence ≥ T_unknown` (evidence too old even if C7 has not run, e.g. c stopped being required at that instant) | none | `unverified` first, then C2–C5 | `streak` = empty, `dis_since` = none before applying it |
+| C2 | **pre-step** for any Agree/Disagree: c is `silent`, or `t − last_evidence ≥ T_unknown` (evidence too old even if C7 has not run, e.g. c stopped being required at that instant) | none | `unverified`, then continue with C3–C6 | `streak` = empty, `dis_since` = none |
+| C3 | Agree | after adding it, `streak` has ≥ `N_follow` replies and `t − streak.first ≥ T_verify` | `following` | add to `streak`, `last_evidence` = t, `dis_since` = none |
+| C4 | Agree | otherwise | unchanged | add to `streak` (first = t if it was empty), `last_evidence` = t |
+| C5 | Disagree | `t − (dis_since or t) ≥ T_mismatch` | `not_following` | `streak` = empty, `last_evidence` = t, `dis_since` = `dis_since` or t |
+| C6 | Disagree | otherwise | `following` → `unverified`; others unchanged | as C5 |
 | C7 | tick, c required and not `silent` | `now − last_evidence ≥ T_unknown` | `silent` | `streak` = empty, `dis_since` = none |
 | C8 | c stops being required | none | `following` → `unverified`; others unchanged | `streak` = empty, `not_required_since` = now. `dis_since` and `not_following` are **kept** |
 | C9 | c required again within `T_unknown` | none | unchanged | `last_evidence` += now − `not_required_since` (silence counts required time only), `not_required_since` = none |
@@ -430,7 +436,7 @@ Properties of this table:
 
 - Verification never carries over to a new requirement (C8).
 - A disagreement episode survives short mode toggles (C8/C9).
-- Only C2 ends an episode (or silence and C1 reset it). No transition can.
+- Only C3 ends an episode (or C1, C2 and C7 reset it). No transition can.
 
 **Aggregate verdict.** The engine maps the required components' states to `TrainerFollowing`, a field of
 `RideStatus`. The mapping is a pure function with no memory of its own:
@@ -473,15 +479,28 @@ as an invariant over every reachable state or as a named scenario.
    the first unmet desired value after it was `following`. Since desired changes are not inputs, no
    transition rate can defer the deadline. The model's fair component walks measure a maximum of 6 s
    (`P_c` = 1 s) and 10 s (`P_c` = 2 s) against bounds of 7 s and 10 s.
-4. **Recovery.** From any state, once every required component again gets agreeing replies at its period,
-   the aggregate is `following` no later than `max(2·P_c, T_verify + P_c)` after the first of them, taking
-   the largest over the components (4 s in SIM). Stale or silent components do not block each other, because
-   each records its own evidence (C6).
+4. **Recovery.** Suppose that, from any state, every required component c again gets agreeing replies
+   exactly every `P_c`, the first arriving at `first_c`. Then:
+   - Component c is `following` no later than `first_c + V_c`, where
+     `V_c = P_c · max(N_follow − 1, ⌈T_verify / P_c⌉)`. That is the arrival of the `N_follow`-th reply
+     once the span reaches `T_verify`: `V` = 2 s for ERG and resistance, and 4 s for each SIM component.
+   - The aggregate is `following` no later than `max_c(first_c + V_c)`.
+   - The bound is reached exactly when no agreeing streak precedes the run, e.g. after silence.
+
+   In ERG this is 2 s after the first reply. In SIM the echo schedule puts the two components' first
+   replies at most `T_poll` apart. The aggregate is therefore `following` no later than
+   `T_poll + 4 s` = **5 s** after the first reply of either component, and exactly 5 s after silence.
+   Example: wind at 10, 12, 14 s and track at 11, 13, 15 s give `following` at 15 s. Arrival jitter of
+   the last reply adds to the bound directly.
+
+   Stale or silent components do not block each other, because each records its own evidence (C2). The
+   model checks this bound as an aggregate-deadline invariant in its fair walks and asserts it exactly in
+   two scenarios.
 5. **Single replies.**
    - One observation never produces `following`, from any state and whatever its content.
    - Agreeing observations that all arrive within less than `T_verify` never produce it either.
    - One Disagree never produces `not_following`.
-6. **Leaving `not_following`.** A component leaves `not_following` only through its own verification (C2),
+6. **Leaving `not_following`.** A component leaves `not_following` only through its own verification (C3),
    silence (C7) or `Deactivate`. A new target does not end it.
 7. **Silence.** A trainer that sends no reply is `checking` for `T_unknown` (5 s) after each `Activate`, then
    `unknown` (A2) until a reply arrives or the machine deactivates. A trainer that never answers page 70
@@ -506,8 +525,17 @@ only §7.8 settle uses the class. The following machine ignores it (see Desired 
 for those issues.
 
 - *Model (this PR):* `python3 docs/adr/models/trainer_following.py` (about 40 s). CI runs it as the
-  `following-model` flake check; locally it is `just model`. Because the components are independent by
-  construction, it verifies the design compositionally, and every walk is exhaustive:
+  `following-model` flake check, which passes it this ADR file; locally it is `just model`. Because the
+  components are independent by construction, it verifies the design compositionally, and every walk is
+  exhaustive:
+  - **Table order.** It parses the component table of this section. The check fails unless:
+    - the row ids are C1–C9 in order;
+    - the reply rows C2–C6 appear in the order of the model's `REPLY_ROWS`, which drives the model's
+      evaluation;
+    - the input classes (Agree, Disagree) match;
+    - exactly C2 is marked as the pre-step.
+
+    A literal implementation of this table is therefore the checked model.
   - **Component walk.** One component machine (C1–C9) runs to the fixpoint. At every step the requirement
     can start, stop or resume, and the reply can be none, Agree or Disagree. An independent monitor, driven
     only by the raw inputs, checks in every reachable state:
@@ -535,6 +563,10 @@ for those issues.
       replies, foreign pages and silence;
     - "erg" fair also runs to the fixpoint;
     - "sim" fair runs to the fixpoint, with grade changes, ERG ↔ SIM toggles and per-component replies;
+    - both fair walks also check the **aggregate recovery deadline** (guarantee 4): in an unbroken run of
+      agreeing replies with an unchanged set of required components, the aggregate is `following` once
+      every component's first reply of the run is `V_c` old. They also check that the SIM components join
+      such a run at most `T_poll` apart;
     - "sim" free covers every input sequence of length ≤ 6. The free SIM space has about 1 M states at
       the fixpoint, too slow for CI. The components it composes are each covered to the fixpoint above.
   - **Named regression scenarios**, one per pre-mortem counterexample:
@@ -543,9 +575,13 @@ for those issues.
     - #54 r2 transition storm, second ride without reconnect, and SIM with wind echoes only;
     - #54 r3 stale components recover, lagging track echoes cannot mask missing wind, and transitions do
       not block verification;
+    - #54 r4 SIM recovery with phase offset (astra's case: following exactly at 15 s), and ERG recovery
+      exact;
     - ERG ↔ SIM toggling cannot mask track, silent trainer, and reconnect mid-ramp.
+
+    `r54_3_stale_components_recover` and both r4 scenarios assert the guarantee-4 bound with equality.
   - **Mutation check (done once, for this PR):** a single reply verifying, dropping the evidence-age half
-    of C6, and C8 clearing the episode are each caught by the walks.
+    of C2, and C8 clearing the episode are each caught by the walks.
 - *#32, Rust implementation of the machine:*
   1. The model's named scenarios, ported as unit tests with the same inputs and the same expected
      verdict sequence.

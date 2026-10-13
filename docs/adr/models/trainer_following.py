@@ -13,7 +13,8 @@ the activity rule and the aggregate function (A1–A6) of §4.4.1 literally, and
   after normalising timestamps.
 * scenarios(): named regressions, one per pre-mortem counterexample so far.
 
-Run: python3 docs/adr/models/trainer_following.py   (exit 0 = all checks pass); CI runs it as the
+Run: python3 docs/adr/models/trainer_following.py [path/to/0002-ble-trainer.md]   (exit 0 = all
+checks pass; the ADR path defaults to the sibling file); CI runs it as the
 `following-model` flake check, `just model` locally.
 """
 from __future__ import annotations
@@ -45,6 +46,11 @@ class K:
         return self.T_decide_p(self.P(c))
     def T_decide_p(self, p):
         return self.T_verify + self.T_mismatch + 3 * p
+    def V(self, c):
+        # §4.4.1 guarantee 4: time from a component's first agreeing reply (replies every P_c)
+        # to its verification: P_c · max(N_follow − 1, ⌈T_verify / P_c⌉)
+        p = self.P(c)
+        return p * max(N_FOLLOW - 1, -(-self.T_verify // p))
 
 
 def components(mode):
@@ -71,26 +77,79 @@ def fresh(now):
     return Comp(last_evidence=now)
 
 
-def comp_agree(c: Comp, now, k: K) -> Comp:
-    if c.state == "silent" or now - c.last_evidence >= k.T_unknown:   # C6
-        c = replace(c, state="unverified", streak_n=0, streak_first=None, dis_since=None)
+# The component table (§4.4.1) in the ADR's row order. TABLE_ORDER is checked against the ADR
+# text (check_table_order); REPLY_ROWS drives comp_reply, so the order evaluated here is the order
+# the ADR states. C2 is a pre-step: when its guard holds it applies and evaluation continues.
+# Every other reply row is first-match-wins among the rows for its input class.
+TABLE_ORDER = ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9")
+
+
+@dataclass(frozen=True)
+class Row:
+    id: str
+    on: str            # "A", "D" or "AD"
+    pre: bool          # pre-step (applies and continues) vs. first-match-wins
+    guard: object      # (comp, now, k) -> bool
+    act: object        # (comp, now, k) -> comp
+
+
+def _stale(c, now, k):
+    return c.state == "silent" or now - c.last_evidence >= k.T_unknown
+
+
+def _reset(c, now, k):
+    return replace(c, state="unverified", streak_n=0, streak_first=None, dis_since=None)
+
+
+def _agree_add(c, now):
     first = now if c.streak_n == 0 else c.streak_first
-    c = replace(c, streak_n=c.streak_n + 1, streak_first=first, last_evidence=now)
-    if c.streak_n >= N_FOLLOW and now - c.streak_first >= k.T_verify:   # C2
-        c = replace(c, state="following", dis_since=None)
-    return c                                                    # C3
+    return replace(c, streak_n=c.streak_n + 1, streak_first=first, last_evidence=now)
+
+
+def _verifies(c, now, k):
+    a = _agree_add(c, now)
+    return a.streak_n >= N_FOLLOW and now - a.streak_first >= k.T_verify
+
+
+def _disagree_add(c, now):
+    dis = c.dis_since if c.dis_since is not None else now
+    return replace(c, streak_n=0, streak_first=None, dis_since=dis, last_evidence=now)
+
+
+def _mismatch(c, now, k):
+    return now - (c.dis_since if c.dis_since is not None else now) >= k.T_mismatch
+
+
+REPLY_ROWS = (
+    Row("C2", "AD", True, _stale, _reset),
+    Row("C3", "A", False, _verifies,
+        lambda c, now, k: replace(_agree_add(c, now), state="following", dis_since=None)),
+    Row("C4", "A", False, lambda c, now, k: True, lambda c, now, k: _agree_add(c, now)),
+    Row("C5", "D", False, _mismatch,
+        lambda c, now, k: replace(_disagree_add(c, now), state="not_following")),
+    Row("C6", "D", False, lambda c, now, k: True,
+        lambda c, now, k: replace(_disagree_add(c, now),
+                                  state="unverified" if c.state == "following" else c.state)),
+)
+
+
+def comp_reply(c: Comp, cls: str, now, k: K) -> Comp:
+    """Apply an Agree ("A") or Disagree ("D") to a component by walking REPLY_ROWS in order."""
+    for row in REPLY_ROWS:
+        if cls not in row.on or not row.guard(c, now, k):
+            continue
+        c = row.act(c, now, k)
+        if not row.pre:
+            return c
+    raise AssertionError("no row matched")
+
+
+def comp_agree(c: Comp, now, k: K) -> Comp:
+    return comp_reply(c, "A", now, k)
 
 
 def comp_disagree(c: Comp, now, k: K) -> Comp:
-    if c.state == "silent" or now - c.last_evidence >= k.T_unknown:   # C6
-        c = replace(c, state="unverified", streak_n=0, streak_first=None, dis_since=None)
-    dis = c.dis_since if c.dis_since is not None else now
-    c = replace(c, streak_n=0, streak_first=None, dis_since=dis, last_evidence=now)
-    if now - dis >= k.T_mismatch:                               # C4
-        return replace(c, state="not_following")
-    if c.state == "following":                                  # C5
-        return replace(c, state="unverified")
-    return c
+    return comp_reply(c, "D", now, k)
 
 
 def comp_tick(c: Comp, now, k: K) -> Comp:
@@ -272,6 +331,7 @@ class Mon:
     pc: tuple = ()
     und: tuple = ()  # per component: age of the current undecided period (fair walk only)
     hit: tuple = ()  # components whose reply this instant was a Disagree completing (a)
+    run: tuple = ()  # fair walk: per component, age of its first reply in the current all-Agree run
 
 
 def mon_get(mon: Mon, c):
@@ -385,7 +445,7 @@ def mon_update(mon: Mon, m_prev: Machine, m_pre: Machine, m_after: Machine, r, n
                 d_n, d_age, sil = 0, None, 0       # fresh component (C1)
         cls = classes.get(c)
         if cls is not None and sil >= k.T_unknown:
-            a_n, a_age, a_ok, d_n, d_age = 0, None, False, 0, None   # evidence too old (C6)
+            a_n, a_age, a_ok, d_n, d_age = 0, None, False, 0, None   # evidence too old (C2)
         if cls == "A":
             a_n, a_age = (1, 0) if a_n == 0 else (min(a_n + 1, N_FOLLOW), a_age)
             a_ok = a_n >= N_FOLLOW and a_age >= k.T_verify
@@ -444,6 +504,7 @@ def explore(k: K, config: str, fair=False, depth=None, limit=3_000_000):
                     mon2 = mon_update(mon, mm, m_pre, m2, r, now, k)
                     if fair:
                         mon2 = _fair_undecided(mon, mon2, m_pre, m2, k, max_undecided)
+                        mon2 = _fair_recovery(mon, mon2, mm, m_pre, m2, r, now, k)
                     ctx = (m, mon, link, d, r)
                     check_invariants(m2, mon2, k, ctx)
                     s = (normalise(m2, now, k), replace(mon2, hit=()), (parity + 1) % 2 if fair else 0)
@@ -489,6 +550,34 @@ def _fair_undecided(mon_old, mon_new, m_pre, m2, k, max_undecided):
         max_undecided[c] = max(max_undecided.get(c, 0), a)
         assert a <= k.T_decide(c), ("deadline", c, a, m2)
     return replace(mon_new, und=tuple(sorted(und.items())))
+
+
+def _fair_recovery(mon_old, mon_new, m_prev, m_pre, m2, r, now, k):
+    """Aggregate deadline (§4.4.1 guarantee 4): during an unbroken run of agreeing replies with an
+    unchanged set of required components, the aggregate is following once every required
+    component c has had its first reply of the run at least V_c ago. In SIM the two components'
+    first replies of a run are at most T_poll apart (the echo schedule), so the aggregate bound is
+    T_poll + V = 5 s after the first reply of either."""
+    if not m2.active:
+        return replace(mon_new, run=())
+    req = components(m2.desired)
+    same = m_prev.active and components(m_prev.desired).keys() == req.keys()
+    run = dict(mon_old.run) if same else {}
+    run = {c: a + 1 for c, a in run.items()}
+    cls = classify(m_pre, r, now, k)
+    if any(v == "D" for v in cls.values()):
+        run = {}
+    else:
+        for c, v in cls.items():
+            if v == "A" and c not in run:
+                # the schedule: a component joins the run at most T_poll after the first one
+                assert all(a <= k.unit for a in run.values()), ("phase offset", run, c, m2)
+                run[c] = 0
+    # cap ages at the bound they are compared with (keeps the state space finite)
+    run = {c: min(a, k.V(c)) for c, a in run.items()}
+    if run.keys() == req.keys() and all(a >= k.V(c) for c, a in run.items()):
+        assert aggregate(m2) == "following", ("aggregate deadline", run, m2)
+    return replace(mon_new, run=tuple(sorted(run.items())))
 
 
 # --- component walk: one component machine in isolation (C1–C9), exhaustively ---
@@ -541,7 +630,7 @@ def explore_component(k: K, period=None):
                 hit = stale = False
                 pre = c2
                 if r is not None and req2:
-                    if mo.req_sil >= k.T_unknown:      # monitor's view of silence (C6 restart)
+                    if mo.req_sil >= k.T_unknown:      # monitor's view of stale evidence (C2)
                         stale = True
                         mo = replace(mo, a_n=0, a_age=None, a_ok=False, d_n=0, d_age=None)
                     if r == "A":
@@ -747,8 +836,27 @@ def scenarios():
         ev[s] = {"rep": ("echo", "wind" if s % 2 else "track", 0 if s % 2 else 3)}
     out = run(ev, k, 30)
     t = first(out, "following", after=16)
-    res["r54_3_stale_components_recover"] = (out[14] == "unknown" and t is not None
-                                             and t <= 16 + 2 * 2 + T_VERIFY_S)
+    # exact: track first at 16, wind first at 17 (T_poll later), each verified V = 4 s later
+    res["r54_3_stale_components_recover"] = (out[14] == "unknown"
+                                             and t == 16 + 1 + k.V("track"))
+
+    # #54 r4 (astra): after silence, wind at 10/12/14 s and track at 11/13/15 s →
+    # following exactly at 15 s = first reply + T_poll + V (5 s), not 4 s.
+    ev = {0: {"link": "ready", "desired": ("sim", 3, 0)}}
+    for s in range(10, 30):
+        ev[s] = {"rep": ("echo", "wind", 0) if s % 2 == 0 else ("echo", "track", 3)}
+    out = run(ev, k, 30)
+    res["r54_4_sim_recovery_phase_offset"] = (
+        out[9] == "unknown" and first(out, "following") == 15
+        and 15 - 10 == 1 + k.V("wind") == 1 + k.V("track"))
+
+    # ERG recovery bound is exact too: after silence, replies every second from 10 s →
+    # following exactly V = 2 s after the first.
+    ev = {0: {"link": "ready", "desired": ("erg", 150)}}
+    for s in range(10, 20):
+        ev[s] = {"rep": ("echo", "erg", 150)}
+    out = run(ev, k, 20)
+    res["r54_4_erg_recovery_exact"] = out[9] == "unknown" and first(out, "following") == 10 + k.V("erg")
 
     # #54 r3-2: grade changes every second, only lagging track echoes, no wind ever:
     # the missing wind component must surface as not_following.
@@ -796,11 +904,37 @@ def scenarios():
     return res
 
 
+def check_table_order(adr_path):
+    """The ADR's component table (§4.4.1) and this model evaluate the same rows in the same order:
+    row ids equal TABLE_ORDER, the reply rows appear in REPLY_ROWS order with the same input class,
+    and exactly C2 is the pre-step."""
+    import re
+    text = open(adr_path, encoding="utf-8").read()
+    section = text[text.index("#### 4.4.1"):text.index("## 5. Decision")]
+    rows = re.findall(r"^\| (C\d) \| ([^|]*)\|", section, flags=re.M)
+    ids = tuple(r[0] for r in rows)
+    assert ids == TABLE_ORDER, ("ADR table order", ids, TABLE_ORDER)
+    when = dict(rows)
+    reply_ids = [r.id for r in REPLY_ROWS]
+    assert list(ids[ids.index(reply_ids[0]):ids.index(reply_ids[-1]) + 1]) == reply_ids, \
+        ("reply rows", ids, reply_ids)
+    for row in REPLY_ROWS:
+        cell = when[row.id]
+        assert ("pre-step" in cell) == row.pre, ("pre-step marker", row.id, cell)
+        if not row.pre:
+            klass = "D" if cell.strip().startswith("Disagree") else "A" if cell.strip().startswith("Agree") else "?"
+            assert klass == row.on, ("input class", row.id, cell, row.on)
+
+
 SIM_FREE_DEPTH = 6  # every input sequence of length ≤ 6 (137 k states, ~30 s)
 
 
-def main():
+def main(argv):
     ok = True
+    import os
+    adr = argv[1] if len(argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "0002-ble-trainer.md")
+    check_table_order(adr)
+    print("table order: ADR §4.4.1 rows == model evaluation order (C1–C9, C2 pre-step), ok")
     for name, passed in scenarios().items():
         print(f"scenario {name}: {'ok' if passed else 'FAIL'}")
         ok &= passed
@@ -825,4 +959,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv))

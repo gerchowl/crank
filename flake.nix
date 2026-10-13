@@ -88,7 +88,7 @@
         });
         # Executable model of the trainer-following machine (ADR-0002 §4.4.1, #54).
         following-model = pkgs.runCommand "following-model" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          python3 ${./docs/adr/models/trainer_following.py}
+          python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md}
           touch $out
         '';
       } // lib.genAttrs [ "app-typecheck" "app-lint" "app-test" "shared-test" "vectors-drift" ] (name:
