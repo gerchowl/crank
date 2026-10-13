@@ -1,0 +1,7 @@
+{
+  "$comment": "Supported window sizes, the source for DESIGN §8 and scripts/check-window-config.py (#170). The first entry is the primary size (the default window); the smallest by area is the minimum.",
+  "sizes": [
+    { "width": 1440, "height": 900, "target": "laptop/desktop landscape (primary)" },
+    { "width": 1024, "height": 768, "target": "tablet landscape" }
+  ]
+}
