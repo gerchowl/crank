@@ -15,7 +15,7 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
       cargoFiles = craneLib.fileset.commonCargoSources ./.;
-      rustFiles = lib.fileset.unions [ cargoFiles ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
+      rustFiles = lib.fileset.unions [ cargoFiles ./clippy.toml ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
         (lib.fileset.difference ./app ./app/src-tauri) ./shared
@@ -34,7 +34,7 @@
       appDist = frontend "crank-app-dist" "pnpm -C app build";
       common = {
         pname = "crank"; version = "0.1.0"; src = source rustFiles;
-        strictDeps = true; CARGO_BUILD_JOBS = "8";
+        strictDeps = true;
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.webkitgtk_4_1 pkgs.gtk3 pkgs.libsoup_3 pkgs.openssl ];
@@ -72,7 +72,11 @@
         deps-edges = craneLib.mkCargoDerivation (rustCheck // {
           src = source (lib.fileset.unions [ rustFiles ./scripts/deps-edges.py ]);
           nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.python3 ];
-          buildPhaseCargoCommand = "cargo metadata --locked --format-version 1 | python3 scripts/deps-edges.py";
+          buildPhaseCargoCommand = ''
+            productionMetadata=$(mktemp)
+            cargo metadata --locked --format-version 1 --features crank-desktop/custom-protocol > "$productionMetadata"
+            cargo metadata --locked --format-version 1 --all-features | python3 scripts/deps-edges.py "$productionMetadata"
+          '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
       } // lib.genAttrs [ "app-typecheck" "app-lint" "app-test" "shared-test" ] (name:
@@ -91,9 +95,8 @@
       devShells.default = craneLib.devShell {
         inputsFrom = [ (desktop "") ];
         packages = [ toolchain pkgs.nodejs pkgs.pnpm_12 pkgs.just pkgs.cargo-nextest
-          pkgs.cargo-deny pkgs.cargo-fuzz pkgs.python3 pkgs.playwright-driver.browsers ];
+          pkgs.cargo-deny pkgs.cargo-fuzz pkgs.python3 ];
         CARGO_BUILD_JOBS = "8";
-        shellHook = ''export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}'';
       };
     };
   in {

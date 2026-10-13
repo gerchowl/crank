@@ -1,5 +1,4 @@
 //! Thin desktop shell and bindings registry (ADR-0001 §4).
-#![cfg_attr(test, allow(clippy::unwrap_used))]
 
 #[tauri::command]
 #[specta::specta]

@@ -25,7 +25,7 @@ dev:
 
 # Signed bundle implementation belongs to #37 (ADR-0001 §12).
 bundle:
-    nix build .#crank-app
+    @echo 'BLOCKED: app assembly and nix-tcc signing require #37'; exit 1
 
 # The macOS embedded WebDriver harness is gated by #35.
 e2e:
