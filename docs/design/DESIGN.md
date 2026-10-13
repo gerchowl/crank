@@ -1272,8 +1272,10 @@ Key glyphs, on every key hint (Today, the ride's `?` list and hints, wish mode, 
   `today-health-cap`, `today-checkin-edit` and `today-wish-carried`; and that opening the library drawer at 1024,
   growing the window to 1440 and shrinking it again leaves the drawer closed (crossing 1280 px closes it), also when the crossing happens while another place is showing.
 - `pnpm screens` (here and `design/brand`) is byte-reproducible (#189): Chromium runs with one raster thread and no
-  partial raster, and the hand-off frames are pinned to their nominal time (the fake clock's `performance.now()` jitters
-  by 1 ms between runs). Two runs on an unchanged tree produce identical files.
+  partial raster, the hand-off frames are pinned to their nominal time (the fake clock's `performance.now()` jitters
+  by 1 ms between runs), and the brand's CSS animations are created paused (they run on the document timeline, so a slow
+  load could finish one before it was set to its frame). Runs on an unchanged tree, also under host load, produce
+  identical files (10 brand, 5 prototype).
 - Not changed here, filed: the lane's buttons (58 / 49 px) are below §7.2's 64 px, and the status bar's fault words
   are 16 px, below T3 — both pre-date §16 (#177).
 
