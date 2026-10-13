@@ -7,3 +7,8 @@ dist/
 /result*
 /app/src-tauri/gen/
 __pycache__/
+
+/crates/crank-fec/fuzz/target/
+/crates/crank-fec/fuzz/artifacts/
+/crates/crank-fec/fuzz/corpus/
+/crates/crank-fec/fuzz/coverage/

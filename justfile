@@ -44,3 +44,7 @@ e2e:
 
 screens:
     @echo 'BLOCKED: screenshot matrix requires #35'; exit 1
+
+# Requires a nightly RUSTC for libFuzzer sanitizers; nightly CI is tracked separately.
+fuzz:
+    cargo fuzz run --fuzz-dir crates/crank-fec/fuzz decode
