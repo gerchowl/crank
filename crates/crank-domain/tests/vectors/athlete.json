@@ -1,0 +1,313 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "athlete",
+      "input": {
+        "ftp": 280,
+        "weightKg": 72,
+        "maxHr": 190,
+        "restHr": 50
+      },
+      "output": {
+        "physio": {
+          "cp": 280,
+          "wPrime": 20000,
+          "hrAtZero": 62,
+          "hrAtFtp": 171,
+          "usualTauS": 55
+        },
+        "powerZones": [
+          {
+            "name": "Z1 Recovery",
+            "min": 0,
+            "max": 154,
+            "color": "#8a94a6"
+          },
+          {
+            "name": "Z2 Endurance",
+            "min": 154,
+            "max": 210,
+            "color": "#3b82f6"
+          },
+          {
+            "name": "Z3 Tempo",
+            "min": 210,
+            "max": 252,
+            "color": "#22c55e"
+          },
+          {
+            "name": "Z4 Threshold",
+            "min": 252,
+            "max": 294,
+            "color": "#eab308"
+          },
+          {
+            "name": "Z5 VO2max",
+            "min": 294,
+            "max": 336,
+            "color": "#f97316"
+          },
+          {
+            "name": "Z6 Anaerobic",
+            "min": 336,
+            "max": 420,
+            "color": "#ef4444"
+          },
+          {
+            "name": "Z7 Neuromuscular",
+            "min": 420,
+            "max": 2240,
+            "color": "#a855f7"
+          }
+        ],
+        "hrZones": [
+          {
+            "name": "Z1",
+            "min": 0,
+            "max": 114,
+            "color": "#8a94a6"
+          },
+          {
+            "name": "Z2",
+            "min": 114,
+            "max": 133,
+            "color": "#3b82f6"
+          },
+          {
+            "name": "Z3",
+            "min": 133,
+            "max": 152,
+            "color": "#22c55e"
+          },
+          {
+            "name": "Z4",
+            "min": 152,
+            "max": 171,
+            "color": "#f97316"
+          },
+          {
+            "name": "Z5",
+            "min": 171,
+            "max": 190,
+            "color": "#ef4444"
+          }
+        ],
+        "power": [
+          {
+            "watts": 0,
+            "hr": 62,
+            "zone": 0
+          },
+          {
+            "watts": 154,
+            "hr": 121.95,
+            "zone": 1
+          },
+          {
+            "watts": 210,
+            "hr": 143.75,
+            "zone": 2
+          },
+          {
+            "watts": 252,
+            "hr": 160.10000000000002,
+            "zone": 3
+          },
+          {
+            "watts": 294,
+            "hr": 176.45,
+            "zone": 4
+          },
+          {
+            "watts": 336,
+            "hr": 187.92607791483286,
+            "zone": 5
+          },
+          {
+            "watts": 420,
+            "hr": 189.96519723559112,
+            "zone": 6
+          },
+          {
+            "watts": 1120,
+            "hr": 190,
+            "zone": 6
+          }
+        ],
+        "hr": [
+          {
+            "bpm": 50,
+            "watts": 0
+          },
+          {
+            "bpm": 100,
+            "watts": 97.61467889908258
+          },
+          {
+            "bpm": 140,
+            "watts": 200.36697247706422
+          },
+          {
+            "bpm": 170,
+            "watts": 277.4311926605505
+          }
+        ]
+      }
+    },
+    {
+      "name": "athlete",
+      "input": {
+        "ftp": 220,
+        "weightKg": 80,
+        "restHr": 60,
+        "maxHr": 175
+      },
+      "output": {
+        "physio": {
+          "cp": 220,
+          "wPrime": 20000,
+          "hrAtZero": 72,
+          "hrAtFtp": 158,
+          "usualTauS": 55
+        },
+        "powerZones": [
+          {
+            "name": "Z1 Recovery",
+            "min": 0,
+            "max": 121,
+            "color": "#8a94a6"
+          },
+          {
+            "name": "Z2 Endurance",
+            "min": 121,
+            "max": 165,
+            "color": "#3b82f6"
+          },
+          {
+            "name": "Z3 Tempo",
+            "min": 165,
+            "max": 198,
+            "color": "#22c55e"
+          },
+          {
+            "name": "Z4 Threshold",
+            "min": 198,
+            "max": 231,
+            "color": "#eab308"
+          },
+          {
+            "name": "Z5 VO2max",
+            "min": 231,
+            "max": 264,
+            "color": "#f97316"
+          },
+          {
+            "name": "Z6 Anaerobic",
+            "min": 264,
+            "max": 330,
+            "color": "#ef4444"
+          },
+          {
+            "name": "Z7 Neuromuscular",
+            "min": 330,
+            "max": 1760,
+            "color": "#a855f7"
+          }
+        ],
+        "hrZones": [
+          {
+            "name": "Z1",
+            "min": 0,
+            "max": 105,
+            "color": "#8a94a6"
+          },
+          {
+            "name": "Z2",
+            "min": 105,
+            "max": 122,
+            "color": "#3b82f6"
+          },
+          {
+            "name": "Z3",
+            "min": 122,
+            "max": 140,
+            "color": "#22c55e"
+          },
+          {
+            "name": "Z4",
+            "min": 140,
+            "max": 158,
+            "color": "#f97316"
+          },
+          {
+            "name": "Z5",
+            "min": 158,
+            "max": 175,
+            "color": "#ef4444"
+          }
+        ],
+        "power": [
+          {
+            "watts": 0,
+            "hr": 72,
+            "zone": 0
+          },
+          {
+            "watts": 121.00000000000001,
+            "hr": 119.30000000000001,
+            "zone": 1
+          },
+          {
+            "watts": 165,
+            "hr": 136.5,
+            "zone": 2
+          },
+          {
+            "watts": 198,
+            "hr": 149.4,
+            "zone": 3
+          },
+          {
+            "watts": 231,
+            "hr": 162.3,
+            "zone": 4
+          },
+          {
+            "watts": 264,
+            "hr": 172.12962827675238,
+            "zone": 5
+          },
+          {
+            "watts": 330,
+            "hr": 174.885886128728,
+            "zone": 6
+          },
+          {
+            "watts": 880,
+            "hr": 174.99999999999974,
+            "zone": 6
+          }
+        ],
+        "hr": [
+          {
+            "bpm": 50,
+            "watts": 0
+          },
+          {
+            "bpm": 100,
+            "watts": 71.62790697674419
+          },
+          {
+            "bpm": 140,
+            "watts": 173.953488372093
+          },
+          {
+            "bpm": 170,
+            "watts": 250.69767441860466
+          }
+        ]
+      }
+    }
+  ]
+}

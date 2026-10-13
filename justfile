@@ -19,6 +19,13 @@ fmt:
 bindings:
     cargo run --locked -p crank-desktop --bin export-bindings
 
+# ADR-0001 §3: regenerate frozen TypeScript reference results for Rust ports.
+vectors:
+    CRANK_EXPORT_VECTORS=1 pnpm -C shared exec vitest run scripts/export-vectors.test.js
+
+vectors-check:
+    pnpm -C shared exec vitest run scripts
+
 dev:
     pnpm install --frozen-lockfile
     pnpm -C app exec tauri dev
