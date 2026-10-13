@@ -169,7 +169,7 @@ export function ProposalCard(p: {
           <Key a="skip" /> other wish · <Key a="keep" /> coach's pick
         </p>
       )}
-      <div className={saddle ? "actions saddle" : "actions"} {...(saddle ? { "data-above-fold": "" } : {})} data-fit>
+      <div className={saddle ? "actions saddle" : "actions"} data-above-fold={saddle ? "" : "wide"} data-fit>
         <button className={saddle ? "primary" : "primary big"} disabled={!p.ready} onClick={p.onStart}>
           <Key a="coach" /> Start
         </button>

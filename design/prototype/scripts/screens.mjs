@@ -7,8 +7,9 @@
 // Saddle scenes (Today after the check-in, §15.2) are captured as the viewport, not the full page, and fail
 // when the wish, the session, its reason or the actions leave the viewport or fall below their type tier.
 // Above-the-fold elements ([data-above-fold]: the saddle card, the desk card's outcome and session, the ride's "next"
-// label on the road, DESIGN §16) fail when they leave the viewport in either direction; at 1440 the complete Today wish
-// matrix beside the card must be inside the viewport too (§16.2). Ride geometry is fixed (P4,
+// label on the road, DESIGN §16; at 1440 also the desk card's actions, Start included) fail when they leave the viewport in either direction; at
+// 1440 the complete Today wish matrix beside the card must exist and be inside the viewport too (§16.2; medical stop and
+// the Why? sheet are the exemptions). Ride geometry is fixed (P4,
 // #10): every [data-geom] box (status-bar groups, hero rows, side slots, the coach lane and its reserved rows, the road
 // rows) must exist and match ride-threshold at the same size, in every phase and state.
 // `SCENES=a,b pnpm screens` renders only those scenes (development; keeps the other PNGs and skips the start screen).
@@ -77,6 +78,8 @@ try {
           saddle: !!document.querySelector("[data-saddle]"),
           belowFold: [...document.querySelectorAll("[data-above-fold]")]
             .filter((el) => {
+              // "wide": the desk card's actions, required above the fold at 1440 only (§16.2; at 1024 the open check-in stacks above)
+              if (el.getAttribute("data-above-fold") === "wide" && innerWidth < 1440) return false;
               const r = el.getBoundingClientRect();
               return r.bottom > innerHeight || r.top < 0 || r.left < 0 || r.right > innerWidth;
             })
@@ -84,12 +87,17 @@ try {
               const r = el.getBoundingClientRect();
               return `"${el.textContent?.trim().slice(0, 40)}" (${Math.round(r.left)},${Math.round(r.top)}–${Math.round(r.right)},${Math.round(r.bottom)} in ${innerWidth}×${innerHeight})`;
             }),
-          // Today at 1440 (DESIGN §16.2): beside the card (not stacked), the COMPLETE wish matrix is above the fold, in
-          // every desk and saddle state (the cap notice included)
+          // Today at 1440 (DESIGN §16.2): the COMPLETE wish matrix is beside the card (not stacked) and above the fold,
+          // in every desk and saddle state (the cap notice and a carried note included). Exempt: a medical stop (no
+          // matrix, §15.2) and the Why? sheet open (the page stacks, §16.2). A missing matrix or a stacked layout fails.
           matrixFold: (() => {
+            if (innerWidth < 1440 || !document.querySelector(".today")) return null;
+            if (document.querySelector(".medical-stop, .why-sheet")) return null;
             const mx = document.querySelector(".today .wish .matrix")?.getBoundingClientRect();
             const card = document.querySelector(".today .today-card")?.getBoundingClientRect();
-            if (!mx || !card || innerWidth < 1440 || mx.left < card.right) return null;
+            if (!mx) return "no wish matrix on Today";
+            if (!card) return "no proposal card on Today";
+            if (mx.left < card.right) return `wish matrix is stacked under the card (${Math.round(mx.left)},${Math.round(mx.top)})`;
             return mx.bottom > innerHeight || mx.top < 0 ? `wish matrix ${Math.round(mx.top)}–${Math.round(mx.bottom)} in ${innerWidth}×${innerHeight}` : null;
           })(),
           geom: [...document.querySelectorAll(".ride [data-geom]")].map((el, i, all) => {
