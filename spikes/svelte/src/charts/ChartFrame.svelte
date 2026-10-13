@@ -55,12 +55,12 @@
     gap: 0.5rem;
     font-size: 0.75rem;
     min-height: 26px;
+    flex-wrap: wrap;
   }
   .title {
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
     color: var(--ink-secondary);
-    font-size: 0.75rem;
+    font-size: 0.8rem;
+    font-weight: 600;
   }
   .legend {
     display: flex;

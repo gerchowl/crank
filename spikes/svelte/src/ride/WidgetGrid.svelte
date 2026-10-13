@@ -9,7 +9,7 @@
 
   let gridEl = $state<HTMLElement>();
   const rows = $derived(layout.rows + (layout.editing ? 1 : 0));
-  const grid: GridInfo = { el: () => gridEl, cols: 12, rows: () => rows };
+  const grid: GridInfo = { el: () => gridEl, cols: 12, rows: () => rows, onEnd: (w) => layout.resolveCollisions(w) };
 
   // Swipe between pages (touch / pen / mouse drag) when not editing.
   let swipeX: number | null = null;

@@ -9,6 +9,7 @@ export interface GridInfo {
   cols: number;
   rows: () => number;
   onStart?: () => void;
+  onEnd?: (w: Widget) => void;
 }
 
 export function gridDrag(w: Widget, mode: "move" | "resize", grid: GridInfo): Attachment<HTMLElement> {
@@ -45,6 +46,7 @@ export function gridDrag(w: Widget, mode: "move" | "resize", grid: GridInfo): At
       if (!start) return;
       start = null;
       handle.releasePointerCapture(e.pointerId);
+      grid.onEnd?.(w);
     };
     handle.addEventListener("pointerdown", down);
     handle.addEventListener("pointermove", move);
