@@ -45,6 +45,7 @@ pub enum ControlMode {
     /// Explicit flat-road SIM with default wind and Crr (ADR-0002 §7.9).
     Free,
 }
+/// Exhaustive for engine routing R1–R5 (ADR-0002 §4.4.1).
 /// One echoed control page as integers; never a full SIM mode (ADR-0002 §4.4.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObservedControl {

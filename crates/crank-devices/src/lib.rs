@@ -14,8 +14,18 @@ use tokio::sync::mpsc;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MonoTime(pub u64);
 
+/// Injectable runtime epoch and executor clock (ADR-0001 §5).
+pub trait Clock: Send + Sync + 'static {
+    /// Current monotonic time, shared with the engine.
+    fn now(&self) -> MonoTime;
+    /// Suspend until a monotonic deadline.
+    fn sleep_until(&self, at: MonoTime) -> BoxFuture<'static, ()>;
+}
+
 /// Trainer protocol selected by discovery. See ADR-0002 §3.
+/// Non-exhaustive to support future FTMS additions (#45).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DriverKind {
     /// ANT FE-C over BLE.
     FeC,
@@ -108,7 +118,9 @@ pub enum TrainerCommand {
     Disconnect,
 }
 /// Driver events; delivery and trainer observation are distinct (ADR-0002 §4.4).
+/// Non-exhaustive to support future FTMS additions (#45).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum TrainerEvent {
     /// Telemetry at notification arrival time.
     Sample(TrainerSample),
@@ -203,6 +215,7 @@ pub enum ObservationSource {
     /// Page-25 target flags.
     Page25Flags,
 }
+/// Exhaustive for engine routing R1–R5 (ADR-0002 §4.4.1).
 /// Page-71 status, retaining every unknown byte. See ADR-0002 §3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandStatus {
@@ -271,7 +284,9 @@ pub trait Discovery: Send + Sync + 'static {
     fn scan(&self) -> BoxStream<'static, DiscoveredDevice>;
 }
 /// Transport-neutral device failures (ADR-0002 §3).
+/// Non-exhaustive to support future FTMS additions (#45).
 #[derive(thiserror::Error, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeviceError {
     /// No adapter is available.
     #[error("adapter unavailable")]
@@ -301,7 +316,9 @@ pub enum DeviceError {
     Disconnected,
 }
 /// Categories shared by real, simulator and replay drivers. See ADR-0002 §3.
+/// Non-exhaustive to support future FTMS additions (#45).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProtocolErrorKind {
     /// Malformed transport frame.
     Framing,
