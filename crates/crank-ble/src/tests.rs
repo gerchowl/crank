@@ -554,3 +554,28 @@ async fn trace_capture_failure_is_reported_without_misreporting_gatt_or_stopping
     tick().await;
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn grade_updates_on_poll_ticks_do_not_reset_the_sim_component_phase() {
+    let mut pacer = Pacer::default();
+    let mut last = None;
+    let mut replies = Vec::new();
+    for tick in 0..48u64 {
+        if tick % 4 == 0 {
+            pacer
+                .set(sim(f32::from(u16::try_from(tick).unwrap())), tick)
+                .unwrap();
+        }
+        if let Some(p) = pacer.tick(tick).unwrap() {
+            if p[4] == 70 {
+                replies.push(last.unwrap());
+            } else {
+                last = Some(p[4]);
+            }
+        }
+    }
+    assert!(replies.len() >= 10);
+    for pair in replies.windows(2) {
+        assert_ne!(pair[0], pair[1]);
+    }
+}

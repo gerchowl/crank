@@ -72,7 +72,7 @@ impl Pacer {
         if self.poll.is_none() {
             self.poll = Some(tick + 4);
         }
-        if self.current != next {
+        if !same_kind {
             self.keep = if next.len() == 2 {
                 self.poll.unwrap_or(tick + 4).max(tick + 1) - 1
             } else {
@@ -107,6 +107,17 @@ impl Pacer {
         if let Some(frame) = self.pending.pop_front() {
             if self.pair_tail {
                 self.pair_completed = due;
+                let mut poll = self.poll.unwrap_or(tick + 4);
+                while poll <= tick + 1 {
+                    poll += 4;
+                }
+                self.keep = poll - 1;
+                self.component = 0;
+            } else if self.current.len() == 1 {
+                self.keep = tick + 8;
+            } else if tick >= self.keep && frame[4] == self.current[self.component][4] {
+                self.component ^= 1;
+                self.keep += 4;
             }
             self.pair_tail = pair;
             self.sent.retain(|p| p[4] != frame[4]);
