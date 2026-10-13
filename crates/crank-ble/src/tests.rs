@@ -206,6 +206,8 @@ struct Fake {
     no_caps: AtomicBool,
     disconnect_fail: AtomicBool,
     disconnects: AtomicUsize,
+    hold_disconnect: AtomicBool,
+    disconnect_gate: tokio::sync::Semaphore,
 }
 impl Fake {
     fn new(clock: Arc<dyn Clock>) -> Arc<Self> {
@@ -220,6 +222,8 @@ impl Fake {
             no_caps: AtomicBool::new(false),
             disconnect_fail: AtomicBool::new(false),
             disconnects: AtomicUsize::new(0),
+            hold_disconnect: AtomicBool::new(false),
+            disconnect_gate: tokio::sync::Semaphore::new(0),
         })
     }
 }
@@ -229,7 +233,9 @@ impl FecTransport for Arc<Fake> {
         _: DeviceRef,
         _: Arc<dyn Clock>,
     ) -> BoxFuture<'static, Result<(DeviceInfo, Notifications), DeviceError>> {
-        let rx = self.receiver.lock().unwrap().take().unwrap();
+        let Some(rx) = self.receiver.lock().unwrap().take() else {
+            return Box::pin(async { Err(DeviceError::ConnectFailed("transport reused".into())) });
+        };
         Box::pin(async move {
             let notifications: Notifications = Box::pin(stream::unfold(rx, |mut rx| async move {
                 rx.recv().await.map(|v| (v, rx))
@@ -263,6 +269,9 @@ impl FecTransport for Arc<Fake> {
         let fake = self.clone();
         Box::pin(async move {
             fake.disconnects.fetch_add(1, Ordering::SeqCst);
+            if fake.hold_disconnect.load(Ordering::SeqCst) {
+                fake.disconnect_gate.acquire().await.unwrap().forget();
+            }
             if fake.disconnect_fail.load(Ordering::SeqCst) {
                 Err(DeviceError::Gatt("disconnect rejected".into()))
             } else {
@@ -608,6 +617,32 @@ async fn trace_capture_failure_is_reported_without_misreporting_gatt_or_stopping
 fn enable_trace() {
     static TRACE: std::sync::Once = std::sync::Once::new();
     TRACE.call_once(|| tracing::subscriber::set_global_default(Trace).unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_setup_holds_admission_until_disconnect_finishes() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let fake = Fake::new(clock.clone());
+    fake.hold_disconnect.store(true, Ordering::SeqCst);
+    let driver = FecTrainer::new(Arc::new(fake.clone()), clock);
+    let connecting = tokio::spawn(driver.connect(&DeviceRef("fake".into()), rider()));
+    settle().await;
+    assert_eq!(fake.writes.lock().unwrap().len(), 1);
+    connecting.abort();
+    assert!(connecting.await.err().unwrap().is_cancelled());
+    settle().await;
+    assert_eq!(fake.disconnects.load(Ordering::SeqCst), 1);
+    let error = driver
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        DeviceError::ConnectFailed("driver already connected".into())
+    );
+    fake.disconnect_gate.add_permits(1);
+    settle().await;
 }
 
 #[tokio::test(start_paused = true)]

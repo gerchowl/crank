@@ -45,11 +45,16 @@ pub trait FecTransport: Send + Sync + 'static {
     /// Release the peripheral.
     fn disconnect(&self) -> BoxFuture<'static, Result<(), DeviceError>>;
 }
-struct ConnectGuard(Option<Arc<dyn FecTransport>>);
+struct ConnectGuard(
+    Option<Arc<dyn FecTransport>>,
+    Option<tokio::sync::OwnedMutexGuard<()>>,
+);
 impl Drop for ConnectGuard {
     fn drop(&mut self) {
         if let Some(transport) = self.0.take() {
+            let guard = self.1.take();
             tokio::spawn(async move {
+                let _guard = guard;
                 if let Err(error) = transport.disconnect().await {
                     tracing::warn!(%error, "cancelled connection cleanup failed");
                 }
@@ -58,6 +63,7 @@ impl Drop for ConnectGuard {
     }
 }
 /// FE-C trainer factory. Supply a separate transport for each live connection.
+/// Cancelled setup retains admission until peripheral cleanup finishes.
 /// No discovery/reconnect loop is implemented here (#147).
 pub struct FecTrainer {
     transport: Arc<dyn FecTransport>,
@@ -109,7 +115,7 @@ impl TrainerDriver for FecTrainer {
             })
             .map_err(|e| crate::protocol(e, ProtocolErrorKind::Encode))?;
             let (info, mut notifications) = transport.connect(dev, clock.clone()).await?;
-            let mut cleanup = ConnectGuard(Some(transport.clone()));
+            let mut cleanup = ConnectGuard(Some(transport.clone()), Some(guard));
             let (events, receiver) = mpsc::channel(256);
             let (commands, control) = mpsc::channel(64);
             let result = async {
@@ -147,6 +153,7 @@ impl TrainerDriver for FecTrainer {
                 }
             };
             emit(&events, TrainerEvent::Link(LinkState::Ready)).await?;
+            let guard = cleanup.1.take();
             cleanup.0 = None;
             let writer_transport = transport.clone();
             tokio::spawn(async move {
