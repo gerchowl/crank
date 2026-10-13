@@ -3,7 +3,7 @@
 
 The real tree must pass; each deliberate mismatch (sizes.json vs DESIGN §8,
 sizes.json vs tauri.conf.json, a missing DESIGN row) must fail loudly.
-Usage: test-window-config.py [root]
+Usage: test-window-config.py [root [check-window-config.py]]
 """
 import json
 import shutil
@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
-check = Path(__file__).resolve().parent / "check-window-config.py"
+check = Path(sys.argv[2] if len(sys.argv) > 2 else Path(__file__).resolve().parent / "check-window-config.py").resolve()
 FILES = ["docs/design/DESIGN.md", "docs/design/sizes.json", "app/src-tauri/tauri.conf.json"]
 
 
@@ -24,7 +24,7 @@ def run(tree: Path) -> subprocess.CompletedProcess:
 def copy_tree(dest: Path) -> Path:
     for f in FILES:
         (dest / f).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(root / f, dest / f)
+        shutil.copyfile(root / f, dest / f)  # not copy(): store files are read-only
     return dest
 
 

@@ -154,7 +154,7 @@
         '';
         # Regression test: the window-config check must fail on mismatched sources (#170).
         window-config-test = pkgs.runCommand "window-config-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          python3 ${./scripts/test-window-config.py} ${source (lib.fileset.unions [ ./docs/design/DESIGN.md ./docs/design/sizes.json ./app/src-tauri/tauri.conf.json ])}
+          python3 ${./scripts/test-window-config.py} ${source (lib.fileset.unions [ ./docs/design/DESIGN.md ./docs/design/sizes.json ./app/src-tauri/tauri.conf.json ])} ${./scripts/check-window-config.py}
           touch $out
         '';
         package-licenses = pkgs.runCommand "package-licenses" { nativeBuildInputs = [ pkgs.python3 ]; } ''
