@@ -1,5 +1,7 @@
 // Shell: four places + the ride mode (DESIGN §3), a top-level error boundary (#4).
-import { Component, useEffect, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useState, type ReactNode } from "react";
+import { boot } from "./boot";
+import { StartScreen } from "./StartScreen";
 import { theme } from "./persist";
 import { navigate, useRoute, type View } from "./session";
 import { useStore } from "./store";
@@ -64,18 +66,37 @@ function Screen({ view }: { view: View }) {
 }
 
 export function App({ forcedTheme }: { forcedTheme: "dark" | "light" | null }) {
-  const r = useRoute();
+  const b = useStore(boot);
   const saved = useStore(theme);
   const mode = forcedTheme ?? saved;
   useEffect(() => {
     document.documentElement.dataset.theme = mode;
   }, [mode]);
+  // The start screen exists only if the app launched while the core was still booting (no minimum display
+  // time: a core that is ready before the first frame never shows it). It stays up through the hand-off fade.
+  const [coldStart] = useState(b.phase !== "ready");
+  const [gone, setGone] = useState(false);
+  const onGone = useCallback(() => {
+    delete document.documentElement.dataset.start; // the pre-paint window background (index.html) ends with the start screen
+    setGone(true);
+  }, []);
+  return (
+    <>
+      {b.phase === "ready" && <Destination />}
+      {coldStart && !gone && <StartScreen boot={b} mode={mode} onGone={onGone} />}
+    </>
+  );
+}
+
+function Destination() {
+  const r = useRoute();
   const place = r.view === "ready" ? "today" : r.view === "review" ? "history" : r.view;
   if (r.view === "ride") return <Ride />;
   // Onboarding and the Resume sheet are modes: no rail, so there is nowhere half-set-up to wander (§3).
+  // `data-destination`: where focus lands when the start screen hands off.
   if (r.view === "onboarding" || r.view === "resume")
     return (
-      <main className="mode">
+      <main className="mode" data-destination tabIndex={-1}>
         <ErrorBoundary key={r.view}>
           <Screen view={r.view} />
         </ErrorBoundary>
@@ -92,7 +113,7 @@ export function App({ forcedTheme }: { forcedTheme: "dark" | "light" | null }) {
           </button>
         ))}
       </nav>
-      <main>
+      <main data-destination tabIndex={-1}>
         <ErrorBoundary key={r.view}>
           <Screen view={r.view} />
         </ErrorBoundary>

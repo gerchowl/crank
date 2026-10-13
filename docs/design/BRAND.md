@@ -157,7 +157,21 @@ interrupted ride). Never on window re-open, wake from sleep, navigation, or afte
 - **Slow boot:** the status line ("Starting crank…", `--muted`, `role="status"`) is **inserted by a boot
   timer at 1.2 s** — timed from boot, not from the motion, and the same under reduced motion. A fast boot
   never shows it, and a screen reader never announces it. A boot *failure* becomes an error in that line per
-  DESIGN P6 — designed in #62.
+  DESIGN P6 (see "Boot failure" below).
+
+**Boot failure (designed in #62).** If the core does not come up, the status line is replaced **at once** (it
+does not wait for 1.2 s) by a `role="alert"` block in `--ink`, in the order of DESIGN P6: **what broke** ("crank
+can't start. The ride core didn't come up: <reason>."), **what the app did** ("Your rides and settings were not
+touched, and nothing is recording."), **what to do** (a *Try again* button, and "If it fails again, quit and reopen
+crank."). The launch motion is not cut and the screen is not inert. *Try again* is a fresh boot attempt with its
+own 1.2 s status clock. The reason text comes from the core's error; the prototype simulates it.
+
+**In the prototype (#62).** `design/prototype/src/StartScreen.tsx` + `start.css`, wired in `App.tsx`; the wordmark is
+imported from `design/brand/src/wordmark.ts` (the outlined SVG, no font). The window background is painted in the
+start screen's `--bg` from `index.html` before any script runs (the web analogue of the native window background,
+#28). The mock core boots instantly, so the screen shows only when `?boot=<ms>` (ready after ms) or
+`?boot=fail[:<ms>]` simulates a cold start (`src/boot.ts`). `pnpm -C design/prototype test:start` checks the rules
+above; `pnpm -C design/prototype screens` renders `docs/design/screens/start-*.png`.
 
 **Layout.** Letters centred in the window (lines trailing left), wordmark at `min(52vw, 820px)` wide, status
 line 48 px above the bottom edge. Nothing else: no version, no tips, no progress bar.
