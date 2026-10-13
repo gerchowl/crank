@@ -537,7 +537,8 @@ agent assumes a hardware result it did not see.
   `LSMinimumSystemVersion = 13.0` and `NSBluetoothAlwaysUsageDescription` (ADR-0002 §8). It is a file
   layout step; Tauri's bundler and `codesign` don't run in the sandbox (the bundler wants to sign, and
   signing needs the login keychain).
-- **`just bundle` (on sage, outside the sandbox):** `nix build .#crank-app`, copy to a writable temp path beside `~/Applications/crank.app`, sign it there inside-out with the self-signed
+- **`just bundle` (on sage, outside the sandbox):** `nix build .#crank-app`, copy to
+  a writable temp path beside `~/Applications/crank.app`, sign it there inside-out with the self-signed
   **`nix-tcc`** identity, selected by its SHA-1 (the identity the check below verifies), and swap it atomically
   into the stable path (`scripts/install-app.sh`; never a window with no app). The identity already exists
   in sage's login keychain (g-fleet `bin/nix-tcc-cert`, the same identity g-fleet's `tcc-sign.nix` uses so

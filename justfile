@@ -6,10 +6,12 @@ check:
 hygiene:
     scripts/check-public-hygiene.sh
 
-# Same gates as the `window-config` and `package-licenses` flake checks (#123, #125).
+# Same gates as the `window-config`, `window-config-test`, `install-app` (Darwin only) and
+# `package-licenses` flake checks (#123, #125, #165, #170).
 config-checks:
     scripts/check-window-config.py
     scripts/check-licenses.py
+    scripts/test-window-config.py
     scripts/test-install-app.sh
 
 test:

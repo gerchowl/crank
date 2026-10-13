@@ -25,10 +25,13 @@ pinned `advisory-db` input (bump: `nix flake update advisory-db`; ADR-0001 §9.5
 `just dev` starts the placeholder window. `just bundle` (sage only, outside the sandbox) builds
 `.#crank-app` (an unsigned, Nix-assembled `crank.app`), signs a copy inside-out with the local `nix-tcc`
 identity (by its SHA-1, the identity the requirement check verifies) and swaps it atomically into
-`~/Applications/crank.app` (`scripts/install-app.sh`, tested by `scripts/test-install-app.sh`), so the
-Bluetooth TCC grant survives rebuilds (ADR-0001 §9.3, ADR-0002 §8). It reads the identity's SHA-1 from
-the keychain at run time, never creates or changes identities, and uses no hardened runtime or App Sandbox (library validation rejects the unsigned nix-store
-dylibs; distribution signing is #47). `just e2e` and `just screens` await the embedded macOS WebDriver
+`~/Applications/crank.app` (`scripts/install-app.sh`), so the Bluetooth TCC grant survives rebuilds
+(ADR-0001 §9.3, ADR-0002 §8). The install logic is tested by `scripts/test-install-app.sh` (stub
+`codesign`, temp target), the `install-app` flake check on aarch64-darwin only: it uses `renamex_np`
+and the recipe is macOS-only, so on Linux the script skips with a message. `just bundle` reads the
+identity's SHA-1 from the keychain at run time, never creates or changes identities, and uses no
+hardened runtime or App Sandbox (library validation rejects the unsigned nix-store dylibs;
+distribution signing is #47). `just e2e` and `just screens` await the embedded macOS WebDriver
 gate #35; they fail explicitly until it lands. Playwright browsers are excluded from the devShell until #35
 provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
 
