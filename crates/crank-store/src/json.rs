@@ -34,6 +34,8 @@ fn validate(text: &str, table: &'static str, column: &'static str) -> Result<(),
     }
     Ok(())
 }
+/// Envelope version written by the workout column constructors.
+const WORKOUT_SCHEMA_VERSION: u32 = 1;
 macro_rules! column {
     ($name:ident, $table:literal, $column:literal, [$($key:literal),+], $doc:literal) => {
         #[doc = $doc]
@@ -65,6 +67,26 @@ macro_rules! workout_column {
             workout: crank_domain::workout::Workout,
         }
         impl $name {
+            /// Serialize a domain workout, adding the `v` envelope itself so
+            /// producers never write it by hand. The result is re-parsed, so it
+            /// satisfies exactly the contract the read path enforces.
+            /// # Errors
+            /// Returns `InvalidJson` if the workout cannot round-trip (for
+            /// example a non-finite number).
+            pub fn new(workout: &crank_domain::workout::Workout) -> Result<Self, StoreError> {
+                let invalid = |reason: String| StoreError::InvalidJson {
+                    table: $table,
+                    column: $column,
+                    reason,
+                };
+                let mut value =
+                    serde_json::to_value(workout).map_err(|e| invalid(e.to_string()))?;
+                let object = value
+                    .as_object_mut()
+                    .ok_or_else(|| invalid("workout did not serialize to an object".into()))?;
+                object.insert("v".into(), WORKOUT_SCHEMA_VERSION.into());
+                <Self as JsonColumn>::parse(&value.to_string())
+            }
             /// The producer's validated workout value.
             #[must_use]
             pub fn workout(&self) -> &crank_domain::workout::Workout {
