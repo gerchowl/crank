@@ -5,13 +5,13 @@ import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import { findNode, NUDGE_TTL_S, type CoachNudge, type CompiledWorkout, type FlatBlock, type RideStatus, type StepNode, type Workout } from "@crank/shared";
 import { Profile, Recovery } from "../charts";
 import { blockName, blockTitle, mmss, num, signed } from "../format";
-import { blockKind, CAP_PCT, cadenceState, coachOffsetPct, coachReason, cursorS, recoveryRead, revertNudge, sceneFixture, settling, SETTLE_S, targetBand, type BlockKind, type CadenceState, type CoreFacts } from "../mock/ext";
+import { blockKind, CAP_PCT_CP, cadenceState, proposedWatts, resumePlan, RESUME, coachOffsetPct, coachReason, cursorS, recoveryRead, revertNudge, sceneFixture, settling, SETTLE_S, targetBand, type BlockKind, type CadenceState, type CoreFacts } from "../mock/ext";
 import { actionFor, bindings, rideScreen, type SlotMetric } from "../persist";
 import { backend, coreFacts, navigate, RECONNECT_NOTICE_S, sceneId, UNDO_WINDOW_S, useMetric, usePoll, useSession, type RideSession } from "../session";
 import { play, useRideSounds } from "../sound";
 import { useStore } from "../store";
 
-const PHASE_WORD: Record<BlockKind, string> = { ramp: "Ramp", steady: "Work", onoff: "On", sprint: "Sprint", hr_recovery: "Recover", easy: "Easy", cooldown: "Cool-down" };
+const PHASE_WORD: Record<BlockKind, string> = { ramp: "Ramp", steady: "Work", onoff: "On", sprint: "Sprint", hr_recovery: "Recover", easy: "Easy", cooldown: "Cool-down", free: "Free ride" };
 /** Above this width the recovery band itself becomes the T1 number (DESIGN §5.2, P7). */
 const WIDE_BAND_S = 30;
 /** After this long without the trainer, the banner offers fixes and End & save (§6.5). */
@@ -53,12 +53,28 @@ function ScreenRestarted({ onBack, repeated = false }: { onBack: () => void; rep
   const elapsed = useMetric("elapsed", 1);
   const target = useMetric("target_power", 1);
   const [leftS, setLeftS] = useState(AUTO_BACK_S);
+  const [confirmEnd, setConfirmEnd] = useState(false);
+  const keys = useStore(bindings);
   useEffect(() => {
-    if (sceneId) return;
+    if (sceneId || confirmEnd) return;
     if (leftS <= 0) return onBack();
     const id = setTimeout(() => setLeftS((s) => s - 1), 1000);
     return () => clearTimeout(id);
-  }, [leftS, onBack]);
+  }, [leftS, onBack, confirmEnd]);
+  // the remote grammar works here too: this screen replaces the ride screen, so it listens itself (§7.2)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const a = actionFor(keys, e.key);
+      if (!a || e.repeat) return;
+      if ((e.target as HTMLElement | null)?.closest("button") && (e.key === "Enter" || e.key === " ")) return;
+      e.preventDefault();
+      if (a === "coach") onBack();
+      else if (a === "end") setConfirmEnd(true);
+      else if (a === "keep" && confirmEnd) setConfirmEnd(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [keys, onBack, confirmEnd]);
   return (
     <div className="ride-restarted" role="alertdialog" aria-label="Ride screen restarted">
       <span className="eyebrow">Ride screen restarted{repeated ? " again" : ""}</span>
@@ -66,15 +82,34 @@ function ScreenRestarted({ onBack, repeated = false }: { onBack: () => void; rep
       <p className="t3">
         {mmss(elapsed)} recorded · the trainer is holding {num(target)} W · nothing was lost.
       </p>
-      <div className="actions">
-        <button className="primary big" autoFocus onClick={onBack}>
-          Back to ride · {leftS} s
-        </button>
-        {repeated && <button onClick={() => (backend.ride.stop(), navigate("review"))}>End ride and review</button>}
-      </div>
-      <p className="muted">Coach button = back to ride.</p>
+      {confirmEnd ? (
+        <div className="actions saddle">
+          <button autoFocus onClick={() => setConfirmEnd(false)}>
+            <KeyHint a="keep" /> Keep riding
+          </button>
+          <button onClick={() => (backend.ride.stop(), navigate("review"))}>End ride and review</button>
+        </div>
+      ) : (
+        <div className="actions saddle">
+          <button className="primary" autoFocus onClick={onBack}>
+            <KeyHint a="coach" /> Back to ride · {leftS} s
+          </button>
+          {repeated && (
+            <button onClick={() => setConfirmEnd(true)}>
+              <KeyHint a="end" /> End ride…
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
+}
+
+/** The bound key/remote button for an action, shown on the control it triggers (saddle screens). */
+export function KeyHint({ a }: { a: "coach" | "keep" | "end" | "pause" }) {
+  const b = useStore(bindings);
+  const k = b[a][0] ?? "";
+  return <kbd className="keyhint">{k === " " ? "Space" : k === "Escape" ? "Esc" : k}</kbd>;
 }
 
 function useNow(active: boolean) {
@@ -121,10 +156,10 @@ function RideScreen({ s }: { s: RideSession }) {
       if (t?.closest("button, input, select, textarea, a, [role=radio], [role=switch]") && (e.key === "Enter" || e.key === " ")) return;
       if (t instanceof HTMLInputElement) return;
       if (e.key === "?") return setDialog("keys");
-      if (e.key === "Escape") return setDialog("end");
       const a = actionFor(keys, e.key);
       if (!a) return;
       e.preventDefault();
+      if (a === "end") return setDialog("end");
       if ((a === "coach" || a === "keep") && performance.now() - laneSince.current.at < DEBOUNCE_MS) return;
       if (a === "pause") {
         if (status.state === "riding") backend.ride.pause();
@@ -160,17 +195,14 @@ function RideScreen({ s }: { s: RideSession }) {
       <StatusBar status={status} facts={facts} onHelp={() => setDialog("keys")} />
       <section className="hero" aria-label="Now">
         <HeroHeader workout={workout} block={block} kind={kind} step={step} capped={!!fx.healthCap} showCadence={config.density === "focus" || (config.slotA !== "cadence" && config.slotB !== "cadence")} />
-        <Rows status={status} facts={facts} kind={kind} block={block} prev={compiled.blocks[status.blockIndex - 1]} step={step} offset={offset} left={left} />
+        <Rows status={status} facts={facts} kind={kind} block={block} prev={compiled.blocks[status.blockIndex - 1]} step={step} offset={offset} left={left} onEnd={() => setDialog("end")} />
         <Next compiled={compiled} workout={workout} index={status.blockIndex} kind={kind} />
       </section>
       <aside className="side" aria-label="Body">
-        {config.density !== "focus" && (
-          <>
-            <Slot metric={config.slotA} status={status} step={step} />
-            <Slot metric={config.slotB} status={status} step={step} />
-          </>
-        )}
-        <CoachLane s={s} status={status} facts={facts} pending={pending} undoable={undoable} nudges={nudges} feel={fx.feelPrompt ? feel : null} detail={config.density === "detail"} />
+        <Slot metric={config.slotA} status={status} step={step} />
+        {/* Focus drops the second slot but keeps its space, so the coach lane never moves (P4) */}
+        {config.density === "focus" ? <div className="slot reserved" aria-hidden /> : <Slot metric={config.slotB} status={status} step={step} />}
+        <CoachLane s={s} status={status} facts={facts} pending={pending} undoable={undoable} nudges={nudges} feel={fx.feelPrompt ? feel : null} detail={config.density === "detail"} current={current} />
       </aside>
       <Road compiled={compiled} block={block} status={status} pending={pending} />
       {dialog === "keys" && (
@@ -195,20 +227,42 @@ function RideScreen({ s }: { s: RideSession }) {
 const DEBOUNCE_MS = 1500;
 const FEEL_COMMIT_MS = 3000;
 const FEEL_WORDS = ["easy", "right", "hard"] as const;
-type Feel = { choice: (typeof FEEL_WORDS)[number] | null; committed: boolean; cycle: () => void; skip: () => void };
-/** "How did that feel?": Coach cycles easy → right → hard; the choice commits 3 s after the last press (tone); Keep skips. */
+type FeelWord = (typeof FEEL_WORDS)[number];
+type Feel = { choice: FeelWord | null; committed: boolean; leftS: number; pick: (w: FeelWord) => void; cycle: () => void; skip: () => void };
+/**
+ * "How did that feel?" — one mapping, no inversion (§7.2): a click or tap selects exactly the word it
+ * shows; the Coach button (keyboard or remote) steps easy → right → hard; Keep skips. The choice
+ * saves 3 s after the last input, with a visible countdown and a tone.
+ */
 function useFeel(): Feel {
-  const [choice, setChoice] = useState<Feel["choice"]>(null);
+  const [choice, setChoice] = useState<FeelWord | null>(null);
   const [committed, setCommitted] = useState(false);
+  const [lastAt, setLastAt] = useState(0);
+  const [now, setNow] = useState(() => performance.now());
   useEffect(() => {
     if (!choice || committed || sceneId) return;
-    const id = setTimeout(() => (setCommitted(true), play.applied()), FEEL_COMMIT_MS);
-    return () => clearTimeout(id);
-  }, [choice, committed]);
+    const id = setInterval(() => {
+      const t = performance.now();
+      setNow(t);
+      if (t - lastAt >= FEEL_COMMIT_MS) {
+        setCommitted(true);
+        play.applied();
+      }
+    }, 200);
+    return () => clearInterval(id);
+  }, [choice, committed, lastAt]);
+  const touch = (w: FeelWord) => {
+    if (committed) return;
+    setChoice(w);
+    setLastAt(performance.now());
+    setNow(performance.now());
+  };
   return {
     choice,
     committed,
-    cycle: () => !committed && setChoice((c) => FEEL_WORDS[(c ? FEEL_WORDS.indexOf(c) + 1 : 0) % FEEL_WORDS.length] ?? "easy"),
+    leftS: choice ? Math.max(0, Math.ceil((FEEL_COMMIT_MS - (now - lastAt)) / 1000)) : 0,
+    pick: touch,
+    cycle: () => touch(FEEL_WORDS[(choice ? FEEL_WORDS.indexOf(choice) + 1 : 0) % FEEL_WORDS.length] ?? "easy"),
     skip: () => (setChoice(null), setCommitted(true)),
   };
 }
@@ -299,17 +353,25 @@ function Sensor({ name, state, note }: { name: string; state: RideStatus["traine
 }
 
 // ---------- hero ----------
-function HeroHeader({ workout, block, kind, step, showCadence, capped }: { workout: Workout; block: FlatBlock; kind: BlockKind; step: StepNode | undefined; showCadence: boolean; capped: boolean }) {
+/** Cadence state with hysteresis (enter out-of-range past the tolerance, return at the band edge). */
+function useCadenceState(step: StepNode | undefined) {
+  const rpm = useMetric("cadence", 2);
+  const prev = useRef<CadenceState>("in");
+  const cs = cadenceState(rpm, step, prev.current);
+  prev.current = cs;
+  return { rpm, cs };
+}
+
+function HeroHeader({ workout, block, kind, step, capped }: { workout: Workout; block: FlatBlock; kind: BlockKind; step: StepNode | undefined; showCadence: boolean; capped: boolean }) {
   const t = blockTitle(workout.nodes, block);
   const inherited = !step?.label && block.phase !== "work" && kind !== "hr_recovery";
   const easyRep = kind === "onoff" && block.phase !== "work";
   const reps = t.reps.at(-1);
-  const cadence = useMetric("cadence", 2);
-  const cs = cadenceState(cadence, step);
+  const { cs } = useCadenceState(step);
   return (
     <div className="row1 t3" data-fit>
       <span className="phase-word">{easyRep ? "Off" : PHASE_WORD[kind]}</span>
-      <span className="title">{t.label ? (inherited ? `after ${t.label}` : t.label) : workout.name}</span>
+      {t.label.toLowerCase() !== PHASE_WORD[kind].toLowerCase() && <span className="title">{t.label ? (inherited ? `after ${t.label}` : t.label) : workout.name}</span>}
       {t.reps.map((r, i) => (
         <span key={i} className="rep">
           {i === t.reps.length - 1 ? "rep" : "set"} {r.i}/{r.n}
@@ -322,25 +384,29 @@ function HeroHeader({ workout, block, kind, step, showCadence, capped }: { worko
           ))}
         </span>
       )}
-      {showCadence && cs !== "in" && cs !== "none" && <span className={`chip cad-${cs}`}>{CADENCE_WORD[cs]}</span>}
-      {capped && <span className="chip cap-chip">capped ≤ {CAP_PCT.endurance} % FTP</span>}
+      {/* out-of-range cadence is the ERG lever: always a chip in row 1, in every density (§5.2) */}
+      {cs !== "in" && cs !== "none" && <span className={`chip cad-chip cad-${cs}`}>{CADENCE_WORD[cs]}</span>}
+      {capped && <span className="chip cap-chip">capped ≤ {Math.round((workout.ftp * CAP_PCT_CP.threshold) / 100)} W</span>}
     </div>
   );
 }
 
-interface RowProps { status: RideStatus; facts: CoreFacts; kind: BlockKind; block: FlatBlock; prev: FlatBlock | undefined; step: StepNode | undefined; offset: number; left: number | null }
+interface RowProps { status: RideStatus; facts: CoreFacts; kind: BlockKind; block: FlatBlock; prev: FlatBlock | undefined; step: StepNode | undefined; offset: number; left: number | null; onEnd: () => void }
 
 function Rows(props: RowProps) {
   const { kind, facts } = props;
   const rec = usePoll(1, () => (kind === "hr_recovery" ? backend.hrRecovery() : null), [kind, props.block.nodeId]);
-  const read = kind === "hr_recovery" && rec ? recoveryRead(rec, props.status.t - rec.startedT, facts.hrLost) : null;
+  // while the trainer is lost the block is frozen: no live forecast, just the frozen time to its maximum
+  const read = kind === "hr_recovery" && rec ? recoveryRead(rec, props.status.t - rec.startedT, facts.hrLost || facts.trainerLost) : null;
   // The caption says which event the number is about: HR crossing (a prediction) or the block's own limit (a rule).
   const caption =
     kind === "sprint"
       ? "power"
       : read
         ? read.kind === "hr_lost"
-          ? "HR lost · block ends at its maximum in"
+          ? facts.trainerLost
+            ? "paused · then ends at its maximum in"
+            : "HR lost · block ends at its maximum in"
           : read.kind === "ends_at_min"
             ? "block ends at its minimum in"
             : read.kind === "estimate" && read.capped
@@ -348,7 +414,9 @@ function Rows(props: RowProps) {
               : `HR below ${rec?.targetBpm} in`
         : kind === "onoff"
           ? "left in rep"
-          : "left in block";
+          : kind === "free"
+            ? "free ride ends in"
+            : "left in block";
   let t1: ReactNode;
   if (kind === "sprint") t1 = <Live metric="power" unit="W" />;
   else if (read) {
@@ -401,27 +469,25 @@ function Banner({ tone, children }: { tone: "warning" | "info" | "neutral"; chil
   );
 }
 
-function BandRow({ status, facts, kind, block, prev, step, offset, left, rec }: RowProps & { rec: ReturnType<typeof backend.hrRecovery> | null }) {
+function BandRow({ status, facts, kind, block, prev, step, offset, left, rec, onEnd }: RowProps & { rec: ReturnType<typeof backend.hrRecovery> | null }) {
   const target = useMetric("target_power", 2);
   const cadence = useMetric("cadence", 2);
   if (facts.trainerLost) {
-    const at = mmss(kind === "hr_recovery" && rec ? status.t - rec.startedT : block.durS - (left ?? 0));
+    const into = mmss(kind === "hr_recovery" && rec ? status.t - rec.startedT : block.durS - (left ?? 0));
     const long = facts.lostForS >= LONG_LOSS_S;
     return (
       <Banner tone="warning">
         <b>
-          ⚠ {status.hrSensor !== "connected" ? "Trainer + HR lost" : "Trainer lost"} · paused at {at}
+          ⚠ {status.hrSensor !== "connected" ? "Trainer + HR lost" : "Trainer lost"} {mmss(facts.lostForS)}
         </b>
+        <span>paused {into} into block · ride saved</span>
         {long ? (
-          <>
-            <span>try: power-cycle the NEO · close Zwift/Tacx</span>
-            <span className="banner-actions">
-              <button onClick={() => (backend.ride.stop(), navigate("review"))}>End & save</button>
-              <span>retry {facts.reconnectAttempt}</span>
-            </span>
-          </>
+          <span className="banner-actions">
+            <span>power-cycle NEO · close Zwift</span>
+            <button onClick={onEnd}>End…</button>
+          </span>
         ) : (
-          <span>reconnecting (try {facts.reconnectAttempt}) · ride saved</span>
+          <span>reconnecting (try {facts.reconnectAttempt})</span>
         )}
       </Banner>
     );
@@ -430,7 +496,16 @@ function BandRow({ status, facts, kind, block, prev, step, offset, left, rec }: 
     return (
       <Banner tone="warning">
         <b>⚠ ERG released · spin up to 60 rpm</b>
-        <span>timer runs · target returns over 5 s</span>
+        <span>timer runs · target returns at 60 rpm</span>
+      </Banner>
+    );
+  if (facts.sinceReconnectS !== null && (facts.lastGapS ?? 0) >= RESUME.softOnlyS && facts.sinceReconnectS < RESUME.rewarmBlockS)
+    return (
+      <Banner tone="info">
+        <b>↻ Back after {mmss(facts.lastGapS)}</b>
+        <span>
+          re-warm-up {mmss(RESUME.rewarmBlockS - facts.sinceReconnectS)} · then {block.phase === "work" ? "this interval from its start" : "the plan"}
+        </span>
       </Banner>
     );
   if (facts.sinceReconnectS !== null && facts.sinceReconnectS < SETTLE_S)
@@ -440,14 +515,26 @@ function BandRow({ status, facts, kind, block, prev, step, offset, left, rec }: 
         <span>{(cadence ?? 0) > 0 ? "workout resumed" : "pedal to resume the workout"}</span>
       </Banner>
     );
-  if (status.state === "paused")
+  if (status.state === "paused") {
+    // the same re-entry policy as a crash (§6.6): long pauses don't resume straight into work
+    const plan = resumePlan(facts.pausedForS ?? 0, block.phase === "work");
     return (
       <Banner tone="neutral">
         <b>Paused {mmss(facts.pausedForS ?? 0)}</b>
-        <span>Resume continues the plan · trainer free</span>
+        <span>{plan.kind === "continue" ? "Resume continues the plan · trainer free" : plan.kind === "rewarm" ? `Resume: ${RESUME.rewarmBlockS / 60}-min re-warm-up first` : "Resume: warm-up first · or End"}</span>
+        {plan.kind !== "continue" && <span>{block.phase === "work" ? "then this interval from its start" : "then the plan"}</span>}
       </Banner>
     );
+  }
   if (kind === "hr_recovery" && rec) return <RecoveryRow rec={rec} step={step} lost={facts.hrLost} status={status} />;
+  if (kind === "free")
+    return (
+      <Banner tone="neutral">
+        <b>No targets · coach off</b>
+        <span>your choice, logged · flat-road resistance</span>
+        <span>stop at any chest pain or dizziness</span>
+      </Banner>
+    );
   if (kind === "sprint") return <Fill target={target} left={left} />;
   const sub = offset && block.aiChanged ? `coach ${signed(offset)} %` : kind === "ramp" ? `↗ to ${Math.round(block.powerTo)} W` : "";
   const blockElapsed = block.durS - (left ?? block.durS);
@@ -529,7 +616,13 @@ function RecoveryRow({ rec, step, lost, status }: { rec: ReturnType<typeof backe
           <small>bpm</small>
         </span>
         <span className="t3 sub" data-fit>
-          {end ? (Math.max(0, end.minS - elapsed) > 0 && (rec.readyInS?.hi ?? Infinity) <= end.minS - elapsed + 1 ? `HR due below ${rec.targetBpm} before then` : `block ends in ${mmss(Math.max(0, end.minS - elapsed))}–${mmss(Math.max(0, end.maxS - elapsed))}`) : ""}
+          {!end
+            ? ""
+            : lost
+              ? "unless HR reconnects"
+              : Math.max(0, end.minS - elapsed) > 0 && (rec.readyInS?.hi ?? Infinity) <= end.minS - elapsed + 1
+                ? `HR due below ${rec.targetBpm} before then`
+                : `block ends in ${mmss(Math.max(0, end.minS - elapsed))}–${mmss(Math.max(0, end.maxS - elapsed))}`}
         </span>
       </div>
       <div className="recovery-mini">{rec.observed.length > 2 ? <Recovery r={rec} height={84} live={!lost && status.state === "riding"} predict={!lost} /> : null}</div>
@@ -569,13 +662,14 @@ const CADENCE_WORD: Record<CadenceState, string> = { in: "✓ in range", below: 
 function Slot({ metric, status, step }: { metric: SlotMetric; status: RideStatus; step: StepNode | undefined }) {
   const v = useMetric(metric, 2);
   const zone = useMetric("hr_zone", 1);
+  const cad = useCadenceState(step);
   const [label, unit] = SLOT_LABEL[metric];
   const hrBased = metric === "hr" || metric === "dfa_a1" || metric === "hr_vs_typical";
   const lost = (hrBased && status.hrSensor !== "connected") || (!hrBased && metric !== "kj" && status.trainer !== "connected");
-  const cs = metric === "cadence" ? cadenceState(v, step) : null;
+  const cs = metric === "cadence" ? cad.cs : null;
   const sub = lost ? `${hrBased ? "HR strap" : "trainer"} lost` : metric === "hr" ? (zone === null ? "" : `zone ${zone}`) : cs ? CADENCE_WORD[cs] : "";
   return (
-    <div className={`slot${lost ? " lost" : ""}`}>
+    <div className={`slot${lost ? " lost" : ""}${cs === "below" || cs === "above" ? ` slot-${cs}` : ""}`}>
       <span className="t3 lbl">{label}</span>
       <span className={`t3 sub${lost ? " status-serious" : cs ? ` cad-${cs}` : ""}`} data-fit>
         {lost && <span aria-hidden>⚠ </span>}
@@ -606,11 +700,25 @@ function CadenceBand({ rpm, lo, hi }: { rpm: number; lo: number; hi: number }) {
 const VERB: Record<CoachNudge["verdict"], [string, string]> = { ease_off: ["Ease off", "Eased off"], push: ["Push", "Pushed"], hold: ["Hold", "Holding"], replan: ["Replan", "Replanned"] };
 const amount = (n: CoachNudge) => (n.proposedPctChange ? ` ${signed(n.proposedPctChange)} %` : "");
 
-function CoachLane({ s, status, facts, pending, undoable, nudges, feel, detail }: { s: RideSession; status: RideStatus; facts: CoreFacts; pending: CoachNudge | undefined; undoable: CoachNudge | undefined; nudges: CoachNudge[]; feel: Feel | null; detail: boolean }) {
+function ProposedTo({ pct }: { pct: number }) {
+  const t = useMetric("target_power", 2);
+  return <>{t === null ? `${signed(pct)} %` : `to ${proposedWatts(t, pct)} W`}</>;
+}
+
+function CoachLane({ s, status, facts, pending, undoable, nudges, feel, detail, current }: { current: { workout: Workout } | null; s: RideSession; status: RideStatus; facts: CoreFacts; pending: CoachNudge | undefined; undoable: CoachNudge | undefined; nudges: CoachNudge[]; feel: Feel | null; detail: boolean }) {
   const wbal = useMetric("wbal_pct", 1);
+  if (current?.workout.id === "free")
+    return (
+      <div className="coach idle" role="status" data-fit>
+        <p className="t3 idle-note" data-fit>
+          Coach off: free ride
+        </p>
+        <span className="grammar">no plan was proposed (health answer)</span>
+      </div>
+    );
   if (feel && !feel.committed)
     return (
-      <div className="coach ask" role="alert">
+      <div className="coach ask" role="alert" data-fit>
         <div className="coach-head">
           <span className="verb" data-fit>
             How was that?
@@ -619,13 +727,13 @@ function CoachLane({ s, status, facts, pending, undoable, nudges, feel, detail }
         </div>
         <div className="coach-actions three" role="radiogroup" aria-label="How did that feel">
           {FEEL_WORDS.map((w) => (
-            <button key={w} role="radio" aria-checked={feel.choice === w} className={feel.choice === w ? "on" : ""} onClick={() => feel.cycle()}>
+            <button key={w} role="radio" aria-checked={feel.choice === w} className={feel.choice === w ? "on" : ""} onClick={() => feel.pick(w)}>
               {w}
             </button>
           ))}
         </div>
         <span className="t3 deadline-text" data-fit>
-          {feel.choice ? `saves “${feel.choice}” in 3 s` : "Coach picks · none in 12 s"}
+          {feel.choice ? `saves “${feel.choice}” in ${feel.leftS} s` : "Coach = next · Keep = skip"}
         </span>
       </div>
     );
@@ -633,13 +741,12 @@ function CoachLane({ s, status, facts, pending, undoable, nudges, feel, detail }
     const ttl = NUDGE_TTL_S[pending.band] || 1;
     const leftS = Math.max(0, pending.t + ttl - status.t);
     return (
-      <div className="coach ask" role="alert">
+      <div className="coach ask" role="alert" data-fit>
         <div className="coach-head">
           <span className="verb" data-fit>
-            {VERB[pending.verdict][0]}
-            {amount(pending)}?
+            {VERB[pending.verdict][0]} {pending.proposedPctChange ? <ProposedTo pct={pending.proposedPctChange} /> : null}?
           </span>
-          <span className="band-word">{pending.band}</span>
+
         </div>
         <p className="t3 reason" data-fit>
           {coachReason(pending)}
@@ -651,13 +758,17 @@ function CoachLane({ s, status, facts, pending, undoable, nudges, feel, detail }
         <span className="t3 deadline-text" data-fit>
           keeps plan in {Math.ceil(leftS)} s
         </span>
+        <span className="grammar">
+          {pending.band}
+          {amount(pending)} · Coach = accept · Keep = keep plan
+        </span>
       </div>
     );
   }
   if (undoable) {
     const leftS = Math.max(0, undoable.t + UNDO_WINDOW_S - status.t);
     return (
-      <div className="coach applied" role="status">
+      <div className="coach applied" role="status" data-fit>
         <div className="coach-head">
           <span className="verb" data-fit>
             {VERB[undoable.verdict][1]}
@@ -674,12 +785,13 @@ function CoachLane({ s, status, facts, pending, undoable, nudges, feel, detail }
         <span className="t3 deadline-text" data-fit>
           Keep = back to plan
         </span>
+        <span className="grammar">Coach does nothing here</span>
       </div>
     );
   }
   const last = nudges.findLast((n) => n.status !== "pending");
   return (
-    <div className="coach idle" role="status">
+    <div className="coach idle" role="status" data-fit>
       {/* Detail density puts its third metric here, in the reserved lane a coach call takes over (§5.3) */}
       {detail ? (
         <div className="idle-metric detail">
@@ -712,6 +824,11 @@ function Road({ compiled, block, status, pending }: { compiled: CompiledWorkout;
         <span className="end">+10 min</span>
       </div>
       <div className="road-near">
+        {pending?.proposedPctChange ? (
+          <span className="road-proposal">
+            proposed {signed(pending.proposedPctChange)} % · {affected} block{affected === 1 ? "" : "s"}
+          </span>
+        ) : null}
         <Profile blocks={compiled.blocks} zones={backend.zones.power} height={120} fromS={now - 120} toS={now + 600} cursorS={now} pending={pending?.proposedPctChange ? { from: status.blockIndex, pct: pending.proposedPctChange } : undefined} label="Next ten minutes" />
       </div>
       <div className="road-all">

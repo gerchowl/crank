@@ -21,10 +21,18 @@ export function settling(block: FlatBlock, prev: FlatBlock | undefined, blockEla
 
 /** #13: cadence band state (the ERG lever). */
 export type CadenceState = "in" | "below" | "above" | "none";
-export function cadenceState(rpm: number | null, step: StepNode | undefined): CadenceState {
+/** Entry thresholds with hysteresis: leave the band at lo − 3 / hi + 5, come back at lo / hi (#13). */
+export const CADENCE_TOL = { below: 3, above: 5 } as const;
+export function cadenceState(rpm: number | null, step: StepNode | undefined, prev: CadenceState = "in"): CadenceState {
   if (!step?.cadence || rpm === null) return "none";
-  if (rpm < step.cadence.lo - 2) return "below";
-  if (rpm > step.cadence.hi + 5) return "above";
+  // a single-value target ("90rpm") means "around 90": ± 5 rpm before the tolerance applies
+  const single = step.cadence.lo === step.cadence.hi;
+  const lo = step.cadence.lo - (single ? 5 : 0);
+  const hi = step.cadence.hi + (single ? 5 : 0);
+  if (prev === "below" && rpm < lo) return "below";
+  if (prev === "above" && rpm > hi) return "above";
+  if (rpm < lo - CADENCE_TOL.below) return "below";
+  if (rpm > hi + CADENCE_TOL.above) return "above";
   return "in";
 }
 
@@ -32,6 +40,15 @@ export function cadenceState(rpm: number | null, step: StepNode | undefined): Ca
 export const TAU_SLOWER_FACTOR = 1.15;
 export const tauSlower = (r: HrRecoveryState) => (r.fit ? r.fit.tauS >= TAU_SLOWER_FACTOR * r.fit.usualTauS : false);
 export const USUAL_TAU_SD_S = 6;
+/** "within" / "slower" only when the fit's ± doesn't cross the rule; otherwise "uncertain". */
+export function tauClass(r: HrRecoveryState): "within" | "slower" | "uncertain" {
+  if (!r.fit) return "uncertain";
+  const limit = TAU_SLOWER_FACTOR * r.fit.usualTauS;
+  const sd = tauSd(r) ?? 0;
+  if (r.fit.tauS - sd >= limit) return "slower";
+  if (r.fit.tauS + sd < limit) return "within";
+  return "uncertain";
+}
 /** #29 (fit quality): τ uncertainty from how much recovery the fit saw (stand-in until the core reports it). */
 export function tauSd(r: HrRecoveryState): number | null {
   if (!r.fit) return null;
@@ -66,9 +83,10 @@ export const cursorS = (block: FlatBlock, blockRemainingS: number | null) =>
   block.startS + Math.max(0, Math.min(block.durS, block.durS - (blockRemainingS ?? block.durS)));
 
 /** #29: the core should tell the UI which ride template a block needs (DESIGN §5.2). */
-export type BlockKind = "ramp" | "steady" | "onoff" | "sprint" | "hr_recovery" | "easy" | "cooldown";
+export type BlockKind = "ramp" | "steady" | "onoff" | "sprint" | "hr_recovery" | "easy" | "cooldown" | "free";
 export function blockKind(b: FlatBlock, step: StepNode | undefined, ftp: number): BlockKind {
   if (step?.end.kind === "hr_recovery") return "hr_recovery";
+  if (step?.target.kind === "free" && b.durS > 60) return "free";
   if (b.phase === "cooldown") return "cooldown";
   if (b.powerFrom !== b.powerTo) return "ramp";
   if (b.phase === "work" && b.durS <= 30 && b.powerFrom >= 1.5 * ftp) return "sprint";
@@ -93,6 +111,8 @@ export function coachReason(n: CoachNudge): string {
   if (/unreachable/.test(m)) return "HR target unreachable";
   return m.slice(0, 24);
 }
+/** The proposed target in watts (#29: the core should send it with the call). */
+export const proposedWatts = (targetW: number, pct: number) => Math.round(targetW * (1 + pct / 100));
 /** The coach's cumulative change to the plan (the rider's own ± is separate). */
 export const coachOffsetPct = (nudges: CoachNudge[], reverted: ReadonlySet<string>) =>
   nudges.filter((n) => (n.status === "auto_applied" || n.status === "accepted") && !reverted.has(n.callId)).reduce((a, n) => a + (n.proposedPctChange ?? 0), 0);
@@ -159,8 +179,8 @@ export const cpTrend = ["17 Aug", "24 Aug", "31 Aug", "7 Sep", "14 Sep", "21 Sep
 export function proposalReasons(p: Proposal, minutes: number, legs: string, sleep: string, capped = false): string[] {
   if (capped)
     return [
-      `Capped by your health answers: endurance only (≤ ${CAP_PCT.endurance} % FTP) until a medical check is confirmed.`,
-      `You said: legs ${legs}, sleep ${sleep} — within the cap that means steady aerobic riding.`,
+      `Capped by your injury answer: nothing above threshold (${CAP_PCT_CP.threshold} % of CP), no sprints.`,
+      `You said: legs ${legs}, sleep ${sleep} — within the cap that means tempo, not intervals.`,
       `Fits your ${minutes} min: ${p.workout.name}.`,
     ];
   return [
@@ -193,9 +213,9 @@ export const week = [
 ] as const;
 
 // ---------- per-lap stats and intent verdict (#12) ----------
-export interface LapRow { label: string; targetW: number; avgW: number; avgHr: number; cadence: number; compliancePct: number }
+export interface LapRow { label: string; targetW: number; planW: number | null; avgW: number; avgHr: number; cadence: number; compliancePct: number }
 /** Fixture: plausible per-interval numbers for the work blocks of a compiled ride. */
-export function workIntervals(w: Workout, c: CompiledWorkout): LapRow[] {
+export function workIntervals(w: Workout, c: CompiledWorkout, coachPct = 0): LapRow[] {
   const rng = new Rng(7);
   return c.blocks
     .filter((b) => b.phase === "work" && b.durS >= 60)
@@ -205,6 +225,7 @@ export function workIntervals(w: Workout, c: CompiledWorkout): LapRow[] {
       return {
         label: `${node?.label ?? "Work"} ${i + 1}`,
         targetW: target,
+        planW: b.aiChanged && coachPct ? Math.round(target / (1 + coachPct / 100)) : null,
         avgW: Math.round(target * (1 + rng.uniform(-0.02, 0.01))),
         avgHr: Math.round(158 + i * 3 + rng.uniform(-2, 2)),
         cadence: Math.round(rng.uniform(88, 94)),
@@ -217,14 +238,21 @@ export function workIntervals(w: Workout, c: CompiledWorkout): LapRow[] {
 export const ON_TARGET_DEF = "on target = share of ERG seconds within ±5 % of the target you were given, settling excluded";
 export function intentVerdict(c: CompiledWorkout, recoveries: HrRecoveryState[], laps: LapRow[], coachPct: number): { part: string; verdict: string; ok: boolean }[] {
   const shortReps = c.blocks.filter((b) => b.phase === "work" && b.durS < 60).length;
-  const slow = recoveries.findIndex(tauSlower);
+  const cls = recoveries.map(tauClass);
+  const within = cls.filter((x) => x === "within").length;
+  const unsure = cls.filter((x) => x === "uncertain").length;
+  const slower = cls.filter((x) => x === "slower").length;
   const out = [];
   if (shortReps) out.push({ part: "VO2 sets", verdict: `${shortReps} of ${shortReps} reps ridden on target`, ok: true });
   const onTarget = laps.length ? Math.round(laps.reduce((a, l) => a + l.compliancePct, 0) / laps.length) : null;
   if (onTarget !== null)
     out.push({ part: `Threshold ${laps.length} × 4:00`, verdict: `${onTarget} % on target${coachPct ? `, against the eased target (plan ${coachPct > 0 ? "+" : "−"}${Math.abs(coachPct)} % by coach)` : ""}`, ok: onTarget >= 85 });
   if (recoveries.length)
-    out.push({ part: "HR recoveries", verdict: slow < 0 ? `${recoveries.length} of ${recoveries.length} within your usual τ` : `recovery ${slow + 1} slower than usual`, ok: slow < 0 });
+    out.push({
+      part: "HR recoveries",
+      verdict: [within && `${within} within your usual τ`, unsure && `${unsure} too close to call (the fit's ± crosses the "slower" rule)`, slower && `${slower} slower`].filter(Boolean).join(" · "),
+      ok: slower === 0 && unsure === 0,
+    });
   return out;
 }
 
@@ -242,44 +270,71 @@ export const lastCheckin = { sleep: 4, legs: 3, stress: 2, motivation: 4, minute
 /** Interrupted ride found on launch (#50: resumable rides); `agoS` decides the re-entry plan. */
 export const interruptedRide = { workout: "Demo: VO2 sets + threshold (45′)", riddenS: 1872, savedS: 1867, block: "block 36 of 39 · Threshold rep 1 of 2, 1:40 into it", inWork: true, gapNote: "crank saves every 5 s" };
 
+// ---------- plan vs eased target (#29: the core should stream the planned target alongside the controlled one) ----------
+export function planTarget(target: (number | null)[], calls: CoachNudge[], reverted: ReadonlySet<string>, ftp: number): (number | null)[] {
+  const applied = calls.filter((c) => (c.status === "auto_applied" || c.status === "accepted") && !reverted.has(c.callId) && c.proposedPctChange);
+  return target.map((v, i) => {
+    if (v === null) return null;
+    const k = applied.filter((c) => i >= c.t).reduce((a, c) => a * (1 + (c.proposedPctChange ?? 0) / 100), 1);
+    return v >= 0.8 * ftp * k ? v / k : v; // only work targets were changed
+  });
+}
+
 // ---------- typical HR (#29: a "usual HR for this power" stream) ----------
 /** Usual HR = HR minus the backend's hr_vs_typical residual (stand-in for a typical-HR stream). */
 export const usualHr = (hr: (number | null)[], vsTyp: (number | null)[]) => hr.map((h, i) => (h === null || vsTyp[i] == null ? null : h - (vsTyp[i] as number)));
 
-// ---------- health check (#29: health-cap state; DESIGN §5.8) ----------
+// ---------- health check (#29 health state; DESIGN §5.8) ----------
 export type HealthAnswer = "yes" | "no" | null;
+/**
+ * Red flags (DESIGN §5.8): any "yes" means see a doctor before training — the coach proposes nothing.
+ * Source: spec/ONBOARDING.md §1.5 (PAR-Q-style screen); items follow the PAR-Q+ and the ACSM 2015
+ * pre-participation screening symptom list (knowledge-pack entry: #77).
+ */
 export const HEALTH_QS = [
-  { id: "chest", q: "Chest pain, or a heart condition, on exertion?", ifYes: "stop" },
-  { id: "faint", q: "Dizziness or fainting during or after exercise?", ifYes: "stop" },
-  { id: "meds", q: "Medication that changes your heart rate (e.g. beta blockers)?", ifYes: "hr" },
-  { id: "injury", q: "An injury that limits hard efforts?", ifYes: "cap" },
+  { id: "chest", q: "Chest pain, pressure or tightness — at rest or when exercising?", kind: "red" },
+  { id: "faint", q: "Fainting, or dizziness that made you lose balance, in the last 12 months?", kind: "red" },
+  { id: "palp", q: "A racing or irregular heartbeat together with dizziness or breathlessness?", kind: "red" },
+  { id: "breath", q: "Unusual breathlessness at light effort (climbing stairs, easy riding)?", kind: "red" },
+  { id: "heart", q: "A heart condition a doctor told you to limit exercise for?", kind: "red" },
+  { id: "meds", q: "Medication that changes your heart rate (e.g. beta blockers)?", kind: "hr" },
+  { id: "injury", q: "An injury that limits hard efforts?", kind: "cap" },
 ] as const;
 export type HealthId = (typeof HEALTH_QS)[number]["id"];
-/** Consequences differ by answer: stop-and-check, HR features off, or an intensity cap. */
+export const RED_FLAGS = HEALTH_QS.filter((h) => h.kind === "red").map((h) => h.id);
+/** Consequences differ by answer: medical stop (no plan), HR features off, or a cap at threshold. */
 export function healthConsequences(a: Partial<Record<HealthId, HealthAnswer>>) {
   const yes = (id: HealthId) => a[id] === "yes";
   return {
     complete: HEALTH_QS.every((h) => a[h.id] === "yes" || a[h.id] === "no"),
-    stop: yes("chest") || yes("faint"),
+    stop: RED_FLAGS.some(yes),
     hrOff: yes("meds"),
-    cap: yes("chest") || yes("faint") ? "endurance" : yes("injury") ? "threshold" : null,
-  } as const;
+    cap: yes("injury") ? ("threshold" as const) : null,
+  };
 }
-/** The planner respects the cap (stand-in: a capped workout instead of the mock's uncapped proposal). */
-export const CAP_PCT = { endurance: 75, threshold: 100 } as const;
-export function cappedProposal(ftp: number, minutes: number): Proposal {
-  const main = Math.max(10, minutes - 15);
-  const r = parseDsl(`"Warm-up" 10m ramp 45-70% 90rpm
-"Endurance" ${main}m 68% 85-95rpm
-"Cool-down" 5m ramp 60-40%`, ftp);
+/** The cap is relative to CP (the model's number), not FTP. */
+export const CAP_PCT_CP = { threshold: 100 } as const;
+export function cappedProposal(cp: number, minutes: number): Proposal {
+  const main = Math.max(15, minutes - 15);
+  const reps = Math.max(1, Math.floor((main + 5) / 15));
+  const r = parseDsl(`"Warm-up" 10m ramp 45-70% 90rpm\n"Tempo" ${reps}x[!last](10m 85% 85-95rpm, 5m 55%)\n"Cool-down" 5m ramp 60-40%`, cp);
   if ("error" in r) throw new Error(r.error.message);
-  return { workout: { id: "capped", name: `Endurance ${minutes}′ (capped)`, ftp, nodes: r.nodes }, rationale: "Capped at endurance until the medical check is confirmed." };
+  return { workout: { id: "capped", name: `Tempo ${reps}×10′ (capped)`, ftp: cp, nodes: r.nodes }, rationale: "Capped at threshold until the injury allows hard efforts." };
 }
+/** A deliberate ride without plan, targets or coach (medical stop, or no plan yet). Logged with its reason. */
+export function freeRide(cp: number): Workout {
+  const r = parseDsl(`"Free ride" 60m free`, cp);
+  if ("error" in r) throw new Error(r.error.message);
+  return { id: "free", name: "Free ride — no plan, no targets", ftp: cp, nodes: r.nodes };
+}
+/** Medical clearance is a dated, attributed record, never a one-click toggle. */
+export interface Clearance { date: string; by: string; note: string; recordedAt: string }
 
 // ---------- interrupted rides (#50; DESIGN §6.6) ----------
 /** Re-entry policy keyed to how long ago the ride stopped and where. */
 export const RESUME = { softOnlyS: 120, rewarmS: 15 * 60, rewarmBlockS: 180 } as const;
 export type ResumePlan = { kind: "continue"; note: string } | { kind: "rewarm"; note: string } | { kind: "stale"; note: string };
+/** One re-entry policy for every interruption — crash, user pause, trainer loss — keyed to time away. */
 export function resumePlan(stoppedAgoS: number, inWork: boolean): ResumePlan {
   if (stoppedAgoS <= RESUME.softOnlyS) return { kind: "continue", note: "continues where you stopped; ERG eases in over 5 s" };
   if (stoppedAgoS <= RESUME.rewarmS)
@@ -314,5 +369,11 @@ export interface SceneFixture {
   stoppedAgoS?: number;
   /** Onboarding: health answers so far */
   health?: Partial<Record<HealthId, HealthAnswer>>;
+  /** A red-flag health answer is on record (DESIGN §5.8): no plan until a dated clearance */
+  medicalStop?: boolean;
+  /** Today: the free-ride confirmation is open */
+  freeConfirm?: boolean;
+  /** Ride: a free ride chosen under a medical stop */
+  freeRide?: boolean;
 }
 export const sceneFixture = createStore<SceneFixture>({});

@@ -3,7 +3,7 @@
 // so the output is deterministic. Fails on page errors, scene errors and horizontal overflow
 // (ride scenes: any overflow — the ride screen must fit the window, #7), and on any [data-fit]
 // element whose text is clipped (reserved rows never wrap or cut text, DESIGN §6.1). Runs the
-// contrast check first (DESIGN §6.3).
+// contrast check first (DESIGN §6.3), and checks every rendered chart mark's composited contrast.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -61,6 +61,40 @@ try {
             .map((el) => `"${el.textContent?.trim().slice(0, 50)}" (${el.scrollWidth}×${el.scrollHeight} in ${el.clientWidth}×${el.clientHeight})`),
         }));
         for (const c of m.clipped) failures.push(`${name}: clipped text ${c}`);
+        // rendered chart marks: effective stroke (opacity inherited from every ancestor) composited over
+        // the real background must reach 3:1 (DESIGN §6.3, WCAG 1.4.11) — token checks alone miss this
+        const weak = await page.evaluate(() => {
+          const parse = (c) => {
+            const m = /rgba?\(([^)]+)\)/.exec(c) ?? /color\(srgb ([^)]+)\)/.exec(c);
+            if (!m) return null;
+            const parts = m[1].replace("/", " ").split(/[\s,]+/).filter(Boolean).map(Number);
+            const scale = c.startsWith("color(") ? 255 : 1;
+            return { r: parts[0] * scale, g: parts[1] * scale, b: parts[2] * scale, a: parts[3] ?? 1 };
+          };
+          const lum = ({ r, g, b }) => [r, g, b].map((v) => v / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)).reduce((acc, v, i) => acc + v * [0.2126, 0.7152, 0.0722][i], 0);
+          const bgOf = (el) => {
+            for (let e = el; e; e = e.parentElement) {
+              const c = parse(getComputedStyle(e).backgroundColor);
+              if (c && c.a > 0.99) return c;
+            }
+            return parse(getComputedStyle(document.body).backgroundColor);
+          };
+          const out = [];
+          for (const el of document.querySelectorAll("svg .line, svg .band-edge, svg .plan-line, svg .eased-line, svg .area-edge, svg .cap-line, svg .marker, svg rect.gap, svg .target-line")) {
+            const cs = getComputedStyle(el);
+            const st = parse(cs.stroke);
+            if (!st || cs.stroke === "none") continue;
+            let alpha = st.a * Number(cs.strokeOpacity || 1);
+            for (let e = el; e && e.tagName !== "svg"; e = e.parentElement) alpha *= Number(getComputedStyle(e).opacity || 1);
+            const bg = bgOf(el.closest("svg"));
+            const mix = { r: st.r * alpha + bg.r * (1 - alpha), g: st.g * alpha + bg.g * (1 - alpha), b: st.b * alpha + bg.b * (1 - alpha) };
+            const [x, y] = [lum(mix), lum(bg)].sort((p, q) => q - p);
+            const ratio = (x + 0.05) / (y + 0.05);
+            if (ratio < 3 && !el.closest("[data-decorative]")) out.push(`${el.getAttribute("class")} ${ratio.toFixed(2)}:1`);
+          }
+          return [...new Set(out)];
+        });
+        for (const w of weak) failures.push(`${name}: chart mark below 3:1 — ${w}`);
         if (m.sw > width) failures.push(`${name}: horizontal overflow (${m.sw} > ${width})`);
         if (m.ride && m.sh > height) failures.push(`${name}: ride screen overflows vertically (${m.sh} > ${height})`);
         await page.screenshot({ path: `${out}${name}.png`, fullPage: !m.ride, animations: "disabled" });

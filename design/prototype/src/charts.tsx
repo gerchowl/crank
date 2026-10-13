@@ -130,12 +130,15 @@ export function TimeAxis({ n, fromS = 0 }: { n: number; fromS?: number }) {
 }
 
 /** One panel of a stacked linear-time chart. Panels share x by sharing `n` (seconds) and `fromS`. */
-export function Panel({ series, height, unit, markers = [], markerNo, n, fromS = 0, lo = 0 }: { series: Series[]; height: number; unit: string; markers?: number[]; markerNo?: number[]; n: number; fromS?: number; lo?: number }) {
+export function Panel({ series, height, unit, markers = [], markerNo, n, fromS = 0, lo: loIn = 0, zoom = false, between, betweenLabel }: { series: Series[]; height: number; unit: string; markers?: number[]; markerNo?: number[]; n: number; fromS?: number; lo?: number; zoom?: boolean; between?: [Vals, Vals]; betweenLabel?: string | undefined }) {
   const all = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
-  const hi = niceMax(Math.max(...all, lo + 1) * 1.05);
+  // zoom: the data range ± 15 %, so small changes (a −5 % target, a 9 bpm gap) are visible
+  const lo = zoom ? Math.floor((Math.min(...all) * 0.85) / 10) * 10 : loIn;
+  const hi = zoom ? Math.ceil((Math.max(...all) * 1.15) / 10) * 10 : niceMax(Math.max(...all, lo + 1) * 1.05);
   const X = (i: number) => (i / Math.max(1, n - 1)) * 1000;
   const Y = (v: number) => height - ((Math.max(lo, v) - lo) / (hi - lo)) * height;
-  const main = series.find((s) => !s.area);
+  // gaps come from the measured series (the plan line never has gaps)
+  const main = series.find((s) => s.cls.startsWith("series-")) ?? series.find((s) => !s.area);
   return (
     <div className="panel">
       <span className="axis-y hi">
@@ -148,7 +151,14 @@ export function Panel({ series, height, unit, markers = [], markerNo, n, fromS =
             <line x1="0" y1="0" x2="0" y2="6" className="gap-line" strokeWidth="2" />
           </pattern>
         </defs>
-        {main && gaps(main.values).map(([a, b]) => <rect key={a} x={X(a)} width={Math.max(4, X(b) - X(a))} y={0} height={height} fill={`url(#gaphatch-${unit})`} className="gap" />)}
+        {/* gaps: a dashed outline box with a light tint — not the hatching, which means "variable length" on profiles */}
+        {main && gaps(main.values).map(([a, b]) => <rect key={a} x={X(a)} width={Math.max(4, X(b) - X(a))} y={1} height={height - 2} className="gap" vectorEffect="non-scaling-stroke" />)}
+        {between && (
+          <polygon
+            className="between"
+            points={`${between[0].flatMap((v, i) => (v === null ? [] : [`${X(i)},${Y(v)}`])).join(" ")} ${[...between[1]].map((v, i) => [v, i] as const).reverse().flatMap(([v, i]) => (v === null ? [] : [`${X(i)},${Y(v)}`])).join(" ")}`}
+          />
+        )}
         {series.map((s) =>
           decimate(s.values, 900).map((run, k) =>
             s.area ? (
@@ -172,6 +182,11 @@ export function Panel({ series, height, unit, markers = [], markerNo, n, fromS =
           <line key={m} x1={X(m - fromS)} x2={X(m - fromS)} y1={0} y2={height} className="marker" vectorEffect="non-scaling-stroke" />
         ))}
       </svg>
+      {betweenLabel && markers[0] !== undefined && (
+        <span className="between-label" style={{ left: `${((markers[0] - fromS) / Math.max(1, n - 1)) * 100}%` }}>
+          {betweenLabel}
+        </span>
+      )}
       {markers.map((m, i) => (
         <span key={m} className="marker-label" style={{ left: `${((m - fromS) / Math.max(1, n - 1)) * 100}%` }}>
           {markerNo?.[i] ?? i + 1}
@@ -210,7 +225,8 @@ export function Recovery({ r, height, live, predict = true }: { r: HrRecoverySta
       <span className="axis-y lo">{lo} bpm</span>
       <svg viewBox={`0 0 1000 ${height}`} preserveAspectRatio="none" style={{ height, width: "100%" }} role="img" aria-label="Heart-rate recovery and prediction">
         <rect x={x(t0 + r.minS)} width={x(t0 + r.maxS) - x(t0 + r.minS)} y={0} height={height} className="window" />
-        {band && <polygon points={band} className="band band-edged" vectorEffect="non-scaling-stroke" />}
+        {band && <polygon points={band} className="band" />}
+        {band && <polygon points={band} className="band-edge" vectorEffect="non-scaling-stroke" />}
         <line x1={0} x2={1000} y1={y(r.targetBpm)} y2={y(r.targetBpm)} className="target-line" vectorEffect="non-scaling-stroke" />
         {runs.map((pts, i) => (
           <polyline key={i} points={pts} className="line series-hr" vectorEffect="non-scaling-stroke" />
@@ -259,6 +275,9 @@ export function PdCurve({ mmp, height }: { mmp: MmpCurve; height: number }) {
   return (
     <div className="pd">
       <span className="axis-y hi">{top} W</span>
+      <span className="axis-y mid" style={{ top: `${6 + height / 2}px` }}>
+        {top / 2}
+      </span>
       <span className="axis-y lo">0</span>
       <svg viewBox={`0 0 1000 ${height}`} preserveAspectRatio="none" style={{ height, width: "100%" }} role="img" aria-label="Power-duration curve">
         <line x1={0} x2={1000} y1={y(top / 2)} y2={y(top / 2)} className="grid" vectorEffect="non-scaling-stroke" />
@@ -286,6 +305,9 @@ export function Bars({ bins, binWidth }: { bins: { lo: number; seconds: number }
   return (
     <div className="bars-chart">
       <span className="axis-y hi">{mmss(max)}</span>
+      <span className="axis-y mid" style={{ top: "76px" }}>
+        {mmss(max / 2)}
+      </span>
       <span className="axis-y lo">0:00</span>
       <div className="bars" role="img" aria-label="Time at power">
         {bins.map((b) => (
@@ -317,6 +339,8 @@ export function Trend({ points, unit, height }: { points: { label: string; v: nu
       <span className="axis-y lo">{lo}</span>
       <svg viewBox={`0 0 1000 ${height}`} preserveAspectRatio="none" style={{ height, width: "100%" }} role="img" aria-label={`Trend in ${unit} with ± 1 sd`}>
         <polygon className="band" points={`${points.map((p, i) => `${x(i)},${y(p.v + p.sd)}`).join(" ")} ${[...points].reverse().map((p, i) => `${x(points.length - 1 - i)},${y(p.v - p.sd)}`).join(" ")}`} />
+        <polyline className="band-edge" points={points.map((p, i) => `${x(i)},${y(p.v + p.sd)}`).join(" ")} vectorEffect="non-scaling-stroke" />
+        <polyline className="band-edge" points={points.map((p, i) => `${x(i)},${y(p.v - p.sd)}`).join(" ")} vectorEffect="non-scaling-stroke" />
         <polyline className="line series-power" points={points.map((p, i) => `${x(i)},${y(p.v)}`).join(" ")} vectorEffect="non-scaling-stroke" />
       </svg>
       <div className="time-axis">

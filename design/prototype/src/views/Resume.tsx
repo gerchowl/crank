@@ -6,6 +6,7 @@ import { mmss } from "../format";
 import { devices, interruptedRide, resumePlan, RESUME, sceneFixture } from "../mock/ext";
 import { backend, loadRide, navigate } from "../session";
 import { useStore } from "../store";
+import { KeyHint } from "./Ride";
 
 const ago = (s: number) => (s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : "yesterday");
 
@@ -17,7 +18,7 @@ export function Resume() {
   const trainerOk = fx.status?.trainer !== "lost";
   const resume = () => (loadRide(demoWorkout(backend.athlete.ftp)), navigate("ready"));
   return (
-    <div className="page resume">
+    <div className="page resume saddle-screen">
       <section className="card ready-card" role="alertdialog" aria-label="Unfinished ride">
         <span className="eyebrow">Unfinished ride · stopped {ago(agoS)}</span>
         <h1>{r.workout}</h1>
@@ -48,24 +49,20 @@ export function Resume() {
             </span>
           </li>
         </ul>
-        <div className="actions">
+        <div className="actions saddle">
           {plan.kind === "stale" ? (
             <>
-              <button className="primary big" autoFocus onClick={() => navigate("history")}>
-                Save & review
+              <button className="primary" autoFocus onClick={() => navigate("history")}>
+                <KeyHint a="coach" /> Save & review
               </button>
-              <button className="big" onClick={resume}>
-                Ride the rest as a new ride
-              </button>
+              <button onClick={resume}>Ride the rest as a new ride</button>
             </>
           ) : (
             <>
-              <button className="primary big" autoFocus disabled={!trainerOk} onClick={resume}>
-                {plan.kind === "rewarm" ? "Resume with re-warm-up" : "Resume ride"}
+              <button className="primary" autoFocus disabled={!trainerOk} onClick={resume}>
+                <KeyHint a="coach" /> {plan.kind === "rewarm" ? "Resume with re-warm-up" : "Resume ride"}
               </button>
-              <button className="big" onClick={() => navigate("history")}>
-                Save & review
-              </button>
+              <button onClick={() => navigate("history")}>Save & review</button>
             </>
           )}
           <span className="spacer" />
