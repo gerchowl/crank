@@ -52,12 +52,17 @@ export function NumberSparkline({ widget }: WidgetProps) {
     ctx.stroke();
   }, theme);
 
-  useMetricCallback(m.id, widget.rateHz, widget.filter, (s) => {
+  // The line gets its own subscription at ≥ 4 Hz so it stays dense at 10×/60×;
+  // the number updates at the widget's display rate.
+  useMetricCallback(m.id, Math.max(4, widget.rateHz), widget.filter, (s) => {
     const pts = buf.current;
     const prev = pts[pts.length - 1];
     if (prev && s.t < prev.t) pts.length = 0; // workout reloaded
     pts.push(s);
     while (pts.length > 2 && (pts[0]?.t ?? 0) < s.t - spanS) pts.shift();
+    redraw();
+  });
+  useMetricCallback(m.id, widget.rateHz, widget.filter, (s) => {
     if (valueEl.current) valueEl.current.textContent = fmtValue(s.v, m.unit, m.id);
     if (chipEl.current) {
       const hit = widget.colorByZone ? zoneOf(m.id, s.v) : null;
@@ -67,7 +72,6 @@ export function NumberSparkline({ widget }: WidgetProps) {
         chipDot.current.style.background = zoneColor(theme, hit.idx, hit.count);
       }
     }
-    redraw();
   });
 
   return (
