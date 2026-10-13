@@ -3,6 +3,7 @@
 // that decision for the prototype, like ext.ts. The production UI must not import it.
 import { parseDsl, type Proposal } from "@crank/shared";
 import type { Grade } from "../knowledge";
+import { CAP_RULE } from "./ext";
 
 /** Intensity of the main effort, low → high, anchored on the athlete's thresholds (R-GEN-01), not zone numbers. */
 export const INTENSITIES = ["easy", "tempo", "threshold", "vo2max", "sprint"] as const;
@@ -61,10 +62,12 @@ export const ALL_CELLS: Cell[] = INTENSITIES.flatMap((intensity) => FORMATS.map(
 export const lockedByCap = (c: Cell, capped: boolean) => capped && (rank(c.intensity) > rank("threshold") || FORMAT_MODE[c.format] !== "ERG" || c.format === "race");
 const allowed = (c: Cell, capped: boolean) => coherent(c) && !lockedByCap(c, capped);
 
-export function proposalFor(c: Cell, minutes: number, cp: number): Proposal {
+/** Under a cap every planned target is ≤ 97 % of it (CAP_RULE.planPct; the cap is 100 % of CP), so ERG ripple never reads as an exceedance. */
+export function proposalFor(c: Cell, minutes: number, cp: number, capped = false): Proposal {
   const make = SESSIONS[`${c.intensity}.${c.format}`];
   if (!make) throw new Error(`no session for ${cellName(c)}`);
-  const [name, main] = make(minutes - 15);
+  const [name, raw] = make(minutes - 15);
+  const main = capped ? raw.replace(/(\d+)%/g, (m, p: string) => (Number(p) > CAP_RULE.planPct ? `${CAP_RULE.planPct}%` : m)) : raw;
   const r = parseDsl(`"Warm-up" 10m ramp 45-70%\n${main}\n"Cool-down" 5m ramp 60-40%`, cp);
   if ("error" in r) throw new Error(r.error.message);
   return { workout: { id: `wish-${c.intensity}-${c.format}`, name, ftp: cp, nodes: r.nodes }, rationale: cellName(c) };
@@ -195,7 +198,7 @@ export function profileEffects(p: TrainingProfile): Effect[] {
       rule: "R-DUR-01",
       when: can ? `on days with 2 h+ to ride (budget ${p.hoursPerWeek} h/week)` : p.returning ? "not during a return block" : `needs 5 h/week or more (yours: ${p.hoursPerWeek} h)`,
     });
-    out.push({ id: "cho", text: "Rides over 75–90 min come with a carbohydrate target.", rule: "R-CHO-01" });
+    out.push({ id: "cho", text: "Fuelling guideline (training, not diet): rides over 75–90 min come with a carbohydrate target.", rule: "R-CHO-01" });
   }
   if (p.focus === "racing" || p.focus === "climbing") out.push({ id: "vo2", text: "VO2max work as 30/15 sets, alternating with 4–5′ intervals.", rule: "R-INT-01" });
   out.push({ id: `mix-${p.focus}`, text: `Which hard sessions suit “${FOCI.find((f) => f[0] === p.focus)?.[1]}” is coaching convention: no trial in the pack compares goal-specific mixes.` });

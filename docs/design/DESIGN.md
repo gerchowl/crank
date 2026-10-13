@@ -3,7 +3,7 @@
 Status: **proposed** (#24), round 5 — the final design round (after three rounds of astra and opus reviews; items
 still open after this round are filed as issues, not further rounds; the PR body maps every
 finding to its resolution). It drives the M1 UI issues once the reviews accept it.
-**Addendum §15** (#87, round 2): training profile, planner wish, Why?/Background.
+**Addendum §15** (#87, round 3): training profile, planner wish, Why?/Background.
 Prototype: `design/prototype/` (`pnpm -C design/prototype dev`). Screenshots: `docs/design/screens/`
 (`pnpm -C design/prototype screens`). Where this document conflicts with `spec/UX-SPEC.md` or
 `spec/VIEWS.md`, this document wins; §9 lists every such place. Engine behaviour (pauses, reconnects, ERG
@@ -379,6 +379,9 @@ persisted after every step, so a relaunch shows **"Welcome back — continue at 
   silent** — there is no capped plan and no one-click override. Riding stays possible only as a **deliberate,
   logged free ride** (no plan, no targets, coach off, flat-road resistance): "Ride without a plan…" opens a
   confirmation that must be ticked ("I understand crank isn't advising this ride, and I'll stop at any symptom").
+  **A medical stop plus a health cap means no ride at all**: the free ride has no targets, so the trainer can't
+  hold the cap; "Ride without a plan…" is not offered and the guard refuses it on every path (the medical-stop
+  gate wins, `today-stop-and-cap`).
   The stop is lifted only by **recording a medical clearance** in Settings → Health — the date of the check (not
   in the future), who cleared the rider, and an explicit statement — and every change is kept in a log.
   **Re-check:** once a day, before the first start, the rider answers **all five red flags** again (the same
@@ -694,7 +697,7 @@ Reviewers should judge, with the screenshots open:
 
 ## 15. Addendum (#87): training profile, planner wish, Why? and Background
 
-Status: **proposed**, round 2 (#87; round-1 reviews by astra and opus, resolution in §15.9). It is the design
+Status: **proposed**, round 3 (#87; round-1 reviews by astra and opus, the round-2 re-review by opus; resolution in §15.9). It is the design
 gate for the owner requests #85 (training profile), #86 (planner wish) and #84 (help / about / background). It
 extends §1–§14 and changes them only where §15.6 says so. Screens: `docs/design/screens/` (§15.7). The planner
 and the coach behind these screens are #59; §15.4 records the contract fields they need.
@@ -769,7 +772,7 @@ step; Skip discards it.
 |---|---|---|
 | Plan builder → fixed calendar to the event (TrainerRoad, TrainingPeaks) | **Change** | A calendar computed months ahead ignores how the rider is; the evidence supports a structure modulated daily (R-RDY-01 · A). |
 | Rider "type" / phenotype labels (Xert, TrainerRoad) | **Drop** | Profiling uses CP, W′, Pmax, durability (R-VLA-01 · B); a label adds no information. |
-| Weight loss as a training goal (ONBOARDING §1.4) | **Drop as a focus** | It doesn't change the session mix differently from general fitness; crank gives no nutrition or medical advice. |
+| Weight loss as a training goal (ONBOARDING §1.4) | **Drop as a focus** | It doesn't change the session mix differently from general fitness; crank gives no diet, weight-loss or medical advice (the in-ride fuelling target is a training guideline, R-CHO-01 · A). |
 | Taper scheduled from the form curve (CTL/TSB) | **Change** | R-LOAD-01 · B; a lighter final week is labelled convention until #143. |
 | "Return from injury/break" as a plan type | **Change** | A state with an end, not a goal; injury goes through the health check (§5.8). |
 | Hours-per-week budget | **Keep** | The cheapest honest input to the weekly structure. |
@@ -803,7 +806,7 @@ viewport** at 1440×900 and 1024×768 (scenes `today-wish-*`, viewport captures)
 
 ```
 ┌ saddle proposal (full width, above the fold) ─────────────────────────────────────┐
-│ ▌Wish VO2max → Tempo · Intervals ▼2                     T3+  (the outcome line)    │
+│ ▌Wish VO2max → Tempo · Intervals, 2 steps easier        T3+  (the outcome line)    │
 │  Tempo 2×10′ · 40:00                                    T3+  (the session)          │
 │  Legs dead, sleep short: two signals against hard work today.  [Why? B · good | D cut-off] │ T3
 │  ▁▁▂▂██▂▂██▂▁  (profile, cap line when capped)                                     │
@@ -839,8 +842,8 @@ granted wish reads **"✓ wish"**; an **adapted** wish reads **"≈ wish"** (sam
 |---|---|---|---|
 | **No wish** | — | "Coach's pick: VO2max · Intervals" | Easier / Harder / Other wish |
 | **As wished** | nothing argues against it | "✓ Your wish: Threshold · Intervals" (+ a session note with its rule) | Start |
-| **Adapted** | same cell, smaller dose, for a readiness reason | "≈ Wish, shortened: 60 min, not 2 h" · "Sleep short: long continuous efforts are cut first" (R-RDY-03 · A, cut-off D) | **Ride the full 2 h** (one tap, logged) |
-| **Deferred** | readiness or load argues against hard work | "Wish VO2max → Tempo · Intervals ▼2" · "Legs dead, sleep short: two signals against hard work today" (R-RDY-02 · B, cut-off D) · "Your wish moves to Thu 15 Oct" | **Ride my wish** (logged) |
+| **Adapted** | same cell, smaller dose, for a readiness reason | "≈ Wish, shortened: 60 min, not 2 h" · "Sleep short: long continuous efforts are cut first" (R-RDY-03 · A, cut-off D); *Why today* says "Shortened to 60 of your 120 min" | **Ride the full 2 h** (one tap, logged) |
+| **Deferred** | readiness or load argues against hard work | "Wish VO2max → Tempo · Intervals, 2 steps easier" · "Legs dead, sleep short: two signals against hard work today" (R-RDY-02 · B, cut-off D) · "Your wish moves to Thu 15 Oct" | **Ride my wish** (logged) |
 | **Blocked by safety** | medical stop; health cap | stop: **no matrix, no proposal** (§5.8); cap: the cell is not a choice ("cap"), Harder stops at the cap; an API request for it → "⚠ Cap: …" | none — lifted only in Settings → Health |
 
 Rules: facts first, then the rule (ID + evidence grade + cut-off grade, *Why?*), never a score. **A deviation needs
@@ -858,22 +861,38 @@ so *Hills* (SIM) and *Open ride* (free) are "cap" cells, and so is *Race sim* (i
 without the rider's action (a surprise at the worst moment, §1 constraint 6), needs new ADR-0002 §7 behaviour for
 a temporary state, and a capped rider loses little by riding ERG for a few weeks. The invariant — **actual power
 above the cap is prevented, or else flagged and logged** — is enforced at three points:
-1. **Plan:** the planner clips the wish space before planning; every delivered target ≤ cap, every block ERG
-   (`test:safety` checks every cell, and every "ride my wish", under the cap).
+1. **Plan:** the planner clips the wish space before planning; every delivered block is ERG and **every planned
+   target is ≤ 97 % of the cap** (272 W under a 280 W cap; `test:safety` checks every cell and every "ride my wish").
+   The margin exists so that a threshold session doesn't sit exactly on the cap, where normal ERG ripple would
+   trip the flag below.
 2. **Start:** the single start guard (§5.8, #81) refuses any workout with a target above the cap or a non-ERG
    block, from every path including Workouts and the free ride ("Above your injury cap", `workouts-start-capped`);
    it never edits a workout silently. The medical stop outranks it.
-3. **Ride:** the core clamps every ERG target to the cap (defence in depth); if measured power still exceeds the
-   cap by > 3 % for 3 s (e.g. a trainer that drops ERG), row 1 shows "⚠ 312 W above cap · logged", the warning
-   tone plays, the event is logged for Review, and the coach may only `ease_off` (`ride-cap-exceeded`). Engine
-   requirement: #32; safety test: #81.
+3. **Ride:** the core clamps every ERG target to the cap (defence in depth) and watches measured power. **An
+   exceedance is power above cap + 3 % (288 W) sustained for 3 s**; one sample at or below that ends it. Why these
+   numbers: with targets ≤ 97 % the flag needs ≥ 6 % (~17 W) over the highest target, well above the few-percent
+   ripple of a trainer holding ERG; 3 s is the window of the 3-s power the rider sees, so a flag never fires on a
+   number the screen hasn't shown, and a single overshoot sample can't trip it. Both are conventions (D) to be
+   checked against measured NEO ripple in the hardware tests (#23). On an exceedance, in the same frame:
+   - **row 1 becomes the status** at the ride tier (T3, warning fill + ⚠ + words): "⚠ 312 W · over your 280 W cap
+     · ease off" — what, how much, what to do, readable at 1 m;
+   - **the gauge shows the same measured power** (band marker pinned high, "▲ 74 W" to the target);
+   - **the coach lane asks a strong `ease_off`** ("Ease off to 231 W? · Above your injury cap"), the only verdict
+     allowed while it lasts; the **warning tone** plays;
+   - **a `CapExceeded { at, watts, forS }` entry is logged** with the ride (one per episode; a dip below the
+     threshold ends the episode) and listed in Review.
+   `test:safety` feeds measured power over time and checks both sides: 10 s at 288 W (+2.9 %) and 2.5 s at 300 W
+   raise nothing; 3.5 s at 300 W raises the status, the call and exactly one log entry; a second episode adds a
+   second entry (`ride-cap-exceeded`). Engine requirement: #32; core safety tests: #81.
 
 **Deferred wish lifecycle.** A wish is a record (§15.4) with a stable id, the day it was for, and an **expiry fixed
 at creation (7 days), never renewed**. States: `open` → `fulfilled` (a ride delivering the cell was *completed*) ·
 `overridden` (ridden anyway) · `replaced` (the rider set another wish) · `deferred` (moved to a date by the
 planner; may be deferred again, but not past its expiry) · `expired`. On the day it was moved to, Today shows it
 pre-set in the matrix with "↻ Carried over from Sun 11 Oct: VO2max · Intervals · expires Sun 18 Oct" and *Drop
-it* (`today-wish-carried`); the planner treats it like a fresh wish. One open wish at a time. Each outcome stores
+it* (`today-wish-carried`); the planner treats it like a fresh wish. **Until the check-in is confirmed nothing reads
+as granted** — the cell says "↻ wish" and the card "↻ Your wish, after your check-in: …", because the answer
+depends on today's check-in. One open wish at a time. Each outcome stores
 the knowledge-pack version its reasons came from, so Review can show the explanation that was shown then.
 
 **Conventions challenged**
@@ -996,9 +1015,13 @@ interface WishOutcome {
 // Proposal gains: cell, wishOutcome, reasons: Reason[] (replaces prose, #29), profileVersion.
 // Commands (all through the core's single guard, #81): wish.set(cell | null), wish.drop(id),
 //   proposal.rideAsWished(proposalId) → logged { at, wishId, reasonsShown }; refused unless overridable.
-// Health cap (§15.2, option a): CapState { active; capW; ergOnly: true } — the planner clips the wish space with it,
-//   ride.start refuses non-ERG blocks or targets > capW (`cap_requires_erg` / `cap_exceeded_target`), the engine
-//   clamps ERG targets to capW and emits CapExceeded { at, watts, forS } when measured power > capW × 1.03 for 3 s (#32).
+// Health cap (§15.2, option a):
+//   CapState { active; capW; ergOnly: true; planPct: 97; tolPct: 3; windowS: 3; log: CapExceeded[] }
+//   - the planner clips the wish space and keeps every target ≤ capW × planPct / 100
+//   - ride.start refuses non-ERG blocks or targets > capW (`cap_requires_erg` / `cap_exceeded_target`);
+//     with a medical stop as well, every start including the free ride is refused (§5.8)
+//   - the engine clamps ERG targets to capW and emits CapExceeded { at, watts, forS } once per episode when
+//     measured power > capW × (1 + tolPct / 100) for ≥ windowS; the judge may then only ease_off (#32, #81).
 ```
 
 Invariants for the ADR and the golden evals (#59):
@@ -1035,7 +1058,9 @@ cap = dashed edge + "cap", cursor = outline + its name at T3+, C/D = dashed chip
     `settings-background`, `settings-background-topic`
   - **saddle**, captured as the viewport (not the full page): `today-wish-granted`, `today-wish-deviates`,
     `today-wish-adapted`, `today-wish-capped`, `today-wish-remote`, `today-why`
-  - **cap:** `workouts-start-capped`, `ride-cap-exceeded`
+  - **cap:** `workouts-start-capped`, `ride-cap-exceeded` (measured power fed through the cap monitor),
+    `today-stop-and-cap`
+  - **profile draft:** `settings-profile-editing` (before → after: *new*, *no longer*, "Not now")
   - `today-wish-long` from round 1 is removed (duration is no longer a format).
 - Intentionally changed: `today`, `today-health-cap`, `today-medical-stop`, `today-free-ride-confirm` (wish card
   and/or the six time choices in the check-in); `start-handoff-100ms` (Today underneath); every `onboarding-*`
@@ -1053,7 +1078,11 @@ cap = dashed edge + "cap", cursor = outline + its name at T3+, C/D = dashed chip
   - under the cap, no cell, override or format delivers a target above the cap or a free block (checked on the delivered workout)
   - Harder stops at the cap
   - a workout above the cap is refused at start
-  - power above the cap in a ride is flagged and logged
+  - every planned target under the cap is ≤ 97 % of it
+  - over-cap power fed over time: within tolerance (+2.9 % for 10 s) and shorter than the window (2.5 s) raise
+    nothing; 3.5 s at 300 W raises the row-1 status, the coach's ease-off and one log entry; the gauge shows the
+    same power; a second episode is a second entry
+  - a medical stop plus a cap: no free-ride offer, and the guard refuses the free ride
   - Pause alone reaches all 19 cells
   - Skip changes the format, − reaches Easy, and Coach uses the wish
   - an adapted wish is "≈ wish" and has a one-tap fix
@@ -1091,3 +1120,16 @@ cap = dashed edge + "cap", cursor = outline + its name at T3+, C/D = dashed chip
 | opus m14 · astra 8 · grid role without arrows; contrast; cap copy | **Fixed** — plain buttons with state labels, 48 px targets; cap edge/text/cursor pairs in `contrast.mjs`; one cap sentence everywhere |
 | opus m15 · profile versioning; time non-overridable | **Fixed** — `TrainingProfile.version`, `profileVersion` on proposals; time is never adapted except by a readiness rule (overridable) |
 | astra 3 · custom duration | **Decided against** — six time choices to 3 h; anything else via Edit (no picker at the bike) |
+
+**Round-2 re-review (opus, at `e3cc5e7`) → round 3**
+
+| Finding | Resolution |
+|---|---|
+| r2-1 · over-cap warning is a 14 px chip, not consistent, single sample, "logged" without a log | **Fixed** — row-1 status at T3 with warning fill; gauge and coach `ease_off` agree; `CapMonitor` applies > cap + 3 % for 3 s over a measured-power stream; one `CapExceeded` log entry per episode; trace-driven tests on both sides of the rule |
+| r2-2 · threshold targets the cap exactly → false flags from ERG ripple | **Fixed** — planned targets ≤ 97 % of the cap; flag at cap + 3 % for 3 s (justified in §15.2, checked on hardware in #23); in `CapState` (§15.4); both tested |
+| r2-3 · carried wish shows ✓ before the check-in | **Fixed** — "↻ wish" / "↻ Your wish, after your check-in" until confirmed |
+| r2-4 · "Why today" ignores the adapted minutes | **Fixed** — "Shortened to 60 of your 120 min: …" |
+| r2-5 · "no nutrition advice" vs a carbohydrate target | **Fixed** — "no diet, weight-loss or medical advice"; the cue reads "Fuelling guideline (training, not diet)" with R-CHO-01 · A |
+| r2-6 · no scene for the profile draft | **Fixed** — `settings-profile-editing` |
+| r2-7 · medical stop + cap: free ride | **Fixed** — stop + cap = no ride (§5.8), no offer, guard refuses; tested |
+| r2-8 · "▼2"; 1440 Why? layout | **Fixed** — "2 steps easier"; the outcome line wraps inside the pushed-aside layout (checked in `today-why` at 1440) |

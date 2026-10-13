@@ -105,7 +105,8 @@ try {
   const bad = [];
   const delivered = async (label) => {
     const [i, w, free] = [await prop(p).getAttribute("data-delivered"), Number(await prop(p).getAttribute("data-max-w")), Number(await prop(p).getAttribute("data-free"))];
-    if (ABOVE_CAP.includes(i) || w > capW + 0.5 || free > 0) bad.push(`${label} → ${i}, max ${w} W, ${free} free blocks`);
+    // planned targets keep a 3 % margin below the cap (CAP_RULE.planPct), so ERG ripple can't read as an exceedance
+    if (ABOVE_CAP.includes(i) || w > capW * 0.97 + 0.5 || free > 0) bad.push(`${label} → ${i}, max ${w} W, ${free} free blocks`);
   };
   for (let i = 0; i < (await open.count()); i++) {
     const label = await open.nth(i).getAttribute("data-cell");
@@ -119,7 +120,7 @@ try {
       await delivered(`${label} ridden anyway`);
     }
   }
-  check("Cap: no wish, override or format delivers a target above the cap or a block the trainer can't hold", bad.length === 0, bad.join("; "));
+  check("Cap: no wish, override or format delivers a target above 97 % of the cap or a block the trainer can't hold", bad.length === 0, bad.join("; "));
   await p.getByRole("button", { name: "Let the coach pick" }).click();
   await settled(p);
   for (let i = 0; i < 8; i++) await p.keyboard.press("+");
@@ -127,8 +128,39 @@ try {
   check("Cap: Harder / Intensity + from the saddle stops at the cap", (await prop(p).getAttribute("data-delivered")) === "threshold");
   p = await page("?scene=workouts-start-capped");
   check("Cap: a workout above the cap is refused at start (every path, one guard)", (await p.locator('[aria-label="Ride blocked by the health cap"]').count()) === 1);
-  p = await page("?scene=ride-cap-exceeded");
-  check("Cap: power above the cap in a ride is flagged and logged", (await p.locator(".cap-chip.over").textContent())?.includes("above cap · logged") ?? false);
+  // in the ride: measured power is fed over time through the core's cap monitor (stand-in); rule = > cap + 3 % for 3 s
+  p = await page("?scene=ride-capped");
+  const feed = (trace) => p.evaluate((tr) => window.__crank.session.get().injectPower(tr), trace);
+  const capNow = async () => ({
+    ...(await p.evaluate(() => {
+      const s = window.__crank.session.get();
+      return { log: s.cap.get().log.length, calls: s.nudges.get().filter((n) => n.callId.startsWith("cap-")).length };
+    })),
+    row: (await p.locator(".row1.cap-over").count()) === 1,
+    lane: (await p.locator(".coach").first().textContent()) ?? "",
+  });
+  await feed([[288, 10]]); // 2.9 % over the 280 W cap: inside the tolerance, however long
+  let c = await capNow();
+  check("Cap: 10 s at 288 W (within cap + 3 %) raises nothing", c.log === 0 && c.calls === 0 && !c.row, JSON.stringify(c));
+  await feed([[300, 2.5]]); // over, but shorter than the 3 s window
+  c = await capNow();
+  check("Cap: 2.5 s at 300 W (shorter than the window) raises nothing", c.log === 0 && c.calls === 0 && !c.row, JSON.stringify(c));
+  await feed([[270, 1], [300, 3.5]]); // a dip ends the earlier run; then 3.5 s sustained
+  c = await capNow();
+  const statusText = (await p.locator(".row1.cap-over").textContent().catch(() => "")) ?? "";
+  check("Cap: 3.5 s at 300 W → row-1 status, strong ease-off call, one log entry", c.log === 1 && c.calls === 1 && c.row && statusText.includes("300 W") && /Ease off/.test(c.lane), `${JSON.stringify({ ...c, lane: c.lane.slice(0, 30) })} "${statusText}"`);
+  const target = await p.evaluate(() => {
+    const s = window.__crank.session.get();
+    return Math.round(s.current.get().compiled.blocks[s.status.get().blockIndex].powerFrom);
+  });
+  check("…and the gauge shows the same measured power (Δ to the target)", ((await p.locator(".ride").textContent()) ?? "").includes(`▲ ${300 - target} W`), `target ${target}`);
+  await feed([[270, 1], [305, 4]]);
+  c = await capNow();
+  check("Cap: a second sustained episode is a second log entry", c.log === 2, JSON.stringify(c));
+  p = await page("?scene=today-stop-and-cap");
+  const noFree = (await p.getByRole("button", { name: "Ride without a plan…" }).count()) === 0;
+  await p.evaluate(() => window.__crank.requestStart(window.__crank.freeRide(), "today"));
+  check("Medical stop + cap: no ride at all — no free-ride offer, and the guard refuses it", noFree && (await p.locator('[aria-label="Ride blocked by the medical stop"]').count()) === 1);
 
   // 5. the saddle path reaches every coherent cell, format included, with the remote's actions only
   p = await page("?scene=today-wish-granted");
