@@ -1,5 +1,5 @@
 //! ADR-0002 §4 part A: independent control vectors and ANT framing checks.
-use crank_fec::{ControlPage as C, FrameError as E, MsgType, decode, encode};
+use crank_fec::{ControlPage as C, FrameError as E, MsgType, Page, decode, encode};
 
 fn frame(p: [u8; 8]) -> [u8; 13] {
     let mut b = [0xa4, 9, 0x4e, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -19,7 +19,13 @@ fn tacx_worked_example() {
     let f = decode(&bytes).expect("Tacx worked example, XOR including sync");
     assert_eq!(f.msg_type, MsgType::Broadcast);
     assert_eq!(f.channel, 5);
-    assert_eq!(f.page, [0x10, 0x19, 4, 0, 0, 0, 0xff, 0x24]);
+    let Page::GeneralFe(p) = f.page else {
+        panic!("general FE")
+    };
+    assert!((p.elapsed_s - 1.0).abs() < f32::EPSILON);
+    assert_eq!(p.equipment_type, 25);
+    assert_eq!(p.state, 2);
+    assert_eq!(p.flags, 4);
 }
 
 #[test]
@@ -100,7 +106,13 @@ fn rejects_malformed_frames() {
     bad[2] = 0x50;
     bad[12] ^= 0x4e ^ 0x50;
     assert_eq!(decode(&bad), Err(E::MessageType(0x50)));
-    assert_eq!(decode(&b).expect("unknown").page, [99, 1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(
+        decode(&b).expect("unknown").page,
+        Page::Unknown {
+            page: 99,
+            raw: [99, 1, 2, 3, 4, 5, 6, 7]
+        }
+    );
 }
 
 #[test]
@@ -263,7 +275,15 @@ fn page_55_frame_and_typed_diameter_errors() {
     let decoded = decode(&b).expect("acknowledged frame");
     assert_eq!(decoded.msg_type, MsgType::Acknowledged);
     assert_eq!(decoded.channel, 5);
-    assert_eq!(decoded.page, [55, 0x4c, 0x1d, 255, 0x88, 0x0c, 70, 0]);
+    assert_eq!(
+        decoded.page,
+        Page::UserConfig {
+            rider_kg: Some(75.0),
+            bike_kg: Some(10.0),
+            wheel_m: Some(0.708),
+            gear_ratio: None,
+        }
+    );
     for wheel_m in [-0.001, 2.541, f32::NAN, f32::INFINITY] {
         let c = C::UserConfig {
             rider_kg: 75.0,
