@@ -435,3 +435,30 @@ pre.dsl ins { text-decoration: none; background: color-mix(in srgb, var(--status
 @media (max-height: 800px) {
   .ride { grid-template-rows: 56px minmax(0, 1fr) minmax(128px, 22vh); }
 }
+
+/* ---------- round 3: honesty and evidence ---------- */
+/* stale or unavailable values: muted, labelled, never styled as live */
+.stale { color: var(--ink-muted); font-style: italic; }
+.estimate.stale b { color: var(--ink-muted); }
+.estimate .prov { display: block; font-size: 13px; margin: 0; color: var(--ink-muted); font-weight: 400; }
+.day .tss { font-size: 11px; margin: 0; color: var(--ink-secondary); }
+svg .cap-line { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 8 5; }
+.chip.cap-chip { color: var(--status-warning); border-color: var(--status-warning); }
+/* every area / band has a ≥ 3:1 edge; fills are decoration (DESIGN §6.3) */
+svg .area-edge { fill: none; stroke: var(--target); stroke-width: 2; }
+svg .band-edged { stroke: var(--series-hr); stroke-width: 1; stroke-dasharray: 3 3; }
+.trend svg .band { stroke: var(--series-power); stroke-width: 1; stroke-dasharray: 3 3; }
+svg .gap { fill-opacity: 1; }
+svg .gap-line { stroke: var(--ink-muted); }
+svg .usual-hr { stroke: var(--ink-secondary); stroke-width: 2; }
+.key.usual-key { background: repeating-linear-gradient(90deg, var(--ink-secondary) 0 4px, transparent 4px 7px); }
+.ride-table tr.event-row td { font-weight: 600; color: var(--ink-primary); background: color-mix(in srgb, var(--status-warning) 12%, transparent); }
+.live-dot.stale { background: var(--surface-0); border-color: var(--ink-muted); }
+.recovery-chart .target-tag { position: absolute; right: 0; transform: translateY(-110%); font-size: 12px; font-weight: 700; color: var(--ink-secondary); }
+.banner-actions { display: flex; gap: 12px; align-items: center; }
+.banner-actions button { min-height: 44px; font-size: var(--t3); font-weight: 700; }
+.coach.idle .idle-metric, .coach.idle .idle-note { color: var(--ink-secondary); }
+.idle-metric.detail { display: flex; flex-direction: column; color: var(--ink-primary) !important; }
+.yn.unanswered > span:first-child { color: var(--ink-primary); }
+.yn .tag { margin-left: 6px; color: var(--status-info); }
+.settings .device > span:nth-child(4) { white-space: nowrap; }

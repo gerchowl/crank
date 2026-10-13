@@ -4,7 +4,7 @@ import type { Checkin, Proposal } from "@crank/shared";
 import { Profile } from "../charts";
 import { editor } from "../editor/model";
 import { blockName, mmss } from "../format";
-import { athleteModel, calibration, devices, lastCheckin, proposalReasons, sceneFixture, week } from "../mock/ext";
+import { ageDays, athleteModel, calibration, CAP_PCT, cappedProposal, devices, lastCheckin, proposalReasons, sceneFixture, STALE_DAYS, week } from "../mock/ext";
 import { backend, loadRide, navigate, noStatus, settle, useSession } from "../session";
 import { useStore } from "../store";
 
@@ -39,9 +39,11 @@ export function Today() {
   useEffect(() => {
     let live = true;
     setPending(true);
+    const capped = sceneFixture.get().healthCap;
     void settle(backend.planner.propose(c)).then((p) => {
       if (!live) return;
-      setProposal(p);
+      // the planner respects the health cap (stand-in until the planner knows about it)
+      setProposal(capped ? cappedProposal(backend.athlete.ftp, c.minutes) : p);
       setPending(false);
     });
     return () => {
@@ -108,8 +110,8 @@ export function Today() {
         <div className="col">
           {fx.healthCap && (
             <section className="card cap status-warning" role="status" aria-label="Intensity cap">
-              <b>⚠ Intensity capped at threshold</b>
-              <span className="muted"> until you confirm a medical check (from your health answers).</span>
+              <b>⚠ Intensity capped at endurance ({CAP_PCT.endurance} % FTP, {Math.round((backend.athlete.ftp * CAP_PCT.endurance) / 100)} W)</b>
+              <span className="muted"> — you reported chest pain on exertion. Get a medical check before hard efforts; the cap lifts when you confirm it.</span>
               <div className="actions">
                 <button>Confirm check</button>
               </div>
@@ -121,12 +123,12 @@ export function Today() {
               <h2>{proposal?.workout.name ?? " "}</h2>
               <p className="big-meta">{compiled ? `${mmss(compiled.totalS)} · TSS ${Math.round(compiled.tss)} · IF ${compiled.if.toFixed(2)}` : " "}</p>
             </div>
-            <div className="proposal-profile">{compiled && <Profile blocks={compiled.blocks} zones={backend.zones.power} height={100} label="Proposed workout profile" />}</div>
+            <div className="proposal-profile">{compiled && <Profile blocks={compiled.blocks} zones={backend.zones.power} height={100} capW={fx.healthCap ? (backend.athlete.ftp * CAP_PCT.endurance) / 100 : undefined} label="Proposed workout profile" />}</div>
             <h3>Why today</h3>
             <ul className="reasons">
               {proposal &&
-                proposalReasons(proposal, c.minutes, word("legs", c.legs), word("sleep", c.sleep)).map((r) => <li key={r}>{r}</li>)}
-              {fx.healthCap && <li>Capped at threshold: no VO2 work until the medical check is confirmed.</li>}
+                proposalReasons(proposal, c.minutes, word("legs", c.legs), word("sleep", c.sleep), !!fx.healthCap).map((r) => <li key={r}>{r}</li>)}
+              {fx.healthCap && <li>Every target stays under the dashed cap line.</li>}
               <li className="muted">
                 Planned on CP {cp?.value} ± {cp?.sd} W ({calibration.confidence} confidence, {calibration.rides} rides).
               </li>
@@ -153,14 +155,22 @@ export function Today() {
 
           <section className="card model" aria-label="Athlete model">
             <h2>Your model</h2>
-            {athleteModel.slice(0, 3).map((e) => (
-              <p key={e.label} className="estimate">
-                <span>{e.label}</span>
-                <b>
-                  {e.value} <span className="pm">± {e.sd}</span> <span className="unit">{e.unit}</span>
-                </b>
-              </p>
-            ))}
+            {athleteModel.slice(0, 3).map((e) => {
+              const age = ageDays(e.updated);
+              return (
+                <div key={e.label} className={age >= STALE_DAYS ? "estimate stale" : "estimate"}>
+                  <span>
+                    {e.label}
+                    <small className="prov">
+                      {e.source === "prior" ? "prior" : `from ${e.n} ${e.source}`} · {age === 0 ? "today" : `${age} d ago`}
+                    </small>
+                  </span>
+                  <b>
+                    {e.value} <span className="pm">± {e.sd}</span> <span className="unit">{e.unit}</span>
+                  </b>
+                </div>
+              );
+            })}
             <p className="muted small">Calibrating: {calibration.unlocksNext}.</p>
           </section>
         </div>
@@ -178,6 +188,7 @@ function WeekCard() {
           <div key={d.day} className={`day day-${d.kind}`}>
             <span>{d.day}</span>
             <b>{d.kind === "rest" ? "rest" : d.kind === "today" ? "today" : d.tss}</b>
+            {d.kind === "done" && <small className="tss">TSS</small>}
           </div>
         ))}
       </div>
@@ -217,19 +228,28 @@ export function Ready() {
             {!trainerOk && <button>Retry</button>}
           </li>
           <li className={hrOk ? "status-good" : "status-warning"}>
-            <span aria-hidden>{hrOk ? "✓" : "!"}</span>
+            <span aria-hidden>{hrOk ? "✓" : "…"}</span>
             <span>
-              <b>{devices[1]?.name}</b> {hrOk ? "· connected" : "not found — you can ride without HR: HR-guided recoveries then run to their maximum, and the coach can't push."}
+              <b>{devices[1]?.name}</b>{" "}
+              {hrOk ? "· connected" : "not found yet — still scanning. Wet the strap's contacts. If you start without it, it joins as soon as it's found; until then HR-guided recoveries run to their maximum and the coach can't push."}
             </span>
-            {!hrOk && <button>Retry</button>}
+            {!hrOk && <button autoFocus>Retry now</button>}
           </li>
+          {fx.healthCap && (
+            <li className="status-warning">
+              <span aria-hidden>⚠</span>
+              <span>
+                <b>Capped at {CAP_PCT.endurance} % FTP</b> until your medical check is confirmed
+              </span>
+            </li>
+          )}
           <li className="muted">
             <span aria-hidden>i</span>
             <span>Mode ERG · the trainer holds the target; keep your cadence up</span>
           </li>
         </ul>
         <div className="actions">
-          <button className="primary big" autoFocus disabled={!trainerOk} onClick={go}>
+          <button className="primary big" autoFocus={hrOk} disabled={!trainerOk} onClick={go}>
             {hrOk ? "Start riding" : "Start without HR"}
           </button>
           <button onClick={() => navigate("today")}>Back</button>
