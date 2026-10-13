@@ -26,17 +26,13 @@
         # Fetch both supported targets so one hash works on macOS and Linux.
         prePnpmInstall = ''pnpm config set --location=project --json supportedArchitectures '["darwin-arm64","linux-x64"]' '';
         fetcherVersion = 4; hash = "";
-        # Temporary cross-platform fetcher diagnostics for #28; removed after comparison.
+        # Temporary archive-header diagnostics for #28; removed after comparison.
         postFixup = ''
-          echo PNPM_DIAGNOSTIC_FILES_BEGIN
-          (cd "$storePath"; find . -type f -print0 | sort -z | xargs -0 sha256sum)
-          echo PNPM_DIAGNOSTIC_FILES_END
-          echo PNPM_DIAGNOSTIC_SQL_BEGIN
-          gzip -nc "$storePath/v11/index.db.sql" | base64 -w0
+          echo PNPM_DIAGNOSTIC_HEADER_BEGIN
+          zstd -dc "$out/pnpm-store.tar.zst" > "$TMPDIR/store.tar"
+          head -c 32768 "$TMPDIR/store.tar" | base64 -w0
           echo
-          echo PNPM_DIAGNOSTIC_SQL_END
-          echo PNPM_DIAGNOSTIC_TAR
-          zstd -dc "$out/pnpm-store.tar.zst" | sha256sum
+          echo PNPM_DIAGNOSTIC_HEADER_END
         '';
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
