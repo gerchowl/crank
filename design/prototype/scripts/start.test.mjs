@@ -256,7 +256,7 @@ try {
         }, shot.toString("base64"));
         series.push({ t, gap: at.gap, dip });
       }
-      const hair = series.filter((x) => x.gap < 0.95 && x.dip > 0.02);
+      const hair = series.filter((x) => x.gap < 1 && x.dip > 0.02);
       check(`slit ${tag} @${k}: no hairline while the faces are < 1 px apart`, hair.length === 0, hair.length ? `t=${hair[0].t} ms: gap ${hair[0].gap.toFixed(2)} px, dip ${hair[0].dip.toFixed(2)}` : "");
       const open1 = series.findIndex((x) => x.gap >= 1);
       const wider = series.slice(open1).every((x, i, all) => i === 0 || x.dip >= all[i - 1].dip - 0.03);
@@ -280,12 +280,32 @@ try {
     check("failure: says what to do", /Try again/.test(s.alert ?? "") && /quit and reopen/.test(s.alert ?? ""));
     check("failure: role=alert, start screen stays, not inert", (await page.locator('.start-error[role="alert"]').count()) === 1 && s.start && !s.inert);
     await page.getByRole("button", { name: "Try again" }).click();
-    await page.clock.runFor(1190);
+    // right after the click, and a frame or two later: a restarted motion would be back at t ≈ 0 (not at rest)
+    await page.clock.runFor(34);
+    const kept = await motion(page);
+    check("failure: Try again does not restart the motion (t stays at 1080, at rest)", kept.rest === true && kept.t === 1080, JSON.stringify(kept));
+    await page.clock.runFor(1190 - 34);
     let r = await state(page);
     check("failure: Try again starts a fresh boot with its own status clock (none before 1.2 s)", r.alert === null && r.status === null);
-    check("failure: Try again does not restart the motion (still at rest)", (await motion(page)).rest === true && (await motion(page)).t === 1080);
     await page.clock.runFor(20);
     check("failure: …status after 1.2 s", (await state(page)).status === "Starting crank…");
+    await close();
+  }
+  // 5b. the core fails *during* the motion: the alert shows at once, the motion is not cut — it keeps advancing
+  // past the failure and rests on the wordmark (BRAND.md §Boot behaviours, boot failure)
+  {
+    const { page, close } = await open("boot=fail:300&theme=dark");
+    await page.waitForSelector(".start svg");
+    await page.clock.runFor(310);
+    const at = await motion(page);
+    const s = await state(page);
+    check("failure mid-motion: alert shown at once, motion still running", s.alert !== null && at.rest === false && at.t > 0 && at.t < 1080, JSON.stringify(at));
+    await page.clock.runFor(96);
+    const later = await motion(page);
+    check("failure mid-motion: painted t keeps advancing 1:1 past the failure (not cut, not frozen)", later.t - at.t >= 80 && later.t - at.t <= 112, `${at.t} → ${later.t}`);
+    await page.clock.runFor(900);
+    const end = await motion(page);
+    check("failure mid-motion: plays through and rests on the wordmark, alert still up", end.rest === true && end.t === 1080 && (await state(page)).alert !== null, JSON.stringify(end));
     await close();
   }
   {
