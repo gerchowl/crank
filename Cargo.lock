@@ -485,6 +485,10 @@ name = "crank-devices"
 version = "0.1.0"
 dependencies = [
  "crank-domain",
+ "futures-util",
+ "smallvec",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
