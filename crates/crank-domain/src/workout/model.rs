@@ -175,6 +175,13 @@ pub struct Workout {
     rename_all_fields = "camelCase"
 )]
 pub enum DslErrorKind {
+    /// A numeric literal or duration calculation overflowed finite f64 range.
+    NumericOverflow,
+    /// Repeat nesting exceeds the Rust parser's stack-safety bound.
+    NestingTooDeep {
+        /// Maximum number of enclosing repeats.
+        max: usize,
+    },
     /// A quoted label has no closing quote.
     UnterminatedLabel,
     /// A repeat has no closing parenthesis.

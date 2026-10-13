@@ -2,6 +2,8 @@ use super::{
     Cadence, DslError, DslErrorKind, OnUnreachable, PowerTarget, Progression, RepeatNode, StepEnd,
     StepNode, WorkoutNode,
 };
+/// Maximum number of enclosing repeats accepted from untrusted text.
+pub const MAX_NESTING_DEPTH: usize = 32;
 #[derive(Clone)]
 struct Token {
     kind: char,
@@ -101,12 +103,25 @@ fn lex(src: &str) -> Result<Vec<Token>, DslError> {
                 }
             }
         }
-        tokens.push(Token {
+        let token = Token {
             kind,
             text,
             offset: start,
             length: offset - start,
-        });
+        };
+        if kind == 'w'
+            && token
+                .text
+                .split(|c: char| !c.is_ascii_digit() && c != '.')
+                .filter_map(|part| part.parse::<f64>().ok())
+                .any(|n| !n.is_finite())
+        {
+            return Err(token.error(
+                DslErrorKind::NumericOverflow,
+                "Number exceeds finite numeric range",
+            ));
+        }
+        tokens.push(token);
     }
     tokens.push(Token {
         kind: 'e',
@@ -167,7 +182,7 @@ impl Parser<'_> {
         }
         t
     }
-    fn seq(&mut self, open: Option<&Token>) -> Result<Vec<WorkoutNode>, DslError> {
+    fn seq(&mut self, open: Option<&Token>, depth: usize) -> Result<Vec<WorkoutNode>, DslError> {
         let mut nodes = Vec::new();
         loop {
             while self.peek().kind == ',' {
@@ -187,7 +202,7 @@ impl Parser<'_> {
                         Err(t.error(DslErrorKind::UnexpectedToken, "Unexpected ')'"))
                     };
                 }
-                _ => nodes.push(self.item()?),
+                _ => nodes.push(self.item(depth)?),
             }
             let after = self.peek();
             if !matches!(after.kind, ',' | 'e' | ')') {
@@ -201,7 +216,7 @@ impl Parser<'_> {
             }
         }
     }
-    fn item(&mut self) -> Result<WorkoutNode, DslError> {
+    fn item(&mut self, depth: usize) -> Result<WorkoutNode, DslError> {
         let label = (self.peek().kind == 's').then(|| self.next().text);
         let t = self.next();
         if t.kind != 'w' {
@@ -220,7 +235,8 @@ impl Parser<'_> {
             ));
         }
         if let Some(count) = suffix(&t.text.to_ascii_lowercase(), "x", false) {
-            self.repeat(count, &t, label).map(WorkoutNode::Repeat)
+            self.repeat(count, &t, label, depth)
+                .map(WorkoutNode::Repeat)
         } else {
             self.step(&t, label).map(WorkoutNode::Step)
         }
@@ -230,7 +246,16 @@ impl Parser<'_> {
         count: f64,
         t: &Token,
         label: Option<String>,
+        depth: usize,
     ) -> Result<RepeatNode, DslError> {
+        if depth == MAX_NESTING_DEPTH {
+            return Err(t.error(
+                DslErrorKind::NestingTooDeep {
+                    max: MAX_NESTING_DEPTH,
+                },
+                format!("Repeat nesting exceeds {MAX_NESTING_DEPTH} levels"),
+            ));
+        }
         if count < 1.0 {
             return Err(t.error(
                 DslErrorKind::InvalidRepeatCount { count },
@@ -300,7 +325,7 @@ impl Parser<'_> {
                 format!("Expected '(' after '{}'", t.text),
             ));
         }
-        node.children = self.seq(Some(&open))?;
+        node.children = self.seq(Some(&open), depth + 1)?;
         let close = self.next();
         if node.children.is_empty() {
             return Err(DslError {
@@ -315,6 +340,12 @@ impl Parser<'_> {
     fn end(&mut self, t: &Token) -> Result<StepEnd, DslError> {
         let w = t.text.to_ascii_lowercase();
         if let Some(s) = parse_duration_word(&w) {
+            if !s.is_finite() {
+                return Err(t.error(
+                    DslErrorKind::NumericOverflow,
+                    "Duration exceeds finite numeric range",
+                ));
+            }
             return if s <= 0.0 {
                 Err(t.error(DslErrorKind::NonPositiveDuration, "Duration must be > 0"))
             } else {
@@ -340,6 +371,12 @@ impl Parser<'_> {
                 ));
             };
             let rt = self.next();
+            if !min_s.is_finite() || !max_s.is_finite() {
+                return Err(rt.error(
+                    DslErrorKind::NumericOverflow,
+                    "Duration exceeds finite numeric range",
+                ));
+            }
             if min_s > max_s {
                 return Err(rt.error(
                     DslErrorKind::ReversedRecoveryBounds { min_s, max_s },
@@ -473,10 +510,11 @@ impl Parser<'_> {
 /// Parse text using an explicit ID source; the crate has no global state.
 /// Reuse a caller-owned source across documents for unique IDs, or reset it for
 /// reproducible trees. Parsing errors may consume IDs; lexical errors consume none.
-/// Error spans use JavaScript UTF-16 offsets.
+/// Error spans use JavaScript UTF-16 offsets. Repeat nesting is limited to
+/// [`MAX_NESTING_DEPTH`]; overflowing numeric literals/durations are rejected.
 ///
 /// # Errors
-/// Returns the first lexical or grammatical error, matching the frozen TS reference.
+/// Returns the first lexical/grammatical error or a Rust input-safety bound error.
 pub fn parse_dsl(
     text: &str,
     ftp: f64,
@@ -488,7 +526,7 @@ pub fn parse_dsl(
         i: 0,
         ftp,
     }
-    .seq(None)
+    .seq(None, 0)
 }
 fn max_pct(target: &PowerTarget, ftp: f64) -> f64 {
     match *target {

@@ -107,12 +107,15 @@ let mut ids = || { next += 1; format!("workout:{next}") };
 let nodes = crank_domain::workout::parse_dsl("1m 50%", 280.0, &mut ids)?;
 ```
 
+## Tree-helper ownership
+
 When syncing text → tree in an editor, carry selection by tree path, not by ID.
 The reference's `reId(nodes)` deep-copies with fresh identities when inserting a
 snippet or duplicating a subtree; `findNode` performs a depth-first ID lookup.
 These are editor/tree utilities rather than compiler dependencies: the reference
 compiler imports neither. Their production port belongs with the remaining
-workout/editor tree work tracked by #9 (under #31), not the parser/printer. `withoutIds` is a private
+workout/compiler/editor tree work tracked by [#152](https://github.com/gerchowl/crank/issues/152)
+(under #69 and #31). `withoutIds` is a private
 Rust test helper; it is not a production API. #69 owns helpers required by the
 compiler and can promote a shared tree utility if compilation needs it.
 
@@ -129,7 +132,6 @@ durations, watts, HR and cadence) use §3's relative `1e-12` / absolute `1e-15`
 tolerance. Both compared documents must have full schema coverage before any
 mismatch is returned; unknown fields and numeric classifications fail loudly.
 Error spans count UTF-16 code units, not UTF-8 bytes or Unicode scalar values.
-IDs come only from the explicit caller-owned source; identical source state and input yield identical trees.
 
 The unreachable non-EOF check after `parseSeq(null)` in `dsl.ts:121` and the
 unlabelled EOF alternative in `dsl.ts:152` are deliberately omitted: sequence
@@ -149,8 +151,28 @@ Canonical number-format parity is bounded to finite numeric magnitudes whose
 printed values remain below `1e21` in absolute value. Decimal fields round to
 three places, so their smallest nonzero printed magnitude is `0.001`; the JS
 exponent threshold below `1e-6` cannot occur. JS switches to exponent notation at
-`1e21`, while Rust Display remains decimal. The parser retains the reference's
-permissive numeric acceptance outside this bound; printing/round-trip parity is
-not promised there. Integers above `2^53 - 1` also inherit JS's loss of integer
+`1e21`, while Rust Display remains decimal. The parser accepts finite numbers
+outside this bound; printing/round-trip parity is not promised there. Integers above `2^53 - 1` also inherit JS's loss of integer
 precision. Whole-number fields use shortest decimal formatting after rounding,
 rather than fixed precision, and both signs of zero print as `0`.
+
+## Rust input safety bounds
+
+The Rust parser accepts at most `MAX_NESTING_DEPTH` (32) enclosing repeats;
+32 repeats around a step succeed, while a 33rd returns
+`DslErrorKind::NestingTooDeep { max: 32 }` at that repeat's count token.
+This is a Rust-side stack-safety bound absent from the frozen TS reference.
+Both the maximum-depth success and a 2,000-level rejection are tested on a
+256 KB worker stack in the default nextest gate. Sibling items do not consume
+nesting depth. The bound also limits the depth of trees returned by the parser;
+callers constructing trees directly must manage their own traversal depth.
+
+Numeric literals that overflow `f64` and duration arithmetic that produces
+infinity return `DslErrorKind::NumericOverflow` instead of an infinite AST
+field. This Rust-side restriction also differs from the TS reference.
+Overflowing literals are rejected during lexing without consuming IDs;
+duration arithmetic errors can consume IDs for preceding nodes.
+Default-gate properties exercise arbitrary Unicode strings and the DSL alphabet,
+including both closed and unclosed deep repeats, asserting completion with
+success or a typed error. Each property runs 256 cases; DSL-alphabet bodies
+are bounded to 2,048 characters and generated nesting to 2,048 levels.
