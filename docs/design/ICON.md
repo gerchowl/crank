@@ -25,17 +25,49 @@ the body of the C's lower stroke.
 - **Icon fundamentals.** One bold silhouette, two colours, no text, holds
   shape at 16 px, centred on the squircle grid with standard margin.
 
-### Final geometry
+### Final geometry (round 2)
 
 - Canvas: 1024 × 1024, iOS Big Sur+ squircle (rounded square, corner radius
   230, filling the canvas; corners outside the squircle are transparent)
-- C ring: outer radius 350, stroke 125, gap half-angle 42° (so the opening
-  spans 84° on the right), butt caps
-- Arm axis: 30° above horizontal; upper arm length 400, lower arm length
-  290 (ends inside the C's stroke body); arm width 82, round caps
-- Chainring hub: filled disc, radius 72, at centre
-- Pedal spindle dot: filled background-coloured dot (radius 24) at the tip
-  of the upper arm
+- C ring: outer radius 350, stroke 125, gap half-angle 62° (opening ≈ 124°
+  on the right, generous enough that the steep crank arms clear the C's
+  stroke cleanly), butt caps
+- Arm axis: **50° above horizontal**; upper arm length 420, lower arm
+  length 310 (ends inside the C's stroke body)
+- Crank arms: tapered polygons, **wide at the hub (width 118) narrowing to
+  the pedal end (width 78)** with a rounded pedal cap. Arm/C-stroke ratio
+  at the hub ≈ 0.94. The taper reads as a real forged crank arm, not a
+  thin gauge needle.
+- Chainring: filled brass **annulus** (outer radius 108, inner BB-hole
+  radius 56). The annulus — a brass ring around a dark central hole where
+  the bottom-bracket spindle sits — is unmistakably a chainring, not a
+  simple hub.
+- Pedal spindle dot: dark background-coloured dot (radius 26) at the tip
+  of the upper arm.
+
+### Why these numbers (round 2)
+
+Round 1 shipped a 30° axis with thin uniform arms. Architect review
+caught two defects both visible in that version's own previews:
+
+1. **At 16/32 px the mark read as a lowercase "e".** The 30° axis is
+   close enough to horizontal that the arm became the e's crossbar.
+2. **Thin uniform arms + a small hub read as a gauge needle, not a
+   crankset.**
+
+Round 2 fixes both:
+
+- **50° axis** (vs 30°): the arm is now visibly a diagonal, not a
+  near-horizontal crossbar. Side-by-side with a reference lowercase "e"
+  rendered at the same sizes/weight (`etest.svg`, SF Pro black at
+  900 pt), the mark no longer reads as a letter — the right-side gap
+  stays open, the diagonal is clearly diagonal, and the chainring hub in
+  the middle has no analogue in an "e".
+- **Tapered arms** (hub 118 → pedal 78), with the hub width roughly 94 %
+  of the C stroke: now reads as a forged crank arm, not a needle.
+- **Chainring annulus** (not just a hub disc): a brass ring with a
+  visible central BB hole makes "crankset" explicit — this is the one
+  component in cycling whose silhouette is a ring with crank arms on it.
 
 ### Palette (two colours, no gradient)
 
@@ -102,19 +134,52 @@ the right tool.
 | vA4            | 30°, oversized hub (78)                                         | Hub-to-arm ratio off; chainring overpowers arms                                           |
 | vA6            | 30°, pedal dots on **both** arms                               | Dot inside the C's body reads as a hole in the C — confusing                              |
 
-**Chosen: vA2.**
+**Round 1 chosen: vA2.** Shipped in the first push to PR #61; architect
+review flagged the "e" + "gauge needle" defects (see "Why these numbers
+(round 2)" above) and the icon was refined on the same branch.
 
-### Small-size review
+### Round 2 `/C/` variants
 
-Reviewed renders at 1024 / 256 / 128 / 64 / 32 / 16 px with the `Read` tool.
-- 1024, 256, 128: all mark details read cleanly (hub, arms, pedal dot, gap).
-- 64: fully recognisable; pedal dot shrinks to ~1 px but still visible.
-- 32: silhouette holds; C-with-slash is unambiguous; pedal dot disappears.
-- 16: reads as "C with a diagonal slash through it" — recognisable but
-  the pedal dot is lost in subpixel noise.
+| id                            | parameters                                                      | verdict                                                                                     |
+| ----------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| r2-45deg                      | 45°, tapered 110→65, hub disc r=100 (BB hole r=22)             | Steeper than r1 but 45° arm still has a slight horizontal flavour at 32 px                 |
+| r2-50deg                      | 50°, same weights, hub disc r=100                              | Clearly diagonal; chainring reads only as "disc" though                                     |
+| r2-55deg                      | 55°, same weights                                               | C's upper arc gets too short — the C starts to look like a parenthesis                      |
+| r2-45deg-ring                 | 45°, chainring **annulus** (r=105, BB hole r=55)               | Annulus reads unmistakably as a chainring; still slightly 45°-flat                          |
+| r2-45deg-twotone              | 45°, arms in lighter cream `#e2b887`, C in brass                | Visual separation nice but breaks the two-colour rule; arms feel delicate                   |
+| r2-50deg-ring                 | 50°, chainring annulus (r=105, BB hole r=55)                   | Clearly diagonal + unmistakable chainring; arms still a touch thin                          |
+| r2-55deg-ring                 | 55°, chainring annulus                                          | Too steep; the C's top shrinks                                                              |
+| **r2-50deg-ring-fatarm**      | 50°, chainring annulus (r=108, BB hole r=56), **arms 118→78** | **Chosen.** Beefy forged crank-arm feel; chainring annulus; steepest diagonal that still keeps the C whole. |
 
-The icon degrades gracefully — the primary mark (C + diagonal) survives to
-16 px; the pedal-spindle detail is a feature of the 32 px+ sizes.
+**Chosen: r2-50deg-ring-fatarm.**
+
+### Small-size review (round 2) — "e" test
+
+Rendered a reference lowercase "e" in SF Pro Display Black at 900 pt on
+the same squircle (`etest.svg`), then rendered at 16 / 32 / 64 px and
+compared against the chosen mark at the same sizes with the `Read` tool.
+
+- **Reference "e"** at those sizes: closed oval top loop, horizontal
+  crossbar through the middle, visible brass-on-dark letter.
+- **Chosen mark** at 16 / 32 / 64 px:
+  - **64 px**: fully readable crankset — C-with-gap on the right, chainring
+    annulus (brass ring + dark BB hole) in the centre, two tapered arms
+    at 50°, pedal spindle dot at the upper tip.
+  - **32 px**: C's right-side gap is still visible as a dark wedge, the
+    arm is clearly a diagonal (not a crossbar), the chainring hub reads
+    as a bright-with-dark-centre blob mid-mark. Does **not** read as "e":
+    the diagonal, the gap, and the dark-centred hub are all signals that
+    an "e" at the same size does not carry.
+  - **16 px**: reduces to "a C with a diagonal slash and a bright centre
+    pip". Still C-shaped; the diagonal defeats the "e" crossbar reading.
+    Pedal dot is lost to subpixel noise (expected at this size).
+
+How I judged "not an e":
+1. the brass is **open** on the right (dark gap visible) vs the e's
+   closed top loop;
+2. the internal line is a **diagonal**, not a horizontal crossbar;
+3. the centre carries a dark-cored blob (the chainring BB hole) that
+   an e does not have.
 
 ## Provenance
 
