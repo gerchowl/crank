@@ -1,0 +1,25 @@
+[package]
+name = "crank-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+default-run = "crank-desktop"
+
+[lints]
+workspace = true
+
+[dependencies]
+crank-core.workspace = true
+tauri.workspace = true
+tauri-specta.workspace = true
+specta.workspace = true
+specta-typescript.workspace = true
+
+[build-dependencies]
+tauri-build = "2"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+# Embedded WebDriver integration is gated by #35.
+e2e = []
