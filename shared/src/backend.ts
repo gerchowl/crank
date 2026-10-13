@@ -4,6 +4,7 @@ import type {
   Checkin,
   CoachNudge,
   Heatmap2D,
+  RideStreams,
   Histogram,
   HistoryQuery,
   HrRecoveryState,
@@ -251,6 +252,20 @@ export function createMockBackend(opts: MockBackendOptions = {}): MockBackend {
     histogram(metric: MetricId, binWidth: number): Histogram {
       return histogramFrom(metric, bus.record.get(metric), binWidth, typicalDistribution(metric, athlete));
     },
+
+    streams(metrics: MetricId[], fromS = 0): RideStreams {
+      const from = Math.max(0, Math.floor(fromS));
+      let to = from;
+      const series: Partial<Record<MetricId, (number | null)[]>> = {};
+      for (const m of metrics) {
+        const rec = bus.record.get(m);
+        series[m] = rec.slice(from).map((v) => (Number.isFinite(v) ? v : null));
+        to = Math.max(to, rec.length);
+      }
+      return { fromS: from, toS: to, series };
+    },
+
+    recoveries: () => structuredClone(sim.pastRecoveries),
 
     heatmap(x: MetricId, y: MetricId, xBin: number, yBin: number): Heatmap2D {
       return heatmapFrom(x, y, bus.record.get(x), bus.record.get(y), xBin, yBin);
