@@ -6,10 +6,13 @@ check:
 hygiene:
     scripts/check-public-hygiene.sh
 
-# Same gates as the `window-config` and `package-licenses` flake checks (#123, #125).
+# Same gates as the `window-config`, `window-config-test`, `install-app` (Darwin only) and
+# `package-licenses` flake checks (#123, #125, #165, #170).
 config-checks:
     scripts/check-window-config.py
     scripts/check-licenses.py
+    scripts/test-window-config.py
+    scripts/test-install-app.sh
 
 test:
     cargo nextest run --workspace
@@ -44,7 +47,7 @@ dev:
     pnpm -C app exec tauri dev
 
 # ADR-0001 §9.3 / ADR-0002 §8 (#37): assemble crank.app with Nix, install it at a stable path and sign
-# it inside-out with the local self-signed `nix-tcc` identity (g-fleet bin/nix-tcc-cert), so the TCC
+# it inside-out (by SHA-1, scripts/install-app.sh) with the local self-signed `nix-tcc` identity (g-fleet bin/nix-tcc-cert), so the TCC
 # Bluetooth grant, keyed on the designated requirement, survives rebuilds. Runs on sage, outside the
 # sandbox. No hardened runtime and no App Sandbox: library validation would reject the nix-store dylibs
 # that are signed by nobody (distribution signing is #47). Never creates or modifies identities.
@@ -56,18 +59,7 @@ bundle:
     sha1=$(security find-identity -v -p codesigning | awk '/"nix-tcc"/ { print tolower($2); exit }')
     [ -n "$sha1" ] || { echo "no valid nix-tcc codesigning identity in the keychain" >&2; exit 1; }
     nix build .#crank-app --out-link result-crank-app
-    mkdir -p "$HOME/Applications"
-    rm -rf "$app"
-    cp -R result-crank-app/crank.app "$app"
-    chmod -R u+w "$app"
-    codesign --force --sign nix-tcc --identifier "$id.cli" "$app/Contents/MacOS/crank"
-    codesign --force --sign nix-tcc --identifier "$id" "$app"
-    codesign --verify --strict --verbose=2 "$app"
-    want="identifier \"$id\" and certificate leaf = H\"$sha1\""
-    got=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
-    echo "designated => $got"
-    [ "$got" = "$want" ] || { echo "requirement mismatch, want: $want" >&2; exit 1; }
-    echo "signed $app"
+    scripts/install-app.sh result-crank-app/crank.app "$app" "$sha1" "$id"
 
 # Regenerate the Tauri icon set from the /C/ mark and record its hashes (#121); `icons-drift` checks it.
 icons:

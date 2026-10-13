@@ -538,11 +538,13 @@ agent assumes a hardware result it did not see.
   layout step; Tauri's bundler and `codesign` don't run in the sandbox (the bundler wants to sign, and
   signing needs the login keychain).
 - **`just bundle` (on sage, outside the sandbox):** `nix build .#crank-app`, copy to
-  `~/Applications/crank.app` (writable copy, stable path), then sign inside-out with the self-signed
-  **`nix-tcc`** identity that already exists in sage's login keychain (g-fleet `bin/nix-tcc-cert`, the same
-  identity g-fleet's `tcc-sign.nix` uses so TCC grants survive rebuilds):
-  `codesign --force --sign nix-tcc --identifier io.github.gerchowl.crank.cli Contents/MacOS/crank`, then
-  `codesign --force --sign nix-tcc --identifier io.github.gerchowl.crank crank.app`. It finishes with
+  a writable temp path beside `~/Applications/crank.app`, sign it there inside-out with the self-signed
+  **`nix-tcc`** identity, selected by its SHA-1 (the identity the check below verifies), and swap it atomically
+  into the stable path (`scripts/install-app.sh`; never a window with no app). The identity already exists
+  in sage's login keychain (g-fleet `bin/nix-tcc-cert`, the same identity g-fleet's `tcc-sign.nix` uses so
+  TCC grants survive rebuilds):
+  `codesign --force --sign <SHA-1> --identifier io.github.gerchowl.crank.cli Contents/MacOS/crank`, then
+  `codesign --force --sign <SHA-1> --identifier io.github.gerchowl.crank crank.app`. It finishes with
   `codesign --verify --strict` and asserts that `codesign -d -r-` prints the designated requirement
   `identifier "io.github.gerchowl.crank" and certificate leaf = H"<nix-tcc SHA-1>"`.
 - TCC records a grant against the app's designated requirement (bundle id + signing certificate) rather
