@@ -38,7 +38,7 @@ One Cargo workspace (edition 2024, toolchain pinned in `rust-toolchain.toml` by 
 | Crate | Kind | Owns | May depend on |
 |---|---|---|---|
 | `crank-domain` | lib, **pure** (no I/O, no async, no clock) | units, metric catalog and zones, filters, multi-resolution history, W′bal, rMSSD/DFA-α1, HR-recovery fit, histogram/heatmap/MMP, athlete model (`Estimate`), lap stats, workout model + DSL + compiler + deterministic rewrite, `Judge` trait + coach feature/verdict types | `serde`, `thiserror`, `specta` (feature `specta`) |
-| `crank-devices` | lib | `TrainerDriver` / `HeartRateDriver` traits and their types (ADR-0002), `sim` module: simulated rider + trainer + HR strap (port of `sim.ts`) | `crank-domain`, `tokio` (sync, time) |
+| `crank-devices` | lib | `TrainerDriver` / `HeartRateDriver` traits and their types (ADR-0002), `sim` module: simulated rider + trainer + HR strap (port of `sim.ts`) | `crank-domain`, `tokio` (sync, time), `futures-util`, `smallvec`, `thiserror` |
 | `crank-fec` | lib, pure | ANT message framing + FE-C page codec (ADR-0002 §4) | none |
 | `crank-ble` | lib | btleplug discovery, FE-C trainer driver, HRS driver, reconnect, raw-frame capture (ADR-0002) | `crank-devices`, `crank-fec`, `btleplug` |
 | `crank-engine` | lib | ride engine actor: tick clock, ride state machine, metric bus, subscriptions + filter chains, ride record, laps, status, ERG policy, judge hook | `crank-domain`, `crank-devices` |
@@ -49,6 +49,9 @@ One Cargo workspace (edition 2024, toolchain pinned in `rust-toolchain.toml` by 
 | `crank-mcp` | lib | MCP tools over `Core` (`rmcp`) | `crank-core` |
 | `crank-cli` | bin `crank` | `clap` CLI: `ride --sim`, `workout parse/compile/print`, `devices scan`, `import intervals`, `mcp` (stdio server), `devserver` | `crank-core`, `crank-mcp` |
 | `crank-desktop` | bin (Tauri v2) | thin `#[tauri::command]` wrappers over `Core`, bindings export, window/menu | `crank-core`, `tauri`, `tauri-specta` |
+
+`crank-devices` uses `futures-util` for object-safe boxed connection futures and discovery streams,
+`smallvec` for inline HR RR intervals, and `thiserror` for transport-neutral device errors (#43).
 
 Rules:
 

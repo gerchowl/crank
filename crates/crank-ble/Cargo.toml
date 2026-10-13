@@ -11,3 +11,15 @@ workspace = true
 [dependencies]
 crank-devices.workspace = true
 crank-fec.workspace = true
+btleplug = "0.13.5"
+futures-util = "0.3"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+uuid = "1"
+
+[features]
+replay = []
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+tokio = { version = "1", features = ["test-util"] }

@@ -17,7 +17,7 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
       cargoFiles = lib.fileset.difference (craneLib.fileset.commonCargoSources ./.) ./crates/crank-fec/fuzz;
-      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./clippy.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
+      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./clippy.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
         (lib.fileset.difference ./app ./app/src-tauri) ./shared
@@ -47,7 +47,7 @@
         strictDeps = true;
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
-          pkgs.webkitgtk_4_1 pkgs.gtk3 pkgs.libsoup_3 pkgs.openssl ];
+          pkgs.webkitgtk_4_1 pkgs.gtk3 pkgs.libsoup_3 pkgs.openssl pkgs.dbus ];
         # Rust checks share crane's default release-profile artifacts.
         cargoExtraArgs = "--workspace --locked";
       };
@@ -99,8 +99,8 @@
       checks = {
         build = desktop "";
         fmt = craneLib.cargoFmt { pname = "crank"; version = "0.1.0"; src = source cargoFiles; };
-        clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--all-targets -- -D warnings"; });
-        nextest = craneLib.cargoNextest rustCheck;
+        clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--features crank-ble/replay --all-targets -- -D warnings"; });
+        nextest = craneLib.cargoNextest (rustCheck // { cargoNextestExtraArgs = "--features crank-ble/replay"; });
         doctest = craneLib.cargoDocTest rustCheck;
         doc = craneLib.cargoDoc (rustCheck // { RUSTDOCFLAGS = "-D warnings"; });
         # RustSec advisories run offline against the pinned `advisory-db` input (ADR-0001 §9.5, #124).

@@ -256,8 +256,31 @@ negative masses) are `EncodeError`s; clamping to trainer capabilities is the eng
 
 - **One writer task per connection**, ticking at **4 Hz** (Tacx's rate). It holds coalescing slots,
   not a queue: `control` (latest `ControlMode`), `rider` (page 55), `requests` (FIFO of page-70 requests).
-  Per tick it writes at most one message, priority `control` > `rider` > `requests`. A newer target
+  Per tick it writes at most one message, priority reserved page-71 poll (subject to the SIM-pair exception below) > `control` > `rider` > other `requests`. A newer target
   replaces an unsent older one, so the trainer always gets the latest target and nothing piles up.
+
+**Amendment (#43): reserved poll tick (2026-10-13).** A page-71 request due on the nominal
+1 s grid reserves the next writer tick, even with single-page control pending; it cannot occupy two
+consecutive ticks or defer the same pending value twice. This prevents observation starvation while
+keeping single-page control latency within two ticks. A pending SIM pair (50 then 51) instead runs on
+two consecutive ticks before the poll; that poll may be late by two ticks, with no change to nominal
+due times. Steady SIM alternates keep-alive pages one second apart, polling on the following tick.
+For continuously superseded SIM pairs, finish the current pair then service an overdue poll before
+starting another pair. An in-flight pair finishes its track page with the newest value before a
+coalesced wind update, so a superseding SIM update can be delivered track then wind. A poll already
+deferred by one SIM pair takes the next tick even if a newer pair is pending; polls are never more
+than two ticks late against the nominal grid and never occupy consecutive ticks. Both SIM pages are
+written within two ticks of the desired change, except when the pair's first free tick goes to such
+an already-deferred poll: then completion is within three ticks (0.75 s), never more. ERG, resistance,
+and single-page control remain within two ticks. This bounds observation starvation, which affects
+safety-relevant trainer_following. The extra SIM tick arises under back-to-back changes faster than
+real terrain; `L` = 2 s budgets 0.5 s nominal writer delay, and #44 check 3 measures end-to-end p99
+including slot/coalescing delay so the 0.75 s worst case is calibrated rather than assumed.
+Latency is measured per page from the moment it first becomes pending; coalescing replaces the value, not the deadline.
+Rider configuration is written on connection; explicit SetRider on a live connection returns a
+protocol fault and requires a new connection. Reserving polls avoids five-second observation expiry;
+one tick of single-page delay remains inside the control latency budget.
+
 - `ControlMode::Sim` needs two pages (50 then 51). When both change they go out on consecutive ticks.
 - **Keep-alive:** the current control page is re-sent every 2 s even if unchanged. In SIM, pages 50 and 51
   alternate 1 s apart, each followed by the page-71 request (the SIM echo schedule, §4.4.1). Writes are idempotent;
@@ -337,7 +360,7 @@ and v1 claims nothing beyond these definitions.
 **Components and grid.**
 
 - Values are compared as integers at the wire resolution, never as floats. `ControlMode::grid_key()` in
-  `crank-devices` gives ERG in 0.25 W, grade in 0.01 % (offset as on page 51), Crr in 5×10⁻⁵, resistance in
+  `crank-devices` gives ERG in 0.25 W, grade in signed 0.01 % (without page 51’s offset), Crr in 5×10⁻⁵, resistance in
   0.5 %, and wind in 0.01 kg/m, 1 km/h and 0.01.
 - The engine emits desired modes already on that grid. §7.1 rounds ERG to 1 W, which is exact in 0.25 W.
   Grade, Crr, resistance and wind are rounded to the grid where the engine produces them.
@@ -378,7 +401,7 @@ renew anything.
 | Constant | Value | Source |
 |---|---|---|
 | `T_poll` page-71 request period | 1 s | §4.4. Gives `P_c` above (SIM: alternation) |
-| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Budget: desired change → control write (≤ 2 writer ticks, 0.5 s), plus the trainer applying it, plus the reply latency. **HIL calibration (#44 check 3)**: `L` ≥ p99 of (desired change → arrival of the first reply that echoes it), measured end to end, so slot and coalescing delay are included |
+| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Budget: desired change → control write (≤ 2 writer ticks (0.5 s) nominal; ≤ 3 ticks (0.75 s) worst case for a SIM pair behind a deferred poll), plus the trainer applying it, plus the reply latency. **HIL calibration (#44 check 3)**: `L` ≥ p99 of (desired change → arrival of the first reply that echoes it), measured end to end, so slot and coalescing delay are included |
 | `N_follow` agreeing replies to verify a component | 3 | Design: a single or duplicated reply never decides |
 | `T_verify` minimum span of those replies | 2 s | Design: a burst of delayed replies arriving together never verifies |
 | `T_mismatch` minimum span of a disagreement episode before `not_following` | 2 s | The previous 2 s rule (8 ticks) |
@@ -604,8 +627,9 @@ for those issues.
   - ERG → free ride with page 51 dropped reaches `not_following` naming `track`.
 - *#43, driver (FE-C):*
   1. **Poll cadence.** For arbitrary command sequences through the 4 Hz writer, a page-70 request for page
-     71 is written every `T_poll` (± one tick) while a controlled mode is active, never otherwise. It is
-     never written more than once per tick and never delays a `control` write.
+     71 is written every `T_poll` (± one tick; −1/+2 ticks with a pending SIM pair) while a controlled
+     mode is active, never otherwise. At most one is written per tick, never on consecutive ticks; a
+     pending single-page control value is deferred at most one tick.
   2. **SIM echo schedule.** In steady SIM, page 50 and page 51 are each written every 2 s, 1 s apart, and
      each is followed by the request on the next free tick. Replies from a faithful fake transport alternate
      between wind and track echoes.

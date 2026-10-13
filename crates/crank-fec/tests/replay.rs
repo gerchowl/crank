@@ -1,39 +1,10 @@
 //! Timestamped raw ANT captures replay through the real decoder, without BLE.
 use std::fmt::Write;
 
-use crank_fec::{AntFrame, FrameError, MsgType, Page, decode};
+use crank_fec::{AntFrame, FrameError, MsgType, Page};
 
-type Record = (u64, bool, Result<AntFrame, FrameError>);
-
-fn replay(capture: &str) -> Vec<Record> {
-    let mut records = Vec::new();
-    let mut previous = 0;
-    for line in capture.lines() {
-        let line = line.split('#').next().expect("line").trim();
-        if line.is_empty() {
-            continue;
-        }
-        let mut fields = line.split_whitespace();
-        let at: u64 = fields
-            .next()
-            .expect("timestamp")
-            .parse()
-            .expect("microseconds");
-        assert!(at >= previous, "capture must be ordered");
-        previous = at;
-        let received = match fields.next().expect("direction") {
-            "rx" => true,
-            "tx" => false,
-            other => panic!("invalid direction: {other}"),
-        };
-        let bytes: Vec<_> = fields
-            .map(|s| u8::from_str_radix(s, 16).expect("hex byte"))
-            .collect();
-        // Keep errors as records: a bad notification cannot consume its successor.
-        records.push((at, received, decode(&bytes)));
-    }
-    records
-}
+mod support;
+use support::replay;
 
 #[test]
 fn replay_all_fixtures() {

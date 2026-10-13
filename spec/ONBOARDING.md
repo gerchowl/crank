@@ -12,7 +12,14 @@ priors; imported history and rides refine them; the coach is conservative in pro
 4. **Goals**: event and date (optional), focus (endurance / climbing / crits / general fitness / weight),
    days per week and time per session available, preferred ride types.
 5. **Health and safety**: short PAR-Q-style screen (heart issues, chest pain, dizziness, medication, injuries).
-   Any "yes" → recommend a medical check before hard efforts, and the coach caps intensity until it's confirmed.
+   A red flag (chest pain, fainting/dizziness, racing or irregular heartbeat, unusual breathlessness, a heart
+   condition a doctor limited exercise for) → **medical stop**: no plan, coach off, riding only as a deliberate,
+   logged free ride (not even that when an injury cap is also active: a free ride has no targets, so the cap
+   cannot be held), lifted only by a dated clearance the rider records (DESIGN §5.8). crank refers, it never
+   clears. Medication and injury answers are not red flags and do different things: a medication that changes
+   heart rate switches off HR-based coaching (HR zones, HR-guided recoveries, HR-vs-usual; no power cap); an
+   injury that limits hard efforts caps intensity at threshold with no sprints.
+   Item wording, sources and escalation: `spec/knowledge-pack/14-health-screening.md`.
 6. **Equipment**: trainer and HR strap pairing test, crank length, connectors (intervals.icu, later).
 
 ## 2. Baseline paths (pick the best available, in this order)

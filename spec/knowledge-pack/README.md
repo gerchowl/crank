@@ -23,6 +23,7 @@ Evidence base for the **LLM planner** (designs and rewrites workouts from histor
 | `11-intervals-vo2max.md` | 30/15 short intervals, time near VO2max, self-pacing | planner, judge |
 | `12-vlamax.md` | Why the app should not use VLamax | planner |
 | `13-training-load-models.md` | Banister/fitness–fatigue, CTL/ATL/TSB, ACWR critique | planner, analytics UI |
+| `14-health-screening.md` | PAR-Q+ and ACSM 2015 screening; red-flag wording, escalation, re-screening | onboarding Health check, daily re-check, medical-stop guard |
 | `rules.md` | 53 candidate rules (YAML) with grade, basis and refs | planner + judge implementation |
 | `references.bib` | BibTeX for every cited item | — |
 

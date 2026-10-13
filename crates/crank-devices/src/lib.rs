@@ -14,8 +14,18 @@ use tokio::sync::mpsc;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MonoTime(pub u64);
 
+/// Injectable runtime epoch and executor clock (ADR-0001 §5).
+pub trait Clock: Send + Sync + 'static {
+    /// Current monotonic time, shared with the engine.
+    fn now(&self) -> MonoTime;
+    /// Suspend until a monotonic deadline.
+    fn sleep_until(&self, at: MonoTime) -> BoxFuture<'static, ()>;
+}
+
 /// Trainer protocol selected by discovery. See ADR-0002 §3.
+/// Non-exhaustive to support future FTMS additions (#45).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DriverKind {
     /// ANT FE-C over BLE.
     FeC,
@@ -108,11 +118,15 @@ pub enum TrainerCommand {
     Disconnect,
 }
 /// Driver events; delivery and trainer observation are distinct (ADR-0002 §4.4).
+/// Non-exhaustive to support future FTMS additions (#45).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum TrainerEvent {
     /// Telemetry at notification arrival time.
     Sample(TrainerSample),
-    /// GATT write-with-response succeeded; no claim of trainer application.
+    /// One control page's GATT write succeeded; no claim of trainer application.
+    /// SIM emits once per component, so the first event does not confirm the pair.
+    /// Diagnostic only; delivery is not an engine following input (ADR-0002 §4.4).
     Delivered {
         /// Desired mode whose control page reached the peripheral.
         mode: ControlMode,
@@ -204,6 +218,7 @@ pub enum ObservationSource {
     Page25Flags,
 }
 /// Page-71 status, retaining every unknown byte. See ADR-0002 §3.
+/// Exhaustive for engine routing R1–R5 (ADR-0002 §4.4.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandStatus {
     /// Command reported successful.
@@ -271,7 +286,9 @@ pub trait Discovery: Send + Sync + 'static {
     fn scan(&self) -> BoxStream<'static, DiscoveredDevice>;
 }
 /// Transport-neutral device failures (ADR-0002 §3).
+/// Non-exhaustive to support future FTMS additions (#45).
 #[derive(thiserror::Error, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeviceError {
     /// No adapter is available.
     #[error("adapter unavailable")]
@@ -296,12 +313,17 @@ pub enum DeviceError {
         /// Diagnostic detail.
         detail: String,
     },
+    /// Raw capture failed; this does not mean the peripheral disconnected (#43).
+    #[error("capture: {0}")]
+    Capture(String),
     /// Connection closed.
     #[error("disconnected")]
     Disconnected,
 }
 /// Categories shared by real, simulator and replay drivers. See ADR-0002 §3.
+/// Non-exhaustive to support future FTMS additions (#45).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProtocolErrorKind {
     /// Malformed transport frame.
     Framing,

@@ -47,7 +47,7 @@ def reachable(root, packages, nodes):
 if len(sys.argv) != 2:
     fail("usage: deps-edges.py PRODUCTION_METADATA < ALL_FEATURES_METADATA")
 packages, nodes = graph(json.load(sys.stdin))
-for root, forbidden in [("crank-domain", "tokio"), ("crank-engine", "crank-ble")]:
+for root, forbidden in [("crank-domain", "tokio"), ("crank-engine", "crank-ble"), ("crank-devices", "crank-fec")]:
     if any(packages[p]["name"] == forbidden for p in reachable(root, packages, nodes)):
         fail(f"{root} must not depend on {forbidden}")
 
