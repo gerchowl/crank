@@ -110,7 +110,7 @@ pub struct Progression {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct StepNode {
-    /// Fresh process-unique identity, unrelated to tree position.
+    /// Identity supplied by the caller, unrelated to tree position.
     pub id: String,
     /// Optional display label (serialized as null when absent).
     pub label: Option<String>,
@@ -127,7 +127,7 @@ pub struct StepNode {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct RepeatNode {
-    /// Fresh process-unique identity.
+    /// Identity supplied by the caller.
     pub id: String,
     /// Optional display label.
     pub label: Option<String>,
@@ -166,10 +166,84 @@ pub struct Workout {
     pub nodes: Vec<WorkoutNode>,
 }
 
+/// Machine-readable parser failure classes; token text remains available via the error span.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum DslErrorKind {
+    /// A quoted label has no closing quote.
+    UnterminatedLabel,
+    /// A repeat has no closing parenthesis.
+    UnclosedRepeat,
+    /// A token cannot start an item (including an unmatched closing parenthesis).
+    UnexpectedToken,
+    /// Consecutive items need a separator.
+    MissingSeparator,
+    /// A label must be followed by an item.
+    MissingItemAfterLabel,
+    /// Repeat count is below one.
+    InvalidRepeatCount {
+        /// Supplied iteration count.
+        count: f64,
+    },
+    /// Repeat options have no closing bracket.
+    UnclosedOptions,
+    /// A non-word token occurs inside repeat options.
+    UnexpectedRepeatOption,
+    /// A word is not a supported repeat option.
+    UnknownRepeatOption,
+    /// Repeat count/options must be followed by an opening parenthesis.
+    MissingRepeatBody,
+    /// Repeat body contains no items.
+    EmptyRepeat,
+    /// A timed step must have positive duration.
+    NonPositiveDuration,
+    /// Heart-rate recovery needs min..max duration bounds.
+    MissingRecoveryBounds,
+    /// Recovery duration bounds are reversed.
+    ReversedRecoveryBounds {
+        /// Supplied minimum seconds.
+        min_s: f64,
+        /// Supplied maximum seconds.
+        max_s: f64,
+    },
+    /// A bare integer needs a duration/work unit or repeat suffix.
+    MissingUnit,
+    /// A word is not a supported step end condition.
+    InvalidStepEnd,
+    /// Ramp keyword must be followed by a percentage range.
+    MissingRampRange,
+    /// A constant percentage range has reversed bounds.
+    ReversedPowerRange,
+    /// A step has more than one intensity target.
+    DuplicatePowerTarget,
+    /// A step has more than one cadence attribute.
+    DuplicateCadence,
+    /// Cadence bounds are reversed.
+    ReversedCadenceRange,
+    /// Recovery policy flag occurs on another kind of step.
+    RecoveryFlagNotApplicable,
+    /// A step attribute is not recognized.
+    UnknownToken,
+    /// A step needs an intensity target.
+    MissingPowerTarget,
+    /// Target intensity exceeds 400 percent FTP.
+    ImplausiblePower {
+        /// Computed intensity before message rounding.
+        pct: f64,
+    },
+}
+
 /// Parse failure selecting a span in the original text using UTF-16 code units.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct DslError {
+    /// Stable failure class for programmatic handling.
+    pub kind: DslErrorKind,
     /// Human-readable reference error message.
     pub message: String,
     /// UTF-16 offset (as in JavaScript editors).
