@@ -34,9 +34,37 @@ dev:
     pnpm install --frozen-lockfile
     pnpm -C app exec tauri dev
 
-# Signed bundle implementation belongs to #37 (ADR-0001 §12).
+# ADR-0001 §9.3 / ADR-0002 §8 (#37): assemble crank.app with Nix, install it at a stable path and sign
+# it inside-out with the local self-signed `nix-tcc` identity (g-fleet bin/nix-tcc-cert), so the TCC
+# Bluetooth grant, keyed on the designated requirement, survives rebuilds. Runs on sage, outside the
+# sandbox. No hardened runtime and no App Sandbox: library validation would reject the nix-store dylibs
+# that are signed by nobody (distribution signing is #47). Never creates or modifies identities.
 bundle:
-    @echo 'BLOCKED: app assembly and nix-tcc signing require #37'; exit 1
+    #!/usr/bin/env bash
+    set -euo pipefail
+    app="$HOME/Applications/crank.app"
+    id=io.github.gerchowl.crank
+    sha1=$(security find-identity -v -p codesigning | awk '/"nix-tcc"/ { print tolower($2); exit }')
+    [ -n "$sha1" ] || { echo "no valid nix-tcc codesigning identity in the keychain" >&2; exit 1; }
+    nix build .#crank-app --out-link result-crank-app
+    mkdir -p "$HOME/Applications"
+    rm -rf "$app"
+    cp -R result-crank-app/crank.app "$app"
+    chmod -R u+w "$app"
+    codesign --force --sign nix-tcc --identifier "$id.cli" "$app/Contents/MacOS/crank"
+    codesign --force --sign nix-tcc --identifier "$id" "$app"
+    codesign --verify --strict --verbose=2 "$app"
+    want="identifier \"$id\" and certificate leaf = H\"$sha1\""
+    got=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
+    echo "designated => $got"
+    [ "$got" = "$want" ] || { echo "requirement mismatch, want: $want" >&2; exit 1; }
+    echo "signed $app"
+
+# Regenerate the Tauri icon set from the /C/ mark and record its hashes (#121); `icons-drift` checks it.
+icons:
+    pnpm -C app exec tauri icon ../assets/icon/icon-1024.png -o src-tauri/icons
+    rm -rf app/src-tauri/icons/android app/src-tauri/icons/ios app/src-tauri/icons/64x64.png
+    python3 scripts/icons.py record
 
 # The macOS embedded WebDriver harness is gated by #35.
 e2e:
