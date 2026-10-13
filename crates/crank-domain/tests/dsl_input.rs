@@ -59,6 +59,25 @@ fn overflowing_numbers_and_duration_arithmetic_are_typed_errors() {
     }
 }
 
+#[test]
+fn long_digit_runs_in_non_number_words_are_unknown_tokens() {
+    let huge = "9".repeat(400);
+    for text in [
+        format!("1m 50% foo{huge}"),
+        format!("1m 50% {huge}foo"),
+        format!("1m 50% a{huge}rpm"),
+        format!("1m 50% !x{huge}"),
+    ] {
+        let err = parse_dsl(&text, 280.0, &mut String::new).unwrap_err();
+        assert_eq!(err.kind, DslErrorKind::UnknownToken, "{text}");
+    }
+    // Numeric-shaped tokens still overflow, including signed and `hr<` forms.
+    for text in [format!("1m hr<{huge}"), format!("1x[-{huge}w](1m free)")] {
+        let err = parse_dsl(&text, 280.0, &mut String::new).unwrap_err();
+        assert_eq!(err.kind, DslErrorKind::NumericOverflow, "{text}");
+    }
+}
+
 fn check_input(text: &str) {
     // A panic fails the property; all rejected input must expose a typed error.
     if let Err(err) = parse_dsl(text, 280.0, &mut String::new) {
