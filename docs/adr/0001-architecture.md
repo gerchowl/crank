@@ -193,17 +193,30 @@ devtools pause). crank bounds it explicitly:
   unacknowledged frames** per stream. While the window is full it sends nothing and **coalesces** into
   bounded pending state: per subscription only the latest sample, the latest status, the latest state of
   each of the two links, and **at most 8** changed nudges (latest per `callId`).
-- **Resync path.** When the window reopens, the next frame carries the coalesced state with
-  `resync: true` — unless more than 8 distinct nudges changed while coalescing, in which case the pending
-  nudges are dropped and the frame is a **bare resync** (`resync: true`, no nudges). On any `resync` or
-  `seq` gap the UI re-reads the durable state by query: `ride_status()`, `coach_decisions()`,
+- **Byte budget, measured.** Every frame is serialized to JSON first and its length **in bytes** is checked
+  against a budget of **8 000 bytes** (below Tauri's 8 192-byte direct-eval threshold, leaving headroom for
+  the IPC envelope). Counts and character limits are not the guarantee; the measured bytes are.
+  1. Fits → send.
+  2. Over budget → **split samples first**: discrete state (status, links, nudges) goes in the first frame,
+     samples fill that frame and the following frames (consecutive `seq`), each re-measured; split frames
+     count against the ack window.
+  3. Discrete state alone over budget → send the **fixed-size resync frame** (`{seq, resync: true}` with
+     empty payload, < 100 bytes) and drop the pending discrete state; the UI then queries the full state.
+- **Resync path.** The next frame after the ack window reopens carries the coalesced state with
+  `resync: true`, subject to the same byte budget (so it may itself be the bare resync frame). On any
+  `resync` or `seq` gap the UI re-reads the durable state by query: `ride_status()`, `coach_decisions()`,
   `device_links()`, and `stream_snapshot(stream)` (latest sample per subscription). Discrete state lives in
   the engine and store, so a coalesced, bare or missed frame never loses information.
-- **Frame size is bounded by construction**, not by splitting: ≤ 64 subscriptions per stream (`subscribe`
-  returns `Conflict` beyond that) with at most one sample each (~40 B), one status (< 1 KiB), two link
-  states, ≤ 8 nudges with `message` capped at 280 characters in the contract (~0.5 KiB each). The worst
-  case is under 8 KiB of JSON, so every frame takes Tauri's direct path; a unit test serializes the
-  worst-case frame and asserts it.
+- **Bounded inputs** (for memory and to keep step 3 rare, not as the size proof): ≤ 64 subscriptions per
+  stream (`subscribe` returns `Conflict` beyond that), at most one sample per subscription per frame, ≤ 8
+  pending nudges (beyond that the pending nudges are dropped and step 3 applies). Nudge `message` is capped
+  at **512 UTF-8 bytes, enforced when the nudge is created** (`CoachNudge::new` returns
+  `Err(MessageTooLong)`; judge and planner templates must produce shorter text, and a template that doesn't
+  fails its unit test).
+- **Required test** (#34): a property test feeds the frame builder arbitrary states at and beyond every
+  cap (64 subscriptions, 8 nudges of 512 bytes of 4-byte UTF-8 characters, maximal status) and asserts that
+  every emitted frame serializes to ≤ 8 000 bytes, that split frames together carry every sample, and that
+  the resync frame is the fixed shape.
 - **Cleanup:** streams belong to a window label. `open_stream` from a window drops that window's previous
   streams (page reload); the window's `Destroyed` event drops them; a failed `send` drops the stream.
   Subscriptions die with their stream.

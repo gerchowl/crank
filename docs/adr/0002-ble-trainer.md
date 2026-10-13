@@ -95,9 +95,8 @@ pub enum TrainerCommand { SetMode(ControlMode), SetRider(RiderConfig), Disconnec
 
 pub enum TrainerEvent {
     Sample(TrainerSample),
-    Applied { cmd: CommandId, mode: ControlMode },     // page 71 matched this command (§4.4)
-    Rejected { cmd: CommandId, mode: ControlMode, reason: CommandStatus },
-    Unconfirmed { cmd: CommandId, mode: ControlMode }, // no matching page 71 within 1 s
+    Delivered { mode: ControlMode },            // GATT write-with-response succeeded: bytes reached the peripheral, nothing more
+    Observed(TrainerObservation),               // what the trainer reports it is doing (§4.4); never "ack of command N"
     Link(LinkState),                            // Connecting | Ready | Lost (Ready = transport, rider config, caps done)
     Fault(DeviceError),
 }
@@ -112,6 +111,14 @@ pub struct TrainerSample {
     pub event_count: Option<u8>,
     pub status: TrainerStatus,                  // calibration / user-config required
     pub target_limit: TargetLimit,              // AtTarget | SpeedTooLow | SpeedTooHigh | Undetermined
+}
+
+pub struct TrainerObservation {
+    pub at: MonoTime,
+    pub source: ObservationSource,              // Page71Echo | Page25Flags
+    pub mode: Option<ControlMode>,              // decoded from the page-71 echo of the last received control page
+    pub status: Option<CommandStatus>,          // page-71 status byte as reported
+    pub target_limit: Option<TargetLimit>,      // page 25 flags
 }
 
 pub trait HeartRateDriver: Send + Sync + 'static {
@@ -246,40 +253,35 @@ negative masses) are `EncodeError`s; clamping to trainer capabilities is the eng
   HIL check 7 measures whether the NEO needs it.
 - **Transport acknowledgement:** writes use GATT write-with-response; a GATT error becomes
   `TrainerEvent::Fault(DeviceError::Gatt)`. One write in flight at a time.
-- **Application acknowledgement (correlated by a data tag).** What FE-C gives us: page 71 reports the
-  last received command page (byte 1), a sequence byte (byte 2), a status (byte 3) and an echo of that
-  command's data bytes 4–7 (field layout as implemented by pycycling; the ANT+ profile text defining the
-  sequence byte's semantics was not retrievable, so crank **does not rely on the sequence byte**). Echoed
-  data alone is ambiguous when targets repeat (200 W → 250 W → 200 W), so the driver makes every new command's
-  bytes unique:
-  - **Command tag.** The driver owns a 2-bit epoch `e` that increments with every *new* control command
-    (keep-alive re-sends reuse the current command's bytes). For page 49 the raw target is `4·W + e`
-    (W in whole watts, 0.25 W units), i.e. a bias of 0–0.75 W; for page 51 the grade's raw value carries `e`
-    in its two low bits (≤ 0.03 % grade). Both are below anything the rider or the power meter can resolve.
-    The engine sees whole watts and grades; the tag is internal to the FE-C driver.
-  - **Rate rule.** The writer starts at most **one new control command per second** (the `control` slot
-    still coalesces: the newest mode wins; keep-alives don't count). Ramps (1 Hz), soft starts (1 Hz) and
-    HR steering (0.2 Hz) fit; block boundaries fall on whole block seconds, so a boundary step replaces
-    that second's ramp update instead of queueing behind it. Only a manual ± or coach change sent less
-    than 1 s earlier can delay a step or another manual change, by at most 1 s. A tag
-    value is therefore reused no sooner than 4 s later.
-  - **Matching.** One page-70 request for page 71 is outstanding at a time, written only after the
-    command's GATT write-with-response completed. A response matches the outstanding `CommandId` iff byte
-    1 is the command's page **and** bytes 4–7 equal the tagged bytes we wrote. Responses are valid for 1 s
-    after their request; with tag reuse ≥ 4 s apart, a late response for an older command can never carry
-    the current command's bytes. *pass* → `Applied`; *fail / not supported / rejected* → `Rejected` (shown
-    in the UI); *pending* → one new request on the next tick (still within the 1 s budget). Non-matching
-    responses are stale and ignored with a debug log. No match within 1 s → `Unconfirmed` ("trainer not
-    confirming"); the keep-alive keeps sending the same bytes, nothing else is retried.
-  - **Supersession.** A newer command drops the outstanding correlation; responses for the old tag are
-    stale.
-  - Pages 48, 50 and 55 are not acknowledged individually (resistance release, wind and rider config are
-    observed through page 25 / page 54 behaviour); `Sim` is acknowledged through its tagged page 51.
-  - **Hardware gate (#44, check 3):** the NEO must (i) accept 0.25 W target resolution in page 49,
-    (ii) answer page 70 → page 71, (iii) echo bytes 4–7 exactly, including the tag bits. The check also
-    records the sequence byte's behaviour for the record. If (ii) or (iii) fails, this ADR is amended to
-    "GATT acknowledgement only" (no `Applied`/`Unconfirmed`) before #43 implements the step; if only (i)
-    fails, the tag moves to page 51-only and ERG uses GATT acknowledgement.
+- **No command-specific confirmation.** FE-C over BLE gives no verifiable way to tie a reply to one
+  command: page 71 reports the last received control page (byte 1), a sequence byte (byte 2) whose
+  semantics are defined in the unretrieved ANT+ profile, a status (byte 3) and an echo of that command's
+  data (bytes 4–7) (layout as implemented by pycycling), and there is no verified bound on how late a reply
+  may arrive. Tags in the data bytes wrap and cannot identify a delayed reply either. crank therefore keeps
+  two separate, honest signals:
+  - **Delivery (transport):** every write uses GATT write-with-response. Success →
+    `TrainerEvent::Delivered { mode }`, meaning the bytes reached the peripheral and nothing more; a GATT
+    error → `Fault(DeviceError::Gatt)`.
+  - **Observation (trainer state):** while a controlled mode (ERG, SIM, resistance, `Free`) is active the
+    writer requests page 71 once per second through the `requests` slot (and once right after a mode
+    change). Each reply becomes `TrainerEvent::Observed` with the echoed control page decoded into the mode
+    it describes (`Erg { target_w }`, grade, resistance %), plus the status byte as reported. Page 25's
+    target-limit flags are observations too. An observation says "the trainer reported state X at time t",
+    never "command N was applied".
+- **How the engine uses observations** (`crank-engine::erg`): it compares the latest observed mode with the
+  desired mode. Equal → `trainer_following = yes`. Different, or status *fail / not supported / rejected*,
+  for longer than 2 s (8 ticks) after the last desired-mode change → `trainer_following = no`, shown in the
+  ride status and excluded from compliance (§7.8). No page-71 reply at all for 5 s → `unknown` (the UI shows
+  no claim either way). Because a mismatch must persist across repeated 1 Hz observations, one delayed or
+  stale reply can't flip the state; the worst effect of a stale reply is one second of a wrong observation.
+  The engine never retries a write because of an observation; the 2 s keep-alive is unchanged.
+- Pages 48, 50 and 55 are observed through the page-71 echo when they were the last control page, and
+  otherwise through page 25 behaviour and page 54.
+- **Hardware gate (#44, check 3):** does the NEO answer page 70 → page 71, and does it echo bytes 4–7 of
+  pages 49 and 51? If not, `Observed` comes only from page 25 flags, `trainer_following` is `unknown` except
+  for target-limit flags, and the ADR is amended before #43 implements the step. **Enhancement, gated on
+  #44:** if the check shows that the sequence byte increments verifiably per received control page,
+  command-specific correlation may be added later as a new ADR amendment; v1 does not depend on it.
 - **Connect sequence:** connect → discover → subscribe `fec2` → read DIS → page 55 (rider config) →
   request page 54 (capabilities) → `TrainerLink` returned with `Link(Ready)` → engine sets the mode. The
   driver never chooses a control mode itself; restoring control is always the engine's `SetMode`.
@@ -349,9 +351,8 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
 1. **Controlled target** = block target × (1 + manual offset + coach change), rounded to 1 W, clamped to
    `[0, caps.max_target_w]` with the clamp shown as a validation warning in the editor (compile time) and a
    status flag in the ride. The controlled target is never smoothed and never derived from measured power.
-2. **Steps:** the new target is sent on the block-boundary tick (subject to the one-new-command-per-second
-   rule of §4.4: a boundary replaces that second's ramp update, and is delayed by at most 1 s only when
-   a manual ± or coach change went out less than 1 s before it). Smoothing a step is the trainer's job; its
+2. **Steps:** the new target is sent on the block-boundary tick (coalescing in the `control` slot,
+   §4.4, means the newest mode always wins). Smoothing a step is the trainer's job; its
    response time (t90 for 100→150→250→100 W) is measured in HIL check 6. A "lead" (send the next target L
    seconds early) defaults to 0 and is set to the measured trainer latency only by an ADR amendment
    backed by the HIL numbers.
@@ -377,7 +378,8 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    (a) the first 5 s of each block whose start target differs from the previous block's end target (the
    mock's per-block settle); (b) a manual ± or coach change: 5 s; (c) an ERG (re-)engagement: the soft
    start's 5 s plus 5 s. Within `ramp` blocks and HR-steered steps the target moves continuously and is
-   compared second by second with no settle; released (§7.4) and paused seconds are excluded. Compliance
+   compared second by second with no settle; released (§7.4), paused and `trainer_following = no` seconds
+   (§4.4) are excluded; compliance consumes observations, never command acknowledgements. Compliance
    is computed only in the engine (#13).
 9. **SIM, resistance and free:** `Sim` sends page 50 (wind; defaults: 0.51 kg/m, 0 km/h, drafting 1.0) and
    page 51 (grade from the free-ride/sim control, Crr default 0.004) at ≤ 1 Hz on change; page 55 carries
