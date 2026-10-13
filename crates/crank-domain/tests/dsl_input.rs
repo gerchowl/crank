@@ -71,10 +71,42 @@ fn long_digit_runs_in_non_number_words_are_unknown_tokens() {
         let err = parse_dsl(&text, 280.0, &mut String::new).unwrap_err();
         assert_eq!(err.kind, DslErrorKind::UnknownToken, "{text}");
     }
-    // Numeric-shaped tokens still overflow, including signed and `hr<` forms.
-    for text in [format!("1m hr<{huge}"), format!("1x[-{huge}w](1m free)")] {
+    // Numeric-shaped tokens still overflow, including signed progressions and `hr<`.
+    for text in [
+        format!("1m hr<{huge}"),
+        format!("1x[-{huge}w](1m free)"),
+        format!("1x[+{huge}%](1m free)"),
+    ] {
         let err = parse_dsl(&text, 280.0, &mut String::new).unwrap_err();
         assert_eq!(err.kind, DslErrorKind::NumericOverflow, "{text}");
+    }
+}
+
+/// #174: TS has no signed `hr<`, signed unit or malformed-decimal token, so a long digit run in
+/// one is an unknown token or unexpected duration word, never an overflow.
+#[test]
+fn number_shaped_but_invalid_tokens_are_not_overflows() {
+    let huge = "9".repeat(400);
+    for text in [
+        format!("1m 50% -hr<{huge}"),
+        format!("1m 50% +hr<{huge}"),
+        format!("1m 50% 9.9.{huge}%"),
+        format!("1m 50% 9.9.{huge}w"),
+        format!("1m 50% 1.5.{huge}bpm"),
+        format!("1m 50% -{huge}kj"),
+        format!("1m 50% +{huge}rpm"),
+        format!("1x[-{huge}m](1m free)"),
+    ] {
+        let err = parse_dsl(&text, 280.0, &mut String::new).unwrap_err();
+        assert_ne!(err.kind, DslErrorKind::NumericOverflow, "{text}");
+        assert!(
+            matches!(
+                err.kind,
+                DslErrorKind::UnknownToken | DslErrorKind::UnknownRepeatOption
+            ),
+            "{text}: {:?}",
+            err.kind
+        );
     }
 }
 

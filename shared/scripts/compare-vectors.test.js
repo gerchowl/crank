@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { vectorDifference } from "./compare-vectors";
 import { vectorSchemas } from "./vector-schema";
 
-const schema = { fields: { value: "float", count: "integer", label: "exact", values: { items: "float" } } };
+const schema = { fields: { value: { kind: "float", nullable: true }, strict: "float", count: "integer", label: "exact",
+  maybeLabel: { kind: "exact", nullable: true }, values: { items: "float" } } };
 const difference = (a, b) => vectorDifference(a, b, schema);
 
 describe("semantic vector comparison (ADR-0001 §3)", () => {
@@ -24,7 +25,6 @@ describe("semantic vector comparison (ADR-0001 §3)", () => {
     [{ value: 1.25 }, { value: 1.25 + 2e-12 }],
     [{ value: 1e-16 }, { value: 2e-15 }],
     [{ value: NaN }, { value: NaN }], [{ value: Infinity }, { value: Infinity }],
-    [{ value: "1" }, { value: 1 }], [{ value: true }, { value: 1 }],
     [{ label: false }, { label: true }], [{ label: "NaN" }, { label: "Infinity" }],
     [{ value: null }, { value: 0 }], [{ values: [1, 2] }, { values: [2, 1] }],
     [{ values: [1] }, { values: [1, 2] }], [{ value: null }, {}],
@@ -36,6 +36,25 @@ describe("semantic vector comparison (ADR-0001 §3)", () => {
   it("accepts exact discrete values, encoded non-finites, and reordered object keys", () => {
     expect(difference({ count: 42, label: true, value: null }, { value: null, label: true, count: 42 })).toBeNull();
     for (const value of ["NaN", "Infinity", "-Infinity"]) expect(difference({ value }, { value })).toBeNull();
+  });
+
+  it.each([
+    [{ value: true }, "$[\"value\"]: boolean at a node not declared exact"],
+    [{ count: false }, "$[\"count\"]: boolean at a node not declared exact"],
+    [{ value: "1" }, "$[\"value\"]: string at a node declared float"],
+    [{ count: "NaN" }, "$[\"count\"]: string at a node declared integer"],
+    [{ strict: null }, "$[\"strict\"]: null at a node not declared nullable"],
+    [{ values: [1, null] }, "$[\"values\"][1]: null at a node not declared nullable"],
+    [{ label: null }, "$[\"label\"]: null at a node not declared nullable"],
+  ])("rejects a value the declared kind cannot hold, even when both sides agree: %j", (value, message) => {
+    expect(() => difference(value, value)).toThrow(message);
+  });
+
+  it("accepts null only where declared nullable", () => {
+    expect(difference({ value: null, maybeLabel: null }, { value: null, maybeLabel: null })).toBeNull();
+    expect(difference({ value: null }, { value: 1 })).not.toBeNull();
+    expect(vectorDifference({ item: null }, { item: null }, { fields: { item: { ref: "node", nullable: true } } },
+      { node: { fields: { x: "float" } } })).toBeNull();
   });
 
   it("reports the path to a nested mismatch", () => {
