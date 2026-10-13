@@ -1,0 +1,560 @@
+use super::{
+    Cadence, DslError, OnUnreachable, PowerTarget, Progression, RepeatNode, StepEnd, StepNode,
+    WorkoutNode,
+};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn id(prefix: char) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("{prefix}{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+#[derive(Clone)]
+struct Token {
+    kind: char,
+    text: String,
+    offset: usize,
+    length: usize,
+}
+impl Token {
+    fn error(&self, message: impl Into<String>) -> DslError {
+        DslError {
+            message: message.into(),
+            offset: self.offset,
+            length: self.length,
+        }
+    }
+}
+// ECMAScript whitespace differs from Rust's Unicode White_Space (notably FEFF/0085).
+fn whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
+    )
+}
+fn lex(src: &str) -> Result<Vec<Token>, DslError> {
+    let mut chars = src.chars().peekable();
+    let mut offset = 0;
+    let mut tokens = Vec::new();
+    while let Some(c) = chars.next() {
+        let start = offset;
+        offset += c.len_utf16();
+        if c == '#' {
+            while chars.peek().is_some_and(|c| *c != '\n') {
+                if let Some(c) = chars.next() {
+                    offset += c.len_utf16();
+                }
+            }
+            continue;
+        }
+        let kind = match c {
+            '\n' | ',' | ';' => ',',
+            '(' | ')' | '[' | ']' => c,
+            '"' => 's',
+            c if whitespace(c) => continue,
+            _ => 'w',
+        };
+        let mut text = String::new();
+        if kind == 's' {
+            loop {
+                match chars.peek().copied() {
+                    None | Some('\n') => {
+                        return Err(Token {
+                            kind,
+                            text,
+                            offset: start,
+                            length: offset - start,
+                        }
+                        .error("Unterminated label string"));
+                    }
+                    Some('"') => {
+                        chars.next();
+                        offset += 1;
+                        break;
+                    }
+                    Some(c) => {
+                        chars.next();
+                        offset += c.len_utf16();
+                        if c == '\\' && chars.peek().is_some() {
+                            if let Some(c) = chars.next() {
+                                text.push(c);
+                                offset += c.len_utf16();
+                            }
+                        } else {
+                            text.push(c);
+                        }
+                    }
+                }
+            }
+        } else {
+            text.push(c);
+            if kind == 'w' {
+                while chars
+                    .peek()
+                    .is_some_and(|c| !whitespace(*c) && !"()[],;\"#".contains(*c))
+                {
+                    if let Some(c) = chars.next() {
+                        text.push(c);
+                        offset += c.len_utf16();
+                    }
+                }
+            }
+        }
+        tokens.push(Token {
+            kind,
+            text,
+            offset: start,
+            length: offset - start,
+        });
+    }
+    tokens.push(Token {
+        kind: 'e',
+        text: String::new(),
+        offset,
+        length: 0,
+    });
+    Ok(tokens)
+}
+fn number(s: &str, decimal: bool) -> Option<f64> {
+    let mut parts = s.split('.');
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
+    if !digits(parts.next()?) {
+        return None;
+    }
+    if let Some(part) = parts.next()
+        && (!decimal || !digits(part) || parts.next().is_some())
+    {
+        return None;
+    }
+    s.parse().ok()
+}
+fn suffix(s: &str, unit: &str, decimal: bool) -> Option<f64> {
+    number(s.strip_suffix(unit)?, decimal)
+}
+fn range(s: &str, unit: &str, decimal: bool) -> Option<(f64, f64)> {
+    let (lo, hi) = s.strip_suffix(unit)?.split_once('-')?;
+    Some((number(lo, decimal)?, number(hi, decimal)?))
+}
+/// Parse an integer h/m/s duration word, case-insensitively; zero is allowed here.
+#[must_use]
+pub fn parse_duration_word(word: &str) -> Option<f64> {
+    let word = word.to_ascii_lowercase();
+    let mut rest = word.as_str();
+    let mut total = 0.0;
+    for (unit, scale) in [('h', 3600.0), ('m', 60.0), ('s', 1.0)] {
+        if let Some((n, tail)) = rest.split_once(unit) {
+            total += number(n, false)? * scale;
+            rest = tail;
+        }
+    }
+    (!word.is_empty() && rest.is_empty()).then_some(total)
+}
+struct Parser {
+    tokens: Vec<Token>,
+    i: usize,
+    ftp: f64,
+}
+impl Parser {
+    fn peek(&self) -> &Token {
+        &self.tokens[self.i]
+    }
+    fn next(&mut self) -> Token {
+        let t = self.peek().clone();
+        if t.kind != 'e' {
+            self.i += 1;
+        }
+        t
+    }
+    fn seq(&mut self, open: Option<&Token>) -> Result<Vec<WorkoutNode>, DslError> {
+        let mut nodes = Vec::new();
+        loop {
+            while self.peek().kind == ',' {
+                self.next();
+            }
+            let t = self.peek();
+            match t.kind {
+                'e' => {
+                    return open.map_or(Ok(nodes), |o| Err(o.error("Unclosed '(' — missing ')'")));
+                }
+                ')' => {
+                    return if open.is_some() {
+                        Ok(nodes)
+                    } else {
+                        Err(t.error("Unexpected ')'"))
+                    };
+                }
+                _ => nodes.push(self.item()?),
+            }
+            let after = self.peek();
+            if !matches!(after.kind, ',' | 'e' | ')') {
+                return Err(after.error(format!(
+                    "Unexpected '{}' — separate items with ',', ';' or a newline",
+                    after.text
+                )));
+            }
+        }
+    }
+    fn item(&mut self) -> Result<WorkoutNode, DslError> {
+        let label = (self.peek().kind == 's').then(|| self.next().text);
+        let t = self.next();
+        if t.kind != 'w' {
+            // Bare EOF is excluded by seq; only a dangling label reaches EOF here.
+            return Err(t.error(if t.kind == 'e' {
+                "Expected a step or repeat after the label".into()
+            } else {
+                format!("Unexpected '{}'", t.text)
+            }));
+        }
+        if let Some(count) = suffix(&t.text.to_ascii_lowercase(), "x", false) {
+            self.repeat(count, &t, label).map(WorkoutNode::Repeat)
+        } else {
+            self.step(&t, label).map(WorkoutNode::Step)
+        }
+    }
+    fn repeat(
+        &mut self,
+        count: f64,
+        t: &Token,
+        label: Option<String>,
+    ) -> Result<RepeatNode, DslError> {
+        if count < 1.0 {
+            return Err(t.error("Repeat count must be ≥ 1"));
+        }
+        let mut node = RepeatNode {
+            id: id('r'),
+            label,
+            count,
+            children: Vec::new(),
+            progression: None,
+            skip_last_rest: None,
+        };
+        if self.peek().kind == '[' {
+            let open = self.next();
+            let mut prog = Progression::default();
+            loop {
+                let o = self.next();
+                match o.kind {
+                    ']' => break,
+                    ',' => continue,
+                    'e' => return Err(open.error("Unclosed '[' — missing ']'")),
+                    'w' => {}
+                    _ => return Err(o.error(format!("Unexpected '{}' in repeat options", o.text))),
+                }
+                let x = o.text.to_ascii_lowercase();
+                let signed = |unit| {
+                    let (sign, tail) = x.split_at_checked(1)?;
+                    let factor = match sign {
+                        "+" => 1.0,
+                        "-" => -1.0,
+                        _ => return None,
+                    };
+                    Some(factor * suffix(tail, unit, true)?)
+                };
+                if let Some(w) = signed("w") {
+                    prog.watts_per_rep = Some(w);
+                } else if let Some(p) = signed("%") {
+                    prog.pct_per_rep = Some(p);
+                } else if x == "!last" {
+                    node.skip_last_rest = Some(true);
+                } else {
+                    return Err(o.error(format!(
+                        "Unknown repeat option '{}' (use +5w, +2%, !last)",
+                        o.text
+                    )));
+                }
+            }
+            if prog != Progression::default() {
+                node.progression = Some(prog);
+            }
+        }
+        let open = self.next();
+        if open.kind != '(' {
+            return Err(open.error(format!("Expected '(' after '{}'", t.text)));
+        }
+        node.children = self.seq(Some(&open))?;
+        let close = self.next();
+        if node.children.is_empty() {
+            return Err(DslError {
+                message: "Empty repeat".into(),
+                offset: t.offset,
+                length: close.offset + 1 - t.offset,
+            });
+        }
+        Ok(node)
+    }
+    fn end(&mut self, t: &Token) -> Result<StepEnd, DslError> {
+        let w = t.text.to_ascii_lowercase();
+        if let Some(s) = parse_duration_word(&w) {
+            return if s <= 0.0 {
+                Err(t.error("Duration must be > 0"))
+            } else {
+                Ok(StepEnd::Time { s })
+            };
+        }
+        if let Some(kj) = suffix(&w, "kj", true) {
+            return Ok(StepEnd::Kj { kj });
+        }
+        if w == "lap" {
+            return Ok(StepEnd::Lap);
+        }
+        if let Some(target_bpm) = w.strip_prefix("hr<").and_then(|s| number(s, false)) {
+            let rt = self.peek();
+            let bounds = rt
+                .text
+                .split_once("..")
+                .and_then(|(lo, hi)| Some((parse_duration_word(lo)?, parse_duration_word(hi)?)));
+            let Some((min_s, max_s)) = bounds.filter(|_| rt.kind == 'w') else {
+                return Err(if rt.kind == 'w' { rt } else { t }.error(format!(
+                    "Expected min..max duration after '{}', e.g. 2m..4m",
+                    t.text
+                )));
+            };
+            let rt = self.next();
+            if min_s > max_s {
+                return Err(rt.error("Min duration is longer than max"));
+            }
+            return Ok(StepEnd::HrRecovery {
+                target_bpm,
+                min_s,
+                max_s,
+                on_unreachable: OnUnreachable::LowerPower,
+            });
+        }
+        Err(t.error(if number(&w, false).is_some() {
+            format!("'{}' needs a unit: 30s, 4m, 1h, 10kj — or '{}x(...)' for a repeat", t.text, t.text)
+        } else { format!("Expected a duration (30s, 4m, 1m30s), kJ (10kj), 'lap', 'hr<N' or a repeat (3x(...)); got '{}'", t.text) }))
+    }
+    fn step(&mut self, t: &Token, label: Option<String>) -> Result<StepNode, DslError> {
+        let mut end = self.end(t)?;
+        let mut target = None;
+        let mut cadence = None;
+        let mut target_tok = t.clone();
+        while self.peek().kind == 'w' {
+            let a = self.next();
+            let x = a.text.to_ascii_lowercase();
+            let pt = if x == "ramp" {
+                let r = self.next();
+                let Some((from, to)) = range(&r.text, "%", true).filter(|_| r.kind == 'w') else {
+                    return Err(if r.kind == 'e' { &a } else { &r }
+                        .error("Expected a range after 'ramp', e.g. ramp 50-75%"));
+                };
+                target_tok = r;
+                PowerTarget::Ramp { from, to }
+            } else if let Some((lo, hi)) = range(&x, "%", true) {
+                if lo > hi {
+                    return Err(a.error(
+                        "Range low end is above high end (use 'ramp 75-50%' for a descending ramp)",
+                    ));
+                }
+                PowerTarget::Range { lo, hi }
+            } else if let Some(value) = suffix(&x, "%", true) {
+                PowerTarget::PctFtp { value }
+            } else if let Some(value) = suffix(&x, "w", false) {
+                PowerTarget::Watts { value }
+            } else if let Some(bpm) = suffix(&x, "bpm", false) {
+                PowerTarget::Hr { bpm }
+            } else if x == "free" {
+                PowerTarget::Free
+            } else if let Some((lo, hi)) =
+                range(&x, "rpm", false).or_else(|| suffix(&x, "rpm", false).map(|n| (n, n)))
+            {
+                if cadence.is_some() {
+                    return Err(a.error("Duplicate cadence"));
+                }
+                if lo > hi {
+                    return Err(a.error("Cadence range low end is above high end"));
+                }
+                cadence = Some(Cadence { lo, hi });
+                continue;
+            } else if matches!(x.as_str(), "!cap" | "!lower" | "!coach") {
+                let StepEnd::HrRecovery { on_unreachable, .. } = &mut end else {
+                    return Err(a.error(format!("'{}' only applies to hr< recovery steps", a.text)));
+                };
+                *on_unreachable = match x.as_str() {
+                    "!cap" => OnUnreachable::Cap,
+                    "!coach" => OnUnreachable::AskCoach,
+                    _ => OnUnreachable::LowerPower,
+                };
+                continue;
+            } else {
+                return Err(a.error(format!("Unknown token '{}'", a.text)));
+            };
+            if target.is_some() {
+                return Err(
+                    if x == "ramp" { &target_tok } else { &a }.error("Duplicate power target")
+                );
+            }
+            if x != "ramp" {
+                target_tok = a;
+            }
+            target = Some(pt);
+        }
+        let target = target.ok_or_else(|| {
+            t.error("Missing power target (e.g. 120%, 250w, 50-75%, ramp 50-75%, 140bpm, free)")
+        })?;
+        let pct = match target {
+            PowerTarget::PctFtp { value } => value,
+            PowerTarget::Watts { value } if self.ftp > 0.0 => value / self.ftp * 100.0,
+            PowerTarget::Range { hi, .. } => hi,
+            PowerTarget::Ramp { from, to } => from.max(to),
+            _ => 0.0,
+        };
+        if pct > 400.0 {
+            return Err(target_tok.error(format!(
+                "{:.0} % FTP is implausible (max 400 %)",
+                js_round(pct)
+            )));
+        }
+        Ok(StepNode {
+            id: id('s'),
+            label,
+            end,
+            target,
+            cadence,
+        })
+    }
+}
+/// Parse text into a tree with fresh IDs. Error spans use JavaScript UTF-16 offsets.
+///
+/// # Errors
+/// Returns the first lexical or grammatical error, matching the frozen TS reference.
+pub fn parse_dsl(text: &str, ftp: f64) -> Result<Vec<WorkoutNode>, DslError> {
+    Parser {
+        tokens: lex(text)?,
+        i: 0,
+        ftp,
+    }
+    .seq(None)
+}
+// Math.round breaks ties towards positive infinity. Adding 0.5 first loses
+// precision immediately below a half-integer (and for large integers).
+fn js_round(n: f64) -> f64 {
+    if n - n.floor() < 0.5 {
+        n.floor()
+    } else {
+        n.ceil()
+    }
+}
+fn fmt_num(n: f64) -> String {
+    (js_round(n * 1000.0) / 1000.0 + 0.0).to_string()
+}
+/// Canonical h/m/s duration, rounded to whole seconds and clamped to zero.
+#[must_use]
+pub fn format_duration(s: f64) -> String {
+    let s = js_round(s).max(0.0);
+    if s <= 0.0 {
+        return "0s".into();
+    }
+    let mut text = String::new();
+    for (n, unit) in [
+        (s / 3600.0).floor(),
+        ((s % 3600.0) / 60.0).floor(),
+        s % 60.0,
+    ]
+    .into_iter()
+    .zip(['h', 'm', 's'])
+    .filter(|(n, _)| *n > 0.0)
+    {
+        text.push_str(&n.to_string());
+        text.push(unit);
+    }
+    text
+}
+fn print_node(node: &WorkoutNode) -> String {
+    let label = match node {
+        WorkoutNode::Step(n) => &n.label,
+        WorkoutNode::Repeat(n) => &n.label,
+    };
+    let label = label.as_ref().map_or_else(String::new, |s| {
+        format!("\"{}\" ", s.replace('\\', "\\\\").replace('"', "\\\""))
+    });
+    match node {
+        WorkoutNode::Repeat(n) => {
+            let mut opts = Vec::new();
+            if let Some(p) = &n.progression {
+                for (value, unit) in [(p.watts_per_rep, 'w'), (p.pct_per_rep, '%')] {
+                    if let Some(v) = value {
+                        opts.push(format!(
+                            "{}{}{unit}",
+                            if v >= 0.0 { "+" } else { "" },
+                            fmt_num(v)
+                        ));
+                    }
+                }
+            }
+            if n.skip_last_rest == Some(true) {
+                opts.push("!last".into());
+            }
+            let options = if opts.is_empty() {
+                String::new()
+            } else {
+                format!("[{}]", opts.join(", "))
+            };
+            format!(
+                "{label}{}x{options}({})",
+                n.count,
+                n.children
+                    .iter()
+                    .map(print_node)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+        WorkoutNode::Step(n) => {
+            let mut flag = "";
+            let end = match n.end {
+                StepEnd::Time { s } => format_duration(s),
+                StepEnd::Kj { kj } => format!("{}kj", fmt_num(kj)),
+                StepEnd::Lap => "lap".into(),
+                StepEnd::HrRecovery {
+                    target_bpm,
+                    min_s,
+                    max_s,
+                    on_unreachable,
+                } => {
+                    flag = match on_unreachable {
+                        OnUnreachable::Cap => " !cap",
+                        OnUnreachable::AskCoach => " !coach",
+                        OnUnreachable::LowerPower => "",
+                    };
+                    format!(
+                        "hr<{:.0} {}..{}",
+                        js_round(target_bpm),
+                        format_duration(min_s),
+                        format_duration(max_s)
+                    )
+                }
+            };
+            let target = match n.target {
+                PowerTarget::PctFtp { value } => format!("{}%", fmt_num(value)),
+                PowerTarget::Watts { value } => format!("{:.0}w", js_round(value)),
+                PowerTarget::Range { lo, hi } => format!("{}-{}%", fmt_num(lo), fmt_num(hi)),
+                PowerTarget::Ramp { from, to } => {
+                    format!("ramp {}-{}%", fmt_num(from), fmt_num(to))
+                }
+                PowerTarget::Hr { bpm } => format!("{:.0}bpm", js_round(bpm)),
+                PowerTarget::Free => "free".into(),
+            };
+            let cad = n.cadence.as_ref().map_or_else(String::new, |c| {
+                if c.lo.total_cmp(&c.hi).is_eq() {
+                    format!(" {}rpm", c.lo)
+                } else {
+                    format!(" {}-{}rpm", c.lo, c.hi)
+                }
+            });
+            format!("{label}{end} {target}{cad}{flag}")
+        }
+    }
+}
+/// Canonical DSL: one top-level item per line, nested items comma-separated.
+/// Numeric values are rounded as in the TS printer; round trips require DSL-representable trees.
+#[must_use]
+pub fn print_dsl(nodes: &[WorkoutNode]) -> String {
+    nodes.iter().map(print_node).collect::<Vec<_>>().join("\n")
+}

@@ -1,9 +1,11 @@
-//! Pure ride metrics, ported under ADR-0001 §2–3.
+//! Pure domain logic; see ADR-0001 §2–4.
 pub mod distributions;
 pub mod filters;
 pub mod history;
 pub mod metric_error;
 pub mod scales;
+/// Workout trees and text DSL.
+pub mod workout;
 
 // Math.round rounds ties towards +infinity and preserves negative zero. Adding
 // 0.5 before floor loses the representable value immediately below a half.
