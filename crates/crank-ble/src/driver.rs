@@ -45,6 +45,18 @@ pub trait FecTransport: Send + Sync + 'static {
     /// Release the peripheral.
     fn disconnect(&self) -> BoxFuture<'static, Result<(), DeviceError>>;
 }
+struct ConnectGuard(Option<Arc<dyn FecTransport>>);
+impl Drop for ConnectGuard {
+    fn drop(&mut self) {
+        if let Some(transport) = self.0.take() {
+            tokio::spawn(async move {
+                if let Err(error) = transport.disconnect().await {
+                    tracing::warn!(%error, "cancelled connection cleanup failed");
+                }
+            });
+        }
+    }
+}
 /// FE-C trainer factory. Supply a separate transport for each live connection.
 /// No discovery/reconnect loop is implemented here (#147).
 pub struct FecTrainer {
@@ -63,7 +75,7 @@ impl FecTrainer {
             connecting: Arc::default(),
         }
     }
-    /// Attach a per-ride capture opened by the ride owner; writes occur at TRACE.
+    /// Attach a TRACE capture. Diagnostic failures emit Fault and never stop BLE.
     #[must_use]
     pub fn with_capture(mut self, capture: Arc<Capture>) -> Self {
         self.capture = Some(capture);
@@ -97,19 +109,22 @@ impl TrainerDriver for FecTrainer {
             })
             .map_err(|e| crate::protocol(e, ProtocolErrorKind::Encode))?;
             let (info, mut notifications) = transport.connect(dev, clock.clone()).await?;
+            let mut cleanup = ConnectGuard(Some(transport.clone()));
             let (events, receiver) = mpsc::channel(256);
             let (commands, control) = mpsc::channel(64);
             let result = async {
                 emit(&events, TrainerEvent::Link(LinkState::Connecting)).await?;
-                write(&transport, &clock, capture.as_ref(), config, None).await?;
+                write(&transport, &clock, capture.as_ref(), config, &events).await?;
                 clock.sleep_until(MonoTime(clock.now().0 + 250_000)).await;
-                write(&transport, &clock, capture.as_ref(), request(54)?, None).await?;
+                write(&transport, &clock, capture.as_ref(), request(54)?, &events).await?;
                 let deadline = MonoTime(clock.now().0 + 2_000_000);
                 loop {
                     tokio::select! {
                         record = notifications.next() => {
                             let (at, bytes) = record.ok_or(DeviceError::Disconnected)??;
-                            record_capture(capture.as_ref(), &clock, true, &bytes)?;
+                            if let Err(error) = record_capture(capture.as_ref(), at, true, &bytes) {
+                                events.try_send(TrainerEvent::Fault(error)).map_err(|e| DeviceError::Gatt(e.to_string()))?;
+                            }
                             if let Ok(frame) = decode(&bytes)
                                 && let Page::Capabilities(p) = frame.page {
                                     break Ok(TrainerCaps { erg: p.modes & 2 != 0, sim: p.modes & 4 != 0,
@@ -124,20 +139,19 @@ impl TrainerDriver for FecTrainer {
             let caps = match result {
                 Ok(caps) => caps,
                 Err(error) => {
-                    transport.disconnect().await?;
-                    return Err(error);
+                    let disconnected = transport.disconnect().await;
+                    cleanup.0 = None;
+                    return Err(disconnected.err().map_or(error.clone(), |other| {
+                        DeviceError::ConnectFailed(format!("{error}; disconnect failed: {other}"))
+                    }));
                 }
             };
             emit(&events, TrainerEvent::Link(LinkState::Ready)).await?;
+            cleanup.0 = None;
             let writer_transport = transport.clone();
             tokio::spawn(async move {
                 let _guard = guard;
-                let mut reader = tokio::spawn(read(
-                    notifications,
-                    events.clone(),
-                    capture.clone(),
-                    clock.clone(),
-                ));
+                let mut reader = tokio::spawn(read(notifications, events.clone(), capture.clone()));
                 let result = tokio::select! {
                     result = run(control, events.clone(), transport.clone(), clock, capture) => result,
                     result = &mut reader => result.map_err(|e| DeviceError::Gatt(e.to_string())),
@@ -171,7 +185,7 @@ async fn emit(events: &mpsc::Sender<TrainerEvent>, event: TrainerEvent) -> Resul
 }
 fn record_capture(
     capture: Option<&Arc<Capture>>,
-    clock: &Arc<dyn Clock>,
+    at: MonoTime,
     rx: bool,
     bytes: &[u8],
 ) -> Result<(), DeviceError> {
@@ -179,7 +193,7 @@ fn record_capture(
         && let Some(capture) = capture
     {
         capture
-            .record_current(clock.as_ref(), rx, bytes)
+            .record(at, rx, bytes)
             .map_err(|e| DeviceError::Capture(e.to_string()))?;
     }
     Ok(())
@@ -189,14 +203,10 @@ async fn write(
     clock: &Arc<dyn Clock>,
     capture: Option<&Arc<Capture>>,
     bytes: [u8; 13],
-    events: Option<&mpsc::Sender<TrainerEvent>>,
+    events: &mpsc::Sender<TrainerEvent>,
 ) -> Result<(), DeviceError> {
-    if let Err(error) = record_capture(capture, clock, false, &bytes) {
-        if let Some(events) = events {
-            emit(events, TrainerEvent::Fault(error)).await?;
-        } else {
-            return Err(error);
-        }
+    if let Err(error) = record_capture(capture, clock.now(), false, &bytes) {
+        emit(events, TrainerEvent::Fault(error)).await?;
     }
     transport.write(bytes).await
 }
@@ -204,12 +214,11 @@ async fn read(
     mut notifications: Notifications,
     events: mpsc::Sender<TrainerEvent>,
     capture: Option<Arc<Capture>>,
-    clock: Arc<dyn Clock>,
 ) {
     while let Some(record) = notifications.next().await {
         match record {
             Ok((at, bytes)) => {
-                if let Err(e) = record_capture(capture.as_ref(), &clock, true, &bytes) {
+                if let Err(e) = record_capture(capture.as_ref(), at, true, &bytes) {
                     let _ = emit(&events, TrainerEvent::Fault(e)).await;
                 }
                 for event in receive(at, &bytes) {
@@ -238,8 +247,17 @@ async fn run(
     let mut next = start + 250_000;
     loop {
         clock.sleep_until(MonoTime(next)).await;
-        tick = tick.max((clock.now().0 - start) / 250_000 - 1);
-        next = clock.now().0 + 250_000;
+        let now = clock.now().0;
+        if now < next {
+            continue;
+        }
+        tick = tick.max(
+            now.saturating_sub(start)
+                .saturating_div(250_000)
+                .saturating_sub(1),
+        );
+        next += 250_000;
+        next = next.max(start.saturating_add((tick + 2).saturating_mul(250_000)));
         for _ in 0..commands.len() {
             let Ok(command) = commands.try_recv() else {
                 break;
@@ -267,7 +285,7 @@ async fn run(
             return Ok(());
         }
         if let Some(frame) = pacer.tick(tick)? {
-            write(&transport, &clock, capture.as_ref(), frame, Some(&events)).await?;
+            write(&transport, &clock, capture.as_ref(), frame, &events).await?;
             if frame[4] != 70
                 && let Some(mode) = pacer.mode
             {

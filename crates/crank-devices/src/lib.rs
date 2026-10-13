@@ -124,7 +124,9 @@ pub enum TrainerCommand {
 pub enum TrainerEvent {
     /// Telemetry at notification arrival time.
     Sample(TrainerSample),
-    /// GATT write-with-response succeeded; no claim of trainer application.
+    /// One control page's GATT write succeeded; no claim of trainer application.
+    /// SIM emits once per component, so the first event does not confirm the pair.
+    /// Diagnostic only; delivery is not an engine following input (ADR-0002 §4.4).
     Delivered {
         /// Desired mode whose control page reached the peripheral.
         mode: ControlMode,

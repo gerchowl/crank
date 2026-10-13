@@ -24,38 +24,22 @@ it("TS scales agree with Rust-exported history bucket edges", () => {
     })),
   );
   cases.forEach((c, k) =>
-    expectEdges(c.edges, committed[k]!.edges, `saved case ${k}`),
+    c.edges.forEach((edge, i) => {
+      const saved = committed[k]!.edges[i]!;
+      expect(Math.abs(edge - saved)).toBeLessThanOrEqual(
+        Math.max(1e-12 * Math.max(Math.abs(edge), Math.abs(saved)), 1e-15),
+      );
+    }),
   );
   expect(cases).toHaveLength(60);
   for (const c of cases) {
     const edges = timeAgoEdges(c.spanS, c.buckets, c.scale);
     expect(edges).toHaveLength(c.edges.length);
-    expectEdges(
-      edges,
-      c.edges,
-      `${c.scale}, span=${c.spanS}, buckets=${c.buckets}`,
-    );
+    edges.forEach((edge, i) => {
+      const rust = c.edges[i]!;
+      expect(Math.abs(edge - rust)).toBeLessThanOrEqual(
+        Math.max(1e-12 * Math.max(Math.abs(edge), Math.abs(rust)), 1e-15),
+      );
+    });
   }
 });
-
-function expectEdges(actual: number[], expected: number[], context: string) {
-  // Keep every numeric comparison and its tolerance, but invoke the matcher
-  // once per case. Per-edge matcher construction dominated this 50k-comparison test.
-  const mismatches: {
-    index: number;
-    actual: number;
-    expected: number;
-    tolerance: number;
-  }[] = [];
-  actual.forEach((edge, index) => {
-    const saved = expected[index]!;
-    const tolerance = Math.max(
-      1e-12 * Math.max(Math.abs(edge), Math.abs(saved)),
-      1e-15,
-    );
-    if (!(Math.abs(edge - saved) <= tolerance)) {
-      mismatches.push({ index, actual: edge, expected: saved, tolerance });
-    }
-  });
-  expect(mismatches, context).toEqual([]);
-}

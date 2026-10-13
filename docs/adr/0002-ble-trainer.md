@@ -267,8 +267,15 @@ two consecutive ticks before the poll; that poll may be late by two ticks, with 
 due times. Steady SIM alternates keep-alive pages one second apart, polling on the following tick.
 For continuously superseded SIM pairs, finish the current pair then service an overdue poll before
 starting another pair. An in-flight pair finishes its track page with the newest value before a
-coalesced wind update, so a superseding SIM update can be delivered track then wind. The two-tick completion bound applies to a pair that is not superseded, and
-an already overdue poll can defer the start of a newer pair by one tick (architect: confirm, #43).
+coalesced wind update, so a superseding SIM update can be delivered track then wind. A poll already
+deferred by one SIM pair takes the next tick even if a newer pair is pending; polls are never more
+than two ticks late against the nominal grid and never occupy consecutive ticks. Both SIM pages are
+written within two ticks of the desired change, except when the pair's first free tick goes to such
+an already-deferred poll: then completion is within three ticks (0.75 s), never more. ERG, resistance,
+and single-page control remain within two ticks. This bounds observation starvation, which affects
+safety-relevant trainer_following. The extra SIM tick arises under back-to-back changes faster than
+real terrain; `L` = 2 s budgets 0.5 s nominal writer delay, and #44 check 3 measures end-to-end p99
+including slot/coalescing delay so the 0.75 s worst case is calibrated rather than assumed.
 Rider configuration is written on connection; explicit SetRider on a live connection returns a
 protocol fault and requires a new connection. Reserving polls avoids five-second observation expiry;
 one tick of single-page delay remains inside the control latency budget.
@@ -393,7 +400,7 @@ renew anything.
 | Constant | Value | Source |
 |---|---|---|
 | `T_poll` page-71 request period | 1 s | §4.4. Gives `P_c` above (SIM: alternation) |
-| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Budget: desired change → control write (≤ 2 writer ticks, 0.5 s), plus the trainer applying it, plus the reply latency. **HIL calibration (#44 check 3)**: `L` ≥ p99 of (desired change → arrival of the first reply that echoes it), measured end to end, so slot and coalescing delay are included |
+| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Budget: desired change → control write (≤ 2 writer ticks (0.5 s) nominal; ≤ 3 ticks (0.75 s) worst case for a SIM pair behind a deferred poll), plus the trainer applying it, plus the reply latency. **HIL calibration (#44 check 3)**: `L` ≥ p99 of (desired change → arrival of the first reply that echoes it), measured end to end, so slot and coalescing delay are included |
 | `N_follow` agreeing replies to verify a component | 3 | Design: a single or duplicated reply never decides |
 | `T_verify` minimum span of those replies | 2 s | Design: a burst of delayed replies arriving together never verifies |
 | `T_mismatch` minimum span of a disagreement episode before `not_following` | 2 s | The previous 2 s rule (8 ticks) |
