@@ -18,7 +18,9 @@ Rust types and command wrappers to `app/src/bindings.ts`; commit that file.
 The drift check must fail after an unexported contract change. The `deps-edges`
 flake check checks all-feature crate boundaries and separately walks the production
 feature graph, failing if expected crates are missing or e2e is enabled.
-`cargo deny check bans licenses sources` checks dependency policy.
+`cargo deny check` checks dependency policy; in the flake the `deny` check runs advisories offline against the
+pinned `advisory-db` input (bump: `nix flake update advisory-db`; ADR-0001 §9.5). The directory name
+`advisory-db-3157b0e258782691` in flake.nix is cargo-deny's hash of the default db URL.
 
 `just dev` starts the placeholder window. `just bundle` (sage only, outside the sandbox) builds
 `.#crank-app` (an unsigned, Nix-assembled `crank.app`), installs it at `~/Applications/crank.app` and signs
