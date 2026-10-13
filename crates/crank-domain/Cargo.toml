@@ -9,6 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+libm = "0.2.16"
 serde.workspace = true
 specta = { workspace = true, optional = true }
 
