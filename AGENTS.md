@@ -20,14 +20,18 @@ flake check checks all-feature crate boundaries and separately walks the product
 feature graph, failing if expected crates are missing or e2e is enabled.
 `cargo deny check bans licenses sources` checks dependency policy.
 
-`just dev` starts the placeholder window. `just bundle` fails with an explicit
-message pending the signing implementation in #37; #37 owns `crank-app` assembly,
-installation at `~/Applications/crank.app`, and stable nix-tcc signing.
-`just e2e` and `just screens` await the embedded macOS WebDriver gate #35;
-they fail explicitly until it lands. Playwright browsers are excluded from the
-devShell until #35 provides the harness. Screenshots will go to
-`docs/design/screens/` as ADR-0001 §8 specifies. Default Tauri icons are used
-until the app icon source lands in #48; regenerate using `tauri icon` then.
+`just dev` starts the placeholder window. `just bundle` (sage only, outside the sandbox) builds
+`.#crank-app` (an unsigned, Nix-assembled `crank.app`), installs it at `~/Applications/crank.app` and signs
+it inside-out with the local `nix-tcc` identity so the Bluetooth TCC grant survives rebuilds (ADR-0001
+§9.3, ADR-0002 §8). It reads the identity's SHA-1 from the keychain at run time, never creates or changes
+identities, and uses no hardened runtime or App Sandbox (library validation rejects the unsigned nix-store
+dylibs; distribution signing is #47). `just e2e` and `just screens` await the embedded macOS WebDriver
+gate #35; they fail explicitly until it lands. Playwright browsers are excluded from the devShell until #35
+provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
+
+App icons are generated from `assets/icon/icon-1024.png`: run `just icons` after changing the mark. It runs
+`tauri icon` and records every hash in `app/src-tauri/icons/MANIFEST.sha256`; the `icons-drift` flake check
+fails when the source or any generated icon differs from the manifest.
 
 Every pnpm lockfile update must update the `fetchPnpmDeps` hash in flake.nix.
 The fetch phase explicitly prepares darwin-arm64 and linux-x64 optional packages
