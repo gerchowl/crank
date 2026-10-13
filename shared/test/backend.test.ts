@@ -430,4 +430,21 @@ describe("realtime clock", () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(got.length).toBe(n);
   });
+  it("streams() returns the full 1 Hz ride record incrementally; recoveries() lists finished blocks", () => {
+    const b = mk({ speed: 60 });
+    b.ride.start();
+    b.advance(600);
+    const all = b.streams(["power", "hr"]);
+    expect(all.fromS).toBe(0);
+    expect(all.toS).toBeGreaterThan(590);
+    expect(all.series.power!.length).toBe(all.toS);
+    expect(all.series.power!.filter((v) => v !== null).length).toBeGreaterThan(550);
+    const tail = b.streams(["power"], 500);
+    expect(tail.fromS).toBe(500);
+    expect(tail.series.power).toEqual(all.series.power!.slice(500));
+    b.advance(3000);
+    const recs = b.recoveries();
+    expect(recs.length).toBeGreaterThan(0);
+    expect(recs.every((r) => r.fit !== undefined)).toBe(true);
+  });
 });
