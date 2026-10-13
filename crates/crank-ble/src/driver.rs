@@ -262,6 +262,8 @@ async fn run(
         clock.sleep_until(MonoTime(next)).await;
         let mut now = clock.now().0;
         if now < next {
+            // An always-early clock still busy-loops, but yields cooperatively.
+            // Such a misbehaving clock is a test or fault condition, not a real clock.
             tokio::task::yield_now().await;
             continue;
         }

@@ -208,6 +208,9 @@ struct Fake {
     disconnect_fail: AtomicBool,
     disconnects: AtomicUsize,
     hold_disconnect: AtomicBool,
+    hold_notifications: AtomicBool,
+    notification_waiting: tokio::sync::Notify,
+    notification_gate: tokio::sync::Semaphore,
     disconnect_gate: tokio::sync::Semaphore,
 }
 impl Fake {
@@ -224,6 +227,9 @@ impl Fake {
             disconnect_fail: AtomicBool::new(false),
             disconnects: AtomicUsize::new(0),
             hold_disconnect: AtomicBool::new(false),
+            hold_notifications: AtomicBool::new(false),
+            notification_waiting: tokio::sync::Notify::new(),
+            notification_gate: tokio::sync::Semaphore::new(0),
             disconnect_gate: tokio::sync::Semaphore::new(0),
         })
     }
@@ -237,10 +243,17 @@ impl FecTransport for Arc<Fake> {
         let Some(rx) = self.receiver.lock().unwrap().take() else {
             return Box::pin(async { Err(DeviceError::ConnectFailed("transport reused".into())) });
         };
+        let fake = self.clone();
         Box::pin(async move {
-            let notifications: Notifications = Box::pin(stream::unfold(rx, |mut rx| async move {
-                rx.recv().await.map(|v| (v, rx))
-            }));
+            let notifications: Notifications =
+                Box::pin(stream::unfold((rx, fake), |(mut rx, fake)| async move {
+                    let record = rx.recv().await?;
+                    if fake.hold_notifications.load(Ordering::SeqCst) {
+                        fake.notification_waiting.notify_one();
+                        fake.notification_gate.acquire().await.unwrap().forget();
+                    }
+                    Some((record, (rx, fake)))
+                }));
             Ok((DeviceInfo::default(), notifications))
         })
     }
@@ -1047,6 +1060,8 @@ struct AlwaysEarlyClock {
     base: MonotonicClock,
     enabled: AtomicBool,
     wakes: AtomicUsize,
+    late_us: AtomicU64,
+    early_deadline: AtomicU64,
 }
 impl Clock for AlwaysEarlyClock {
     fn now(&self) -> MonoTime {
@@ -1054,11 +1069,13 @@ impl Clock for AlwaysEarlyClock {
     }
     fn sleep_until(&self, at: MonoTime) -> BoxFuture<'static, ()> {
         if self.enabled.load(Ordering::SeqCst) {
+            self.early_deadline.store(at.0, Ordering::SeqCst);
             // Bound a broken writer so the regression fails rather than hanging.
             assert!(self.wakes.fetch_add(1, Ordering::SeqCst) < 100);
             Box::pin(async {})
         } else {
-            self.base.sleep_until(at)
+            self.base
+                .sleep_until(MonoTime(at.0 + self.late_us.load(Ordering::SeqCst)))
         }
     }
 }
@@ -1068,6 +1085,8 @@ async fn always_early_clock_yields_to_other_tasks_and_cancellation() {
         base: MonotonicClock::default(),
         enabled: AtomicBool::new(false),
         wakes: AtomicUsize::new(0),
+        late_us: AtomicU64::new(0),
+        early_deadline: AtomicU64::new(0),
     });
     let fake = Fake::new(clock.clone());
     let link = FecTrainer::new(Arc::new(fake.clone()), clock.clone())
@@ -1098,26 +1117,49 @@ async fn capture_accepts_rx_arriving_before_tx_but_processed_after_it() {
         .connect(&DeviceRef("fake".into()), rider())
         .await
         .unwrap();
+    settle().await; // Start the writer and arm its first 250 ms sleep.
     while link.events.try_recv().is_ok() {}
     let arrival = clock.now();
     let bytes = reply(pages(sim(0.0)).unwrap()[0], 0);
+    fake.hold_notifications.store(true, Ordering::SeqCst);
+    fake.sender.send(Ok((arrival, bytes.clone()))).unwrap();
+    fake.notification_waiting.notified().await; // RX delivered, processing held.
     link.control
         .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 100 }))
         .await
         .unwrap();
-    tick().await; // TX recorded after RX arrival, before its processing.
-    fake.sender.send(Ok((arrival, bytes.clone()))).unwrap();
+    tick().await;
+    let (written_at, tx) = *fake.writes.lock().unwrap().last().unwrap();
+    assert_eq!(tx[4], 49);
+    assert!(written_at.0 > arrival.0);
+    assert_eq!((arrival.0, written_at.0), (250_000, 500_000));
+    let before = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        before
+            .lines()
+            .last()
+            .unwrap()
+            .starts_with(&format!("{} tx", written_at.0))
+    );
+    fake.hold_notifications.store(false, Ordering::SeqCst);
+    fake.notification_gate.add_permits(1);
     settle().await;
-    let mut observed = false;
+    let mut observed = Vec::new();
     while let Ok(event) = link.events.try_recv() {
         assert!(!matches!(
             event,
             TrainerEvent::Fault(DeviceError::Capture(_))
         ));
-        observed |= matches!(event, TrainerEvent::Observed(o) if o.at == arrival);
+        if let TrainerEvent::Observed(o) = event {
+            observed.push(o);
+        }
     }
-    assert!(observed);
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].at, arrival);
     let text = std::fs::read_to_string(&path).unwrap();
+    // Processing order is documented: the older RX stamp follows the later TX.
+    assert!(text.starts_with(&before));
+    assert_eq!(text.lines().count(), before.lines().count() + 1);
     assert!(
         text.lines()
             .last()
@@ -1128,8 +1170,78 @@ async fn capture_accepts_rx_arriving_before_tx_but_processed_after_it() {
     assert!(records.contains(&(arrival.0, true, crank_fec::decode(&bytes))));
     assert!(records.windows(2).all(|p| p[0].0 <= p[1].0));
     #[cfg(feature = "replay")]
-    assert!(crate::replay::ReplayTrainer::new(&text, clock).is_ok());
+    assert_eq!(replay_observation(&text).await, observed[0]);
     link.control.send(TrainerCommand::Disconnect).await.unwrap();
     tick().await;
     std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(feature = "replay")]
+async fn replay_observation(text: &str) -> TrainerObservation {
+    let clock = Arc::new(MonotonicClock::default());
+    let mut link = crate::replay::ReplayTrainer::new(text, clock)
+        .unwrap()
+        .connect(&DeviceRef("replay".into()), rider())
+        .await
+        .unwrap();
+    let mut observations = Vec::new();
+    while let Some(event) = link.events.recv().await {
+        assert!(!matches!(event, TrainerEvent::Fault(_)));
+        if let TrainerEvent::Observed(o) = event {
+            observations.push(o);
+        }
+    }
+    assert_eq!(observations.len(), 1);
+    observations.remove(0)
+}
+
+#[tokio::test(start_paused = true)]
+async fn always_early_spacing_sleep_yields_after_a_late_write() {
+    let clock = Arc::new(AlwaysEarlyClock {
+        base: MonotonicClock::default(),
+        enabled: AtomicBool::new(false),
+        wakes: AtomicUsize::new(0),
+        late_us: AtomicU64::new(0),
+        early_deadline: AtomicU64::new(0),
+    });
+    let fake = Fake::new(clock.clone());
+    let link = FecTrainer::new(Arc::new(fake.clone()), clock.clone())
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    clock.late_us.store(20_000, Ordering::SeqCst);
+    settle().await; // First nominal wake is armed with 20 ms jitter.
+    link.control
+        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 100 }))
+        .await
+        .unwrap();
+    clock.late_us.store(0, Ordering::SeqCst);
+    tokio::time::advance(Duration::from_millis(270)).await;
+    settle().await;
+    let last_write = fake.writes.lock().unwrap().last().unwrap().0.0;
+    assert_eq!(last_write, 520_000);
+    link.control
+        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        .await
+        .unwrap();
+    clock.enabled.store(true, Ordering::SeqCst);
+    tokio::time::advance(Duration::from_millis(230)).await;
+    settle().await; // Outer nominal sleep finishes, inner spacing sleep wakes early.
+    assert_eq!(clock.now().0, last_write + 230_000);
+    assert_eq!(
+        clock.early_deadline.load(Ordering::SeqCst),
+        last_write + 250_000
+    );
+    assert!((1..100).contains(&clock.wakes.load(Ordering::SeqCst)));
+    assert_eq!(fake.writes.lock().unwrap().len(), 3);
+    clock.enabled.store(false, Ordering::SeqCst);
+    tokio::time::advance(Duration::from_millis(20)).await;
+    settle().await;
+    assert_eq!(
+        fake.writes.lock().unwrap().last().unwrap().0.0,
+        last_write + 250_000
+    );
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+    assert_eq!(fake.disconnects.load(Ordering::SeqCst), 1);
 }
