@@ -74,6 +74,28 @@ try {
   await p.getByRole("button", { name: "Done" }).click();
   check("All 'no' → the ride reaches the Ready check", await atReady(p));
 
+  // the check-in collapses to one summary line once done; Edit re-opens it in place and the card returns to its desk form
+  // until "Use these answers" (DESIGN §16.2) — Start is gated exactly as before
+  p = await page("");
+  const idle = () => p.waitForFunction(() => !document.querySelector("[data-pending]") && document.querySelector(".proposal-card"));
+  await idle();
+  check("Check-in open: the card is the desk card, Start disabled", (await p.locator(".proposal-card.desk").count()) === 1 && (await p.locator(".proposal-card").getByRole("button", { name: /Start/ }).isDisabled()));
+  await p.getByRole("button", { name: "✓ Same as yesterday" }).click();
+  check("Same as yesterday without the red flags: still open, no saddle card", (await p.locator(".checkin-summary").count()) === 0 && (await p.locator("[data-saddle]").count()) === 0);
+  const flagRows = p.locator('.redflag-check [role="radiogroup"]');
+  for (let i = 0; i < 5; i++) await flagRows.nth(i).getByRole("radio", { name: "no" }).click();
+  await p.getByRole("button", { name: "Done", exact: true }).click();
+  await idle();
+  check("Confirmed + red flags answered: one summary line and the saddle card", ((await p.locator(".checkin-summary").textContent()) ?? "").includes("no red flags") && (await p.locator("[data-saddle]").count()) === 1 && (await p.locator('[aria-label="How are you today"]').count()) === 0);
+  await p.locator(".checkin-summary").getByRole("button", { name: "Edit" }).click();
+  await idle();
+  check("Edit re-opens the check-in in place; the card is the desk card again", (await p.locator('[aria-label="How are you today"]').count()) === 1 && (await p.locator(".proposal-card.desk").count()) === 1);
+  await p.getByRole("radio", { name: "short" }).click();
+  check("Changing an answer keeps it open (no collapse mid-edit)", (await p.locator(".checkin-summary").count()) === 0);
+  await p.getByRole("button", { name: "✓ Use these answers" }).click();
+  await idle();
+  check("Use these answers collapses it again with the new answer", ((await p.locator(".checkin-summary").textContent()) ?? "").includes("sleep short") && (await p.locator("[data-saddle]").count()) === 1);
+
   // 3. in-ride symptom: its own binding, and the End dialog
   p = await page("?scene=ride-threshold");
   await p.waitForTimeout(1600);
@@ -184,7 +206,7 @@ try {
   // 6. readiness deviations: explained with a pack rule; the rider may override (and only then)
   p = await page("?scene=today-wish-deviates");
   const line = p.locator(".outcome-line");
-  check("Deviation: explained with a pack rule and its cut-off grade", (await line.getAttribute("data-relation")) === "deferred" && (await p.locator(".saddle-proposal .why").count()) === 1 && (await prop(p).getAttribute("data-delivered")) === "tempo");
+  check("Deviation: explained with a pack rule and its cut-off grade", (await line.getAttribute("data-relation")) === "deferred" && (await p.locator("[data-saddle] .why").count()) === 1 && (await prop(p).getAttribute("data-delivered")) === "tempo");
   await p.getByRole("button", { name: "Ride my wish" }).click();
   await settled(p);
   check("…'ride my wish' gives the rider's wish, logged", (await prop(p).getAttribute("data-delivered")) === "vo2max" && (await line.getAttribute("data-relation")) === "anyway");

@@ -48,14 +48,17 @@ select, input, textarea {
 [data-fit] { overflow: hidden; }
 
 /* ---------- shell ---------- */
-.shell { display: grid; grid-template-columns: 184px minmax(0, 1fr); min-height: 100%; }
-.rail { display: flex; flex-direction: column; gap: 6px; padding: 20px 14px; background: var(--surface-1); border-right: 1px solid var(--border); }
-.rail .brand { font-weight: 800; font-size: 22px; letter-spacing: -0.02em; padding: 0 10px 18px; }
-.rail button { display: flex; gap: 12px; align-items: center; background: none; border-color: transparent; text-align: left; font-size: 16px; min-height: 48px; }
+/* a labelled icon rail at every size (DESIGN §16.3): 72 px, icon over a 12.5 px word, 62 px items */
+.shell { display: grid; grid-template-columns: 72px minmax(0, 1fr); min-height: 100%; }
+.rail { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 16px 6px; background: var(--surface-1); border-right: 1px solid var(--border); }
+.rail .brand { font-weight: 800; font-size: 16px; letter-spacing: -0.02em; text-align: center; padding: 0 0 14px; }
+.rail button { display: flex; flex-direction: column; gap: 3px; align-items: center; justify-content: center; background: none; border-color: transparent; padding: 6px 2px; min-height: 62px; }
+.rail .rail-icon { font-size: 22px; line-height: 1; }
+.rail .rail-label { font-size: 12.5px; line-height: 1.1; white-space: nowrap; }
 .rail button.on { background: var(--accent-soft); color: var(--ink-primary); font-weight: 600; }
 main { min-width: 0; }
 main.mode { display: grid; justify-items: center; }
-.page { padding: 28px 32px 40px; max-width: 1240px; width: 100%; }
+.page { padding: 28px 32px 40px; max-width: 1368px; width: 100%; } /* 1440 − the 72 px rail (§16.3) */
 .page-head { margin-bottom: 20px; }
 .page-head h1 { font-size: 34px; margin-bottom: 4px; }
 .eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 13px; font-weight: 600; color: var(--ink-muted); }
@@ -118,20 +121,40 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .panel .marker-label { left: 0; }
 
 /* ---------- today ---------- */
-.today-grid { display: grid; grid-template-columns: minmax(400px, 5fr) minmax(0, 6fr); gap: 16px; align-items: start; }
-.today-grid .col { display: grid; gap: 16px; min-width: 0; }
+/* DESIGN §16.2: check-in (or its summary line) · the proposal card 7fr beside the wish matrix 4fr · Last 7 days and
+   Model in a strip under each column; stacked when the page is narrow (1024, or 1440 with the Why? sheet open) */
+.today { container-type: inline-size; }
+.today .page-head { margin-bottom: 14px; }
+.today .page-head .date { font-size: 18px; font-weight: 400; margin-left: 8px; }
+.today-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 7fr) minmax(0, 4fr); grid-template-areas: "card wish" "week model"; align-items: start; }
+.today-grid[data-stop] { grid-template-areas: "card card" "week model"; }
+.today-card { grid-area: card; display: flex; flex-direction: column; min-width: 0; }
+.today-card > .card { flex: 1; }
+.today-wish { grid-area: wish; min-width: 0; }
+.today-week { grid-area: week; min-width: 0; }
+.today-model { grid-area: model; min-width: 0; }
+.checkin { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 28px; margin-bottom: 16px; }
+.checkin h2 .small { font-weight: 400; margin-left: 6px; }
+.checkin .redflag-check.compact { margin-top: 0; border-top: 0; padding-top: 0; }
+.checkin-summary { display: flex; align-items: center; gap: 16px; padding: 8px 12px 8px 22px; margin-bottom: 16px; font-size: 17px; }
+.checkin-summary > span { flex: 1; white-space: nowrap; }
+.checkin-summary button { min-height: 48px; }
+.today .cap { margin-bottom: 16px; }
+@container (max-width: 1000px) {
+  .today-grid, .today-grid[data-stop] { grid-template-columns: minmax(0, 1fr); grid-template-areas: "card" "wish" "week" "model"; }
+}
+@container (max-width: 760px) {
+  .checkin { grid-template-columns: minmax(0, 1fr); }
+}
 .scale-row { display: grid; grid-template-columns: 92px repeat(5, minmax(0, 1fr)); gap: 5px; align-items: center; margin: 7px 0; }
 .scale-label { font-weight: 600; }
 .tap.word { font-size: 14px; padding: 0 4px; min-width: 0; line-height: 1.1; }
 .scale-row[aria-label="Time available"] { grid-template-columns: 92px repeat(6, minmax(0, 1fr)); }
 .confirm { width: 100%; margin-top: 10px; min-height: 52px; font-weight: 700; font-size: 17px; }
 .confirm.on { background: color-mix(in srgb, var(--status-good) 18%, var(--surface-2)); border-color: var(--status-good); }
-.proposal h2 { font-size: 26px; margin: 4px 0 2px; }
-.proposal h3 { margin-top: 6px; }
-.proposal-profile { margin: 14px 0 6px; min-height: 100px; }
 .reasons { margin: 0; padding-left: 20px; color: var(--ink-secondary); display: grid; gap: 4px; }
 .pending-dot { color: var(--status-info); text-transform: none; letter-spacing: 0; }
-.today[data-pending] .proposal-profile, .today[data-pending] .reasons { opacity: 0.4; }
+.today[data-pending] :is(.card-profile, .reason-line, .reasons) { opacity: 0.4; }
 .estimate { display: flex; justify-content: space-between; align-items: baseline; margin: 6px 0; }
 .estimate b { font-size: 20px; }
 .estimate .pm { font-size: 20px; font-weight: 500; color: var(--ink-secondary); }
@@ -158,7 +181,9 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 
 /* ---------- ride ---------- */
 .ride {
-  --t1: clamp(150px, 21vh, 240px);
+  /* T1 re-derived for the three-row hero (DESIGN §16.1): the smaller of a height term and a width term (the hero
+     is 62 % of the window, so at 1024 its width bounds the widest T1 string) → 220 px at 1440×900, 176 px at 1024×768 */
+  --t1: clamp(150px, min(24.5vh, 17.2vw), 260px);
   --t2: clamp(84px, 11.4vh, 128px);
   --t3p: clamp(34px, 4.5vh, 44px);
   --t3: clamp(27px, 3.7vh, 36px);
@@ -178,34 +203,39 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
   grid-area: bar; display: flex; align-items: center; gap: 16px; padding: 0 16px;
   background: var(--surface-1); border-bottom: 1px solid var(--border); white-space: nowrap;
 }
-.statusbar .pause { width: 150px; display: flex; gap: 10px; justify-content: center; align-items: center; min-height: 48px; font-weight: 700; font-size: 20px; }
-.statusbar .clock { width: 200px; }
+/* groups are sized to their content (§16.1); a value that changes reserves its widest form, so nothing moves */
+.statusbar .pause { display: flex; gap: 10px; justify-content: center; align-items: center; min-height: 48px; font-weight: 700; font-size: 20px; padding: 0 16px; }
+.swap { display: inline-grid; }
+.swap > * { grid-area: 1 / 1; text-align: center; }
+.swap > .off { visibility: hidden; }
+.statusbar .clock b { display: inline-block; min-width: 3.7em; text-align: right; }
 .statusbar .clock .lbl { font-size: 0.6em; }
-.statusbar .intensity { width: 300px; display: flex; gap: 8px; align-items: center; }
+.statusbar .intensity { display: flex; gap: 8px; align-items: center; }
 .statusbar .intensity .you { font-size: 0.55em; }
 .statusbar .intensity b { width: 2.6em; text-align: center; }
 .statusbar .intensity button { width: 44px; min-height: 44px; padding: 0; font-size: 24px; }
 .chip { border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; font-size: 15px; font-weight: 700; }
-.sensor { width: 270px; font-size: var(--t3); overflow: hidden; }
-.sensor + .sensor { width: 150px; }
-.statusbar .sensor:first-of-type { margin-left: auto; }
+.chip.mode { min-width: 4.2em; text-align: center; } /* the widest mode word (FREE), so the mode never moves its neighbours */
+/* one device pill, right-aligned: it grows leftwards into free space on a fault, so no other group moves */
+.device-pill { margin-left: auto; display: flex; align-items: center; gap: 14px; padding: 2px 14px; min-height: 48px; border: 1px solid var(--border); border-radius: 24px; }
+.sensor { font-size: var(--t3); white-space: nowrap; }
+.sensor + .sensor { padding-left: 14px; border-left: 1px solid var(--border); }
 .sensor b { color: var(--ink-primary); }
 .sensor .lbl { color: inherit; font-size: 16px; font-weight: 600; }
 .statusbar .help { width: 48px; padding: 0; font-weight: 700; font-size: 20px; }
 
 .hero {
   grid-area: hero; min-width: 0; padding: 14px 28px 12px; border-right: 1px solid var(--border);
-  display: grid; grid-template-rows: auto auto minmax(0, 1fr) calc(var(--t2) + 2.4 * var(--t3) + 8px) auto;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) calc(var(--t2) + 2.4 * var(--t3) + 8px);
 }
-.row1 { display: flex; gap: 14px; align-items: center; white-space: nowrap; }
+/* a fixed height: the T3 line plus room for a chip's padding and border, so a chip never grows the row (#10) */
+.row1 { display: flex; gap: 14px; align-items: center; white-space: nowrap; height: calc(var(--t3) * 1.2 + 10px); }
+.row1 .caption { margin-left: auto; padding-left: 8px; flex-shrink: 0; }
 .phase-word { text-transform: uppercase; font-weight: 800; letter-spacing: 0.04em; color: var(--accent-text); }
 .row1 .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
 .row1 .rep { color: var(--ink-secondary); }
-.row2 { white-space: nowrap; padding-top: 4px; }
 .row3 { display: flex; align-items: center; min-height: 0; }
 .row4 { min-height: 0; display: flex; align-items: center; }
-.row5 { white-space: nowrap; color: var(--ink-secondary); padding-top: 6px; }
-.row5 b { color: var(--ink-primary); }
 .pips { display: inline-flex; gap: 6px; }
 .pips i { width: 0.6em; height: 0.6em; border-radius: 50%; border: 3px solid var(--ink-muted); }
 .pips i.done { background: var(--ink-muted); }
@@ -242,7 +272,8 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .recovery-mini .axis-y { width: 36px; }
 .live-dot { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 33px; border-radius: 50%; background: var(--series-hr); border: 2px solid var(--surface-0); }
 
-.side { grid-area: side; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* the coach lane is a fixed grid row: 1fr of the side column (§16.1) */
+.side { grid-area: side; display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0; }
 .slot { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "lbl sub" "val val" "band band"; column-gap: 12px; padding: 10px 24px 10px; border-bottom: 1px solid var(--border); }
 .slot .lbl { grid-area: lbl; white-space: nowrap; }
 .slot .val { grid-area: val; }
@@ -256,8 +287,19 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .cad-band.reserved { visibility: hidden; }
 .cad-band .gauge-band { border-width: 2px; }
 .cad-band .gauge-mark { top: -4px; bottom: -4px; width: 6px; margin-left: -3px; }
-.coach { flex: 1; min-height: 0; position: relative; padding: 14px 24px 12px; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
-.coach-head { display: flex; align-items: baseline; }
+/* fixed rows, reserved when empty: head · reason · actions · deadline (text + bar) · grammar */
+.coach {
+  --lane-btn: clamp(48px, 6.4vh, 62px);
+  min-height: 0; position: relative; padding: 10px 24px 8px; border-top: 3px solid var(--border);
+  display: grid; align-content: center; gap: 5px; grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: calc(var(--t3p) * 1.2) calc(var(--t3) * 1.2) var(--lane-btn) calc(var(--t3) * 1.2 + 10px) 22px;
+}
+.coach.ask { border-top-color: var(--status-info); }
+.coach.applied { border-top-color: var(--status-good); }
+.lane-head { display: flex; align-items: baseline; white-space: nowrap; min-width: 0; line-height: 1.2; }
+.lane-metric { grid-row: 1 / 4; display: flex; align-items: center; min-height: 0; }
+.lane-deadline { display: grid; grid-template-rows: auto 6px; gap: 4px; align-content: start; }
+.deadline.reserved { visibility: hidden; }
 .coach .verb { font-size: var(--t3p); font-weight: 800; white-space: nowrap; display: block; }
 .band-word { position: absolute; top: 6px; right: 18px; text-transform: uppercase; font-weight: 700; font-size: 14px; letter-spacing: 0.08em; color: var(--ink-secondary); }
 .coach .reason { margin: 0; color: var(--ink-secondary); white-space: nowrap; }
@@ -266,23 +308,26 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .deadline { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
 .deadline i { display: block; height: 100%; background: var(--ink-secondary); }
 .deadline-text { color: var(--ink-secondary); white-space: nowrap; display: block; }
-.coach-actions { display: flex; gap: 10px; }
-.coach-actions button { flex: 1; min-height: clamp(52px, 7.4vh, 68px); font-size: var(--t3); font-weight: 700; padding: 0 6px; }
+.coach-actions { display: flex; gap: 10px; min-height: 0; }
+.coach-actions.three { flex: 1; }
+.coach-actions button { flex: 1; min-height: var(--lane-btn); font-size: var(--t3); font-weight: 700; padding: 0 6px; }
 .coach-actions button.on { border: 3px solid var(--ink-primary); }
-.coach.idle { justify-content: flex-start; }
 .idle-metric { white-space: nowrap; }
 .idle-note { margin: 0; color: var(--ink-secondary); white-space: nowrap; }
 
-.road { grid-area: road; display: grid; grid-template-rows: 18px minmax(0, 1fr) 24px; gap: 6px; padding: 8px 20px 10px; border-top: 1px solid var(--border); background: var(--surface-1); }
-.road-ticks { position: relative; font-size: 15px; font-weight: 700; }
-.road-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
-.road-ticks .legend { left: 50%; font-weight: 500; color: var(--ink-secondary); }
-.road-ticks .end { right: 0; transform: none; color: var(--ink-secondary); }
+/* road: a label lane (T3+ "next", pinned to its block's start, §16.1) · the near profile · the whole ride */
+.road { grid-area: road; display: grid; grid-template-rows: calc(var(--t3p) * 1.2 + 8px) minmax(0, 1fr) 24px; gap: 4px; padding: 6px 20px 8px; border-top: 1px solid var(--border); background: var(--surface-1); }
+.road-labels { position: relative; min-width: 0; }
+.road-now { position: absolute; bottom: 0; transform: translateX(-100%); padding-right: 6px; font-size: 15px; font-weight: 700; white-space: nowrap; }
+.road-next { position: absolute; top: 0; bottom: 8px; display: flex; align-items: center; gap: 0.3em; white-space: nowrap; padding: 0 8px; line-height: 1.2; }
+/* the notch marks the next block's start on the road below it */
+.road-notch { position: absolute; bottom: 0; width: 0; height: 0; margin-left: -8px; border: 8px solid transparent; border-bottom: 0; border-top: 8px solid var(--ink-primary); }
+.road-next .lbl { color: var(--ink-secondary); }
 .road-near { position: relative; min-height: 0; }
 .road-near .profile { height: 100% !important; }
 .road-all { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; }
 .road-meta { font-size: 15px; color: var(--ink-secondary); white-space: nowrap; }
-.ride:is([data-state="paused"], [data-state="held"]) :is(.row3, .row5, .road) { opacity: 0.45; }
+.ride:is([data-state="paused"], [data-state="held"]) :is(.row3, .road) { opacity: 0.45; }
 
 .scrim { position: fixed; inset: 0; background: rgb(0 0 0 / 0.45); display: grid; place-items: center; }
 .dialog { width: min(640px, 90vw); background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 24px; font-size: 19px; box-shadow: 0 20px 60px rgb(0 0 0 / 0.5); display: flex; flex-wrap: wrap; gap: 12px; }
@@ -329,8 +374,18 @@ button.ride-row:hover { background: var(--surface-2); }
 .pd { padding-top: 6px; }
 
 /* ---------- workouts ---------- */
-.workouts { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 20px; max-width: none; }
+.workouts { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 20px; max-width: none; position: relative; }
 .library { display: flex; flex-direction: column; gap: 6px; }
+.library h2 { display: flex; align-items: center; justify-content: space-between; }
+.lib-toggle, .lib-close { display: none; }
+/* below 1280 px the library is a drawer over the panes (DESIGN §16.3, #111) */
+@media (max-width: 1279px) {
+  .workouts { grid-template-columns: minmax(0, 1fr); }
+  .library { display: none; }
+  .library[data-open] { display: flex; position: absolute; z-index: 10; top: 20px; left: 20px; bottom: 0; width: 280px; padding: 16px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; box-shadow: 12px 0 32px rgb(0 0 0 / 0.35); }
+  .lib-toggle, .lib-close { display: inline-flex; align-items: center; min-height: 48px; }
+  .lib-close { min-width: 48px; justify-content: center; }
+}
 .lib-item { text-align: left; background: var(--surface-1); }
 .editor { min-width: 0; }
 .editor-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -401,18 +456,12 @@ pre.dsl ins { text-decoration: none; background: color-mix(in srgb, var(--status
 
 /* ---------- 1024 × 768 (DESIGN §8): same anatomy and rows, compact chrome ---------- */
 @media (max-width: 1100px) {
-  .shell { grid-template-columns: 148px minmax(0, 1fr); }
-  .rail button { gap: 8px; font-size: 15px; }
   .page { padding: 20px 20px 32px; }
-  .today-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .scale-row { grid-template-columns: 74px repeat(5, minmax(0, 1fr)); gap: 4px; }
   .scale-row[aria-label="Time available"] { grid-template-columns: 74px repeat(6, minmax(0, 1fr)); }
   .tap.word { font-size: 13px; }
   .scale-label { font-size: 14px; }
   .inputs { grid-template-columns: minmax(0, 1fr); }
-  .workouts { grid-template-columns: 150px minmax(0, 1fr); }
-  .editor-panes { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .editor-panes > section:last-child { grid-column: 1 / -1; }
   .settings { grid-template-columns: 150px minmax(0, 1fr); }
   .device { grid-template-columns: 80px minmax(0, 1fr) minmax(0, 1fr) 96px; }
   .device > .protocol { display: none; }
@@ -420,12 +469,10 @@ pre.dsl ins { text-decoration: none; background: color-mix(in srgb, var(--status
   .ride-row { grid-template-columns: 90px minmax(0, 1.4fr) 130px 60px 110px; }
   .ride-row > .mini { display: none; }
   .statusbar { gap: 12px; padding: 0 10px; }
-  .statusbar .pause { width: 124px; font-size: 18px; gap: 8px; }
-  .statusbar .clock { width: 160px; }
-  .statusbar .intensity { width: 262px; gap: 6px; }
-  .statusbar .intensity button { width: 40px; min-height: 40px; }
-  .sensor { width: 222px; }
-  .sensor + .sensor { width: 116px; }
+  .statusbar .pause { font-size: 18px; gap: 8px; padding: 0 12px; }
+  .statusbar .intensity { gap: 6px; }
+  .device-pill { gap: 10px; padding: 2px 10px; }
+  .sensor + .sensor { padding-left: 10px; }
   .hero { padding: 10px 20px 10px; }
   .row1 { gap: 10px; }
   .band-split { gap: 20px; }
@@ -497,13 +544,13 @@ svg .between { fill: var(--status-warning); fill-opacity: 0.3; stroke: none; }
 .chip.cad-above, .slot-above .sub { color: var(--div-pos); border-color: var(--div-pos); font-weight: 800; }
 .slot-below { box-shadow: inset 6px 0 0 var(--div-neg); }
 .slot-above { box-shadow: inset 6px 0 0 var(--div-pos); }
-.slot.reserved { visibility: hidden; min-height: calc(var(--t2) + 1.2 * var(--t3) + 38px); }
+.slot.reserved { visibility: hidden; }
 .grammar { font-size: 16px; color: var(--ink-secondary); white-space: nowrap; }
 .band-word { display: inline-flex; gap: 6px; }
 .road-proposal { position: absolute; top: 4px; left: 18%; z-index: 1; font-size: var(--t3); font-weight: 800; color: var(--status-info); background: var(--surface-1); padding: 0 8px; border: 2px dashed var(--status-info); border-radius: 6px; }
 kbd.keyhint { font-size: 0.6em; padding: 2px 6px; margin-right: 8px; vertical-align: middle; }
 /* screens read from the saddle use ride tiers (§6.2) */
-.saddle-screen, .saddle-proposal { --t2: clamp(84px, 11.4vh, 128px); --t3p: clamp(34px, 4.5vh, 44px); --t3: clamp(27px, 3.7vh, 36px); }
+.saddle-screen, .proposal-card.saddle { --t2: clamp(84px, 11.4vh, 128px); --t3p: clamp(34px, 4.5vh, 44px); --t3: clamp(27px, 3.7vh, 36px); }
 .saddle-screen .ready-card { width: min(1000px, 100%); }
 .saddle-screen h1 { font-size: var(--t3p); }
 .saddle-screen .big-meta, .saddle-screen .checks { font-size: var(--t3); }
@@ -515,9 +562,6 @@ kbd.keyhint { font-size: 0.6em; padding: 2px 6px; margin-right: 8px; vertical-al
 @media (max-width: 1100px) {
   .settings .device { grid-template-columns: 80px minmax(0, 1fr) minmax(150px, auto) 96px; }
 }
-.coach { gap: 5px; padding-top: 10px; padding-bottom: 8px; }
-.coach > * { flex-shrink: 0; }
-.coach-actions button { min-height: clamp(48px, 6.4vh, 62px); }
 @media (max-height: 800px) {
   .coach { gap: 4px; padding-top: 8px; padding-bottom: 6px; }
 }
@@ -561,17 +605,24 @@ main[data-destination]:focus { outline: none; }
 .cell:disabled:not(.locked) { opacity: 1; cursor: default; }
 .carried { border-left: 4px solid var(--status-info); padding-left: 10px; }
 .carried button { min-height: 48px; margin-left: 6px; }
-.saddle-proposal { margin-bottom: 16px; border-width: 2px; }
-.saddle-proposal p, .saddle-proposal h2 { margin: 0 0 6px; }
-.saddle-proposal h2 { font-weight: 800; }
+/* the one proposal card (§16.2): desk while the check-in is open, saddle (ride tiers, 72 px actions pinned to its
+   bottom edge) once it is done */
+.proposal-card { display: flex; flex-direction: column; gap: 6px; border-width: 2px; }
+.proposal-card p, .proposal-card h2 { margin: 0; }
+.proposal-card.desk .outcome-line { font-size: 20px; }
+.proposal-card.desk h2 { font-size: 26px; }
+.proposal-card.saddle h2 { font-weight: 800; }
+.card-profile { margin: 4px 0; }
+.card-keys { font-size: 15px; color: var(--ink-secondary); }
+.proposal-card .actions { flex-wrap: nowrap; gap: 8px; margin-top: 10px; }
+.proposal-card.saddle .actions.saddle { margin-top: auto; padding-top: 8px; }
+.proposal-card.saddle .actions.saddle button { min-height: 72px; font-size: var(--t3); padding: 0 12px; flex: 1 1 auto; white-space: nowrap; }
+.proposal-card.saddle .actions.saddle kbd { font-size: 0.55em; padding: 1px 4px; vertical-align: middle; }
 .outcome-line { font-weight: 700; border-left: 6px solid var(--border); padding-left: 12px; }
 .outcome-line.rel-as_wished, .outcome-line.rel-anyway { border-left-color: var(--status-good); }
 .outcome-line.rel-adapted, .outcome-line.rel-deferred { border-left-color: var(--status-info); }
 .outcome-line.rel-blocked_by_safety { border-left-color: var(--status-warning); }
 .reason-line { color: var(--ink-secondary); }
-.saddle-profile { margin: 6px 0; }
-.saddle-proposal .actions.saddle { margin-top: 8px; }
-.saddle-proposal .actions.saddle button { min-height: 64px; font-size: var(--t3); padding: 0 18px; }
 .remote-wish { position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / 0.55); display: grid; place-items: center; padding: 16px; }
 .remote-wish .card { width: min(1100px, 100%); }
 .t2-name { font-size: var(--t3p); font-weight: 800; margin: 4px 0; white-space: nowrap; overflow: hidden; }
@@ -587,11 +638,11 @@ main[data-destination]:focus { outline: none; }
 .why { min-height: 32px; padding: 0 6px; font-size: 13px; font-weight: 600; display: inline-flex; gap: 6px; align-items: center; vertical-align: baseline; position: relative; }
 /* a 48 px hit area around the visually compact chip (§6.7) */
 .why::after { content: ""; position: absolute; inset: -8px -2px; }
-.saddle-proposal .why { font-size: 18px; min-height: 40px; }
+.proposal-card.saddle .why { font-size: 18px; min-height: 40px; }
 .shell { position: relative; }
 /* ≥ 1440 px the sheet pushes the page aside, so the claim stays visible; below, it overlays and repeats the claim */
 @media (min-width: 1440px) {
-  .shell[data-why] { grid-template-columns: 184px minmax(0, 1fr) 460px; }
+  .shell[data-why] { grid-template-columns: 72px minmax(0, 1fr) 460px; }
   .shell[data-why] .why-sheet { position: static; width: auto; box-shadow: none; }
 }
 /* the sheet spans the page (so it covers it in any scroll position); its content sticks to the viewport */

@@ -422,5 +422,7 @@ export interface SceneFixture {
   carried?: boolean;
   /** Today: the remote wish mode is open at this cell */
   remote?: import("./wish").Cell;
+  /** Today: the done check-in re-opened with Edit (DESIGN §16.2) */
+  editCheckin?: boolean;
 }
 export const sceneFixture = createStore<SceneFixture>({});

@@ -1,4 +1,5 @@
-// Today (DESIGN §5.1) and the Ready check (§5.4).
+// Today (DESIGN §5.1, §16.2) and the Ready check (§5.4). The check-in collapses to one summary line once it is done;
+// one proposal card (desk while the check-in is open, saddle once it is done) sits beside the wish matrix.
 import { useEffect, useRef, useState } from "react";
 import type { Checkin, Proposal } from "@crank/shared";
 import { Profile } from "../charts";
@@ -12,9 +13,8 @@ import { useStore } from "../store";
 import { KeyHint } from "./Ride";
 import { bindings, type Action } from "../persist";
 import { play } from "../sound";
-import { carriedFixture, fmtMin, nextCell, nextFormat, planWish, proposalFor, stepWish, type Cell, type Wish, type WishOutcome } from "../mock/wish";
-import { outcomeHead, RemoteWish, SaddleProposal, WishCard } from "./Wish";
-import { WhyChip } from "./Why";
+import { carriedFixture, fmtMin, nextCell, nextFormat, planWish, proposalFor, stepWish, type Cell, type Wish } from "../mock/wish";
+import { ProposalCard, RemoteWish, WishCard } from "./Wish";
 
 type Score = 1 | 2 | 3 | 4 | 5;
 type Row = "sleep" | "legs" | "stress" | "motivation";
@@ -44,6 +44,8 @@ export function Today() {
   const fx0 = sceneFixture.get();
   const [c, setC] = useState<Checkin>({ ...lastCheckin, ...fx0.checkin });
   const [confirmed, setConfirmed] = useState<"same" | "changed" | null>(fx0.ready ? (fx0.checkin ? "changed" : "same") : fx0.checkin ? "changed" : null);
+  // the check-in is open while the rider is answering (or after Edit); done = confirmed, red flags answered, not editing
+  const [editing, setEditing] = useState(!!fx0.editCheckin);
   // the wish (DESIGN §15.2): null = the coach picks; safety is applied by the planner before the wish
   const [carried, setCarried] = useState(fx0.carried ? carriedFixture : null);
   const [wish, setWishState] = useState<Wish>(fx0.wish ?? carried?.cell ?? null);
@@ -60,6 +62,7 @@ export function Today() {
   const [freeConfirm, setFreeConfirm] = useState(!!fx.freeConfirm || route.sub === "free");
   const stop = stopActive() || safe.stop;
   const checkinDone = confirmed !== null && safe.checkedToday && !stop;
+  const collapsed = checkinDone && !editing;
   const ready = !!proposal && !pending && checkinDone;
   const capped = !!fx.healthCap;
   const coachPick: Cell = capped ? { intensity: "tempo", format: "intervals" } : { intensity: "vo2max", format: "intervals" };
@@ -99,7 +102,7 @@ export function Today() {
         return;
       }
       if (is("minus", k) || is("plus", k)) return setWish(stepWish(outcome.delivered, is("minus", k) ? -1 : 1, capped));
-      if (checkinDone && (is("skip", k) || is("pause", k)) && !(e.target instanceof HTMLButtonElement)) return (e.preventDefault(), setRemote(outcome.wish ?? outcome.delivered));
+      if (collapsed && (is("skip", k) || is("pause", k)) && !(e.target instanceof HTMLButtonElement)) return (e.preventDefault(), setRemote(outcome.wish ?? outcome.delivered));
       if (is("keep", k) && !(e.target instanceof HTMLButtonElement)) return setWish(null);
       // a start within 1.5 s of a wish change could start a plan the rider hasn't seen (§7.2 debounce)
       if (!is("coach", k) || !ready || !proposal || e.target instanceof HTMLButtonElement || performance.now() - wishAt.current < 1500) return;
@@ -108,10 +111,11 @@ export function Today() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [proposal, ready, wish, stop, capped, remote, checkinDone, outcome.delivered, outcome.wish]);
+  }, [proposal, ready, wish, stop, capped, remote, collapsed, outcome.delivered, outcome.wish]);
 
   const set = (patch: Partial<Checkin>) => {
     setConfirmed("changed");
+    setEditing(true);
     setC((prev) => ({ ...prev, ...patch }));
   };
   const compiled = proposal ? backend.compileWorkout(proposal.workout) : null;
@@ -131,39 +135,29 @@ export function Today() {
         shortened && f.startsWith("Fits your") ? `Shortened to ${outcome.minutes} of your ${c.minutes} min: ${proposal.workout.name}.` : f,
       )
     : [];
-  const profile = compiled && <Profile blocks={compiled.blocks} zones={backend.zones.power} height={checkinDone ? 64 : 100} capW={capped ? capW : undefined} label="Proposed workout profile" />;
+  const profile = compiled && <Profile blocks={compiled.blocks} zones={backend.zones.power} height={collapsed ? 64 : 88} capW={capped ? capW : undefined} label="Proposed workout profile" />;
+  const whyFacts = [...facts, ...(capped ? ["Every target stays under the dashed cap line, in ERG."] : []), `Planned on CP ${cp?.value} ± ${cp?.sd} W (${calibration.confidence} confidence, ${calibration.rides} rides)${compiled ? ` · TSS ${Math.round(compiled.tss)} · IF ${compiled.if.toFixed(2)}` : ""}.`];
 
   return (
     <div className="page today" data-pending={pending || undefined}>
       <header className="page-head">
-        <h1>Tuesday</h1>
-        <p className="muted">13 October</p>
+        <h1>
+          Tuesday <span className="muted date">13 October</span>
+        </h1>
       </header>
-      {checkinDone && compiled && proposal && (
-        <div {...delivered}>
-          <SaddleProposal
-            o={outcome}
-            anyway={rideAnyway}
-            askedMin={c.minutes}
-            name={proposal.workout.name}
-            totalS={compiled.totalS}
-            fallbackReason={capped ? `Capped at threshold (${Math.round(capW)} W), ERG only — from your injury answer.` : (facts[0] ?? "")}
-            ready={ready}
-            onStart={() => start(proposal)}
-            onAnyway={() => setAnyway(true)}
-            onRemote={() => setRemote(outcome.wish ?? outcome.delivered)}
-            onStep={step}
-          >
-            <div className="saddle-profile">{profile}</div>
-          </SaddleProposal>
-        </div>
-      )}
-      {remote && <RemoteWish o={outcome} cursor={remote} capped={capped} onUse={() => (setWish(remote), setRemote(null))} onCancel={() => setRemote(null)} />}
-      <div className="today-grid">
-        <div className="col">
-          <section className="card checkin" aria-label="How are you today" data-prefilled={!confirmed || undefined}>
-            <h2>How are you?</h2>
-            <p className={confirmed ? "muted small" : "small status-info"}>{confirmed === "same" ? "Same as yesterday — confirmed." : confirmed === "changed" ? "Your answers for today." : "Pre-filled from yesterday. Confirm or change."}</p>
+      {collapsed ? (
+        <section className="card checkin-summary" aria-label="How you are today">
+          <span data-fit>
+            {ROWS.map((r) => `${r.label.toLowerCase()} ${word(r.key, c[r.key])}`).join(" · ")} · {fmtMin(c.minutes)} · no red flags
+          </span>
+          <button onClick={() => setEditing(true)}>Edit</button>
+        </section>
+      ) : (
+        <section className="card checkin" aria-label="How are you today" data-prefilled={!confirmed || undefined}>
+          <div className="checkin-answers">
+            <h2>
+              How are you? <span className={confirmed ? "muted small" : "small status-info"}>{confirmed === "same" ? "Same as yesterday — confirmed." : confirmed === "changed" ? "Your answers for today." : "Pre-filled from yesterday. Confirm or change."}</span>
+            </h2>
             {ROWS.map((r) => (
               <div className="scale-row" key={r.key} role="radiogroup" aria-label={`${r.label}, worse to better`}>
                 <span className="scale-label">{r.label}</span>
@@ -185,76 +179,70 @@ export function Today() {
                 </button>
               ))}
             </div>
-            <button className={confirmed === "same" ? "confirm on" : "confirm"} disabled={confirmed === "changed"} onClick={() => setConfirmed("same")}>
-              ✓ Same as yesterday
-            </button>
+            {/* Same as yesterday confirms; once confirmed (a change confirms too), "Use these answers" closes the check-in to its summary line */}
+            {confirmed !== null ? (
+              <button className="confirm on" disabled={!safe.checkedToday || stop} onClick={() => setEditing(false)}>
+                ✓ Use these answers
+              </button>
+            ) : (
+              <button className="confirm" onClick={() => (setConfirmed("same"), setEditing(false))}>
+                ✓ Same as yesterday
+              </button>
+            )}
+          </div>
+          <div className="checkin-flags">
             {stop ? null : safe.checkedToday ? (
               <p className="small status-good rf-done">✓ Health check done: none of the red-flag symptoms since your last ride.</p>
             ) : (
               <RedFlagCheck compact onDone={() => undefined} />
             )}
-          </section>
-          {!stop && <WishCard o={outcome} capped={capped} carried={carried} provisional={!checkinDone} onWish={setWish} onDropCarried={() => (setCarried(null), setWish(null))} />}
-          <WeekCard />
-        </div>
-
-        <div className="col">
+          </div>
+        </section>
+      )}
+      {capped && !collapsed && !stop && (
+        <section className="card cap status-warning" role="status" aria-label="Intensity cap">
+          <b>⚠ Capped at threshold ({CAP_PCT_CP.threshold} % of CP, {Math.round(capW)} W) · no sprints · ERG only</b>
+          <span className="muted"> — from your injury answer. Lift it in Settings → Health when the injury allows hard efforts.</span>
+        </section>
+      )}
+      {remote && <RemoteWish o={outcome} cursor={remote} capped={capped} onUse={() => (setWish(remote), setRemote(null))} onCancel={() => setRemote(null)} />}
+      <div className="today-grid" data-stop={stop || undefined}>
+        <div className="today-card" {...delivered}>
           {stop ? (
             <MedicalStop open={freeConfirm && !capped} capped={capped} onOpen={() => setFreeConfirm(true)} onClose={() => setFreeConfirm(false)} />
           ) : (
-            <>
-              {capped && !checkinDone && (
-                <section className="card cap status-warning" role="status" aria-label="Intensity cap">
-                  <b>⚠ Capped at threshold ({CAP_PCT_CP.threshold} % of CP, {Math.round(capW)} W) · no sprints · ERG only</b>
-                  <span className="muted"> — from your injury answer. Lift it in Settings → Health when the injury allows hard efforts.</span>
-                </section>
-              )}
-              <section className="card proposal" aria-label={checkinDone ? "Why today" : "Today's proposal"} aria-busy={pending} {...(checkinDone ? {} : delivered)}>
-                {!checkinDone && (
-                  <>
-                    <div className="proposal-head">
-                      <span className="eyebrow">Coach proposes {pending && <span className="pending-dot">· re-planning…</span>}</span>
-                      <h2>{proposal?.workout.name ?? " "}</h2>
-                      <p className="big-meta">{compiled ? `${mmss(compiled.totalS)} · TSS ${Math.round(compiled.tss)} · IF ${compiled.if.toFixed(2)}` : " "}</p>
-                    </div>
-                    <div className="proposal-profile">{profile}</div>
-                    <OutcomeDesk o={outcome} anyway={rideAnyway} askedMin={c.minutes} />
-                  </>
-                )}
-                <h3>Why today</h3>
-                <ul className="reasons">
-                  {facts.map((r) => (
-                    <li key={r}>{r}</li>
-                  ))}
-                  {capped && <li>Every target stays under the dashed cap line, in ERG.</li>}
-                  <li className="muted">
-                    Planned on CP {cp?.value} ± {cp?.sd} W ({calibration.confidence} confidence, {calibration.rides} rides){compiled ? ` · TSS ${Math.round(compiled.tss)} · IF ${compiled.if.toFixed(2)}` : ""}.
-                  </li>
-                </ul>
-                <div className="actions">
-                  {!checkinDone && (
-                    <button className="primary big" disabled={!ready} onClick={() => proposal && start(proposal)}>
-                      Start <kbd>Enter</kbd>
-                    </button>
-                  )}
-                  <button disabled={c.minutes <= 30} onClick={() => set({ minutes: MINUTES[Math.max(0, MINUTES.indexOf(c.minutes) - 1)] ?? 30 })}>
-                    Shorter
-                  </button>
-                  {!checkinDone && (
-                    <>
-                      <button onClick={() => step(-1)}>Easier</button>
-                      <button onClick={() => step(1)}>Harder</button>
-                    </>
-                  )}
-                  <button disabled={!proposal} onClick={() => proposal && (editor.load(proposal.workout), navigate("workouts"))}>
-                    Edit
-                  </button>
-                </div>
-                {!checkinDone && <p className="small muted">Confirm how you feel and answer the health check to start.</p>}
-              </section>
-            </>
+            proposal &&
+            compiled && (
+              <ProposalCard
+                mode={collapsed ? "saddle" : "desk"}
+                o={outcome}
+                anyway={rideAnyway}
+                askedMin={c.minutes}
+                name={proposal.workout.name}
+                totalS={compiled.totalS}
+                fallbackReason={capped ? `Capped at threshold (${Math.round(capW)} W), ERG only — from your injury answer.` : (facts[0] ?? "")}
+                facts={whyFacts}
+                ready={ready}
+                pending={pending}
+                onStart={() => start(proposal)}
+                onAnyway={() => setAnyway(true)}
+                onStep={step}
+                onEdit={() => (editor.load(proposal.workout), navigate("workouts"))}
+              >
+                <div className="card-profile">{profile}</div>
+              </ProposalCard>
+            )
           )}
-
+        </div>
+        {!stop && (
+          <div className="today-wish">
+            <WishCard o={outcome} capped={capped} carried={carried} provisional={!checkinDone} onWish={setWish} onDropCarried={() => (setCarried(null), setWish(null))} />
+          </div>
+        )}
+        <div className="today-week">
+          <WeekCard />
+        </div>
+        <div className="today-model">
           <section className="card model" aria-label="Athlete model">
             <h2>Your model</h2>
             {athleteModel.slice(0, 3).map((e) => {
@@ -277,28 +265,6 @@ export function Today() {
           </section>
         </div>
       </div>
-    </div>
-  );
-}
-
-/** Before the check-in is done: the outcome on the desk card, every reason with its Why? (§15.2). */
-function OutcomeDesk({ o, anyway, askedMin }: { o: WishOutcome; anyway: boolean; askedMin: number }) {
-  return (
-    <div className={`wish-outcome rel-${anyway ? "anyway" : o.relation}`} data-relation={anyway ? "anyway" : o.relation} aria-live="polite">
-      <p className="wish-line">
-        <b>{outcomeHead(o, anyway, askedMin, true)}</b>
-      </p>
-      {!anyway && o.reasons.length > 0 && (
-        <ul className="reasons">
-          {o.reasons.map((r) => (
-            <li key={r.text}>
-              {r.text} {r.rule && <WhyChip id={r.rule} reason={r} />}
-            </li>
-          ))}
-        </ul>
-      )}
-      {!anyway && o.deferredTo && <p className="small">Your wish moves to {o.deferredTo}, if your check-in is ok; it expires after 7 days.</p>}
-      {o.overridable && !anyway && <p className="small muted">Answer the check-in to start, or to ride your wish anyway.</p>}
     </div>
   );
 }

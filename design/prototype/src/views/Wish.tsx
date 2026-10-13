@@ -1,7 +1,8 @@
 // The planner wish (DESIGN §15.2): the rider points into intensity × format; the planner answers with what
 // it proposes and, where that differs, why. The matrix shows both marks, so a deviation is a distance on the
-// grid (P2). After the check-in the proposal becomes a saddle card (wish, session, one reason, actions at T3,
-// above the fold); a remote reaches every cell through the wish mode. Safety is never one of the choices.
+// grid (P2). One proposal card (DESIGN §16.2): at the desk before the check-in, and at ride-tier type with 72 px
+// actions pinned to its bottom edge (always above the fold) once the check-in is done; a remote reaches every cell
+// through the wish mode. Safety is never one of the choices.
 import { useStore } from "../store";
 import { mmss } from "../format";
 import { bindings, type Action } from "../persist";
@@ -10,7 +11,7 @@ import { WhyChip } from "./Why";
 
 export function Key({ a }: { a: Action }) {
   const k = useStore(bindings)[a][0] ?? "";
-  return <kbd>{k === "Backspace" ? "⌫" : k === " " ? "Space" : k}</kbd>;
+  return <kbd>{k === "Backspace" ? "⌫" : k === "Enter" ? "⏎" : k === " " ? "Space" : k}</kbd>;
 }
 
 /** The grid: plain buttons in reading order (Tab / arrow-free), each announcing its state in words. */
@@ -101,46 +102,75 @@ export function outcomeHead(o: WishOutcome, anyway: boolean, askedMin: number, p
   }
 }
 
-/** After the check-in: the proposal read from the bike — the wish, the session, one reason, the actions (§15.2). */
-export function SaddleProposal(p: {
+/**
+ * The one proposal surface (§16.2): outcome line (6 px edge) · session · duration · profile · one reason + Why? ·
+ * Start / Easier / Harder / Ride my wish. `desk` (check-in open) keeps every other reason and fact behind a disclosure;
+ * `saddle` (check-in done) is the same card at ride-tier type with 72 px actions pinned to its bottom edge.
+ */
+export function ProposalCard(p: {
+  mode: "desk" | "saddle";
   o: WishOutcome;
   anyway: boolean;
   askedMin: number;
   name: string;
   totalS: number;
   fallbackReason: string;
+  facts: string[];
   ready: boolean;
+  pending: boolean;
   onStart: () => void;
   onAnyway: () => void;
-  onRemote: () => void;
   onStep: (dir: -1 | 1) => void;
+  onEdit: () => void;
   children?: React.ReactNode;
 }) {
+  const saddle = p.mode === "saddle";
   const r = p.anyway ? undefined : p.o.reasons[0];
+  const more = p.anyway ? [] : p.o.reasons.slice(1);
+  const rel = p.anyway ? "anyway" : p.o.relation;
+  const tier = (t: "t3plus" | "t3") => (saddle ? { "data-tier": t, "data-above-fold": "" } : {});
   return (
-    <section className="card saddle-proposal" data-saddle aria-label="Today's proposal">
-      <p className={`outcome-line t3p rel-${p.anyway ? "anyway" : p.o.relation}`} data-above-fold data-tier="t3plus" data-fit aria-live="polite" data-relation={p.anyway ? "anyway" : p.o.relation}>
-        {outcomeHead(p.o, p.anyway, p.askedMin)}
+    <section className={`card proposal-card ${p.mode}`} data-saddle={saddle || undefined} aria-label="Today's proposal" aria-busy={p.pending}>
+      <p className={`outcome-line${saddle ? " t3p" : ""} rel-${rel}`} data-above-fold {...tier("t3plus")} data-fit aria-live="polite" data-relation={rel}>
+        {outcomeHead(p.o, p.anyway, p.askedMin, !saddle)}
+        {p.pending && !saddle && <span className="pending-dot"> · re-planning…</span>}
       </p>
-      <h2 className="t3p" data-above-fold data-tier="t3plus" data-fit>
+      <h2 className={saddle ? "t3p" : undefined} data-above-fold {...tier("t3plus")} data-fit>
         {p.name} · {mmss(p.totalS)}
       </h2>
-      <p className="t3 reason-line" data-above-fold data-tier="t3">
-        {r ? r.text : p.fallbackReason} {r?.rule && <WhyChip id={r.rule} reason={r} />}
-        {!p.anyway && p.o.deferredTo && <span className="muted"> Your wish moves to {p.o.deferredTo}.</span>}
-      </p>
       {p.children}
-      <div className="actions saddle" data-above-fold>
-        <button className="primary" disabled={!p.ready} onClick={p.onStart}>
-          <Key a="coach" /> Start
-        </button>
-        {p.o.overridable && !p.anyway && (
-          <button disabled={!p.ready} onClick={p.onAnyway}>
-            {p.o.relation === "adapted" ? `Ride the full ${fmtMin(p.askedMin)}` : "Ride my wish"}
+      <p className={`reason-line${saddle ? " t3" : ""}`} {...tier("t3")}>
+        {r ? r.text : p.fallbackReason} {r?.rule && <WhyChip id={r.rule} reason={r} />}
+        {!p.anyway && p.o.deferredTo && <span className="muted"> Your wish moves to {p.o.deferredTo}{saddle ? "." : ", if your check-in is ok; it expires after 7 days."}</span>}
+      </p>
+      {!saddle && (
+        <details className="more">
+          <summary>
+            Why today: every fact{more.length ? ` and ${more.length} more reason${more.length === 1 ? "" : "s"}` : ""}
+          </summary>
+          <ul className="reasons">
+            {more.map((x) => (
+              <li key={x.text}>
+                {x.text} {x.rule && <WhyChip id={x.rule} reason={x} />}
+              </li>
+            ))}
+            {p.facts.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
+          <button className="link" onClick={p.onEdit}>
+            Edit a copy in Workouts
           </button>
-        )}
-        <button onClick={p.onRemote}>
-          <Key a="skip" /> Other wish
+        </details>
+      )}
+      {saddle && (
+        <p className="card-keys">
+          <Key a="skip" /> other wish · <Key a="keep" /> coach's pick
+        </p>
+      )}
+      <div className={saddle ? "actions saddle" : "actions"} {...(saddle ? { "data-above-fold": "" } : {})} data-fit>
+        <button className={saddle ? "primary" : "primary big"} disabled={!p.ready} onClick={p.onStart}>
+          <Key a="coach" /> Start
         </button>
         <button onClick={() => p.onStep(-1)}>
           <Key a="minus" /> Easier
@@ -148,7 +178,13 @@ export function SaddleProposal(p: {
         <button onClick={() => p.onStep(1)}>
           <Key a="plus" /> Harder
         </button>
+        {p.o.overridable && !p.anyway && (
+          <button disabled={!p.ready} onClick={p.onAnyway}>
+            {p.o.relation === "adapted" ? `Ride the full ${fmtMin(p.askedMin)}` : "Ride my wish"}
+          </button>
+        )}
       </div>
+      {!saddle && !p.ready && <p className="small muted">Confirm how you feel and answer the health check to start{p.o.overridable ? ", or to ride your wish anyway" : ""}.</p>}
     </section>
   );
 }

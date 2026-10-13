@@ -1,7 +1,8 @@
-// Ride (DESIGN §5.2, §6, §7). Fixed anatomy: status bar · hero rows 1–5 · side · coach lane · road.
-// Phase templates change what fills the rows; states fill reserved rows. Nothing re-flows (#10).
+// Ride (DESIGN §5.2, §6, §7, §16.1). Fixed anatomy: status bar · hero rows (row 1 + caption, T1, band) · side ·
+// coach lane (a fixed grid row with reserved slots) · road (with "next" pinned to its block). Phase templates
+// change what fills the rows; states fill reserved rows. Nothing re-flows (#10).
 // Every live value is its own subscription in a leaf component.
-import { Component, useEffect, useRef, useState, type ReactNode } from "react";
+import { Component, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { findNode, NUDGE_TTL_S, type CoachNudge, type CompiledWorkout, type FlatBlock, type RideStatus, type StepNode, type Workout } from "@crank/shared";
 import { Profile, Recovery } from "../charts";
 import { blockName, blockTitle, mmss, num, signed } from "../format";
@@ -202,17 +203,17 @@ function RideScreen({ s }: { s: RideSession }) {
     <div className="ride" data-cap-log={cap.log.length} data-kind={kind} data-state={facts.trainerLost ? "held" : status.state} data-density={config.density}>
       <StatusBar status={status} facts={facts} onHelp={() => setDialog("keys")} />
       <section className="hero" aria-label="Now">
-        <HeroHeader workout={workout} block={block} kind={kind} step={step} capped={!!fx.healthCap} capOver={cap.over} showCadence={config.density === "focus" || (config.slotA !== "cadence" && config.slotB !== "cadence")} />
-        <Rows status={status} facts={facts} kind={kind} block={block} prev={compiled.blocks[status.blockIndex - 1]} step={step} offset={offset} left={left} onEnd={() => setDialog("end")} />
-        <Next compiled={compiled} workout={workout} index={status.blockIndex} kind={kind} />
+        <Rows status={status} facts={facts} kind={kind} block={block} prev={compiled.blocks[status.blockIndex - 1]} step={step} offset={offset} left={left} onEnd={() => setDialog("end")}>
+          {(caption) => <HeroHeader workout={workout} block={block} kind={kind} step={step} capped={!!fx.healthCap} capOver={cap.over} caption={caption} />}
+        </Rows>
       </section>
       <aside className="side" aria-label="Body">
         <Slot metric={config.slotA} status={status} step={step} />
         {/* Focus drops the second slot but keeps its space, so the coach lane never moves (P4) */}
-        {config.density === "focus" ? <div className="slot reserved" aria-hidden /> : <Slot metric={config.slotB} status={status} step={step} />}
+        <Slot metric={config.slotB} status={status} step={step} reserved={config.density === "focus"} />
         <CoachLane s={s} status={status} facts={facts} pending={pending} undoable={undoable} nudges={nudges} feel={fx.feelPrompt ? feel : null} detail={config.density === "detail"} current={current} />
       </aside>
-      <Road compiled={compiled} block={block} status={status} pending={pending} />
+      <Road compiled={compiled} workout={workout} block={block} kind={kind} status={status} pending={pending} />
       {dialog === "keys" && (
         <Dialog label="Keys" onClose={() => setDialog(null)}>
           <KeysList />
@@ -354,17 +355,24 @@ function StatusBar({ status, facts, onHelp }: { status: RideStatus; facts: CoreF
   const remaining = useMetric("remaining", 2);
   const paused = status.state === "paused";
   const back = facts.sinceReconnectS !== null && facts.sinceReconnectS < SETTLE_S + RECONNECT_NOTICE_S && facts.lastGapS !== null;
+  // groups are sized to their content (§16.1); every changing value reserves its widest form, so nothing moves
   return (
     <header className="statusbar">
-      <button className="pause" onClick={() => (paused ? backend.ride.resume() : backend.ride.pause())}>
-        <span aria-hidden>{paused ? "▶" : "❚❚"}</span>
-        <span>{paused ? "Resume" : "Pause"}</span>
+      <button className="pause" data-geom="pause" onClick={() => (paused ? backend.ride.resume() : backend.ride.pause())}>
+        <span className="swap" aria-hidden>
+          <span className={paused ? "" : "off"}>▶</span>
+          <span className={paused ? "off" : ""}>❚❚</span>
+        </span>
+        <span className="swap">
+          <span className={paused ? "" : "off"}>Resume</span>
+          <span className={paused ? "off" : ""}>Pause</span>
+        </span>
       </button>
-      <div className="clock t3">
+      <div className="clock t3" data-geom="clock">
         <b>{mmss(remaining)}</b> <span className="lbl">left</span>
       </div>
-      <div className="intensity t3" aria-label="Your intensity offset">
-        <span className="chip mode">{status.mode.toUpperCase()}</span>
+      <div className="intensity t3" aria-label="Your intensity offset" data-geom="intensity">
+        <span className="chip mode" data-mode={status.mode}>{status.mode.toUpperCase()}</span>
         <span className="lbl you">you</span>
         <button onClick={() => backend.ride.adjust(-5)} aria-label="Intensity −5 %">
           −
@@ -374,9 +382,12 @@ function StatusBar({ status, facts, onHelp }: { status: RideStatus; facts: CoreF
           +
         </button>
       </div>
-      <Sensor name="NEO" state={facts.trainerLost ? "lost" : status.trainer} note={back ? `back · ${mmss(facts.lastGapS)} gap` : null} />
-      <Sensor name="HR" state={status.hrSensor} note={null} />
-      <button className="help" onClick={onHelp} aria-label="Keys">
+      {/* one device pill; a device expands to its status only on a fault or a reconnect note */}
+      <div className="device-pill">
+        <Sensor name="NEO" state={facts.trainerLost ? "lost" : status.trainer} note={back ? `back · ${mmss(facts.lastGapS)} gap` : null} />
+        <Sensor name="HR" state={status.hrSensor} note={null} />
+      </div>
+      <button className="help" onClick={onHelp} aria-label="Keys" data-geom="help">
         ?
       </button>
     </header>
@@ -389,7 +400,15 @@ function Sensor({ name, state, note }: { name: string; state: RideStatus["traine
   const text = ok ? (note ?? "") : state === "connecting" ? "…" : "lost";
   return (
     <div className={`sensor status-${cls}`} role="status" aria-label={`${name} ${ok ? (note ?? "connected") : text}`}>
-      <span aria-hidden>{ok ? (note ? "↻" : "●") : "⚠"}</span> <b>{name}</b> <span className="lbl">{text}</span>
+      {ok && !note ? (
+        <>
+          <b>{name}</b> <span aria-hidden>●</span>
+        </>
+      ) : (
+        <>
+          <span aria-hidden>{ok ? "↻" : "⚠"}</span> <b>{name}</b> <span className="lbl">{text}</span>
+        </>
+      )}
     </div>
   );
 }
@@ -404,7 +423,8 @@ function useCadenceState(step: StepNode | undefined) {
   return { rpm, cs };
 }
 
-function HeroHeader({ workout, block, kind, step, capped, capOver }: { workout: Workout; block: FlatBlock; kind: BlockKind; step: StepNode | undefined; showCadence: boolean; capped: boolean; capOver: CapExceeded | null }) {
+/** Row 1: what this block is, and — right-aligned on the same line — which event the T1 number counts to (§16.1). */
+function HeroHeader({ workout, block, kind, step, capped, capOver, caption }: { workout: Workout; block: FlatBlock; kind: BlockKind; step: StepNode | undefined; capped: boolean; capOver: CapExceeded | null; caption: string }) {
   const t = blockTitle(workout.nodes, block);
   const inherited = !step?.label && block.phase !== "work" && kind !== "hr_recovery";
   const easyRep = kind === "onoff" && block.phase !== "work";
@@ -414,12 +434,12 @@ function HeroHeader({ workout, block, kind, step, capped, capOver }: { workout: 
   // over the cap (§15.2 point 3): row 1 becomes the status at the ride tier — what, how much, what to do
   if (capOver)
     return (
-      <div className="row1 t3 cap-over" data-fit role="alert">
+      <div className="row1 t3 cap-over" data-fit data-geom="row1" role="alert">
         ⚠ {capOver.watts} W · over your {capW} W cap · ease off
       </div>
     );
   return (
-    <div className="row1 t3" data-fit>
+    <div className="row1 t3" data-fit data-geom="row1">
       <span className="phase-word">{easyRep ? "Off" : PHASE_WORD[kind]}</span>
       {t.label.toLowerCase() !== PHASE_WORD[kind].toLowerCase() && <span className="title">{t.label ? (inherited ? `after ${t.label}` : t.label) : workout.name}</span>}
       {t.reps.map((r, i) => (
@@ -437,13 +457,15 @@ function HeroHeader({ workout, block, kind, step, capped, capOver }: { workout: 
       {/* out-of-range cadence is the ERG lever: always a chip in row 1, in every density (§5.2) */}
       {cs !== "in" && cs !== "none" && <span className={`chip cad-chip cad-${cs}`}>{CADENCE_WORD[cs]}</span>}
       {capped && <span className="chip cap-chip">capped ≤ {capW} W</span>}
+      <span className="caption lbl">{caption}</span>
     </div>
   );
 }
 
 interface RowProps { status: RideStatus; facts: CoreFacts; kind: BlockKind; block: FlatBlock; prev: FlatBlock | undefined; step: StepNode | undefined; offset: number; left: number | null; onEnd: () => void }
 
-function Rows(props: RowProps) {
+/** Hero rows: row 1 (rendered by `children` with the caption) · T1 · the row-4 band (§16.1). */
+function Rows({ children, ...props }: RowProps & { children: (caption: string) => ReactNode }) {
   const { kind, facts } = props;
   const rec = usePoll(1, () => (kind === "hr_recovery" ? backend.hrRecovery() : null), [kind, props.block.nodeId]);
   // while the trainer is lost the block is frozen: no live forecast, just the frozen time to its maximum
@@ -455,12 +477,12 @@ function Rows(props: RowProps) {
       : read
         ? read.kind === "hr_lost"
           ? facts.trainerLost
-            ? "paused · then ends at its maximum in"
-            : "HR lost · block ends at its maximum in"
+            ? "paused · ends at max in"
+            : "HR lost · ends at max in"
           : read.kind === "ends_at_min"
-            ? "block ends at its minimum in"
+            ? "block ends at min in"
             : read.kind === "estimate" && read.capped
-              ? `HR below ${rec?.targetBpm} in · or at the block maximum`
+              ? `HR below ${rec?.targetBpm} · or max in`
               : `HR below ${rec?.targetBpm} in`
         : kind === "onoff"
           ? "left in rep"
@@ -490,11 +512,11 @@ function Rows(props: RowProps) {
   } else t1 = <div className="t1">{mmss(props.left)}</div>;
   return (
     <>
-      <div className="row2 t3 lbl" data-fit>
-        {caption}
+      {children(caption)}
+      <div className="row3" data-geom="row3">
+        {t1}
       </div>
-      <div className="row3">{t1}</div>
-      <div className="row4">
+      <div className="row4" data-geom="row4">
         <BandRow {...props} rec={rec} />
       </div>
     </>
@@ -680,23 +702,6 @@ function RecoveryRow({ rec, step, lost, status }: { rec: ReturnType<typeof backe
   );
 }
 
-function Next({ compiled, workout, index, kind }: { compiled: CompiledWorkout; workout: Workout; index: number; kind: BlockKind }) {
-  const next = compiled.blocks[index + 1];
-  if (kind === "cooldown" || !next) {
-    return (
-      <div className="row5 t3p" data-fit>
-        <span className="lbl">next</span> ride complete → Review
-      </div>
-    );
-  }
-  const w = next.powerFrom === next.powerTo ? `${Math.round(next.powerFrom)} W` : `${Math.round(next.powerFrom)}→${Math.round(next.powerTo)} W`;
-  return (
-    <div className="row5 t3p" data-fit>
-      <span className="lbl">next</span> <b>{blockName(workout.nodes, next)}</b> {next.durRangeS ? `${mmss(next.durRangeS[0])}–${mmss(next.durRangeS[1])}` : mmss(next.durS)} @ {w}
-    </div>
-  );
-}
-
 // ---------- side ----------
 const SLOT_LABEL: Record<SlotMetric, [string, string]> = {
   hr: ["Heart rate", "bpm"],
@@ -709,7 +714,8 @@ const SLOT_LABEL: Record<SlotMetric, [string, string]> = {
 };
 const CADENCE_WORD: Record<CadenceState, string> = { in: "✓ in range", below: "▲ spin faster", above: "▼ ease cadence", none: "no target" };
 
-function Slot({ metric, status, step }: { metric: SlotMetric; status: RideStatus; step: StepNode | undefined }) {
+/** `reserved`: Focus density keeps the slot's exact box but hides it (§5.3). */
+function Slot({ metric, status, step, reserved = false }: { metric: SlotMetric; status: RideStatus; step: StepNode | undefined; reserved?: boolean }) {
   const v = useMetric(metric, 2);
   const zone = useMetric("hr_zone", 1);
   const cad = useCadenceState(step);
@@ -719,7 +725,7 @@ function Slot({ metric, status, step }: { metric: SlotMetric; status: RideStatus
   const cs = metric === "cadence" ? cad.cs : null;
   const sub = lost ? `${hrBased ? "HR strap" : "trainer"} lost` : metric === "hr" ? (zone === null ? "" : `zone ${zone}`) : cs ? CADENCE_WORD[cs] : "";
   return (
-    <div className={`slot${lost ? " lost" : ""}${cs === "below" || cs === "above" ? ` slot-${cs}` : ""}`}>
+    <div data-geom="slot" aria-hidden={reserved || undefined} className={`slot${reserved ? " reserved" : ""}${lost ? " lost" : ""}${cs === "below" || cs === "above" ? ` slot-${cs}` : ""}`}>
       <span className="t3 lbl">{label}</span>
       <span className={`t3 sub${lost ? " status-serious" : cs ? ` cad-${cs}` : ""}`} data-fit>
         {lost && <span aria-hidden>⚠ </span>}
@@ -755,136 +761,214 @@ function ProposedTo({ pct }: { pct: number }) {
   return <>{t === null ? `${signed(pct)} %` : `to ${proposedWatts(t, pct)} W`}</>;
 }
 
+/**
+ * The lane's fixed skeleton (§16.1): head · reason · actions · deadline (text + bar) · grammar, each a grid row of
+ * fixed height, reserved when empty. A call, an applied change or the feel prompt fills the rows; nothing moves.
+ */
+function Lane(p: { cls: "idle" | "ask" | "applied"; alert?: boolean; head?: ReactNode; band?: string; reason?: ReactNode; actions?: ReactNode; deadline?: ReactNode; bar?: number | null; grammar?: ReactNode; metric?: ReactNode }) {
+  return (
+    <div className={`coach ${p.cls}`} role={p.alert ? "alert" : "status"} data-fit data-lane={p.cls} data-geom="lane">
+      {p.metric ? (
+        <div className="lane-metric">{p.metric}</div>
+      ) : (
+        <>
+          <div className="lane-head" data-fit data-geom="lane-head">
+            {p.head}
+          </div>
+          <p className="t3 reason" data-fit>
+            {p.reason}
+          </p>
+          <div className="coach-actions" data-geom="lane-actions">
+            {p.actions}
+          </div>
+        </>
+      )}
+      {p.band && <span className="band-word">{p.band}</span>}
+      <div className="lane-deadline" data-geom="lane-deadline">
+        <span className="t3 deadline-text" data-fit>
+          {p.deadline}
+        </span>
+        <div className={p.bar === undefined || p.bar === null ? "deadline reserved" : "deadline"} aria-hidden>
+          <i style={{ width: `${Math.round((p.bar ?? 0) * 100)}%` }} />
+        </div>
+      </div>
+      <span className="grammar" data-geom="lane-grammar">
+        {p.grammar}
+      </span>
+    </div>
+  );
+}
+
 function CoachLane({ s, status, facts, pending, undoable, nudges, feel, detail, current }: { current: { workout: Workout } | null; s: RideSession; status: RideStatus; facts: CoreFacts; pending: CoachNudge | undefined; undoable: CoachNudge | undefined; nudges: CoachNudge[]; feel: Feel | null; detail: boolean }) {
   const wbal = useMetric("wbal_pct", 1);
-  if (current?.workout.id === "free")
-    return (
-      <div className="coach idle" role="status" data-fit>
-        <p className="t3 idle-note" data-fit>
-          Coach off: free ride
-        </p>
-        <span className="grammar">no plan was proposed (health answer)</span>
-      </div>
-    );
+  if (current?.workout.id === "free") return <Lane cls="idle" reason="Coach off: free ride" grammar="no plan was proposed (health answer)" />;
   if (feel && !feel.committed)
     return (
-      <div className="coach ask" role="alert" data-fit>
-        <div className="coach-head">
-          <span className="verb" data-fit>
-            How was that?
-          </span>
-          <span className="band-word">calibrating</span>
-        </div>
-        <div className="coach-actions three" role="radiogroup" aria-label="How did that feel">
-          {FEEL_WORDS.map((w) => (
-            <button key={w} role="radio" aria-checked={feel.choice === w} className={feel.choice === w ? "on" : ""} onClick={() => feel.pick(w)}>
-              {w}
-            </button>
-          ))}
-        </div>
-        <span className="t3 deadline-text" data-fit>
-          {feel.choice ? `saves “${feel.choice}” in ${feel.leftS} s` : "Coach = next · Keep = skip"}
-        </span>
-      </div>
+      <Lane
+        cls="ask"
+        alert
+        head={<span className="verb">How was that?</span>}
+        band="calibrating"
+        actions={
+          <div className="coach-actions three" role="radiogroup" aria-label="How did that feel">
+            {FEEL_WORDS.map((w) => (
+              <button key={w} role="radio" aria-checked={feel.choice === w} className={feel.choice === w ? "on" : ""} onClick={() => feel.pick(w)}>
+                {w}
+              </button>
+            ))}
+          </div>
+        }
+        deadline={feel.choice ? `saves “${feel.choice}” in ${feel.leftS} s` : "Coach = next · Keep = skip"}
+        bar={feel.choice ? feel.leftS / (FEEL_COMMIT_MS / 1000) : null}
+      />
     );
   if (pending) {
     const ttl = NUDGE_TTL_S[pending.band] || 1;
     const leftS = Math.max(0, pending.t + ttl - status.t);
     return (
-      <div className="coach ask" role="alert" data-fit>
-        <div className="coach-head">
-          <span className="verb" data-fit>
+      <Lane
+        cls="ask"
+        alert
+        head={
+          <span className="verb">
             {VERB[pending.verdict][0]} {pending.proposedPctChange ? <ProposedTo pct={pending.proposedPctChange} /> : null}?
           </span>
-
-        </div>
-        <p className="t3 reason" data-fit>
-          {coachReason(pending)}
-        </p>
-        <div className="coach-actions">
-          <button onClick={() => backend.coach.respond(pending.callId, true)}>Accept</button>
-          <button onClick={() => backend.coach.respond(pending.callId, false)}>Keep plan</button>
-        </div>
-        <span className="t3 deadline-text" data-fit>
-          keeps plan in {Math.ceil(leftS)} s
-        </span>
-        <span className="grammar">
-          {pending.band}
-          {amount(pending)} · Coach = accept · Keep = keep plan
-        </span>
-      </div>
+        }
+        reason={coachReason(pending)}
+        actions={
+          <>
+            <button onClick={() => backend.coach.respond(pending.callId, true)}>Accept</button>
+            <button onClick={() => backend.coach.respond(pending.callId, false)}>Keep plan</button>
+          </>
+        }
+        deadline={`keeps plan in ${Math.ceil(leftS)} s`}
+        bar={leftS / ttl}
+        grammar={`${pending.band}${amount(pending)} · Coach = accept · Keep = keep plan`}
+      />
     );
   }
   if (undoable) {
     const leftS = Math.max(0, undoable.t + UNDO_WINDOW_S - status.t);
     return (
-      <div className="coach applied" role="status" data-fit>
-        <div className="coach-head">
-          <span className="verb" data-fit>
+      <Lane
+        cls="applied"
+        head={
+          <span className="verb">
             {VERB[undoable.verdict][1]}
             {amount(undoable)}
           </span>
-          <span className="band-word">auto</span>
-        </div>
-        <p className="t3 reason" data-fit>
-          {coachReason(undoable)}
-        </p>
-        <div className="coach-actions">
-          <button onClick={() => undo(s, undoable)}>Back to plan · {Math.ceil(leftS)} s</button>
-        </div>
-        <span className="t3 deadline-text" data-fit>
-          Keep = back to plan
-        </span>
-        <span className="grammar">Coach does nothing here</span>
-      </div>
+        }
+        band="auto"
+        reason={coachReason(undoable)}
+        actions={<button onClick={() => undo(s, undoable)}>Back to plan · {Math.ceil(leftS)} s</button>}
+        deadline="Keep = back to plan"
+        bar={leftS / UNDO_WINDOW_S}
+        grammar="Coach does nothing here"
+      />
     );
   }
   const last = nudges.findLast((n) => n.status !== "pending");
+  // ≤ 28 characters, so it fits the lane at 1024 (§6.1); the call's time is in Review
+  const note = facts.hrLost ? "HR lost: coach can't push" : last ? `last call${amount(last)}: ${s.reverted.get().has(last.callId) ? "back to plan" : last.status === "auto_applied" || last.status === "accepted" ? "applied" : "not taken"}` : "coach: no calls yet";
+  // Detail density puts its third metric at T2 in the rows a call takes over; the note moves to the deadline row (§5.3)
+  if (detail)
+    return (
+      <Lane
+        cls="idle"
+        metric={
+          <div className="idle-metric detail">
+            <span className="t3 lbl">W′ balance</span>
+            <span className="t2">{facts.trainerLost ? <span className="stale">—</span> : <>{num(wbal)}<small>%</small></>}</span>
+          </div>
+        }
+        deadline={note}
+      />
+    );
   return (
-    <div className="coach idle" role="status" data-fit>
-      {/* Detail density puts its third metric here, in the reserved lane a coach call takes over (§5.3) */}
-      {detail ? (
-        <div className="idle-metric detail">
-          <span className="t3 lbl">W′ balance</span>
-          <span className="t2">{facts.trainerLost ? <span className="stale">—</span> : <>{num(wbal)}<small>%</small></>}</span>
-        </div>
-      ) : (
-        <div className="idle-metric t3" data-fit>
+    <Lane
+      cls="idle"
+      head={
+        <span className="idle-metric t3">
           <span className="lbl">W′ balance</span> {facts.trainerLost ? <span className="stale">— no power data</span> : <b>{num(wbal)} %</b>}
-        </div>
-      )}
-      <p className="t3 idle-note" data-fit>
-        {facts.hrLost ? "HR lost: coach can't push" : last ? `last call ${mmss(last.t)}${amount(last)} ${s.reverted.get().has(last.callId) ? "back to plan" : last.status === "auto_applied" || last.status === "accepted" ? "applied" : "not taken"}` : "coach: no calls yet"}
-      </p>
-    </div>
+        </span>
+      }
+      reason={note}
+    />
   );
 }
 
 // ---------- road ahead ----------
-function Road({ compiled, block, status, pending }: { compiled: CompiledWorkout; block: FlatBlock; status: RideStatus; pending: CoachNudge | undefined }) {
+/** The near road spans 2 min back and 10 min ahead of now (§5.2). */
+const ROAD_BACK_S = 120;
+const ROAD_AHEAD_S = 600;
+/**
+ * Where the "next" label goes on the label lane (§16.1): it begins at its block's start when it fits, else it ends there,
+ * else it is right-aligned over it; a notch always marks the start. Measured, because the label's width is its text's.
+ */
+function useLabelLeft(at: number) {
+  const lane = useRef<HTMLDivElement>(null);
+  const label = useRef<HTMLSpanElement>(null);
+  const [left, setLeft] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const place = () => {
+      const W = lane.current?.clientWidth ?? 0;
+      const w = label.current?.offsetWidth ?? 0;
+      const x = at * W;
+      setLeft(x + w <= W ? x : x - w >= 0 ? x - w : Math.max(0, W - w));
+    };
+    place();
+    const ro = new ResizeObserver(place);
+    if (lane.current) ro.observe(lane.current);
+    if (label.current) ro.observe(label.current);
+    return () => ro.disconnect();
+  }, [at]);
+  return { lane, label, left };
+}
+
+function Road({ compiled, workout, block, kind, status, pending }: { compiled: CompiledWorkout; workout: Workout; block: FlatBlock; kind: BlockKind; status: RideStatus; pending: CoachNudge | undefined }) {
   const affected = pending ? compiled.blocks.filter((b, i) => i >= status.blockIndex && b.phase === "work").length : 0;
   const left = useMetric("block_remaining", 1);
   const elapsed = useMetric("elapsed", 1);
   const now = cursorS(block, left);
+  const fromS = now - ROAD_BACK_S;
+  const span = ROAD_BACK_S + ROAD_AHEAD_S;
+  const next = compiled.blocks[status.blockIndex + 1];
+  const last = compiled.blocks.at(-1);
+  // "next" is pinned to its block's start on the near road (§16.1); after the last block it marks the ride's end
+  const atS = kind === "cooldown" || !next ? (last ? last.startS + last.durS : now) : next.startS;
+  const at = Math.max(0, Math.min(1, (atS - fromS) / span));
+  const { lane, label, left: labelLeft } = useLabelLeft(at);
+  const watts = next ? (next.powerFrom === next.powerTo ? `${Math.round(next.powerFrom)} W` : `${Math.round(next.powerFrom)}→${Math.round(next.powerTo)} W`) : "";
   return (
     <section className="road" aria-label="Road ahead">
-      <div className="road-ticks">
-        <span style={{ left: `${(120 / 720) * 100}%` }}>now</span>
-        <span className="legend">{pending?.proposedPctChange ? `dashed = proposed ${signed(pending.proposedPctChange)} % on ${affected} work block${affected === 1 ? "" : "s"}` : "coach changes: solid = applied"}</span>
-        <span className="end">+10 min</span>
+      <div className="road-labels" data-geom="road-labels" ref={lane}>
+        <span className="road-now" style={{ left: `${(ROAD_BACK_S / span) * 100}%` }}>
+          now
+        </span>
+        <span className="road-notch" style={{ left: `${at * 100}%` }} aria-hidden />
+        <span ref={label} className="road-next t3p" style={{ left: labelLeft ?? 0, visibility: labelLeft === null ? "hidden" : undefined }} data-above-fold data-tier="t3plus" data-fit>
+          <span className="lbl">next</span>{" "}
+          {kind === "cooldown" || !next ? (
+            "ride complete → Review"
+          ) : (
+            <>
+              <b>{blockName(workout.nodes, next)}</b> {next.durRangeS ? `${mmss(next.durRangeS[0])}–${mmss(next.durRangeS[1])}` : mmss(next.durS)} @ {watts}
+            </>
+          )}
+        </span>
       </div>
-      <div className="road-near">
+      <div className="road-near" data-geom="road-near">
         {pending?.proposedPctChange ? (
           <span className="road-proposal">
             proposed {signed(pending.proposedPctChange)} % · {affected} block{affected === 1 ? "" : "s"}
           </span>
         ) : null}
-        <Profile blocks={compiled.blocks} zones={backend.zones.power} height={120} fromS={now - 120} toS={now + 600} cursorS={now} pending={pending?.proposedPctChange ? { from: status.blockIndex, pct: pending.proposedPctChange } : undefined} label="Next ten minutes" />
+        <Profile blocks={compiled.blocks} zones={backend.zones.power} height={120} fromS={fromS} toS={now + ROAD_AHEAD_S} cursorS={now} pending={pending?.proposedPctChange ? { from: status.blockIndex, pct: pending.proposedPctChange } : undefined} label="Next ten minutes" />
       </div>
-      <div className="road-all">
+      <div className="road-all" data-geom="road-all">
         <Profile blocks={compiled.blocks} zones={backend.zones.power} height={24} cursorS={now} label="Whole ride" />
         <span className="road-meta">
-          {mmss(elapsed)} ridden · block {status.blockIndex + 1} of {compiled.blocks.length}
+          {mmss(elapsed)} ridden · block {status.blockIndex + 1} of {compiled.blocks.length} · {pending?.proposedPctChange ? `dashed = proposed ${signed(pending.proposedPctChange)} %` : "solid = coach applied"} · −2 … +10 min
         </span>
       </div>
     </section>
