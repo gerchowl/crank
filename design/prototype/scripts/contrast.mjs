@@ -37,6 +37,11 @@ const PAIRS = [
   ["status-info", "surface-1", 4.5, "status text"],
   ["status-warning", "surface-1", 4.5, "status text"],
   ["status-serious", "surface-1", 4.5, "status text"],
+  ["accent", "surface-1", 3, "wish matrix: planned cell (UI boundary)"],
+  ["accent-text", "surface-2", 3, "wish matrix: wished-cell outline (UI boundary)"],
+  ["status-warning", "surface-2", 3, "wish matrix: cap edge (UI boundary)"],
+  ["focus", "surface-1", 3, "wish mode cursor (UI boundary)"],
+  ["warning-ink", "status-warning", 4.5, "over-cap status text on its warning fill"],
   ["border", "surface-1", 1.3, "hairline (decorative)"],
 ];
 let failed = 0;

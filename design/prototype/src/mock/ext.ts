@@ -186,7 +186,7 @@ export function proposalReasons(p: Proposal, minutes: number, legs: string, slee
   return [
     `You said: legs ${legs}, sleep ${sleep}.`,
     `Last threshold work: over-unders on Fri 9 Oct, 4 days ago.`,
-    `Load over 7 days: 164 TSS — below your usual 210, so there is room.`,
+    `Load over 7 days: 164 TSS (your usual: 210).`,
     `Fits your ${minutes} min: ${p.workout.name}.`,
   ];
 }
@@ -314,6 +314,39 @@ export function healthConsequences(a: Partial<Record<HealthId, HealthAnswer>>) {
 }
 /** The cap is relative to CP (the model's number), not FTP. */
 export const CAP_PCT_CP = { threshold: 100 } as const;
+/**
+ * CapState (DESIGN §15.2, §15.4; engine #32): planned ERG targets stay ≤ 97 % of the cap; an exceedance is power
+ * above cap + 3 % sustained for 3 s. Together that is ≥ 6 % headroom over the highest planned target, so normal
+ * ERG ripple around a target never trips it, and 3 s matches the 3-s power average the rider sees.
+ */
+export const CAP_RULE = { planPct: 97, tolPct: 3, windowS: 3 } as const;
+export interface CapExceeded { at: number; watts: number; forS: number }
+/** Core stand-in: one log entry per sustained episode above cap × (1 + tol); a sample at or below it ends the episode. */
+export class CapMonitor {
+  private since: number | null = null;
+  private peak = 0;
+  readonly log: CapExceeded[] = [];
+  readonly capW: number;
+  constructor(capW: number) {
+    this.capW = capW;
+  }
+  feed(t: number, w: number | null): CapExceeded | null {
+    if (w === null || w <= this.capW * (1 + CAP_RULE.tolPct / 100)) {
+      this.since = null;
+      this.peak = 0;
+      return null;
+    }
+    this.since ??= t;
+    this.peak = Math.max(this.peak, w);
+    const forS = t - this.since;
+    if (forS < CAP_RULE.windowS) return null;
+    const open = this.log.at(-1)?.at === this.since ? this.log.at(-1) : undefined;
+    const e = { at: this.since, watts: Math.round(this.peak), forS };
+    if (open) Object.assign(open, e);
+    else this.log.push(e);
+    return e;
+  }
+}
 export function cappedProposal(cp: number, minutes: number): Proposal {
   const main = Math.max(15, minutes - 15);
   const reps = Math.max(1, Math.floor((main + 5) / 15));
@@ -375,7 +408,19 @@ export interface SceneFixture {
   freeConfirm?: boolean;
   /** Ride: a free ride chosen under a medical stop */
   freeRide?: boolean;
+  /** Settings → Training profile: show an unsaved draft (before → after) */
+  profileDraft?: boolean;
   /** Ride: the End dialog is open */
   endDialog?: boolean;
+  /** Today: the check-in answers differ from yesterday's (#85/#86 scenes) */
+  checkin?: Partial<import("@crank/shared").Checkin>;
+  /** Today: the rider's wish (DESIGN §15.2) */
+  wish?: import("./wish").Cell;
+  /** Today: the check-in and today's red-flag check are done → the saddle proposal */
+  ready?: boolean;
+  /** Today: a deferred wish carried over from an earlier day */
+  carried?: boolean;
+  /** Today: the remote wish mode is open at this cell */
+  remote?: import("./wish").Cell;
 }
 export const sceneFixture = createStore<SceneFixture>({});

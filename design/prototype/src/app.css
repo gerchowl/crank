@@ -123,7 +123,7 @@ svg .marker { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray: 
 .scale-row { display: grid; grid-template-columns: 92px repeat(5, minmax(0, 1fr)); gap: 5px; align-items: center; margin: 7px 0; }
 .scale-label { font-weight: 600; }
 .tap.word { font-size: 14px; padding: 0 4px; min-width: 0; line-height: 1.1; }
-.scale-row[aria-label="Time available"] { grid-template-columns: 92px repeat(4, minmax(0, 1fr)); }
+.scale-row[aria-label="Time available"] { grid-template-columns: 92px repeat(6, minmax(0, 1fr)); }
 .confirm { width: 100%; margin-top: 10px; min-height: 52px; font-weight: 700; font-size: 17px; }
 .confirm.on { background: color-mix(in srgb, var(--status-good) 18%, var(--surface-2)); border-color: var(--status-good); }
 .proposal h2 { font-size: 26px; margin: 4px 0 2px; }
@@ -406,7 +406,7 @@ pre.dsl ins { text-decoration: none; background: color-mix(in srgb, var(--status
   .page { padding: 20px 20px 32px; }
   .today-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .scale-row { grid-template-columns: 74px repeat(5, minmax(0, 1fr)); gap: 4px; }
-  .scale-row[aria-label="Time available"] { grid-template-columns: 74px repeat(4, minmax(0, 1fr)); }
+  .scale-row[aria-label="Time available"] { grid-template-columns: 74px repeat(6, minmax(0, 1fr)); }
   .tap.word { font-size: 13px; }
   .scale-label { font-size: 14px; }
   .inputs { grid-template-columns: minmax(0, 1fr); }
@@ -503,7 +503,7 @@ svg .between { fill: var(--status-warning); fill-opacity: 0.3; stroke: none; }
 .road-proposal { position: absolute; top: 4px; left: 18%; z-index: 1; font-size: var(--t3); font-weight: 800; color: var(--status-info); background: var(--surface-1); padding: 0 8px; border: 2px dashed var(--status-info); border-radius: 6px; }
 kbd.keyhint { font-size: 0.6em; padding: 2px 6px; margin-right: 8px; vertical-align: middle; }
 /* screens read from the saddle use ride tiers (§6.2) */
-.saddle-screen { --t2: clamp(84px, 11.4vh, 128px); --t3p: clamp(34px, 4.5vh, 44px); --t3: clamp(27px, 3.7vh, 36px); }
+.saddle-screen, .saddle-proposal { --t2: clamp(84px, 11.4vh, 128px); --t3p: clamp(34px, 4.5vh, 44px); --t3: clamp(27px, 3.7vh, 36px); }
 .saddle-screen .ready-card { width: min(1000px, 100%); }
 .saddle-screen h1 { font-size: var(--t3p); }
 .saddle-screen .big-meta, .saddle-screen .checks { font-size: var(--t3); }
@@ -539,3 +539,91 @@ kbd.keyhint { font-size: 0.6em; padding: 2px 6px; margin-right: 8px; vertical-al
 .dialog .symptom-btn { border: 2px solid var(--status-serious); color: var(--status-serious); font-weight: 700; width: 100%; }
 .redflag-check .choices { flex-wrap: nowrap; margin: 4px 0; }
 main[data-destination]:focus { outline: none; }
+
+/* ---------- wish matrix, Why? sheet, Background, training profile (DESIGN §15) ---------- */
+.wish h2 { margin-bottom: 2px; }
+.wish-now { font-size: clamp(22px, 3vh, 28px); margin: 0 0 10px; white-space: nowrap; overflow: hidden; }
+.matrix { display: grid; grid-template-columns: 92px repeat(5, minmax(0, 1fr)); gap: 4px; align-items: stretch; }
+.matrix-row { display: contents; }
+.matrix.big { grid-template-columns: 150px repeat(5, minmax(0, 1fr)); gap: 6px; margin: 12px 0; }
+.matrix.big .axis { font-size: 20px; }
+.matrix .axis { font-size: 13px; font-weight: 600; color: var(--ink-secondary); align-self: end; text-align: center; line-height: 1.15; }
+.matrix .row-axis { text-align: left; align-self: center; display: grid; }
+.matrix .row-axis small { font-weight: 400; color: var(--ink-muted); font-size: 11px; }
+.cell { min-height: 48px; min-width: 0; padding: 0 2px; font-size: 13px; font-weight: 700; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border); }
+.cell.none { background: none; border: none; display: grid; place-items: center; color: var(--ink-muted); }
+.cell.none::after { content: "·"; }
+.cell.wished { outline: 3px solid var(--accent-text); outline-offset: -3px; color: var(--accent-text); }
+.cell.planned { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.cell.locked { background: none; border: 2px dashed var(--status-warning); color: var(--status-warning); font-weight: 700; }
+.cell.adapted { background: var(--surface-2); color: var(--ink-primary); border: 3px solid var(--accent); }
+.cell.cursor { outline: 4px solid var(--focus); outline-offset: 1px; }
+.cell:disabled:not(.locked) { opacity: 1; cursor: default; }
+.carried { border-left: 4px solid var(--status-info); padding-left: 10px; }
+.carried button { min-height: 48px; margin-left: 6px; }
+.saddle-proposal { margin-bottom: 16px; border-width: 2px; }
+.saddle-proposal p, .saddle-proposal h2 { margin: 0 0 6px; }
+.saddle-proposal h2 { font-weight: 800; }
+.outcome-line { font-weight: 700; border-left: 6px solid var(--border); padding-left: 12px; }
+.outcome-line.rel-as_wished, .outcome-line.rel-anyway { border-left-color: var(--status-good); }
+.outcome-line.rel-adapted, .outcome-line.rel-deferred { border-left-color: var(--status-info); }
+.outcome-line.rel-blocked_by_safety { border-left-color: var(--status-warning); }
+.reason-line { color: var(--ink-secondary); }
+.saddle-profile { margin: 6px 0; }
+.saddle-proposal .actions.saddle { margin-top: 8px; }
+.saddle-proposal .actions.saddle button { min-height: 64px; font-size: var(--t3); padding: 0 18px; }
+.remote-wish { position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / 0.55); display: grid; place-items: center; padding: 16px; }
+.remote-wish .card { width: min(1100px, 100%); }
+.t2-name { font-size: var(--t3p); font-weight: 800; margin: 4px 0; white-space: nowrap; overflow: hidden; }
+.wish-grammar { color: var(--ink-secondary); margin: 6px 0; }
+.wish-line { margin: 10px 0 4px; }
+.wish-outcome { border-left: 4px solid var(--border); padding: 2px 0 6px 12px; margin: 10px 0; }
+.wish-outcome.rel-as_wished, .wish-outcome.rel-anyway { border-left-color: var(--status-good); }
+.wish-outcome.rel-adapted, .wish-outcome.rel-deferred { border-left-color: var(--status-info); }
+.wish-outcome.rel-blocked_by_safety { border-left-color: var(--status-warning); }
+.wish-outcome .actions { margin-top: 8px; }
+.grade { display: inline-block; font-size: 12px; font-weight: 700; padding: 0 6px; border-radius: 6px; border: 1.5px solid var(--ink-secondary); color: var(--ink-primary); white-space: nowrap; }
+.grade.g-C, .grade.g-D { border-style: dashed; color: var(--ink-secondary); }
+.why { min-height: 32px; padding: 0 6px; font-size: 13px; font-weight: 600; display: inline-flex; gap: 6px; align-items: center; vertical-align: baseline; position: relative; }
+/* a 48 px hit area around the visually compact chip (§6.7) */
+.why::after { content: ""; position: absolute; inset: -8px -2px; }
+.saddle-proposal .why { font-size: 18px; min-height: 40px; }
+.shell { position: relative; }
+/* ≥ 1440 px the sheet pushes the page aside, so the claim stays visible; below, it overlays and repeats the claim */
+@media (min-width: 1440px) {
+  .shell[data-why] { grid-template-columns: 184px minmax(0, 1fr) 460px; }
+  .shell[data-why] .why-sheet { position: static; width: auto; box-shadow: none; }
+}
+/* the sheet spans the page (so it covers it in any scroll position); its content sticks to the viewport */
+.why-sheet { position: absolute; top: 0; right: 0; min-height: 100%; width: min(480px, 46vw); z-index: 20; background: var(--surface-1); border-left: 1px solid var(--border); box-shadow: -12px 0 32px rgb(0 0 0 / 0.35); padding: 20px 24px; }
+.why-body { position: sticky; top: 0; max-height: 100vh; overflow: auto; padding-bottom: 20px; }
+.why-sheet header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.why-sheet h3 { margin: 16px 0 4px; }
+.why-sheet p { margin: 0; }
+.claim { margin-top: 14px; padding: 10px 12px; border-left: 4px solid var(--accent-text); background: var(--surface-2); border-radius: 6px; }
+.claim p { margin: 2px 0 !important; }
+.safety-first { margin-top: 12px !important; padding: 8px 10px; border: 2px solid var(--status-serious); border-radius: 8px; }
+.grade-line { margin-top: 14px !important; display: flex; gap: 10px; align-items: baseline; }
+.sources { padding-left: 20px; font-size: 14px; display: grid; gap: 6px; color: var(--ink-secondary); }
+.sources a, button.link { color: var(--accent-text); }
+button.link { background: none; border: none; padding: 0; min-height: 36px; text-align: left; font-weight: 600; display: block; }
+.why-sheet .foot { margin-top: 18px; }
+.findings { padding-left: 0; list-style: none; display: grid; gap: 8px; }
+.grades { display: grid; gap: 6px; margin: 12px 0; }
+.grades div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; align-items: baseline; }
+.grades dd { margin: 0; color: var(--ink-secondary); }
+.topics { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.topics button { width: 100%; text-align: left; display: grid; gap: 4px; padding: 8px 12px; }
+.grades-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.profile { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 24px; align-items: start; }
+.onboarding-card .profile .choices.column, .settings-card .profile .choices.column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.effects { position: sticky; top: 16px; }
+.profile .field input { max-width: 100%; width: 100%; min-width: 0; }
+.unit-input { display: flex; gap: 8px; align-items: center; }
+.unit-input input { max-width: 120px !important; }
+.effects .gone { text-decoration: line-through; color: var(--ink-muted); }
+.tag.new { background: var(--accent); color: var(--accent-ink); }
+details.more summary { min-height: 48px; display: flex; align-items: center; font-weight: 600; cursor: pointer; color: var(--accent-text); }
+.cap-gate { border-color: var(--status-warning); }
+/* over the cap (§15.2): row 1 becomes a filled warning status at the ride tier; the word carries it, not the colour */
+.row1.cap-over { background: var(--status-warning); color: var(--warning-ink); font-weight: 800; border-radius: 8px; padding: 0 12px; }

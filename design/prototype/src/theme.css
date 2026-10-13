@@ -37,6 +37,7 @@
   --status-good: #46c25a;
   --status-info: #6cb6ff;
   --status-warning: #e3b341;
+  --warning-ink: #0a0e13;
   --status-serious: #f0883e;
   --status-critical: #ff5c6c;
 
@@ -80,6 +81,7 @@
   --status-good: #1a7f37;
   --status-info: #0969da;
   --status-warning: #9a6700;
+  --warning-ink: #ffffff;
   --status-serious: #bc4c00;
   --status-critical: #cf222e;
 }
