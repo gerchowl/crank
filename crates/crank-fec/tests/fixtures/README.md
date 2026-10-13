@@ -8,7 +8,9 @@
 ```
 
 `elapsed_us` is an unsigned 64-bit count of microseconds from capture start,
-monotonically nondecreasing (ties preserve file order). `rx` means trainer →
+usually monotonically nondecreasing. Live RX records retain notification arrival
+stamps even if processed after a later TX; readers stably sort by timestamp
+(ties preserve file order). `rx` means trainer →
 host (`fec2` notification); `tx` means host → trainer (`fec3` write).
 Remaining whitespace-separated tokens are hexadecimal bytes. Blank lines and
 `#` comments (including trailing comments) are allowed. Preserve each complete
