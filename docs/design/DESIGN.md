@@ -1,6 +1,6 @@
 # crank — first-principles UX design
 
-Status: **proposed** (#24), round 2 (after the astra and opus reviews of round 1; the PR body maps every
+Status: **proposed** (#24), round 3 (after two rounds of astra and opus reviews; the PR body maps every
 finding to its resolution). It drives the M1 UI issues once the reviews accept it.
 Prototype: `design/prototype/` (`pnpm -C design/prototype dev`). Screenshots: `docs/design/screens/`
 (`pnpm -C design/prototype screens`). Where this document conflicts with `spec/UX-SPEC.md` or
@@ -161,12 +161,13 @@ keyboard access (`?` lists keys). Issue numbers and fixture notes never appear i
   days vs usual, time available) plus the confidence of the athlete model used. Actions: **Start** (primary,
   Enter), **Shorter / Easier / Harder / Other** (directed variants, #15), **Edit** (opens the editor on a copy).
   Structured reasons need a planner contract change (#29).
-- **Model card**: CP / W′ / HRmax with the **± at the same size as the value** (secondary ink), source and n,
-  and what is still calibrating (spec/ONBOARDING §4).
-- **Health cap** (from onboarding's health check): when active, a status card above the proposal: "Intensity
-  capped at threshold until you confirm a medical check" with *Confirm check*. The cap is also stated in the
-  proposal reasons and on the Ready check.
-- **Last 7 days**: seven day cells (done / rest / today, TSS) — context, not navigation.
+- **Model card**: CP / W′ / HRmax with the **± at the same size as the value** (secondary ink), and under each
+  its provenance and age ("from 9 rides · 2 d ago"); older than 6 weeks → stale styling; what is still
+  calibrating (spec/ONBOARDING §4).
+- **Health cap** (from onboarding's health check): when active, a status card above the proposal states the cap,
+  why, and *Confirm check*; the **planner's proposal respects it** (e.g. "Endurance 45′ (capped)"), the
+  profile draws the cap line, and the reasons say so instead of the uncapped reasoning.
+- **Last 7 days**: seven day cells (done / rest / today; the number is labelled "TSS") — context, not navigation.
 
 ### 5.2 Ride — *"Am I doing it right, how long, what next?"*
 
@@ -202,11 +203,19 @@ empty. The side and the coach lane are identical in every phase.
 | **Cool-down** | left in block | block countdown | target + band; row 5: "ride complete — Review opens automatically" | Signals the end. |
 
 **Recovery estimate (P7).** The core gives the posterior mean and a 90 % band of "time until HR is below the
-target", already clamped to the block's min/max. When the band is narrower than 30 s the mean is the T1
-number and its half-width is shown under it ("± 6 s"); when it is wider, **the band itself is the T1 number** ("1:40–3:40").
-The caption says "HR below 118 in", not "ready": the block may end earlier (min) or later (max) than the
-prediction, which the sub-line states. If HR is lost during the block, it falls back to its maximum
-(ADR-0001 §5): the caption becomes "HR lost · block ends at its maximum", T1 counts down to the maximum.
+target", clamped to the block's min/max. A clamped value is the block's **rule**, not a prediction, so the
+screen says which event the number is about (core flags, #13; prototype `recoveryRead()`):
+
+| Situation | Row 2 caption | T1 | Row 4 sub-line |
+|---|---|---|---|
+| fit not ready yet | HR below 118 in | "fitting…" | block ends in m:ss–m:ss |
+| HR predicted below target before the minimum | **block ends at its minimum in** | time to the minimum | HR due below 118 before then |
+| prediction inside the block's limits, band ≤ 30 s | HR below 118 in | ≈ mean, band "1:01–1:12" under it (the backend's interval, never widened or narrowed for display) | block ends in m:ss–m:ss |
+| band > 30 s | HR below 118 in | the band ("1:40–3:40") at range size (§6.2) | block ends in m:ss–m:ss |
+| band reaches the maximum | HR below 118 in · or at the block maximum | the band | block ends in m:ss–m:ss |
+| HR lost (ADR-0001 §5) | HR lost · block ends at its maximum in | time to the maximum | the chart stops its forecast; the last HR is drawn hollow (stale) |
+
+All times count **from now** (the sub-line too), so two numbers on screen never use different origins.
 
 **ERG band.** The band shows the core's target band (#13); edges are solid lines, not gradients. The marker
 and Δ are **hidden while the trainer settles** (first 5 s of a block whose target changed, after a ± or coach
@@ -221,59 +230,79 @@ appears as a chip in row 1. **ERG released** (cadence < 40 rpm for 2 s, ADR-0002
 released — spin up to 60 rpm to re-engage", with a warning tone; re-engagement shows "easing back in"
 during the 5 s soft start.
 
+**Stale values (P6, P7).** A value whose input is lost is never shown as live: it becomes "—" with what is
+missing ("— no power data"), or, where the last value still helps, it is drawn hollow/muted with its age.
+Dependent estimates follow their inputs: W′ balance needs power, HR forecasts and "HR vs usual" need HR,
+cadence needs the trainer.
+
+**Row 1** names the block: its own label, else the enclosing label with "after" for the rests inside it
+("Easy · after Threshold 1/2"), plus rep pips, a cadence chip when the cadence slot is hidden, and
+"capped ≤ 75 % FTP" while a health cap is active.
+
 **States** (overlay a template without moving it):
 
-| State | What changes | Input |
+| State | What changes | Input (§7.2) |
 |---|---|---|
-| Coach asks (`pending`) | Tone (§7.3). Lane: verb + amount on one line ("Ease off −3 %?"), one short reason (≤ 24 characters, e.g. "HR +8 bpm vs usual"), band word as a small tag, two **equal-weight** buttons, **numeric deadline** ("keeps plan in 24 s"); affected blocks **dashed** on the road | Coach = accept · Keep = keep · silence = keep |
-| Coach applied (`auto_applied`, opt-in) | Tone. Lane: "Eased off −5 %" + reason + "**Undo · 11 s**"; applied blocks **solid** outline; the target's sub-line shows "coach −5 %" | Coach (within the window) = undo |
-| Trainer lost | Warning tone. Status chip ⚠ NEO "lost"; row 4: "**Trainer lost — workout paused at 2:47 of this block** · reconnecting (attempt 3) · keep pedalling or stop, your ride is saved"; actual power "—"; countdown frozen (ADR-0002 §6) | — |
-| Trainer reconnected | Row 4 for the 5 s soft start: "Reconnected · easing back in to 253 W"; then the chip shows "NEO back · 0:14 gap" for 10 s; the workout resumes when cadence > 0 | — |
-| Trainer lost at a block boundary | Same as trainer lost; the block shown is the one the core paused in (block transitions inside the 2 s detection window stand, ADR-0001 §5); on reconnect the soft start goes to *that* block's target, so a new interval never starts at full load without the ramp | — |
-| HR lost | Chip ⚠ HR "lost"; HR slot "—" + "HR strap lost"; lane: "HR-based advice paused — the coach can't push without HR" | — |
-| Both lost | Row 4 banner: "Trainer and HR lost — workout paused · reconnecting both"; ride stays paused until the trainer is back and cadence > 0 | — |
-| Paused (user) | The plan dims (countdown, target, road); **the body stays live** (HR, cadence); row 4: "Paused 0:42 · press Pause to resume — the plan waits" | Pause |
-| "How did that feel?" (calibrating, after a hard block) | Lane: "How was that? easy · right · hard" with the deadline; silence = no answer. Feeds the athlete model (spec/ONBOARDING §4, #18) | Coach cycles, Keep = skip |
+| Coach asks (`pending`) | Tone (§7.3). Lane: verb + amount on one line ("Ease off −3 %?"), one short reason (≤ 24 characters), band word as a small tag, two **equal-weight** buttons, **numeric deadline** ("keeps plan in 24 s"); on the road the affected work blocks get a **dashed outline at their proposed height**, on top of any solid (already applied) outline, and the legend states the scope ("proposed −3 % on 2 work blocks") | Coach = accept · Keep = keep · silence = keep |
+| Coach applied (`auto_applied`, opt-in) | Tone. Lane: "Eased off −5 %" + reason + "**Back to plan · 11 s**"; applied blocks **solid** outline; the target's sub-line shows "coach −5 %" on the changed blocks | Keep (within the window) = back to plan · Coach does nothing |
+| Trainer lost | Warning tone. Chip ⚠ NEO "lost"; row 4: "**⚠ Trainer lost · paused at 2:47**" / "reconnecting (try 3) · ride saved"; actual power, cadence and W′ balance "—"; countdown frozen and dimmed (ADR-0002 §6) | — |
+| Trainer lost ≥ 30 s | Row 4 adds what to try ("power-cycle the NEO · close Zwift/Tacx") and an **End & save** button; reconnecting continues behind it | Esc → End ride dialog |
+| Trainer reconnected | Row 4 for the 5 s soft start: "Reconnected · easing in to 253 W" / "workout resumed" (or "pedal to resume" at 0 rpm); then the chip shows "NEO back · 0:14 gap" for 10 s | — |
+| Trainer lost at a block boundary | The block shown is the one the core paused in (transitions inside the 2 s detection window stand, ADR-0001 §5): "paused at 0:00" of the new interval; on reconnect the soft start goes to *that* block's target | — |
+| HR lost | Chip ⚠ HR "lost"; HR slot "—" + "HR strap lost"; lane: "HR lost: coach can't push" | — |
+| Both lost | Row 4: "⚠ Trainer + HR lost · paused at m:ss"; stays paused until the trainer is back and cadence > 0 | — |
+| ERG released (cadence < 40 rpm 2 s) | Row 4: "⚠ ERG released · spin up to 60 rpm" / "timer runs · target returns over 5 s" (the block timer keeps running, ADR-0002 §7.4); cadence slot "▲ spin faster" | — |
+| Paused (user) | The plan dims (countdown, next, road); **the body stays live** (HR, cadence); row 4: "Paused 0:42" / "Resume continues the plan · trainer free". While paused the trainer is at 0 % resistance, so restarting is easy; ERG re-engages with the soft start | Pause |
+| "How did that feel?" (calibrating, after a hard block) | Lane: "How was that?" with **nothing preselected**; each Coach press moves the choice easy → right → hard; the choice **saves 3 s after the last press** with the confirmation tone ("saves “hard” in 3 s"); Keep skips; no press within 12 s records nothing. Feeds the athlete model (#18) | Coach = choose · Keep = skip |
 | Finished | Auto-navigate to Review (#6) | — |
 
 ### 5.3 Ride-screen configuration (replaces the layout editor, §9)
 The rider chooses what the **two side slots** show (the same in every phase; from the metric catalogue: HR,
-cadence, W′bal, DFA-α1, HR vs typical, power 10 s, kJ) and a **density** (Focus: hero + coach + road; Standard;
-Detail: adds a third slot). Cadence *state* survives every configuration (§5.2). It is a form in Settings,
-edited as a **draft** with Save / Cancel / Reset to default, validated per slot on load and on save (#4, #8);
-every control reads the draft, never a prop-seeded copy (#11). Geometry is fixed, so a configuration can
-never produce an unusable layout at 1024 (#7). The rider's **screen distance** lives here too (§6.2).
+cadence, W′bal, DFA-α1, HR vs typical, power 10 s, kJ) and a **density**: *Focus* (hero + coach + road; the
+cadence state moves to row 1), *Standard* (default; the idle coach lane shows W′ balance quietly at T3 and the
+last call), *Detail* (the idle lane shows a third metric at T2 — it lives in the reserved lane, which a coach
+call takes over, so no density adds a row). Cadence *state* survives every configuration (§5.2). Edited as a
+**draft** with Save / Cancel / Reset to default, validated per slot on load and on save (#4, #8); controls
+read the draft, never a prop-seeded copy (#11). Geometry is fixed, so no configuration can produce an
+unusable layout at 1024 (#7); `ride-focus` and `ride-detail` show both. The rider's **screen distance** lives
+here too (§6.2).
 
 ### 5.4 Ready check (pre-ride)
 A sheet over Today: workout name + duration, **NEO** (FE-C, connected / reconnecting / not found → Retry,
-"close other apps using the NEO"), **HR** (connected / not found → *Ride without HR* with the consequence:
-"HR-guided recoveries run to their maximum; the coach can't push"), mode (ERG), the health cap if active,
-"starts with 8:00 warm-up". **Start** is enabled when the trainer is connected; HR is optional but called out.
+"close other apps using the NEO"), **HR** (connected / not found → keeps scanning, **Retry now** focused —
+never the riskier choice — and *Start without HR* with the consequence: "it joins as soon as it's found; until
+then HR-guided recoveries run to their maximum and the coach can't push"), mode (ERG), the health cap if
+active, "starts with 8:00 warm-up". **Start** is enabled when the trainer is connected.
 
 ### 5.5 Review — *"Did it work, and was the coach right?"*
 Order follows the rider's questions:
 1. **Intent verdict** (headline): one line per part of the workout, from the core's per-interval stats (#12):
-   "Threshold 2×4:00 — 96 % of target, as planned", "VO2 sets — 15 of 15 reps", "Recoveries — set 3 slower
-   than usual". Then: coach changes applied, data gaps ("0:09 without power data — excluded from compliance").
-2. **Two inputs** (each ≤ 1 tap): **RPE 1–10** with word anchors, and **rate each coach call**. Each call is
-   a row that expands to its full reason and a **mini chart of the 3 minutes around it** (power vs target, HR)
-   so the rating is made with the context, not from memory.
-3. **Evidence**: stacked linear-time panels sharing one x axis with **time ticks** (P05): power over the
-   planned target drawn as a filled band behind it, HR, cadence; **y scales with units**; **numbered coach
-   markers** matching the call list; **gaps shaded** and never bridged; a legend; *Show as table*.
-   HR recoveries table: τ vs usual, the data length the fit used, and the "slower" flag from the core (#13).
-   Work-interval table (#12).
-4. **All numbers** (collapsed by default): duration, kJ, NP, TSS, IF, compliance, and metrics only when the
-   core marks them valid for this session (e.g. decoupling only for steady rides, #29).
+   "Threshold 2 × 4:00 — 94 % on target, against the eased target (plan −5 % by coach)", "VO2 sets — 15 of 15
+   reps", "HR recoveries — 3 of 3 within your usual τ". Then the coach (applied / not taken) and data gaps
+   for **each** sensor ("0:04 without power, excluded from on target · 0:17 without HR, excluded from the coach and
+   recoveries"). **"On target" has one definition everywhere** and it is printed under the verdict: share of
+   ERG seconds within ±5 % of the target the rider was given, settling excluded (ADR-0002 §7.8).
+2. **Two inputs** (each ≤ 1 tap): **RPE 1–10** with word anchors, and **rate each coach call**. Each call
+   expands to its full reason and a **chart of the 3 minutes around it**: power over the planned target, and HR
+   with **your usual HR for that power** as a dashed line, so "HR +9 bpm vs usual" is visible as a gap.
+3. **Evidence**: stacked linear-time panels sharing one x axis with time ticks (P05): **power as a line**
+   over the planned target drawn as a band **with its own ≥ 3:1 edge**, HR on an **80–200 bpm** scale (a
+   0-based HR axis flattens the differences the coach reacts to), cadence; numbered coach markers; **gaps
+   hatched** and never bridged; a legend; *Show as table* — per-minute rows **plus a row for every gap and
+   coach call**, so nothing brief is sampled away. HR recoveries: τ **± its fit uncertainty**, your usual τ
+   **± its spread**, the data the fit used, and the "slower" rule (≥ 1.15 × usual) stated. Work-interval table
+   with the same "on target" measure as the verdict (#12).
+4. **All numbers** (collapsed by default): duration, kJ, NP, TSS, IF, on target, and metrics only when the
+   core marks them valid for this session (e.g. decoupling only for steady rides, #13).
 5. **Analytics**: time at power (axes: W bins, minutes), power–duration curve (5 s – 60 min, log x with
-   ticks, W scale). The remaining V5 plots (power × HR heatmap, quadrants, durability, …) follow VIEWS when
-   their data exists (#18).
+   ticks, W scale), each with *Show as table*. Point-by-point keyboard inspection of every chart: #71.
 
 ### 5.6 History — *"Am I improving, can I trust the numbers?"*
-- **Athlete model** card: CP, W′, HRmax, HR-recovery τ, each value ± sd, source, n, last update, and a
-  "calibrating" badge (P7, spec/ONBOARDING §3).
-- **CP trend** with dates on x, watts on y, the ± 1 sd band labelled in a legend.
-- **PD curve**: latest ride / 90 days / all time (backend `mmp()`), with axes.
+- **Athlete model** card: CP, W′, HRmax, HR-recovery τ, each value ± sd, source, n, last update **and its age**;
+  priors say "not measured yet"; an estimate older than 6 weeks is drawn stale (P7, spec/ONBOARDING §3). The
+  same τ is the "usual τ" Review compares against.
+- **CP trend** with dates on x, watts on y, the ± 1 sd band labelled in a legend; *Show as table*.
+- **PD curve**: latest ride / 90 days / all time (backend `mmp()`), with axes; *Show as table*.
 - **Rides**: list (date, name, duration, TSS, RPE, mini profile) → Review of that ride.
 
 ### 5.7 Workouts (library + editor)
@@ -282,8 +311,9 @@ Library on the left; the editor keeps the spike's strongest idea — **three syn
 zone time, issues). **AI on selection** (vary / harder / easier / shorter same stimulus) **locks all editing**
 until Accept / Reject; Accept verifies the target node id and content hash, else re-requests (#1). The open
 suggestion is explained before it is accepted:
-- a **plain-language change summary** ("VO2 sets: 5 → 6 reps per set; +4:30; TSS 51 → 58"), from the
-  planner's rewrite rationale (#29) and the compiled before/after;
+- a **plain-language change summary** ("VO2 sets: 3 times → 4 times, 125 % FTP → 127 % FTP · +5:45 · load
+  51 → 61 TSS") — words, not workout-file syntax; the exact text is in the diff below. Production takes it
+  from the planner's rewrite rationale (#29);
 - **two stacked profiles**, *Current* and *Proposed*, on the same time scale, the changed item outlined;
 - the **text and outline show the diff**: the old item struck through, the new item highlighted;
 - the **summary shows Current → Proposed** for duration range, TSS, IF and zone time, every value labelled.
@@ -296,9 +326,13 @@ relaunch shows **"Welcome back — continue at Health check (4 of 7)"**.
 - Every step states what **Skip** does ("Skipping keeps wide priors: CP ± 60 W, the coach stays conservative").
 - **Current numbers**: value, *what it came from* (ramp test / 20-min test / app estimate / guess) and
   *when* (a date); the uncertainty shown grows with age and source.
-- **Health check**: four yes/no questions; any yes shows the consequence immediately ("intensity capped at
-  threshold until you confirm a medical check") and that cap appears on Today, the Ready check and in ride
-  targets.
+- **Health check**: four yes/no questions with **no default** — each starts "not answered" and Continue
+  stays disabled until all are answered; unanswered (or Skip) is treated as the cautious answer. Each "yes"
+  has its own consequence, shown at once: chest pain / fainting → "get a medical check before hard riding",
+  cap at endurance (75 % FTP) and no coach push until confirmed; HR-changing medication → HR zones,
+  HR-guided recoveries and HR-vs-usual coaching off (targets by power and feel), no power cap; injury → cap at
+  threshold, no sprints. A cap changes what the planner proposes (the capped proposal is drawn with the cap
+  line, `today-health-cap`) and appears on the Ready check (`ready-capped`) and in the ride (`ride-capped`).
 - **Devices**: pairing shows **live readings** (W, rpm, bpm) so "pedal a few strokes" visibly works.
 - **Baseline**: import / assessment week / passive learning, each with what it costs and how soon it is confident.
 - **Your starting model**: estimates with value ± sd, a relative-uncertainty bar, source, what will narrow
@@ -317,8 +351,10 @@ volume, §7.3), **Ride screen** (§5.3), **Appearance** (mode dark / light / aut
 ### 6.1 Grid
 Status bar 64 px (56 px at ≤ 800 px height). Hero and side split 62 / 38. Road ahead 22 % of height
 (min 128 px). Hero rows 1–5 have fixed heights from the type tiers. All regions are fixed by CSS grid with
-`minmax(0, …)`; contents are sized by the visual budget below and never wrap: every string that appears in a
-reserved row has a maximum length (coach reason ≤ 24 characters; verb + amount always on one line).
+`minmax(0, …)`; contents are sized by the visual budget below. **Single-line rows never wrap** (rows 1, 2, 5, slot labels, the
+coach verb, reason and deadline): every string there has a maximum length (coach reason ≤ 24 characters).
+**Banners** in row 4 are one bold line plus at most two short lines, each ≤ 36 characters so they fit on
+one line at 1024. The harness fails on any clipped `[data-fit]` text.
 
 ### 6.2 Visual budget (legibility as visual angle)
 Character height *h* (cap height) at distance *d* subtends θ ≈ *h*/*d*. Ergonomic standards set 16′ of arc
@@ -332,9 +368,11 @@ multiples of that. Reference devices: a 13–15″ laptop at default scaling (�
 | **T2 glance** | target, HR, cadence | ≥ 50′ | 101 px | 84 px | `clamp(84px, 11.4vh, 128px)` → 103 / 88 |
 | **T3+ read** | next block, coach verb, banners | ≥ 20′ | 40 px | 34 px | `clamp(34px, 4.5vh, 44px)` → 41 / 35 |
 | **T3 read** | labels, captions, coach reason, deadlines, status-bar values | ≥ 16′ | 32 px | 27 px | `clamp(27px, 3.7vh, 36px)` → 33 / 28 |
+| T1r range | the recovery band when shown as the hero ("1:40–3:40") | ≥ 55′ | 117 px | 100 px | `0.62 × T1` → 117 / 100 |
 | T4 chrome | key hints, axis ticks, band word, road labels — never needed mid-effort | — | 15–18 px | 15–18 px | fixed px |
 
-Achieved at the prototype's sizes (laptop / tablet): T1 94′ / 96′, T2 51′ / 52′, T3+ 20′ / 21′, T3 16.5′ / 16.9′.
+Achieved at the prototype's sizes (laptop / tablet): T1 94′ / 96′, T1r 58′ / 59′, T2 51′ / 52′, T3+ 20′ / 21′,
+T3 16.5′ / 16.9′.
 The vh rules only hold for the two reference devices. **Production computes px from the monitor's
 physical size, its scale factor and the rider's distance** (Settings → Ride screen, default 1.0 m) and warns
 when the window is too small to meet T2 (#52). Numbers: tabular, lining figures.
@@ -345,6 +383,9 @@ screen colour carries **state**, not decoration, and never alone (P9): the band 
 a word, series a dash pattern or a direct label. Minimum contrast: text ≥ 4.5:1 (≥ 3:1 at T2 and above), chart
 marks and UI boundaries ≥ 3:1 against their surface, in both modes (WCAG 2.2 1.4.3 / 1.4.11). The prototype's
 key pairs are checked by `scripts/contrast.mjs` (part of `pnpm screens`); the full palette validation is #30.
+**Fills are decoration, edges carry the encoding:** every area and band (planned target, uncertainty bands)
+also has an edge stroke in a token that passes 3:1, and gaps are hatched in `--ink-muted` (≥ 4.5:1), so a
+low-contrast composite fill never carries meaning on its own.
 
 ### 6.4 Motion
 Values update at the backend subscription rate (hero 4 Hz, side 2 Hz, road 1 Hz). No animated layout
@@ -367,24 +408,34 @@ soft-start and released flags (ADR-0001 §5, #29).
 ### 6.6 Crashes, restarts and sleep
 - **UI crash** (the webview throws or reloads): the engine runs in the core process, so the ride keeps
   recording and the trainer keeps its target. The ride's error boundary shows: "The ride screen restarted —
-  your ride kept going (31:07 recorded) and the trainer is holding 253 W" with **Back to ride**, which
-  re-subscribes from a snapshot (ADR-0001 stream snapshot). A second crash within a minute offers **End ride
-  and review** instead.
+  your ride kept going (31:07 recorded) and the trainer is holding 253 W" with **Back to ride** focused, bound
+  to the Coach button and taken **automatically after 5 s**; it re-subscribes from a snapshot (ADR-0001 stream
+  snapshot). A second crash within 60 s adds **End ride and review** as a second, unfocused choice — never the
+  default.
 - **Process crash, forced quit, OS sleep**: the record is saved every 5 s (ADR-0001 §6), so at most 5 s are
-  lost. On the next launch, before anything else, a **Resume sheet**: workout, where it stopped ("31:12 ridden ·
-  block 36 of 39 · Threshold rep 1 of 2"), what was saved, the gap, and three choices: **Resume ride**
-  (continue the same ride record from the same block; the gap is recorded as no data; ERG re-engages with
-  the soft start; requires the trainer), **Save & review** (close it as an interrupted ride), **Discard**
-  (confirm). Today's ADR closes open rides as aborted, which allows only *Save & review*; resuming needs the
-  ADR amendment in **#50**.
+  lost. On the next launch, before anything else, a **Resume sheet** shows the workout, where it stopped
+  ("31:12 ridden · Threshold rep 1 of 2, 1:40 into it"), what was saved, and a **re-entry plan keyed to how
+  long ago it stopped and where**:
+
+  | Stopped | Offer (focused first) | Re-entry |
+  |---|---|---|
+  | ≤ 2 min ago | **Resume ride** · Save & review | same point; ERG eases in over 5 s |
+  | 2–15 min ago | **Resume with re-warm-up** · Save & review | a 3-min ramp to the block's target first; an interrupted work interval restarts from its beginning |
+  | > 15 min ago | **Save & review** · Ride the rest as a new ride | no resume: a cold threshold rep is not the same session; "the rest" starts with a warm-up |
+
+  Resume stays disabled until the trainer is connected (shown on the sheet). The gap is recorded as no data.
+  Today's ADR closes open rides as aborted, which allows only *Save & review*; resuming needs the ADR
+  amendment in **#50** (policy recorded there). Screens `resume` (4 min ago), `resume-stale` (22 h ago).
 - **Sleep prevention**: while a ride is loaded the app holds a power assertion so the system and display
   don't sleep (**#51**). If it sleeps anyway, BLE drops → trainer lost (§6.5) → on wake the reconnect loop runs.
 
 ### 6.7 Accessibility
-Every control is a native button or input with a visible focus ring; dialogs (End ride, keys, Resume) take
+Every control is a native button or input with a visible focus ring; a focused control keeps its native
+Enter/Space meaning over any ride shortcut (§7.2); dialogs (End ride, keys, Resume) take
 focus, trap Tab, close on Escape (and consume it) and **suspend ride shortcuts while open**; the End ride
 dialog focuses **Keep riding** first, so a Pause / Space press can never end a ride; live regions announce coach calls
-and sensor changes; every chart has a table alternative (P9); targets ≥ 48 px; contrast per §6.3.
+and sensor changes; every chart has a table alternative (P9) and keyboard point inspection is specified in #71; targets ≥ 48 px;
+contrast per §6.3.
 
 ---
 
@@ -408,19 +459,31 @@ and sensor changes; every chart has a table alternative (P9); targets ≥ 48 px;
 - **Confidence**: the coach says what it is unsure about ("calibrating: HR-vs-typical unlocks after 20 min
   at 300 W").
 
-### 7.2 Hands-free input (decided)
+### 7.2 Hands-free input and the decision model (decided)
 Ride input is **five abstract actions**: **Coach**, **Keep**, **Pause**, **Skip**, **Intensity − / +**.
-- **Coach** answers whatever the lane shows: accept a question, undo an applied change within its window,
-  cycle the "how did that feel" answer. **Keep** is the explicit no. Doing nothing is always safe: questions
-  keep the plan, applied changes stay applied (they were opted in), feel prompts record no answer.
-- **Bindings**: keyboard `Enter` (Coach), `N` / `Backspace` (Keep), `Space` (Pause), `S` (Skip), `−` / `+`;
-  `Y` and `U` stay as aliases. **Any HID device can be bound** in Settings → Controls with *Learn* (press the
-  remote's button), so a handlebar remote that sends media keys or arrows works without code changes. A
-  **one-button remote** binds that button to Coach only; everything else then relies on silence-is-safe and
-  the on-screen buttons.
-- **Fallback without a remote**: on-screen buttons at ≥ 64 px in the lane (equal weight: Accept is not the
-  bright default, because silence means keep) and the safe defaults above.
-- Which remotes send which keys, with what latency, decides the default binding (owner hardware test, **#53**).
+
+**Decision model — no input can reverse a rider's coach decision by accident:**
+- **Coach only ever says yes** (accept a question; choose in the feel prompt). It never undoes anything.
+- **Keep is the only way back to the plan**: decline a question, or return an auto-applied change to the plan
+  within its 15 s window ("Back to plan · 11 s"). An explicitly accepted change is not undone by any key; the
+  rider can still ease off with Intensity −.
+- **Debounce**: after the lane changes (a call appears, is answered, applies, expires) Coach and Keep are
+  ignored for **1.5 s**, so a press meant for the previous state can't act on the new one; key repeat is ignored.
+- **Focused controls win**: when a button or input has keyboard focus, Enter and Space do what that control
+  says (Enter on "Keep plan" keeps the plan); global shortcuts apply only when nothing interactive is focused.
+- **Silence**: a question **keeps the plan** when its deadline runs out (logged "expired · no answer"); an
+  auto-applied change **stays applied** (the rider opted in) after its window; the feel prompt **records
+  nothing**.
+
+**Bindings**: keyboard `Enter` / `Y` (Coach), `N` / `Backspace` (Keep), `Space` (Pause), `S` (Skip), `−` / `+`.
+Any HID device can be bound in Settings → Controls with *Learn*, so a remote that sends media keys or arrows
+works without code changes. **Minimum remote grammar: two buttons = Coach + Pause** (Keep then only via
+silence for questions, on screen for "back to plan"); a one-button remote binds Coach only and everything
+else relies on silence being safe and the on-screen buttons. Which remotes send which keys, and whether
+long-press is distinguishable, decides the defaults (owner hardware test, **#53**).
+
+**Fallback without a remote**: on-screen buttons at ≥ 64 px in the lane, equal weight (Accept is not the bright
+default, because silence means keep), and the safe defaults above.
 
 ### 7.3 Sound
 Sound is the channel that needs no glance (constraint 1). Distinct, short tones, each with a mute in
@@ -506,9 +569,12 @@ sizing (#52), remote test (#53).
   scene's moment and freezes it. `pnpm -C design/prototype screens` checks the contrast pairs, then renders
   every scene at 1440×900 and 1024×768 in dark and light to `docs/design/screens/<scene>.<w>x<h>.<theme>.png`,
   and fails on any page error, horizontal overflow, ride-screen overflow or clipped reserved-row text.
-- States the mock cannot produce (a trainer lost for longer than its 3–6 s blip with the ADR's pause, both
-  sensors lost, ERG released, a crashed screen, an interrupted ride, a feel prompt, a missing trainer at the
-  Ready check) are **scene fixtures**: `mock/ext.ts` overlays the status the core would send, labelled as such.
+- States the mock cannot produce (a trainer lost for longer than its 3–6 s blip with the ADR's pause, a loss
+  at a block boundary, both sensors lost, ERG released with low cadence, a crashed screen, an interrupted
+  ride, a feel prompt, a missing trainer, a health cap) are **scene fixtures**: `mock/ext.ts` overlays the status
+  and metric values the core would send, labelled as such. The mock keeps the block timer running during a
+  trainer loss (the ADR freezes it), so consecutive loss/reconnect scenes show a few seconds of drift — a mock
+  limit tracked in #29, not the design.
 - Known prototype limits (all tracked): Easier / Harder / Other are disabled (#15); past rides in History
   cannot be opened (#29); the sprint scene runs in ERG (#29); per-interval stats, intent verdicts, proposal
   reasons, the athlete model, devices and the week strip are fixtures (#12, #18, #29); onboarding answers
@@ -521,13 +587,16 @@ Reviewers should judge, with the screenshots open:
 2. **Phase fit** — does each template put the right thing in the hero (§5.2)? Anything shown that the rider
    cannot act on?
 3. **Stability** — compare `ride-threshold`, `ride-warmup-ramp`, `ride-hr-recovery`, `ride-paused`,
-   `ride-coach-ask`, `ride-trainer-lost`: does anything other than values and reserved rows change position?
-4. **Coach trust** — one glance: verb, amount, reason, deadline, default? Is silence always safe? Can it be
-   answered hands-free (§7.2)?
-5. **Failure honesty** — `ride-trainer-lost`, `ride-reconnected`, `ride-both-lost`, `ride-hr-lost-recovery`,
-   `ride-erg-released`, `ride-screen-restarted`, `resume`: what broke, what the app does, what to do, what was saved?
+   `ride-coach-ask`, `ride-trainer-lost`, `ride-focus`, `ride-detail`: does anything other than values and
+   reserved rows change position?
+4. **Coach trust** — one glance: verb, amount, reason, deadline, default? Can any input sequence reverse a
+   decision (§7.2)? Is silence always safe?
+5. **Failure honesty** — `ride-trainer-lost`, `ride-trainer-lost-long`, `ride-lost-at-boundary`,
+   `ride-reconnected`, `ride-both-lost`, `ride-hr-lost-recovery`, `ride-erg-released`, `ride-screen-restarted`,
+   `resume`, `resume-stale`: what broke, what the app does, what to do, what was saved, how it re-enters?
 6. **First principles** — challenge §2: any convention kept without a reason, or dropped that riders need?
-7. **Honest numbers** — ranges and sources wherever estimates appear (recovery, Today, History, onboarding)?
+7. **Honest numbers** — ranges, sources and ages wherever estimates appear (recovery, Today, History,
+   onboarding)? Do stale values look stale? Do health answers start unanswered and does a cap change the plan?
 8. **Evidence** — can Review's charts substantiate its verdict (axes, markers, gaps, tables)?
 9. **Defects** — does §10 make #1–#11 impossible, or only less likely?
 10. **Supersessions** — are the §9 changes to UX-SPEC/VIEWS acceptable to the owner?

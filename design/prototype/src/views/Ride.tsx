@@ -5,7 +5,7 @@ import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import { findNode, NUDGE_TTL_S, type CoachNudge, type CompiledWorkout, type FlatBlock, type RideStatus, type StepNode, type Workout } from "@crank/shared";
 import { Profile, Recovery } from "../charts";
 import { blockName, blockTitle, mmss, num, signed } from "../format";
-import { blockKind, cadenceState, coachOffsetPct, coachReason, cursorS, revertNudge, sceneFixture, settling, SETTLE_S, targetBand, type BlockKind, type CadenceState, type CoreFacts } from "../mock/ext";
+import { blockKind, CAP_PCT, cadenceState, coachOffsetPct, coachReason, cursorS, recoveryRead, revertNudge, sceneFixture, settling, SETTLE_S, targetBand, type BlockKind, type CadenceState, type CoreFacts } from "../mock/ext";
 import { actionFor, bindings, rideScreen, type SlotMetric } from "../persist";
 import { backend, coreFacts, navigate, RECONNECT_NOTICE_S, sceneId, UNDO_WINDOW_S, useMetric, usePoll, useSession, type RideSession } from "../session";
 import { play, useRideSounds } from "../sound";
@@ -14,6 +14,8 @@ import { useStore } from "../store";
 const PHASE_WORD: Record<BlockKind, string> = { ramp: "Ramp", steady: "Work", onoff: "On", sprint: "Sprint", hr_recovery: "Recover", easy: "Easy", cooldown: "Cool-down" };
 /** Above this width the recovery band itself becomes the T1 number (DESIGN §5.2, P7). */
 const WIDE_BAND_S = 30;
+/** After this long without the trainer, the banner offers fixes and End & save (§6.5). */
+const LONG_LOSS_S = 30;
 
 export function Ride() {
   const s = useSession();
@@ -28,38 +30,49 @@ export function Ride() {
 }
 
 // ---------- §6.6 UI crash: the engine keeps riding ----------
-class RideErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null; count: number }> {
-  override state = { error: null as Error | null, count: 0 };
+/** A crash within REPEAT_WINDOW_MS of the last one counts as repeated (offers End as a second choice). */
+const REPEAT_WINDOW_MS = 60_000;
+const AUTO_BACK_S = 5;
+class RideErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null; lastMs: number; repeated: boolean }> {
+  override state = { error: null as Error | null, lastMs: -Infinity, repeated: false };
   static getDerivedStateFromError(error: Error) {
     return { error };
   }
+  override componentDidCatch() {
+    const now = performance.now();
+    this.setState((p) => ({ repeated: now - p.lastMs < REPEAT_WINDOW_MS, lastMs: now }));
+  }
   override render() {
     if (!this.state.error) return this.props.children;
-    return <ScreenRestarted repeated={this.state.count > 0} onBack={() => this.setState((p) => ({ error: null, count: p.count + 1 }))} />;
+    return <ScreenRestarted repeated={this.state.repeated} onBack={() => this.setState({ error: null })} />;
   }
 }
 
+/** §6.6: the engine keeps riding; the default (focused, Coach button, and after 5 s by itself) is Back to ride. */
 function ScreenRestarted({ onBack, repeated = false }: { onBack: () => void; repeated?: boolean }) {
   const elapsed = useMetric("elapsed", 1);
   const target = useMetric("target_power", 1);
+  const [leftS, setLeftS] = useState(AUTO_BACK_S);
+  useEffect(() => {
+    if (sceneId) return;
+    if (leftS <= 0) return onBack();
+    const id = setTimeout(() => setLeftS((s) => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [leftS, onBack]);
   return (
     <div className="ride-restarted" role="alertdialog" aria-label="Ride screen restarted">
-      <span className="eyebrow">Ride screen restarted</span>
+      <span className="eyebrow">Ride screen restarted{repeated ? " again" : ""}</span>
       <h1>Your ride kept going</h1>
       <p className="t3">
         {mmss(elapsed)} recorded · the trainer is holding {num(target)} W · nothing was lost.
       </p>
       <div className="actions">
-        {repeated ? (
-          <button className="primary big" autoFocus onClick={() => (backend.ride.stop(), navigate("review"))}>
-            End ride and review
-          </button>
-        ) : (
-          <button className="primary big" autoFocus onClick={onBack}>
-            Back to ride
-          </button>
-        )}
+        <button className="primary big" autoFocus onClick={onBack}>
+          Back to ride · {leftS} s
+        </button>
+        {repeated && <button onClick={() => (backend.ride.stop(), navigate("review"))}>End ride and review</button>}
       </div>
+      <p className="muted">Coach button = back to ride.</p>
     </div>
   );
 }
@@ -89,33 +102,50 @@ function RideScreen({ s }: { s: RideSession }) {
   const now = useNow(status?.state === "paused" || status?.trainer !== "connected");
   const facts = status ? coreFacts(s, status, now) : null;
   const left = useMetric("block_remaining", 4);
+  const feel = useFeel();
 
   const pending = nudges.find((n) => n.status === "pending");
   const undoable = status ? nudges.findLast((n) => n.status === "auto_applied" && !reverted.has(n.callId) && status.t - n.t < UNDO_WINDOW_S) : undefined;
+  // Decision debounce (§7.2): after the lane changes (a call appears, is answered, applies), coach
+  // inputs are ignored for DEBOUNCE_MS, so a press meant for the previous state can't act on the new one.
+  const laneKey = pending ? `ask:${pending.callId}` : undoable ? `undo:${undoable.callId}` : fx.feelPrompt ? "feel" : "idle";
+  const laneSince = useRef({ key: laneKey, at: performance.now() });
+  if (laneSince.current.key !== laneKey) laneSince.current = { key: laneKey, at: performance.now() };
   useRideSounds(status, current?.compiled ?? null, nudges, left, !!facts && (facts.trainerLost || facts.hrLost || facts.ergReleased));
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!status || dialog || e.metaKey || e.ctrlKey || e.target instanceof HTMLInputElement) return;
+      if (!status || dialog || e.metaKey || e.ctrlKey || e.repeat) return;
+      // A focused control keeps its native meaning: Enter/Space on "Keep plan" keeps the plan.
+      const t = e.target as HTMLElement | null;
+      if (t?.closest("button, input, select, textarea, a, [role=radio], [role=switch]") && (e.key === "Enter" || e.key === " ")) return;
+      if (t instanceof HTMLInputElement) return;
       if (e.key === "?") return setDialog("keys");
       if (e.key === "Escape") return setDialog("end");
       const a = actionFor(keys, e.key);
       if (!a) return;
       e.preventDefault();
+      if ((a === "coach" || a === "keep") && performance.now() - laneSince.current.at < DEBOUNCE_MS) return;
       if (a === "pause") {
         if (status.state === "riding") backend.ride.pause();
         else if (status.state === "paused") backend.ride.resume();
       } else if (a === "plus") backend.ride.adjust(5);
       else if (a === "minus") backend.ride.adjust(-5);
       else if (a === "skip") backend.ride.skipBlock();
+      // Coach only ever says yes; Keep is the only way back to the plan. Nothing reverses a decision
+      // through the same button that made it.
       else if (a === "coach") {
         if (pending) backend.coach.respond(pending.callId, true);
+        else if (fx.feelPrompt) feel.cycle();
+      } else if (a === "keep") {
+        if (pending) backend.coach.respond(pending.callId, false);
         else if (undoable) undo(s, undoable);
-      } else if (a === "keep" && pending) backend.coach.respond(pending.callId, false);
+        else if (fx.feelPrompt) feel.skip();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [s, status, pending, undoable, dialog, keys]);
+  }, [s, status, pending, undoable, dialog, keys, fx.feelPrompt, feel]);
 
   if (!status || !current || !facts) return null;
   const { workout, compiled } = current;
@@ -129,7 +159,7 @@ function RideScreen({ s }: { s: RideSession }) {
     <div className="ride" data-kind={kind} data-state={facts.trainerLost ? "held" : status.state} data-density={config.density}>
       <StatusBar status={status} facts={facts} onHelp={() => setDialog("keys")} />
       <section className="hero" aria-label="Now">
-        <HeroHeader workout={workout} block={block} kind={kind} step={step} showCadence={config.density === "focus" || (config.slotA !== "cadence" && config.slotB !== "cadence")} />
+        <HeroHeader workout={workout} block={block} kind={kind} step={step} capped={!!fx.healthCap} showCadence={config.density === "focus" || (config.slotA !== "cadence" && config.slotB !== "cadence")} />
         <Rows status={status} facts={facts} kind={kind} block={block} prev={compiled.blocks[status.blockIndex - 1]} step={step} offset={offset} left={left} />
         <Next compiled={compiled} workout={workout} index={status.blockIndex} kind={kind} />
       </section>
@@ -138,12 +168,11 @@ function RideScreen({ s }: { s: RideSession }) {
           <>
             <Slot metric={config.slotA} status={status} step={step} />
             <Slot metric={config.slotB} status={status} step={step} />
-            {config.density === "detail" && <Slot metric="wbal_pct" status={status} step={step} />}
           </>
         )}
-        <CoachLane s={s} status={status} facts={facts} pending={pending} undoable={undoable} nudges={nudges} feel={!!fx.feelPrompt} />
+        <CoachLane s={s} status={status} facts={facts} pending={pending} undoable={undoable} nudges={nudges} feel={fx.feelPrompt ? feel : null} detail={config.density === "detail"} />
       </aside>
-      <Road compiled={compiled} block={block} status={status} pending={!!pending} />
+      <Road compiled={compiled} block={block} status={status} pending={pending} />
       {dialog === "keys" && (
         <Dialog label="Keys" onClose={() => setDialog(null)}>
           <KeysList />
@@ -161,6 +190,27 @@ function RideScreen({ s }: { s: RideSession }) {
       )}
     </div>
   );
+}
+
+const DEBOUNCE_MS = 1500;
+const FEEL_COMMIT_MS = 3000;
+const FEEL_WORDS = ["easy", "right", "hard"] as const;
+type Feel = { choice: (typeof FEEL_WORDS)[number] | null; committed: boolean; cycle: () => void; skip: () => void };
+/** "How did that feel?": Coach cycles easy → right → hard; the choice commits 3 s after the last press (tone); Keep skips. */
+function useFeel(): Feel {
+  const [choice, setChoice] = useState<Feel["choice"]>(null);
+  const [committed, setCommitted] = useState(false);
+  useEffect(() => {
+    if (!choice || committed || sceneId) return;
+    const id = setTimeout(() => (setCommitted(true), play.applied()), FEEL_COMMIT_MS);
+    return () => clearTimeout(id);
+  }, [choice, committed]);
+  return {
+    choice,
+    committed,
+    cycle: () => !committed && setChoice((c) => FEEL_WORDS[(c ? FEEL_WORDS.indexOf(c) + 1 : 0) % FEEL_WORDS.length] ?? "easy"),
+    skip: () => (setChoice(null), setCommitted(true)),
+  };
 }
 
 function undo(s: RideSession, n: CoachNudge) {
@@ -249,8 +299,9 @@ function Sensor({ name, state, note }: { name: string; state: RideStatus["traine
 }
 
 // ---------- hero ----------
-function HeroHeader({ workout, block, kind, step, showCadence }: { workout: Workout; block: FlatBlock; kind: BlockKind; step: StepNode | undefined; showCadence: boolean }) {
+function HeroHeader({ workout, block, kind, step, showCadence, capped }: { workout: Workout; block: FlatBlock; kind: BlockKind; step: StepNode | undefined; showCadence: boolean; capped: boolean }) {
   const t = blockTitle(workout.nodes, block);
+  const inherited = !step?.label && block.phase !== "work" && kind !== "hr_recovery";
   const easyRep = kind === "onoff" && block.phase !== "work";
   const reps = t.reps.at(-1);
   const cadence = useMetric("cadence", 2);
@@ -258,7 +309,7 @@ function HeroHeader({ workout, block, kind, step, showCadence }: { workout: Work
   return (
     <div className="row1 t3" data-fit>
       <span className="phase-word">{easyRep ? "Off" : PHASE_WORD[kind]}</span>
-      <span className="title">{t.label || workout.name}</span>
+      <span className="title">{t.label ? (inherited ? `after ${t.label}` : t.label) : workout.name}</span>
       {t.reps.map((r, i) => (
         <span key={i} className="rep">
           {i === t.reps.length - 1 ? "rep" : "set"} {r.i}/{r.n}
@@ -272,6 +323,7 @@ function HeroHeader({ workout, block, kind, step, showCadence }: { workout: Work
         </span>
       )}
       {showCadence && cs !== "in" && cs !== "none" && <span className={`chip cad-${cs}`}>{CADENCE_WORD[cs]}</span>}
+      {capped && <span className="chip cap-chip">capped ≤ {CAP_PCT.endurance} % FTP</span>}
     </div>
   );
 }
@@ -279,30 +331,42 @@ function HeroHeader({ workout, block, kind, step, showCadence }: { workout: Work
 interface RowProps { status: RideStatus; facts: CoreFacts; kind: BlockKind; block: FlatBlock; prev: FlatBlock | undefined; step: StepNode | undefined; offset: number; left: number | null }
 
 function Rows(props: RowProps) {
-  const { kind, step, facts } = props;
+  const { kind, facts } = props;
   const rec = usePoll(1, () => (kind === "hr_recovery" ? backend.hrRecovery() : null), [kind, props.block.nodeId]);
-  const hrLostInRecovery = kind === "hr_recovery" && facts.hrLost;
+  const read = kind === "hr_recovery" && rec ? recoveryRead(rec, props.status.t - rec.startedT, facts.hrLost) : null;
+  // The caption says which event the number is about: HR crossing (a prediction) or the block's own limit (a rule).
   const caption =
-    kind === "sprint" ? "power" : kind === "hr_recovery" ? (hrLostInRecovery ? "HR lost · block ends at its maximum in" : `HR below ${rec?.targetBpm ?? ""} in`) : kind === "onoff" ? "left in rep" : "left in block";
+    kind === "sprint"
+      ? "power"
+      : read
+        ? read.kind === "hr_lost"
+          ? "HR lost · block ends at its maximum in"
+          : read.kind === "ends_at_min"
+            ? "block ends at its minimum in"
+            : read.kind === "estimate" && read.capped
+              ? `HR below ${rec?.targetBpm} in · or at the block maximum`
+              : `HR below ${rec?.targetBpm} in`
+        : kind === "onoff"
+          ? "left in rep"
+          : "left in block";
   let t1: ReactNode;
   if (kind === "sprint") t1 = <Live metric="power" unit="W" />;
-  else if (kind === "hr_recovery" && rec) {
-    const elapsed = props.status.t - rec.startedT;
-    const toMax = step?.end.kind === "hr_recovery" ? step.end.maxS - elapsed : null;
-    const ready = rec.readyInS;
-    if (hrLostInRecovery) t1 = <div className="t1">{mmss(toMax)}</div>;
-    else if (!ready) t1 = <div className="t1 muted">fitting…</div>;
-    else if (ready.hi - ready.lo > WIDE_BAND_S)
+  else if (read) {
+    if (read.kind === "hr_lost" || read.kind === "ends_at_min") t1 = <div className="t1">{mmss(read.inS)}</div>;
+    else if (read.kind === "fitting") t1 = <div className="t1 muted">fitting…</div>;
+    else if (read.hi - read.lo > WIDE_BAND_S)
       t1 = (
         <div className="t1 range-mode">
-          {mmss(ready.lo)}–{mmss(ready.hi)}
+          {mmss(read.lo)}–{mmss(read.hi)}
         </div>
       );
     else
       t1 = (
         <div className="t1-wrap">
-          <span className="t1">≈ {mmss(ready.mean)}</span>
-          <span className="t3 range">± {Math.max(1, Math.round((ready.hi - ready.lo) / 2))} s</span>
+          <span className="t1">≈ {mmss(read.mean)}</span>
+          <span className="t3 range">
+            {mmss(read.lo)}–{mmss(read.hi)}
+          </span>
         </div>
       );
   } else t1 = <div className="t1">{mmss(props.left)}</div>;
@@ -339,34 +403,48 @@ function Banner({ tone, children }: { tone: "warning" | "info" | "neutral"; chil
 
 function BandRow({ status, facts, kind, block, prev, step, offset, left, rec }: RowProps & { rec: ReturnType<typeof backend.hrRecovery> | null }) {
   const target = useMetric("target_power", 2);
-  if (facts.trainerLost)
+  const cadence = useMetric("cadence", 2);
+  if (facts.trainerLost) {
+    const at = mmss(kind === "hr_recovery" && rec ? status.t - rec.startedT : block.durS - (left ?? 0));
+    const long = facts.lostForS >= LONG_LOSS_S;
     return (
       <Banner tone="warning">
         <b>
-          ⚠ {status.hrSensor !== "connected" ? "Trainer and HR lost" : "Trainer lost"} — paused at {mmss(kind === "hr_recovery" && rec ? status.t - rec.startedT : block.durS - (left ?? 0))} of this block
+          ⚠ {status.hrSensor !== "connected" ? "Trainer + HR lost" : "Trainer lost"} · paused at {at}
         </b>
-        <span>reconnecting (attempt {facts.reconnectAttempt}) · keep pedalling · ride saved</span>
+        {long ? (
+          <>
+            <span>try: power-cycle the NEO · close Zwift/Tacx</span>
+            <span className="banner-actions">
+              <button onClick={() => (backend.ride.stop(), navigate("review"))}>End & save</button>
+              <span>retry {facts.reconnectAttempt}</span>
+            </span>
+          </>
+        ) : (
+          <span>reconnecting (try {facts.reconnectAttempt}) · ride saved</span>
+        )}
       </Banner>
     );
+  }
   if (facts.ergReleased)
     return (
       <Banner tone="warning">
-        <b>⚠ ERG released — spin up to 60 rpm</b>
-        <span>the target returns with a 5 s soft start</span>
+        <b>⚠ ERG released · spin up to 60 rpm</b>
+        <span>timer runs · target returns over 5 s</span>
       </Banner>
     );
   if (facts.sinceReconnectS !== null && facts.sinceReconnectS < SETTLE_S)
     return (
       <Banner tone="info">
-        <b>↻ Reconnected · easing back in to {num(target)} W</b>
-        <span>the workout continues when you pedal</span>
+        <b>↻ Reconnected · easing in to {num(target)} W</b>
+        <span>{(cadence ?? 0) > 0 ? "workout resumed" : "pedal to resume the workout"}</span>
       </Banner>
     );
   if (status.state === "paused")
     return (
       <Banner tone="neutral">
         <b>Paused {mmss(facts.pausedForS ?? 0)}</b>
-        <span>press Pause to resume — the plan waits for you</span>
+        <span>Resume continues the plan · trainer free</span>
       </Banner>
     );
   if (kind === "hr_recovery" && rec) return <RecoveryRow rec={rec} step={step} lost={facts.hrLost} status={status} />;
@@ -422,7 +500,7 @@ function Fill({ target, left }: { target: number | null; left: number | null }) 
     <div className="sprint-row">
       <div className="fill-wrap">
         <span className="t3 lbl" data-fit>
-          vs target · tick = {num(target)} W
+          target {num(target)} W (the line)
         </span>
         <div className="fill" role="meter" aria-label="Power vs sprint target" aria-valuenow={actual ?? undefined}>
           <i style={{ width: `${(pct / 1.3) * 100}%` }} />
@@ -441,6 +519,7 @@ function RecoveryRow({ rec, step, lost, status }: { rec: ReturnType<typeof backe
   const hr = useMetric("hr", 2);
   const end = step?.end.kind === "hr_recovery" ? step.end : null;
   const toGo = hr !== null ? Math.max(0, hr - rec.targetBpm) : null;
+  const elapsed = status.t - rec.startedT;
   return (
     <div className="band-split">
       <div className="target">
@@ -450,10 +529,10 @@ function RecoveryRow({ rec, step, lost, status }: { rec: ReturnType<typeof backe
           <small>bpm</small>
         </span>
         <span className="t3 sub" data-fit>
-          {end ? `ends ${mmss(end.minS)}–${mmss(end.maxS)}` : ""}
+          {end ? (Math.max(0, end.minS - elapsed) > 0 && (rec.readyInS?.hi ?? Infinity) <= end.minS - elapsed + 1 ? `HR due below ${rec.targetBpm} before then` : `block ends in ${mmss(Math.max(0, end.minS - elapsed))}–${mmss(Math.max(0, end.maxS - elapsed))}`) : ""}
         </span>
       </div>
-      <div className="recovery-mini">{rec.observed.length > 2 ? <Recovery r={rec} height={84} live={!lost && status.state === "riding"} /> : null}</div>
+      <div className="recovery-mini">{rec.observed.length > 2 ? <Recovery r={rec} height={84} live={!lost && status.state === "riding"} predict={!lost} /> : null}</div>
     </div>
   );
 }
@@ -527,9 +606,9 @@ function CadenceBand({ rpm, lo, hi }: { rpm: number; lo: number; hi: number }) {
 const VERB: Record<CoachNudge["verdict"], [string, string]> = { ease_off: ["Ease off", "Eased off"], push: ["Push", "Pushed"], hold: ["Hold", "Holding"], replan: ["Replan", "Replanned"] };
 const amount = (n: CoachNudge) => (n.proposedPctChange ? ` ${signed(n.proposedPctChange)} %` : "");
 
-function CoachLane({ s, status, facts, pending, undoable, nudges, feel }: { s: RideSession; status: RideStatus; facts: CoreFacts; pending: CoachNudge | undefined; undoable: CoachNudge | undefined; nudges: CoachNudge[]; feel: boolean }) {
+function CoachLane({ s, status, facts, pending, undoable, nudges, feel, detail }: { s: RideSession; status: RideStatus; facts: CoreFacts; pending: CoachNudge | undefined; undoable: CoachNudge | undefined; nudges: CoachNudge[]; feel: Feel | null; detail: boolean }) {
   const wbal = useMetric("wbal_pct", 1);
-  if (feel)
+  if (feel && !feel.committed)
     return (
       <div className="coach ask" role="alert">
         <div className="coach-head">
@@ -538,15 +617,15 @@ function CoachLane({ s, status, facts, pending, undoable, nudges, feel }: { s: R
           </span>
           <span className="band-word">calibrating</span>
         </div>
-        <div className="coach-actions three">
-          {["easy", "right", "hard"].map((w, i) => (
-            <button key={w} className={i === 1 ? "on" : ""}>
+        <div className="coach-actions three" role="radiogroup" aria-label="How did that feel">
+          {FEEL_WORDS.map((w) => (
+            <button key={w} role="radio" aria-checked={feel.choice === w} className={feel.choice === w ? "on" : ""} onClick={() => feel.cycle()}>
               {w}
             </button>
           ))}
         </div>
         <span className="t3 deadline-text" data-fit>
-          skipped in 12 s
+          {feel.choice ? `saves “${feel.choice}” in 3 s` : "Coach picks · none in 12 s"}
         </span>
       </div>
     );
@@ -590,10 +669,10 @@ function CoachLane({ s, status, facts, pending, undoable, nudges, feel }: { s: R
           {coachReason(undoable)}
         </p>
         <div className="coach-actions">
-          <button onClick={() => undo(s, undoable)}>Undo · {Math.ceil(leftS)} s</button>
+          <button onClick={() => undo(s, undoable)}>Back to plan · {Math.ceil(leftS)} s</button>
         </div>
         <span className="t3 deadline-text" data-fit>
-          Coach button = undo
+          Keep = back to plan
         </span>
       </div>
     );
@@ -601,18 +680,27 @@ function CoachLane({ s, status, facts, pending, undoable, nudges, feel }: { s: R
   const last = nudges.findLast((n) => n.status !== "pending");
   return (
     <div className="coach idle" role="status">
-      <div className="idle-metric t3p" data-fit>
-        <span className="lbl">W′ balance</span> <b>{num(wbal)} %</b>
-      </div>
+      {/* Detail density puts its third metric here, in the reserved lane a coach call takes over (§5.3) */}
+      {detail ? (
+        <div className="idle-metric detail">
+          <span className="t3 lbl">W′ balance</span>
+          <span className="t2">{facts.trainerLost ? <span className="stale">—</span> : <>{num(wbal)}<small>%</small></>}</span>
+        </div>
+      ) : (
+        <div className="idle-metric t3" data-fit>
+          <span className="lbl">W′ balance</span> {facts.trainerLost ? <span className="stale">— no power data</span> : <b>{num(wbal)} %</b>}
+        </div>
+      )}
       <p className="t3 idle-note" data-fit>
-        {facts.hrLost ? "HR lost: coach can't push" : last ? `last call ${mmss(last.t)}${amount(last)} ${last.status === "auto_applied" || last.status === "accepted" ? "applied" : "not taken"}` : "coach: no calls yet"}
+        {facts.hrLost ? "HR lost: coach can't push" : last ? `last call ${mmss(last.t)}${amount(last)} ${s.reverted.get().has(last.callId) ? "back to plan" : last.status === "auto_applied" || last.status === "accepted" ? "applied" : "not taken"}` : "coach: no calls yet"}
       </p>
     </div>
   );
 }
 
 // ---------- road ahead ----------
-function Road({ compiled, block, status, pending }: { compiled: CompiledWorkout; block: FlatBlock; status: RideStatus; pending: boolean }) {
+function Road({ compiled, block, status, pending }: { compiled: CompiledWorkout; block: FlatBlock; status: RideStatus; pending: CoachNudge | undefined }) {
+  const affected = pending ? compiled.blocks.filter((b, i) => i >= status.blockIndex && b.phase === "work").length : 0;
   const left = useMetric("block_remaining", 1);
   const elapsed = useMetric("elapsed", 1);
   const now = cursorS(block, left);
@@ -620,11 +708,11 @@ function Road({ compiled, block, status, pending }: { compiled: CompiledWorkout;
     <section className="road" aria-label="Road ahead">
       <div className="road-ticks">
         <span style={{ left: `${(120 / 720) * 100}%` }}>now</span>
-        <span className="legend">coach: dashed = proposed · solid = applied</span>
+        <span className="legend">{pending?.proposedPctChange ? `dashed = proposed ${signed(pending.proposedPctChange)} % on ${affected} work block${affected === 1 ? "" : "s"}` : "coach changes: solid = applied"}</span>
         <span className="end">+10 min</span>
       </div>
       <div className="road-near">
-        <Profile blocks={compiled.blocks} zones={backend.zones.power} height={120} fromS={now - 120} toS={now + 600} cursorS={now} pendingFrom={pending ? status.blockIndex : undefined} label="Next ten minutes" />
+        <Profile blocks={compiled.blocks} zones={backend.zones.power} height={120} fromS={now - 120} toS={now + 600} cursorS={now} pending={pending?.proposedPctChange ? { from: status.blockIndex, pct: pending.proposedPctChange } : undefined} label="Next ten minutes" />
       </div>
       <div className="road-all">
         <Profile blocks={compiled.blocks} zones={backend.zones.power} height={24} cursorS={now} label="Whole ride" />
@@ -640,8 +728,8 @@ function KeysList() {
   const b = useStore(bindings);
   const show = (k: string) => (k === " " ? "Space" : k);
   const rows: [keyof typeof b, string][] = [
-    ["coach", "Coach: accept a question · undo an applied change"],
-    ["keep", "Keep: keep the plan"],
+    ["coach", "Coach: accept a question · choose in the feel prompt (never undoes)"],
+    ["keep", "Keep: keep the plan · back to plan after an auto change"],
     ["pause", "Pause / resume"],
     ["skip", "Skip block"],
     ["minus", "Intensity −5 %"],

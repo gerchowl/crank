@@ -7,6 +7,7 @@ import { demoWorkout, type CompiledWorkout, type RewriteIntent, type WorkoutNode
 import { Profile } from "../charts";
 import { editor, editorStore, type EditorState } from "../editor/model";
 import { mmss, signed } from "../format";
+import { humanToken } from "../mock/ext";
 import { backend, loadRide, navigate } from "../session";
 import { useStore } from "../store";
 
@@ -78,12 +79,12 @@ function changeSummary(s: EditorState, before: CompiledWorkout, after: CompiledW
   const tok = (t: string) => t.split(/[\s,()]+/).filter(Boolean);
   const a = tok(old ? body(old) : "");
   const b = tok(s.lock.proposal.map(body).join(" "));
-  const changed = a.length === b.length ? a.flatMap((x, i) => (x !== b[i] ? [`${x} → ${b[i]}`] : [])) : [];
+  const changed = a.length === b.length ? a.flatMap((x, i) => (x !== b[i] ? [`${humanToken(x)} → ${humanToken(b[i] ?? "")}`] : [])) : [];
   const dT = after.totalS - before.totalS;
   return [
     `${old ? label(old) : "Item"}${changed.length ? `: ${changed.join(", ")}` : " rewritten"}`,
     `${dT >= 0 ? "+" : "−"}${mmss(Math.abs(dT))}`,
-    `TSS ${Math.round(before.tss)} → ${Math.round(after.tss)} (${signed(after.tss - before.tss)})`,
+    `load ${Math.round(before.tss)} → ${Math.round(after.tss)} TSS (${signed(after.tss - before.tss)})`,
   ].join(" · ");
 }
 
@@ -157,7 +158,7 @@ export function Workouts() {
             ) : (
               <>
                 <span>
-                  <b>Coach suggests ({s.lock.intent.replace(/_/g, " ")}):</b> {after && changeSummary(s, compiled, after)}. Editing is locked.
+                  <b>Coach suggests ({s.lock.intent.replace(/_/g, " ")}):</b> {after && changeSummary(s, compiled, after)}. Exact text below. Editing is locked.
                 </span>
                 <button className="primary" onClick={editor.accept}>
                   Accept

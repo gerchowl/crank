@@ -13,23 +13,25 @@ interface ProfileProps {
   cursorS?: number;
   /** Highlight blocks whose path starts with this top-level index (editor selection / changed item). */
   selected?: number | null;
-  /** Blocks a pending coach call would change (dashed outline); applied changes (aiChanged) are solid. */
-  pendingFrom?: number | undefined;
+  /** A pending coach call: work blocks from `from` on are drawn dashed at their proposed height; applied changes (aiChanged) stay solid. */
+  pending?: { from: number; pct: number } | undefined;
   onPick?: ((topIndex: number) => void) | undefined;
+  /** Health cap: a labelled horizontal line no target may cross */
+  capW?: number | undefined;
   label: string;
 }
 
 /** Workout profile (VIEWS P13): width = time, height = power, sequential zone ramp. */
-export function Profile({ blocks, zones, height, fromS = 0, toS, cursorS, selected, pendingFrom, onPick, label }: ProfileProps) {
+export function Profile({ blocks, zones, height, fromS = 0, toS, cursorS, selected, pending, onPick, capW, label }: ProfileProps) {
   const end = toS ?? Math.max(1, ...blocks.map((b) => b.startS + b.durS));
   const span = Math.max(1, end - fromS);
-  const top = Math.max(1, ...blocks.map((b) => Math.max(b.powerFrom, b.powerTo))) * 1.08;
+  const top = Math.max(1, capW ?? 0, ...blocks.map((b) => Math.max(b.powerFrom, b.powerTo))) * 1.08;
   const x = (s: number) => ((s - fromS) / span) * 1000;
   const y = (w: number) => height - (w / top) * height;
-  const poly = (b: FlatBlock) => {
+  const poly = (b: FlatBlock, k = 1) => {
     const x0 = x(b.startS);
     const x1 = x(b.startS + b.durS);
-    return `${x0},${height} ${x0},${y(b.powerFrom)} ${x1},${y(b.powerTo)} ${x1},${height}`;
+    return `${x0},${height} ${x0},${y(b.powerFrom * k)} ${x1},${y(b.powerTo * k)} ${x1},${height}`;
   };
   const visible = (b: FlatBlock) => b.startS + b.durS > fromS && b.startS < end;
   return (
@@ -44,25 +46,18 @@ export function Profile({ blocks, zones, height, fromS = 0, toS, cursorS, select
         const z = zoneIndex(zones, (b.powerFrom + b.powerTo) / 2) + 1;
         const dim = cursorS !== undefined && b.startS + b.durS <= cursorS;
         const sel = selected !== undefined && selected !== null && b.path[0] === selected;
-        const pending = pendingFrom !== undefined && i >= pendingFrom && b.phase === "work";
+        const proposed = pending !== undefined && i >= pending.from && b.phase === "work";
         return (
           <g key={i} onClick={onPick ? () => onPick(b.path[0] ?? 0) : undefined} className={onPick ? "pickable" : undefined}>
             <polygon points={poly(b)} fill={`var(--zone-${z})`} opacity={dim ? 0.35 : 1} />
             {b.durRangeS && <polygon points={poly(b)} fill="url(#hatch)" opacity={0.35} />}
-            {(b.aiChanged || sel || pending) && (
-              <polygon
-                points={poly(b)}
-                fill="none"
-                stroke={sel ? "var(--accent)" : "var(--ink-primary)"}
-                strokeWidth={2.5}
-                strokeDasharray={pending && !b.aiChanged ? "6 4" : undefined}
-                vectorEffect="non-scaling-stroke"
-              />
-            )}
+            {(b.aiChanged || sel) && <polygon points={poly(b)} fill="none" stroke={sel ? "var(--accent)" : "var(--ink-primary)"} strokeWidth={2.5} vectorEffect="non-scaling-stroke" />}
+            {proposed && <polygon points={poly(b, 1 + pending.pct / 100)} fill="none" stroke="var(--status-info)" strokeWidth={3} strokeDasharray="7 4" vectorEffect="non-scaling-stroke" />}
           </g>
         );
       })}
       {cursorS !== undefined && <line x1={x(cursorS)} x2={x(cursorS)} y1={0} y2={height} stroke="var(--ink-primary)" strokeWidth={3} vectorEffect="non-scaling-stroke" />}
+      {capW !== undefined && <line x1={0} x2={1000} y1={y(capW)} y2={y(capW)} className="cap-line" vectorEffect="non-scaling-stroke" />}
     </svg>
   );
 }
@@ -135,24 +130,33 @@ export function TimeAxis({ n, fromS = 0 }: { n: number; fromS?: number }) {
 }
 
 /** One panel of a stacked linear-time chart. Panels share x by sharing `n` (seconds) and `fromS`. */
-export function Panel({ series, height, unit, markers = [], markerNo, n, fromS = 0 }: { series: Series[]; height: number; unit: string; markers?: number[]; markerNo?: number[]; n: number; fromS?: number }) {
+export function Panel({ series, height, unit, markers = [], markerNo, n, fromS = 0, lo = 0 }: { series: Series[]; height: number; unit: string; markers?: number[]; markerNo?: number[]; n: number; fromS?: number; lo?: number }) {
   const all = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
-  const hi = niceMax(Math.max(...all, 1) * 1.05);
+  const hi = niceMax(Math.max(...all, lo + 1) * 1.05);
   const X = (i: number) => (i / Math.max(1, n - 1)) * 1000;
-  const Y = (v: number) => height - (v / hi) * height;
+  const Y = (v: number) => height - ((Math.max(lo, v) - lo) / (hi - lo)) * height;
   const main = series.find((s) => !s.area);
   return (
     <div className="panel">
       <span className="axis-y hi">
         {hi} {unit}
       </span>
-      <span className="axis-y lo">0</span>
+      <span className="axis-y lo">{lo}</span>
       <svg viewBox={`0 0 1000 ${height}`} preserveAspectRatio="none" style={{ height }} role="img" aria-label={`${series.map((s) => s.label).join(", ")} over the ride`}>
-        {main && gaps(main.values).map(([a, b]) => <rect key={a} x={X(a)} width={Math.max(3, X(b) - X(a))} y={0} height={height} className="gap" />)}
+        <defs>
+          <pattern id={`gaphatch-${unit}`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="6" className="gap-line" strokeWidth="2" />
+          </pattern>
+        </defs>
+        {main && gaps(main.values).map(([a, b]) => <rect key={a} x={X(a)} width={Math.max(4, X(b) - X(a))} y={0} height={height} fill={`url(#gaphatch-${unit})`} className="gap" />)}
         {series.map((s) =>
           decimate(s.values, 900).map((run, k) =>
             s.area ? (
-              <polygon key={`${s.cls}${k}`} className={`area ${s.cls}`} points={`${X(run[0]?.i ?? 0)},${height} ${run.map((p) => `${X(p.i)},${Y(p.hi)}`).join(" ")} ${X(run.at(-1)?.i ?? 0)},${height}`} />
+              <g key={`${s.cls}${k}`}>
+                <polygon className={`area ${s.cls}`} points={`${X(run[0]?.i ?? 0)},${height} ${run.map((p) => `${X(p.i)},${Y(p.hi)}`).join(" ")} ${X(run.at(-1)?.i ?? 0)},${height}`} />
+                {/* the area's edge carries the encoding (≥ 3:1); the fill is decoration */}
+                <polyline className="area-edge" points={run.map((p) => `${X(p.i)},${Y(p.hi)}`).join(" ")} vectorEffect="non-scaling-stroke" />
+              </g>
             ) : (
               <polyline
                 key={`${s.cls}${k}`}
@@ -178,8 +182,8 @@ export function Panel({ series, height, unit, markers = [], markerNo, n, fromS =
 }
 
 /** HR recovery (VIEWS P12): observed (gaps kept), prediction with band, target, block window, live dot, time axis. */
-export function Recovery({ r, height, live }: { r: HrRecoveryState; height: number; live: boolean }) {
-  const pred = r.predicted ?? [];
+export function Recovery({ r, height, live, predict = true }: { r: HrRecoveryState; height: number; live: boolean; predict?: boolean }) {
+  const pred = predict ? (r.predicted ?? []) : [];
   const t0 = r.startedT;
   const t1 = Math.max(t0 + r.maxS, ...pred.map((p) => p.t));
   const obs = r.observed.filter((s): s is { t: number; v: number } => s.v !== null);
@@ -206,14 +210,17 @@ export function Recovery({ r, height, live }: { r: HrRecoveryState; height: numb
       <span className="axis-y lo">{lo} bpm</span>
       <svg viewBox={`0 0 1000 ${height}`} preserveAspectRatio="none" style={{ height, width: "100%" }} role="img" aria-label="Heart-rate recovery and prediction">
         <rect x={x(t0 + r.minS)} width={x(t0 + r.maxS) - x(t0 + r.minS)} y={0} height={height} className="window" />
-        {band && <polygon points={band} className="band" />}
+        {band && <polygon points={band} className="band band-edged" vectorEffect="non-scaling-stroke" />}
         <line x1={0} x2={1000} y1={y(r.targetBpm)} y2={y(r.targetBpm)} className="target-line" vectorEffect="non-scaling-stroke" />
         {runs.map((pts, i) => (
           <polyline key={i} points={pts} className="line series-hr" vectorEffect="non-scaling-stroke" />
         ))}
         {pred.length > 0 && <polyline points={pred.map((p) => `${x(p.t)},${y(p.mean)}`).join(" ")} className="line series-hr" strokeDasharray="3 4" vectorEffect="non-scaling-stroke" />}
       </svg>
-      {last && live && <i className="live-dot" style={{ left: `${x(last.t) / 10}%`, top: `${y(last.v)}px` }} />}
+      {last && <i className={live ? "live-dot" : "live-dot stale"} style={{ left: `${x(last.t) / 10}%`, top: `${y(last.v)}px` }} />}
+      <span className="target-tag" style={{ top: `${y(r.targetBpm)}px` }}>
+        {r.targetBpm}
+      </span>
       <div className="time-axis" aria-hidden>
         {minutes.map((m) => (
           <span key={m} style={{ left: `${x(t0 + m * 60) / 10}%` }}>

@@ -139,6 +139,8 @@ export const useSession = () => useStore(session);
 export function useMetric(metric: MetricId, rateHz: number): number | null {
   const [sample, setSample] = useState<Sample | null>(null);
   useEffect(() => backend.subscribe(metric, { rateHz }, setSample), [metric, rateHz]);
+  const fixed = sceneFixture.get().metrics; // scene fixture: what the core would send in this state
+  if (fixed && metric in fixed) return fixed[metric] ?? null;
   return sample?.v ?? null;
 }
 

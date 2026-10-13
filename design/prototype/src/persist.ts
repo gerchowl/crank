@@ -78,7 +78,7 @@ export const ACTIONS = ["coach", "keep", "pause", "skip", "minus", "plus"] as co
 export type Action = (typeof ACTIONS)[number];
 export type Bindings = Record<Action, string[]>;
 export const DEFAULT_BINDINGS: Bindings = {
-  coach: ["Enter", "y", "u"],
+  coach: ["Enter", "y"],
   keep: ["n", "Backspace"],
   pause: [" "],
   skip: ["s"],

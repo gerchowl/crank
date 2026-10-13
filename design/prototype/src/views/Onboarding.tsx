@@ -1,7 +1,7 @@
 // Onboarding (DESIGN §5.8, spec/ONBOARDING.md): a mode without the rail; progress is saved after
 // every step so a relaunch resumes where the rider left; every Skip states its consequence.
 import { useState, type ReactNode } from "react";
-import { devices, priorModel } from "../mock/ext";
+import { devices, HEALTH_QS, healthConsequences, priorModel, sceneFixture, type HealthAnswer, type HealthId } from "../mock/ext";
 import { ONBOARDING_STEPS, onboardingStep, saveOnboardingStep, type OnboardingStep } from "../persist";
 import { navigate, useRoute } from "../session";
 import { useStore } from "../store";
@@ -19,12 +19,11 @@ const SKIP: Record<OnboardingStep, string> = {
   about: "Skipping uses population priors: CP ± 60 W, HR max from age unknown → HR zones off until a hard ride.",
   background: "Skipping assumes a beginner: the first week stays easy.",
   numbers: "Skipping starts CP at 220 ± 60 W: targets stay conservative until rides narrow it.",
-  health: "Skipping counts as unanswered: intensity stays capped at threshold until you answer.",
+  health: "Skipping counts as unanswered: every workout stays capped at endurance until you answer.",
   devices: "Skipping: you can pair before the first ride, on the Ready check.",
   baseline: "Skipping chooses passive learning.",
   result: "",
 };
-const HEALTH_QS = ["Heart condition or chest pain on exertion?", "Dizziness or fainting?", "Medication affecting heart rate?", "Injury that limits hard efforts?"];
 
 function Choice({ options, value, onPick, label }: { options: string[]; value: string | null; onPick: (v: string) => void; label: string }) {
   return (
@@ -45,7 +44,10 @@ export function Onboarding() {
   const resuming = r.sub === "resume" || (!fromRoute && saved !== null);
   const [idx, setIdx] = useState(Math.max(0, ONBOARDING_STEPS.indexOf(fromRoute ?? (r.sub === "resume" ? "health" : (saved ?? "about")))));
   const [welcome, setWelcome] = useState(resuming);
-  const [a, setA] = useState<Record<string, string>>({ sex: "prefer not to say", years: "5–10", structured: "some", ftpKnown: "yes", ftpFrom: "20-min test", path: "passive learning", [HEALTH_QS[2] ?? ""]: r.sub === "health" ? "yes" : "no" });
+  const [a, setA] = useState<Record<string, string>>({ sex: "prefer not to say", years: "5–10", structured: "some", ftpKnown: "yes", ftpFrom: "20-min test", path: "passive learning" });
+  // health answers have no default: unanswered stays unanswered (DESIGN §5.8)
+  const [health, setHealth] = useState<Partial<Record<HealthId, HealthAnswer>>>(() => sceneFixture.get().health ?? {});
+  const hc = healthConsequences(health);
   const step = ONBOARDING_STEPS[idx] ?? "about";
   const go = (i: number) => {
     const next = ONBOARDING_STEPS[i];
@@ -65,7 +67,6 @@ export function Onboarding() {
       <small>{unit}</small>
     </label>
   );
-  const capped = HEALTH_QS.some((q) => a[q] === "yes");
   const bodies: Record<OnboardingStep, ReactNode> = {
     about: (
       <>
@@ -113,19 +114,31 @@ export function Onboarding() {
       <>
         <h1>Health check</h1>
         <p className="muted">A short safety screen. It is not a diagnosis.</p>
-        {HEALTH_QS.map((q) => (
-          <div key={q} className="yn">
-            <span>{q}</span>
-            <Choice label={q} options={["no", "yes"]} value={a[q] ?? "no"} onPick={pick(q)} />
+        {HEALTH_QS.map((h) => (
+          <div key={h.id} className={health[h.id] ? "yn" : "yn unanswered"}>
+            <span>
+              {h.q} {!health[h.id] && <span className="tag">not answered</span>}
+            </span>
+            <Choice label={h.q} options={["no", "yes"]} value={health[h.id] ?? null} onPick={(v) => setHealth((p) => ({ ...p, [h.id]: v as HealthAnswer }))} />
           </div>
         ))}
-        {capped ? (
-          <p className="cap-note status-warning">
-            ⚠ <b>Intensity capped at threshold</b> until you confirm a medical check. You'll see the cap on Today, before each ride and in the targets; confirm it in Settings → Athlete model.
+        {hc.stop && (
+          <p className="cap-note status-serious">
+            ⚠ <b>Please get a medical check before any hard riding.</b> Until you confirm it, every workout is capped at endurance (75 % FTP) and the coach never pushes.
           </p>
-        ) : (
-          <p className="small muted">All "no": no cap.</p>
         )}
+        {hc.hrOff && (
+          <p className="cap-note status-warning">
+            ⚠ <b>Your medication changes heart rate:</b> HR zones, HR-guided recoveries and "HR vs usual" coaching are switched off; targets use power and how you feel instead. No power cap.
+          </p>
+        )}
+        {hc.cap === "threshold" && !hc.stop && (
+          <p className="cap-note status-warning">
+            ⚠ <b>Capped at threshold</b> and no sprints until you confirm the injury allows hard efforts.
+          </p>
+        )}
+        {hc.complete && !hc.stop && !hc.hrOff && !hc.cap && <p className="small muted">All answered "no": no restrictions.</p>}
+        {!hc.complete && <p className="small status-info">Answer every question to continue. Unanswered questions are treated as the cautious answer: capped at endurance.</p>}
       </>
     ),
     devices: (
@@ -206,7 +219,7 @@ export function Onboarding() {
           </tbody>
         </table>
         <p>
-          <b>What narrows it:</b> your next 3–4 rides (passive learning). <b>Auto-applied coach changes</b> stay off; aggressive replans unlock at medium confidence.
+          <b>What narrows it:</b> your next 3–4 rides (passive learning). Meanwhile the coach proposes only small changes, and asks before every one.
         </p>
       </>
     ),
@@ -238,7 +251,7 @@ export function Onboarding() {
             <button onClick={() => go(idx + 1)}>Skip</button>
           </span>
         )}
-        <button className="primary big" onClick={() => (last ? finish() : go(idx + 1))}>
+        <button className="primary big" disabled={step === "health" && !hc.complete} onClick={() => (last ? finish() : go(idx + 1))}>
           {last ? "Ride today" : "Continue"}
         </button>
       </div>

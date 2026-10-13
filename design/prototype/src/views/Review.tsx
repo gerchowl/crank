@@ -1,9 +1,9 @@
 // Review (DESIGN §5.5) and History (§5.6).
-import { useState } from "react";
-import type { CoachNudge, MetricId, RideStreams } from "@crank/shared";
+import { useState, type ReactNode } from "react";
+import type { CoachNudge, MetricId, MmpCurve, RideStreams } from "@crank/shared";
 import { Bars, gaps, Panel, PdCurve, Profile, TimeAxis, Trend } from "../charts";
 import { mmss, num, signed } from "../format";
-import { athleteModel, calibration, coachReason, cpTrend, intentVerdict, metricValid, pastRides, sceneFixture, tauSlower, workIntervals } from "../mock/ext";
+import { ageDays, athleteModel, calibration, coachOffsetPct, coachReason, cpTrend, intentVerdict, metricValid, ON_TARGET_DEF, pastRides, sceneFixture, tauSd, tauSlower, TAU_SLOWER_FACTOR, USUAL_TAU_SD_S, usualHr, workIntervals } from "../mock/ext";
 import { backend, navigate, noStatus, usePoll, useMetric, useSession, type RideSession } from "../session";
 import { useStore } from "../store";
 
@@ -42,19 +42,28 @@ function CallContext({ streams, n, no }: { streams: RideStreams; n: CoachNudge; 
   const from = Math.max(0, Math.round(n.t) - 60);
   const to = Math.min(streams.toS, Math.round(n.t) + 120);
   const cut = (m: MetricId) => (streams.series[m] ?? []).slice(from, to);
+  const usual = usualHr(cut("hr"), cut("hr_vs_typical"));
   return (
     <div className="call-context">
       <p className="muted">{n.message}</p>
       <Panel n={to - from} fromS={from} unit="W" height={60} markers={[Math.round(n.t)]} markerNo={[no]} series={[{ values: cut("target_power"), cls: "target", label: "target", area: true }, { values: cut("power"), cls: "series-power", label: "power" }]} />
-      <Panel n={to - from} fromS={from} unit="bpm" height={44} markers={[Math.round(n.t)]} markerNo={[no]} series={[{ values: cut("hr"), cls: "series-hr", label: "heart rate" }]} />
+      <Panel n={to - from} fromS={from} unit="bpm" height={64} lo={80} markers={[Math.round(n.t)]} markerNo={[no]} series={[{ values: usual, cls: "usual-hr", label: "your usual HR at this power", dashed: true }, { values: cut("hr"), cls: "series-hr", label: "heart rate" }]} />
+      <p className="legend">
+        <span className="key series-hr" /> heart rate <span className="key usual-key" /> your usual HR for this power (the gap is what the coach saw)
+      </p>
       <TimeAxis n={to - from} fromS={from} />
     </div>
   );
 }
 
-function RideTable({ streams }: { streams: RideStreams }) {
-  const rows = [];
-  for (let i = 0; i < streams.toS; i += 60) rows.push(i);
+/** Per-minute rows plus a row for every data gap and coach call, so nothing brief is sampled away. */
+function RideTable({ streams, calls }: { streams: RideStreams; calls: CoachNudge[] }) {
+  const events = new Map<number, string>();
+  for (const [a, b] of gaps(streams.series.power ?? [])) events.set(a, `no power data for ${mmss(b - a)}`);
+  for (const [a, b] of gaps(streams.series.hr ?? [])) events.set(a, `${events.has(a) ? `${events.get(a)} · ` : ""}no HR for ${mmss(b - a)}`);
+  calls.forEach((c, i) => events.set(Math.round(c.t), `coach call ${i + 1}: ${c.verdict.replace("_", " ")}`));
+  const rows = new Set<number>(events.keys());
+  for (let i = 0; i < streams.toS; i += 60) rows.add(i);
   const v = (m: MetricId, i: number) => num(streams.series[m]?.[i] ?? null);
   return (
     <table className="ride-table">
@@ -65,18 +74,62 @@ function RideTable({ streams }: { streams: RideStreams }) {
           <th>power W</th>
           <th>HR bpm</th>
           <th>cadence rpm</th>
+          <th>event</th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((i) => (
-          <tr key={i}>
+        {[...rows].sort((a, b) => a - b).map((i) => (
+          <tr key={i} className={events.has(i) ? "event-row" : undefined}>
             <td>{mmss(i)}</td>
             <td>{v("target_power", i)}</td>
             <td>{v("power", i)}</td>
             <td>{v("hr", i)}</td>
             <td>{v("cadence", i)}</td>
+            <td>{events.get(i) ?? ""}</td>
           </tr>
         ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** Every chart has a table alternative (P9). */
+function WithTable({ title, chart, table }: { title: string; chart: ReactNode; table: ReactNode }) {
+  const [asTable, setAsTable] = useState(false);
+  return (
+    <>
+      <div className="card-head">
+        <h2>{title}</h2>
+        <span className="spacer" />
+        <button onClick={() => setAsTable(!asTable)}>{asTable ? "Show chart" : "Show as table"}</button>
+      </div>
+      {asTable ? table : chart}
+    </>
+  );
+}
+
+function PdTable({ mmp }: { mmp: MmpCurve }) {
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>duration</th>
+          <th>this ride</th>
+          <th>best 90 days</th>
+          <th>all time</th>
+        </tr>
+      </thead>
+      <tbody>
+        {mmp.durationsS.map((d, i) =>
+          d >= 5 ? (
+            <tr key={d}>
+              <td>{mmss(d)}</td>
+              <td>{mmp.today[i] ? `${Math.round(mmp.today[i] ?? 0)} W` : "—"}</td>
+              <td>{Math.round(mmp.best90d[i] ?? 0)} W</td>
+              <td>{Math.round(mmp.allTime[i] ?? 0)} W</td>
+            </tr>
+          ) : null,
+        )}
       </tbody>
     </table>
   );
@@ -95,7 +148,7 @@ function RideReview({ s }: { s: RideSession }) {
   });
   const [table, setTable] = useState(false);
   const [allNumbers, setAllNumbers] = useState(false);
-  const streams = usePoll(1, () => backend.streams(["power", "target_power", "hr", "cadence"]), []);
+  const streams = usePoll(1, () => backend.streams(["power", "target_power", "hr", "cadence", "hr_vs_typical"]), []);
   const recoveries = usePoll(0.2, () => backend.recoveries(), []);
   const mmp = usePoll(0.2, () => backend.mmp(), []);
   const hist = usePoll(0.2, () => backend.histogram("power", 20), []);
@@ -106,8 +159,9 @@ function RideReview({ s }: { s: RideSession }) {
   const markers = nudges.map((x) => Math.round(x.t));
   const laps = workIntervals(current.workout, current.compiled);
   const finished = status?.state === "finished";
-  const verdict = intentVerdict(current.compiled, recoveries);
+  const verdict = intentVerdict(current.compiled, recoveries, laps, coachOffsetPct(nudges, reverted));
   const noPower = gaps(series.power ?? []).reduce((a, [x, y]) => a + (y - x), 0);
+  const noHr = gaps(series.hr ?? []).reduce((a, [x, y]) => a + (y - x), 0);
   const rate = (callId: string, r: "right" | "wrong" | "unsure") => {
     backend.coach.rate(callId, r, true);
     setRated((p) => ({ ...p, [callId]: r }));
@@ -130,12 +184,13 @@ function RideReview({ s }: { s: RideSession }) {
           <li className="ok">
             <span aria-hidden>i</span> <b>Coach</b> — {applied.length ? `${applied.length} change applied (${applied.map((a) => `${signed(a.proposedPctChange ?? 0)} %`).join(", ")})` : "no changes applied"}, {nudges.length - applied.length} not taken
           </li>
-          {noPower > 0 && (
+          {(noPower > 0 || noHr > 0) && (
             <li className="warn">
-              <span aria-hidden>!</span> <b>Data</b> — {mmss(noPower)} without power data (trainer reconnect), excluded from "on target"
+              <span aria-hidden>!</span> <b>Data</b> — {mmss(noPower)} without power (excluded from "on target") · {mmss(noHr)} without HR (excluded from the coach and recoveries)
             </li>
           )}
         </ul>
+        <p className="small muted">{ON_TARGET_DEF}.</p>
       </section>
 
       <section className="card inputs" aria-label="Two quick inputs">
@@ -196,11 +251,11 @@ function RideReview({ s }: { s: RideSession }) {
           <button onClick={() => setTable(!table)}>{table ? "Show chart" : "Show as table"}</button>
         </div>
         {table ? (
-          <RideTable streams={streams} />
+          <RideTable streams={streams} calls={nudges} />
         ) : (
           <>
             <Panel n={n} unit="W" height={130} markers={markers} series={[{ values: series.target_power ?? [], cls: "target", label: "planned target", area: true }, { values: series.power ?? [], cls: "series-power", label: "power" }]} />
-            <Panel n={n} unit="bpm" height={80} markers={markers} series={[{ values: series.hr ?? [], cls: "series-hr", label: "heart rate" }]} />
+            <Panel n={n} unit="bpm" height={90} lo={80} markers={markers} series={[{ values: series.hr ?? [], cls: "series-hr", label: "heart rate" }]} />
             <Panel n={n} unit="rpm" height={60} markers={markers} series={[{ values: series.cadence ?? [], cls: "series-cadence", label: "cadence" }]} />
             <TimeAxis n={n} />
           </>
@@ -214,11 +269,11 @@ function RideReview({ s }: { s: RideSession }) {
             <thead>
               <tr>
                 <th>#</th>
-                <th>τ</th>
-                <th>usual τ</th>
+                <th>τ (fit)</th>
+                <th>your usual τ</th>
                 <th>fit from</th>
                 <th>took</th>
-                <th />
+                <th>vs usual</th>
               </tr>
             </thead>
             <tbody>
@@ -227,16 +282,21 @@ function RideReview({ s }: { s: RideSession }) {
                 return (
                   <tr key={i}>
                     <td>{i + 1}</td>
-                    <td>{num(r.fit?.tauS)} s</td>
-                    <td>{num(r.fit?.usualTauS)} s</td>
+                    <td>
+                      {num(r.fit?.tauS)} ± {num(tauSd(r))} s
+                    </td>
+                    <td>
+                      {num(r.fit?.usualTauS)} ± {USUAL_TAU_SD_S} s
+                    </td>
                     <td>{mmss(took - (r.peakT - r.startedT))} of data</td>
                     <td>{mmss(took)}</td>
-                    <td>{tauSlower(r) ? <span className="status-warning">⚠ slower</span> : <span className="muted">usual</span>}</td>
+                    <td>{tauSlower(r) ? <span className="status-warning">⚠ slower</span> : <span className="muted">within</span>}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+          <p className="small muted">"Slower" from τ ≥ {TAU_SLOWER_FACTOR} × usual ({num((current.compiled && recoveries[0]?.fit?.usualTauS ? recoveries[0].fit.usualTauS * TAU_SLOWER_FACTOR : null))} s). Fit uncertainty shrinks with more recovery data.</p>
         </section>
         <section className="card" aria-label="Work intervals">
           <h2>Work intervals</h2>
@@ -251,6 +311,7 @@ function RideReview({ s }: { s: RideSession }) {
                 <th>on target</th>
               </tr>
             </thead>
+            {/* the same measure as the verdict */}
             <tbody>
               {laps.map((l) => (
                 <tr key={l.label}>
@@ -286,11 +347,18 @@ function RideReview({ s }: { s: RideSession }) {
           <Bars bins={hist.bins} binWidth={hist.binWidth} />
         </section>
         <section className="card" aria-label="Power-duration">
-          <h2>Power–duration</h2>
-          <PdCurve mmp={mmp} height={140} />
-          <p className="legend">
-            <span className="key series-power" /> this ride <span className="key series-muted" /> best 90 days <span className="key series-muted dashed" /> all time
-          </p>
+          <WithTable
+            title="Power–duration"
+            table={<PdTable mmp={mmp} />}
+            chart={
+              <>
+                <PdCurve mmp={mmp} height={140} />
+                <p className="legend">
+                  <span className="key series-power" /> this ride <span className="key series-muted" /> best 90 days <span className="key series-muted dashed" /> all time
+                </p>
+              </>
+            }
+          />
         </section>
       </div>
       <div className="actions">
@@ -326,24 +394,57 @@ export function History() {
                     <b>{e.value}</b> ± {e.sd} {e.unit}
                   </td>
                   <td className="muted">
-                    {e.source === "prior" ? "prior · calibrating" : `${e.source} · n = ${e.n}`} · {e.updated}
+                    {e.source === "prior" ? "prior · not measured yet" : `${e.source} · n = ${e.n}`} · {e.updated} ({ageDays(e.updated)} d ago)
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <h3>Critical power by week</h3>
-          <Trend points={cpTrend.map((c) => ({ label: c.week, v: c.cp, sd: c.sd }))} unit="W" height={90} />
-          <p className="legend">
-            <span className="key series-power" /> estimate <span className="key band-key" /> ± 1 sd (narrows as rides add evidence)
-          </p>
+          <WithTable
+            title="Critical power by week"
+            table={
+              <table>
+                <thead>
+                  <tr>
+                    <th>week of</th>
+                    <th>CP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cpTrend.map((c) => (
+                    <tr key={c.week}>
+                      <td>{c.week}</td>
+                      <td>
+                        {c.cp} ± {c.sd} W
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            }
+            chart={
+              <>
+                <Trend points={cpTrend.map((c) => ({ label: c.week, v: c.cp, sd: c.sd }))} unit="W" height={90} />
+                <p className="legend">
+                  <span className="key series-power" /> estimate <span className="key band-key" /> ± 1 sd (narrows as rides add evidence)
+                </p>
+              </>
+            }
+          />
         </section>
         <section className="card" aria-label="Power-duration">
-          <h2>Power–duration</h2>
-          <PdCurve mmp={mmp} height={200} />
-          <p className="legend">
-            <span className="key series-power" /> latest ride <span className="key series-muted" /> best 90 days <span className="key series-muted dashed" /> all time
-          </p>
+          <WithTable
+            title="Power–duration"
+            table={<PdTable mmp={mmp} />}
+            chart={
+              <>
+                <PdCurve mmp={mmp} height={200} />
+                <p className="legend">
+                  <span className="key series-power" /> latest ride <span className="key series-muted" /> best 90 days <span className="key series-muted dashed" /> all time
+                </p>
+              </>
+            }
+          />
         </section>
       </div>
       <section className="card" aria-label="Rides">

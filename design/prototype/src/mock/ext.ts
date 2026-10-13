@@ -3,8 +3,8 @@
 // (DESIGN §10 #2). Each export names the issue that turns it into a real contract addition; the
 // production UI must not import this module. Scene fixtures (states the mock cannot produce) are
 // at the bottom and are labelled as such.
-import type { Backend, CoachNudge, CompiledWorkout, FlatBlock, HrRecoveryState, Proposal, RideStatus, StepNode, Workout } from "@crank/shared";
-import { findNode, Rng } from "@crank/shared";
+import type { Backend, CoachNudge, CompiledWorkout, FlatBlock, HrRecoveryState, MetricId, Proposal, RideStatus, StepNode, Workout } from "@crank/shared";
+import { findNode, parseDsl, Rng } from "@crank/shared";
 import { createStore } from "../store";
 
 /** #13: the target band (± % of target) belongs in the contract. */
@@ -28,8 +28,35 @@ export function cadenceState(rpm: number | null, step: StepNode | undefined): Ca
   return "in";
 }
 
-/** #13: τ "slower than usual" flag. */
-export const tauSlower = (r: HrRecoveryState) => (r.fit ? r.fit.tauS >= 1.15 * r.fit.usualTauS : false);
+/** #13: τ "slower than usual" flag; the usual τ carries its spread so "usual" is a range, not a point. */
+export const TAU_SLOWER_FACTOR = 1.15;
+export const tauSlower = (r: HrRecoveryState) => (r.fit ? r.fit.tauS >= TAU_SLOWER_FACTOR * r.fit.usualTauS : false);
+export const USUAL_TAU_SD_S = 6;
+/** #29 (fit quality): τ uncertainty from how much recovery the fit saw (stand-in until the core reports it). */
+export function tauSd(r: HrRecoveryState): number | null {
+  if (!r.fit) return null;
+  const minutes = Math.max(0.5, ((r.observed.at(-1)?.t ?? r.startedT) - r.peakT) / 60);
+  return Math.round(r.fit.tauS * (0.25 / Math.sqrt(minutes)));
+}
+
+/**
+ * #13 / #29: what the recovery estimate means. readyInS is clamped to the block's min/max, so a band
+ * pinned to a limit is not a prediction of HR crossing — it is the block's rule.
+ */
+export type RecoveryRead =
+  | { kind: "fitting" }
+  | { kind: "ends_at_min"; inS: number } // HR is predicted below target before the minimum
+  | { kind: "estimate"; lo: number; hi: number; mean: number; capped: boolean } // capped = hi is the block maximum
+  | { kind: "hr_lost"; inS: number };
+export function recoveryRead(r: HrRecoveryState, elapsedS: number, hrLost: boolean): RecoveryRead {
+  const toMin = Math.max(0, r.minS - elapsedS);
+  const toMax = Math.max(0, r.maxS - elapsedS);
+  if (hrLost) return { kind: "hr_lost", inS: toMax };
+  const ready = r.readyInS;
+  if (!ready) return { kind: "fitting" };
+  if (ready.hi <= toMin + 1) return { kind: "ends_at_min", inS: toMin };
+  return { kind: "estimate", lo: ready.lo, hi: ready.hi, mean: ready.mean, capped: ready.hi >= toMax - 1 };
+}
 
 /** #13: whether a summary metric means something for this session (decoupling needs a steady ride). */
 export const metricValid = (metric: string, c: CompiledWorkout) => metric !== "decoupling" || !c.blocks.some((b) => b.phase === "work" && b.durS < 600);
@@ -101,10 +128,19 @@ export const athleteModel: Estimate[] = [
   { label: "Critical power", value: 280, sd: 12, unit: "W", source: "rides", n: 9, updated: "11 Oct" },
   { label: "W′", value: 20.0, sd: 2.6, unit: "kJ", source: "rides", n: 9, updated: "11 Oct" },
   { label: "HR max", value: 186, sd: 3, unit: "bpm", source: "rides", n: 9, updated: "4 Oct" },
-  { label: "HR-recovery τ", value: 41, sd: 6, unit: "s", source: "rides", n: 14, updated: "11 Oct" },
+  // ages in days on 13 Oct: Today and History show how old each estimate is (stale ≥ 42 d)
+  { label: "HR-recovery τ", value: 55, sd: 6, unit: "s", source: "rides", n: 14, updated: "11 Oct" },
   { label: "Durability", value: 93, sd: 4, unit: "% CP @ 2000 kJ", source: "prior", n: 0, updated: "20 Sep" },
 ];
 export const calibration = { confidence: "medium" as "low" | "medium" | "high", rides: 9, unlocksNext: "HR-vs-usual at 300 W after 20 more minutes there" };
+/** Days between an "11 Oct"-style date and today (13 Oct 2026); estimates ≥ STALE_DAYS old look stale. */
+export const STALE_DAYS = 42;
+export function ageDays(d: string): number {
+  const months: Record<string, number> = { Aug: 7, Sep: 8, Oct: 9 };
+  const [day, mon] = d.split(" ");
+  const t = Date.UTC(2026, months[mon ?? ""] ?? 9, Number(day));
+  return Math.round((Date.UTC(2026, 9, 13) - t) / 86400000);
+}
 /** Onboarding result: priors from the questionnaire (low confidence). */
 export const priorModel: Estimate[] = [
   { label: "Critical power", value: 255, sd: 35, unit: "W", source: "self_report", n: 0, updated: "today" },
@@ -120,7 +156,13 @@ export const cpTrend = ["17 Aug", "24 Aug", "31 Aug", "7 Sep", "14 Sep", "21 Sep
 
 // ---------- planner (#15, #29) ----------
 /** Structured, checkable reasons for a proposal (the planner returns prose today). */
-export function proposalReasons(p: Proposal, minutes: number, legs: string, sleep: string): string[] {
+export function proposalReasons(p: Proposal, minutes: number, legs: string, sleep: string, capped = false): string[] {
+  if (capped)
+    return [
+      `Capped by your health answers: endurance only (≤ ${CAP_PCT.endurance} % FTP) until a medical check is confirmed.`,
+      `You said: legs ${legs}, sleep ${sleep} — within the cap that means steady aerobic riding.`,
+      `Fits your ${minutes} min: ${p.workout.name}.`,
+    ];
   return [
     `You said: legs ${legs}, sleep ${sleep}.`,
     `Last threshold work: over-unders on Fri 9 Oct, 4 days ago.`,
@@ -171,12 +213,16 @@ export function workIntervals(w: Workout, c: CompiledWorkout): LapRow[] {
     });
 }
 /** One line per part of the workout: did it do its job (the core computes this from lap stats). */
-export function intentVerdict(c: CompiledWorkout, recoveries: HrRecoveryState[]): { part: string; verdict: string; ok: boolean }[] {
+/** "On target" has one definition everywhere (ADR-0002 §7.8): share of ERG seconds within ±5 % of the controlled target, settle excluded. */
+export const ON_TARGET_DEF = "on target = share of ERG seconds within ±5 % of the target you were given, settling excluded";
+export function intentVerdict(c: CompiledWorkout, recoveries: HrRecoveryState[], laps: LapRow[], coachPct: number): { part: string; verdict: string; ok: boolean }[] {
   const shortReps = c.blocks.filter((b) => b.phase === "work" && b.durS < 60).length;
   const slow = recoveries.findIndex(tauSlower);
   const out = [];
   if (shortReps) out.push({ part: "VO2 sets", verdict: `${shortReps} of ${shortReps} reps ridden on target`, ok: true });
-  out.push({ part: "Threshold 2 × 4:00", verdict: "97 % of target on average — as planned", ok: true });
+  const onTarget = laps.length ? Math.round(laps.reduce((a, l) => a + l.compliancePct, 0) / laps.length) : null;
+  if (onTarget !== null)
+    out.push({ part: `Threshold ${laps.length} × 4:00`, verdict: `${onTarget} % on target${coachPct ? `, against the eased target (plan ${coachPct > 0 ? "+" : "−"}${Math.abs(coachPct)} % by coach)` : ""}`, ok: onTarget >= 85 });
   if (recoveries.length)
     out.push({ part: "HR recoveries", verdict: slow < 0 ? `${recoveries.length} of ${recoveries.length} within your usual τ` : `recovery ${slow + 1} slower than usual`, ok: slow < 0 });
   return out;
@@ -193,11 +239,70 @@ export const devices: Device[] = [
 /** Yesterday's check-in, pre-filled on Today (#29: persisted check-ins). */
 export const lastCheckin = { sleep: 4, legs: 3, stress: 2, motivation: 4, minutes: 45 } as const;
 
-/** Interrupted ride found on launch (#50: resumable rides). */
-export const interruptedRide = { workout: "Demo: VO2 sets + threshold (45′)", stoppedAt: "19:40 yesterday", riddenS: 1872, savedS: 1867, block: "block 36 of 39 · Threshold rep 1 of 2", gapNote: "crank saves every 5 s" };
+/** Interrupted ride found on launch (#50: resumable rides); `agoS` decides the re-entry plan. */
+export const interruptedRide = { workout: "Demo: VO2 sets + threshold (45′)", riddenS: 1872, savedS: 1867, block: "block 36 of 39 · Threshold rep 1 of 2, 1:40 into it", inWork: true, gapNote: "crank saves every 5 s" };
+
+// ---------- typical HR (#29: a "usual HR for this power" stream) ----------
+/** Usual HR = HR minus the backend's hr_vs_typical residual (stand-in for a typical-HR stream). */
+export const usualHr = (hr: (number | null)[], vsTyp: (number | null)[]) => hr.map((h, i) => (h === null || vsTyp[i] == null ? null : h - (vsTyp[i] as number)));
+
+// ---------- health check (#29: health-cap state; DESIGN §5.8) ----------
+export type HealthAnswer = "yes" | "no" | null;
+export const HEALTH_QS = [
+  { id: "chest", q: "Chest pain, or a heart condition, on exertion?", ifYes: "stop" },
+  { id: "faint", q: "Dizziness or fainting during or after exercise?", ifYes: "stop" },
+  { id: "meds", q: "Medication that changes your heart rate (e.g. beta blockers)?", ifYes: "hr" },
+  { id: "injury", q: "An injury that limits hard efforts?", ifYes: "cap" },
+] as const;
+export type HealthId = (typeof HEALTH_QS)[number]["id"];
+/** Consequences differ by answer: stop-and-check, HR features off, or an intensity cap. */
+export function healthConsequences(a: Partial<Record<HealthId, HealthAnswer>>) {
+  const yes = (id: HealthId) => a[id] === "yes";
+  return {
+    complete: HEALTH_QS.every((h) => a[h.id] === "yes" || a[h.id] === "no"),
+    stop: yes("chest") || yes("faint"),
+    hrOff: yes("meds"),
+    cap: yes("chest") || yes("faint") ? "endurance" : yes("injury") ? "threshold" : null,
+  } as const;
+}
+/** The planner respects the cap (stand-in: a capped workout instead of the mock's uncapped proposal). */
+export const CAP_PCT = { endurance: 75, threshold: 100 } as const;
+export function cappedProposal(ftp: number, minutes: number): Proposal {
+  const main = Math.max(10, minutes - 15);
+  const r = parseDsl(`"Warm-up" 10m ramp 45-70% 90rpm
+"Endurance" ${main}m 68% 85-95rpm
+"Cool-down" 5m ramp 60-40%`, ftp);
+  if ("error" in r) throw new Error(r.error.message);
+  return { workout: { id: "capped", name: `Endurance ${minutes}′ (capped)`, ftp, nodes: r.nodes }, rationale: "Capped at endurance until the medical check is confirmed." };
+}
+
+// ---------- interrupted rides (#50; DESIGN §6.6) ----------
+/** Re-entry policy keyed to how long ago the ride stopped and where. */
+export const RESUME = { softOnlyS: 120, rewarmS: 15 * 60, rewarmBlockS: 180 } as const;
+export type ResumePlan = { kind: "continue"; note: string } | { kind: "rewarm"; note: string } | { kind: "stale"; note: string };
+export function resumePlan(stoppedAgoS: number, inWork: boolean): ResumePlan {
+  if (stoppedAgoS <= RESUME.softOnlyS) return { kind: "continue", note: "continues where you stopped; ERG eases in over 5 s" };
+  if (stoppedAgoS <= RESUME.rewarmS)
+    return { kind: "rewarm", note: `adds a ${RESUME.rewarmBlockS / 60}-min re-warm-up ramp${inWork ? ", then restarts the interval you were in from its start" : ""}` };
+  return { kind: "stale", note: "too long ago to pick up the same session" };
+}
+
+// ---------- plain-language edits (#29: planner rewrite rationale) ----------
+export function humanToken(t: string): string {
+  let m: RegExpExecArray | null;
+  if ((m = /^(\d+)x/.exec(t))) return `${m[1]} times`;
+  if ((m = /^(\d+(?:\.\d+)?)%$/.exec(t))) return `${m[1]} % FTP`;
+  if ((m = /^(\d+)-(\d+)%$/.exec(t))) return `${m[1]}–${m[2]} % FTP`;
+  if ((m = /^hr<(\d+)$/.exec(t))) return `until HR < ${m[1]}`;
+  if ((m = /^(\d+)rpm$/.exec(t))) return `${m[1]} rpm`;
+  if ((m = /^(?:(\d+)m)?(?:(\d+)s)?$/.exec(t)) && (m[1] || m[2])) return `${m[1] ? `${m[1]} min` : ""}${m[1] && m[2] ? " " : ""}${m[2] ? `${m[2]} s` : ""}`;
+  return t;
+}
 
 // ---------- scene fixtures (states the mock cannot produce; DESIGN §12) ----------
 export interface SceneFixture {
+  /** live metric values the core would send in this state (e.g. cadence < 40 rpm for ERG release) */
+  metrics?: Partial<Record<MetricId, number | null>>;
   status?: Partial<RideStatus>;
   facts?: Partial<CoreFacts>;
   screenCrashed?: boolean;
@@ -205,5 +310,9 @@ export interface SceneFixture {
   healthCap?: boolean;
   /** Review: expand the coach call with this index */
   openCall?: number;
+  /** Resume sheet: seconds since the interrupted ride stopped */
+  stoppedAgoS?: number;
+  /** Onboarding: health answers so far */
+  health?: Partial<Record<HealthId, HealthAnswer>>;
 }
 export const sceneFixture = createStore<SceneFixture>({});

@@ -182,6 +182,7 @@ export function Settings() {
               <li>One call changes the remaining work by at most −5 % or +3 %.</li>
               <li>All coach changes together stay within −10 % … +5 % of the plan.</li>
               <li>Increases always ask; silence never raises the load. No push without HR or while the health cap is on.</li>
+              <li>Coach only says yes; Keep is the only way back to the plan; presses within 1.5 s of a new call are ignored.</li>
             </ul>
           </>
         )}
@@ -228,7 +229,7 @@ function DistanceField() {
   );
 }
 
-const ACTION_LABEL: Record<Action, string> = { coach: "Coach (accept · undo)", keep: "Keep plan", pause: "Pause / resume", skip: "Skip block", minus: "Intensity −5 %", plus: "Intensity +5 %" };
+const ACTION_LABEL: Record<Action, string> = { coach: "Coach (accept · choose)", keep: "Keep (decline · back to plan)", pause: "Pause / resume", skip: "Skip block", minus: "Intensity −5 %", plus: "Intensity +5 %" };
 const SOUND_LABEL: Record<SoundEvent, [string, () => void]> = {
   block: ["Block change", () => play.block(true)],
   countdown: ["Last 3 seconds", () => play.tick()],
