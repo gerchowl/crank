@@ -1,0 +1,31 @@
+{
+  "name": "@neo/spike-solid",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p .",
+    "lint": "eslint --max-warnings 0 .",
+    "check": "pnpm typecheck && pnpm lint",
+    "shots": "node scripts/shots.mjs"
+  },
+  "dependencies": {
+    "@neo/shared": "workspace:*",
+    "solid-js": "^1.9.17",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "eslint-plugin-solid": "^0.18.1",
+    "globals": "^17.13.0",
+    "playwright": "^1.64.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.71.2",
+    "vite": "^8.3.4",
+    "vite-plugin-solid": "^2.11.14"
+  }
+}
