@@ -56,6 +56,9 @@ export interface Heatmap2D {
   xLo: number; yLo: number; cols: number; rows: number;
   seconds: number[];     // row-major, rows * cols
 }
+/** Full-ride 1 Hz record (per-second mean); index i = ride second fromS + i; null = no data. */
+export interface RideStreams { fromS: number; toS: number; series: Partial<Record<MetricId, (number | null)[]>> }
+
 export interface MmpCurve { durationsS: number[]; today: number[]; best90d: number[]; allTime: number[] }
 
 // ---------- HR recovery ----------
@@ -201,6 +204,10 @@ export interface Backend {
   heatmap(x: MetricId, y: MetricId, xBin: number, yBin: number): Heatmap2D;
   mmp(): MmpCurve;
   hrRecovery(): HrRecoveryState;
+  /** Completed seconds of the ride record; pass fromS to fetch incrementally. Poll ≤ 1 Hz. */
+  streams(metrics: MetricId[], fromS?: number): RideStreams;
+  /** Finished hr_recovery blocks of this ride, oldest first. */
+  recoveries(): HrRecoveryState[];
   onStatus(cb: (s: RideStatus) => void): Unsubscribe;
   onNudge(cb: (n: CoachNudge) => void): Unsubscribe;
 
