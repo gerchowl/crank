@@ -22,8 +22,10 @@ high bits zero. Reads reject malformed payloads and infinite values. Timestamps
 are UTC Unix seconds; an aborted ride's end timestamp is the recovery time.
 
 Each JSON column has its own sealed newtype and requires an object containing an
-integer `v`. Only validated text is exposed, never `serde_json::Value`. Owner
-types will replace these envelopes through forward migrations, tracked in
+integer `v`. The two workout columns also validate through the actual domain
+`Workout` type from #76 and expose that typed value; #76 landed before v1's
+initial release. Other owner types will replace their envelopes through forward
+migrations, tracked in
 [#156](https://github.com/gerchowl/crank/issues/156). Metric distribution types on
 dev are not ride-summary/lap-stat schemas, so those columns also use envelopes.
 The initial migration includes the scalar `athlete_profile` table required by

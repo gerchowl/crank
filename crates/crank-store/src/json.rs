@@ -52,18 +52,58 @@ macro_rules! column {
         }
     };
 }
-column!(
+// #76 landed before schema v1's first release. Keep the version envelope while
+// validating the producer's actual Workout schema, including nested nodes.
+macro_rules! workout_column {
+    ($name:ident, $table:literal, $column:literal, $doc:literal) => {
+        #[doc = $doc]
+        #[doc = "Validated through crank-domain's Workout (#76/#68) with integer v."]
+        #[doc = "ADR-0001 §6; owner-type tracking: #156."]
+        #[derive(Clone, Debug, PartialEq)]
+        pub struct $name {
+            text: String,
+            workout: crank_domain::workout::Workout,
+        }
+        impl $name {
+            /// The producer's validated workout value.
+            #[must_use]
+            pub fn workout(&self) -> &crank_domain::workout::Workout {
+                &self.workout
+            }
+        }
+        impl sealed::Sealed for $name {}
+        impl JsonColumn for $name {
+            const TABLE: &'static str = $table;
+            const COLUMN: &'static str = $column;
+            const KEYS: &'static [&'static str] = &["id"];
+            fn parse(text: &str) -> Result<Self, StoreError> {
+                validate(text, Self::TABLE, Self::COLUMN)?;
+                let workout = serde_json::from_str(text).map_err(|e| StoreError::InvalidJson {
+                    table: Self::TABLE,
+                    column: Self::COLUMN,
+                    reason: e.to_string(),
+                })?;
+                Ok(Self {
+                    text: text.into(),
+                    workout,
+                })
+            }
+            fn as_str(&self) -> &str {
+                &self.text
+            }
+        }
+    };
+}
+workout_column!(
     WorkoutTreeJson,
     "workout",
     "tree_json",
-    ["id"],
     "Workout tree; owner #76/#68."
 );
-column!(
+workout_column!(
     RideWorkoutJson,
     "ride",
     "workout_json",
-    ["id"],
     "Ridden workout; owner #76/#68."
 );
 column!(
