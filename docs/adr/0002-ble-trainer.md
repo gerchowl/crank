@@ -86,7 +86,7 @@ pub enum ControlMode {
     Erg { target_w: u16 },
     Sim { grade_pct: f32, crr: f32, wind: Wind },
     Resistance { pct: f32 },                    // 0..=100
-    Free,                                       // no control page sent; trainer default feel
+    Free,                                       // explicit flat-road SIM: grade 0, default Crr and wind (§7.9)
 }
 pub struct Wind { pub cw_kg_per_m: f32, pub speed_kmh: f32, pub drafting: f32 }
 pub struct RiderConfig { pub rider_kg: f32, pub bike_kg: f32, pub wheel_m: f32 }
@@ -95,9 +95,10 @@ pub enum TrainerCommand { SetMode(ControlMode), SetRider(RiderConfig), Disconnec
 
 pub enum TrainerEvent {
     Sample(TrainerSample),
-    Applied { mode: ControlMode },              // trainer confirmed (§4.4)
-    Rejected { mode: ControlMode, reason: CommandStatus },
-    Link(LinkState),                            // Connecting | Connected | Lost
+    Applied { cmd: CommandId, mode: ControlMode },     // page 71 matched this command (§4.4)
+    Rejected { cmd: CommandId, mode: ControlMode, reason: CommandStatus },
+    Unconfirmed { cmd: CommandId, mode: ControlMode }, // no matching page 71 within 1 s
+    Link(LinkState),                            // Connecting | Ready | Lost (Ready = transport, rider config, caps done)
     Fault(DeviceError),
 }
 
@@ -127,8 +128,11 @@ pub trait Discovery: Send + Sync + 'static {
 #[derive(thiserror::Error, Debug)]
 pub enum DeviceError {
     AdapterUnavailable, PermissionDenied, NotFound,
-    ConnectFailed(String), Gatt(String), Protocol(crank_fec::FrameError), Disconnected,
+    ConnectFailed(String), Gatt(String),
+    Protocol { kind: ProtocolErrorKind, detail: String },  // transport-neutral; crank-ble maps crank_fec::FrameError
+    Disconnected,
 }
+pub enum ProtocolErrorKind { Framing, Checksum, UnexpectedPage, Encode }
 ```
 
 Implementations:
@@ -242,21 +246,37 @@ negative masses) are `EncodeError`s; clamping to trainer capabilities is the eng
   HIL check 7 measures whether the NEO needs it.
 - **Transport acknowledgement:** writes use GATT write-with-response; a GATT error becomes
   `TrainerEvent::Fault(DeviceError::Gatt)`. One write in flight at a time.
-- **Application acknowledgement:** after a control-page change, the writer requests page 71 once (page
-  70, byte 6 = 71). `TrainerEvent::Applied` fires when page 71 reports *pass* for that command page;
-  *fail / not supported / rejected* fire `Rejected` and the UI shows it. Whether the NEO implements page
-  71 is HIL check 3; if it does not, this ADR is amended to "GATT acknowledgement only" before #43
+- **Application acknowledgement (correlated).** Every control write gets a local `CommandId`; at most one
+  control command is *outstanding*. After writing it, the writer requests page 71 (page 70, byte 6 = 71)
+  on the next free tick. A page-71 response **matches** only if byte 1 equals the command's page **and**
+  the echoed data bytes 4–7 equal the bytes we wrote (for page 49 that includes the target in bytes 6–7)
+  **and** the sequence byte differs from the last page-71 sequence seen before the write. Then:
+  *pass* → `Applied`; *fail / not supported / rejected* → `Rejected` (shown in the UI); *pending* → request
+  page 71 again on the next tick. Non-matching responses are stale (an older target) and are ignored with a
+  debug log. If no matching response arrives within 1 s (4 ticks) → `Unconfirmed`, shown as "trainer not
+  confirming"; the keep-alive keeps sending the same target, nothing else is retried. A newer `SetMode`
+  **supersedes** the outstanding command: its correlation is dropped and late responses for it count as
+  stale. Keep-alive re-sends are not new commands. Whether the NEO implements page 71 and echoes the data
+  bytes is HIL check 3; if it does not, this ADR is amended to "GATT acknowledgement only" before #43
   implements the step.
 - **Connect sequence:** connect → discover → subscribe `fec2` → read DIS → page 55 (rider config) →
-  request page 54 (capabilities) → `TrainerLink` returned → engine sets the mode.
+  request page 54 (capabilities) → `TrainerLink` returned with `Link(Ready)` → engine sets the mode. The
+  driver never chooses a control mode itself; restoring control is always the engine's `SetMode`.
 
 ## 5. Decision: sensor sources, discovery, pairing memory
 
 - **One telemetry source per ride, never mixed.** For an FE-C-controlled trainer the source is FE-C
   **page 25** (power, cadence, accumulated power, trainer status, target-limit flags) plus **page 16**
   (speed, distance). Reasons: it is the link we must hold anyway for control; it carries the target-limit
-  flags the ERG policy needs (§7); accumulated power + event count give exact average power across dropped
-  notifications, so the 1 Hz record has no gaps from single lost packets. Cycling Power 2A63 and CSC 2A5B
+  flags the ERG policy needs (§7); accumulated power + event count survive dropped notifications (below).
+  **Gap filling:** between two received page-25 frames, `Δaccumulated / Δevents` (both modulo their
+  rollover: 65 536 W and 256 events) is the exact *average* power of the missed events, not their
+  individual values, so kJ stay exact but per-second means inside the gap are estimates. The engine fills
+  only gaps shorter than the 2.0 s loss threshold (§6) with that average and marks those seconds
+  `estimated` in the record (ADR-0001 §6); seconds wholly covered by received frames are exact. Longer gaps
+  are dropouts: `null`, no filling. After a reconnect or an event-count jump that is not plausible for the
+  elapsed time (more than 4 events per 250 ms), the first frame starts a new baseline; no delta is taken
+  across it. Cycling Power 2A63 and CSC 2A5B
   are **not subscribed** during FE-C rides. The source is recorded in `ride.telemetry_source`.
   Acceptance in HIL check 5: page 25 arrives at ≥ 2 Hz and its per-second mean power agrees with 2A63
   within ±1 W; otherwise the ADR is amended to use 2A63 for telemetry.
@@ -280,15 +300,18 @@ negative masses) are `EncodeError`s; clamping to trainer capabilities is the eng
 ## 6. Decision: reconnection and dropout in a running workout
 
 - **Detection:** a btleplug `DeviceDisconnected` event, or no trainer sample for 8 ticks (2.0 s at 4 Hz),
-  marks the trainer `Lost`. The engine enters `paused(trainer_lost)` (ADR-0001 §5): ride time and the block
-  timer freeze, the record gets `null` (no interpolation).
+  marks the trainer `Lost`. The engine enters `paused(trainer_lost)` (ADR-0001 §5): from the detecting tick
+  workout time and the block timer freeze while session time continues; the record gets `null` (no
+  interpolation). The ≤ 2 s detection window before that stays workout time with `null` record values
+  (ADR-0001 §5).
 - **Reconnect loop** (driver task, active while a ride is loaded or the ride view is open): connect to the
   known peripheral, backoff 0.5 s, 1 s, 2 s, 4 s, then every 5 s, until the rider ends the ride or releases
   the trainer. Each attempt is logged; the UI shows "reconnecting (attempt n)".
-- **On reconnect:** re-subscribe `fec2`, re-send page 55, re-check page 54, re-send the current control
-  mode (the engine re-issues `SetMode` on `Link(Connected)`), then `Link(Connected)`. The ride resumes when
-  cadence > 0 (ADR-0001 §5). In ERG the target is re-applied through the soft start of §7, because
-  the trainer may have been in its standalone mode while disconnected (behaviour measured in HIL check 11).
+- **On reconnect**, in this order: (1) the driver re-subscribes `fec2`, re-sends page 55 and re-checks page
+  54, then emits `Link(Ready)`; (2) on `Ready` the engine issues `SetMode` with the current mode (in ERG via
+  the soft start of §7, because the trainer may have been in its standalone mode while disconnected,
+  measured in HIL check 11); (3) the ride resumes when cadence > 0 (ADR-0001 §5). The driver never re-sends
+  a control mode on its own, so there is exactly one owner of control state.
 - **HR strap dropout:** same reconnect loop; the ride does not pause; HR metrics are `null`; HR-dependent
   blocks and judge features behave as in ADR-0001 §5.
 - **Packet loss without disconnect:** handled by accumulated power (§5); single missing pages are not a
@@ -323,13 +346,22 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    controller: an update every 5 s, at most ±5 W per update, bounded to 40–90 % FTP, frozen while HR is
    `null`.
 8. **Shown vs controlled power:** the UI shows filtered power per widget (default `power_3s`); `delta_target`
-   and `compliance` use `power_3s` against the **controlled** target, skipping 5 s of settle after each
-   target change (as the mock defines compliance); the ride record stores unfiltered per-second means of
+   uses `power_3s` against the **controlled** target; the ride record stores unfiltered per-second means of
    the source; coach features use their own windows from the knowledge pack. No display filter ever
    feeds control.
-9. **SIM and resistance:** `Sim` sends page 50 (wind; defaults: 0.51 kg/m, 0 km/h, drafting 1.0) and page
-   51 (grade from the free-ride/sim control, Crr default 0.004) at ≤ 1 Hz on change; page 55 carries
-   rider mass from the athlete profile and bike mass and wheel size from equipment settings.
+   **Compliance** = share of ERG seconds with `power_3s` within ±5 % of the controlled target, excluding
+   *settle* seconds. Settle is triggered only by **discontinuities**, never by continuous target updates:
+   (a) the first 5 s of each block whose start target differs from the previous block's end target (the
+   mock's per-block settle); (b) a manual ± or coach change: 5 s; (c) an ERG (re-)engagement: the soft
+   start's 5 s plus 5 s. Within `ramp` blocks and HR-steered steps the target moves continuously and is
+   compared second by second with no settle; released (§7.4) and paused seconds are excluded. Compliance
+   is computed only in the engine (#13).
+9. **SIM, resistance and free:** `Sim` sends page 50 (wind; defaults: 0.51 kg/m, 0 km/h, drafting 1.0) and
+   page 51 (grade from the free-ride/sim control, Crr default 0.004) at ≤ 1 Hz on change; page 55 carries
+   rider mass from the athlete profile and bike mass and wheel size from equipment settings. `Free` is
+   **sent explicitly** as flat-road SIM (page 50 defaults, page 51 grade 0 %), never as "send nothing": an
+   FE-C trainer keeps its last control page, so silence after ERG could leave the ERG target active.
+   HIL check 12 (#44) confirms that ERG → `Free` releases the target on the NEO.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 
@@ -359,8 +391,11 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
   - Part A, no pedalling (an agent can run it via the Alacritty path while the trainer is powered): checks
     1–4 (checksum, message type, page 71, pages 54/80/81) and the idle notification pattern.
   - Part B, owner, about 20 min of pedalling in one sitting, script-guided with on-screen prompts: checks
-    5–9 and 11 (page 25 rate and agreement with 2A63; ERG step response at 90 rpm; cadence steps at 200 W;
-    keep-alive need; SIM grades; low-cadence stall point; dropout and reconnect).
+    5–9, 11 and 12 (page 25 rate and agreement with 2A63; ERG step response at 90 rpm; cadence steps at
+    200 W; keep-alive need; SIM grades; low-cadence stall point; dropout and reconnect; ERG → `Free`
+    releases the target).
+  - Check 3 also records whether page 71 echoes the command's data bytes and advances its sequence byte,
+    which the acknowledgement correlation of §4.4 relies on.
   - Check 10 (single central) needs a second central device; done with the owner's phone in the same
     sitting.
   - Results go to `docs/hil/<date>-fec.md`; any contradiction with this ADR amends it before #43 merges.
