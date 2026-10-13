@@ -3,7 +3,7 @@ import { useState, type ReactNode } from "react";
 import type { CoachNudge, MetricId, MmpCurve, RideStreams } from "@crank/shared";
 import { Bars, gaps, Panel, PdCurve, Profile, TimeAxis, Trend } from "../charts";
 import { mmss, num, signed } from "../format";
-import { ageDays, athleteModel, calibration, coachOffsetPct, coachReason, cpTrend, intentVerdict, metricValid, ON_TARGET_DEF, pastRides, sceneFixture, tauSd, tauSlower, TAU_SLOWER_FACTOR, USUAL_TAU_SD_S, usualHr, workIntervals } from "../mock/ext";
+import { ageDays, athleteModel, calibration, coachOffsetPct, coachReason, cpTrend, intentVerdict, metricValid, ON_TARGET_DEF, pastRides, planTarget, sceneFixture, tauClass, tauSd, TAU_SLOWER_FACTOR, USUAL_TAU_SD_S, usualHr, workIntervals } from "../mock/ext";
 import { backend, navigate, noStatus, usePoll, useMetric, useSession, type RideSession } from "../session";
 import { useStore } from "../store";
 
@@ -38,18 +38,26 @@ function Tile({ metric, label, unit, digits }: { metric: MetricId; label: string
 }
 
 /** The 3 minutes around a coach call (1 min before, 2 after), so the rating has context. */
-function CallContext({ streams, n, no }: { streams: RideStreams; n: CoachNudge; no: number }) {
+function CallContext({ streams, n, no, plan }: { streams: RideStreams; n: CoachNudge; no: number; plan: (number | null)[] }) {
   const from = Math.max(0, Math.round(n.t) - 60);
   const to = Math.min(streams.toS, Math.round(n.t) + 120);
   const cut = (m: MetricId) => (streams.series[m] ?? []).slice(from, to);
   const usual = usualHr(cut("hr"), cut("hr_vs_typical"));
+  const planCut = plan.slice(from, to);
+  const at = Math.round(n.t) - from;
+  const gap = (() => {
+    const h = cut("hr")[at];
+    const u = usual[at];
+    return h != null && u != null ? Math.round(h - u) : null;
+  })();
+  const gapLabel = gap === null ? undefined : `${gap > 0 ? "+" : ""}${gap} bpm vs usual`;
   return (
     <div className="call-context">
       <p className="muted">{n.message}</p>
-      <Panel n={to - from} fromS={from} unit="W" height={60} markers={[Math.round(n.t)]} markerNo={[no]} series={[{ values: cut("target_power"), cls: "target", label: "target", area: true }, { values: cut("power"), cls: "series-power", label: "power" }]} />
-      <Panel n={to - from} fromS={from} unit="bpm" height={64} lo={80} markers={[Math.round(n.t)]} markerNo={[no]} series={[{ values: usual, cls: "usual-hr", label: "your usual HR at this power", dashed: true }, { values: cut("hr"), cls: "series-hr", label: "heart rate" }]} />
+      <Panel n={to - from} fromS={from} unit="W" height={80} zoom markers={[Math.round(n.t)]} markerNo={[no]} series={[{ values: planCut, cls: "plan-line", label: "planned target", dashed: true }, { values: cut("target_power"), cls: "eased-line", label: "target you were given" }, { values: cut("power"), cls: "series-power", label: "power" }]} />
+      <Panel n={to - from} fromS={from} unit="bpm" height={80} zoom markers={[Math.round(n.t)]} markerNo={[no]} between={[cut("hr"), usual]} betweenLabel={gapLabel} series={[{ values: usual, cls: "usual-hr", label: "your usual HR at this power", dashed: true }, { values: cut("hr"), cls: "series-hr", label: "heart rate" }]} />
       <p className="legend">
-        <span className="key series-hr" /> heart rate <span className="key usual-key" /> your usual HR for this power (the gap is what the coach saw)
+        <span className="key plan-key" /> plan <span className="key eased-key" /> target given <span className="key series-power" /> power · <span className="key series-hr" /> HR <span className="key usual-key" /> your usual HR here (shaded: the gap the coach saw)
       </p>
       <TimeAxis n={to - from} fromS={from} />
     </div>
@@ -90,6 +98,29 @@ function RideTable({ streams, calls }: { streams: RideStreams; calls: CoachNudge
         ))}
       </tbody>
     </table>
+  );
+}
+
+const OUTCOME: Record<CoachNudge["status"], string> = { pending: "asking", auto_applied: "applied (auto)", accepted: "accepted", declined: "declined", expired: "no answer → plan kept" };
+/** What the coach did, in ride time: every call with verdict, band, outcome and effect (VIEWS P20). */
+function CoachTimeline({ calls, reverted, n }: { calls: CoachNudge[]; reverted: ReadonlySet<string>; n: number }) {
+  return (
+    <div className="coach-timeline" aria-label="Coach timeline">
+      <span className="axis-y hi">coach</span>
+      {calls.map((c, i) => {
+        const changed = (c.status === "auto_applied" || c.status === "accepted") && !reverted.has(c.callId);
+        return (
+          <div key={c.callId} className={`tl-call ${changed ? "tl-changed" : "tl-kept"}`} style={{ left: `${(c.t / Math.max(1, n - 1)) * 100}%` }}>
+            <span className="call-no">{i + 1}</span>
+            <b>
+              {c.verdict.replace("_", " ")} {c.proposedPctChange ? `${signed(c.proposedPctChange)} %` : ""}
+            </b>
+            <span>{reverted.has(c.callId) ? "undone → plan" : OUTCOME[c.status]}</span>
+            <span className="muted">{c.band}</span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -157,9 +188,11 @@ function RideReview({ s }: { s: RideSession }) {
   const series = streams.series;
   const n = streams.toS - streams.fromS;
   const markers = nudges.map((x) => Math.round(x.t));
-  const laps = workIntervals(current.workout, current.compiled);
+  const coachPct = coachOffsetPct(nudges, reverted);
+  const laps = workIntervals(current.workout, current.compiled, coachPct);
+  const plan = planTarget(series.target_power ?? [], nudges, reverted, current.workout.ftp);
   const finished = status?.state === "finished";
-  const verdict = intentVerdict(current.compiled, recoveries, laps, coachOffsetPct(nudges, reverted));
+  const verdict = intentVerdict(current.compiled, recoveries, laps, coachPct);
   const noPower = gaps(series.power ?? []).reduce((a, [x, y]) => a + (y - x), 0);
   const noHr = gaps(series.hr ?? []).reduce((a, [x, y]) => a + (y - x), 0);
   const rate = (callId: string, r: "right" | "wrong" | "unsure") => {
@@ -178,7 +211,7 @@ function RideReview({ s }: { s: RideSession }) {
         <ul className="verdict-list">
           {verdict.map((v) => (
             <li key={v.part} className={v.ok ? "ok" : "warn"}>
-              <span aria-hidden>{v.ok ? "✓" : "!"}</span> <b>{v.part}</b> — {v.verdict}
+              <span aria-hidden>{v.ok ? "✓" : "?"}</span> <b>{v.part}</b> — {v.verdict}
             </li>
           ))}
           <li className="ok">
@@ -235,7 +268,7 @@ function RideReview({ s }: { s: RideSession }) {
                     ))}
                   </span>
                 </div>
-                {open === x.callId && <CallContext streams={streams} n={x} no={i + 1} />}
+                {open === x.callId && <CallContext streams={streams} n={x} no={i + 1} plan={plan} />}
               </li>
             ))}
           </ol>
@@ -246,7 +279,7 @@ function RideReview({ s }: { s: RideSession }) {
         <div className="card-head">
           <h2>The ride</h2>
           <span className="legend">
-            <span className="key series-power" /> power <span className="key area-key" /> planned target <span className="key series-hr" /> heart rate <span className="key series-cadence" /> cadence <span className="key marker-key" /> coach call (numbered) <span className="key gap-key" /> no data
+            <span className="key series-power" /> power <span className="key plan-key" /> plan <span className="key eased-key" /> target given (after coach) <span className="key series-hr" /> heart rate <span className="key series-cadence" /> cadence <span className="key marker-key" /> coach call <span className="key gap-key" /> no data
           </span>
           <button onClick={() => setTable(!table)}>{table ? "Show chart" : "Show as table"}</button>
         </div>
@@ -254,10 +287,21 @@ function RideReview({ s }: { s: RideSession }) {
           <RideTable streams={streams} calls={nudges} />
         ) : (
           <>
-            <Panel n={n} unit="W" height={130} markers={markers} series={[{ values: series.target_power ?? [], cls: "target", label: "planned target", area: true }, { values: series.power ?? [], cls: "series-power", label: "power" }]} />
+            <Panel
+              n={n}
+              unit="W"
+              height={130}
+              markers={markers}
+              series={[
+                { values: plan, cls: "plan-line", label: "planned target", dashed: true },
+                { values: series.target_power ?? [], cls: "eased-line", label: "target you were given" },
+                { values: series.power ?? [], cls: "series-power", label: "power" },
+              ]}
+            />
             <Panel n={n} unit="bpm" height={90} lo={80} markers={markers} series={[{ values: series.hr ?? [], cls: "series-hr", label: "heart rate" }]} />
             <Panel n={n} unit="rpm" height={60} markers={markers} series={[{ values: series.cadence ?? [], cls: "series-cadence", label: "cadence" }]} />
             <TimeAxis n={n} />
+            <CoachTimeline calls={nudges} reverted={reverted} n={n} />
           </>
         )}
       </section>
@@ -290,7 +334,7 @@ function RideReview({ s }: { s: RideSession }) {
                     </td>
                     <td>{mmss(took - (r.peakT - r.startedT))} of data</td>
                     <td>{mmss(took)}</td>
-                    <td>{tauSlower(r) ? <span className="status-warning">⚠ slower</span> : <span className="muted">within</span>}</td>
+                    <td>{(() => { const c = tauClass(r); return c === "slower" ? <span className="status-warning">⚠ slower</span> : c === "uncertain" ? <span className="status-info">? too close to call</span> : <span className="muted">within</span>; })()}</td>
                   </tr>
                 );
               })}
@@ -316,7 +360,7 @@ function RideReview({ s }: { s: RideSession }) {
               {laps.map((l) => (
                 <tr key={l.label}>
                   <td>{l.label}</td>
-                  <td>{l.targetW} W</td>
+                  <td>{l.planW ? <>{l.planW} → {l.targetW} W <span className="tag">coach</span></> : `${l.targetW} W`}</td>
                   <td>{l.avgW} W</td>
                   <td>{l.avgHr}</td>
                   <td>{l.cadence}</td>
@@ -343,8 +387,30 @@ function RideReview({ s }: { s: RideSession }) {
 
       <div className="two">
         <section className="card" aria-label="Time at power">
-          <h2>Time at power</h2>
-          <Bars bins={hist.bins} binWidth={hist.binWidth} />
+          <WithTable
+            title="Time at power"
+            chart={<Bars bins={hist.bins} binWidth={hist.binWidth} />}
+            table={
+              <table>
+                <thead>
+                  <tr>
+                    <th>power</th>
+                    <th>time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {hist.bins.filter((b) => b.seconds > 0).map((b) => (
+                    <tr key={b.lo}>
+                      <td>
+                        {b.lo}–{b.lo + hist.binWidth} W
+                      </td>
+                      <td>{mmss(b.seconds)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            }
+          />
         </section>
         <section className="card" aria-label="Power-duration">
           <WithTable
@@ -388,7 +454,7 @@ export function History() {
           <table>
             <tbody>
               {athleteModel.map((e) => (
-                <tr key={e.label}>
+                <tr key={e.label} className={e.source === "prior" ? "stale" : undefined}>
                   <td>{e.label}</td>
                   <td className="num">
                     <b>{e.value}</b> ± {e.sd} {e.unit}

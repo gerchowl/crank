@@ -417,8 +417,8 @@ pre.dsl ins { text-decoration: none; background: color-mix(in srgb, var(--status
   .device { grid-template-columns: 80px minmax(0, 1fr) minmax(0, 1fr) 96px; }
   .device > .protocol { display: none; }
   .history .two { grid-template-columns: minmax(0, 1fr); }
-  .ride-row { grid-template-columns: 90px minmax(0, 1.4fr) minmax(0, 1fr) 130px; }
-  .ride-row > :last-child { display: none; }
+  .ride-row { grid-template-columns: 90px minmax(0, 1.4fr) 130px 80px; }
+  .ride-row > .mini { display: none; }
   .statusbar { gap: 12px; padding: 0 10px; }
   .statusbar .pause { width: 124px; font-size: 18px; gap: 8px; }
   .statusbar .clock { width: 160px; }
@@ -447,9 +447,6 @@ svg .cap-line { stroke: var(--status-warning); stroke-width: 2; stroke-dasharray
 /* every area / band has a ≥ 3:1 edge; fills are decoration (DESIGN §6.3) */
 svg .area-edge { fill: none; stroke: var(--target); stroke-width: 2; }
 svg .band-edged { stroke: var(--series-hr); stroke-width: 1; stroke-dasharray: 3 3; }
-.trend svg .band { stroke: var(--series-power); stroke-width: 1; stroke-dasharray: 3 3; }
-svg .gap { fill-opacity: 1; }
-svg .gap-line { stroke: var(--ink-muted); }
 svg .usual-hr { stroke: var(--ink-secondary); stroke-width: 2; }
 .key.usual-key { background: repeating-linear-gradient(90deg, var(--ink-secondary) 0 4px, transparent 4px 7px); }
 .ride-table tr.event-row td { font-weight: 600; color: var(--ink-primary); background: color-mix(in srgb, var(--status-warning) 12%, transparent); }
@@ -462,3 +459,65 @@ svg .usual-hr { stroke: var(--ink-secondary); stroke-width: 2; }
 .yn.unanswered > span:first-child { color: var(--ink-primary); }
 .yn .tag { margin-left: 6px; color: var(--status-info); }
 .settings .device > span:nth-child(4) { white-space: nowrap; }
+
+/* ---------- round 4: safety, salience, evidence ---------- */
+.medical-stop { border: 3px solid var(--status-serious); }
+.medical-stop h2 { font-size: 26px; color: var(--status-serious); }
+.stop-note { border: 2px solid var(--status-serious); color: var(--ink-primary); }
+.free-confirm { margin-top: 12px; padding: 14px; border-radius: 10px; background: var(--surface-2); }
+.check { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; font-weight: 600; }
+.check input { min-height: 0; width: 22px; height: 22px; margin-top: 2px; }
+.yn.symptoms { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); border-bottom: 0; }
+.checkin[data-prefilled] .scale-row .tap.on { background: none; color: var(--ink-primary); border: 2px dashed var(--accent-text); }
+.free-note { font-size: 20px; padding: 10px 14px; border-radius: 10px; background: var(--surface-2); }
+/* fills are decoration; edges and marks carry meaning (§6.3) */
+svg .band { fill: var(--series-hr); opacity: 1; fill-opacity: 0.18; }
+.trend svg .band { fill: var(--series-power); fill-opacity: 0.2; }
+svg .band-edge { fill: none; stroke: var(--series-hr); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.trend svg .band-edge { stroke: var(--series-power); }
+svg rect.gap { fill: color-mix(in srgb, var(--status-warning) 18%, transparent); stroke: var(--status-warning); stroke-width: 1.5; stroke-dasharray: 3 2; }
+.key.gap-key { background: color-mix(in srgb, var(--status-warning) 18%, transparent); border: 1.5px dashed var(--status-warning); }
+svg .plan-line { stroke: var(--ink-muted); stroke-width: 2; }
+svg .eased-line { stroke: var(--target); stroke-width: 2.5; }
+.key.plan-key { background: repeating-linear-gradient(90deg, var(--ink-muted) 0 5px, transparent 5px 9px); }
+.key.eased-key { background: var(--target); height: 3px; }
+svg .between { fill: var(--status-warning); fill-opacity: 0.3; stroke: none; }
+.between-label { position: absolute; top: 22px; transform: translateX(8px); margin-left: 52px; font-size: 13px; font-weight: 700; color: var(--status-warning); white-space: nowrap; }
+.axis-y.mid { top: 50%; }
+.coach-timeline { position: relative; height: 74px; margin: 4px 0 0 52px; border-top: 1px solid var(--border); }
+.coach-timeline .axis-y.hi { left: -52px; top: 8px; }
+.tl-call { position: absolute; top: 6px; transform: translateX(-12px); display: flex; flex-direction: column; font-size: 12px; line-height: 1.25; white-space: nowrap; padding-left: 4px; border-left: 3px solid var(--ink-muted); }
+.tl-call.tl-changed { border-left-color: var(--status-warning); }
+.tl-call b { font-size: 13px; }
+.tl-call b::first-letter { text-transform: uppercase; }
+.tl-call .call-no { width: 18px; }
+/* cadence out of range is the ERG lever: colour + weight + a chip in every density */
+.chip.cad-chip { font-size: var(--t3); padding: 2px 10px; border-width: 3px; }
+.chip.cad-below, .slot-below .sub { color: var(--div-neg); border-color: var(--div-neg); font-weight: 800; }
+.chip.cad-above, .slot-above .sub { color: var(--div-pos); border-color: var(--div-pos); font-weight: 800; }
+.slot-below { box-shadow: inset 6px 0 0 var(--div-neg); }
+.slot-above { box-shadow: inset 6px 0 0 var(--div-pos); }
+.slot.reserved { visibility: hidden; min-height: calc(var(--t2) + 1.2 * var(--t3) + 38px); }
+.grammar { font-size: 16px; color: var(--ink-secondary); white-space: nowrap; }
+.band-word { display: inline-flex; gap: 6px; }
+.road-proposal { position: absolute; top: 4px; left: 18%; z-index: 1; font-size: var(--t3); font-weight: 800; color: var(--status-info); background: var(--surface-1); padding: 0 8px; border: 2px dashed var(--status-info); border-radius: 6px; }
+kbd.keyhint { font-size: 0.6em; padding: 2px 6px; margin-right: 8px; vertical-align: middle; }
+/* screens read from the saddle use ride tiers (§6.2) */
+.saddle-screen { --t2: clamp(84px, 11.4vh, 128px); --t3p: clamp(34px, 4.5vh, 44px); --t3: clamp(27px, 3.7vh, 36px); }
+.saddle-screen .ready-card { width: min(1000px, 100%); }
+.saddle-screen h1 { font-size: var(--t3p); }
+.saddle-screen .big-meta, .saddle-screen .checks { font-size: var(--t3); }
+.saddle-screen .checks li { grid-template-columns: 1.2em minmax(0, 1fr) auto; }
+.actions.saddle button, .ride-restarted .actions button { font-size: var(--t3, 30px); min-height: 72px; padding: 0 28px; font-weight: 700; }
+.ride-restarted { --t3: clamp(27px, 3.7vh, 36px); }
+.ride-restarted h1 { font-size: clamp(48px, 7vh, 64px); }
+.settings .device { grid-template-columns: 96px minmax(0, 1fr) minmax(0, 1fr) minmax(150px, auto) 110px; }
+@media (max-width: 1100px) {
+  .settings .device { grid-template-columns: 80px minmax(0, 1fr) minmax(150px, auto) 96px; }
+}
+.coach { gap: 5px; padding-top: 10px; padding-bottom: 8px; }
+.coach > * { flex-shrink: 0; }
+.coach-actions button { min-height: clamp(48px, 6.4vh, 62px); }
+@media (max-height: 800px) {
+  .coach { gap: 4px; padding-top: 8px; padding-bottom: 6px; }
+}

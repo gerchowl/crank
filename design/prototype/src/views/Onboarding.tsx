@@ -19,7 +19,7 @@ const SKIP: Record<OnboardingStep, string> = {
   about: "Skipping uses population priors: CP ± 60 W, HR max from age unknown → HR zones off until a hard ride.",
   background: "Skipping assumes a beginner: the first week stays easy.",
   numbers: "Skipping starts CP at 220 ± 60 W: targets stay conservative until rides narrow it.",
-  health: "Skipping counts as unanswered: every workout stays capped at endurance until you answer.",
+  health: "Skipping leaves the questions unanswered: no plan until you answer them.",
   devices: "Skipping: you can pair before the first ride, on the Ready check.",
   baseline: "Skipping chooses passive learning.",
   result: "",
@@ -123,9 +123,10 @@ export function Onboarding() {
           </div>
         ))}
         {hc.stop && (
-          <p className="cap-note status-serious">
-            ⚠ <b>Please get a medical check before any hard riding.</b> Until you confirm it, every workout is capped at endurance (75 % FTP) and the coach never pushes.
-          </p>
+          <div className="cap-note stop-note" role="alert">
+            <b>Please see a doctor before you train.</b> A "yes" here can be a sign of a heart problem. crank will not plan or coach rides until you record a medical clearance (the date and who
+            cleared you) in Settings → Health. You can still ride freely — no plan, no targets — as your own logged choice. <b>If you have chest pain now, call emergency services.</b>
+          </div>
         )}
         {hc.hrOff && (
           <p className="cap-note status-warning">
@@ -134,11 +135,11 @@ export function Onboarding() {
         )}
         {hc.cap === "threshold" && !hc.stop && (
           <p className="cap-note status-warning">
-            ⚠ <b>Capped at threshold</b> and no sprints until you confirm the injury allows hard efforts.
+            ⚠ <b>Capped at threshold (100 % of CP)</b> and no sprints until you record that the injury allows hard efforts.
           </p>
         )}
         {hc.complete && !hc.stop && !hc.hrOff && !hc.cap && <p className="small muted">All answered "no": no restrictions.</p>}
-        {!hc.complete && <p className="small status-info">Answer every question to continue. Unanswered questions are treated as the cautious answer: capped at endurance.</p>}
+        {!hc.complete && <p className="small status-info">Answer every question to continue. Until all are answered, crank proposes no plan.</p>}
       </>
     ),
     devices: (
@@ -219,7 +220,7 @@ export function Onboarding() {
           </tbody>
         </table>
         <p>
-          <b>What narrows it:</b> your next 3–4 rides (passive learning). Meanwhile the coach proposes only small changes, and asks before every one.
+          <b>What narrows it:</b> your rides over the next 2–4 weeks (passive learning). Meanwhile the coach proposes only small changes, and asks before every one.
         </p>
       </>
     ),

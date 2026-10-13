@@ -1,7 +1,7 @@
 // Settings (DESIGN §5.9). The ride-screen section edits a draft (#8, #11): controls read the
 // draft only, Save validates and persists, Cancel/Reset never touch the saved value until Save.
 import { useEffect, useState } from "react";
-import { athleteModel, devices } from "../mock/ext";
+import { athleteModel, devices, sceneFixture, type Clearance } from "../mock/ext";
 import {
   ACTIONS,
   autonomy,
@@ -34,6 +34,7 @@ import { useStore } from "../store";
 const SECTIONS = [
   ["devices", "Devices"],
   ["athlete", "Athlete model"],
+  ["health", "Health"],
   ["coach", "Coach"],
   ["controls", "Controls & sound"],
   ["ride-screen", "Ride screen"],
@@ -143,6 +144,7 @@ export function Settings() {
             <button>Scan for devices</button>
           </>
         )}
+        {sec === "health" && <HealthForm />}
         {sec === "athlete" && (
           <>
             <h2>Athlete model</h2>
@@ -229,7 +231,7 @@ function DistanceField() {
   );
 }
 
-const ACTION_LABEL: Record<Action, string> = { coach: "Coach (accept · choose)", keep: "Keep (decline · back to plan)", pause: "Pause / resume", skip: "Skip block", minus: "Intensity −5 %", plus: "Intensity +5 %" };
+const ACTION_LABEL: Record<Action, string> = { coach: "Coach (accept · choose)", keep: "Keep (decline · back to plan)", end: "End ride (asks first)", pause: "Pause / resume", skip: "Skip block", minus: "Intensity −5 %", plus: "Intensity +5 %" };
 const SOUND_LABEL: Record<SoundEvent, [string, () => void]> = {
   block: ["Block change", () => play.block(true)],
   countdown: ["Last 3 seconds", () => play.tick()],
@@ -304,6 +306,70 @@ function ControlsForm() {
               </tr>
             );
           })}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+/**
+ * Medical clearance (DESIGN §5.8): lifting a medical stop is a dated, attributed record the rider
+ * types in — never a one-click switch. Every change is kept in a log; the daily check-in re-asks.
+ */
+function HealthForm() {
+  const fx = useStore(sceneFixture);
+  const [date, setDate] = useState("");
+  const [by, setBy] = useState("");
+  const [ack, setAck] = useState(false);
+  const [log, setLog] = useState<Clearance[]>([]);
+  const today = "2026-10-13";
+  const valid = /^\d{4}-\d{2}-\d{2}$/.test(date) && date <= today && by.trim().length >= 3 && ack;
+  return (
+    <>
+      <h2>Health</h2>
+      {fx.medicalStop || log.length === 0 ? (
+        <p className="cap-note stop-note" role="status">
+          <b>Medical stop active</b> since 13 Oct — you answered "yes" to chest pain or pressure. crank proposes no plans and the coach is off. Free rides stay possible as a logged choice.
+        </p>
+      ) : (
+        <p className="status-good">✓ Clearance recorded. Plans resume; the daily check-in keeps asking.</p>
+      )}
+      <h3>Record a medical clearance</h3>
+      <div className="fields">
+        <label className="field">
+          <span>Date of the check</span>
+          <input type="date" max={today} value={date} onChange={(e) => setDate(e.target.value)} />
+          <small>not in the future</small>
+        </label>
+        <label className="field">
+          <span>Cleared by</span>
+          <input value={by} onChange={(e) => setBy(e.target.value)} placeholder="e.g. Dr. name, practice" />
+          <small>who examined you</small>
+        </label>
+      </div>
+      <label className="check">
+        <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} /> A doctor examined me for these symptoms and cleared me for hard exercise.
+      </label>
+      <div className="actions">
+        <button className="primary" disabled={!valid} onClick={() => setLog((l) => [...l, { date, by: by.trim(), note: "cleared for hard exercise", recordedAt: today }])}>
+          Record clearance
+        </button>
+      </div>
+      <h3>Log</h3>
+      <table>
+        <tbody>
+          <tr>
+            <td>13 Oct</td>
+            <td>Onboarding: "yes" to chest pain or pressure → medical stop</td>
+          </tr>
+          {log.map((c) => (
+            <tr key={c.recordedAt + c.date}>
+              <td>{c.recordedAt}</td>
+              <td>
+                Clearance recorded: checked {c.date} by {c.by}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </>

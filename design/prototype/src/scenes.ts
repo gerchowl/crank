@@ -3,9 +3,11 @@
 import { demoWorkout, parseDsl, type MockBackend, type RideStatus, type Workout } from "@crank/shared";
 import { editor } from "./editor/model";
 import { pathNodes } from "./format";
-import { cappedProposal, sceneFixture, type SceneFixture } from "./mock/ext";
+import { athleteModel, cappedProposal, freeRide, sceneFixture, type SceneFixture } from "./mock/ext";
 import { rideScreen } from "./persist";
 import { backend, loadRide, navigate, session, type View } from "./session";
+
+const CP = athleteModel[0]?.value ?? 280;
 
 const SPRINT_DSL = `"Warm-up" 6m ramp 45-70% 90rpm
 "Sprints" 3x(15s 180% 110-120rpm, "Easy" 4m45s 50%)
@@ -60,16 +62,21 @@ export const scenes: Record<string, Scene> = {
   "onboarding-background": { view: "onboarding", sub: "background" },
   "onboarding-numbers": { view: "onboarding", sub: "numbers" },
   "onboarding-health": { view: "onboarding", sub: "health" },
-  "onboarding-health-answered": { view: "onboarding", sub: "health", setup: () => sceneFixture.set({ health: { chest: "no", faint: "no", meds: "yes", injury: "no" } }) },
+  "onboarding-health-stop": { view: "onboarding", sub: "health", setup: () => sceneFixture.set({ health: { chest: "yes", faint: "no", palp: "no", breath: "no", heart: "no", meds: "no", injury: "no" } }) },
+  "onboarding-health-answered": { view: "onboarding", sub: "health", setup: () => sceneFixture.set({ health: { chest: "no", faint: "no", palp: "no", breath: "no", heart: "no", meds: "yes", injury: "no" } }) },
   "onboarding-devices": { view: "onboarding", sub: "devices" },
   "onboarding-baseline": { view: "onboarding", sub: "baseline" },
   "onboarding-result": { view: "onboarding", sub: "result" },
   "onboarding-resume": { view: "onboarding", sub: "resume", setup: () => sceneFixture.set({ health: { chest: "no" } }) },
   today: { view: "today" },
   "today-health-cap": { view: "today", setup: () => sceneFixture.set({ healthCap: true }) },
+  "today-medical-stop": { view: "today", setup: () => sceneFixture.set({ medicalStop: true }) },
+  "today-free-ride-confirm": { view: "today", setup: () => sceneFixture.set({ medicalStop: true, freeConfirm: true }) },
+  "ready-free-ride": { view: "ready", setup: () => (loadRide(freeRide(CP)), sceneFixture.set({ medicalStop: true })) },
+  "ride-free": { view: "ride", setup: () => (startRide(freeRide(CP)), rideFor(backend, 600), sceneFixture.set({ medicalStop: true, freeRide: true })) },
   ready: { view: "ready", setup: () => loadRide(demoWorkout(backend.athlete.ftp)) },
   "ready-no-trainer": { view: "ready", setup: () => (loadRide(demoWorkout(backend.athlete.ftp)), sceneFixture.set({ status: { trainer: "lost" } })) },
-  "ready-capped": { view: "ready", setup: () => (loadRide(cappedProposal(backend.athlete.ftp, 45).workout), sceneFixture.set({ healthCap: true })) },
+  "ready-capped": { view: "ready", setup: () => (loadRide(cappedProposal(CP, 45).workout), sceneFixture.set({ healthCap: true })) },
   "ready-no-hr": { view: "ready", setup: () => (loadRide(demoWorkout(backend.athlete.ftp)), sceneFixture.set({ status: { hrSensor: "lost" } })) },
   "ride-warmup-ramp": ride(() => rideUntil(backend, (s) => s.t >= 300)),
   "ride-vo2-on": ride(() => (rideUntil(backend, (s) => s.t > 1000 && s.phase === "work" && blockOf(s)?.durS === 30), rideFor(backend, 9))),
@@ -93,12 +100,14 @@ export const scenes: Record<string, Scene> = {
   ),
   "ride-capped": {
     view: "ride",
-    setup: () => (startRide(cappedProposal(backend.athlete.ftp, 45).workout), rideFor(backend, 900), sceneFixture.set({ healthCap: true })),
+    setup: () => (startRide(cappedProposal(CP, 45).workout), rideFor(backend, 900), sceneFixture.set({ healthCap: true })),
   },
   "ride-focus": ride(() => (rideUntil(backend, (s) => labelled(s, "Threshold") && s.phase === "work"), rideFor(backend, 95), rideScreen.set({ density: "focus", slotA: "hr", slotB: "cadence" }))),
   "ride-detail": ride(() => (rideUntil(backend, (s) => labelled(s, "Threshold") && s.phase === "work"), rideFor(backend, 95), rideScreen.set({ density: "detail", slotA: "hr", slotB: "cadence" }))),
   "ride-hr-lost": ride(() => (rideUntil(backend, (s) => s.t > 1150 && s.hrSensor !== "connected"), rideFor(backend, 1))),
   "ride-hr-lost-recovery": ride(() => (rideUntil(backend, (s) => labelled(s, "Recover") && s.hrSensor !== "connected"), rideFor(backend, 1))),
+  "ride-paused-long": fixture(() => (atThreshold(), backend.ride.pause()), { facts: { pausedForS: 6 * 60 + 10 } }),
+  "ride-reconnected-long": fixture(atThreshold, { facts: { sinceReconnectS: 12, lastGapS: 190 } }),
   "ride-paused": fixture(() => (atThreshold(), backend.ride.pause()), { facts: { pausedForS: 42 } }),
   "ride-feel-prompt": fixture(() => (rideUntil(backend, (s) => labelled(s, "Threshold") && s.phase !== "work"), rideFor(backend, 4)), { feelPrompt: true }),
   "ride-screen-restarted": fixture(atThreshold, { screenCrashed: true }),
@@ -113,6 +122,7 @@ export const scenes: Record<string, Scene> = {
   "settings-coach": { view: "settings", sub: "coach" },
   "settings-controls": { view: "settings", sub: "controls" },
   "settings-ride-screen": { view: "settings", sub: "ride-screen" },
+  "settings-health": { view: "settings", sub: "health", setup: () => sceneFixture.set({ medicalStop: true }) },
 };
 
 export function applyScene(id: string) {

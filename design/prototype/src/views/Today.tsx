@@ -4,9 +4,10 @@ import type { Checkin, Proposal } from "@crank/shared";
 import { Profile } from "../charts";
 import { editor } from "../editor/model";
 import { blockName, mmss } from "../format";
-import { ageDays, athleteModel, calibration, CAP_PCT, cappedProposal, devices, lastCheckin, proposalReasons, sceneFixture, STALE_DAYS, week } from "../mock/ext";
+import { ageDays, athleteModel, calibration, CAP_PCT_CP, cappedProposal, devices, freeRide, lastCheckin, proposalReasons, sceneFixture, STALE_DAYS, week } from "../mock/ext";
 import { backend, loadRide, navigate, noStatus, settle, useSession } from "../session";
 import { useStore } from "../store";
+import { KeyHint } from "./Ride";
 
 type Score = 1 | 2 | 3 | 4 | 5;
 type Row = "sleep" | "legs" | "stress" | "motivation";
@@ -23,6 +24,8 @@ const word = (row: Row, v: number) => {
   return r?.words[r.values.indexOf(v as Score)] ?? "";
 };
 
+const cpW = athleteModel[0]?.value ?? backend.athlete.ftp;
+
 function start(p: Proposal) {
   loadRide(p.workout);
   navigate("ready");
@@ -34,7 +37,11 @@ export function Today() {
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [pending, setPending] = useState(true);
   const fx = useStore(sceneFixture);
-  const ready = !!proposal && !pending && confirmed !== null;
+  // every check-in re-asks the red-flag symptoms (no default, DESIGN §5.8)
+  const [symptoms, setSymptoms] = useState<"yes" | "no" | null>(fx.medicalStop ? "yes" : null);
+  const [freeConfirm, setFreeConfirm] = useState(!!fx.freeConfirm);
+  const stop = !!fx.medicalStop || symptoms === "yes";
+  const ready = !!proposal && !pending && confirmed !== null && symptoms === "no";
 
   useEffect(() => {
     let live = true;
@@ -43,7 +50,7 @@ export function Today() {
     void settle(backend.planner.propose(c)).then((p) => {
       if (!live) return;
       // the planner respects the health cap (stand-in until the planner knows about it)
-      setProposal(capped ? cappedProposal(backend.athlete.ftp, c.minutes) : p);
+      setProposal(capped ? cappedProposal(cpW, c.minutes) : p);
       setPending(false);
     });
     return () => {
@@ -67,6 +74,7 @@ export function Today() {
   };
   const compiled = proposal ? backend.compileWorkout(proposal.workout) : null;
   const cp = athleteModel[0];
+  const capW = (cpW * CAP_PCT_CP.threshold) / 100;
 
   return (
     <div className="page today" data-pending={pending || undefined}>
@@ -76,7 +84,7 @@ export function Today() {
       </header>
       <div className="today-grid">
         <div className="col">
-          <section className="card checkin" aria-label="How are you today">
+          <section className="card checkin" aria-label="How are you today" data-prefilled={!confirmed || undefined}>
             <h2>How are you?</h2>
             <p className={confirmed ? "muted small" : "small status-info"}>{confirmed === "same" ? "Same as yesterday — confirmed." : confirmed === "changed" ? "Your answers for today." : "Pre-filled from yesterday. Confirm or change."}</p>
             {ROWS.map((r) => (
@@ -103,18 +111,31 @@ export function Today() {
             <button className={confirmed === "same" ? "confirm on" : "confirm"} disabled={confirmed === "changed"} onClick={() => setConfirmed("same")}>
               ✓ Same as yesterday
             </button>
+            <div className={symptoms ? "yn symptoms" : "yn symptoms unanswered"} role="radiogroup" aria-label="Red-flag symptoms since your last ride">
+              <span>
+                <b>Since your last ride:</b> chest pain or pressure, fainting, or a racing heartbeat with dizziness?
+              </span>
+              <span className="choices">
+                {(["no", "yes"] as const).map((v) => (
+                  <button key={v} role="radio" aria-checked={symptoms === v} className={symptoms === v ? "tap wide on" : "tap wide"} onClick={() => setSymptoms(v)}>
+                    {v}
+                  </button>
+                ))}
+              </span>
+            </div>
           </section>
           <WeekCard />
         </div>
 
         <div className="col">
+          {stop ? (
+            <MedicalStop open={freeConfirm} onOpen={() => setFreeConfirm(true)} onClose={() => setFreeConfirm(false)} />
+          ) : (
+            <>
           {fx.healthCap && (
             <section className="card cap status-warning" role="status" aria-label="Intensity cap">
-              <b>⚠ Intensity capped at endurance ({CAP_PCT.endurance} % FTP, {Math.round((backend.athlete.ftp * CAP_PCT.endurance) / 100)} W)</b>
-              <span className="muted"> — you reported chest pain on exertion. Get a medical check before hard efforts; the cap lifts when you confirm it.</span>
-              <div className="actions">
-                <button>Confirm check</button>
-              </div>
+              <b>⚠ Capped at threshold ({CAP_PCT_CP.threshold} % of CP, {Math.round(capW)} W) · no sprints</b>
+              <span className="muted"> — from your injury answer. Lift it in Settings → Health when the injury allows hard efforts.</span>
             </section>
           )}
           <section className="card proposal" aria-label="Today's proposal" aria-busy={pending}>
@@ -123,7 +144,7 @@ export function Today() {
               <h2>{proposal?.workout.name ?? " "}</h2>
               <p className="big-meta">{compiled ? `${mmss(compiled.totalS)} · TSS ${Math.round(compiled.tss)} · IF ${compiled.if.toFixed(2)}` : " "}</p>
             </div>
-            <div className="proposal-profile">{compiled && <Profile blocks={compiled.blocks} zones={backend.zones.power} height={100} capW={fx.healthCap ? (backend.athlete.ftp * CAP_PCT.endurance) / 100 : undefined} label="Proposed workout profile" />}</div>
+            <div className="proposal-profile">{compiled && <Profile blocks={compiled.blocks} zones={backend.zones.power} height={100} capW={fx.healthCap ? capW : undefined} label="Proposed workout profile" />}</div>
             <h3>Why today</h3>
             <ul className="reasons">
               {proposal &&
@@ -150,8 +171,10 @@ export function Today() {
                 Edit
               </button>
             </div>
-            {!confirmed && <p className="small muted">Confirm how you feel to start.</p>}
+            {(!confirmed || symptoms === null) && <p className="small muted">Confirm how you feel and answer the symptom question to start.</p>}
           </section>
+            </>
+          )}
 
           <section className="card model" aria-label="Athlete model">
             <h2>Your model</h2>
@@ -176,6 +199,54 @@ export function Today() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Medical stop (DESIGN §5.8): a red-flag answer means see a doctor first. The coach proposes nothing;
+ * riding is still possible only as a deliberate, logged choice without plan, targets or coach.
+ */
+function MedicalStop({ open, onOpen, onClose }: { open: boolean; onOpen: () => void; onClose: () => void }) {
+  const [understood, setUnderstood] = useState(false);
+  return (
+    <section className="card medical-stop" role="alert" aria-label="See a doctor before training">
+      <span className="eyebrow">No plan today</span>
+      <h2>Please see a doctor before training</h2>
+      <p>
+        You reported a symptom that needs a medical check before exercise — chest pain or pressure, fainting, or a racing heartbeat with dizziness. crank won't plan or coach rides until you
+        record a clearance. <b>If you have chest pain now, stop and call emergency services.</b>
+      </p>
+      <ul className="reasons">
+        <li>The coach proposes nothing and stays silent.</li>
+        <li>To lift this, record the clearance (date and who cleared you) in Settings → Health. It is not a one-click switch.</li>
+        <li>Every check-in asks about these symptoms again.</li>
+      </ul>
+      {!open ? (
+        <div className="actions">
+          <button className="primary big" onClick={() => navigate("settings", "health")}>
+            Record a medical clearance
+          </button>
+          <button onClick={onOpen}>Ride without a plan…</button>
+        </div>
+      ) : (
+        <div className="free-confirm" role="dialog" aria-label="Ride without a plan">
+          <p>
+            <b>A free ride has no plan, no targets and no coach.</b> The trainer is set to flat-road resistance. It is your decision and it is logged with the reason.
+          </p>
+          <label className="check">
+            <input type="checkbox" checked={understood} onChange={(e) => setUnderstood(e.target.checked)} /> I understand crank isn't advising this ride, and I'll stop at any symptom.
+          </label>
+          <div className="actions">
+            <button autoFocus onClick={onClose}>
+              Cancel
+            </button>
+            <button disabled={!understood} onClick={() => (loadRide(freeRide(cpW)), navigate("ready"))}>
+              Start free ride
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -212,7 +283,7 @@ export function Ready() {
   };
   const first = compiled.blocks[0];
   return (
-    <div className="page ready">
+    <div className="page ready saddle-screen">
       <section className="card ready-card" aria-label="Ready check">
         <span className="eyebrow">Ready check</span>
         <h1>{s.workout.name}</h1>
@@ -233,13 +304,17 @@ export function Ready() {
               <b>{devices[1]?.name}</b>{" "}
               {hrOk ? "· connected" : "not found yet — still scanning. Wet the strap's contacts. If you start without it, it joins as soon as it's found; until then HR-guided recoveries run to their maximum and the coach can't push."}
             </span>
-            {!hrOk && <button autoFocus>Retry now</button>}
+            {!hrOk && (
+              <button className="primary" autoFocus>
+                Retry now
+              </button>
+            )}
           </li>
           {fx.healthCap && (
             <li className="status-warning">
               <span aria-hidden>⚠</span>
               <span>
-                <b>Capped at {CAP_PCT.endurance} % FTP</b> until your medical check is confirmed
+                <b>Capped at threshold ({Math.round((cpW * CAP_PCT_CP.threshold) / 100)} W)</b> · no sprints (injury answer)
               </span>
             </li>
           )}
@@ -248,11 +323,19 @@ export function Ready() {
             <span>Mode ERG · the trainer holds the target; keep your cadence up</span>
           </li>
         </ul>
-        <div className="actions">
-          <button className="primary big" autoFocus={hrOk} disabled={!trainerOk} onClick={go}>
-            {hrOk ? "Start riding" : "Start without HR"}
+        {s.workout.id === "free" && (
+          <p className="free-note">
+            <b>Free ride</b> · no plan, no targets, coach off · your choice is logged
+          </p>
+        )}
+        <div className="actions saddle">
+          {/* the safe or usual choice is primary and focused; starting without HR is deliberate (§5.4) */}
+          <button className={hrOk ? "primary" : ""} autoFocus={hrOk} disabled={!trainerOk} onClick={go}>
+            {hrOk && <KeyHint a="coach" />} {hrOk ? "Start riding" : "Start without HR"}
           </button>
-          <button onClick={() => navigate("today")}>Back</button>
+          <button onClick={() => navigate("today")}>
+            <KeyHint a="end" /> Back
+          </button>
         </div>
       </section>
     </div>
