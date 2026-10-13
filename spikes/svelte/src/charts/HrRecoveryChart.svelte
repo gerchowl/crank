@@ -51,7 +51,7 @@
         y: { auto: true, range: (_u, lo, hi) => [Math.floor(Math.min(lo, rec?.targetBpm ?? lo) - 8), Math.ceil(hi + 6)] },
       },
       axes: [
-        axisStyle(c, { size: 24, values: (_u, s) => s.map((x: number | null) => (x === null ? "" : dur(x))) // uPlot nulls filtered log ticks at runtime, incrs: [15, 30, 60, 120] }),
+        axisStyle(c, { size: 24, values: (_u, s) => s.map((x: number | null) => (x === null ? "" : dur(x))), incrs: [15, 30, 60, 120] }),
         axisStyle(c, { size: 36 }),
       ],
       series: [
