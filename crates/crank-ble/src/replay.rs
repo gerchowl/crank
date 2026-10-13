@@ -13,12 +13,12 @@ struct Replay(Vec<(MonoTime, Vec<u8>)>);
 impl ReplayTrainer {
     /// Parse the existing crank-fec capture format without combining payloads.
     /// Captures must include the connection’s page-54 reply; TX records are
-    /// validated but not replayed as engine commands. Arrival ties retain order.
+    /// validated but not replayed as engine commands. Processing may interleave
+    /// RX/TX arrival stamps; stable timestamp sorting retains file order for ties.
     /// # Errors
-    /// Rejects malformed records, unknown directions or decreasing timestamps.
+    /// Rejects malformed records, unknown directions or timestamp overflow.
     pub fn new(capture: &str, clock: Arc<dyn Clock>) -> Result<Self, DeviceError> {
         let mut records = Vec::new();
-        let mut previous = 0;
         for line in capture.lines() {
             let line = line.split('#').next().unwrap_or_default().trim();
             if line.is_empty() {
@@ -31,10 +31,9 @@ impl ReplayTrainer {
                 .ok_or_else(error)?
                 .parse()
                 .map_err(|_| error())?;
-            if at < previous || clock.now().0.checked_add(at).is_none() {
+            if clock.now().0.checked_add(at).is_none() {
                 return Err(error());
             }
-            previous = at;
             let rx = match fields.next() {
                 Some("rx") => true,
                 Some("tx") => false,
@@ -47,6 +46,7 @@ impl ReplayTrainer {
                 records.push((MonoTime(at), bytes));
             }
         }
+        records.sort_by_key(|(at, _)| *at);
         Ok(Self(FecTrainer::new(Arc::new(Replay(records)), clock)))
     }
 }

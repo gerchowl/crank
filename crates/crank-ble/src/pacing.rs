@@ -44,10 +44,12 @@ pub(crate) struct Pacer {
     pub mode: Option<ControlMode>,
     current: Vec<[u8; 13]>,
     sent: Vec<[u8; 13]>,
-    pending: std::collections::VecDeque<[u8; 13]>,
-    pair_tail: bool,
+    // First-pending tick survives value replacement; earliest deadline goes first.
+    pending: std::collections::VecDeque<([u8; 13], u64)>,
+    // Retire pair debt when its remaining page is cancelled, not on unrelated updates.
+    pair_tail: Option<u8>,
     pair_completed: bool,
-    tail_continuation: bool,
+    continuation: Option<u8>,
     poll: Option<u64>,
     last_poll: Option<u64>,
     keep: u64,
@@ -59,19 +61,28 @@ impl Pacer {
         let same_kind = self.current.first().map(|p| p[4]) == next.first().map(|p| p[4]);
         if !same_kind {
             self.sent.clear();
-            self.pair_tail = false;
-            self.tail_continuation = false;
+            self.pair_tail = None;
+            self.continuation = None;
         }
-        let mut changed: std::collections::VecDeque<_> = next
+        let mut changed: Vec<_> = next
             .iter()
             .filter(|p| !self.sent.contains(p))
-            .copied()
+            .map(|p| {
+                let since = self
+                    .pending
+                    .iter()
+                    .find(|(old, _)| old[4] == p[4])
+                    .map_or(tick, |(_, since)| *since);
+                (*p, since)
+            })
             .collect();
-        if self.pair_tail && next.len() == 2 {
-            changed.retain(|p| p[4] != 51);
-            changed.push_front(next[1]);
-        }
-        self.tail_continuation &= changed.iter().any(|p| p[4] == 50);
+        self.pair_tail = self
+            .pair_tail
+            .filter(|page| changed.iter().any(|(p, _)| p[4] == *page));
+        changed.sort_by_key(|(p, since)| (*since, self.pair_tail.is_some_and(|page| p[4] != page)));
+        self.continuation = self
+            .continuation
+            .filter(|page| changed.iter().any(|(p, _)| p[4] == *page));
         if self.poll.is_none() {
             self.poll = Some(tick + 4);
         }
@@ -83,7 +94,7 @@ impl Pacer {
             };
             self.component = 0;
         }
-        self.pending = changed;
+        self.pending = changed.into();
         self.current = next;
         self.mode = Some(mode);
         Ok(())
@@ -93,10 +104,10 @@ impl Pacer {
             return Ok(None);
         }
         let due = self.poll.is_some_and(|due| tick >= due);
-        let pair = self.pending.len() == 2 && !self.pair_tail;
+        let pair = self.pending.len() == 2 && self.pair_tail.is_none();
         if due
-            && ((!pair && !self.pair_tail) || self.pair_completed)
-            && (!self.tail_continuation || self.pair_completed)
+            && ((!pair && self.pair_tail.is_none()) || self.pair_completed)
+            && (self.continuation.is_none() || self.pair_completed)
             && self.last_poll != tick.checked_sub(1)
         {
             self.last_poll = Some(tick);
@@ -108,14 +119,14 @@ impl Pacer {
             self.pair_completed = false;
             return Ok(Some(request(71)?));
         }
-        if let Some(frame) = self.pending.pop_front() {
-            if self.tail_continuation && due && !pair {
+        if let Some((frame, _)) = self.pending.pop_front() {
+            if self.continuation.is_some() && due && !pair {
                 self.pair_completed = true;
             }
-            self.tail_continuation = false;
-            if self.pair_tail {
+            self.continuation = None;
+            if self.pair_tail.is_some() {
                 self.pair_completed = due;
-                self.tail_continuation = !self.pending.is_empty();
+                self.continuation = self.pending.front().map(|(p, _)| p[4]);
                 let mut poll = self.poll.unwrap_or(tick + 4);
                 while poll <= tick + 1 {
                     poll += 4;
@@ -128,7 +139,7 @@ impl Pacer {
                 self.component ^= 1;
                 self.keep += 4;
             }
-            self.pair_tail = pair;
+            self.pair_tail = pair.then(|| if frame[4] == 50 { 51 } else { 50 });
             self.sent.retain(|p| p[4] != frame[4]);
             self.sent.push(frame);
             return Ok(Some(frame));

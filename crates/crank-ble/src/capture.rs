@@ -7,7 +7,7 @@ use std::{
     sync::Mutex,
 };
 /// Per-ride raw capture, preserving complete payloads including malformed bytes.
-pub struct Capture(Mutex<(File, MonoTime, u64)>);
+pub struct Capture(Mutex<(File, MonoTime)>);
 impl Capture {
     /// Create a new capture without overwriting an existing ride.
     /// # Errors
@@ -15,11 +15,13 @@ impl Capture {
     pub fn create(path: &Path, start: MonoTime) -> io::Result<Self> {
         let mut file = File::create_new(path)?;
         writeln!(file, "# elapsed_us direction complete_frame_hex")?;
-        Ok(Self(Mutex::new((file, start, 0))))
+        Ok(Self(Mutex::new((file, start))))
     }
-    /// Append a complete payload in arrival order; flush for crash diagnostics.
+    /// Append a complete payload in processing order; flush for crash diagnostics.
+    /// RX arrival stamps can precede a TX processed earlier. Replay stably sorts
+    /// by stamp, retaining file order for ties, without altering arrival times.
     /// # Errors
-    /// Rejects timestamps before the previous record or poisoned/file errors.
+    /// Rejects timestamps before the capture epoch or poisoned/file errors.
     pub fn record(&self, at: MonoTime, rx: bool, bytes: &[u8]) -> io::Result<()> {
         let mut state = self
             .0
@@ -28,22 +30,15 @@ impl Capture {
         append(&mut state, at, rx, bytes)
     }
 }
-fn append(
-    state: &mut (File, MonoTime, u64),
-    at: MonoTime,
-    rx: bool,
-    bytes: &[u8],
-) -> io::Result<()> {
+fn append(state: &mut (File, MonoTime), at: MonoTime, rx: bool, bytes: &[u8]) -> io::Result<()> {
     let elapsed =
         at.0.checked_sub(state.1.0)
-            .filter(|t| *t >= state.2)
-            .ok_or_else(|| io::Error::other("capture time out of order"))?;
+            .ok_or_else(|| io::Error::other("capture time before epoch"))?;
     write!(state.0, "{elapsed} {}", if rx { "rx" } else { "tx" })?;
     for byte in bytes {
         write!(state.0, " {byte:02X}")?;
     }
     writeln!(state.0)?;
     state.0.flush()?;
-    state.2 = elapsed;
     Ok(())
 }
