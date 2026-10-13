@@ -1,6 +1,6 @@
 # crank — UX spec for UI spikes (v0)
 
-Indoor-cycling training app for a Tacx NEO (BLE FTMS) + BLE HR strap, with an AI coach
+Indoor-cycling training app for a Tacx NEO (BLE, FE-C over BLE — see TRAINER-BLE.md) + BLE HR strap, with an AI coach
 (System-1 judge in-ride, LLM planner pre/post-ride). Final app: Rust core + Tauri v2.
 **These spikes are UI only**: a plain Vite + TS web app against the shared mock backend
 in `shared/` (stands in for the Rust core / Tauri channel). All metrics, filters,
