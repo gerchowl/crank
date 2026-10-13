@@ -45,7 +45,7 @@ One Cargo workspace (edition 2024, toolchain pinned in `rust-toolchain.toml` by 
 | `crank-store` | lib | SQLite schema, migrations, repositories | `crank-domain`, `rusqlite` (bundled: pinned SQLite engine), `rusqlite_migration` (forward-only schema versions), `serde`/`serde_json` (validated JSON envelopes), `thiserror` (typed store errors) |
 | `crank-coach` | lib | `RulesJudge` (knowledge-pack rules, implements `crank_domain::Judge`), `Planner` trait + Claude API client | `crank-domain`, `reqwest` |
 | `crank-intervals` | lib | intervals.icu client + mapping into domain types | `crank-domain`, `reqwest` |
-| `crank-core` | lib | `Core` facade wiring everything; **the API** (async methods + DTOs); config/data dirs, secrets, when to open the store as ride-lock owner (§9.4) | all of the above |
+| `crank-core` | lib | `Core` facade wiring everything; **the API** (async methods + DTOs); config/data dirs, secrets, ~~ride lock~~ (superseded by §9.4: the lock lives in `crank-store`; core decides when to open as owner) | all of the above |
 | `crank-mcp` | lib | MCP tools over `Core` (`rmcp`) | `crank-core` |
 | `crank-cli` | bin `crank` | `clap` CLI: `ride --sim`, `workout parse/compile/print`, `devices scan`, `import intervals`, `mcp` (stdio server), `devserver` | `crank-core`, `crank-mcp` |
 | `crank-desktop` | bin (Tauri v2) | thin `#[tauri::command]` wrappers over `Core`, bindings export, window/menu | `crank-core`, `tauri`, `tauri-specta` |
@@ -365,9 +365,8 @@ Crash safety: the open chunk of each metric is upserted every 5 s, so a crash lo
 ride record. **Recovery runs only in the process that has just acquired `ride.lock`** (§2), before it
 starts or loads a ride: holding the lock proves no other process owns a live ride (the advisory lock is
 released by the kernel when its holder dies), so any `ride` without `ended_at` is closed as `aborted` with
-its data intact and shown in review. Processes without the lock
-(`crank mcp`, CLI queries) never run recovery and treat an open ride as live; which tables they may write
-is fixed in §9.4.
+its data intact and shown in review. Processes ~~that only read or write the store without the lock~~ (superseded by §9.4: which tables a lock-less process may write)
+without the lock (`crank mcp`, CLI queries) never run recovery and treat an open ride as live.
 
 Rejected: **sqlx** (async API we don't need on a single writer thread; compile-time checked queries need a
 live database or an offline query cache in the build); **an embedded KV store (redb, sled)** (the review and
