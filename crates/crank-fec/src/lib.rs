@@ -3,7 +3,6 @@
 //! XOR includes sync, as in the Tacx worked example. The contradictory sum
 //! variant and acceptance of acknowledged writes remain hardware checks in #44.
 //! No transport delivery or command confirmation is inferred from decoded pages.
-//! Typed telemetry, replay and fuzzing are the separate part B tracked in #129.
 
 mod types;
 pub use types::*;
@@ -107,9 +106,16 @@ fn quantize(
 fn checksum(bytes: &[u8]) -> u8 {
     bytes.iter().fold(0, |xor, byte| xor ^ byte)
 }
+fn word(p: [u8; 8], i: usize) -> u16 {
+    u16::from_le_bytes([p[i], p[i + 1]])
+}
+fn optional(value: u16, invalid: u16, scale: f32) -> Option<f32> {
+    (value != invalid).then_some(f32::from(value) / scale)
+}
+
 /// Decode exactly one complete 13-byte ANT data frame, verifying XOR checksum.
 ///
-/// All pages retain their eight bytes. Typed page interpretation is #129;
+/// Unspecified pages retain their eight bytes as [`Page::Unknown`];
 /// interpreting observations and logging unknown pages belong to the caller.
 ///
 /// # Errors
@@ -138,6 +144,85 @@ pub fn decode(bytes: &[u8]) -> Result<AntFrame, FrameError> {
     Ok(AntFrame {
         msg_type,
         channel: bytes[3],
-        page: p,
+        page: decode_page(p),
     })
+}
+
+fn decode_page(p: [u8; 8]) -> Page {
+    match p[0] {
+        16 => Page::GeneralFe(GeneralFe {
+            equipment_type: p[1],
+            elapsed_s: f32::from(p[2]) * 0.25,
+            distance_m: p[3],
+            speed_mps: optional(word(p, 4), 0xffff, 1000.0),
+            heart_rate_bpm: (p[6] != 0xff).then_some(p[6]),
+            state: (p[7] >> 4) & 7,
+            lap_toggle: p[7] & 0x80 != 0,
+            flags: p[7] & 15,
+        }),
+        25 => Page::Trainer(TrainerData {
+            event_count: p[1],
+            cadence_rpm: (p[2] != 0xff).then_some(p[2]),
+            accumulated_power_w: word(p, 3),
+            power_w: (word(p, 5) & 0xfff != 0xfff).then_some(word(p, 5) & 0xfff),
+            status: p[6] >> 4,
+            target_limit: p[7] & 3,
+            state: (p[7] >> 4) & 7,
+            lap_toggle: p[7] & 0x80 != 0,
+        }),
+        48 => Page::BasicResistance {
+            pct: optional(u16::from(p[7]), 0xff, 2.0),
+        },
+        49 => Page::TargetPower {
+            watts: f32::from(word(p, 6)) * 0.25,
+        },
+        50 => Page::Wind {
+            cw_kg_per_m: optional(u16::from(p[5]), 0xff, 100.0),
+            speed_kmh: (p[6] != 0xff).then_some(f32::from(p[6]) - 127.0),
+            drafting: optional(u16::from(p[7]), 0xff, 100.0),
+        },
+        51 => Page::Track {
+            grade_pct: (word(p, 5) != 0xffff).then(|| (f32::from(word(p, 5)) - 20_000.0) / 100.0),
+            crr: f32::from(p[7]) / 20_000.0,
+        },
+        54 => Page::Capabilities(FeCapabilities {
+            max_resistance_n: (word(p, 5) != 0xffff).then_some(word(p, 5)),
+            modes: p[7],
+        }),
+        55 => Page::UserConfig {
+            rider_kg: optional(word(p, 1), 0xffff, 100.0),
+            bike_kg: optional(word(p, 4) >> 4, 0xfff, 20.0),
+            wheel_m: (p[6] != 0xff && (p[4] & 15 <= 9 || p[4] & 15 == 15)).then(|| {
+                let offset = if p[4] & 15 == 15 { 0 } else { p[4] & 15 };
+                f32::from(u16::from(p[6]) * 10 + u16::from(offset)) / 1000.0
+            }),
+            gear_ratio: (p[7] != 0).then_some(f32::from(p[7]) * 0.03),
+        },
+        70 => Page::Request {
+            page: p[6],
+            times: p[5] & 127,
+            acknowledged: p[5] & 0x80 != 0,
+            command_type: p[7],
+        },
+        71 => Page::CommandStatus(CommandStatus {
+            last_page: p[1],
+            sequence: p[2],
+            status: p[3],
+            echo: [p[4], p[5], p[6], p[7]],
+        }),
+        80 => Page::Manufacturer(ManufacturerInfo {
+            hardware_revision: p[3],
+            manufacturer_id: word(p, 4),
+            model: word(p, 6),
+        }),
+        81 => Page::Product(ProductInfo {
+            software_revision: p[3],
+            supplemental_revision: (p[2] != 0xff).then_some(p[2]),
+            serial: u32::from_le_bytes([p[4], p[5], p[6], p[7]]),
+        }),
+        other => Page::Unknown {
+            page: other,
+            raw: p,
+        },
+    }
 }
