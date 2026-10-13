@@ -29,7 +29,7 @@
       // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-assignment -- uPlot.Scale.Distr is an ambient const enum (unusable under isolatedModules); 3 = Logarithmic
       scales: { x: { time: false, distr: 3, log: 10 }, y: { auto: true, range: (_u, _lo, hi) => [0, Math.ceil((hi * 1.08) / 50) * 50] } },
       axes: [
-        axisStyle(c, { size: 22, splits: () => [1, 5, 15, 60, 300, 1200, 3600], values: (_u, s) => s.map((x) => (x === null ? "" : dur(x))) }),
+        axisStyle(c, { size: 22, splits: () => [1, 5, 15, 60, 300, 1200, 3600], values: (_u, s) => s.map((x: number | null) => (x === null ? "" : dur(x))) // uPlot nulls filtered log ticks at runtime }),
         axisStyle(c, { size: 38 }),
       ],
       series: [
