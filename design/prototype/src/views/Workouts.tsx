@@ -119,6 +119,10 @@ export function Workouts() {
   const drawer = useStore(libraryOpen);
   const drawerMode = useDrawerMode();
   const modal = drawer && drawerMode;
+  // crossing to ≥ 1280 px closes the drawer, so it cannot reappear as a modal when the window shrinks again (#179)
+  useEffect(() => {
+    if (!drawerMode) libraryOpen.set(false);
+  }, [drawerMode]);
   const libRef = useRef<HTMLElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const closeLibrary = () => libraryOpen.set(false);
