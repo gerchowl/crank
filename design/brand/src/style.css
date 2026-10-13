@@ -33,11 +33,15 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 
 /* --- start screen --- */
 .start {
-  height: 100%;
+  position: fixed;
+  inset: 0;
   display: grid;
   place-items: center;
-  position: relative;
+  background: var(--bg);
 }
+/* Optical centring: the letters sit mid-window; the speed lines trail into the left margin. */
+.start .wm svg { transform: translateX(var(--focus-shift, 0%)); }
+.start[inert] { pointer-events: none; }
 .start .wm { width: min(var(--w), var(--max)); }
 .start[data-concept="slice"] { --w: 52vw; --max: 820px; }
 .start[data-concept="blur"] { --w: 50vw; --max: 800px; }
@@ -50,16 +54,20 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
   color: var(--muted);
   font-size: 15px;
   letter-spacing: 0.02em;
-  animation: status 300ms linear 1200ms backwards;
+  animation: fade 300ms linear backwards; /* inserted by a boot timer (main.ts), never by CSS delay */
 }
-@keyframes status { from { opacity: 0; } }
+
+/* stand-in destination for the hand-off demo (?ready=ms) */
+.dest { height: 100%; display: grid; place-content: center; gap: 16px; justify-items: center; color: var(--muted); }
+.dest button { font: inherit; padding: 10px 20px; border: 0; border-radius: 6px; background: var(--ink); color: var(--bg); }
 
 /* --- launch motion: every keyframe states only `from`; the resting state is the element's own style,
    so reduced motion (animation: none) is simply the final frame. --- */
 .wm-l, .wm-speed, .wm-echo, .crank, .in-scale, .in-index { transform-box: fill-box; }
 
 [data-concept="slice"] .wm-l { animation: settle 520ms var(--settle) calc(var(--i) * 45ms) backwards; }
-[data-concept="slice"] .wm-speed { transform-origin: right center; animation: draw 700ms var(--settle) 150ms backwards; }
+/* Lines are revealed by a clip (not scaleX), so the 50° chamfer never changes angle mid-draw. */
+[data-concept="slice"] .wm-speed { animation: reveal 700ms var(--settle) 150ms backwards; }
 [data-concept="slice"] .wm-speed.s1 { animation-delay: 230ms; }
 
 [data-concept="blur"] svg > .wm-letters { animation: arrive 800ms var(--settle) backwards; }
@@ -84,7 +92,7 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 
 @keyframes settle { from { opacity: 0; transform: translateX(-60px); } }
 @keyframes settle-far { from { opacity: 0; transform: translateX(-160px); } }
-@keyframes draw { from { transform: scaleX(0); } }
+@keyframes reveal { from { clip-path: inset(0 0 0 100%); } }
 @keyframes grow { from { transform: scaleX(0); } }
 @keyframes fade { from { opacity: 0; } }
 @keyframes arrive { from { opacity: 0; transform: translateX(-280px); } }
