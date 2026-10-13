@@ -152,6 +152,11 @@
           python3 ${./scripts/check-window-config.py} ${source (lib.fileset.unions [ ./docs/design/DESIGN.md ./docs/design/sizes.json ./app/src-tauri/tauri.conf.json ])}
           touch $out
         '';
+        # Regression test: the window-config check must fail on mismatched sources (#170).
+        window-config-test = pkgs.runCommand "window-config-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          python3 ${./scripts/test-window-config.py} ${source (lib.fileset.unions [ ./docs/design/DESIGN.md ./docs/design/sizes.json ./app/src-tauri/tauri.conf.json ])}
+          touch $out
+        '';
         package-licenses = pkgs.runCommand "package-licenses" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           python3 ${./scripts/check-licenses.py} ${source (lib.fileset.intersection (lib.fileset.gitTracked ./.) (lib.fileset.fileFilter (f: f.name == "package.json") ./.))}
           touch $out
@@ -159,6 +164,13 @@
         # Executable model of the trainer-following machine (ADR-0002 §4.4.1, #54).
         following-model = pkgs.runCommand "following-model" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md}
+          touch $out
+        '';
+      } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+        # just bundle is macOS-only (ADR-0001 §9.3): exercise its atomic install against a temp target (#165).
+        install-app = pkgs.runCommand "install-app" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          cp -r ${source (lib.fileset.unions [ ./scripts/install-app.sh ./scripts/test-install-app.sh ])} src
+          cd src && bash scripts/test-install-app.sh
           touch $out
         '';
       } // lib.genAttrs [ "app-typecheck" "app-lint" "app-test" "shared-test" "shared-typecheck" "vectors-drift" ] (name:
