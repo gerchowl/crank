@@ -8,7 +8,7 @@ default production toolchain unchanged. From the repository root:
 
 ```sh
 export CARGO_BUILD_JOBS=8
-export CARGO_TARGET_DIR=/Users/larsgerchow/.cache/crank-target/crank-129
+export CARGO_TARGET_DIR=$HOME/.cache/crank-target/crank-fuzz
 nix develop .#fuzz -c cargo fuzz build --fuzz-dir crates/crank-fec/fuzz --target-dir "$CARGO_TARGET_DIR" decode
 nix develop .#fuzz -c cargo fuzz run --fuzz-dir crates/crank-fec/fuzz --target-dir "$CARGO_TARGET_DIR" decode -- -max_total_time=60 -max_len=512
 ```

@@ -117,6 +117,11 @@
           cd src && python3 -I scripts/icons.py check
           touch $out
         '';
+        # Public-repo hygiene (#122, #146): no internal hostnames or absolute home paths.
+        public-hygiene = pkgs.runCommand "public-hygiene" { } ''
+          sh ${./scripts/check-public-hygiene.sh} ${source (lib.fileset.gitTracked ./.)}
+          touch $out
+        '';
         # Executable model of the trainer-following machine (ADR-0002 §4.4.1, #54).
         following-model = pkgs.runCommand "following-model" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md}
@@ -138,7 +143,6 @@
         packages = [ (pkgs.rust-bin.selectLatestNightlyWith (t: t.minimal.override {
           extensions = [ "rust-src" ];
         })) pkgs.cargo-fuzz ];
-        CARGO_BUILD_JOBS = "8";
       };
       devShells.default = craneLib.devShell {
         inputsFrom = [ (desktop "") ];

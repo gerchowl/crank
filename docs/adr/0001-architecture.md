@@ -13,7 +13,7 @@ with `strong | lean | uncertain` bands) and an LLM planner (Claude API) before a
 ships an MCP server, an integrated CLI and intervals.icu import. Already decided: **Rust core + Tauri v2 +
 React 19 with the React Compiler** (`spec/SPIKE-RESULTS.md`), BLE only, v1 = everything in the spec.
 Owner decisions of 2026-10-13 (folded in here): build with a Nix flake using crane, `nix flake check` as
-the CI gate, anvil's attic as binary cache; a real, locally signed `crank.app` (`nix-tcc` identity) from day 1;
+the CI gate, ~~anvil's attic as binary cache~~ (superseded, Amendment 2026-10-13: GitHub-hosted CI, no attic); a real, locally signed `crank.app` (`nix-tcc` identity) from day 1;
 and the definition of done in §8.1.
 
 The UI spikes ran against `shared/`, a TypeScript mock of the future core (`shared/src/contract.ts`,
@@ -45,7 +45,7 @@ One Cargo workspace (edition 2024, toolchain pinned in `rust-toolchain.toml` by 
 | `crank-store` | lib | SQLite schema, migrations, repositories | `crank-domain`, `rusqlite` (bundled: pinned SQLite engine), `rusqlite_migration` (forward-only schema versions), `serde`/`serde_json` (validated JSON envelopes), `thiserror` (typed store errors) |
 | `crank-coach` | lib | `RulesJudge` (knowledge-pack rules, implements `crank_domain::Judge`), `Planner` trait + Claude API client | `crank-domain`, `reqwest` |
 | `crank-intervals` | lib | intervals.icu client + mapping into domain types | `crank-domain`, `reqwest` |
-| `crank-core` | lib | `Core` facade wiring everything; **the API** (async methods + DTOs); config/data dirs, secrets, ride lock | all of the above |
+| `crank-core` | lib | `Core` facade wiring everything; **the API** (async methods + DTOs); config/data dirs, secrets, when to open the store as ride-lock owner (§9.4) | all of the above |
 | `crank-mcp` | lib | MCP tools over `Core` (`rmcp`) | `crank-core` |
 | `crank-cli` | bin `crank` | `clap` CLI: `ride --sim`, `workout parse/compile/print`, `devices scan`, `import intervals`, `mcp` (stdio server), `devserver` | `crank-core`, `crank-mcp` |
 | `crank-desktop` | bin (Tauri v2) | thin `#[tauri::command]` wrappers over `Core`, bindings export, window/menu | `crank-core`, `tauri`, `tauri-specta` |
@@ -365,8 +365,9 @@ Crash safety: the open chunk of each metric is upserted every 5 s, so a crash lo
 ride record. **Recovery runs only in the process that has just acquired `ride.lock`** (§2), before it
 starts or loads a ride: holding the lock proves no other process owns a live ride (the advisory lock is
 released by the kernel when its holder dies), so any `ride` without `ended_at` is closed as `aborted` with
-its data intact and shown in review. Processes that only read or write the store without the lock
-(`crank mcp`, CLI queries) never run recovery and treat an open ride as live.
+its data intact and shown in review. Processes without the lock
+(`crank mcp`, CLI queries) never run recovery and treat an open ride as live; which tables they may write
+is fixed in §9.4.
 
 Rejected: **sqlx** (async API we don't need on a single writer thread; compile-time checked queries need a
 live database or an offline query cache in the build); **an embedded KV store (redb, sled)** (the review and
@@ -505,17 +506,14 @@ agent assumes a hardware result it did not see.
 
 - **Packages:** `crank-cli`, `crank-desktop`, `crank-desktop-e2e`, `app-dist` (Vite build), `crank-app`
   (the unsigned macOS bundle, `aarch64-darwin` only).
-- **CI:** the fleet runners (#25, anvil vm-runner, `x86_64-linux`) run `nix flake check` on every PR into
+- **CI:** ~~the fleet runners (#25, anvil vm-runner, `x86_64-linux`) run `nix flake check` on every PR into
   `dev`, as the required job. sage runs `nix flake check` for `aarch64-darwin` plus the §8.1 GUI commands
-  before merge. #25's workflow changes from `nix develop -c just check` to `nix flake check`;
-  `just check` is a local alias for it.
-- **Binary cache:** anvil's atticd is a substituter, URL `http://anvil.tail22bd7c.ts.net:8091/fleet`, key
-  `fleet:XhYN63AUcQY42UsuNq5cjrSeDmXMbf1Znx52Qw8kucw=` (g-fleet `lib/fleet-cache.nix`). sage already has it
-  in `/etc/nix/nix.conf` via host configuration (g-fleet's `nixPullCache`). The flake declares
-  **no `nixConfig`**, per the architect's #28 round 2 decision: fleet hosts receive the substituter
-  and key from host config; non-fleet hosts use cache.nixos.org and source. Never use
-  `--accept-flake-config` or change nix.conf for this project. Pushing build results to attic is
-  the runners' job (#25).
+  before merge.~~ **Superseded by the Amendment 2026-10-13 (below):** GitHub-hosted runners run the gate.
+  `just check` is a local alias for `nix flake check`; sage still runs the §8.1 GUI commands.
+- **Binary cache:** ~~anvil's atticd is a substituter~~ **superseded (Amendment 2026-10-13).** The flake
+  declares **no `nixConfig`**, per the architect's #28 round 2 decision: hosts that have a cache get it
+  from host configuration; everyone else uses cache.nixos.org and source. Never use
+  `--accept-flake-config` or change nix.conf for this project.
 
 ### 9.2 Frontend and generated bindings in Nix
 
@@ -567,6 +565,26 @@ agent assumes a hardware result it did not see.
 - The `crank` CLI on PATH is a symlink to `~/Applications/crank.app/Contents/MacOS/crank`. Run from a
   terminal, its Bluetooth grant belongs to the terminal (TCC responsible process); BLE runs by agents use
   the Alacritty path (ADR-0002 §8).
+
+### 9.4 Amendment 2026-10-13: CI is GitHub-hosted (#122, #166)
+
+*Amends §1, §2, §6 and §9.1. The struck-through text above is kept as history.*
+
+- **CI.** Since #58 the gate is `nix flake check -L` on GitHub-hosted `ubuntu-latest` and `macos-latest`;
+  the `CI Summary` job is required on `dev` and `main`. The fleet runner (anvil vm-runner) was offboarded
+  from this repository because **self-hosted runners must never serve a public repository**: a pull request
+  from a fork would execute untrusted code on a machine inside the owner's network (g-fleet#170).
+  The attic binary cache is not used by this repository either; CI uses the magic Nix cache on hosted
+  runners. No internal hostnames or cache keys are published here; the `public-hygiene` flake check
+  (`scripts/check-public-hygiene.sh`) fails on internal hostnames and absolute home paths in tracked files.
+- **Ride lock (amends §2 item 3).** The ride lock is acquired by `crank-store` (`Store::open_owner`), the
+  narrowest place that can guarantee "recovery only in the lock holder". `crank-core` decides *when* to open
+  the store as owner; it does not implement the lock.
+- **Lock-less writers (amends §6).** A process without the lock may write the non-ride tables (`rating`,
+  `checkin`, `setting`, `plan_item`, …) on its own connection, relying on SQLite WAL locking plus
+  `busy_timeout`. It never writes `ride` or `ride_chunk` and never runs recovery. The current store is
+  strictly read-only for lock-less processes (`StoreError::ReadOnly`) and stays so until the first lock-less
+  writer (MCP/CLI) lands; #166 tracks that implementation.
 
 ## 10. Alternatives considered (summary)
 
@@ -621,7 +639,7 @@ agent assumes a hardware result it did not see.
 
 Scaffold (#28) acceptance gains: crate list of §2, pinned specta trio, bindings drift test, dependency-edge
 check, `clippy::unwrap_used` deny outside tests, and the flake of §9.1–9.2 (crane checks, `fetchPnpmDeps`,
-attic substituter via fleet host configuration, no `nixConfig`) with `nix flake check` green.
+no `nixConfig`; the attic substituter was superseded, §9.4) with `nix flake check` green.
 
 ## 13. References
 
@@ -633,7 +651,7 @@ attic substituter via fleet host configuration, no `nixConfig`) with `nix flake 
 - btleplug README (platforms, macOS usage description): https://github.com/deviceplug/btleplug
 - crane API (`buildDepsOnly`, `cargoClippy`, `cargoNextest`, `cargoDocTest`, `cargoDoc`, `cargoDeny`, filesets): https://crane.dev/API.html
 - nixpkgs-unstable (evaluated 2026-10-13): `pnpm_12` = 12.9.0, `fetchPnpmDeps`, `pnpmConfigHook` present
-- g-fleet: `lib/fleet-cache.nix` (attic URL + key), `bin/nix-tcc-cert` and `modules/home/tcc-sign.nix` (stable `nix-tcc` signing for TCC)
+- g-fleet: `bin/nix-tcc-cert` and `modules/home/tcc-sign.nix` (stable `nix-tcc` signing for TCC)
 - crates.io versions as of 2026-10-13: tauri 2.12.3, tauri-specta/specta 2.0.0-rc.25, specta-typescript
   0.0.12, ts-rs 12.0.1, rusqlite 0.40.2, rusqlite_migration 2.6.0, keyring 4.2.0, directories 6.0.0,
   rmcp 3.5.1, btleplug 0.13.5, tauri-plugin-wdio-webdriver 1.5.0
