@@ -29,6 +29,11 @@ const SIZES = [
   [1024, 768],
 ];
 const THEMES = ["dark", "light"];
+// Byte-identical captures (#189): with Chromium's defaults the same page rasterises to one of two PNGs, run to run
+// (1-level anti-aliasing noise on rounded corners of sticky/fixed layers in a full-page capture, found by hashing
+// 12 captures of one scene: 75/25). Partial raster re-uses damaged tiles from earlier frames and multi-threaded
+// raster orders them by thread timing; one raster thread without partial raster paints every tile from scratch.
+const RASTER_ARGS = ["--disable-gpu", "--disable-partial-raster", "--num-raster-threads=1"];
 
 execFileSync(process.execPath, [fileURLToPath(new URL("./contrast.mjs", import.meta.url))], { stdio: "inherit" });
 mkdirSync(out, { recursive: true });
@@ -39,7 +44,7 @@ const server = await createServer({ root, logLevel: "warn", server: { port: 0 } 
 await server.listen();
 const base = server.resolvedUrls?.local[0];
 if (!base) throw new Error("vite did not report a local URL");
-const browser = await chromium.launch();
+const browser = await chromium.launch({ args: RASTER_ARGS });
 const failures = [];
 
 try {
@@ -193,6 +198,9 @@ async function startScreens() {
       query: "boot=600",
       async prepare(page) {
         await page.clock.runFor(600); // the core is ready: destination live underneath, F running on under the fade
+        // F's own rAF driver paints t = 591 or 592 ms (the fake clock's frame phase varies with load timing, #189):
+        // paint the frame at the exact t instead, as the motion frames do
+        await paintAt(page, 600);
         await page.evaluate(() => {
           const fade = document.getAnimations().find((a) => a.effect?.target?.classList.contains("start"));
           fade.currentTime = 100;
