@@ -333,10 +333,12 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 
-- **App:** the signed `crank.app` (bundle id `io.github.gerchowl.crank`, Apple Development identity for dev
-  builds, #37) with `NSBluetoothAlwaysUsageDescription` = "crank connects to your smart trainer and
-  heart-rate strap over Bluetooth." The grant is tied to the signing identity, so it survives rebuilds;
-  ad-hoc-signed builds lose it on every rebuild (`spec/TRAINER-BLE.md`).
+- **App:** a real bundle from day 1: `crank.app` (bundle id `io.github.gerchowl.crank`) with
+  `NSBluetoothAlwaysUsageDescription` = "crank connects to your smart trainer and heart-rate strap over
+  Bluetooth.", assembled by Nix and signed by `just bundle` on sage with the self-signed `nix-tcc`
+  identity (ADR-0001 §9.3, #37). TCC keys the grant on the designated requirement (bundle id + signing
+  certificate), so the owner grants Bluetooth once and it survives rebuilds; ad-hoc-signed builds lose
+  it on every rebuild (`spec/TRAINER-BLE.md`). Developer ID signing is for distribution only (#47).
 - **CLI / HIL scripts:** the grant belongs to the terminal app that launched the process (TCC responsible
   process). On sage, flock panes are denied (responsible process `sshd-keygen-wrapper`), so hardware runs
   go through an Alacritty window: a wrapper script launched with
@@ -395,7 +397,8 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
 | HIL session 1: checksum, message type, page 71, rates, ERG response, keep-alive, SIM, stall point, single central, dropout; request current Tacx doc | #44 | M1 |
 | `SimTrainer`/`SimHeart` port (with the `shared/` port) | #31 | M1 |
 | ERG policy and dropout pause in the engine | #32 | M1 |
-| Dev signing identity for TCC | #37 | M1 |
+| Signed `crank.app` via `just bundle` (`nix-tcc`) | #37 | M1 |
+| Developer ID + notarization (distribution) | #47 | M3 |
 | FTMS driver | #45 | M3 |
 | Windows/Linux BLE behaviour | #41 | M3 |
 

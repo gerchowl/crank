@@ -12,6 +12,9 @@ crank is an indoor-cycling app for the owner's Tacx NEO (gen 1, BLE only, FE-C o
 with `strong | lean | uncertain` bands) and an LLM planner (Claude API) before and after rides. v1 also
 ships an MCP server, an integrated CLI and intervals.icu import. Already decided: **Rust core + Tauri v2 +
 React 19 with the React Compiler** (`spec/SPIKE-RESULTS.md`), BLE only, v1 = everything in the spec.
+Owner decisions of 2026-10-13 (folded in here): build with a Nix flake using crane, `nix flake check` as
+the CI gate, anvil's attic as binary cache; a real, locally signed `crank.app` (`nix-tcc` identity) from day 1;
+and the definition of done in §8.1.
 
 The UI spikes ran against `shared/`, a TypeScript mock of the future core (`shared/src/contract.ts`,
 ~3.7k LOC of metrics, filters, multi-resolution history, W′bal, HRV, HR-recovery fit, DSL, compiler,
@@ -327,47 +330,157 @@ on top).
   the IPC contract (commands return `has_key: bool`). Debug builds only accept `CRANK_ANTHROPIC_API_KEY` /
   `CRANK_INTERVALS_API_KEY` from the environment; release builds compile that path out.
 
-## 8. Decision: testing strategy
+## 8. Decision: testing strategy and definition of done
+
+### 8.1 Definition of done (owner, 2026-10-13)
+
+v1 is done when **crank runs on sage, is fully tested, and the owner's only manual step is granting
+Bluetooth once.** Each required test kind maps to an automated command and a place where it runs:
+
+| Required by the owner | Covered by | Runs where | Command |
+|---|---|---|---|
+| Unit tests | `cargo nextest` (all crates), Vitest (app) | Nix sandbox | `nix flake check` |
+| Property tests | `proptest` (DSL round trip, compiler invariants, filters, FE-C encode/decode, chunk codec) | Nix sandbox | `nix flake check` |
+| Simulated-trainer integration | engine scenarios on `SimTrainer` + `SimHeart` + `VirtualClock` | Nix sandbox | `nix flake check` |
+| FE-C codec against fixture frames | `crank-fec` tests on the Tacx worked example and committed HIL captures; `ReplayTrainer` through the real FE-C driver | Nix sandbox | `nix flake check` |
+| UI e2e | WebdriverIO against the real app on the simulated trainer (§8.3) | sage GUI session, outside the sandbox | `just e2e` |
+| Screenshot harness | same harness, view × state matrix to `docs/design/screens/` | sage GUI session, outside the sandbox | `just screens` |
+| App on sage, Bluetooth granted once | `.app` from Nix, signed with `nix-tcc` (§9.3) | sage, outside the sandbox | `just bundle` |
+
+`nix flake check` is the CI gate (§9.1). `just e2e`, `just screens` and `just bundle` run on sage
+before merging any PR that touches `app/`, `crank-desktop`, `crank-core`'s API or `crank-ble`; the PR body
+reports the commands and their exit codes. None of them needs the owner: e2e and screenshots use the
+simulated trainer, so they need no Bluetooth. The one owner step is the Bluetooth prompt on the first
+launch of the signed app; hardware-in-the-loop sessions (§8.4) are verification, not a setup step.
+
+### 8.2 Test layers
 
 | Layer | Tool | What |
 |---|---|---|
-| Unit | `cargo test` (+ `cargo nextest` in CI) | every crate; domain vectors from `shared/` (§3) |
+| Unit | `cargo nextest` (+ `cargo test --doc`) | every crate; domain vectors from `shared/` (§3) |
 | Property | `proptest` | DSL round trip, compiler invariants, filters, FE-C encode/decode round trip, chunk codec |
-| Fuzz | `cargo-fuzz` | `parse_dsl`, `crank_fec::decode` never panic |
-| Snapshot | `insta` | compiled workouts, `bindings.ts`, store migrations' resulting schema |
+| Fuzz | `cargo-fuzz` | `parse_dsl`, `crank_fec::decode` never panic; corpora committed, short runs on sage, not in the gate |
+| Snapshot | `insta` | compiled workouts, store migrations' resulting schema |
+| Bindings drift | export test | regenerated `bindings.ts` equals the committed file |
 | Engine integration | `SimTrainer` + `SimHeart` + `VirtualClock` | 45-min workout in milliseconds; scenarios: dropout mid-interval, reconnect, HR loss, skip, manual and auto pause, low-cadence ERG release, coach auto-apply |
-| BLE replay | captured `.fecap` files through `crank-fec` + FE-C driver over a fake transport | real NEO behaviour in CI without Bluetooth |
+| FE-C fixtures and replay | `.fecap` captures through `crank-fec` + FE-C driver over a fake transport | real NEO behaviour without Bluetooth |
 | Store | temp DB | migrate empty, migrate fixtures of every released schema, kill-during-ride recovery |
 | UI unit | Vitest + Testing Library | editor tree ops, undo/redo, DSL↔tree sync incl. invalid drafts (#9), stores; `@tauri-apps/api/mocks` `mockIPC` for command calls |
-| UI E2E + screenshots | WebdriverIO `@wdio/tauri-service`, embedded provider (`tauri-plugin-wdio-webdriver`, debug builds only) against the real app launched with `--sim --seed N --clock virtual` | view × state matrix into `docs/design/screens/` (`just screens`); validation is #35 |
+| UI e2e + screenshots | WebdriverIO `@wdio/tauri-service` (§8.3) | flows and the screenshot matrix on the real app |
 | Hardware-in-the-loop | owner-run, batched, scripted | ADR-0002 §9 |
 
-Why not Playwright against the real app: `tauri-driver` supports Windows and Linux only, "as macOS has no
-WKWebView driver tool available" ([Tauri WebDriver docs](https://v2.tauri.app/develop/tests/webdriver/)).
-WebdriverIO's Tauri service has an embedded provider for macOS
-([platform support](https://webdriver.io/docs/desktop-testing/tauri/platform-support)); the plugin opens an
-HTTP automation endpoint, so it is registered only under `debug_assertions`. Until #35 lands, #24's
-Playwright harness against the `shared/` mock remains the design-review tool.
+### 8.3 UI e2e on macOS
 
-Hardware-in-the-loop protocol: test scripts live in `hil/` and run in a terminal that has the Bluetooth
-grant (on sage: an Alacritty window opened via `alacritty msg create-window -e <wrapper>`, see the crank
-traps). Sessions are batched into one owner request with a checklist, a time estimate and the exact pedalling
-needed; every run writes a capture file and a result note to `docs/hil/<date>-<topic>.md`. No agent
-assumes a hardware result it did not see.
+`tauri-driver` supports Windows and Linux only, "as macOS has no WKWebView driver tool available"
+([Tauri WebDriver docs](https://v2.tauri.app/develop/tests/webdriver/)). WebdriverIO's Tauri service
+uses an embedded provider on macOS: the `tauri-plugin-wdio-webdriver` plugin (1.5.0) runs a WebDriver
+server inside the app ([platform support](https://webdriver.io/docs/desktop-testing/tauri/platform-support)).
 
-## 9. Decision: packaging
+- The plugin opens an HTTP automation endpoint, so it is behind a cargo feature `e2e` of `crank-desktop`.
+  The flake builds a separate package `crank-desktop-e2e` with the feature on; `crank-app` (the bundle,
+  §9.3) never enables it, and a flake check asserts that from `cargo metadata`.
+- `just e2e` builds `.#crank-desktop-e2e` with Nix, then runs WebdriverIO (from the app's pnpm
+  devDependencies) against it with `--sim --seed 42 --clock virtual --data-dir <tmp>`. Under the virtual
+  clock a debug command `debug_advance(sim_s)` (feature `e2e` only) moves the ride to each state, so
+  screenshots are deterministic.
+- A WebView window needs the logged-in GUI session. On sage, flock panes run under sshd and have none, so
+  agents launch `just e2e` / `just screens` through the Alacritty IPC wrapper (the same path as BLE runs)
+  and read the result files. The screenshot matrix is the one #24 defines; #24's Playwright harness
+  against the `shared/` mock remains the design-review tool until this harness reaches parity.
+- **#35 gates M1 UI work.** It validates the embedded provider on sage (navigation, element queries,
+  screenshots, `debug_advance`). If it fails, the decided alternative is: Playwright drives the Vite
+  build in Chromium, and the real Rust core runs as `crank devserver --sim`, reached through a WebSocket
+  shim that implements `invoke` and `Channel` for the generated bindings (`window.__TAURI_INTERNALS__`),
+  dispatching to the same `Core` methods. That path tests the real core and UI but not WKWebView itself,
+  so #35 must record the trade-off and amend this section. Either way `just e2e` and `just screens` keep
+  their names and outputs, so §8.1 holds.
 
-- macOS first: Tauri v2 bundle, bundle id `io.github.gerchowl.crank`, minimum macOS 13.
-- **Signing for dev** (#37): Apple Development identity, so the Bluetooth TCC grant survives rebuilds
-  (ad-hoc signed builds lose it, `spec/TRAINER-BLE.md`).
-- `app/src-tauri/Info.plist` adds `NSBluetoothAlwaysUsageDescription`; Tauri merges it with the generated
-  plist ([macOS application bundle](https://v2.tauri.app/distribute/macos-application-bundle/)). The
-  same key is required for any process using CoreBluetooth on macOS, per the btleplug README.
-- Hardened runtime on; **no App Sandbox in v1** (direct distribution; the sandbox would also need the
-  `com.apple.security.device.bluetooth` and network-client entitlements and a container for the data dir).
-- The `crank` CLI is shipped inside the bundle (`Contents/MacOS/crank`) and on PATH via a documented
-  symlink; when run from a terminal its Bluetooth grant belongs to the terminal (TCC responsible process).
-- Distribution beyond the owner (Developer ID, notarization, updater) and Windows/Linux bundles: #41.
+### 8.4 Hardware-in-the-loop protocol
+
+Test scripts live in `hil/` and run in a terminal that has the Bluetooth grant (on sage: an Alacritty
+window opened via `alacritty msg create-window -e <wrapper>`, see the crank traps). Sessions are batched
+into one owner request with a checklist, a time estimate and the exact pedalling needed; every run writes a
+capture file and a result note to `docs/hil/<date>-<topic>.md`. Captures become FE-C fixtures (§8.2). No
+agent assumes a hardware result it did not see.
+
+## 9. Decision: build, packaging and signing
+
+### 9.1 Nix flake with crane; `nix flake check` is the CI gate
+
+- `flake.nix` at the repo root; inputs `nixpkgs` (nixpkgs-unstable, pinned by `flake.lock`), `crane`, and
+  `rust-overlay` for the toolchain from `rust-toolchain.toml` (`craneLib.overrideToolchain`). The devshell
+  (`nix develop`) provides the same toolchain, `pnpm_12` (matches `packageManager: pnpm@12.9.0`; present
+  in nixpkgs-unstable as of 2026-10-13), Node, `just`, `cargo-nextest`, `cargo-deny` and `cargo-fuzz`.
+- **crane:** one `buildDepsOnly` produces the shared `cargoArtifacts`; every Rust check reuses it
+  ([crane API](https://crane.dev/API.html)). The source is filtered with `craneLib.fileset.commonCargoSources`
+  plus the test fixtures, migrations and knowledge-pack rules, so doc or UI edits don't rebuild Rust.
+- **Flake `checks`** (per system, `aarch64-darwin` and `x86_64-linux`):
+
+  | Check | crane / derivation |
+  |---|---|
+  | `fmt` | `cargoFmt` |
+  | `clippy` | `cargoClippy`, `--all-targets -- -D warnings` |
+  | `nextest` | `cargoNextest` (unit, property, engine-sim, store, FE-C fixtures, bindings drift) |
+  | `doctest` | `cargoDocTest` |
+  | `doc` | `cargoDoc` with `RUSTDOCFLAGS=-D warnings` (`missing_docs` denied) |
+  | `deny` | `cargoDeny` (bans, licenses, sources) |
+  | `deps-edges` | script over `cargo metadata`: forbidden crate edges (§2) and `e2e` feature not in `crank-app` |
+  | `app-typecheck`, `app-lint`, `app-test` | frontend derivations: `tsc --noEmit`, ESLint, Vitest |
+
+- **Packages:** `crank-cli`, `crank-desktop`, `crank-desktop-e2e`, `app-dist` (Vite build), `crank-app`
+  (the unsigned macOS bundle, `aarch64-darwin` only).
+- **CI:** the fleet runners (#25, anvil vm-runner, `x86_64-linux`) run `nix flake check` on every PR into
+  `dev`, as the required job. sage runs `nix flake check` for `aarch64-darwin` plus the §8.1 GUI commands
+  before merge. #25's workflow changes from `nix develop -c just check` to `nix flake check`;
+  `just check` is a local alias for it.
+- **Binary cache:** anvil's atticd is a substituter, URL `http://anvil.tail22bd7c.ts.net:8091/fleet`, key
+  `fleet:XhYN63AUcQY42UsuNq5cjrSeDmXMbf1Znx52Qw8kucw=` (g-fleet `lib/fleet-cache.nix`). sage already has it
+  in `/etc/nix/nix.conf` (g-fleet's `nixPullCache`); the flake also declares it in `nixConfig`
+  (`extra-substituters`, `extra-trusted-public-keys`) for other hosts. Pushing build results to attic is
+  the runners' job (#25).
+
+### 9.2 Frontend and generated bindings in Nix
+
+- **pnpm dependencies:** a fixed-output derivation via nixpkgs `fetchPnpmDeps` (pnpm 12, `hash` in
+  `flake.nix`), consumed with `pnpmConfigHook` by `app-dist` and the frontend checks. Updating
+  `pnpm-lock.yaml` requires updating that hash in the same commit; the check fails otherwise, by design.
+  Rejected: `node2nix`/`dream2nix` (generated Nix per package, a second lockfile to keep in sync) and
+  building the frontend outside Nix (the gate would not cover it).
+- **Bindings:** `app/src/bindings.ts` is generated by a Rust test and committed. The frontend
+  derivations consume the committed file, so the frontend builds without building Rust; the `nextest`
+  check regenerates it and fails on any diff, so the committed file cannot go stale. Developers run
+  `just bindings` after changing API types.
+- **Embedding:** Tauri embeds the frontend at compile time, so `crank-desktop` takes `app-dist` as input
+  (`frontendDist` set to the derivation's output path).
+
+### 9.3 macOS bundle and stable TCC from day 1
+
+- `crank-app` (Nix, sandboxed) assembles an **unsigned** `crank.app`: `Contents/MacOS/crank-desktop`, the
+  CLI as `Contents/MacOS/crank`, `Resources/` (icon), and `Info.plist` from `app/src-tauri/Info.plist`
+  with `CFBundleIdentifier = io.github.gerchowl.crank`, `CFBundleExecutable = crank-desktop`,
+  `LSMinimumSystemVersion = 13.0` and `NSBluetoothAlwaysUsageDescription` (ADR-0002 §8). It is a file
+  layout step; Tauri's bundler and `codesign` don't run in the sandbox (the bundler wants to sign, and
+  signing needs the login keychain).
+- **`just bundle` (on sage, outside the sandbox):** `nix build .#crank-app`, copy to
+  `~/Applications/crank.app` (writable copy, stable path), then sign inside-out with the self-signed
+  **`nix-tcc`** identity that already exists in sage's login keychain (g-fleet `bin/nix-tcc-cert`, the same
+  identity g-fleet's `tcc-sign.nix` uses so TCC grants survive rebuilds):
+  `codesign --force --sign nix-tcc --identifier io.github.gerchowl.crank.cli Contents/MacOS/crank`, then
+  `codesign --force --sign nix-tcc --identifier io.github.gerchowl.crank crank.app`. It finishes with
+  `codesign --verify --strict` and asserts that `codesign -d -r-` prints the designated requirement
+  `identifier "io.github.gerchowl.crank" and certificate leaf = H"<nix-tcc SHA-1>"`.
+- Because TCC matches the designated requirement (bundle id + signing certificate), not the cdhash, the
+  owner grants Bluetooth on the first launch and **the grant survives every rebuild**. That is the owner's
+  only manual step (§8.1).
+- **No hardened runtime and no App Sandbox for local builds.** The Nix-built binaries load dylibs from
+  `/nix/store`, and hardened-runtime library validation rejects libraries not signed by the same team (a
+  self-signed certificate has no team ID). The local bundle is not relocatable to another Mac; that's fine
+  for sage.
+- **Distribution** to other Macs (Developer ID Application with the owner's Apple Developer account,
+  hardened runtime, self-contained dylibs, notarization, stapling) is #47 (M3). Windows/Linux bundles: #41.
+- The `crank` CLI on PATH is a symlink to `~/Applications/crank.app/Contents/MacOS/crank`. Run from a
+  terminal, its Bluetooth grant belongs to the terminal (TCC responsible process); BLE runs by agents use
+  the Alacritty path (ADR-0002 §8).
 
 ## 10. Alternatives considered (summary)
 
@@ -379,7 +492,10 @@ assumes a hardware result it did not see.
 | One multiplexed `Channel<StreamFrame>` | channel per widget; events | IPC volume, no ordering; events are JSON and unordered |
 | Integer 250 ms ticks on a monotonic clock | wall-clock timers; float time | drift and non-determinism |
 | rusqlite + rusqlite_migration, chunked 1 Hz | sqlx; KV store; row per sample; files | see §6 |
-| WebdriverIO embedded provider | tauri-driver; Playwright on the web build only | no macOS driver; would test the mock, not the core |
+| WebdriverIO embedded provider | tauri-driver; Playwright on the web build only | no macOS driver; would not exercise WKWebView (kept as the #35 alternative, §8.3) |
+| Nix flake + crane, `nix flake check` as gate | plain cargo + pnpm in CI; `nix develop -c just check` | not hermetic, no shared dependency artifacts, no attic reuse |
+| pnpm deps as fixed-output derivation (`fetchPnpmDeps`) | node2nix / dream2nix; frontend outside Nix | second lockfile; gate would not cover the UI |
+| `.app` assembled in Nix, signed by `just bundle` with `nix-tcc` | Tauri bundler; Apple Development / Developer ID for local builds | bundler signs inside the build; Apple identities are distribution concerns (#47) and not needed for a stable TCC grant |
 
 ## 11. Consequences
 
@@ -393,7 +509,12 @@ assumes a hardware result it did not see.
 - The desktop app and CLI cannot ride at the same time (ride lock), mirroring the trainer's own
   single-central limit.
 - `shared/` lives on until the React app consumes the bindings, and receives no new logic.
-- CI runs everything except BLE hardware; hardware truth comes from captures replayed in CI.
+- CI runs everything except BLE hardware and the GUI-session steps; hardware truth comes from captures
+  replayed in CI, and `just e2e` / `just screens` / `just bundle` run on sage before UI-touching merges.
+- Every `pnpm-lock.yaml` change also updates the pnpm deps hash in `flake.nix`.
+- The local `crank.app` depends on `/nix/store` and runs only on sage (or another Nix Mac); a
+  distributable bundle is #47's work.
+- The owner's only manual step for v1 is granting Bluetooth once to the `nix-tcc`-signed app.
 
 ## 12. Open questions (filed)
 
@@ -405,24 +526,28 @@ assumes a hardware result it did not see.
 | Core + desktop commands and bindings (implementation) | #34 | M1 |
 | Does `@wdio/tauri-service`'s embedded provider work for E2E/screenshots on macOS? | #35 | M1 |
 | Spec/contract text alignment with this ADR | #36 | M1 |
-| Apple Development signing identity (owner action) | #37 | M1 |
+| `just bundle`: Nix-assembled `crank.app` signed with `nix-tcc`, DR check (implementation) | #37 | M1 |
 | Keychain secrets (implementation) | #38 | M2 |
 | Judge backend: local rules vs a System One model; latency and offline behaviour | #39 | M2 |
 | MCP/CLI access to a live ride owned by the desktop app | #40 | M3 |
-| Distribution (Developer ID, notarization, updater) and Windows/Linux | #41 | M3 |
+| Developer ID signing + notarization for a distributable `crank.app` | #47 | M3 |
+| Windows/Linux bundles and BLE behaviour | #41 | M3 |
 
 Scaffold (#28) acceptance gains: crate list of §2, pinned specta trio, bindings drift test, dependency-edge
-check, `clippy::unwrap_used` deny outside tests.
+check, `clippy::unwrap_used` deny outside tests, and the flake of §9.1–9.2 (crane checks, `fetchPnpmDeps`,
+attic substituter in `nixConfig`) with `nix flake check` green.
 
 ## 13. References
 
 - Tauri v2, calling the frontend (channels vs events): https://v2.tauri.app/develop/calling-frontend/
 - Tauri v2, WebDriver (platform support): https://v2.tauri.app/develop/tests/webdriver/
 - Tauri v2, mocking (`mockIPC`): https://v2.tauri.app/develop/tests/mocking/
-- Tauri v2, macOS application bundle (Info.plist merge, entitlements): https://v2.tauri.app/distribute/macos-application-bundle/
 - tauri-specta (v2 RC; Channel support in `examples/app`): https://github.com/specta-rs/tauri-specta
 - WebdriverIO Tauri service, platform support: https://webdriver.io/docs/desktop-testing/tauri/platform-support
 - btleplug README (platforms, macOS usage description): https://github.com/deviceplug/btleplug
+- crane API (`buildDepsOnly`, `cargoClippy`, `cargoNextest`, `cargoDocTest`, `cargoDoc`, `cargoDeny`, filesets): https://crane.dev/API.html
+- nixpkgs-unstable (evaluated 2026-10-13): `pnpm_12` = 12.9.0, `fetchPnpmDeps`, `pnpmConfigHook` present
+- g-fleet: `lib/fleet-cache.nix` (attic URL + key), `bin/nix-tcc-cert` and `modules/home/tcc-sign.nix` (stable `nix-tcc` signing for TCC)
 - crates.io versions as of 2026-10-13: tauri 2.12.3, tauri-specta/specta 2.0.0-rc.25, specta-typescript
   0.0.12, ts-rs 12.0.1, rusqlite 0.40.2, rusqlite_migration 2.6.0, keyring 4.2.0, directories 6.0.0,
   rmcp 3.5.1, btleplug 0.13.5, tauri-plugin-wdio-webdriver 1.5.0
