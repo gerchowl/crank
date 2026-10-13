@@ -1,0 +1,224 @@
+/*
+ * Design tokens (spec/THEMES.md). Components and charts reference roles, never hex.
+ *
+ * Structure: each preset defines BOTH its light (-l) and dark (-d) steps; the mode layer
+ * then selects one set. This keeps Auto (OS preference) a pure selector switch instead of a
+ * second copy of every preset.
+ *
+ *   <html data-theme="ocean|graphite|ember" data-mode="dark|light|auto" data-zones="ramp|classic">
+ *
+ * All ramps validated with the dataviz validator (scripts/validate_palette.js):
+ *   zones   7 steps, --ordinal, light vs #fcfcfb and dark vs #1a1a19 — all PASS
+ *   fatigue 5 steps, --ordinal, both modes — all PASS
+ *   series  slots 1–3 (power/HR/cadence) --pairs all, both modes — PASS (documented default palette)
+ * See README "Palette validation".
+ */
+
+:root {
+  /* ---------- status: fixed, never themed (always shown with icon + label) ---------- */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+
+  /* ---------- series identity: fixed slots, same hue in every preset ---------- */
+  --series-power-l: #2a78d6;
+  --series-power-d: #3987e5;
+  --series-hr-l: #eb6834;
+  --series-hr-d: #d95926;
+  --series-cadence-l: #1baf7a;
+  --series-cadence-d: #199e70;
+  --series-dfa-l: #eda100;
+  --series-dfa-d: #c98500;
+  --series-torque-l: #e87ba4;
+  --series-torque-d: #d55181;
+
+  /* ---------- diverging: blue ↔ red, grey midpoint ---------- */
+  --div-neg-l: #e34948;
+  --div-neg-d: #e66767;
+  --div-pos-l: #2a78d6;
+  --div-pos-d: #3987e5;
+  --div-mid-l: #d6d5ce;
+  --div-mid-d: #383835;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ================= presets ================= */
+
+/* Ocean (default): blue chrome, blue zone ramp, amber fatigue ramp */
+:root,
+:root[data-theme="ocean"] {
+  --accent-l: #2a78d6;
+  --accent-d: #3987e5;
+  --accent-ink-l: #ffffff;
+  --accent-ink-d: #0b0b0b;
+  --accent-soft-l: #e3eefc;
+  --accent-soft-d: #172a42;
+
+  --zone-1-l: #7cb2f8; --zone-2-l: #649de6; --zone-3-l: #4b88d4; --zone-4-l: #3273c3;
+  --zone-5-l: #2360a8; --zone-6-l: #124d8f; --zone-7-l: #013a76;
+  --zone-1-d: #255897; --zone-2-d: #356db1; --zone-3-d: #4582cd; --zone-4-d: #5597e9;
+  --zone-5-d: #6fadfc; --zone-6-d: #97c4fe; --zone-7-d: #bedaff;
+
+  --fatigue-1-l: #dea258; --fatigue-2-l: #c28127; --fatigue-3-l: #9f6401; --fatigue-4-l: #794b02; --fatigue-5-l: #543402;
+  --fatigue-1-d: #7b4c00; --fatigue-2-d: #a36702; --fatigue-3-d: #cb8315; --fatigue-4-d: #eaa652; --fatigue-5-d: #ffcd95;
+
+}
+
+/* Graphite: grey chrome, grey zones (labels mandatory), blue fatigue */
+:root[data-theme="graphite"] {
+  --accent-l: #52514e;
+  --accent-d: #c3c2b7;
+  --accent-ink-l: #ffffff;
+  --accent-ink-d: #0b0b0b;
+  --accent-soft-l: #ebeae5;
+  --accent-soft-d: #2c2c2a;
+
+  --zone-1-l: #b1afab; --zone-2-l: #9c9b96; --zone-3-l: #888682; --zone-4-l: #75736e;
+  --zone-5-l: #61605b; --zone-6-l: #4f4d49; --zone-7-l: #3d3c38;
+  --zone-1-d: #595854; --zone-2-d: #6d6c67; --zone-3-d: #82807b; --zone-4-d: #979590;
+  --zone-5-d: #acaba6; --zone-6-d: #c2c1bc; --zone-7-d: #d9d7d3;
+
+  --fatigue-1-l: #7cb2f8; --fatigue-2-l: #5893dd; --fatigue-3-l: #3273c3; --fatigue-4-l: #1b569b; --fatigue-5-l: #013a76;
+  --fatigue-1-d: #255897; --fatigue-2-d: #3d77bf; --fatigue-3-d: #5597e9; --fatigue-4-d: #82b9ff; --fatigue-5-d: #bedaff;
+}
+
+/* Ember: red/orange chrome, red zones, teal fatigue; critical shifts to magenta */
+:root[data-theme="ember"] {
+  --accent-l: #c33e38;
+  --accent-d: #eb6459;
+  --accent-ink-l: #ffffff;
+  --accent-ink-d: #0b0b0b;
+  --accent-soft-l: #fbe6e3;
+  --accent-soft-d: #3a1d1b;
+
+  --zone-1-l: #fc8a7e; --zone-2-l: #e97167; --zone-3-l: #d6594f; --zone-4-l: #c33e38;
+  --zone-5-l: #a82d29; --zone-6-l: #8e1b1a; --zone-7-l: #74050a;
+  --zone-1-d: #972f29; --zone-2-d: #b24039; --zone-3-d: #ce5249; --zone-4-d: #eb6459;
+  --zone-5-d: #ff7f73; --zone-6-d: #fea69c; --zone-7-d: #fec9c2;
+
+  --fatigue-1-l: #6dc1bb; --fatigue-2-l: #40a29d; --fatigue-3-l: #0a847f; --fatigue-4-l: #056460; --fatigue-5-l: #024643;
+  --fatigue-1-d: #046662; --fatigue-2-d: #1b8782; --fatigue-3-d: #37a9a3; --fatigue-4-d: #69c9c3; --fatigue-5-d: #95e9e3;
+
+  --status-critical: #c2307a;
+}
+
+/* Classic zones (opt-in, not CVD-safe): rainbow Z1 grey … Z7 purple, same steps both modes */
+:root[data-zones="classic"] {
+  --zone-1-l: #8a94a6; --zone-2-l: #3b82f6; --zone-3-l: #22c55e; --zone-4-l: #eab308;
+  --zone-5-l: #f97316; --zone-6-l: #ef4444; --zone-7-l: #a855f7;
+  --zone-1-d: #8a94a6; --zone-2-d: #3b82f6; --zone-3-d: #22c55e; --zone-4-d: #eab308;
+  --zone-5-d: #f97316; --zone-6-d: #ef4444; --zone-7-d: #a855f7;
+}
+
+/* ================= modes ================= */
+
+/* Light (also the Auto fallback) */
+:root {
+  color-scheme: light;
+  --surface-0: #efeee9;
+  --surface-1: #fcfcfb;
+  --surface-2: #f3f2ee;
+  --ink-primary: #0b0b0b;
+  --ink-secondary: #52514e;
+  --ink-muted: #75736e;
+  --border: rgba(11, 11, 11, 0.12);
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --focus: #2a78d6;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.06);
+
+  --accent: var(--accent-l);
+  --accent-ink: var(--accent-ink-l);
+  --accent-soft: var(--accent-soft-l);
+  --series-power: var(--series-power-l);
+  --series-hr: var(--series-hr-l);
+  --series-cadence: var(--series-cadence-l);
+  --series-dfa: var(--series-dfa-l);
+  --series-torque: var(--series-torque-l);
+  --target: var(--ink-muted);
+  --div-neg: var(--div-neg-l);
+  --div-mid: var(--div-mid-l);
+  --div-pos: var(--div-pos-l);
+  --zone-1: var(--zone-1-l); --zone-2: var(--zone-2-l); --zone-3: var(--zone-3-l); --zone-4: var(--zone-4-l);
+  --zone-5: var(--zone-5-l); --zone-6: var(--zone-6-l); --zone-7: var(--zone-7-l);
+  --fatigue-1: var(--fatigue-1-l); --fatigue-2: var(--fatigue-2-l); --fatigue-3: var(--fatigue-3-l);
+  --fatigue-4: var(--fatigue-4-l); --fatigue-5: var(--fatigue-5-l);
+}
+
+/* Dark — designed, not inverted: its own steps of the same ramps. Duplicated for explicit
+   dark and for Auto under an OS dark preference (an explicit light choice wins). */
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --surface-0: #0d0d0d;
+  --surface-1: #1a1a19;
+  --surface-2: #242422;
+  --ink-primary: #f0efec;
+  --ink-secondary: #c3c2b7;
+  --ink-muted: #8f8d86;
+  --border: rgba(255, 255, 255, 0.1);
+  --grid: #2c2c2a;
+  --axis: #43433f;
+  --focus: #6fadfc;
+  --shadow: none;
+
+  --accent: var(--accent-d);
+  --accent-ink: var(--accent-ink-d);
+  --accent-soft: var(--accent-soft-d);
+  --series-power: var(--series-power-d);
+  --series-hr: var(--series-hr-d);
+  --series-cadence: var(--series-cadence-d);
+  --series-dfa: var(--series-dfa-d);
+  --series-torque: var(--series-torque-d);
+  --div-neg: var(--div-neg-d);
+  --div-mid: var(--div-mid-d);
+  --div-pos: var(--div-pos-d);
+  --zone-1: var(--zone-1-d); --zone-2: var(--zone-2-d); --zone-3: var(--zone-3-d); --zone-4: var(--zone-4-d);
+  --zone-5: var(--zone-5-d); --zone-6: var(--zone-6-d); --zone-7: var(--zone-7-d);
+  --fatigue-1: var(--fatigue-1-d); --fatigue-2: var(--fatigue-2-d); --fatigue-3: var(--fatigue-3-d);
+  --fatigue-4: var(--fatigue-4-d); --fatigue-5: var(--fatigue-5-d);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-mode="light"])) {
+    color-scheme: dark;
+    --surface-0: #0d0d0d;
+    --surface-1: #1a1a19;
+    --surface-2: #242422;
+    --ink-primary: #f0efec;
+    --ink-secondary: #c3c2b7;
+    --ink-muted: #8f8d86;
+    --border: rgba(255, 255, 255, 0.1);
+    --grid: #2c2c2a;
+    --axis: #43433f;
+    --focus: #6fadfc;
+    --shadow: none;
+
+    --accent: var(--accent-d);
+    --accent-ink: var(--accent-ink-d);
+    --accent-soft: var(--accent-soft-d);
+    --series-power: var(--series-power-d);
+    --series-hr: var(--series-hr-d);
+    --series-cadence: var(--series-cadence-d);
+    --series-dfa: var(--series-dfa-d);
+    --series-torque: var(--series-torque-d);
+    --div-neg: var(--div-neg-d);
+    --div-mid: var(--div-mid-d);
+    --div-pos: var(--div-pos-d);
+    --zone-1: var(--zone-1-d); --zone-2: var(--zone-2-d); --zone-3: var(--zone-3-d); --zone-4: var(--zone-4-d);
+    --zone-5: var(--zone-5-d); --zone-6: var(--zone-6-d); --zone-7: var(--zone-7-d);
+    --fatigue-1: var(--fatigue-1-d); --fatigue-2: var(--fatigue-2-d); --fatigue-3: var(--fatigue-3-d);
+    --fatigue-4: var(--fatigue-4-d); --fatigue-5: var(--fatigue-5-d);
+  }
+}
+
+/* OLED black variant (TV / night riding) */
+:root[data-mode="dark"][data-oled="true"] {
+  --surface-0: #000000;
+  --surface-1: #0b0b0b;
+  --surface-2: #161615;
+}

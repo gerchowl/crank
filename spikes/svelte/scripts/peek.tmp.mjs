@@ -1,0 +1,14 @@
+import { chromium } from "playwright";
+const [url, out, skips = "0", waitMs = "4000", w = "1440", h = "900"] = process.argv.slice(2);
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: +w, height: +h } });
+const errs = [];
+page.on("console", (m) => { if (m.type() === "error" || m.type() === "warning") errs.push(m.type() + ": " + m.text()); });
+page.on("pageerror", (e) => errs.push("pageerror: " + e.message));
+await page.goto(url);
+await page.waitForTimeout(1500);
+await page.evaluate((n) => { for (let i = 0; i < n; i++) window.__neo.ride.skipBlock(); }, +skips);
+await page.waitForTimeout(+waitMs);
+await page.screenshot({ path: out });
+console.log(errs.slice(0, 10).join("\n") || "no console errors");
+await browser.close();
