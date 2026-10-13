@@ -142,7 +142,7 @@ are what Tauri itself uses for download progress and child-process output
 
 | Mechanism | Used for |
 |---|---|
-| **Commands** (request/response, async) | every query and mutation: `history`, `histogram`, `heatmap`, `mmp`, `hr_recovery`, `streams`, `recoveries`, `laps`, `compile_workout`, `parse_dsl`, `print_dsl`, ride control (`ride_load/start/pause/resume/stop/adjust/skip_block`), layouts, snippets, workouts, athlete model, coach respond/rate, planner propose/rewrite, devices, settings |
+| **Commands** (request/response, async) | every query and mutation: `history`, `histogram`, `heatmap`, `mmp`, `hr_recovery`, `streams`, `recoveries`, `laps`, `compile_workout`, `parse_dsl`, `print_dsl`, ride control (`ride_load/start/pause/resume/stop/adjust/skip_block`), `ride_status`, `coach_decisions`, `device_links`, `stream_ack`, layouts, snippets, workouts, athlete model, coach respond/rate, planner propose/rewrite, devices, settings |
 | **One `Channel<StreamFrame>` per window** | all live data: subscribed samples, ride status, nudge changes, device link changes |
 | **Events** | only low-rate, app-wide invalidation hints for multiple windows: `store_changed { table }` |
 
@@ -169,14 +169,36 @@ async fn unsubscribe(core: State<'_, Core>, stream: StreamId, sub: SubId) -> Res
 #[derive(Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamFrame {
-    pub seq: u64,                        // gap ⇒ the UI requests a status snapshot
-    pub samples: Vec<SubSample>,         // only subscriptions that are due in this frame
+    pub seq: u64,                        // per stream, +1 per frame
+    pub resync: bool,                    // frames were coalesced: re-query discrete state (below)
+    pub samples: Vec<SubSample>,         // latest value of each subscription that is due
     pub status: Option<RideStatus>,      // on change, and every 500 ms while riding
-    pub nudges: Vec<CoachNudge>,         // created or status-changed since last frame
-    pub links: Vec<LinkChange>,          // trainer / HR link state changes
+    pub nudges: Vec<CoachNudge>,         // latest state per callId changed since last frame
+    pub links: Vec<LinkChange>,          // latest trainer / HR link state, if changed
 }
-pub struct SubSample { pub sub: SubId, pub t: f64, pub v: Option<f64> }
+pub struct SubSample { pub sub: SubId, pub t: f64, pub v: Option<f64> }  // t = session seconds (§5)
+
+#[tauri::command] #[specta::specta]
+async fn stream_ack(core: State<'_, Core>, stream: StreamId, seq: u64) -> Result<(), ApiError>;
 ```
+
+**Flow control.** Tauri's `Channel::send` has no consumer backpressure: payloads under 8 KiB of JSON are
+pushed with `webview.eval`, larger ones are parked in a pending map until the page fetches them
+(`crates/tauri/src/ipc/channel.rs`, tauri-v2.12.3, `MAX_JSON_DIRECT_EXECUTE_THRESHOLD = 8192`). Throttling
+the send rate therefore does not bound queued work if the page stalls (busy main thread, hidden window,
+devtools pause). crank bounds it explicitly:
+
+- The UI calls `stream_ack(stream, seq)` after it has applied a frame. The core keeps **at most 3
+  unacknowledged frames** per stream. While the window is full it sends nothing and **coalesces**: per
+  subscription only the latest sample, per `callId` the latest nudge, the latest status and link state.
+  The next frame after an ack carries the coalesced state with `resync: true`.
+- Discrete state is durable and queryable, so a coalesced or missed frame never loses information: on
+  `resync` or a `seq` gap the UI re-reads `ride_status()`, `coach_decisions()` and `device_links()`.
+- Frames stay under 8 KiB of JSON (≈ 30 subscriptions plus status), so they take Tauri's direct path.
+  The core counts frames over the limit as a metric and splits samples across frames rather than exceed it.
+- **Cleanup:** streams belong to a window label. `open_stream` from a window drops that window's previous
+  streams (page reload); the window's `Destroyed` event drops them; a failed `send` drops the stream.
+  Subscriptions die with their stream.
 
 Rates:
 
@@ -188,7 +210,7 @@ Rates:
 | Status heartbeat | 2 Hz while riding, immediately on change | same as mock |
 | Ride record | 1 Hz per-second means | `streams()` and persistence |
 
-At 10× / 60× simulated speed the source rates scale with ride time, frame emission does not.
+At 10× / 60× simulated speed the source rates scale with simulated session time, frame emission does not.
 Ordering guarantee: everything in one frame happened before everything in the next; a status change
 and the samples that follow it can't be reordered, which events could not promise.
 
@@ -222,39 +244,54 @@ because invalid drafts are a normal editor state.
 
 ## 5. Decision: time and the ride clock
 
-- **Tick source.** The engine advances in fixed **250 ms ticks** (`SIM_DT` in the mock, FE-C's 4 Hz).
-  Ride time is `ticks × 250 ms` as an integer (`RideTicks(u64)`), so ride time is exact and the same
-  inputs give the same ride.
+- **Tick source.** The engine advances in fixed **250 ms ticks** (`SIM_DT` in the mock, FE-C's 4 Hz),
+  counted as integers, so time is exact and the same inputs give the same ride.
+- **Two time axes.**
+  - **Session time** (`session_s`, `SessionTicks(u64)`): ticks since `start`, advancing in every state
+    except `idle`/`finished`, including pauses. It is the coordinate of the ride record, `streams()`,
+    `Sample.t`, `history()` and laps' `start_s/end_s`, so pauses and dropouts appear as gaps (null) in
+    charts and storage instead of disappearing.
+  - **Workout time** (`workout_s`, `WorkoutTicks(u64)`): ticks spent in `riding`; it drives the block
+    timer, `elapsed`/`remaining`, the workout strip cursor and the planned-vs-actual mapping. The record
+    stores it as the metric `workout_s` (null while paused), so every session second maps to a workout
+    position.
 - **Clock trait.** `trait Clock { fn now(&self) -> MonoTime; async fn sleep_until(&self, t: MonoTime); }`
   with `MonotonicClock` (wraps `tokio::time::Instant`, never wall-clock) and `VirtualClock` (tests,
   `--clock virtual`, 10×/60× simulation). Wall-clock UTC is used only for `ride.started_at` and
   calendar data.
-- **Tick scheduling.** The real clock ticks on a `tokio::time::interval` with
-  `MissedTickBehavior::Burst`: if the process stalls, missed ticks are processed back-to-back with the
-  device samples that arrived, so ride time never drifts from monotonic time.
-- **Device samples** are timestamped with `MonoTime` on arrival and consumed at the next tick
-  (latest sample wins; FE-C accumulated power and event count give exact average power across dropped
-  notifications, ADR-0002 §5).
+- **Tick scheduling and catch-up.** Tick *k* covers the monotonic window `[t0 + k·250 ms, t0 + (k+1)·250 ms)`.
+  The real clock ticks on a `tokio::time::interval` with `MissedTickBehavior::Burst`. Device samples are
+  timestamped with `MonoTime` on arrival and assigned to the tick whose window contains the timestamp, not
+  to whichever tick runs next; after a stall the missed ticks are replayed in order with their own samples,
+  so session time never drifts from monotonic time and late processing changes no values.
+- **Sample holding.** A tick without a new trainer sample holds the last value for up to 1.0 s (4 ticks;
+  page 25 may arrive at only ~2 Hz, ADR-0002 §5), HR for up to 3.0 s; after that the value is `null`.
+  Small packet gaps are filled from FE-C accumulated power as an average over the gap, flagged as
+  estimated (ADR-0002 §5).
 - **Speed** 10×/60× is only available with the simulated trainer. With a real trainer `setSpeed` returns
   `InvalidInput`.
-- **States:** `idle → riding ⇄ paused(reason) → finished`. Ride time and the current block's elapsed time
-  advance only in `riding`.
+- **States:** `idle → riding ⇄ paused(reason) → finished`. Workout time and the current block's elapsed
+  time advance only in `riding`; session time advances in `riding` and `paused`.
 
 | Pause reason | Enters when | Leaves when |
 |---|---|---|
 | `user` | pause command / key | resume command |
 | `stopped_pedalling` | cadence = 0 **and** power = 0 for 3 s (12 ticks) | cadence > 0 on any tick |
-| `trainer_lost` | ADR-0002 link-lost event, or no trainer sample for 2.0 s (8 ticks) | trainer link back **and** cadence > 0 |
+| `trainer_lost` | ADR-0002 link-lost event, or no trainer sample for 2.0 s (8 ticks) | trainer `Link(Ready)` and the engine has re-applied the mode **and** cadence > 0 |
 
-Behaviour when BLE drops mid-interval: the block timer freezes at the last good tick; the record gets
-`null` for the gap (no interpolation); the ERG target is re-sent on reconnect (ADR-0002 §6); the interval
-continues with its remaining time, so the rider never loses or gains work. HR loss does not pause: HR
+Behaviour when BLE drops mid-interval: loss is only known after the 2.0 s detection window. Those ≤ 8
+ticks stay `riding` and count as workout time (no rollback: block transitions inside the window stand, and
+nothing already emitted is rewritten); their record seconds are `null` because no sample arrived. From the
+detecting tick the block timer is frozen and session time keeps running with `null` record values (no
+interpolation). On reconnect the engine re-applies the control mode (ADR-0002 §6) and the interval continues
+with its remaining time, so apart from the ≤ 2 s window the rider neither loses nor gains work. HR loss does not pause: HR
 metrics go `null`, `hr_recovery` blocks fall back to their `maxS` with a visible notice, and the judge
 receives no HR features (and therefore cannot `push`, knowledge-pack rule R-GEN-02). The 3 s and 2 s
 thresholds are initial values verified in HIL session 1 (#44).
 
-- **Live cursor** (#14): `RideStatus` carries the current block's actual start (ride seconds) and elapsed
-  time, so the UI never derives position from planned durations.
+- **Live cursor** (#14): `RideStatus` carries `session_s`, `workout_s`, and the current block's actual
+  start (session and workout seconds) and elapsed time, so the UI never derives position from planned
+  durations.
 - **Per-ride state reset** (#3): a ride is a `RideSession` value created by `ride_load`; nothing ride-scoped
   lives outside it, so a new workout cannot see the previous ride.
 
@@ -290,9 +327,9 @@ Schema v1 (#33):
 | `workout` | `id, name, dsl, tree_json, ftp_at_creation, source, created_at` | `dsl` canonical text; `tree_json` validated on read |
 | `snippet`, `layout` | `id, name, json, updated_at` | validated on read (#4); built-in defaults live in code |
 | `ride` | `id, started_at (UTC), ended_at, state (finished/aborted), workout_json, compiled_json, trainer_device_id, hr_device_id, telemetry_source, summary_json` | snapshot of the workout as ridden, incl. coach changes (#16) |
-| `ride_chunk` | `(ride_id, metric, start_s)`, `n, data BLOB` | 1 Hz per-second means, 60 s per chunk, `f32` LE, NaN = no data |
+| `ride_chunk` | `(ride_id, metric, start_s)`, `n, data BLOB, estimated BLOB` | 1 Hz per-second means indexed by **session** second, 60 s per chunk, `f32` LE, NaN = no data; `estimated` = bitmask of seconds filled from accumulated power (ADR-0002 §5) |
 | `ride_rr` | `(ride_id, start_ms)`, `data BLOB` | RR intervals (`u16` ms) for DFA-α1/rMSSD recomputation |
-| `lap` | `(ride_id, idx)`, `node_id, path, start_s, end_s, stats_json` | per-lap stats by the backend's definition (#12) |
+| `lap` | `(ride_id, idx)`, `node_id, path, start_s, end_s, workout_start_s, workout_end_s, stats_json` | session and workout coordinates; per-lap stats by the backend's definition (#12) |
 | `recovery` | `(ride_id, node_id, iteration)`, `fit_json, tau_s, observed BLOB` | finished `hr_recovery` blocks |
 | `coach_decision` | `call_id, ride_id, t, verdict, band, p, message, proposed_pct, status, rating, useful, features_json` | ratings included (#16) |
 | `checkin` | `id, at, sleep, legs, stress, motivation, minutes, note, proposal_workout_id` | |
@@ -302,8 +339,11 @@ Schema v1 (#33):
 | `import_activity` | `source, external_id, ride_id, imported_at` | intervals.icu dedup |
 
 Crash safety: the open chunk of each metric is upserted every 5 s, so a crash loses at most 5 s of the
-ride record. On startup a `ride` without `ended_at` is closed as `aborted` with its data intact and
-shown in review.
+ride record. **Recovery runs only in the process that has just acquired `ride.lock`** (§2), before it
+starts or loads a ride: holding the lock proves no other process owns a live ride (the advisory lock is
+released by the kernel when its holder dies), so any `ride` without `ended_at` is closed as `aborted` with
+its data intact and shown in review. Processes that only read or write the store without the lock
+(`crank mcp`, CLI queries) never run recovery and treat an open ride as live.
 
 Rejected: **sqlx** (async API we don't need on a single writer thread; compile-time checked queries need a
 live database or an offline query cache in the build); **an embedded KV store (redb, sled)** (the review and
@@ -361,8 +401,8 @@ launch of the signed app; hardware-in-the-loop sessions (§8.4) are verification
 | Property | `proptest` | DSL round trip, compiler invariants, filters, FE-C encode/decode round trip, chunk codec |
 | Fuzz | `cargo-fuzz` | `parse_dsl`, `crank_fec::decode` never panic; corpora committed, short runs on sage, not in the gate |
 | Snapshot | `insta` | compiled workouts, store migrations' resulting schema |
-| Bindings drift | export test | regenerated `bindings.ts` equals the committed file |
-| Engine integration | `SimTrainer` + `SimHeart` + `VirtualClock` | 45-min workout in milliseconds; scenarios: dropout mid-interval, reconnect, HR loss, skip, manual and auto pause, low-cadence ERG release, coach auto-apply |
+| Bindings drift | `bindings-drift` flake check | regenerated `bindings.ts` equals the committed file |
+| Engine integration | `SimTrainer` + `SimHeart` + `VirtualClock` | 45-min workout in milliseconds; scenarios: dropout mid-interval (incl. a block boundary inside the 2 s detection window), reconnect ordering, HR loss, skip, manual and auto pause, low-cadence ERG release, coach auto-apply, stall catch-up (timestamp-assigned samples), packet gaps filled as estimated, compliance across ramps and soft starts, stalled stream consumer (ack window, coalescing, `resync`), crash recovery only under `ride.lock` |
 | FE-C fixtures and replay | `.fecap` captures through `crank-fec` + FE-C driver over a fake transport | real NEO behaviour without Bluetooth |
 | Store | temp DB | migrate empty, migrate fixtures of every released schema, kill-during-ride recovery |
 | UI unit | Vitest + Testing Library | editor tree ops, undo/redo, DSL↔tree sync incl. invalid drafts (#9), stores; `@tauri-apps/api/mocks` `mockIPC` for command calls |
@@ -412,15 +452,28 @@ agent assumes a hardware result it did not see.
   (`nix develop`) provides the same toolchain, `pnpm_12` (matches `packageManager: pnpm@12.9.0`; present
   in nixpkgs-unstable as of 2026-10-13), Node, `just`, `cargo-nextest`, `cargo-deny` and `cargo-fuzz`.
 - **crane:** one `buildDepsOnly` produces the shared `cargoArtifacts`; every Rust check reuses it
-  ([crane API](https://crane.dev/API.html)). The source is filtered with `craneLib.fileset.commonCargoSources`
-  plus the test fixtures, migrations and knowledge-pack rules, so doc or UI edits don't rebuild Rust.
+  ([crane API](https://crane.dev/API.html)). Sources are explicit `lib.fileset` unions per derivation, so
+  doc or UI edits don't rebuild Rust and nothing a derivation reads is silently filtered out:
+
+  | Derivation | Source fileset |
+  |---|---|
+  | `buildDepsOnly` | `craneLib.fileset.cargoTomlAndLock` (+ `.cargo/config.toml`) |
+  | Rust checks (`clippy`, `nextest`, `doctest`, `doc`) | `craneLib.fileset.commonCargoSources` + `crates/*/migrations` + `crates/*/tests/fixtures` + `spec/knowledge-pack/rules.md` + `app/src-tauri/{tauri.conf.json,capabilities,icons,Info.plist}` (read by `tauri::generate_context!`) |
+  | `bindings-drift` | the Rust check set + **`app/src/bindings.ts`** (the committed file it compares against) |
+  | `crank-desktop`, `crank-desktop-e2e` | the Rust check set + the `app-dist` output (`frontendDist`) |
+  | `app-dist`, `app-*` checks | `app/` without `src-tauri/`, `pnpm-lock.yaml`, `package.json` |
+  | `crank-app` | `crank-desktop` and `crank-cli` outputs + `app/src-tauri/{Info.plist,icons}` |
+
+  Commonly missed inputs (`commonCargoSources` keeps only Cargo, Rust and TOML files) are therefore named
+  explicitly; a derivation that needs a new kind of file adds it to its row in the same PR.
 - **Flake `checks`** (per system, `aarch64-darwin` and `x86_64-linux`):
 
   | Check | crane / derivation |
   |---|---|
   | `fmt` | `cargoFmt` |
   | `clippy` | `cargoClippy`, `--all-targets -- -D warnings` |
-  | `nextest` | `cargoNextest` (unit, property, engine-sim, store, FE-C fixtures, bindings drift) |
+  | `nextest` | `cargoNextest` (unit, property, engine-sim, store, FE-C fixtures) |
+  | `bindings-drift` | runs the bindings export binary and `diff`s its output against the committed `app/src/bindings.ts` |
   | `doctest` | `cargoDocTest` |
   | `doc` | `cargoDoc` with `RUSTDOCFLAGS=-D warnings` (`missing_docs` denied) |
   | `deny` | `cargoDeny` (bans, licenses, sources) |
@@ -446,10 +499,11 @@ agent assumes a hardware result it did not see.
   `pnpm-lock.yaml` requires updating that hash in the same commit; the check fails otherwise, by design.
   Rejected: `node2nix`/`dream2nix` (generated Nix per package, a second lockfile to keep in sync) and
   building the frontend outside Nix (the gate would not cover it).
-- **Bindings:** `app/src/bindings.ts` is generated by a Rust test and committed. The frontend
-  derivations consume the committed file, so the frontend builds without building Rust; the `nextest`
-  check regenerates it and fails on any diff, so the committed file cannot go stale. Developers run
-  `just bindings` after changing API types.
+- **Bindings:** `app/src/bindings.ts` is generated by a small export binary (`crank-desktop --bin
+  export-bindings`, built with the Rust check set) and committed. The frontend derivations consume the
+  committed file, so the frontend builds without building Rust; the `bindings-drift` check regenerates it
+  and fails on any diff (its source explicitly includes the committed file, §9.1), so it cannot go stale.
+  Developers run `just bindings` after changing API types.
 - **Embedding:** Tauri embeds the frontend at compile time, so `crank-desktop` takes `app-dist` as input
   (`frontendDist` set to the derivation's output path).
 
@@ -469,9 +523,16 @@ agent assumes a hardware result it did not see.
   `codesign --force --sign nix-tcc --identifier io.github.gerchowl.crank crank.app`. It finishes with
   `codesign --verify --strict` and asserts that `codesign -d -r-` prints the designated requirement
   `identifier "io.github.gerchowl.crank" and certificate leaf = H"<nix-tcc SHA-1>"`.
-- Because TCC matches the designated requirement (bundle id + signing certificate), not the cdhash, the
-  owner grants Bluetooth on the first launch and **the grant survives every rebuild**. That is the owner's
-  only manual step (§8.1).
+- TCC records a grant against the app's designated requirement (bundle id + signing certificate) rather
+  than its cdhash, so the owner grants Bluetooth on the first launch and the grant is expected to survive
+  rebuilds. That is the owner's only manual step (§8.1). Apple notes that support for self-signed identities
+  varies by subsystem ([TN2206](https://developer.apple.com/library/archive/technotes/tn2206/_index.html)),
+  and the fleet's `nix-tcc` precedent (g-fleet `tcc-sign.nix`) covers other TCC services, not Bluetooth, so
+  this is an **acceptance gate of #37**: launch from Finder → one Bluetooth prompt → grant → scan finds the
+  NEO; then change a source file, rebuild, re-sign with `just bundle`, relaunch → scan works with **no**
+  prompt. If the gate fails, local builds switch to an Apple Development certificate from the owner's
+  Apple Developer account (the account #47 uses); that adds one owner step (installing the certificate)
+  and this section is amended.
 - **No hardened runtime and no App Sandbox for local builds.** The Nix-built binaries load dylibs from
   `/nix/store`, and hardened-runtime library validation rejects libraries not signed by the same team (a
   self-signed certificate has no team ID). The local bundle is not relocatable to another Mac; that's fine
