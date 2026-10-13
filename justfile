@@ -20,6 +20,7 @@ bindings:
     cargo run --locked -p crank-desktop --bin export-bindings
 
 dev:
+    pnpm install --frozen-lockfile
     pnpm -C app exec tauri dev
 
 # Signed bundle implementation belongs to #37 (ADR-0001 §12).
