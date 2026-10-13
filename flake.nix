@@ -4,8 +4,10 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     crane.url = "github:ipetkov/crane";
     rust-overlay.url = "github:oxalica/rust-overlay";
+    # RustSec database for the `deny` check (ADR-0001 §9.5): pinned, so the sandbox needs no network.
+    advisory-db = { url = "github:rustsec/advisory-db"; flake = false; };
   };
-  outputs = { self, nixpkgs, crane, rust-overlay }: let
+  outputs = { self, nixpkgs, crane, rust-overlay, advisory-db }: let
     systems = [ "aarch64-darwin" "x86_64-linux" ];
     eachSystem = nixpkgs.lib.genAttrs systems;
     project = system: let
@@ -72,6 +74,10 @@
         install -m644 ${./app/src-tauri/icons/icon.icns} $app/Resources/icon.icns
         install -m644 ${./app/src-tauri/Info.plist} $app/Info.plist
       '';
+      # deny.toml stays the single policy file; Nix only injects where the database lives.
+      # cargo-deny needs a git checkout it can lock, so the pinned input is copied into one at build time.
+      denyConfig = (pkgs.formats.toml { }).generate "deny.toml" (let cfg = builtins.fromTOML (builtins.readFile ./deny.toml); in
+        cfg // { advisories = cfg.advisories // { db-path = "@advisoryDbRoot@"; }; });
       checks = {
         build = desktop "";
         fmt = craneLib.cargoFmt { pname = "crank"; version = "0.1.0"; src = source cargoFiles; };
@@ -79,7 +85,25 @@
         nextest = craneLib.cargoNextest rustCheck;
         doctest = craneLib.cargoDocTest rustCheck;
         doc = craneLib.cargoDoc (rustCheck // { RUSTDOCFLAGS = "-D warnings"; });
-        deny = craneLib.cargoDeny { pname = "crank"; version = "0.1.0"; src = source cargoFiles; cargoDenyChecks = "bans licenses sources"; };
+        # RustSec advisories run offline against the pinned `advisory-db` input (ADR-0001 §9.5, #124).
+        # The directory name is cargo-deny's hash of the default db URL (see AGENTS.md).
+        deny = craneLib.cargoDeny {
+          pname = "crank"; version = "0.1.0"; src = source cargoFiles;
+          cargoDenyChecks = "advisories bans licenses sources -A index-failure";
+          # Yanked releases need the crates.io index, which the sandbox cannot reach: that
+          # lint is silenced here and enforced by .github/workflows/advisories.yml (#181).
+          cargoDenyExtraArgs = "--offline --config $TMPDIR/deny.toml";
+          nativeBuildInputs = [ pkgs.git ];
+          preBuild = ''
+            export advisoryDbRoot=$TMPDIR/advisory-dbs
+            db=$advisoryDbRoot/advisory-db-3157b0e258782691
+            mkdir -p $db && cp -R ${advisory-db}/. $db && chmod -R u+w $db
+            substituteAll ${denyConfig} $TMPDIR/deny.toml
+            export GIT_AUTHOR_NAME=nix GIT_AUTHOR_EMAIL=nix@invalid GIT_COMMITTER_NAME=nix GIT_COMMITTER_EMAIL=nix@invalid
+            export GIT_AUTHOR_DATE="@${toString advisory-db.lastModified}" GIT_COMMITTER_DATE="@${toString advisory-db.lastModified}"
+            git -C $db init -q && git -C $db add -A && git -C $db commit -q -m pinned
+          '';
+        };
         bindings-drift = craneLib.mkCargoDerivation (rustCheck // {
           src = source (lib.fileset.unions [ rustFiles ./app/src/bindings.ts ]);
           buildPhaseCargoCommand = ''

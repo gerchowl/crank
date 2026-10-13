@@ -5,3 +5,17 @@ multiple-versions = "warn"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+# RustSec policy (ADR-0001 §9.5, #124): vulnerabilities, unmaintained and unsound
+# crates (direct or transitive) and yanked releases all fail. No blanket ignores:
+# every entry below needs a reason and a tracking issue.
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2024-0429", reason = "glib 0.18 via tauri's Linux gtk3 stack; fix needs glib 0.20, we never call VariantStrIter (gerchowl/crank#180)" },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error via gtk3-macros/glib-macros, Linux build-time only (gerchowl/crank#180)" },
+  { id = "RUSTSEC-2024-0436", reason = "paste via specta 2.0.0-rc.25, build-time proc macro (gerchowl/crank#180)" },
+]
