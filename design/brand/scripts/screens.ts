@@ -3,7 +3,8 @@
 // the size-proof sheets of the exported assets. Static shots use reduced motion, which is the final frame by
 // construction; timers run on Playwright's fake clock, so boot timing is deterministic. Fails on page errors,
 // overflow, a wordmark leaving the window, motion over 1.2 s, wrong boot-status or hand-off behaviour, and any
-// size-sheet item not rendered at its stated width.
+// size-sheet item not rendered at its stated width. F · Spin-up (#83) adds its storyboard, small-size strip,
+// boot behaviours and the A-vs-F sheet, and fails unless its final frame is pixel-identical to A at rest.
 import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
@@ -11,6 +12,7 @@ import { chromium, type Page } from "playwright";
 import { CONCEPTS } from "../src/wordmark.ts";
 import { SLICE } from "../src/geometry.ts";
 import { SLICE_ART } from "../src/slice.ts";
+import { LETTER_START, SPIN } from "../src/spin.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const out = fileURLToPath(new URL("../../../docs/design/brand/", import.meta.url));
@@ -21,9 +23,13 @@ const SIZES = [
 const THEMES = ["dark", "light"] as const;
 const FRAMES = [0, 150, 300, 500, 750, 1200]; // ms; 1200 = the motion budget, everything at rest
 const ids = Object.keys(CONCEPTS);
+const STORY = Array.from({ length: 13 }, (_, i) => i * 100); // F's storyboard: every 100 ms, 0 … 1200
+const spinOut = `${out}spin/`;
 
-mkdirSync(out, { recursive: true });
-for (const f of readdirSync(out)) if (f.endsWith(".png")) rmSync(out + f);
+for (const dir of [out, spinOut]) {
+  mkdirSync(dir, { recursive: true });
+  for (const f of readdirSync(dir)) if (f.endsWith(".png")) rmSync(dir + f);
+}
 
 const server = await createServer({ root, logLevel: "warn", server: { port: 0 } });
 await server.listen();
@@ -31,11 +37,23 @@ const base = server.resolvedUrls?.local[0];
 if (!base) throw new Error("vite did not report a local URL");
 const browser = await chromium.launch();
 const failures: string[] = [];
+/** Static start screens, kept for the A-vs-F exactness check: `${id}.${w}x${h}.${theme}`. */
+const shots = new Map<string, Buffer>();
+const pad = (t: number) => String(t).padStart(4, "0");
+/** F's storyboard frames by `${w}x${h}.${theme}`, reused by the A-vs-F sheet. */
+const spinFrames = new Map<string, { label: string; png: Buffer }[]>();
 
-async function open(page: Page, name: string, query: string) {
+// F's budget, from its own timing table: everything at rest by SPIN.end ≤ 1.2 s.
+const spinEnds = [...LETTER_START.map((s) => s + SPIN.letter), ...SPIN.lines.map(([s, d]) => s + d), SPIN.cuts[0] + SPIN.cuts[1], SPIN.morph[1]];
+if (SPIN.end > 1200 || Math.max(...spinEnds) > SPIN.end) failures.push(`spin: motion ends at ${Math.max(...spinEnds)} ms (end ${SPIN.end}, budget 1200)`);
+console.log(`  spin: R A N K start at ${LETTER_START.join(" / ")} ms; at rest by ${Math.max(...spinEnds)} ms`);
+
+/** `paused`: the fake clock moves only by `runFor` (installed clocks otherwise also flow in real time). */
+async function open(page: Page, name: string, query: string, paused = false) {
   page.on("pageerror", (e) => failures.push(`${name}: ${e.message}`));
   page.on("console", (m) => m.type() === "error" && failures.push(`${name}: console: ${m.text()}`));
-  await page.clock.install();
+  await page.clock.install({ time: 0 });
+  if (paused) await page.clock.pauseAt(1000);
   await page.goto(`${base}?${query}`);
   await page.waitForSelector("svg");
   const m = await page.evaluate(() => {
@@ -55,15 +73,16 @@ try {
         const name = `${id}.${width}x${height}.${theme}`;
         const page = await ctx.newPage();
         await open(page, name, id === "overview" ? `theme=${theme}` : `concept=${id}&theme=${theme}`);
-        await page.screenshot({ path: `${out}${name}.png` });
+        shots.set(name, await page.screenshot({ path: `${out}${name}.png` }));
         console.log(`  ${name}.png`);
         await page.close();
       }
     }
     await ctx.close();
   }
+  await spinStoryboards();
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, reducedMotion: "no-preference" });
-  for (const id of ids) {
+  for (const id of ids.filter((i) => i !== "spin")) {
     for (const t of FRAMES) {
       const name = `motion.${id}.${String(t).padStart(4, "0")}ms`;
       const page = await ctx.newPage();
@@ -86,6 +105,9 @@ try {
   }
   await ctx.close();
   await bootAndHandOff();
+  await spinBoot();
+  for (const theme of THEMES) await spinSmall(theme);
+  for (const theme of THEMES) await compareSheet(theme);
   for (const theme of THEMES) await sizeSheet(theme);
 } finally {
   await browser.close();
@@ -137,6 +159,209 @@ async function bootAndHandOff() {
     await ctx.close();
   }
   console.log("  slice.slow-boot.*.png, slice.handoff-100ms.*.png");
+}
+
+/** F every 100 ms at both window sizes and themes (?t= renders the frozen frame), its storyboard sheets, and
+ *  the landing check: the driven final frame and F under reduced motion must equal A at rest, pixel for pixel. */
+async function spinStoryboards() {
+  for (const [width, height] of SIZES) {
+    const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, reducedMotion: "no-preference" });
+    for (const theme of THEMES) {
+      const size = `${width}x${height}.${theme}`;
+      const frames: { label: string; png: Buffer }[] = [];
+      for (const t of STORY) {
+        const name = `spin.${size}.${pad(t)}ms`;
+        const page = await ctx.newPage();
+        await open(page, name, `concept=spin&theme=${theme}&t=${t}`);
+        frames.push({ label: `${t} ms`, png: await page.screenshot({ path: `${spinOut}${name}.png` }) });
+        await page.close();
+      }
+      spinFrames.set(size, frames);
+      const a = shots.get(`slice.${size}`)!;
+      for (const [what, png] of [
+        ["final frame (t = 1200)", frames.at(-1)!.png],
+        ["reduced-motion frame", shots.get(`spin.${size}`)!],
+      ] as const) {
+        const d = await pixelDiff(a, png);
+        if (d !== 0) failures.push(`spin.${size}: ${what} differs from A at rest in ${d} px`);
+      }
+      await sheet(`${out}spin.storyboard.${size}.png`, `F · Spin-up — ${width}×${height}, ${theme}, every 100 ms`, theme, 4, 320, frames);
+      console.log(`  spin/spin.${size}.*ms.png (${frames.length}), spin.storyboard.${size}.png`);
+    }
+    await ctx.close();
+  }
+}
+
+/** F's boot behaviours on the fake clock (BRAND.md §F · Spin-up → Boot): (a) a boot within SPIN.cut cuts to the
+ *  settled wordmark, a later one fast-forwards it inside the 200 ms hand-off; (b) a slow boot plays through and
+ *  rests, status at 1.2 s; (b′, ?hold) the closed ring holds until ready. Destination live + focused and the
+ *  start screen inert as every hand-off begins; under reduced motion: no motion, status at 1.2 s, removed at once. */
+async function spinBoot() {
+  const state = (page: Page) =>
+    page.evaluate(() => {
+      const s = document.querySelector<HTMLElement>(".start");
+      return {
+        t: s?.dataset.t === undefined ? null : Number(s.dataset.t),
+        opacity: s ? Number(getComputedStyle(s).opacity) : null,
+        inert: !!s?.inert,
+        status: !!document.querySelector(".status"),
+        live:
+          document.activeElement?.closest(".dest") !== null &&
+          document.elementFromPoint(innerWidth / 2, innerHeight / 2)?.closest(".dest") !== null,
+      };
+    });
+  for (const reducedMotion of ["no-preference", "reduce"] as const) {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, reducedMotion });
+    const page = async (name: string, query: string) => {
+      const p = await ctx.newPage();
+      await open(p, name, `concept=spin&${query}`, true);
+      return p;
+    };
+    for (const theme of THEMES) {
+      const tag = `${reducedMotion}.${theme}`;
+      const fail = (m: string) => failures.push(`spin-boot.${tag}: ${m}`);
+      const handOffBegins = async (p: Page, what: string, slow = false) => {
+        const s = await state(p);
+        if (!s.live || (s.opacity !== null && !s.inert)) fail(`${what}: destination not live + focused, or start screen not inert, as the hand-off begins`);
+        if (s.status !== slow) fail(`${what}: status ${s.status ? "shown" : "missing"} on a boot ${slow ? "over" : "under"} 1.2 s`);
+        return s;
+      };
+
+      // (b) slow boot: plays through, rests settled; the status line comes from the boot timer at 1.2 s.
+      let p = await page(`spin-slow.${tag}`, `theme=${theme}`);
+      await p.clock.runFor(1150);
+      let s = await state(p);
+      if (s.status) fail("status before 1.2 s");
+      if (reducedMotion === "reduce" ? s.t !== null : s.t === null || s.t < 1100 || s.t >= SPIN.end) fail(`painted t = ${s.t} at 1150 ms`);
+      await p.clock.runFor(100);
+      s = await state(p);
+      if (!s.status) fail("no status after 1.2 s");
+      if (reducedMotion === "no-preference" && s.t !== SPIN.end) fail(`not settled at 1250 ms (t = ${s.t})`);
+      await p.close();
+
+      // (a) ready at 600 ms: fast-forward inside the fade (removed at once under reduced motion).
+      p = await page(`spin-handoff.${tag}`, `theme=${theme}&ready=600`);
+      await p.clock.runFor(600);
+      s = await handOffBegins(p, "ready at 600 ms");
+      if (reducedMotion === "reduce") {
+        if (s.opacity !== null) fail("start screen not removed at once under reduced motion");
+        await p.close();
+        continue;
+      }
+      await p.clock.runFor(100);
+      s = await state(p);
+      if (s.t === null || s.t <= 600 || s.t >= SPIN.end || s.opacity === null || s.opacity < 0.3 || s.opacity > 0.7)
+        fail(`100 ms into the hand-off: t = ${s.t}, opacity = ${s.opacity} (expected fast-forwarding, half faded)`);
+      await p.screenshot({ path: `${out}spin.handoff-100ms.1440x900.${theme}.png` });
+      await p.clock.runFor(120);
+      if (await p.locator(".start").count()) fail("start screen still there 220 ms after ready");
+      await p.close();
+
+      // (a) ready at 100 ms (≤ SPIN.cut): cut straight to the settled wordmark, then the same fade.
+      p = await page(`spin-cut.${tag}`, `theme=${theme}&ready=100`);
+      await p.clock.runFor(100);
+      await handOffBegins(p, "ready at 100 ms");
+      await p.clock.runFor(20);
+      s = await state(p);
+      if (s.t !== SPIN.end) fail(`ready at 100 ms did not cut to the settled wordmark (t = ${s.t})`);
+      await p.clock.runFor(200);
+      if (await p.locator(".start").count()) fail("start screen still there 320 ms after a 100 ms boot");
+      await p.close();
+
+      // (b′) ?hold: the closed ring holds (t stays at SPIN.up) past 1.2 s, then finishes inside the hand-off.
+      p = await page(`spin-hold.${tag}`, `theme=${theme}&hold&ready=2000`);
+      await p.clock.runFor(1900);
+      s = await state(p);
+      if (s.t !== SPIN.up || !s.status) fail(`hold: t = ${s.t}, status ${s.status} at 1.9 s (expected ${SPIN.up}, shown)`);
+      // The status fade-in is CSS (document timeline, not the fake clock): show it as it is 700 ms after insertion.
+      await p.evaluate(() => document.querySelector(".status")?.getAnimations().forEach((a) => a.finish()));
+      await p.screenshot({ path: `${out}spin.hold.1440x900.${theme}.png` });
+      await p.clock.runFor(100);
+      await handOffBegins(p, "hold, ready at 2 s", true);
+      await p.clock.runFor(220);
+      if (await p.locator(".start").count()) fail("hold: start screen still there 220 ms after ready");
+      await p.close();
+    }
+    await ctx.close();
+  }
+  console.log("  spin.handoff-100ms.*.png, spin.hold.*.png (boot behaviours checked)");
+}
+
+/** Small sizes: F at the full form's floor — wordmark 160 px wide (BRAND.md §Sizes) — every 100 ms, at 2×. */
+async function spinSmall(theme: (typeof THEMES)[number]) {
+  const ctx = await browser.newContext({ viewport: { width: 280, height: 160 }, deviceScaleFactor: 2, reducedMotion: "no-preference" });
+  const frames: { label: string; png: Buffer }[] = [];
+  for (const t of STORY) {
+    const page = await ctx.newPage();
+    await open(page, `spin-small.${theme}.${t}`, `concept=spin&theme=${theme}&w=160&t=${t}`);
+    frames.push({ label: `${t} ms`, png: await page.screenshot() });
+    await page.close();
+  }
+  await ctx.close();
+  await sheet(`${out}spin.small.${theme}.png`, `F · Spin-up at the full form's floor: wordmark 160 px wide, 2×, every 100 ms — ${theme}`, theme, 5, 280, frames, 2);
+  console.log(`  spin.small.${theme}.png`);
+}
+
+/** The review sheet: A · Slice and F · Spin-up side by side at 1440×900, every 100 ms (A's CSS motion is set
+ *  to each instant like the motion.* frames; F's frames are the storyboard's). */
+async function compareSheet(theme: (typeof THEMES)[number]) {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, reducedMotion: "no-preference" });
+  const f = spinFrames.get(`1440x900.${theme}`)!;
+  const cells: { label: string; png: Buffer }[] = [];
+  for (const [i, t] of STORY.entries()) {
+    const page = await ctx.newPage();
+    await open(page, `compare.${theme}.${t}`, `concept=slice&theme=${theme}`);
+    await page.evaluate((at) => {
+      for (const a of document.getAnimations()) {
+        a.pause();
+        a.currentTime = at;
+      }
+    }, t);
+    cells.push({ label: `A · Slice — ${t} ms`, png: await page.screenshot() }, { label: `F · Spin-up — ${t} ms`, png: f[i]!.png });
+    await page.close();
+  }
+  await ctx.close();
+  await sheet(`${out}compare.slice-vs-spin.${theme}.png`, `A · Slice (left) vs F · Spin-up (right) — 1440×900, ${theme}, every 100 ms`, theme, 2, 560, cells);
+  console.log(`  compare.slice-vs-spin.${theme}.png`);
+}
+
+/** Number of pixels that differ between two PNGs (decoded in the browser; −1 if their sizes differ). */
+async function pixelDiff(a: Buffer, b: Buffer) {
+  const page = await browser.newPage();
+  const d = await page.evaluate(async ([a, b]) => {
+    const pixels = async (b64: string) => {
+      const img = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+      const g = new OffscreenCanvas(img.width, img.height).getContext("2d")!;
+      g.drawImage(img, 0, 0);
+      return g.getImageData(0, 0, img.width, img.height).data;
+    };
+    const [x, y] = await Promise.all([pixels(a), pixels(b)]);
+    if (x.length !== y.length) return -1;
+    let n = 0;
+    for (let i = 0; i < x.length; i += 4) if (x[i] !== y[i] || x[i + 1] !== y[i + 1] || x[i + 2] !== y[i + 2]) n++;
+    return n;
+  }, [a.toString("base64"), b.toString("base64")] as const);
+  await page.close();
+  return d;
+}
+
+/** A labelled contact sheet of frames, `cols` per row, each `width` CSS px wide. */
+async function sheet(path: string, title: string, theme: (typeof THEMES)[number], cols: number, width: number, cells: { label: string; png: Buffer }[], scale = 1) {
+  const [bg, ink, line] = theme === "dark" ? ["#111317", "#ece6dc", "#2c3037"] : ["#e6e1d6", "#1a1d22", "#c9c3b6"];
+  const page = await browser.newPage({ viewport: { width: cols * (width + 20) + 60, height: 400 }, deviceScaleFactor: scale });
+  page.on("pageerror", (e) => failures.push(`${path}: ${e.message}`));
+  await page.setContent(`<style>
+    body { margin: 0; padding: 24px 30px; background: ${bg}; color: ${ink}; font: 13px system-ui, sans-serif; }
+    h1 { font-size: 14px; font-weight: 600; margin: 0 0 16px; }
+    .grid { display: grid; grid-template-columns: repeat(${cols}, ${width}px); gap: 14px 20px; }
+    figure { margin: 0; display: grid; gap: 6px; } img { width: ${width}px; display: block; outline: 1px solid ${line}; }
+    figcaption { opacity: .75; font-variant-numeric: tabular-nums; }
+  </style><h1>${title}</h1><div class="grid">${cells
+    .map((c) => `<figure><img src="data:image/png;base64,${c.png.toString("base64")}"><figcaption>${c.label}</figcaption></figure>`)
+    .join("")}</div>`);
+  await page.waitForFunction(() => [...document.images].every((i) => i.complete && i.naturalWidth > 0));
+  await page.screenshot({ path, fullPage: true });
+  await page.close();
 }
 
 /** Size proof: every item at its stated size with shrinking disabled; labels are measured, not assumed. */
