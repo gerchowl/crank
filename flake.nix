@@ -19,6 +19,7 @@
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
         (lib.fileset.difference ./app ./app/src-tauri) ./shared
+        ./crates/crank-domain/tests/vectors
         ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ]);
       pnpmDeps = pkgs.fetchPnpmDeps {
         pname = "crank"; src = frontendSrc; pnpm = pkgs.pnpm_12;
@@ -85,8 +86,9 @@
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
-      } // lib.genAttrs [ "app-typecheck" "app-lint" "app-test" "shared-test" ] (name:
+      } // lib.genAttrs [ "app-typecheck" "app-lint" "app-test" "shared-test" "vectors-drift" ] (name:
         (frontend name (if name == "shared-test" then "pnpm -C shared test"
+          else if name == "vectors-drift" then "pnpm -C shared exec vitest run scripts/export-vectors.test.js"
           else "pnpm -C app ${lib.removePrefix "app-" name}" )).overrideAttrs {
             installPhase = "touch $out";
           });

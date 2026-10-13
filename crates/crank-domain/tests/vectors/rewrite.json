@@ -1,0 +1,1099 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "harder",
+      "input": {
+        "nodes": [
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 480
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 45,
+              "to": 75
+            },
+            "label": "Warm-up",
+            "cadence": {
+              "lo": 90,
+              "hi": 90
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 180
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 60
+            }
+          },
+          {
+            "type": "repeat",
+            "count": 3,
+            "label": "VO2 sets",
+            "progression": {
+              "wattsPerRep": 5
+            },
+            "children": [
+              {
+                "type": "repeat",
+                "count": 5,
+                "children": [
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 30
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 125
+                    }
+                  },
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 15
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 50
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "hr_recovery",
+                  "targetBpm": 118,
+                  "minS": 120,
+                  "maxS": 240,
+                  "onUnreachable": "lower_power"
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 40
+                },
+                "label": "Recover"
+              }
+            ]
+          },
+          {
+            "type": "repeat",
+            "count": 2,
+            "label": "Threshold",
+            "skipLastRest": true,
+            "children": [
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 240
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 95
+                },
+                "cadence": {
+                  "lo": 90,
+                  "hi": 95
+                }
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 120
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 55
+                }
+              }
+            ]
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 300
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 60,
+              "to": 40
+            },
+            "label": "Cool-down"
+          }
+        ],
+        "intent": "harder",
+        "ftp": 280,
+        "seed": 31
+      },
+      "output": [
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 480
+          },
+          "target": {
+            "kind": "ramp",
+            "from": 45,
+            "to": 75
+          },
+          "label": "Warm-up",
+          "cadence": {
+            "lo": 90,
+            "hi": 90
+          }
+        },
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 180
+          },
+          "target": {
+            "kind": "pct_ftp",
+            "value": 60
+          }
+        },
+        {
+          "type": "repeat",
+          "count": 4,
+          "label": "VO2 sets",
+          "progression": {
+            "wattsPerRep": 5
+          },
+          "children": [
+            {
+              "type": "repeat",
+              "count": 5,
+              "children": [
+                {
+                  "type": "step",
+                  "end": {
+                    "kind": "time",
+                    "s": 30
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 127
+                  }
+                },
+                {
+                  "type": "step",
+                  "end": {
+                    "kind": "time",
+                    "s": 15
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 50
+                  }
+                }
+              ]
+            },
+            {
+              "type": "step",
+              "end": {
+                "kind": "hr_recovery",
+                "targetBpm": 118,
+                "minS": 120,
+                "maxS": 240,
+                "onUnreachable": "lower_power"
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 40
+              },
+              "label": "Recover"
+            }
+          ]
+        },
+        {
+          "type": "repeat",
+          "count": 3,
+          "label": "Threshold",
+          "skipLastRest": true,
+          "children": [
+            {
+              "type": "step",
+              "end": {
+                "kind": "time",
+                "s": 240
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 97
+              },
+              "cadence": {
+                "lo": 90,
+                "hi": 95
+              }
+            },
+            {
+              "type": "step",
+              "end": {
+                "kind": "time",
+                "s": 120
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 55
+              }
+            }
+          ]
+        },
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 300
+          },
+          "target": {
+            "kind": "ramp",
+            "from": 60,
+            "to": 40
+          },
+          "label": "Cool-down"
+        }
+      ]
+    },
+    {
+      "name": "easier",
+      "input": {
+        "nodes": [
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 480
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 45,
+              "to": 75
+            },
+            "label": "Warm-up",
+            "cadence": {
+              "lo": 90,
+              "hi": 90
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 180
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 60
+            }
+          },
+          {
+            "type": "repeat",
+            "count": 3,
+            "label": "VO2 sets",
+            "progression": {
+              "wattsPerRep": 5
+            },
+            "children": [
+              {
+                "type": "repeat",
+                "count": 5,
+                "children": [
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 30
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 125
+                    }
+                  },
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 15
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 50
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "hr_recovery",
+                  "targetBpm": 118,
+                  "minS": 120,
+                  "maxS": 240,
+                  "onUnreachable": "lower_power"
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 40
+                },
+                "label": "Recover"
+              }
+            ]
+          },
+          {
+            "type": "repeat",
+            "count": 2,
+            "label": "Threshold",
+            "skipLastRest": true,
+            "children": [
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 240
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 95
+                },
+                "cadence": {
+                  "lo": 90,
+                  "hi": 95
+                }
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 120
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 55
+                }
+              }
+            ]
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 300
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 60,
+              "to": 40
+            },
+            "label": "Cool-down"
+          }
+        ],
+        "intent": "easier",
+        "ftp": 280,
+        "seed": 31
+      },
+      "output": [
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 600
+          },
+          "target": {
+            "kind": "ramp",
+            "from": 45,
+            "to": 75
+          },
+          "label": "Warm-up",
+          "cadence": {
+            "lo": 90,
+            "hi": 90
+          }
+        },
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 225
+          },
+          "target": {
+            "kind": "pct_ftp",
+            "value": 60
+          }
+        },
+        {
+          "type": "repeat",
+          "count": 2,
+          "label": "VO2 sets",
+          "progression": {
+            "wattsPerRep": 5
+          },
+          "children": [
+            {
+              "type": "repeat",
+              "count": 5,
+              "children": [
+                {
+                  "type": "step",
+                  "end": {
+                    "kind": "time",
+                    "s": 30
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 120
+                  }
+                },
+                {
+                  "type": "step",
+                  "end": {
+                    "kind": "time",
+                    "s": 20
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 50
+                  }
+                }
+              ]
+            },
+            {
+              "type": "step",
+              "end": {
+                "kind": "hr_recovery",
+                "targetBpm": 123,
+                "minS": 120,
+                "maxS": 240,
+                "onUnreachable": "lower_power"
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 40
+              },
+              "label": "Recover"
+            }
+          ]
+        },
+        {
+          "type": "repeat",
+          "count": 1,
+          "label": "Threshold",
+          "skipLastRest": true,
+          "children": [
+            {
+              "type": "step",
+              "end": {
+                "kind": "time",
+                "s": 240
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 90
+              },
+              "cadence": {
+                "lo": 90,
+                "hi": 95
+              }
+            },
+            {
+              "type": "step",
+              "end": {
+                "kind": "time",
+                "s": 150
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 55
+              }
+            }
+          ]
+        },
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 375
+          },
+          "target": {
+            "kind": "ramp",
+            "from": 60,
+            "to": 40
+          },
+          "label": "Cool-down"
+        }
+      ]
+    },
+    {
+      "name": "shorter_same_stimulus",
+      "input": {
+        "nodes": [
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 480
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 45,
+              "to": 75
+            },
+            "label": "Warm-up",
+            "cadence": {
+              "lo": 90,
+              "hi": 90
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 180
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 60
+            }
+          },
+          {
+            "type": "repeat",
+            "count": 3,
+            "label": "VO2 sets",
+            "progression": {
+              "wattsPerRep": 5
+            },
+            "children": [
+              {
+                "type": "repeat",
+                "count": 5,
+                "children": [
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 30
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 125
+                    }
+                  },
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 15
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 50
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "hr_recovery",
+                  "targetBpm": 118,
+                  "minS": 120,
+                  "maxS": 240,
+                  "onUnreachable": "lower_power"
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 40
+                },
+                "label": "Recover"
+              }
+            ]
+          },
+          {
+            "type": "repeat",
+            "count": 2,
+            "label": "Threshold",
+            "skipLastRest": true,
+            "children": [
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 240
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 95
+                },
+                "cadence": {
+                  "lo": 90,
+                  "hi": 95
+                }
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 120
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 55
+                }
+              }
+            ]
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 300
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 60,
+              "to": 40
+            },
+            "label": "Cool-down"
+          }
+        ],
+        "intent": "shorter_same_stimulus",
+        "ftp": 280,
+        "seed": 31
+      },
+      "output": [
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 360
+          },
+          "target": {
+            "kind": "ramp",
+            "from": 45,
+            "to": 75
+          },
+          "label": "Warm-up",
+          "cadence": {
+            "lo": 90,
+            "hi": 90
+          }
+        },
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 125
+          },
+          "target": {
+            "kind": "pct_ftp",
+            "value": 60
+          }
+        },
+        {
+          "type": "repeat",
+          "count": 3,
+          "label": "VO2 sets",
+          "progression": {
+            "wattsPerRep": 5
+          },
+          "children": [
+            {
+              "type": "repeat",
+              "count": 5,
+              "children": [
+                {
+                  "type": "step",
+                  "end": {
+                    "kind": "time",
+                    "s": 25
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 129
+                  }
+                },
+                {
+                  "type": "step",
+                  "end": {
+                    "kind": "time",
+                    "s": 10
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 50
+                  }
+                }
+              ]
+            },
+            {
+              "type": "step",
+              "end": {
+                "kind": "hr_recovery",
+                "targetBpm": 118,
+                "minS": 85,
+                "maxS": 190,
+                "onUnreachable": "lower_power"
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 40
+              },
+              "label": "Recover"
+            }
+          ]
+        },
+        {
+          "type": "repeat",
+          "count": 2,
+          "label": "Threshold",
+          "skipLastRest": true,
+          "children": [
+            {
+              "type": "step",
+              "end": {
+                "kind": "time",
+                "s": 190
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 99
+              },
+              "cadence": {
+                "lo": 90,
+                "hi": 95
+              }
+            },
+            {
+              "type": "step",
+              "end": {
+                "kind": "time",
+                "s": 85
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 55
+              }
+            }
+          ]
+        },
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 225
+          },
+          "target": {
+            "kind": "ramp",
+            "from": 60,
+            "to": 40
+          },
+          "label": "Cool-down"
+        }
+      ]
+    },
+    {
+      "name": "vary",
+      "input": {
+        "nodes": [
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 480
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 45,
+              "to": 75
+            },
+            "label": "Warm-up",
+            "cadence": {
+              "lo": 90,
+              "hi": 90
+            }
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 180
+            },
+            "target": {
+              "kind": "pct_ftp",
+              "value": 60
+            }
+          },
+          {
+            "type": "repeat",
+            "count": 3,
+            "label": "VO2 sets",
+            "progression": {
+              "wattsPerRep": 5
+            },
+            "children": [
+              {
+                "type": "repeat",
+                "count": 5,
+                "children": [
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 30
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 125
+                    }
+                  },
+                  {
+                    "type": "step",
+                    "end": {
+                      "kind": "time",
+                      "s": 15
+                    },
+                    "target": {
+                      "kind": "pct_ftp",
+                      "value": 50
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "hr_recovery",
+                  "targetBpm": 118,
+                  "minS": 120,
+                  "maxS": 240,
+                  "onUnreachable": "lower_power"
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 40
+                },
+                "label": "Recover"
+              }
+            ]
+          },
+          {
+            "type": "repeat",
+            "count": 2,
+            "label": "Threshold",
+            "skipLastRest": true,
+            "children": [
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 240
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 95
+                },
+                "cadence": {
+                  "lo": 90,
+                  "hi": 95
+                }
+              },
+              {
+                "type": "step",
+                "end": {
+                  "kind": "time",
+                  "s": 120
+                },
+                "target": {
+                  "kind": "pct_ftp",
+                  "value": 55
+                }
+              }
+            ]
+          },
+          {
+            "type": "step",
+            "end": {
+              "kind": "time",
+              "s": 300
+            },
+            "target": {
+              "kind": "ramp",
+              "from": 60,
+              "to": 40
+            },
+            "label": "Cool-down"
+          }
+        ],
+        "intent": "vary",
+        "ftp": 280,
+        "seed": 31
+      },
+      "output": [
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 480
+          },
+          "target": {
+            "kind": "ramp",
+            "from": 45,
+            "to": 75
+          },
+          "label": "Warm-up",
+          "cadence": {
+            "lo": 90,
+            "hi": 90
+          }
+        },
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 180
+          },
+          "target": {
+            "kind": "pct_ftp",
+            "value": 60
+          }
+        },
+        {
+          "type": "repeat",
+          "count": 3,
+          "label": "VO2 sets",
+          "progression": {
+            "wattsPerRep": 5
+          },
+          "children": [
+            {
+              "type": "repeat",
+              "count": 8,
+              "children": [
+                {
+                  "type": "step",
+                  "end": {
+                    "kind": "time",
+                    "s": 20
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 131
+                  }
+                },
+                {
+                  "type": "step",
+                  "end": {
+                    "kind": "time",
+                    "s": 10
+                  },
+                  "target": {
+                    "kind": "pct_ftp",
+                    "value": 50
+                  }
+                }
+              ]
+            },
+            {
+              "type": "step",
+              "end": {
+                "kind": "hr_recovery",
+                "targetBpm": 118,
+                "minS": 120,
+                "maxS": 240,
+                "onUnreachable": "lower_power"
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 40
+              },
+              "label": "Recover"
+            }
+          ]
+        },
+        {
+          "type": "repeat",
+          "count": 2,
+          "label": "Threshold",
+          "skipLastRest": true,
+          "children": [
+            {
+              "type": "step",
+              "end": {
+                "kind": "time",
+                "s": 80
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 91
+              },
+              "cadence": {
+                "lo": 90,
+                "hi": 95
+              }
+            },
+            {
+              "type": "step",
+              "end": {
+                "kind": "time",
+                "s": 80
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 101
+              }
+            },
+            {
+              "type": "step",
+              "end": {
+                "kind": "time",
+                "s": 80
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 93
+              }
+            },
+            {
+              "type": "step",
+              "end": {
+                "kind": "time",
+                "s": 120
+              },
+              "target": {
+                "kind": "pct_ftp",
+                "value": 55
+              }
+            }
+          ]
+        },
+        {
+          "type": "step",
+          "end": {
+            "kind": "time",
+            "s": 300
+          },
+          "target": {
+            "kind": "ramp",
+            "from": 60,
+            "to": 40
+          },
+          "label": "Cool-down"
+        }
+      ]
+    }
+  ]
+}
