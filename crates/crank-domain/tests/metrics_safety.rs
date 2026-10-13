@@ -1,6 +1,6 @@
 //! Arbitrary IEEE-754 inputs and typed-error contracts from the round-two decision.
 use crank_domain::{
-    distributions::{heatmap_from, histogram_from},
+    distributions::{heatmap_from, histogram_from, typical_distribution},
     filters::{Filter, FilterChain},
     history::MultiResSeries,
     metric_error::MetricError,
@@ -161,4 +161,113 @@ fn rounded_negative_indices_match_ts() {
     // When only the first sample rounds to -1, TS omits it rather than using bin 0.
     let h = histogram_from("power", &[v, v + width * 2.], width, None).unwrap();
     assert_eq!(h.bins.iter().map(|b| b.seconds).sum::<usize>(), 1);
+}
+
+// ---- #155 -------------------------------------------------------------------------------
+
+const TYPICAL_METRICS: [&str; 5] = ["power", "power_30s", "pct_ftp", "hr", "cadence"];
+
+/// A nonfinite or nonpositive FTP is a typed error for every metric, supported or not, and is
+/// checked before the metric is looked up (TS propagated NaN into the distribution).
+#[test]
+fn typical_distribution_rejects_invalid_ftp_for_every_metric() {
+    for ftp in [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        0.,
+        -0.,
+        -1.,
+        -280.,
+        f64::MIN,
+        f64::MAX,
+        f64::from_bits(1),
+    ] {
+        for metric in TYPICAL_METRICS.into_iter().chain(["unknown", ""]) {
+            assert!(
+                matches!(
+                    typical_distribution(metric, ftp),
+                    Err(MetricError::InvalidMetricParameter("ftp"))
+                ),
+                "{metric} at {ftp}"
+            );
+        }
+    }
+}
+
+#[test]
+fn typical_distribution_valid_ftp_covers_known_metrics_only() {
+    for metric in TYPICAL_METRICS {
+        let f = typical_distribution(metric, 280.).unwrap().unwrap();
+        let mass = f(-1000., 1000.);
+        assert!((mass - 1.).abs() < 1e-6, "{metric}: {mass}");
+    }
+    assert!(typical_distribution("unknown", 280.).unwrap().is_none());
+}
+
+proptest! {
+ #![proptest_config(ProptestConfig{cases:64,max_shrink_iters:1024,..ProptestConfig::default()})]
+ #[test]
+ fn typical_distribution_error_kind_per_ftp_class(ftp in ieee(), index in 0..TYPICAL_METRICS.len(), lo in -1e3..1e3_f64, width in 0.0..1e3_f64) {
+  let result = typical_distribution(TYPICAL_METRICS[index], ftp);
+  // Every power component must be a finite mean with a nonzero finite deviation.
+  let usable = ftp.is_finite() && ftp > 0. && 1.05 * ftp < f64::MAX && 0.07 * ftp > 0.;
+  if usable {
+   let share = result.unwrap().unwrap()(lo, lo + width);
+   prop_assert!((0. ..=1. + 1e-9).contains(&share), "{share}");
+  } else {
+   prop_assert!(matches!(result, Err(MetricError::InvalidMetricParameter("ftp"))));
+  }
+ }
+ /// The incrementally sorted window gives exactly the result of sorting the window afresh,
+ /// including NaN slots, signed zeros and infinities.
+ #[test]
+ fn median_matches_a_fresh_sort_of_the_window(
+  n in 1..9_u32,
+  samples in prop::collection::vec(
+   prop_oneof![
+    4 => prop::option::of(-50.0..50.0_f64),
+    1 => prop::option::of(proptest::sample::select(vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0., -0., 1e308, -1e308])),
+   ],
+   0..80,
+  )
+ ) {
+  let mut chain = FilterChain::new([Filter::Median { n: f64::from(n) }]).unwrap();
+  let mut window: Vec<f64> = Vec::new();
+  for (t, sample) in samples.into_iter().enumerate() {
+   let got = chain.push(f64::from(u32::try_from(t).unwrap()), sample);
+   let Some(v) = sample else { prop_assert!(got.is_none()); continue; };
+   window.push(v);
+   if window.len() > n as usize { window.remove(0); }
+   let mut sorted: Vec<f64> = window.iter().copied().filter(|x| !x.is_nan()).collect();
+   sorted.sort_by(f64::total_cmp);
+   let expected = match sorted.len() {
+    0 => f64::NAN,
+    len if len % 2 == 1 => sorted[len / 2],
+    len => {
+     // TS sums then halves, so a pair of huge finite samples overflows to infinity.
+     let sum = sorted[len / 2 - 1] + sorted[len / 2];
+     sum / 2.
+    }
+   };
+   let got = got.unwrap();
+   prop_assert!(got.to_bits() == expected.to_bits() || (got.is_nan() && expected.is_nan()), "{got} != {expected}");
+  }
+ }
+}
+
+/// A heatmap clamps an over-wide axis to 400 bins, with the last bin as the overflow bin, where
+/// a histogram widens and then errors. Both are TS contracts, so the two intentionally differ.
+#[test]
+fn heatmap_axis_cap_is_a_clamp_not_an_error() {
+    let h = heatmap_from("power", "hr", &[0., 1e6, 5.], &[0., 0., 0.], 1., 1.).unwrap();
+    assert_eq!((h.cols, h.rows), (400, 1));
+    assert_eq!(h.seconds.len(), 400);
+    assert_eq!(h.seconds.iter().sum::<usize>(), 3);
+    assert_eq!(h.seconds[0], 1);
+    assert_eq!(h.seconds[5], 1);
+    assert_eq!(h.seconds[399], 1);
+    // The same range on a histogram is widened to fit (still no error).
+    let hist = histogram_from("power", &[0., 1e6], 1., None).unwrap();
+    assert!(hist.bins.len() <= 401 && hist.bin_width > 1.);
 }

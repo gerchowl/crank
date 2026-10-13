@@ -7,8 +7,10 @@ use crank_domain::workout::{
 use proptest::prelude::*;
 use serde::Deserialize;
 
+/// Each tree is stored once under its name; the cases refer to it (#174).
 #[derive(Deserialize)]
 struct Fixture {
+    trees: std::collections::BTreeMap<String, Vec<WorkoutNode>>,
     #[serde(rename = "reId")]
     re_id: Vec<ReIdCase>,
     #[serde(rename = "findNode")]
@@ -16,16 +18,14 @@ struct Fixture {
 }
 #[derive(Deserialize)]
 struct ReIdCase {
-    name: String,
-    input: Vec<WorkoutNode>,
+    tree: String,
     output: Vec<WorkoutNode>,
     #[serde(rename = "freshUnique")]
     fresh_unique: bool,
 }
 #[derive(Deserialize)]
 struct FindCase {
-    name: String,
-    input: Vec<WorkoutNode>,
+    tree: String,
     id: String,
     output: Option<WorkoutNode>,
 }
@@ -86,22 +86,23 @@ fn re_id_matches_the_reference() {
     let fx = fixture();
     assert!(fx.re_id.len() >= 5);
     for case in fx.re_id {
-        let out = re_id(&case.input, &mut counter()).unwrap();
-        assert_eq!(kind_ids(&out, None), case.output, "{}", case.name);
+        let input = &fx.trees[&case.tree];
+        let out = re_id(input, &mut counter()).unwrap();
+        assert_eq!(kind_ids(&out, None), case.output, "{}", case.tree);
         let mut ids = Vec::new();
         preorder(&out, &mut ids);
         let mut old = Vec::new();
-        preorder(&case.input, &mut old);
+        preorder(input, &mut old);
         let unique: std::collections::HashSet<_> = ids.iter().collect();
         let fresh = unique.len() == ids.len() && ids.iter().all(|i| !old.contains(i));
-        assert_eq!(fresh, case.fresh_unique, "{}", case.name);
+        assert_eq!(fresh, case.fresh_unique, "{}", case.tree);
     }
 }
 
 #[test]
 fn re_id_requests_ids_in_preorder() {
     let fx = fixture();
-    let nested = &fx.re_id.iter().find(|c| c.name == "nested").unwrap().input;
+    let nested = &fx.trees["nested"];
     let out = re_id(nested, &mut counter()).unwrap();
     let mut ids = Vec::new();
     preorder(&out, &mut ids);
@@ -119,10 +120,11 @@ fn find_node_matches_the_reference() {
     assert!(fx.find_node.len() > 20);
     for case in fx.find_node {
         assert_eq!(
-            find_node(&case.input, &case.id),
+            find_node(&fx.trees[&case.tree], &case.id),
             case.output.as_ref(),
-            "{}",
-            case.name
+            "{}/{}",
+            case.tree,
+            case.id
         );
     }
 }
@@ -130,12 +132,7 @@ fn find_node_matches_the_reference() {
 #[test]
 fn find_node_returns_the_first_match_in_depth_first_order_for_duplicates() {
     let fx = fixture();
-    let dup = &fx
-        .re_id
-        .iter()
-        .find(|c| c.name == "duplicate_ids")
-        .unwrap()
-        .input;
+    let dup = &fx.trees["duplicate_ids"];
     // [repeat x [step y, step x], step y, repeat x [step z]]: the repeat precedes its child x,
     // and the nested y precedes the later top-level y.
     assert!(matches!(find_node(dup, "x"), Some(WorkoutNode::Repeat(r)) if r.children.len() == 2));

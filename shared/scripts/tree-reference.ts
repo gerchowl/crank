@@ -1,11 +1,7 @@
-// Regenerates tree_helpers.json from the frozen TS reference (shared/src/workout/model.ts).
-// Run from the repository root:
-//   pnpm -C shared exec vitest run --root .. crates/crank-domain/tests/fixtures/export-tree-reference.test.ts
-// The fixture is committed; rerun only if the frozen reference changes. shared/ is not modified.
-import { writeFileSync } from "node:fs";
-import { test } from "vitest";
-import type { WorkoutNode } from "../../../../shared/src/contract";
-import { findNode, reId } from "../../../../shared/src/workout/model";
+// ADR-0001 §3 / #152 / #159: reference results of the frozen tree helpers (src/workout/model.ts),
+// consumed by crates/crank-domain/tests/tree_helpers.rs. Executes the mock, never reimplements it.
+import type { WorkoutNode } from "../src/contract";
+import { findNode, reId } from "../src/workout/model";
 
 const step = (id: string, label?: string): WorkoutNode => ({
   type: "step",
@@ -23,7 +19,8 @@ const rep = (id: string, children: WorkoutNode[], extra: object = {}): WorkoutNo
   ...extra,
 });
 
-const trees: Record<string, WorkoutNode[]> = {
+/** The trees every case refers to by name, so each is stored once. */
+export const trees: Record<string, WorkoutNode[]> = {
   empty: [],
   flat: [step("a", "warm"), step("b")],
   nested: [
@@ -42,33 +39,30 @@ const trees: Record<string, WorkoutNode[]> = {
 const stable = (nodes: WorkoutNode[]): WorkoutNode[] =>
   nodes.map((n) =>
     n.type === "step"
-      ? { ...n, id: n.id.split("_")[0] }
-      : { ...n, id: n.id.split("_")[0], children: stable(n.children) },
+      ? { ...n, id: n.id.split("_")[0] ?? n.id }
+      : { ...n, id: n.id.split("_")[0] ?? n.id, children: stable(n.children) },
   );
 const preorder = (nodes: readonly WorkoutNode[]): string[] =>
   nodes.flatMap((n) => [n.id, ...(n.type === "repeat" ? preorder(n.children) : [])]);
 
-test("export tree helper reference", () => {
-  const reid = Object.entries(trees).map(([name, input]) => {
+/** Serialized fixture: `trees` once by name; `reId`/`findNode` cases refer to a tree by name. */
+export function treeReference(): string {
+  const reid = Object.entries(trees).map(([tree, input]) => {
     const out = reId(input);
     const ids = preorder(out);
+    const old = new Set(preorder(input));
     return {
-      name,
-      input,
+      tree,
       output: stable(out),
-      freshUnique: new Set(ids).size === ids.length && ids.every((i) => !preorder(input).includes(i)),
+      freshUnique: new Set(ids).size === ids.length && ids.every((id) => !old.has(id)),
     };
   });
-  const find = Object.entries(trees).flatMap(([name, input]) =>
+  const find = Object.entries(trees).flatMap(([tree, input]) =>
     [...new Set([...preorder(input), "missing", ""])].map((id) => ({
-      name: `${name}/${id}`,
-      input,
+      tree,
       id,
       output: findNode(input, id) ?? null,
     })),
   );
-  writeFileSync(
-    new URL("./tree_helpers.json", import.meta.url),
-    JSON.stringify({ schemaVersion: 1, reId: reid, findNode: find }, null, 1) + "\n",
-  );
-});
+  return JSON.stringify({ schemaVersion: 1, trees, reId: reid, findNode: find }, null, 1) + "\n";
+}
