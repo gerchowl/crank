@@ -36,5 +36,15 @@ export function useUPlot(opts: PlotOpts) {
     plot.current?.setData(d);
   }, []);
 
-  return { el, setData };
+  /** zoom x (null = full data range) */
+  const setXRange = useCallback((r: [number, number] | null) => {
+    const u = plot.current;
+    if (!u) return;
+    const xs = data.current[0];
+    const min = r?.[0] ?? xs[0] ?? 0;
+    const max = r?.[1] ?? xs[xs.length - 1] ?? 1;
+    if (max > min) u.setScale("x", { min, max });
+  }, []);
+
+  return { el, setData, setXRange };
 }
