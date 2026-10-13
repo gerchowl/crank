@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>crank — design prototype</title>
+    <!-- Cold start (?boot=…, src/boot.ts): paint the window in the start screen's colour before any script
+         loads, so there is no flash. Same precedence as App: ?theme, then the saved theme
+         (THEME_KEY in src/persist.ts), then the app default (dark). -->
+    <script>
+      (function () {
+        var q = new URLSearchParams(location.search);
+        if (!q.has("boot")) return;
+        var m = q.get("theme");
+        if (m !== "dark" && m !== "light") {
+          try {
+            m = JSON.parse(localStorage.getItem("crank.design.theme.v1"));
+          } catch (e) {}
+        }
+        document.documentElement.dataset.start = m === "light" ? "light" : "dark";
+      })();
+    </script>
+    <link rel="stylesheet" href="/src/start.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

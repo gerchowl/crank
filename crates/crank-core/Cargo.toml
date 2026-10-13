@@ -1,0 +1,23 @@
+[package]
+name = "crank-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+crank-domain.workspace = true
+crank-devices.workspace = true
+crank-ble.workspace = true
+crank-engine.workspace = true
+crank-store.workspace = true
+crank-coach.workspace = true
+crank-intervals.workspace = true
+serde.workspace = true
+specta.workspace = true
+
+[dev-dependencies]
+serde_json = "1"

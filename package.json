@@ -6,5 +6,6 @@
   "scripts": {
     "test": "pnpm -C shared test",
     "typecheck": "pnpm -r typecheck"
-  }
+  },
+  "license": "Apache-2.0"
 }
