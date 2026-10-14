@@ -1,0 +1,713 @@
+//! #147 tests: discovery, HRS, reconnect and pairing through the transport seams.
+use crate::*;
+use crank_devices::*;
+use futures_util::{StreamExt, future::BoxFuture, stream};
+use proptest::prelude::*;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::sync::mpsc;
+
+fn at(us: u64) -> MonoTime {
+    MonoTime(us)
+}
+async fn settle() {
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+}
+async fn advance(d: Duration) {
+    tokio::time::advance(d).await;
+    settle().await;
+}
+fn ms(n: u64) -> Duration {
+    Duration::from_millis(n)
+}
+
+// ---- HRS parsing (Bluetooth HRS spec §3.106 vectors) ------------------------------------
+
+#[test]
+fn hrs_spec_vectors() {
+    // uint8 value, no contact feature, no RR.
+    let s = parse_heart_rate(at(1), &[0x00, 72]).unwrap();
+    assert_eq!((s.at, s.bpm, s.contact), (at(1), Some(72), None));
+    assert!(s.rr_ms.is_empty());
+    // uint16 value.
+    assert_eq!(
+        parse_heart_rate(at(0), &[0x01, 0x48, 0x00]).unwrap().bpm,
+        Some(72)
+    );
+    // A 16-bit value above u8 range is not representable: no bpm, not a wrap.
+    assert_eq!(
+        parse_heart_rate(at(0), &[0x01, 0x2c, 0x01]).unwrap().bpm,
+        None
+    );
+    // Zero is "no value".
+    assert_eq!(parse_heart_rate(at(0), &[0x00, 0]).unwrap().bpm, None);
+}
+#[test]
+fn hrs_sensor_contact_bits() {
+    let contact = |flags| parse_heart_rate(at(0), &[flags, 60]).unwrap().contact;
+    assert_eq!(contact(0b000), None); // not supported, detected bit ignored
+    assert_eq!(contact(0b010), None);
+    assert_eq!(contact(0b100), Some(false)); // supported, no contact
+    assert_eq!(contact(0b110), Some(true)); // supported and detected
+}
+#[test]
+fn hrs_rr_intervals_are_converted_from_1024ths_of_a_second() {
+    // 1024 → 1000 ms, 512 → 500 ms, 870 → 849.6 → 850 ms (rounded), 0 → 0.
+    let bytes = [0x10, 60, 0x00, 0x04, 0x00, 0x02, 0x66, 0x03, 0x00, 0x00];
+    let s = parse_heart_rate(at(0), &bytes).unwrap();
+    assert_eq!(s.rr_ms.as_slice(), [1000, 500, 850, 0]);
+    // Energy expended (flag bit 3) is skipped before the RR field, uint16 HR.
+    let bytes = [0x19, 0x3c, 0x00, 0x10, 0x00, 0x00, 0x04];
+    let s = parse_heart_rate(at(0), &bytes).unwrap();
+    assert_eq!((s.bpm, s.rr_ms.as_slice()), (Some(60), [1000].as_slice()));
+    // RR bytes without the RR flag are ignored, not misread.
+    assert!(
+        parse_heart_rate(at(0), &[0x00, 60, 1, 2])
+            .unwrap()
+            .rr_ms
+            .is_empty()
+    );
+}
+#[test]
+fn hrs_truncated_payloads_are_framing_errors_not_panics() {
+    for bytes in [
+        &[][..],
+        &[0x00],
+        &[0x01, 0x48],
+        &[0x08, 60, 0x00],
+        &[0x10, 60, 0x00], // odd RR length
+    ] {
+        assert!(
+            matches!(
+                parse_heart_rate(at(0), bytes),
+                Err(DeviceError::Protocol {
+                    kind: ProtocolErrorKind::Framing,
+                    ..
+                })
+            ),
+            "{bytes:?}"
+        );
+    }
+}
+proptest! {
+    #[test]
+    fn hrs_parser_never_panics_and_rr_count_matches_length(
+        bytes in prop::collection::vec(any::<u8>(), 0..64), t in any::<u64>()) {
+        if let Ok(s) = parse_heart_rate(at(t), &bytes) {
+            let header = 1 + if bytes[0] & 1 == 0 { 1 } else { 2 } + if bytes[0] & 8 != 0 { 2 } else { 0 };
+            let expected = if bytes[0] & 0x10 != 0 { (bytes.len() - header) / 2 } else { 0 };
+            prop_assert_eq!(s.rr_ms.len(), expected);
+            prop_assert_eq!(s.at, at(t));
+        }
+    }
+}
+
+// ---- HRS driver over a fake transport ----------------------------------------------------
+
+type HrReceiver = mpsc::UnboundedReceiver<Result<(MonoTime, Vec<u8>), DeviceError>>;
+struct FakeHr {
+    streams: Mutex<VecDeque<Result<HrReceiver, DeviceError>>>,
+    connects: Mutex<Vec<MonoTime>>,
+    clock: Arc<dyn Clock>,
+    disconnects: Mutex<usize>,
+}
+impl HrTransport for Arc<FakeHr> {
+    fn connect(
+        &self,
+        _: DeviceRef,
+        _: Arc<dyn Clock>,
+    ) -> BoxFuture<'static, Result<(DeviceInfo, Notifications), DeviceError>> {
+        self.connects.lock().unwrap().push(self.clock.now());
+        let next = self.streams.lock().unwrap().pop_front();
+        Box::pin(async move {
+            let rx = next.ok_or(DeviceError::NotFound)??;
+            let notifications: Notifications = Box::pin(stream::unfold(rx, |mut rx| async move {
+                let n = rx.recv().await?;
+                Some((n, rx))
+            }));
+            Ok((
+                DeviceInfo {
+                    name: Some("Strap".into()),
+                    ..DeviceInfo::default()
+                },
+                notifications,
+            ))
+        })
+    }
+    fn disconnect(&self) -> BoxFuture<'static, Result<(), DeviceError>> {
+        *self.disconnects.lock().unwrap() += 1;
+        Box::pin(async { Ok(()) })
+    }
+}
+type HrSender = mpsc::UnboundedSender<Result<(MonoTime, Vec<u8>), DeviceError>>;
+fn fake_hr(clock: &Arc<dyn Clock>, connections: usize) -> (Arc<FakeHr>, Vec<HrSender>) {
+    let mut senders = Vec::new();
+    let streams = (0..connections)
+        .map(|_| {
+            let (tx, rx) = mpsc::unbounded_channel();
+            senders.push(tx);
+            Ok(rx)
+        })
+        .collect();
+    let fake = Arc::new(FakeHr {
+        streams: Mutex::new(streams),
+        connects: Mutex::default(),
+        clock: clock.clone(),
+        disconnects: Mutex::new(0),
+    });
+    (fake, senders)
+}
+fn drain<T>(rx: &mut mpsc::Receiver<T>) -> Vec<T> {
+    std::iter::from_fn(|| rx.try_recv().ok()).collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn hrs_driver_streams_samples_faults_on_garbage_and_reports_loss() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let (fake, senders) = fake_hr(&clock, 1);
+    let driver = HrsDriver::new(Arc::new(fake.clone()), clock);
+    let mut link = driver.connect(&DeviceRef("strap".into())).await.unwrap();
+    assert_eq!(link.info.name.as_deref(), Some("Strap"));
+    senders[0]
+        .send(Ok((at(7), vec![0x16, 64, 0x00, 0x04])))
+        .unwrap();
+    senders[0].send(Ok((at(8), vec![0x00]))).unwrap(); // truncated
+    senders[0].send(Ok((at(9), vec![0x00, 65]))).unwrap(); // survives the bad frame
+    settle().await;
+    let events = drain(&mut link.events);
+    assert_eq!(
+        events[..2],
+        [
+            HrEvent::Link(LinkState::Connecting),
+            HrEvent::Link(LinkState::Ready)
+        ]
+    );
+    assert!(matches!(&events[2], HrEvent::Sample(s)
+        if s.bpm == Some(64) && s.contact == Some(true) && s.rr_ms.as_slice() == [1000]));
+    assert!(matches!(
+        &events[3],
+        HrEvent::Fault(DeviceError::Protocol { .. })
+    ));
+    assert!(matches!(&events[4], HrEvent::Sample(s) if s.bpm == Some(65) && s.at == at(9)));
+    senders[0].send(Err(DeviceError::Disconnected)).unwrap();
+    settle().await;
+    let events = drain(&mut link.events);
+    assert_eq!(events.last(), Some(&HrEvent::Link(LinkState::Lost)));
+    assert_eq!(*fake.disconnects.lock().unwrap(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn hr_strap_dropout_reconnects_on_the_backoff_schedule() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let (fake, senders) = fake_hr(&clock, 2);
+    // Connection 2 is only reachable after two refused attempts.
+    fake.streams
+        .lock()
+        .unwrap()
+        .insert(1, Err(DeviceError::NotFound));
+    fake.streams
+        .lock()
+        .unwrap()
+        .insert(1, Err(DeviceError::NotFound));
+    let inner = HrsDriver::new(Arc::new(fake.clone()), clock.clone());
+    let driver = ReconnectingHr::new(inner, clock.clone());
+    let mut link = driver.connect(&DeviceRef("strap".into())).await.unwrap();
+    settle().await;
+    let t0 = clock.now();
+    senders[0].send(Err(DeviceError::Disconnected)).unwrap();
+    settle().await;
+    advance(ms(500)).await;
+    advance(ms(1000)).await;
+    advance(ms(2000)).await;
+    settle().await;
+    let connects = fake.connects.lock().unwrap().clone();
+    let offsets: Vec<_> = connects.iter().map(|t| t.0 - t0.0).collect();
+    // Initial connect at t0 (before the loss), then +0.5 s, +1.5 s, +3.5 s.
+    assert_eq!(offsets, [0, 500_000, 1_500_000, 3_500_000]);
+    senders[1].send(Ok((at(1), vec![0x00, 80]))).unwrap();
+    settle().await;
+    let events = drain(&mut link.events);
+    let attempts: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            HrEvent::Reconnecting { attempt } => Some(*attempt),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(attempts, [1, 2, 3]);
+    assert!(events.contains(&HrEvent::Link(LinkState::Lost)));
+    assert!(matches!(events.last(), Some(HrEvent::Sample(s)) if s.bpm == Some(80)));
+}
+
+// ---- discovery ---------------------------------------------------------------------------
+
+fn short(n: u16) -> Uuid {
+    Uuid::from_u128((u128::from(n) << 96) | 0x0000_1000_8000_0080_5f9b_34fb)
+}
+use uuid::Uuid;
+
+#[test]
+fn classification_matrix() {
+    assert_eq!(
+        classify(&[FEC_SERVICE, short(0x1818)]),
+        Some((Some(DriverKind::FeC), false))
+    );
+    assert_eq!(
+        classify(&[short(0x1826), short(0x1818)]),
+        Some((Some(DriverKind::Ftms), false))
+    );
+    // FE-C wins when a trainer advertises both.
+    assert_eq!(
+        classify(&[short(0x1826), FEC_SERVICE]),
+        Some((Some(DriverKind::FeC), false))
+    );
+    assert_eq!(classify(&[short(0x180d)]), Some((None, true)));
+    assert_eq!(
+        classify(&[FEC_SERVICE, short(0x180d)]),
+        Some((Some(DriverKind::FeC), true))
+    );
+    // Cycling-Power-only and unrelated devices are ignored in v1.
+    assert_eq!(classify(&[short(0x1818)]), None);
+    assert_eq!(classify(&[short(0x180f)]), None);
+    assert_eq!(classify(&[]), None);
+}
+#[test]
+fn scan_filter_lists_exactly_the_four_services() {
+    assert_eq!(
+        SCAN_SERVICES,
+        [FEC_SERVICE, short(0x1826), short(0x1818), short(0x180d)]
+    );
+}
+struct Ads(Mutex<Option<Vec<Advertisement>>>);
+impl Advertisements for Ads {
+    fn advertisements(&self) -> futures_util::stream::BoxStream<'static, Advertisement> {
+        stream::iter(self.0.lock().unwrap().take().unwrap()).boxed()
+    }
+}
+fn ad(id: &str, name: Option<&str>, services: &[Uuid]) -> Advertisement {
+    Advertisement {
+        device: DeviceRef(id.into()),
+        name: name.map(Into::into),
+        services: services.to_vec(),
+    }
+}
+#[tokio::test]
+async fn scanner_post_filters_classifies_and_reports_changes_once() {
+    let scanner = Scanner(Ads(Mutex::new(Some(vec![
+        ad("cps", Some("Pedals"), &[short(0x1818)]), // post-filtered (Linux ignores the OS filter)
+        ad("neo", None, &[]),                        // discovered, services not known yet
+        ad("neo", None, &[FEC_SERVICE]),             // classified
+        ad("neo", None, &[FEC_SERVICE]),             // duplicate: suppressed
+        ad("neo", Some("Tacx NEO"), &[FEC_SERVICE]), // name arrived: reported again
+        ad("hr", Some("Strap"), &[short(0x180d)]),
+        ad("kick", Some("KICKR"), &[short(0x1826)]),
+    ]))));
+    let found: Vec<_> = scanner.scan().collect().await;
+    let summary: Vec<_> = found
+        .iter()
+        .map(|d| {
+            (
+                d.device.0.as_str(),
+                d.info.name.as_deref(),
+                d.trainer,
+                d.heart_rate,
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("neo", None, Some(DriverKind::FeC), false),
+            ("neo", Some("Tacx NEO"), Some(DriverKind::FeC), false),
+            ("hr", Some("Strap"), None, true),
+            ("kick", Some("KICKR"), Some(DriverKind::Ftms), false),
+        ]
+    );
+}
+
+// ---- pairing memory ----------------------------------------------------------------------
+
+#[test]
+fn pairing_matches_by_platform_id_then_name_and_verifies_serial() {
+    let info = DeviceInfo {
+        name: Some("Tacx NEO".into()),
+        serial: Some("55624".into()),
+        ..DeviceInfo::default()
+    };
+    let pairing = Pairing::from_connection(&DeviceRef("uuid-1".into()), &info);
+    let found = |id: &str, name: Option<&str>| DiscoveredDevice {
+        device: DeviceRef(id.into()),
+        info: DeviceInfo {
+            name: name.map(Into::into),
+            ..DeviceInfo::default()
+        },
+        trainer: Some(DriverKind::FeC),
+        heart_rate: false,
+    };
+    assert!(pairing.matches(&found("uuid-1", None)));
+    assert!(pairing.matches(&found("uuid-2", Some("Tacx NEO")))); // platform id re-assigned
+    assert!(!pairing.matches(&found("uuid-2", Some("KICKR"))));
+    assert!(!pairing.matches(&found("uuid-2", None)));
+    assert!(pairing.verify(&info));
+    assert!(pairing.verify(&DeviceInfo::default())); // serial unknown: cannot refute
+    assert!(!pairing.verify(&DeviceInfo {
+        serial: Some("99999".into()),
+        ..DeviceInfo::default()
+    }));
+    assert_eq!(pairing.device_ref(), DeviceRef("uuid-1".into()));
+}
+#[test]
+fn pairing_round_trips_through_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let info = DeviceInfo {
+        name: Some("Tacx NEO".into()),
+        serial: Some("55624".into()),
+        ..DeviceInfo::default()
+    };
+    let pairing = Pairing::from_connection(&DeviceRef("uuid-1".into()), &info);
+    let store = crank_store::Store::open_owner(dir.path()).unwrap();
+    store
+        .remember_device(crank_store::Device {
+            id: "trainer".into(),
+            kind: "trainer".into(),
+            name: pairing.name.clone(),
+            platform_id: pairing.platform_id.clone(),
+            serial: pairing.serial.clone(),
+            last_seen: 1,
+        })
+        .unwrap();
+    drop(store);
+    let stored = crank_store::Store::open_read_only(dir.path())
+        .unwrap()
+        .devices()
+        .unwrap();
+    let restored = Pairing {
+        platform_id: stored[0].platform_id.clone(),
+        name: stored[0].name.clone(),
+        serial: stored[0].serial.clone(),
+    };
+    assert_eq!(restored, pairing);
+}
+
+// ---- trainer reconnect supervisor --------------------------------------------------------
+
+struct Device {
+    link: TrainerLink,
+    events: mpsc::Sender<TrainerEvent>,
+    commands: mpsc::Receiver<TrainerCommand>,
+}
+fn device_link() -> Device {
+    let (control, commands) = mpsc::channel(16);
+    let (events, receiver) = mpsc::channel(64);
+    Device {
+        link: TrainerLink {
+            info: DeviceInfo::default(),
+            caps: TrainerCaps {
+                erg: true,
+                sim: true,
+                resistance: true,
+                max_resistance_n: None,
+                max_target_w: 2000,
+            },
+            control,
+            events: receiver,
+        },
+        events,
+        commands,
+    }
+}
+struct Script {
+    clock: Arc<dyn Clock>,
+    outcomes: Mutex<VecDeque<Result<TrainerLink, DeviceError>>>,
+    attempts: Mutex<Vec<(MonoTime, RiderConfig)>>,
+}
+struct ScriptDriver(Arc<Script>);
+impl TrainerDriver for ScriptDriver {
+    fn kind(&self) -> DriverKind {
+        DriverKind::FeC
+    }
+    fn connect(
+        &self,
+        _: &DeviceRef,
+        rider: RiderConfig,
+    ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
+        self.0
+            .attempts
+            .lock()
+            .unwrap()
+            .push((self.0.clock.now(), rider));
+        let next = self
+            .0
+            .outcomes
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Err(DeviceError::NotFound));
+        Box::pin(async move { next })
+    }
+}
+fn rider() -> RiderConfig {
+    RiderConfig {
+        rider_kg: 71.5,
+        bike_kg: 9.0,
+        wheel_m: 0.68,
+    }
+}
+fn script(clock: &Arc<dyn Clock>, outcomes: Vec<Result<TrainerLink, DeviceError>>) -> Arc<Script> {
+    Arc::new(Script {
+        clock: clock.clone(),
+        outcomes: Mutex::new(outcomes.into()),
+        attempts: Mutex::default(),
+    })
+}
+
+#[test]
+fn backoff_schedule_is_exact() {
+    let secs: Vec<f64> = (1..=8).map(|a| backoff(a).as_secs_f64()).collect();
+    assert_eq!(secs, [0.5, 1.0, 2.0, 4.0, 5.0, 5.0, 5.0, 5.0]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn trainer_reconnects_on_the_exact_schedule_reapplies_rider_and_never_restores_mode() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let first = device_link();
+    let mut second = device_link();
+    let mut outcomes: Vec<_> = (0..5)
+        .map(|_| Err(DeviceError::ConnectFailed("not found".into())))
+        .collect();
+    outcomes.insert(0, Ok(first.link));
+    outcomes.push(Ok(second.link));
+    let script = script(&clock, outcomes);
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock.clone());
+    let mut link = driver
+        .connect(&DeviceRef("neo".into()), rider())
+        .await
+        .unwrap();
+    // A running ride: the engine had issued ERG before the loss.
+    link.control
+        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        .await
+        .unwrap();
+    settle().await;
+    let mut first_commands = first.commands;
+    assert_eq!(
+        first_commands.try_recv(),
+        Ok(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+    );
+
+    let lost_at = clock.now();
+    first
+        .events
+        .send(TrainerEvent::Link(LinkState::Lost))
+        .await
+        .unwrap();
+    settle().await;
+    // Delays 0.5, 1, 2, 4, 5 and a final 5 s: one tick before each deadline nothing
+    // happens, on the deadline exactly one attempt is made.
+    let mut elapsed = 0;
+    for (index, delay) in [500, 1000, 2000, 4000, 5000, 5000].into_iter().enumerate() {
+        advance(ms(delay - 1)).await;
+        assert_eq!(
+            script.attempts.lock().unwrap().len(),
+            1 + index,
+            "early at {delay}"
+        );
+        advance(ms(1)).await;
+        assert_eq!(
+            script.attempts.lock().unwrap().len(),
+            2 + index,
+            "late at {delay}"
+        );
+        elapsed += delay;
+        let (t, r) = *script.attempts.lock().unwrap().last().unwrap();
+        assert_eq!(t.0 - lost_at.0, elapsed * 1000);
+        assert_eq!(r, rider(), "rider config is re-applied on every attempt");
+    }
+    // The consumer-facing link survived: Lost, then numbered attempts and faults, then Ready.
+    let mut second_events = vec![
+        TrainerEvent::Link(LinkState::Connecting),
+        TrainerEvent::Link(LinkState::Ready),
+    ];
+    for e in second_events.drain(..) {
+        second.events.send(e).await.unwrap();
+    }
+    settle().await;
+    let events = drain(&mut link.events);
+    assert_eq!(events[0], TrainerEvent::Link(LinkState::Lost));
+    let attempts: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let TrainerEvent::Reconnecting { attempt } = e {
+                Some(*attempt)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(attempts, [1, 2, 3, 4, 5, 6]);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, TrainerEvent::Fault(_)))
+            .count(),
+        5
+    );
+    assert_eq!(events.last(), Some(&TrainerEvent::Link(LinkState::Ready)));
+    // The driver restored nothing: the new device saw no command at all.
+    assert!(second.commands.try_recv().is_err());
+    // Only the engine's explicit SetMode after Ready reaches it.
+    link.control
+        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        .await
+        .unwrap();
+    settle().await;
+    assert_eq!(
+        second.commands.try_recv(),
+        Ok(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn commands_sent_while_disconnected_are_discarded_not_replayed() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let first = device_link();
+    let mut second = device_link();
+    let script = script(&clock, vec![Ok(first.link), Ok(second.link)]);
+    let driver = Reconnecting::new(ScriptDriver(script), clock);
+    let link = driver
+        .connect(&DeviceRef("neo".into()), rider())
+        .await
+        .unwrap();
+    first
+        .events
+        .send(TrainerEvent::Link(LinkState::Lost))
+        .await
+        .unwrap();
+    settle().await;
+    link.control
+        .send(TrainerCommand::SetMode(ControlMode::Free))
+        .await
+        .unwrap();
+    advance(ms(500)).await;
+    assert!(second.commands.try_recv().is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn release_during_backoff_stops_the_loop() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let first = device_link();
+    let script = script(&clock, vec![Ok(first.link)]);
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock);
+    let link = driver
+        .connect(&DeviceRef("neo".into()), rider())
+        .await
+        .unwrap();
+    first
+        .events
+        .send(TrainerEvent::Link(LinkState::Lost))
+        .await
+        .unwrap();
+    settle().await;
+    advance(ms(500)).await; // attempt 1 (fails), now waiting 1 s
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    settle().await;
+    advance(Duration::from_mins(1)).await;
+    assert_eq!(
+        script.attempts.lock().unwrap().len(),
+        2,
+        "initial connect + attempt 1 only"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_the_link_stops_reconnecting_and_release_is_forwarded() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let first = device_link();
+    let mut first_commands = first.commands;
+    let script = script(&clock, vec![Ok(first.link)]);
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock.clone());
+    let link = driver
+        .connect(&DeviceRef("neo".into()), rider())
+        .await
+        .unwrap();
+    // Release while connected reaches the device.
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    settle().await;
+    assert_eq!(first_commands.try_recv(), Ok(TrainerCommand::Disconnect));
+    first
+        .events
+        .send(TrainerEvent::Link(LinkState::Lost))
+        .await
+        .unwrap();
+    settle().await;
+    advance(Duration::from_mins(1)).await;
+    assert_eq!(
+        script.attempts.lock().unwrap().len(),
+        1,
+        "a released ride is never reconnected"
+    );
+    drop(link);
+
+    // Consumer disappears mid-outage.
+    let first = device_link();
+    let script = self::script(&clock, vec![Ok(first.link)]);
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock);
+    let link = driver
+        .connect(&DeviceRef("neo".into()), rider())
+        .await
+        .unwrap();
+    first
+        .events
+        .send(TrainerEvent::Link(LinkState::Lost))
+        .await
+        .unwrap();
+    settle().await;
+    drop(link);
+    settle().await;
+    advance(Duration::from_mins(1)).await;
+    assert_eq!(
+        script.attempts.lock().unwrap().len(),
+        1,
+        "no attempt once the consumer is gone"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn first_connect_failure_is_returned_not_retried() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let script = script(&clock, vec![Err(DeviceError::NotFound)]);
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock);
+    let result = driver.connect(&DeviceRef("neo".into()), rider()).await;
+    assert!(matches!(result, Err(DeviceError::NotFound)));
+    advance(Duration::from_secs(30)).await;
+    assert_eq!(script.attempts.lock().unwrap().len(), 1);
+}
+
+// ---- #201: capture tests leave nothing behind, even when they panic ------------------------
+
+#[test]
+fn a_panicking_capture_test_leaves_no_file_behind() {
+    let seen = Mutex::new(None);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("panics.fecap");
+        *seen.lock().unwrap() = Some(dir.path().to_owned());
+        Capture::create(&path, MonoTime(0))
+            .unwrap()
+            .record(MonoTime(0), true, &[1])
+            .unwrap();
+        assert!(path.exists());
+        panic!("injected failure after the capture file exists");
+    }));
+    assert!(outcome.is_err());
+    let dir = seen.lock().unwrap().take().unwrap();
+    assert!(
+        !dir.exists(),
+        "temp dir (and its .fecap) must be removed on unwind"
+    );
+}

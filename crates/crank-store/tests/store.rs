@@ -76,7 +76,7 @@ fn samples(second: u32) -> Vec<Sample> {
 fn migrate_empty_database() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_owner(dir.path()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 1);
+    assert_eq!(store.schema_version().unwrap(), 2);
     let db = Connection::open(dir.path().join("crank.db")).unwrap();
     let tables: Vec<String> = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -121,7 +121,7 @@ fn migrate_every_released_fixture() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("crank.db"), fixture).unwrap();
         let store = Store::open_owner(dir.path()).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 1);
+        assert_eq!(store.schema_version().unwrap(), 2);
         assert_eq!(
             store
                 .load_json::<SettingJson>(&["fixture"])
@@ -461,6 +461,81 @@ fn pairing_memory_and_typed_json_write() {
     ));
 }
 
+fn device(id: &str, platform_id: &str, last_seen: i64) -> Device {
+    Device {
+        id: id.into(),
+        kind: "trainer".into(),
+        name: Some("NEO".into()),
+        platform_id: platform_id.into(),
+        serial: Some("55624".into()),
+        last_seen,
+    }
+}
+
+#[test]
+fn remembering_a_platform_id_again_updates_one_row_and_keeps_its_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_owner(dir.path()).unwrap();
+    store.remember_device(device("neo", "uuid", 1)).unwrap();
+    // Same peripheral under a different caller id: still one device, original id kept.
+    store.remember_device(device("other", "uuid", 2)).unwrap();
+    assert_eq!(store.devices().unwrap(), vec![device("neo", "uuid", 2)]);
+    // CoreBluetooth re-assigned the platform id of a known device: updated in place.
+    store.remember_device(device("neo", "uuid-2", 3)).unwrap();
+    assert_eq!(store.devices().unwrap(), vec![device("neo", "uuid-2", 3)]);
+    let db = Connection::open(dir.path().join("crank.db")).unwrap();
+    let duplicate = db.execute(
+        "INSERT INTO device VALUES ('x','trainer',NULL,'uuid-2',NULL,0)",
+        [],
+    );
+    assert!(
+        duplicate.is_err(),
+        "the schema itself enforces UNIQUE(platform_id)"
+    );
+}
+
+#[test]
+fn migration_two_collapses_duplicate_platform_ids_and_repoints_rides() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("crank.db"),
+        include_bytes!("fixtures/v1.db"),
+    )
+    .unwrap();
+    {
+        let db = Connection::open(dir.path().join("crank.db")).unwrap();
+        db.execute_batch(
+            "INSERT INTO device VALUES ('old','trainer','NEO','uuid','1',10);
+             INSERT INTO device VALUES ('new','trainer','NEO','uuid','1',20);
+             INSERT INTO device VALUES ('hr','hr','Strap','uuid-hr',NULL,5);
+             INSERT INTO ride (id,started_at,workout_json,compiled_json,trainer_device_id,telemetry_source)
+             VALUES ('r','1','{}','{}','old','fec');",
+        )
+        .unwrap();
+    }
+    let store = Store::open_owner(dir.path()).unwrap();
+    let ids: Vec<_> = store.devices().unwrap().into_iter().map(|d| d.id).collect();
+    assert_eq!(ids, ["hr", "new"]);
+    let db = Connection::open(dir.path().join("crank.db")).unwrap();
+    let trainer: String = db
+        .query_row("SELECT trainer_device_id FROM ride WHERE id='r'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(trainer, "new");
+}
+
+#[test]
+fn pairing_memory_survives_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    Store::open_owner(dir.path())
+        .unwrap()
+        .remember_device(device("neo", "uuid", 7))
+        .unwrap();
+    let store = Store::open_read_only(dir.path()).unwrap();
+    assert_eq!(store.devices().unwrap(), vec![device("neo", "uuid", 7)]);
+}
+
 #[test]
 fn failed_chunk_transaction_preserves_prior_commit_and_buffer() {
     let dir = tempfile::tempdir().unwrap();
@@ -570,7 +645,7 @@ fn read_only_refuses_a_newer_schema() {
         Store::open_read_only(dir.path()),
         Err(StoreError::SchemaTooNew {
             found: 999,
-            supported: 1
+            supported: 2
         })
     ));
 }

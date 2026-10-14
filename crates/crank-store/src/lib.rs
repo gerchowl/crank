@@ -156,7 +156,7 @@ pub struct Ride {
     /// Optional summary.
     pub summary: Option<RideSummaryJson>,
 }
-/// Pairing memory only; discovery and pairing policy belong to #147.
+/// Pairing memory (ADR-0002 §5); `platform_id` is unique. Matching policy lives in `crank-ble`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     /// Stable database id.
@@ -280,18 +280,41 @@ impl Store {
             Ok(())
         })
     }
-    /// Persist platform id, advertised name and DIS serial.
+    /// Persist platform id, advertised name and DIS serial. A platform id names
+    /// one device (unique index): re-remembering it updates that row and keeps
+    /// its `id`, so rides that reference it stay valid. An existing `id` with a
+    /// new platform id (`CoreBluetooth` re-assigned it) is updated in place.
     /// # Errors
     /// Returns read-only, SQL or worker errors.
     pub fn remember_device(&self, device: Device) -> Result<(), StoreError> {
         self.write(move |w| {
-            w.db.execute(
-                "INSERT INTO device VALUES (?1,?2,?3,?4,?5,?6)
-                 ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,name=excluded.name,
-                 platform_id=excluded.platform_id,serial=excluded.serial,last_seen=excluded.last_seen",
-                params![device.id, device.kind, device.name, device.platform_id,
-                    device.serial, device.last_seen],
+            let tx = w.db.transaction()?;
+            let Device {
+                id,
+                kind,
+                name,
+                platform_id,
+                serial,
+                last_seen,
+            } = device;
+            let mut changed = tx.execute(
+                "UPDATE device SET kind=?1,name=?2,serial=?3,last_seen=?4 WHERE platform_id=?5",
+                params![kind, name, serial, last_seen, platform_id],
             )?;
+            if changed == 0 {
+                changed = tx.execute(
+                    "UPDATE device SET kind=?1,name=?2,serial=?3,last_seen=?4,platform_id=?5
+                     WHERE id=?6",
+                    params![kind, name, serial, last_seen, platform_id, id],
+                )?;
+            }
+            if changed == 0 {
+                tx.execute(
+                    "INSERT INTO device VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![id, kind, name, platform_id, serial, last_seen],
+                )?;
+            }
+            tx.commit()?;
             Ok(())
         })
     }
