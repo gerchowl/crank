@@ -31,6 +31,8 @@ out=${CRANK_E2E_OUT:-$root/app/e2e-out}
 mkdir -p "$out"
 # A per-run directory: a run that outlives the wait below can never leak its result into the next one.
 run=$(mktemp -d "$out/run.XXXXXX")
+# Keep the 3 newest earlier run dirs for post-mortems; older ones are removed.
+ls -dt "$out"/run.* | grep -vxF "$run" | tail -n +4 | while read -r old; do rm -rf "$old"; done
 
 nix build "$root#crank-desktop-e2e" --out-link "$out/app"
 app=$(readlink -f "$out/app")/bin/crank-desktop
@@ -38,7 +40,8 @@ export CRANK_E2E_APP=$app
 
 if [ "${CRANK_E2E_DIRECT:-}" = 1 ]; then
   "$0" --launches "$run"
-  exit
+  rm -rf "$run"
+  exit 0
 fi
 
 wrapper=$run/run.sh
@@ -62,4 +65,7 @@ for _ in $(seq 1 1200); do
 done
 [ -f "$run/exit" ] || { echo "e2e: no result after 1200 s ($run)" >&2; cat "$run/log" 2>/dev/null; exit 1; }
 cat "$run/log"
-exit "$(cat "$run/exit")"
+code=$(cat "$run/exit")
+# A passing run leaves nothing behind; a failing one keeps its dir (log, screenshots).
+[ "$code" = 0 ] && rm -rf "$run"
+exit "$code"
