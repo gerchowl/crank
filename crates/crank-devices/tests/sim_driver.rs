@@ -314,6 +314,68 @@ async fn same_seed_and_faults_reproduce_the_same_events() {
     assert_eq!(runs[0], runs[1]);
 }
 
+// ---- link ownership ----
+
+fn lost(ev: &[TrainerEvent]) -> bool {
+    ev.contains(&TrainerEvent::Link(LinkState::Lost))
+}
+#[tokio::test(start_paused = true)]
+async fn stale_links_disconnect_does_not_kill_the_next_link() {
+    let r = rig(vec![]);
+    let mut a = connect(&r).await;
+    a.control
+        .send(TrainerCommand::Disconnect)
+        .await
+        .expect("sim");
+    assert!(lost(&run(&mut a, 1).await));
+    drop(a); // its control task now sees a closed channel
+    let mut b = connect(&r).await;
+    set(&b, ControlMode::Erg { target_w: 200 }).await;
+    let ev = run(&mut b, 10).await;
+    assert!(!lost(&ev), "link B was torn down by link A");
+    assert!(mean_power(&ev, 5, 10) > 150.0);
+}
+#[tokio::test(start_paused = true)]
+async fn dropping_an_old_link_later_does_not_kill_the_running_one() {
+    let r = rig(vec![]);
+    let mut a = connect(&r).await;
+    a.control
+        .send(TrainerCommand::Disconnect)
+        .await
+        .expect("sim");
+    assert!(lost(&run(&mut a, 1).await));
+    let mut b = connect(&r).await;
+    set(&b, ControlMode::Erg { target_w: 200 }).await;
+    let mut ev = run(&mut b, 5).await;
+    drop(a);
+    ev.extend(run(&mut b, 5).await);
+    assert!(!lost(&ev), "link B was torn down when A was dropped");
+    assert!(mean_power(&ev, 6, 10) > 150.0);
+}
+#[tokio::test(start_paused = true)]
+async fn a_dropped_strap_link_can_be_replaced_without_losing_the_new_one() {
+    let r = rig(vec![]);
+    let a = r
+        .heart()
+        .connect(&DeviceRef("hr".into()))
+        .await
+        .expect("sim");
+    drop(a);
+    let mut b = r
+        .heart()
+        .connect(&DeviceRef("hr".into()))
+        .await
+        .expect("sim");
+    let mut n = 0;
+    for _ in 0..6 {
+        sleep(s(1)).await;
+        while let Ok(e) = b.events.try_recv() {
+            n += usize::from(matches!(e, HrEvent::Sample(_)));
+        }
+    }
+    assert!(n >= 5, "{n} samples on the replacement link");
+}
+
 // ---- faults ----
 
 #[tokio::test(start_paused = true)]

@@ -179,6 +179,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[derive(Default)]
 struct TrainerSide {
+    /// Link generation; commands and closes from an older link are ignored.
+    generation: u64,
     tx: Option<mpsc::Sender<TrainerEvent>>,
     history: [Vec<(u64, ObservedControl)>; 4],
     active: Option<SimComponent>,
@@ -193,6 +195,7 @@ struct TrainerSide {
 }
 #[derive(Default)]
 struct HeartSide {
+    generation: u64,
     tx: Option<mpsc::Sender<HrEvent>>,
     rr: SmallVec<[u16; 4]>,
     was_down: bool,
@@ -203,6 +206,7 @@ struct World {
     start: Option<MonoTime>,
     ticks: u64,
     running: bool,
+    next_generation: u64,
     trainer: TrainerSide,
     heart: HeartSide,
 }
@@ -225,6 +229,7 @@ impl World {
             start: None,
             ticks: 0,
             running: false,
+            next_generation: 0,
             trainer: TrainerSide::default(),
             heart: HeartSide::default(),
         }
@@ -393,6 +398,7 @@ impl World {
                 // the trainer fell back to standalone: the engine must re-issue SetMode
                 let (tx, acc) = (self.trainer.tx.take(), self.trainer.acc_power);
                 self.trainer = TrainerSide {
+                    generation: self.trainer.generation,
                     tx,
                     acc_power: acc,
                     ..TrainerSide::default()
@@ -555,10 +561,11 @@ async fn run(world: Arc<Mutex<World>>, clock: Arc<dyn Clock>) {
         };
         clock.sleep_until(wake).await;
         let now = clock.now();
-        let (out, trainer_tx, heart_tx) = {
+        let (out, trainer_tx, heart_tx, generations) = {
             let mut w = lock(&world);
             // senders captured first: a Disconnect inside the batch still delivers `Lost`
             let (trainer_tx, heart_tx) = (w.trainer.tx.clone(), w.heart.tx.clone());
+            let generations = (w.trainer.generation, w.heart.generation);
             let start = w.start.unwrap_or_default();
             let mut out = Out::default();
             while start.0 + (w.ticks + 1) * TICK_US <= now.0 {
@@ -566,7 +573,7 @@ async fn run(world: Arc<Mutex<World>>, clock: Arc<dyn Clock>) {
                 let k = w.ticks;
                 w.tick(k, start, &mut out);
             }
-            (out, trainer_tx, heart_tx)
+            (out, trainer_tx, heart_tx, generations)
         };
         let mut closed = (trainer_tx.is_none(), heart_tx.is_none());
         if let Some(tx) = trainer_tx {
@@ -586,10 +593,11 @@ async fn run(world: Arc<Mutex<World>>, clock: Arc<dyn Clock>) {
             }
         }
         let mut w = lock(&world);
-        if closed.0 {
+        // a receiver dropped by an older link must not tear down its successor
+        if closed.0 && w.trainer.generation == generations.0 {
             w.trainer = TrainerSide::default();
         }
-        if closed.1 {
+        if closed.1 && w.heart.generation == generations.1 {
             w.heart = HeartSide::default();
         }
         if w.trainer.tx.is_none() && w.heart.tx.is_none() {
@@ -624,20 +632,24 @@ impl TrainerDriver for SimTrainer {
             let (events, receiver) = mpsc::channel(256);
             let (commands, mut control) = mpsc::channel(64);
             let caps = lock(&rig.world).cfg.caps.clone();
+            let mut generation = 0;
             for s in [LinkState::Connecting, LinkState::Ready] {
                 events
                     .try_send(TrainerEvent::Link(s))
                     .map_err(|e| DeviceError::Gatt(e.to_string()))?;
             }
             rig.attach(|w| {
-                if w.trainer.tx.is_some() {
+                if w.trainer.tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
                     return Err(DeviceError::ConnectFailed(
                         "driver already connected".into(),
                     ));
                 }
                 w.core
                     .set_mass_kg(f64::from(rider.rider_kg) + f64::from(rider.bike_kg));
+                w.next_generation += 1;
+                generation = w.next_generation;
                 w.trainer = TrainerSide {
+                    generation,
                     tx: Some(events),
                     ..TrainerSide::default()
                 };
@@ -645,13 +657,18 @@ impl TrainerDriver for SimTrainer {
             })?;
             let world = rig.world.clone();
             tokio::spawn(async move {
+                // Only this link's generation may feed the trainer: after a newer
+                // connect, a late command or the drop of this sender is stale.
+                let push = |cmd| {
+                    let mut w = lock(&world);
+                    if w.trainer.generation == generation {
+                        w.trainer.pending.push(cmd);
+                    }
+                };
                 while let Some(cmd) = control.recv().await {
-                    lock(&world).trainer.pending.push(cmd);
+                    push(cmd);
                 }
-                lock(&world)
-                    .trainer
-                    .pending
-                    .push(TrainerCommand::Disconnect);
+                push(TrainerCommand::Disconnect);
             });
             Ok(TrainerLink {
                 info: info("trainer"),
@@ -676,12 +693,14 @@ impl HeartRateDriver for SimHeart {
                     .map_err(|e| DeviceError::Gatt(e.to_string()))?;
             }
             rig.attach(|w| {
-                if w.heart.tx.is_some() {
+                if w.heart.tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
                     return Err(DeviceError::ConnectFailed(
                         "driver already connected".into(),
                     ));
                 }
+                w.next_generation += 1;
                 w.heart = HeartSide {
+                    generation: w.next_generation,
                     tx: Some(events),
                     ..HeartSide::default()
                 };
