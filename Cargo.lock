@@ -561,6 +561,8 @@ version = "0.1.0"
 dependencies = [
  "crank-domain",
  "futures-util",
+ "libm",
+ "serde_json",
  "smallvec",
  "thiserror 2.0.21",
  "tokio",
