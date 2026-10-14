@@ -1,5 +1,6 @@
 //! The ride actor: state machine, tick assignment, loss rules, record (ADR-0001 §5).
-use crate::control::{BlockTarget, PolicyContext, RideActivity, SOFT_START_TICKS, TargetPolicy};
+use crate::control::{PolicyContext, PolicyStatus, RideActivity, TargetPolicy};
+use crate::erg::{Compliance, Component, ErgPolicy, Machine, TrainerFollowing};
 use crate::record::{METRICS, Mean, RecordError, RideRecorder, SecondRow};
 use crate::stream::hub::Hub;
 use crate::stream::types::StreamError;
@@ -12,9 +13,9 @@ use crate::ticks::{
 };
 use crank_devices::{
     Clock, ControlMode, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime, TrainerCommand,
-    TrainerEvent, TrainerLink, TrainerSample,
+    TrainerEvent, TrainerLink, TrainerObservation, TrainerSample,
 };
-use crank_domain::workout::FlatBlock;
+use crank_domain::workout::{FlatBlock, Phase as BlockPhase};
 use std::{
     collections::{BTreeMap, VecDeque},
     future::pending,
@@ -68,6 +69,25 @@ pub struct RideStatus {
     pub late_samples: u64,
     /// First recording failure of the ride; recording stops after it.
     pub record_error: Option<String>,
+    /// Whether the trainer follows the commanded mode (ADR-0002 §4.4.1).
+    pub trainer_following: TrainerFollowing,
+    /// The required component that is `not_following` or `silent`, if any.
+    pub not_following_component: Option<Component>,
+    /// ERG is released for low cadence (ADR-0002 §7.4).
+    pub erg_released: bool,
+    /// Compliance tally (ADR-0002 §7.8).
+    pub compliance: Compliance,
+    /// The active health cap (DESIGN §15.2, §15.4); `None` when no cap applies.
+    pub cap: Option<CapState>,
+}
+/// The ride's health cap as reported in the status (DESIGN §15.4): under a cap only ERG
+/// rides, and every ERG command is clamped to `cap_w`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapState {
+    /// Cap in watts.
+    pub cap_w: u16,
+    /// Only ERG blocks are allowed.
+    pub erg_only: bool,
 }
 /// A ride to run: its sequenced blocks and where its record goes.
 pub struct RideSetup {
@@ -75,6 +95,10 @@ pub struct RideSetup {
     pub blocks: Vec<FlatBlock>,
     /// Destination of the 1 Hz record.
     pub recorder: Box<dyn RideRecorder>,
+    /// The ride's health cap in watts, already resolved by core from the profile and CP
+    /// (DESIGN §15.2); `None` when no cap applies. The engine owns the clamp and the
+    /// refusal, not the derivation (#244); detecting `CapExceeded` is #245.
+    pub cap_w: Option<u16>,
 }
 /// Engine commands (ADR-0001 §5 sketch, the part of it this crate implements).
 pub enum EngineCmd {
@@ -108,6 +132,14 @@ pub enum CommandError {
     /// The trainer link is not `Ready` (connecting, lost or reconnecting).
     #[error("trainer not ready")]
     TrainerNotReady,
+    /// A health cap is active and the ride has a `free`/SIM block or no blocks
+    /// (`cap_requires_erg`, DESIGN §15.2).
+    #[error("cap_requires_erg")]
+    CapRequiresErg,
+    /// A health cap is active and a block targets more than the cap
+    /// (`cap_exceeded_target`, DESIGN §15.2).
+    #[error("cap_exceeded_target")]
+    CapExceededTarget,
     /// The record could not be opened.
     #[error(transparent)]
     Record(#[from] RecordError),
@@ -318,8 +350,15 @@ struct Session {
     block_elapsed: u64,
     last_sent: Option<ControlMode>,
     flow_start: Option<u64>,
-    engage_power: Option<f64>,
-    after_loss: bool,
+    /// Counts loss epochs; the policy owes a soft start for every increase.
+    loss_epoch: u64,
+    /// Counts every applied link transition and silence.
+    link_epoch: u64,
+    cap_w: Option<u16>,
+    policy: Box<dyn TargetPolicy>,
+    following: Machine,
+    observations: BTreeMap<(u64, u64), TrainerObservation>,
+    observed: u64,
     acc: SecondAcc,
     record_error: Option<String>,
     late: u64,
@@ -327,6 +366,24 @@ struct Session {
 impl Session {
     fn reset_control(&mut self) {
         self.last_sent = None;
+    }
+    /// The engine's half of the single ride-start guard under a health cap (DESIGN §15.2):
+    /// only ERG rides, and no target above the cap. The medical stop outranks it.
+    fn check_cap(&self) -> Result<(), CommandError> {
+        let Some(cap) = self.cap_w else {
+            return Ok(());
+        };
+        if self.blocks.is_empty() || self.blocks.iter().any(|b| b.phase == BlockPhase::Free) {
+            return Err(CommandError::CapRequiresErg);
+        }
+        if self
+            .blocks
+            .iter()
+            .any(|b| b.power_from.max(b.power_to) > f64::from(cap) + 0.5)
+        {
+            return Err(CommandError::CapExceededTarget);
+        }
+        Ok(())
     }
     fn append_second(&mut self) {
         let acc = std::mem::take(&mut self.acc);
@@ -354,20 +411,17 @@ impl Session {
     /// the flow start and the origin, so pre-loss power is never an origin and its ramp
     /// never carries over (ADR-0002 §7.5, #231). Not in here, handled by the callers:
     /// the trainer hold (`apply_links`), the last command (`reset_control`) and the
-    /// `after_loss` flag, which a completed ramp clears in `control`.
+    /// loss epoch (`loss_epoch`), which the policy repays with its soft start.
     fn reset_soft_start(&mut self) {
         self.recent_power.clear();
         self.flow_start = None;
-        self.engage_power = None;
     }
-    /// Samples flow while a pedalling trainer value is present; the origin is the 3 s
-    /// power of the new epoch at the tick they start (0 W if it has none: no jump).
+    /// Samples flow while a pedalling trainer value is present.
     fn track_flow(&mut self, k: u64, pedalling: bool) {
         if !pedalling {
             self.flow_start = None;
         } else if self.flow_start.is_none() {
             self.flow_start = Some(k);
-            self.engage_power = Some(self.power_3s().unwrap_or(0.0));
         }
     }
     fn power_3s(&self) -> Option<f64> {
@@ -405,7 +459,9 @@ async fn recv<T>(rx: &mut Option<mpsc::Receiver<T>>) -> Option<T> {
 pub struct Engine {
     clock: Arc<dyn Clock>,
     activity: Arc<dyn RideActivity>,
-    policy: Box<dyn TargetPolicy>,
+    /// Builds one policy per loaded ride: nothing a ride's policy learned can reach the
+    /// next (a policy is owned by its [`Session`]).
+    policy_factory: Box<dyn Fn() -> Box<dyn TargetPolicy> + Send>,
     trainer_events: Option<mpsc::Receiver<TrainerEvent>>,
     trainer_control: Option<mpsc::Sender<TrainerCommand>>,
     max_target_w: u16,
@@ -422,7 +478,8 @@ pub struct Engine {
 }
 impl Engine {
     /// Build an engine over connected links. `activity` receives the ride-active
-    /// signal ([`RideActivity`]); the policy is [`BlockTarget`] until replaced.
+    /// signal ([`RideActivity`]); each ride gets a fresh [`ErgPolicy`] unless
+    /// [`Engine::with_policy_factory`] says otherwise.
     #[must_use]
     pub fn new(
         clock: Arc<dyn Clock>,
@@ -443,7 +500,7 @@ impl Engine {
         let engine = Self {
             clock,
             activity,
-            policy: Box::new(BlockTarget),
+            policy_factory: Box::new(|| Box::new(ErgPolicy::new())),
             trainer_events,
             trainer_control,
             max_target_w,
@@ -464,6 +521,11 @@ impl Engine {
                 hr_link,
                 late_samples: 0,
                 record_error: None,
+                trainer_following: TrainerFollowing::Unknown,
+                not_following_component: None,
+                erg_released: false,
+                compliance: Compliance::default(),
+                cap: None,
             })
             .0,
             trainer_log: LinkLog::default(),
@@ -477,10 +539,14 @@ impl Engine {
         };
         (engine, handle)
     }
-    /// Replace the control policy (the #218 seam, see [`TargetPolicy`]).
+    /// Replace the control policy: `factory` is called on every `Load`, so a ride's policy
+    /// state cannot outlive the ride (see [`TargetPolicy`]).
     #[must_use]
-    pub fn with_policy(mut self, policy: Box<dyn TargetPolicy>) -> Self {
-        self.policy = policy;
+    pub fn with_policy_factory(
+        mut self,
+        factory: impl Fn() -> Box<dyn TargetPolicy> + Send + 'static,
+    ) -> Self {
+        self.policy_factory = Box::new(factory);
         self
     }
 
@@ -623,7 +689,23 @@ impl Engine {
                     self.trainer_link = Some(state);
                 }
             }
-            // Delivery, echoes and faults feed the following machine (#218).
+            // Page-71 echoes and page-25 flags feed the following machine, in tick order
+            // like samples. A reply that predates an applied link transition needs no tag:
+            // the transition deactivates the machine before the tick's replies are fed in
+            // `follow`, and it is only active again once `control` has re-sent the mode.
+            TrainerEvent::Observed(obs) => {
+                if let Some(s) = self.session.as_mut().filter(|_| active) {
+                    // A late reply still counts, at the start of the next unprocessed tick.
+                    let at = match s.window.tick_of(obs.at) {
+                        Some(k) if k >= s.next_tick => obs.at.0,
+                        Some(_) => s.window.end_of(s.next_tick.saturating_sub(1)).0,
+                        None => return,
+                    };
+                    s.observed += 1;
+                    s.observations.insert((at, s.observed), obs);
+                }
+            }
+            // Delivery and faults are not following inputs (ADR-0002 §4.4.1).
             _ => {}
         }
     }
@@ -677,10 +759,11 @@ impl Engine {
             s.reset_control();
             s.trainer.clear();
             s.reset_soft_start();
+            s.link_epoch += 1;
             // Any transition away from `Ready` (Lost, or Connecting without a Lost)
             // makes the next engagement a soft start (#231).
             if state != LinkState::Ready {
-                s.after_loss = true;
+                s.loss_epoch += 1;
             }
             if state == LinkState::Lost {
                 s.pauses.lost = true;
@@ -775,7 +858,8 @@ impl Engine {
         // the ride is already paused for a loss: power sampled before it is no origin.
         if s.missed == LOSS_TICKS {
             s.pauses.lost = true;
-            s.after_loss = true;
+            s.loss_epoch += 1;
+            s.link_epoch += 1;
             s.reset_control();
             s.reset_soft_start();
         }
@@ -826,34 +910,56 @@ impl Engine {
         };
         self.hub.on_source(ticks_to_seconds(s.clock_ticks), &values);
     }
+    /// Feed the following machine with what happened up to the end of tick `k`: the
+    /// link and desired mode as they stand, then the replies stamped in the tick.
+    fn follow(&self, s: &mut Session, k: u64) {
+        let end = s.window.end_of(k).0;
+        let key = s.last_sent.and_then(|m| m.grid_key().ok());
+        s.following
+            .set_link(self.trainer_link == Some(LinkState::Ready), end);
+        s.following.set_desired(key, end);
+        let due: Vec<_> = s
+            .observations
+            .range(..(end, 0))
+            .map(|(key, _)| *key)
+            .collect();
+        for key in due {
+            if let Some(obs) = s.observations.remove(&key) {
+                s.following.observe(&obs, key.0);
+            }
+        }
+        s.following.tick(end);
+    }
     fn control(&mut self, s: &mut Session, k: u64) {
+        self.follow(s, k);
         if self.trainer_link != Some(LinkState::Ready) {
             return;
         }
         let Some(control) = self.trainer_control.as_ref() else {
             return;
         };
-        // A ramp that is already running holds its last step while samples are
-        // missing; it restarts from the current power when they return.
-        if s.after_loss && s.flow_start.is_none() && s.last_sent.is_some() {
-            return;
-        }
         let ctx = PolicyContext {
             block: s.blocks.get(s.block_idx),
+            block_index: s.block_idx,
             block_elapsed_ticks: s.block_elapsed,
-            engaged_ticks: s.flow_start.map_or(0, |f| k - f),
-            after_loss: s.after_loss,
-            engage_power_w: s.flow_start.and(s.engage_power),
+            tick: k,
+            link_epoch: s.link_epoch,
+            loss_epoch: s.loss_epoch,
+            flow_start: s.flow_start,
+            power_3s_w: s.power_3s(),
+            cadence_rpm: s.trainer.get(k).and_then(|t| t.cadence),
+            last_sent: s.last_sent,
+            riding: s.pauses.reason().is_none(),
+            following: s.following.verdict(),
             max_target_w: self.max_target_w,
+            cap_w: s.cap_w,
         };
-        if let Some(mode) = self.policy.desired(&ctx)
+        if let Some(mode) = s.policy.desired(&ctx)
             && s.last_sent != Some(mode)
             && control.try_send(TrainerCommand::SetMode(mode)).is_ok()
         {
             s.last_sent = Some(mode);
-        }
-        if s.after_loss && s.flow_start.is_some_and(|f| k - f >= SOFT_START_TICKS) {
-            s.after_loss = false;
+            self.follow(s, k);
         }
     }
     /// End whatever is loaded: finish a started ride, unload one that never started.
@@ -921,8 +1027,13 @@ impl Engine {
                     block_elapsed: 0,
                     last_sent: None,
                     flow_start: None,
-                    engage_power: None,
-                    after_loss: false,
+                    loss_epoch: 0,
+                    link_epoch: 0,
+                    cap_w: setup.cap_w,
+                    policy: (self.policy_factory)(),
+                    following: Machine::new(),
+                    observations: BTreeMap::new(),
+                    observed: 0,
                     acc: SecondAcc::default(),
                     record_error: None,
                     late: 0,
@@ -943,6 +1054,7 @@ impl Engine {
                 if !ready {
                     return Err(CommandError::TrainerNotReady);
                 }
+                s.check_cap()?;
                 s.recorder.start(&METRICS)?;
                 s.window = TickWindow::new(now);
                 s.phase = Phase::Active;
@@ -1014,6 +1126,7 @@ impl Engine {
 
     fn publish(&mut self) {
         let s = self.session.as_ref();
+        let policy: PolicyStatus = s.map_or_else(PolicyStatus::default, |s| s.policy.status());
         let state = match s {
             Some(s) if s.phase == Phase::Finished => RideState::Finished,
             Some(s) if s.phase == Phase::Active => s
@@ -1033,6 +1146,14 @@ impl Engine {
             hr_link: self.hr_link,
             late_samples: s.map_or(0, |s| s.late),
             record_error: s.and_then(|s| s.record_error.clone()),
+            trainer_following: s.map_or(TrainerFollowing::Unknown, |s| s.following.verdict()),
+            not_following_component: s.and_then(|s| s.following.blocking()),
+            erg_released: policy.released,
+            compliance: policy.compliance,
+            cap: s.and_then(|s| s.cap_w).map(|cap_w| CapState {
+                cap_w,
+                erg_only: true,
+            }),
         };
         let now = self.clock.pacing_now().0;
         self.hub.on_status(StreamStatus::from(&status), now);

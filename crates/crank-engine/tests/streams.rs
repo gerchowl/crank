@@ -79,6 +79,7 @@ async fn launch_at(dur_s: f64, speed: u32) -> (EngineHandle, Arc<Mutex<Vec<u32>>
         .send(EngineCmd::Load(RideSetup {
             blocks: vec![work(dur_s)],
             recorder: Box::new(rows),
+            cap_w: None,
         }))
         .await
         .expect("sim setup");

@@ -12,7 +12,10 @@ spike worktrees, or terminate processes you did not start.
 
 Run everything in `nix develop`; first run `pnpm install --frozen-lockfile`.
 `just check` runs the hermetic `nix flake check` gate. `just test` runs nextest,
-doctests, app Vitest, and the frozen shared tests. `just lint` runs clippy and
+doctests, app Vitest, and the frozen shared tests. `just model` runs the executable trainer-following model of ADR-0002 §4.4.1 and checks
+that the committed fixture `crates/crank-engine/tests/fixtures/following.json` is its output (the `following-model` flake
+check); `just model-fixture` regenerates it. `crank-engine`'s `refines_the_model` test reads that fixture, so the Rust
+machine, its reply-row table and its constants are tied to the model without running Python at test time (#218). `just lint` runs clippy and
 ESLint/Prettier; `just fmt` formats Rust and app files. `just bindings` exports
 Rust types and command wrappers to `app/src/bindings.ts`; commit that file.
 The drift check must fail after an unexported contract change. The `deps-edges`

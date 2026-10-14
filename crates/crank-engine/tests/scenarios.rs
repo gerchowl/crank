@@ -156,6 +156,7 @@ async fn launch_with(
         .send(EngineCmd::Load(RideSetup {
             blocks,
             recorder: recorder.unwrap_or_else(|| Box::new(Recorder(rec.clone()))),
+            cap_w: None,
         }))
         .await
         .expect("sim setup");
