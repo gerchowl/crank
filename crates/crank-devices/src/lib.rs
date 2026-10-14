@@ -5,6 +5,7 @@
 //! Monotonic timestamps use microseconds from a shared runtime epoch (ADR-0001 §5).
 
 mod control;
+pub mod sim;
 pub use control::*;
 use futures_util::{future::BoxFuture, stream::BoxStream};
 use smallvec::SmallVec;
