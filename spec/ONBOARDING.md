@@ -15,7 +15,7 @@ priors; imported history and rides refine them; the coach is conservative in pro
    chest pain, dizziness, medication, injuries, pregnancy), with a footer link to the official PAR-Q+ / ePARmed-X+.
    A red flag (chest pain, fainting/dizziness, racing or irregular heartbeat, unusual breathlessness, a heart
    condition a doctor limited exercise for) → **medical stop**: no plan, coach off, riding only as a deliberate,
-   logged free ride (not even that when an injury cap is also active: a free ride has no targets, so the cap
+   logged free ride (not even that when any health cap is also active: a free ride has no targets, so the cap
    cannot be held), lifted only by a dated clearance the rider records (DESIGN §5.8). crank refers, it never
    clears. Medication and injury answers are not red flags and do different things: a medication that changes
    heart rate switches off HR-based coaching (HR zones, HR-guided recoveries, HR-vs-usual; no power cap); an

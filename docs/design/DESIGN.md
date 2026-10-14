@@ -376,7 +376,7 @@ persisted after every step, so a relaunch shows **"Welcome back — continue at 
   | A heart condition a doctor told you to limit exercise for? | **red flag** | medical stop |
   | Medication that changes your heart rate? | HR | HR zones, HR-guided recoveries and HR-vs-usual coaching off; targets by power and feel; no power cap |
   | An injury that limits hard efforts? | cap | cap at threshold (100 % of CP) and no sprints |
-  | Pregnant? (asked of everyone: sex is optional) | medical stop (#196) | medical stop, lifted like any other by a dated clearance; not one of the five red flags, so not part of the daily re-check |
+  | Pregnant? (asked of everyone: sex is optional) | medical stop (#196) | medical stop, lifted like any other by a dated clearance; message: consult a health-care practitioner, with the ePARmed-X+ link, not the generic red-flag "see a doctor" copy; not one of the five red flags, so not part of the daily re-check |
   | Do you regularly do vigorous exercise? (only when age > 45, #195) | advisory | on **no**: an advisory, not a stop: "consult a qualified exercise professional before vigorous or maximal efforts"; the rider acknowledges it, the acknowledgement is logged, and until then the **health cap** applies |
 
   **The screen's footer** says it is informed by the PAR-Q+ and the ACSM 2015 guidance and is not either, and links
@@ -901,7 +901,8 @@ granted wish reads **"✓ wish"**; an **adapted** wish reads **"≈ wish"** (sam
 | **As wished** | nothing argues against it | "✓ Your wish: Threshold · Intervals" (+ a session note with its rule) | Start |
 | **Adapted** | same cell, smaller dose, for a readiness reason | "≈ Wish, shortened: 60 min, not 2 h" · "Sleep short: long continuous efforts are cut first" (R-RDY-03 · A, cut-off D); *Why today* says "Shortened to 60 of your 120 min" | **Ride the full 2 h** (one tap, logged) |
 | **Deferred** | readiness or load argues against hard work | "Wish VO2max → Tempo · Intervals, 2 steps easier" · "Legs dead, sleep short: two signals against hard work today" (R-RDY-02 · B, cut-off D) · "Your wish moves to Thu 15 Oct" | **Ride my wish** (logged) |
-| **Blocked by safety** | medical stop; unwell today; health cap | stop: **no matrix, no proposal** (§5.8); unwell today: no matrix, a rest proposal (§5.8); cap: the cell is not a choice ("cap"), Harder stops at the cap; an API request for it → "⚠ Cap: …" | none — lifted only in Settings → Health |
+| **Blocked by safety** | medical stop; health cap | stop: **no matrix, no proposal** (§5.8); cap: the cell is not a choice ("cap"), Harder stops at the cap; an API request for it → "⚠ Cap: …" | none — lifted only in Settings → Health |
+| **Unwell today** (§5.8, #196) | the rider answered "Unwell today?" yes | no matrix, no planned or coached ride, a rest proposal | a free ride as a logged choice (not while a health cap is active: stop-plus-cap rule); nothing to lift: the answer resets the next day |
 
 Rules: facts first, then the rule (ID + evidence grade + cut-off grade, *Why?*), never a score. **A deviation needs
 an A/B rule for its direction; its cut-off (how many signals, how many minutes) may be convention (D) and is shown
@@ -923,7 +924,7 @@ above the cap is prevented, or else flagged and logged** — is enforced at thre
    The margin exists so that a threshold session doesn't sit exactly on the cap, where normal ERG ripple would
    trip the flag below.
 2. **Start:** the single start guard (§5.8, #81) refuses any workout with a target above the cap or a non-ERG
-   block, from every path including Workouts and the free ride ("Above your injury cap", `workouts-start-capped`);
+   block, from every path including Workouts and the free ride ("Above your injury cap" or "Above your cap until you've read the exercise advice", naming the actual cap source: injury answer or over-45 advisory; `workouts-start-capped`);
    it never edits a workout silently. The medical stop outranks it.
 3. **Ride:** the core clamps every ERG target to the cap (defence in depth) and watches measured power. **An
    exceedance is power above cap + 3 % (288 W) sustained for 3 s**; one sample at or below that ends it. Why these
@@ -934,7 +935,7 @@ above the cap is prevented, or else flagged and logged** — is enforced at thre
    - **row 1 becomes the status** at the ride tier (T3, warning fill + ⚠ + words): "⚠ 312 W · over your 280 W cap
      · ease off" — what, how much, what to do, readable at 1 m;
    - **the gauge shows the same measured power** (band marker pinned high, "▲ 74 W" to the target);
-   - **the coach lane asks a strong `ease_off`** ("Ease off to 231 W? · Above your injury cap"), the only verdict
+   - **the coach lane asks a strong `ease_off`** ("Ease off to 231 W? · Above your injury cap", or "… · Above your cap until you've read the exercise advice" when the over-45 advisory is the source), the only verdict
      allowed while it lasts; the **warning tone** plays;
    - **a `CapExceeded { at, watts, forS }` entry is logged** with the ride (one per episode; a dip below the
      threshold ends the episode) and listed in Review.
