@@ -172,10 +172,12 @@ keyboard access (`?` lists keys). Issue numbers and fixture notes never appear i
 - **Model card**: CP / W′ / HRmax with the **± at the same size as the value** (secondary ink), and under each
   its provenance and age ("from 9 rides · 2 d ago"); older than 6 weeks → stale styling; what is still
   calibrating (spec/ONBOARDING §4).
-- **Health cap** (injury answer): a status card states the cap (threshold, 100 % of CP, in watts) and where to
-  lift it; the **planner's proposal respects it** (e.g. "Tempo 2×10′ (capped)"), the profile draws the cap line,
+- **Health cap** (injury answer, or the over-45 advisory not yet acknowledged, #195): a status card states the
+  cap (threshold, 100 % of CP, in watts), why, and where to lift it; the **planner's proposal respects it** (e.g. "Tempo 2×10′ (capped)"), the profile draws the cap line,
   and the reasons say so. A medical stop replaces the whole proposal card (§5.8).
-- **Symptom question**: every check-in ends with the red-flag question (no default); Start needs it answered.
+- **Symptom question**: every check-in ends with the red-flag question (no default); Start needs it answered. The
+  check-in also asks the *changes* and *unwell today* questions (§5.8, #194, #196); a yes to unwell replaces the
+  proposal with a rest proposal.
 - **Pre-filled vs confirmed**: yesterday's answers are drawn as dashed outlines until the rider confirms
   ("Same as yesterday") or changes one; confirmed answers are filled.
 - **Last 7 days**: seven day cells (done / rest / today; the number is labelled "TSS") — context, not navigation.
@@ -360,8 +362,9 @@ persisted after every step, so a relaunch shows **"Welcome back — continue at 
 - Every step states what **Skip** does ("Skipping keeps wide priors: CP ± 60 W, the coach stays conservative").
 - **Current numbers**: value, *what it came from* (ramp test / 20-min test / app estimate / guess) and
   *when* (a date); the uncertainty shown grows with age and source.
-- **Health check** (spec/ONBOARDING §1.5; item list follows the PAR-Q+ and the ACSM 2015 pre-participation
-  screening, knowledge-pack entry #77). Every question starts **not answered**; Continue stays disabled until
+- **Health check** (spec/ONBOARDING §1.5; item list **informed by** the PAR-Q+ and the ACSM 2015
+  pre-participation screening, knowledge-pack entry #77; it is crank's own screen, **not** the PAR-Q+ and never
+  called that, #193). Every question starts **not answered**; Continue stays disabled until
   all are answered, and with any question unanswered crank proposes no plan. Answers and consequences:
 
   | Question | Kind | If "yes" |
@@ -373,6 +376,19 @@ persisted after every step, so a relaunch shows **"Welcome back — continue at 
   | A heart condition a doctor told you to limit exercise for? | **red flag** | medical stop |
   | Medication that changes your heart rate? | HR | HR zones, HR-guided recoveries and HR-vs-usual coaching off; targets by power and feel; no power cap |
   | An injury that limits hard efforts? | cap | cap at threshold (100 % of CP) and no sprints |
+  | Pregnant? (asked of everyone: sex is optional) | medical stop (#196) | medical stop, lifted like any other by a dated clearance; not one of the five red flags, so not part of the daily re-check |
+  | Do you regularly do vigorous exercise? (only when age > 45, #195) | advisory | on **no**: an advisory, not a stop: "consult a qualified exercise professional before vigorous or maximal efforts"; the rider acknowledges it, the acknowledgement is logged, and until then the **health cap** applies |
+
+  **The screen's footer** says it is informed by the PAR-Q+ and the ACSM 2015 guidance and is not either, and links
+  to the official **PAR-Q+ / ePARmed-X+** (https://eparmedx.com) for a full screening. The full PAR-Q+ is not
+  shipped: its licence forbids changes and it would duplicate this screen (#193).
+
+  **Over-45 advisory (#195).** Age is the About-you answer. Until the advisory is acknowledged the planner
+  proposes nothing above the health cap (see **Health cap** in §5.1 and §15.2: one cap, one set of numbers and one
+  start guard, whatever raised it) and says why ("Capped until you've read the exercise advice"). Recording the
+  acknowledgement lifts the cap; it can be re-opened in Settings → Health. Evidence grade D (form advice,
+  knowledge-pack entry #77). A cap raised only by this advisory follows every rule of the injury cap, including
+  *medical stop plus cap = no ride at all*.
 
   **Medical stop — a global invariant, not a Today feature.** Any red flag (at onboarding, at a re-check, or a
   symptom reported in a ride) puts the stop on record. **While it is active, no planned or coached ride starts
@@ -395,12 +411,25 @@ persisted after every step, so a relaunch shows **"Welcome back — continue at 
   list as above, each yes/no, no default; "Answer all 5" until complete). It is part of the Today check-in, and
   any other start path that comes first (Workouts, Resume, History) shows the same check before the ride
   (`start-recheck`). Any "yes" puts the stop back.
+  **Daily check-in questions beyond the five red flags (#194, #196).** Asked in the same Today check-in, no
+  default, Start needs them answered:
+
+  | Question | Kind | If "yes" |
+  |---|---|---|
+  | Since your last ride: any new or changed medication that affects heart rate, or an injury that limits exercise? (#194) | changes | routes to the impact questions I1 (medication) and I2 (injury) with their effects above; the answer is logged; **any yes also re-asks all five red flags in full** (their answers are cleared and must be given again) |
+  | Unwell today (cold, fever, infection)? (#196) | day state | **no planned or coached ride today** and a **rest proposal**; a free ride stays available only as a logged choice, as under a medical stop (and not when a health cap is active, same rule as stop plus cap); the answer is not carried over and resets the next day |
+
+  Clearance validity (12 months) is unchanged by the changes question. An unwell day is not a medical stop: it needs
+  no clearance and leaves no standing state; the core guard (#81) refuses planned and coached starts on every path
+  for that day, like the stop.
   **During a ride:** a symptom is reported with one deliberate action — the **Report symptom** binding (default
   `!`, bindable to a remote button) or "Stopping because of chest pain, dizziness or feeling unwell" in the End
   dialog. The workout stops at once and the trainer is released (production: ERG to 0 % resistance, workout
   closed, #81), the medical stop is set, and the screen gives the guidance: emergency line, "stop pedalling, sit
   down", the ride is saved (`ride-symptom-stop`, `ride-end-dialog`). Nothing on that screen resumes the ride. Screens `onboarding-health-stop`, `today-medical-stop`,
   `today-free-ride-confirm`, `ready-free-ride`, `ride-free`, `settings-health`.
+  **Settings → Health** also shows the over-45 advisory (acknowledged or not, with *Read it again*) and the
+  "Pregnant?" answer, each editable with the change logged; an unwell answer is today's only (§5.1).
 - **Devices**: pairing shows **live readings** (W, rpm, bpm) so "pedal a few strokes" visibly works.
 - **Baseline**: import / assessment week / passive learning, each with what it costs and how soon it is confident.
 - **Your starting model**: estimates with value ± sd, a relative-uncertainty bar, source, what will narrow
@@ -411,7 +440,7 @@ Sections: **Devices** (trainer + HR, protocol, status, battery, pair / forget; o
 **Training profile** (§15.1),
 **Athlete model** (estimates ± source, manual override with provenance "self-report"), **Coach** (autonomy,
 §7.1), **Controls & sound** (the five actions and their bindings with *Learn* for a remote, §7.2; tones and
-volume, §7.3), **Ride screen** (§5.3), **Appearance** (mode dark / light / auto, preset, classic zones), **Background** (§15.3).
+volume, §7.3), **Health** (§5.8: clearance record and log, over-45 advisory, pregnancy answer), **Ride screen** (§5.3), **Appearance** (mode dark / light / auto, preset, classic zones), **Background** (§15.3).
 
 ---
 
@@ -872,7 +901,7 @@ granted wish reads **"✓ wish"**; an **adapted** wish reads **"≈ wish"** (sam
 | **As wished** | nothing argues against it | "✓ Your wish: Threshold · Intervals" (+ a session note with its rule) | Start |
 | **Adapted** | same cell, smaller dose, for a readiness reason | "≈ Wish, shortened: 60 min, not 2 h" · "Sleep short: long continuous efforts are cut first" (R-RDY-03 · A, cut-off D); *Why today* says "Shortened to 60 of your 120 min" | **Ride the full 2 h** (one tap, logged) |
 | **Deferred** | readiness or load argues against hard work | "Wish VO2max → Tempo · Intervals, 2 steps easier" · "Legs dead, sleep short: two signals against hard work today" (R-RDY-02 · B, cut-off D) · "Your wish moves to Thu 15 Oct" | **Ride my wish** (logged) |
-| **Blocked by safety** | medical stop; health cap | stop: **no matrix, no proposal** (§5.8); cap: the cell is not a choice ("cap"), Harder stops at the cap; an API request for it → "⚠ Cap: …" | none — lifted only in Settings → Health |
+| **Blocked by safety** | medical stop; unwell today; health cap | stop: **no matrix, no proposal** (§5.8); unwell today: no matrix, a rest proposal (§5.8); cap: the cell is not a choice ("cap"), Harder stops at the cap; an API request for it → "⚠ Cap: …" | none — lifted only in Settings → Health |
 
 Rules: facts first, then the rule (ID + evidence grade + cut-off grade, *Why?*), never a score. **A deviation needs
 an A/B rule for its direction; its cut-off (how many signals, how many minutes) may be convention (D) and is shown
