@@ -1388,6 +1388,12 @@ How `effective` is built:
 5. Recompute `start_s` as the running sum of the remaining expected durations (so the effective sequence tiles
    `[0, total_s_eff)` like the compiled one); `power_from/to`, `phase`, `node_id`, `path` are untouched.
 
+**Planned versus ridden, one statement.** Every *planned* duration comes from `effective`: `ride_plan.total_s` /
+`total_range_s` and the overview's planned length are sums of its `dur_s` (extensions included, suppressed blocks
+excluded). Every *ridden* quantity comes from the ride log and the cursor through `block_status` and the recorder:
+ridden time, and a lap's `edited_dur_s`, which is the compiled `dur_s` plus the net `extend` rows of the log for that
+block as of the lap's end (§17.4). `effective` is never asked what has been ridden.
+
 Suppressed blocks stay in the returned sequence (the road draws them greyed, §17.6) with their planned duration, and
 contribute 0 s to the timeline; the *ridden* sequence the engine walks is the subsequence with `suppressed = None`.
 `RideStatus.block_index` indexes the ridden sequence (§17.5).
@@ -1410,16 +1416,17 @@ All five are `EngineCmd` variants (plus `UndoEdit`), exposed by the core (#34) a
 accepted in `riding` **and** in every `paused(…)` state (§17.3). A command is applied between ticks and takes effect
 from the next tick (the same rule as every detection in ADR-0001 §5). **A refused command changes nothing** (overlay,
 status and log are byte-equal before and after; tested). Codes every command can return: `not_started`, `wrong_state`,
-`free_ride`. **This table is the single list of refusal codes**: the command-matrix test (§17.7 test 6) is generated
-from it, one case per row and per code.
+`free_ride`. **This table is the single list of the engine's refusal codes**: the command-matrix test (§17.7 test 6) is
+generated from it, one case per row and per code. One code is **not** the engine's: `needs_confirmation` is returned
+by the **core** (§17.2 Interactions), before a command reaches the engine, so the engine has no such row.
 
 | Command | Effect | Preconditions (beyond the common ones) | Refusal codes |
 |---|---|---|---|
-| `end_set(group?)` | The current block ends now, every later block of the group (default: the **innermost group of the current block**) becomes `set_ended`, the cursor jumps to the first block after the group | the group has the current block; if `group` is given it is one of the current block's groups | `no_group` (current block is in no repeat), `unknown_group`, `not_current_group`, `needs_confirmation` (a coach edit arriving auto-applied, §17.2 Interactions), `stale_proposal` (a coach edit whose target changed since the ask) |
-| `suppress(target)` | `target` ∈ `BlockId` · `IterationId` · `GroupId`: the blocks become `rider`-suppressed; they stay on the road, greyed | every block of the target is **upcoming** (not current, not done); a group is suppressible only if *no* block of it has started | `unknown_block`, `already_started` (current or done; for a group in progress the message says "use End set"), `would_end_ride` (nothing ridable would remain after the cursor; the rider uses End), `removes_rest` (a block-level suppress of a `recovery` block between two un-suppressed `work` blocks; suppress the rep instead), `removes_warmup` (§17.3), `needs_confirmation`, `stale_proposal` (as for `end_set`) |
+| `end_set(group?)` | The current block ends now, every later block of the group (default: the **innermost group of the current block**) becomes `set_ended`, the cursor jumps to the first block after the group | the group has the current block; if `group` is given it is one of the current block's groups | `no_group` (current block is in no repeat), `unknown_group`, `not_current_group`, `stale_proposal` (a coach-origin edit whose target changed since the ask) |
+| `suppress(target)` | `target` ∈ `BlockId` · `IterationId` · `GroupId`: the blocks become `rider`-suppressed; they stay on the road, greyed | every block of the target is **upcoming** (not current, not done); a group is suppressible only if *no* block of it has started | `unknown_block`, `already_started` (current or done; for a group in progress the message says "use End set"), `would_end_ride` (nothing ridable would remain after the cursor; the rider uses End), `removes_rest` (a block-level suppress of a `recovery` block between two un-suppressed `work` blocks; suppress the rep instead), `removes_warmup` (§17.3), `stale_proposal` (as for `end_set`) |
 | `restore(target)` | undo of a `suppress`: `rider`-suppressed blocks of the target are back in the ridden sequence | blocks are `rider`-suppressed and still upcoming | `not_suppressed`, `not_restorable` (`set_ended`, or the block has been passed), `already_started` |
 | `extend(+N s)` | adds N s to the **current** block's expected duration; the block timer's end moves, the target does not | current block is a fixed-time block (`dur_range_s = None`, time end rule); N and the cumulative sum within the table below; the extension must not predict a depleted W′bal (§17.3) | `not_extendable` (`lap`, `kJ`, `hr<` blocks), `extend_step` (N not in the table), `extend_limit` (cumulative), `would_deplete`, `coach_cannot_extend`, `cap_exceeded_target`, `cap_requires_erg` (§17.3 rule 1) |
-| `repeat_once(group)` | `added[group] += 1` | the group has the current block or an upcoming block (it is not finished); `added < 2`; a copy template exists (§17.1) | `unknown_group`, `group_finished`, `repeat_limit`, `no_template`, `would_deplete`, `coach_cannot_extend`, `cap_exceeded_target`, `cap_requires_erg` |
+| `repeat_once(group)` | `added[group] += 1` | the group has the current block or an upcoming block (it is not finished); `added < 2` (`added < 1` without a CP / W′ model, §17.3 rule 3: the second added rep is refused `repeat_limit`); a copy template exists (§17.1) | `unknown_group`, `group_finished`, `repeat_limit`, `no_template`, `would_deplete`, `coach_cannot_extend`, `cap_exceeded_target`, `cap_requires_erg` |
 | `undo_edit` | removes the **most recent undoable rider-initiated edit** from the fold (§17.2 "Undo scope") | an undoable edit exists | `nothing_to_undo` |
 
 **Extend limits** (a convention (D); owner may override, §17.9). The limit depends on the block's `phase`, because a
@@ -1434,13 +1441,13 @@ longer rest is the safe edit and a longer interval is not:
 cumulative maximum on `work` is +60 s.
 
 **Undo.** Undo is **its own action** (§17.6). It reverses **rider-initiated** edits only. **Keep never undoes a rider
-edit; its §7.1/§7.2 role for coach changes is unchanged** (it answers asks and returns an auto-applied intensity change
+edit; its §7.2 role for coach changes is unchanged** (it answers asks and returns an auto-applied intensity change
 to the plan within 15 s). An explicitly accepted coach change, a rider-confirmed coach structural edit included, is not
 undone by any key (§7.2).
 
 | Edit | Reversed by | On the undo stack until |
 |---|---|---|
-| `end_set` | `undo_edit` | **15 s of session time** after the edit (pausing does not extend it). It re-enters the interrupted block **from its beginning**: a block discontinuity (§17.3 rule 7); the seconds ridden in between stay in the record (their own lap) |
+| `end_set` | `undo_edit` | **15 s of session time** after the edit (pausing does not extend it), **or until the block it entered stops being current** (Skip, natural end), whichever is first: only while the entered block is still current can Undo move the cursor back. It re-enters the interrupted block **from its beginning**: a block discontinuity (§17.3 rule 7); the seconds ridden in between stay in the record (their own lap) |
 | `extend` | `undo_edit` (subtracts N) | the block's elapsed time passes the un-extended end, **or the block stops being current** for any reason (`end_set`, Skip, natural end) |
 | `repeat_once` | `undo_edit` | the first block of the added rep starts, or the added rep is `set_ended` |
 | `suppress` | **`restore`** (explicit) | **not on the undo stack and has no undo window**; `restore` is available until the block starts |
@@ -1479,8 +1486,10 @@ undone by any key (§7.2).
   edit is never auto-applied**, whatever the autonomy setting (auto-apply covers `ease_off` and the intensity part of
   `replan` only). The proposal is always an ask (deadline; silence keeps the plan; Coach = accept, Keep = keep the
   plan) and executes, on accept, through the same command with `actor = coach` and `input = coach`. **The core
-  enforces this** like every §7.1 bound: a structural edit arriving with `auto_applied` is refused
-  (`needs_confirmation`). `extend` and `repeat_once` are **never** coach-initiated (`coach_cannot_extend`: the coach
+  enforces this** like every §7.1 bound, and is the **only** layer that does: before any command reaches the engine
+  it reads the proposal's actor (`coach`) and its confirmation state (the nudge's answer: `accepted` by the rider, as
+  opposed to `auto_applied`), and refuses an unconfirmed coach structural edit with `needs_confirmation`. The engine
+  keeps no second copy of the rule. `extend` and `repeat_once` are **never** coach-initiated (`coach_cannot_extend`: the coach
   adds no work, §7.1), and no edit is proposed while the health cap is the reason a call is pending (only `ease_off`
   may be asked, §15.2). A proposal is re-validated when accepted: if a rider edit made it stale (target gone, started
   or already suppressed) the accept is refused `stale_proposal` and the ask expires "superseded by your edit". Once
@@ -1513,7 +1522,7 @@ in depth); neither relies on the other.
    blocks are refused `would_deplete` when the predicted W′bal at the end of the extended block, or of the added
    rep, at its target is < 0 J (the R-WB-01 floor, the same rule as #243's `depleted` flag). With no CP / W′ model
    the check cannot run; the engine then applies the conservative limits of §17.2 (+60 s cumulative on `work`, one
-   added rep) and the refusal text says why. It never silently allows the full limit.
+   added rep: a second is refused `repeat_limit`) and the refusal text says why. It never silently allows the full limit.
 4. **Warm-up and rest protection** (a convention (D), owner may override): `removes_rest` as in §17.2; and
    `removes_warmup`: the edit suppresses a `warmup` block **before any `work` block has started** and would leave
    fewer than 180 s of `warmup` before the first `work` block (the compiler's cooldown convention, `MissingCooldown`).
@@ -1578,8 +1587,8 @@ anywhere, so none is added (a ride is not deleted by this table's rules); times 
 - `ride.compiled_json` stays the **plan**; the as-ridden sequence is derived. (`ride.workout_json`, "as ridden incl.
   coach changes", is unchanged: coach intensity changes are not structure.)
 - `lap` gets `iteration` from #243's migration; this section adds no `lap` column. A lap's `stats_json` carries
-  `planned_dur_s` (compiled) and `edited_dur_s` (effective at the lap's end) so a lengthened or shortened block
-  reads as such.
+  `planned_dur_s` (compiled) and `edited_dur_s` (compiled plus the net `extend` rows of the log as of the lap's end,
+  §17.1 "Planned versus ridden") so a lengthened block reads as such.
 
 **Laps** (#243 rules, one lap per `FlatBlock` as ridden): `end_set`, like a skip, **closes the current lap at the
 edit tick**, and the new current block opens its lap. A suppressed or `set_ended` block never starts, so it has **no
@@ -1627,9 +1636,9 @@ Follows #243's precedent: **flags on `RideStatus`, bulk by query**, no new lane.
   with a delayed query).
 - **Queries** (not stream, not frame-budgeted): `ride_plan() → { edit_seq, blocks: [{ id, start_s, dur_s, extended_s,
   origin, status, restorable }], total_s, total_range_s }` and `ride_edits() → [RideEdit]` (the log).
-- **Frame budget**: the added fields serialize (camelCase JSON) to at most **120 bytes** in the worst case
+- **Frame budget**: the added fields serialize (camelCase JSON) to at most **128 bytes** in the worst case
   (`"editSeq":4294967295,"blockCount":4294967295,"undo":{"seq":4294967295,"kind":"repeat_once","expiresSessionS":4294967295}`
-  is 117 bytes, rounded up to 120).
+  is 117 bytes; 121 with the joining comma).
   Status is "on change": an edit emits one status frame; `undo`'s expiry emits one more (`None`). The maximal-status
   property test of #243 (all flags set) is re-run with these fields set; discrete state still falls back to the
   fixed resync frame when over 8 000 bytes. No new coalescing class: the latest status already coalesces.
@@ -1698,7 +1707,7 @@ Each is a test that fails without the change (the PR body shows the pre-change f
 **Engine (`SimTrainer`, `VirtualClock`, existing rig):**
 
 6. **Command matrix**: generated from the §17.2 table: one success case per command row and one case per refusal
-   code listed in it (including `nothing_to_undo`, `needs_confirmation`, `stale_proposal`, the common codes and the
+   code listed in it (including `nothing_to_undo`, `stale_proposal`, `repeat_limit` in both its forms, the common codes and the
    cap and W′bal codes); a refused command leaves overlay, status and log byte-equal.
 7. **`end_set`** mid-rep: lap closed at the edit tick; cursor at the first block after the group; one ERG write on the
    next tick; the group's later blocks never start (no laps); with the entered block's start target different from
@@ -1709,7 +1718,10 @@ Each is a test that fails without the change (the PR body shows the pre-change f
    is never rewritten, and after the `end_set`'s window passes `undo_edit` is refused `nothing_to_undo`; after undoing
    the `end_set` the block keeps its extension. (ii) `extend`, `repeat_once`, `undo_edit`, `undo_edit` reverses the
    `repeat_once` and then the `extend`. (iii) `extend` then Skip: the `extend` is expired. (iv) a `skip` between two
-   edits does not block undoing the earlier one while it is valid. (v) `suppress` is never on the stack (`undo_edit`
+   edits does not block undoing the earlier one while it is valid; (iv-a) `end_set`, then Skip the entered block,
+   then `undo_edit` → `nothing_to_undo`, and the edits made before the `end_set` are unaffected (an earlier still-valid
+   entry is reachable only if its own condition holds); (iv-b) `end_set`, the entered block ends **naturally**
+   (< 15 s), then `undo_edit` → `nothing_to_undo`. (v) `suppress` is never on the stack (`undo_edit`
    leaves it, `restore` reverses it). (vi) the engine invariant of §17.1 holds over random command sequences with the
    `end_set` undo as its only exception.
 7b. **Ramps** (§17.3 rules 5a, 5b), each with the control log asserted write by write: `end_set` **during the
@@ -1728,8 +1740,9 @@ Each is a test that fails without the change (the PR body shows the pre-change f
    test 6's `cap_exceeded_target` row; (b) W′bal check removed → the `would_deplete` row; (c) warm-up rule removed →
    the `removes_warmup` row; (d) **an edit replaces an in-flight ramp with the new block's target** (the "cut the
    ramp" mutation) → this test and 7b.
-10. **Coach**: a `replan` with a structural `proposed_edit` is **always an ask**, also with auto-apply on (an
-    `auto_applied` structural edit is refused `needs_confirmation`); accept → applied with `actor = coach`, and **no
+10. **Coach**: a `replan` with a structural `proposed_edit` is **always an ask**, also with auto-apply on (**core**
+    test, §17.7 core list: an `auto_applied` structural edit is refused `needs_confirmation` and no command reaches
+    the engine); accept → applied with `actor = coach`, and **no
     key undoes it**: `undo_edit` is `nothing_to_undo` and Keep leaves it (§7.2); Keep on the ask keeps the plan; `extend` and `repeat_once` from `actor = coach` refused `coach_cannot_extend`; a
     stale proposal refuses with `stale_proposal`; a rider edit leaves the intensity offset untouched.
 11. **Free ride**: every edit command refused `free_ride`; state unchanged.
@@ -1744,7 +1757,8 @@ Each is a test that fails without the change (the PR body shows the pre-change f
     returns the same `edit_seq`).
 
 Core (#34) and UI (#98, #104) steps add: command wrappers + bindings regenerated (drift check), `ride_plan` /
-`ride_edits` query tests; Vitest + mockIPC for selection, stepping, the three lane states, refusal copy and the
+`ride_edits` query tests; the `needs_confirmation` check (a coach structural edit without a rider's accept never
+reaches the engine, whatever the autonomy setting); Vitest + mockIPC for selection, stepping, the three lane states, refusal copy and the
 `End set` and `Undo` dispatcher actions (debounce, focus-wins, Learn; Keep never undoes a rider edit; a second End set press while an `end_set` undo is offered is a no-op); the three scenes above; e2e on the sim
 trainer: End set mid-rep then Undo (and the stack scope with an earlier Extend); Skip a rep and see it greyed; a refused edit under a cap.
 
@@ -1769,7 +1783,7 @@ trainer: End set mid-rep then Undo (and the stack scope with an earlier Extend);
 | coach `proposed_edit` (a `replan` proposes `end_set` / `suppress`) | R-INT-03 names "end set" as the `replan` action; the verdict had no typed form | §17.2 (ask-only) |
 | `coach_decision.proposed_edit_json` column | holds that typed edit by `call_id` (no nudge field) | §17.4 |
 | ◀ ▶ selection stepping in the lane | road blocks can be narrower than the 48 px target floor | §17.6 |
-| **Undo** as a ninth dispatcher action (rider edits only) | the architect separated Undo from Keep (round 2); §7.2 is unchanged | §17.2, §17.6 |
+| **Undo** as a ninth dispatcher action (rider edits only) | the architect separated Undo from Keep (round 2); §7.2's decision model is unchanged (its action list is edited here and declared in this table) | §17.2, §17.6 |
 | `would_deplete` (W′bal check on `extend` / `repeat_once`) | the issue names the health cap and soft start only; extending work is the one edit that can deplete reserve (R-WB-01, #243 Q4) | §17.3 rule 3 |
 | `removes_rest`, `removes_warmup` (protection refusals) | a block-level skip must not make hard efforts adjacent or remove the warm-up before the first hard block | §17.2, §17.3 rule 4 |
 | logging **Skip** into `ride_edit` (kind `skip`) | planned versus done and `block_status` need it; today Skip leaves no trace but a shorter lap | §17.4 |
