@@ -13,6 +13,8 @@ config-checks:
     scripts/check-licenses.py
     scripts/test-window-config.py
     scripts/test-install-app.sh
+    scripts/test-e2e-prune.sh
+    scripts/test-check-npm-prod-licenses.py
 
 test:
     cargo nextest run --workspace

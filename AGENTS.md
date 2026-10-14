@@ -40,9 +40,11 @@ provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 
 npm licences: `scripts/check-licenses.py` gates only our own `package.json` files. There is no licence gate for transitive
 **dev**Dependencies (about 446 came in with WebdriverIO, #233) by decision: they belong to the e2e harness and the shared
 frozen mock, run only on developer machines and CI, and are never shipped in the app. The production tree (react, react-dom,
-`@tauri-apps/api` and their transitives, which Vite bundles) is checked by `just npm-licenses`, which feeds
-`pnpm -C app licenses list --prod --json` to `scripts/check-npm-prod-licenses.py` (an SPDX allow-list); run it when a
-runtime dependency changes. It needs installed `node_modules`, so it is not a hermetic flake check.
+`@tauri-apps/api` and their transitives, which Vite bundles) is checked against an SPDX allow-list (parsed with
+`AND`/`OR`/`WITH` and parentheses, `scripts/check-npm-prod-licenses.py`, unit-tested by
+`scripts/test-check-npm-prod-licenses.py`). The `npm-prod-licenses` flake check runs it in CI on the installed tree;
+`just npm-licenses` is the same check locally after `pnpm install`. `just config-checks` also runs the unit tests and
+`scripts/test-e2e-prune.sh` (the `e2e-prune` and `npm-licenses-test` flake checks).
 
 App icons are generated from `assets/icon/icon-1024.png`: run `just icons` after changing the mark. It runs
 `tauri icon` and records every hash in `app/src-tauri/icons/MANIFEST.sha256`; the `icons-drift` flake check
