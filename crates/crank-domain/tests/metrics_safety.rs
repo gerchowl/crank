@@ -385,11 +385,11 @@ fn finite_negative_filter_parameters_are_clamped_with_ts_values() {
     // minCutoff -1 clamps to 1e-3 and beta -2 to 0 (not to a passthrough, so the value is a real check).
     let expected = [
         10.,
-        10.062439533909748,
-        10.108540454034557,
-        10.202153150788833,
-        10.074614185625913,
-        10.137015591521957,
+        10.062_439_533_909_748,
+        10.108_540_454_034_557,
+        10.202_153_150_788_833,
+        10.074_614_185_625_913,
+        10.137_015_591_521_957,
     ];
     let got = run(Filter::OneEuro {
         min_cutoff: -1.,
