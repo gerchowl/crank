@@ -57,7 +57,7 @@ async fn pair_both(core: &Core) {
 async fn ack_all(core: &Core, stream: StreamId, frames: &Frames) {
     let last = frames.lock().expect("test mutex").last().map(|f| f.seq);
     if let Some(seq) = last {
-        core.stream_ack(Some("main"), stream, u32::try_from(seq).expect("seq fits"))
+        core.stream_ack(Some("main"), stream, seq)
             .await
             .expect("ack");
     }
