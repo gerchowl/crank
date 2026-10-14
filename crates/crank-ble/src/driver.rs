@@ -45,18 +45,20 @@ pub trait FecTransport: Send + Sync + 'static {
     /// Release the peripheral.
     fn disconnect(&self) -> BoxFuture<'static, Result<(), DeviceError>>;
 }
-struct ConnectGuard(
-    Option<Arc<dyn FecTransport>>,
-    Option<tokio::sync::OwnedMutexGuard<()>>,
-    tokio::runtime::Handle,
+/// Disconnects a half-open peripheral if setup is cancelled; shared with the HRS driver.
+pub(crate) struct ConnectGuard(
+    pub(crate) Option<Cleanup>,
+    pub(crate) Option<tokio::sync::OwnedMutexGuard<()>>,
+    pub(crate) tokio::runtime::Handle,
 );
+pub(crate) type Cleanup = Box<dyn FnOnce() -> BoxFuture<'static, Result<(), DeviceError>> + Send>;
 impl Drop for ConnectGuard {
     fn drop(&mut self) {
-        if let Some(transport) = self.0.take() {
+        if let Some(cleanup) = self.0.take() {
             let guard = self.1.take();
             self.2.spawn(async move {
                 let _guard = guard;
-                if let Err(error) = transport.disconnect().await {
+                if let Err(error) = cleanup().await {
                     tracing::warn!(%error, "cancelled connection cleanup failed");
                 }
             });
@@ -65,7 +67,7 @@ impl Drop for ConnectGuard {
 }
 /// FE-C trainer factory. Supply a separate transport for each live connection.
 /// Cancelled setup retains admission until peripheral cleanup finishes.
-/// No discovery/reconnect loop is implemented here (#147).
+/// Reconnection is a separate wrapper, [`crate::Reconnecting`] (ADR-0002 §6).
 pub struct FecTrainer {
     transport: Arc<dyn FecTransport>,
     clock: Arc<dyn Clock>,
@@ -116,8 +118,9 @@ impl TrainerDriver for FecTrainer {
             })
             .map_err(|e| crate::protocol(e, ProtocolErrorKind::Encode))?;
             let (info, mut notifications) = transport.connect(dev, clock.clone()).await?;
+            let release = transport.clone();
             let mut cleanup = ConnectGuard(
-                Some(transport.clone()),
+                Some(Box::new(move || release.disconnect())),
                 Some(guard),
                 tokio::runtime::Handle::current(),
             );
