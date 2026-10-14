@@ -1,7 +1,7 @@
 //! The built-in workout library: DSL text parsed and compiled at start-up. User workouts
 //! (store-backed library and editor) are #110/#111; until then this is the MVP's source of
 //! rideable workouts (#256).
-use crate::dto::{WorkoutDetail, WorkoutSummary};
+use crate::dto::{CompiledView, WorkoutDetail, WorkoutSummary};
 use crate::error::{ApiError, ErrorCode};
 use crank_domain::workout::{
     CompileOptions, CompiledWorkout, Severity, Workout, compile_workout, parse_dsl, print_dsl,
@@ -95,7 +95,7 @@ impl Library {
         Ok(WorkoutDetail {
             workout: e.workout.clone(),
             dsl: print_dsl(&e.workout.nodes),
-            compiled: e.compiled.clone(),
+            compiled: CompiledView::try_from(&e.compiled)?,
         })
     }
 }
