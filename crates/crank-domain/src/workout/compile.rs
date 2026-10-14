@@ -62,7 +62,7 @@ pub fn hr_steady(power: f64, ftp: f64, a: &Athlete) -> f64 {
     if raw <= knee {
         raw
     } else {
-        knee + 8. * (1. - (-(raw - knee) / 8.).exp())
+        knee + 8. * (1. - libm::exp(-(raw - knee) / 8.))
     }
 }
 fn athlete_finite(a: &Athlete) -> Result<(), CompileError> {

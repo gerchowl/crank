@@ -2,11 +2,15 @@
 //!
 //! The vector records a whole-ride run. Its inputs are the workout, athlete, seed and
 //! tick count; the trainer commands are not stored. They are derived here the way
-//! `RideSim.computeTarget` derives them (`shared/src/sim.ts`): block power from the
-//! compiled workout (`compile_workout`), lerped over the block, the `free` sine
-//! target, and block advancement by time or by the HR-recovery end rule fed from the
-//! simulated strap's last reading. The target is passed to the core as `f64`; the
-//! drivers quantise to 1 W (ADR-0002 §7.1), which is tested separately.
+//! `RideSim.computeTarget` derives them (`shared/src/sim.ts`) **for this vector's
+//! features only**: block power from the compiled workout (`compile_workout`),
+//! lerped over the block, the `free` sine target, and block advancement by time or by
+//! the HR-recovery end rule fed from the simulated strap's last reading. Not derived
+//! (they do not occur in the vectors, and the harness panics on unsupported end
+//! kinds): HR targets, `kj` ends, coach `blockScale`, manual offset and the
+//! recovery-lowered ×0.75. Full target derivation belongs to the engine (#32) and
+//! #203. The target is passed to the core as `f64`; the drivers quantise to 1 W
+//! (ADR-0002 §7.1), which is tested separately.
 //!
 //! Compared: `power`, `cadence`, `speed`, `hr`, `rr` and `wbal_pct`. Derived metrics,
 //! the bus and coach hooks are #203.
@@ -94,8 +98,13 @@ fn run(input: &Value) -> Streams {
         let b = &compiled.blocks[block];
         let step = find(&b.node_id);
         let el = t - block_start;
+        assert!(
+            matches!(step["target"]["kind"].as_str(), Some("pct_ftp" | "free")),
+            "unsupported target kind {}",
+            step["target"]["kind"]
+        );
         let target = if step["target"]["kind"] == "free" {
-            0.55 * athlete.ftp * (1.0 + 0.1 * (t / 90.0).sin() + 0.05 * (t / 23.0).sin())
+            0.55 * athlete.ftp * (1.0 + 0.1 * libm::sin(t / 90.0) + 0.05 * libm::sin(t / 23.0))
         } else {
             let frac = if b.dur_s > 0.0 {
                 (el / b.dur_s).clamp(0.0, 1.0)
@@ -138,7 +147,10 @@ fn raw_streams_match_simulator_vectors() {
     let doc: Value =
         serde_json::from_str(&std::fs::read_to_string(path).expect("vector")).expect("vector");
     let cases = doc["cases"].as_array().expect("vector");
-    assert!(cases.len() >= 2);
+    assert!(
+        cases.len() >= 3,
+        "two 120 s rides and the harder 380 s ride"
+    );
     for case in cases {
         let got = run(&case["input"]);
         for (metric, ours) in [
