@@ -1,4 +1,7 @@
 //! Pure domain logic; see ADR-0001 §2–4.
+//!
+//! Intentional divergences from the frozen TS reference, each with its pinning test, are
+//! listed in `DIVERGENCES.md` at the crate root.
 pub mod distributions;
 pub mod filters;
 pub mod history;
