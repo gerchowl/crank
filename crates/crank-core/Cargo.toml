@@ -9,15 +9,21 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-crank-domain.workspace = true
+crank-domain = { workspace = true, features = ["specta"] }
 crank-devices.workspace = true
 crank-ble.workspace = true
-crank-engine.workspace = true
+crank-engine = { workspace = true, features = ["specta"] }
 crank-store.workspace = true
 crank-coach.workspace = true
 crank-intervals.workspace = true
+futures-util = "0.3"
 serde.workspace = true
+serde_json.workspace = true
 specta.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "test-util", "time"] }

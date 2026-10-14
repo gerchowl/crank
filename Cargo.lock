@@ -601,9 +601,14 @@ dependencies = [
  "crank-engine",
  "crank-intervals",
  "crank-store",
+ "futures-util",
  "serde",
  "serde_json",
  "specta",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

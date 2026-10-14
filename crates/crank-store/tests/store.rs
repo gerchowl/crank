@@ -772,3 +772,36 @@ fn workout_constructor_adds_the_version_envelope() {
     assert_eq!(stored["v"], 1);
     assert_eq!(RideWorkoutJson::new(&workout).unwrap().workout(), &workout);
 }
+
+#[test]
+fn rides_lists_newest_first_and_forget_device_unlinks_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_owner(dir.path()).unwrap();
+    let trainer = device("t", "p-t", 1);
+    store.remember_device(trainer).unwrap();
+    for (id, started_at) in [("a", 10), ("b", 20)] {
+        let mut r = ride();
+        r.id = id.into();
+        r.started_at = started_at;
+        r.trainer_device_id = Some("t".into());
+        store.start_ride(r).unwrap();
+        store.append_second(id, 0, samples(0)).unwrap();
+        store
+            .finish_ride(
+                id,
+                started_at + 5,
+                RideSummaryJson::parse(r#"{"v":1}"#).unwrap(),
+            )
+            .unwrap();
+    }
+    let ids: Vec<_> = store.rides().unwrap().into_iter().map(|r| r.id).collect();
+    assert_eq!(ids, ["b", "a"]);
+    assert!(store.forget_device("t").unwrap());
+    assert!(!store.forget_device("t").unwrap());
+    assert!(store.devices().unwrap().is_empty());
+    assert_eq!(
+        store.rides().unwrap().len(),
+        2,
+        "history survives the pairing"
+    );
+}
