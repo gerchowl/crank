@@ -33,6 +33,7 @@ These fixtures are **synthetic**, not evidence of NEO behaviour:
   raw pages 17/19, and an outgoing page 49. For example, `39 30` is 12345 mm/s,
   `BC 7A` is power 0xABC = 2748 W plus status 7, and `34 12` is 4660 N.
 
-Real NEO captures will be added by [#44](https://github.com/gerchowl/crank/issues/44),
-including confirmation of the tentative pages 54/80/81 layouts. Pages 17/19 remain
-unknown pending [#139](https://github.com/gerchowl/crank/issues/139) and an ADR amendment.
+Real NEO captures from [#44](https://github.com/gerchowl/crank/issues/44) Part A are in
+`docs/hil/captures/` (they confirm the pages 54/80/81 layouts); promoting them to fixtures with
+independently checked `.expected` snapshots is tracked in [#216](https://github.com/gerchowl/crank/issues/216).
+Pages 17/19 remain unknown pending [#139](https://github.com/gerchowl/crank/issues/139) and an ADR amendment.

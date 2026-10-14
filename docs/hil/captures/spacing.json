@@ -1,0 +1,56 @@
+{
+  "bare_request_spacing": [
+    {
+      "gap_ms": 250,
+      "page71_replies": 21,
+      "requests": 20
+    },
+    {
+      "gap_ms": 500,
+      "page71_replies": 20,
+      "requests": 20
+    },
+    {
+      "gap_ms": 1000,
+      "page71_replies": 17,
+      "requests": 20
+    },
+    {
+      "gap_ms": 2000,
+      "page71_replies": 21,
+      "requests": 20
+    }
+  ],
+  "check": "3-spacing",
+  "control_to_request_delay": [
+    {
+      "answered_within_1500ms": 9,
+      "control_to_request_ms": 100,
+      "trials": 10
+    },
+    {
+      "answered_within_1500ms": 10,
+      "control_to_request_ms": 250,
+      "trials": 10
+    },
+    {
+      "answered_within_1500ms": 8,
+      "control_to_request_ms": 500,
+      "trials": 10
+    },
+    {
+      "answered_within_1500ms": 9,
+      "control_to_request_ms": 1000,
+      "trials": 10
+    }
+  ],
+  "identity": {
+    "dis_serial_present": true,
+    "firmware": "0.7.4",
+    "id_prefix": "5c67045f",
+    "model": "Neo",
+    "name": "Tacx Neo *****"
+  },
+  "link_dropped_during_run": false,
+  "what_was_sent": "20 page-70 requests for page 71 at 250/500/1000/2000 ms; page 49 then request(71) after 100/250/500/1000 ms x10"
+}

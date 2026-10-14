@@ -100,8 +100,8 @@
       checks = {
         build = desktop "";
         fmt = craneLib.cargoFmt { pname = "crank"; version = "0.1.0"; src = source cargoFiles; };
-        clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--features crank-ble/replay --all-targets -- -D warnings"; });
-        nextest = craneLib.cargoNextest (rustCheck // { cargoNextestExtraArgs = "--features crank-ble/replay"; });
+        clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--features crank-ble/replay,crank-ble/hil --all-targets -- -D warnings"; });
+        nextest = craneLib.cargoNextest (rustCheck // { cargoNextestExtraArgs = "--features crank-ble/replay,crank-ble/hil"; });
         doctest = craneLib.cargoDocTest rustCheck;
         doc = craneLib.cargoDoc (rustCheck // { RUSTDOCFLAGS = "-D warnings"; });
         deny = denyCheck {

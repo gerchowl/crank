@@ -1,7 +1,8 @@
 //! Pure, allocation-free ANT/FE-C-over-BLE codec (ADR-0002 §4).
 //!
-//! XOR includes sync, as in the Tacx worked example. The contradictory sum
-//! variant and acceptance of acknowledged writes remain hardware checks in #44.
+//! XOR includes sync, as in the Tacx worked example. HIL #44 Part A: the NEO
+//! accepts every checksum rule on writes (it does not verify them) and both
+//! message types; XOR including sync stays the encoding.
 //! No transport delivery or command confirmation is inferred from decoded pages.
 
 mod types;
@@ -13,7 +14,8 @@ pub use types::*;
 /// (half units round upward). No clamping to field or trainer limits occurs.
 /// Page 70 requests acknowledged replies; its count must fit seven bits.
 /// A count of 0 is encoded as received (byte 0x80); whether the profile reads
-/// that as "until acknowledged" is tentative pending HIL #44 (ADR-0002 §4.2).
+/// that as "until acknowledged" is how the NEO behaves: it answers about five
+/// times (HIL #44 Part A, ADR-0002 §4.2).
 ///
 /// # Errors
 /// Returns the offending field for non-finite or out-of-domain values.
