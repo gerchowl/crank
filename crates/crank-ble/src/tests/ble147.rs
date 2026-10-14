@@ -215,7 +215,7 @@ async fn hr_strap_dropout_reconnects_on_the_backoff_schedule() {
         .unwrap()
         .insert(1, Err(DeviceError::NotFound));
     let inner = HrsDriver::new(Arc::new(fake.clone()), clock.clone());
-    let driver = ReconnectingHr::new(inner, clock.clone());
+    let driver = ReconnectingHr::new(inner, clock.clone(), RideGate::new(true));
     let mut link = driver.connect(&DeviceRef("strap".into())).await.unwrap();
     settle().await;
     let t0 = clock.now();
@@ -337,6 +337,7 @@ fn pairing_matches_by_platform_id_then_name_and_verifies_serial() {
     let info = DeviceInfo {
         name: Some("Tacx NEO".into()),
         serial: Some("55624".into()),
+        model: Some("T2800".into()),
         ..DeviceInfo::default()
     };
     let pairing = Pairing::from_connection(&DeviceRef("uuid-1".into()), &info);
@@ -359,6 +360,10 @@ fn pairing_matches_by_platform_id_then_name_and_verifies_serial() {
         serial: Some("99999".into()),
         ..DeviceInfo::default()
     }));
+    assert!(!pairing.verify(&DeviceInfo {
+        model: Some("Other".into()),
+        ..DeviceInfo::default()
+    }));
     assert_eq!(pairing.device_ref(), DeviceRef("uuid-1".into()));
 }
 #[test]
@@ -367,6 +372,7 @@ fn pairing_round_trips_through_the_store() {
     let info = DeviceInfo {
         name: Some("Tacx NEO".into()),
         serial: Some("55624".into()),
+        model: Some("T2800".into()),
         ..DeviceInfo::default()
     };
     let pairing = Pairing::from_connection(&DeviceRef("uuid-1".into()), &info);
@@ -378,6 +384,7 @@ fn pairing_round_trips_through_the_store() {
             name: pairing.name.clone(),
             platform_id: pairing.platform_id.clone(),
             serial: pairing.serial.clone(),
+            model: pairing.model.clone(),
             last_seen: 1,
         })
         .unwrap();
@@ -390,6 +397,7 @@ fn pairing_round_trips_through_the_store() {
         platform_id: stored[0].platform_id.clone(),
         name: stored[0].name.clone(),
         serial: stored[0].serial.clone(),
+        model: stored[0].model.clone(),
     };
     assert_eq!(restored, pairing);
 }
@@ -483,7 +491,11 @@ async fn trainer_reconnects_on_the_exact_schedule_reapplies_rider_and_never_rest
     outcomes.insert(0, Ok(first.link));
     outcomes.push(Ok(second.link));
     let script = script(&clock, outcomes);
-    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock.clone());
+    let driver = Reconnecting::new(
+        ScriptDriver(script.clone()),
+        clock.clone(),
+        RideGate::new(true),
+    );
     let mut link = driver
         .connect(&DeviceRef("neo".into()), rider())
         .await
@@ -578,8 +590,8 @@ async fn commands_sent_while_disconnected_are_discarded_not_replayed() {
     let first = device_link();
     let mut second = device_link();
     let script = script(&clock, vec![Ok(first.link), Ok(second.link)]);
-    let driver = Reconnecting::new(ScriptDriver(script), clock);
-    let link = driver
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock, RideGate::new(true));
+    let mut link = driver
         .connect(&DeviceRef("neo".into()), rider())
         .await
         .unwrap();
@@ -594,7 +606,78 @@ async fn commands_sent_while_disconnected_are_discarded_not_replayed() {
         .await
         .unwrap();
     advance(ms(500)).await;
+    // The discarded command did not end the loop: attempt 1 connected the new device,
+    // whose Ready reaches the consumer, and the command was never replayed to it.
+    assert_eq!(script.attempts.lock().unwrap().len(), 2);
+    second
+        .events
+        .send(TrainerEvent::Link(LinkState::Ready))
+        .await
+        .unwrap();
+    settle().await;
+    assert_eq!(
+        drain(&mut link.events).last(),
+        Some(&TrainerEvent::Link(LinkState::Ready))
+    );
     assert!(second.commands.try_recv().is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn outside_a_ride_a_loss_is_surfaced_and_not_retried() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let first = device_link();
+    let script = script(&clock, vec![Ok(first.link)]);
+    let gate = RideGate::new(false);
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock, gate.clone());
+    let mut link = driver
+        .connect(&DeviceRef("neo".into()), rider())
+        .await
+        .unwrap();
+    first
+        .events
+        .send(TrainerEvent::Link(LinkState::Lost))
+        .await
+        .unwrap();
+    settle().await;
+    advance(Duration::from_mins(1)).await;
+    assert_eq!(script.attempts.lock().unwrap().len(), 1);
+    assert_eq!(
+        drain(&mut link.events),
+        [TrainerEvent::Link(LinkState::Lost)]
+    );
+    assert!(
+        link.events.recv().await.is_none(),
+        "stream ends; rediscovery takes over"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn ride_ending_during_backoff_stops_the_loop_and_a_new_ride_enables_it() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let first = device_link();
+    let script = script(&clock, vec![Ok(first.link)]);
+    let gate = RideGate::new(true);
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock, gate.clone());
+    let _link = driver
+        .connect(&DeviceRef("neo".into()), rider())
+        .await
+        .unwrap();
+    first
+        .events
+        .send(TrainerEvent::Link(LinkState::Lost))
+        .await
+        .unwrap();
+    settle().await;
+    advance(ms(500)).await; // attempt 1 fails; now backing off 1 s
+    assert_eq!(script.attempts.lock().unwrap().len(), 2);
+    gate.set_active(false);
+    settle().await;
+    advance(Duration::from_mins(1)).await;
+    assert_eq!(
+        script.attempts.lock().unwrap().len(),
+        2,
+        "no attempts after the ride ended"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -602,7 +685,7 @@ async fn release_during_backoff_stops_the_loop() {
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
     let first = device_link();
     let script = script(&clock, vec![Ok(first.link)]);
-    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock);
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock, RideGate::new(true));
     let link = driver
         .connect(&DeviceRef("neo".into()), rider())
         .await
@@ -630,7 +713,11 @@ async fn dropping_the_link_stops_reconnecting_and_release_is_forwarded() {
     let first = device_link();
     let mut first_commands = first.commands;
     let script = script(&clock, vec![Ok(first.link)]);
-    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock.clone());
+    let driver = Reconnecting::new(
+        ScriptDriver(script.clone()),
+        clock.clone(),
+        RideGate::new(true),
+    );
     let link = driver
         .connect(&DeviceRef("neo".into()), rider())
         .await
@@ -656,7 +743,7 @@ async fn dropping_the_link_stops_reconnecting_and_release_is_forwarded() {
     // Consumer disappears mid-outage.
     let first = device_link();
     let script = self::script(&clock, vec![Ok(first.link)]);
-    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock);
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock, RideGate::new(true));
     let link = driver
         .connect(&DeviceRef("neo".into()), rider())
         .await
@@ -681,7 +768,7 @@ async fn dropping_the_link_stops_reconnecting_and_release_is_forwarded() {
 async fn first_connect_failure_is_returned_not_retried() {
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
     let script = script(&clock, vec![Err(DeviceError::NotFound)]);
-    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock);
+    let driver = Reconnecting::new(ScriptDriver(script.clone()), clock, RideGate::new(true));
     let result = driver.connect(&DeviceRef("neo".into()), rider()).await;
     assert!(matches!(result, Err(DeviceError::NotFound)));
     advance(Duration::from_secs(30)).await;
