@@ -833,7 +833,6 @@ fn the_policy_clamps_a_target_above_the_cap_even_if_a_ride_got_through() {
         block_elapsed_ticks: 0,
         tick: 0,
         link_epoch: 0,
-        loss_epoch: 0,
         flow_start: Some(0),
         power_3s_w: Some(250.0),
         cadence_rpm: Some(90),
@@ -984,7 +983,6 @@ fn ctx_at(b: &crank_domain::workout::FlatBlock, k: u64) -> crate::control::Polic
         block_elapsed_ticks: k,
         tick: k,
         link_epoch: 0,
-        loss_epoch: 0,
         flow_start: Some(0),
         power_3s_w: Some(100.0),
         cadence_rpm: Some(90),
@@ -1176,4 +1174,187 @@ fn resuming_after_exactly_t_unknown_keeps_the_episode_and_one_microsecond_later_
         F::Checking,
         "one microsecond more: a fresh start (C1)"
     );
+}
+
+// ---- a link epoch never re-engages ERG by itself (architect decision, round 4) ----------
+
+/// 300 W for 8 ticks at 90 rpm, then 20 rpm until released (8 ticks): returns the rig at
+/// tick 16 with `erg_released` and the commands drained.
+fn released_rig() -> Rig {
+    let mut r = rig();
+    r.load(vec![work(300.0)]);
+    r.start();
+    pedal(&r, 0, 8, 200, 90);
+    pedal(&r, 8, 16, 150, 20);
+    r.through(15);
+    assert!(r.status().erg_released);
+    assert_eq!(
+        r.modes().last(),
+        Some(&ControlMode::Resistance { pct: 0.0 })
+    );
+    r
+}
+fn positive_erg(modes: &[ControlMode]) -> Vec<u16> {
+    modes
+        .iter()
+        .filter_map(|m| match m {
+            ControlMode::Erg { target_w } if *target_w > 0 => Some(*target_w),
+            _ => None,
+        })
+        .collect()
+}
+#[test]
+fn a_ready_while_released_at_low_cadence_never_commands_erg() {
+    // the falsifier's repro: Ready at 20 rpm used to command Erg{300} for ~2 s
+    let mut r = released_rig();
+    r.link(LinkState::Ready);
+    pedal(&r, 16, 32, 150, 20);
+    r.through(31);
+    let sent = r.modes();
+    assert!(positive_erg(&sent).is_empty(), "{sent:?}");
+    assert!(r.status().erg_released);
+    assert_eq!(
+        sent.last(),
+        Some(&ControlMode::Resistance { pct: 0.0 }),
+        "re-issued"
+    );
+}
+#[test]
+fn a_bare_ready_while_released_leaves_release_only_through_the_cadence_criteria() {
+    let mut r = released_rig();
+    r.link(LinkState::Ready);
+    // 90 rpm: 7 ticks are not 2 s, still released and nothing above 0 W
+    pedal(&r, 16, 23, 150, 90);
+    r.through(22);
+    assert!(r.status().erg_released);
+    assert!(positive_erg(&r.modes()).is_empty());
+    // the eighth tick re-engages with the §7.5 soft start from the 3 s power (150 W)
+    pedal(&r, 23, 48, 150, 90);
+    r.through(47);
+    assert!(!r.status().erg_released);
+    let sent = positive_erg(&r.modes());
+    assert_eq!(sent, vec![150, 180, 210, 240, 270, 300], "{sent:?}");
+}
+#[test]
+fn connecting_then_ready_while_released_is_the_same() {
+    let mut r = released_rig();
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    pedal(&r, 16, 30, 150, 20);
+    r.through(29);
+    assert!(r.status().erg_released);
+    assert!(positive_erg(&r.modes()).is_empty());
+}
+#[test]
+fn a_ready_in_the_middle_of_a_ramp_owes_a_new_soft_start() {
+    let mut r = rig();
+    r.load(vec![work(300.0)]);
+    r.start();
+    pedal(&r, 0, 8, 100, 90);
+    r.through(7);
+    r.modes();
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    pedal(&r, 8, 18, 100, 90); // 2.5 s into the ramp
+    r.through(17);
+    r.link(LinkState::Ready); // mid-ramp
+    pedal(&r, 18, 26, 130, 90);
+    r.through(25);
+    let sent = positive_erg(&r.modes());
+    // the first ramp (100 → …) was cut; the second restarts from the then-current 3 s power
+    assert_eq!(sent.first(), Some(&100), "{sent:?}");
+    let second: Vec<_> = sent
+        .iter()
+        .copied()
+        .skip_while(|w| *w != 100)
+        .skip(1)
+        .collect();
+    assert!(
+        !second.contains(&300),
+        "no jump to the target mid-ramp: {sent:?}"
+    );
+}
+
+// ---- killers of the review's surviving mutants --------------------------------------------
+
+fn policy_tally(power: f64, flow: Option<u64>, link_epoch: u64) -> crate::erg::Compliance {
+    use crate::control::TargetPolicy;
+    let b = block(600.0, 200.0, 200.0, Phase::Work);
+    let mut p = crate::erg::ErgPolicy::new();
+    for k in 0..4 {
+        let mut c = ctx_at(&b, k);
+        c.cap_w = None;
+        c.power_3s_w = Some(power);
+        c.flow_start = flow;
+        c.link_epoch = link_epoch;
+        p.desired(&c);
+    }
+    p.status().compliance
+}
+#[test]
+fn compliance_tolerance_is_inclusive_at_five_percent() {
+    assert_eq!(policy_tally(210.0, Some(0), 0).within_s, 1, "exactly +5 %");
+    assert_eq!(policy_tally(190.0, Some(0), 0).within_s, 1, "exactly -5 %");
+    assert_eq!(policy_tally(210.5, Some(0), 0).within_s, 0);
+    assert_eq!(policy_tally(210.0, Some(0), 0).counted_s, 1);
+}
+#[test]
+fn seconds_waiting_at_zero_watts_do_not_count_against_the_block_target() {
+    // a link epoch owes a soft start; nobody pedals: the engine holds 0 W
+    let c = policy_tally(200.0, None, 1);
+    assert_eq!((c.counted_s, c.excluded_s), (0, 1), "{c:?}");
+}
+#[test]
+fn exactly_forty_rpm_is_not_low_cadence() {
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 40, 150, 40);
+    r.through(39);
+    assert!(!r.status().erg_released);
+    pedal(&r, 40, 60, 150, 39);
+    r.through(59);
+    assert!(r.status().erg_released);
+}
+#[test]
+fn the_first_tick_already_reports_checking_after_its_command() {
+    // the mode sent on tick 0 activates the machine on that same tick (second `follow`)
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    r.sample(0, 100, 90);
+    r.through(0);
+    assert_eq!(r.modes(), vec![erg(200)]);
+    assert_eq!(r.status().trainer_following, F::Checking);
+}
+#[test]
+fn a_silent_trainer_names_no_component() {
+    // A2: every component silent is `unknown`, and nothing is blamed (A3 only)
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 60, 200, 90);
+    r.through(59);
+    let s = r.status();
+    assert_eq!(s.trainer_following, F::Unknown);
+    assert_eq!(s.not_following_component, None);
+}
+#[test]
+fn every_ride_second_lands_in_exactly_one_compliance_bucket() {
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 20, 200, 90);
+    r.through(19);
+    r.link(LinkState::Lost);
+    r.through(59); // 10 s without a link
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    pedal(&r, 60, 80, 200, 90);
+    r.through(79);
+    let st = r.status();
+    assert_eq!(st.session.0, 80);
+    let c = st.compliance;
+    assert_eq!(c.counted_s + c.excluded_s, 20, "{c:?}");
+    assert!(c.excluded_s >= 10, "the lost seconds are excluded: {c:?}");
 }

@@ -497,15 +497,17 @@ fn every_frame_stays_under_the_byte_budget_at_every_cap() {
 fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
     // A small budget forces splitting: ~30 bytes per sample, a few per frame. The status
     // alone is ~285 bytes since #218 (following, compliance, cap), so the budget is
-    // sized for it plus a few samples.
-    const BUDGET: usize = 480;
+    // sized so that 12 samples split over exactly three frames.
+    const BUDGET: usize = 360;
     let mut flow = Flow::new(BUDGET);
-    for sub in 0..10_u64 {
+    for sub in 0..12_u64 {
         flow.offer_sample(sample(sub, 1.5, 100.0 + sub as f64));
     }
     flow.offer_status(riding(1));
     let frames = flow.drain(0);
-    assert!(frames.len() > 1);
+    // the status (~285 bytes) rides the first frame with a few samples: three frames, the
+    // whole window (MAX_UNACKED), carry the 12 samples
+    assert_eq!(frames.len(), 3);
     let mut got = Vec::new();
     for (i, f) in frames.iter().enumerate() {
         assert_eq!(f.seq, i as u64, "consecutive seq");
@@ -517,7 +519,7 @@ fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
         );
         got.extend(f.samples.iter().map(|s| s.sub.0));
     }
-    assert_eq!(got, (0..10).collect::<Vec<_>>(), "every sample, in order");
+    assert_eq!(got, (0..12).collect::<Vec<_>>(), "every sample, in order");
     assert_eq!(flow.unacked(), frames.len());
 }
 
@@ -1092,4 +1094,74 @@ fn the_worst_status_with_the_erg_fields_has_a_measured_size() {
     eprintln!("worst status: {n} bytes");
     assert!(n < 800, "worst status is {n} bytes");
     assert!(n < FRAME_BUDGET_BYTES / 10);
+}
+
+#[test]
+fn the_wire_status_carries_the_erg_fields_with_their_meaning() {
+    use crate::engine::{CapState, RideState, RideStatus};
+    use crate::erg::{Compliance, Component, TrainerFollowing};
+    use crate::ticks::{SessionTicks, WorkoutTicks};
+    let ride = RideStatus {
+        state: RideState::Riding,
+        loaded: true,
+        session: SessionTicks(0),
+        workout: WorkoutTicks(0),
+        block_index: None,
+        block_elapsed: WorkoutTicks(0),
+        trainer_link: None,
+        hr_link: None,
+        late_samples: 0,
+        record_error: None,
+        trainer_following: TrainerFollowing::NotFollowing,
+        not_following_component: Some(Component::Track),
+        erg_released: true,
+        compliance: Compliance {
+            counted_s: 3,
+            within_s: 2,
+            excluded_s: 1,
+        },
+        cap: Some(CapState {
+            cap_w: 180,
+            erg_only: true,
+        }),
+    };
+    let v = serde_json::to_value(StreamStatus::from(&ride)).expect("status");
+    assert_eq!(v["trainerFollowing"], "not_following");
+    assert_eq!(v["notFollowingComponent"], "track");
+    assert_eq!(v["ergReleased"], true);
+    assert_eq!(v["compliance"]["countedS"], 3);
+    assert_eq!(v["compliance"]["withinS"], 2);
+    assert_eq!(v["compliance"]["excludedS"], 1);
+    assert_eq!(v["cap"]["capW"], 180);
+    assert_eq!(v["cap"]["ergOnly"], true);
+    for (c, name) in [
+        (Component::Erg, "erg"),
+        (Component::Resistance, "resistance"),
+        (Component::Wind, "wind"),
+    ] {
+        let mut r = ride.clone();
+        r.not_following_component = Some(c);
+        let v = serde_json::to_value(StreamStatus::from(&r)).expect("status");
+        assert_eq!(v["notFollowingComponent"], name);
+    }
+    let mut calm = ride;
+    calm.not_following_component = None;
+    calm.erg_released = false;
+    calm.cap = None;
+    calm.trainer_following = TrainerFollowing::Checking;
+    let v = serde_json::to_value(StreamStatus::from(&calm)).expect("status");
+    assert_eq!(
+        (
+            &v["trainerFollowing"],
+            &v["notFollowingComponent"],
+            &v["ergReleased"],
+            &v["cap"]
+        ),
+        (
+            &"checking".into(),
+            &serde_json::Value::Null,
+            &false.into(),
+            &serde_json::Value::Null
+        )
+    );
 }
