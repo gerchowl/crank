@@ -1,0 +1,268 @@
+/* App shell: labelled icon rail + content on one continuous grid (DESIGN §16.3, §10 #7: no breakpoint reflow;
+   the app targets >= 1024 px wide, DESIGN §3). Numbers use the .num utility (tabular numerals). */
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+body {
+  background: var(--surface-0);
+  color: var(--ink-primary);
+  font:
+    16px/1.4 system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  font-variant-numeric: tabular-nums lining-nums;
+  -webkit-font-smoothing: antialiased;
+}
+h1,
+h2 {
+  margin: 0 0 0.5em;
+  line-height: 1.15;
+}
+h1 {
+  font-size: 30px;
+}
+h2 {
+  font-size: 19px;
+}
+.num {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.muted {
+  color: var(--ink-muted);
+}
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+button {
+  font: inherit;
+  color: var(--ink-primary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  min-height: 40px;
+  cursor: pointer;
+}
+button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+kbd {
+  font:
+    600 0.8em ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid currentColor;
+}
+
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 200;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+.skip-link:focus {
+  transform: none;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  min-height: 100%;
+}
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 6px;
+  background: var(--surface-1);
+  border-right: 1px solid var(--border);
+}
+.rail .brand {
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+  text-align: center;
+  padding: 0 0 14px;
+}
+.rail button {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border-color: transparent;
+  padding: 6px 2px;
+  min-height: 62px;
+}
+.rail .rail-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+.rail .rail-label {
+  font-size: 12.5px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.rail button[aria-current="page"] {
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+main {
+  min-width: 0;
+  outline: none;
+}
+main.mode {
+  display: grid;
+  justify-items: center;
+  min-height: 100%;
+}
+.page {
+  /* Side padding runs 20 px at 1024 to 32 px at 1440 on the viewport, with no breakpoint: content is 912 px at
+     1024 and 1304 px at 1440 (§16.3). 2.885vw - 9.5px = 20 at 1024, 32 at 1440. */
+  padding: 28px clamp(20px, calc(2.885vw - 9.5px), 32px) 40px;
+  max-width: 1368px; /* 1440 minus the 72 px rail */
+  width: 100%;
+}
+.page-head {
+  margin-bottom: 20px;
+}
+.page-head h1 {
+  font-size: 34px;
+  margin-bottom: 4px;
+}
+.section-nav {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+.section-nav button[aria-current="true"] {
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.theme-choice {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 16px 0;
+}
+.theme-choice label {
+  margin-right: 20px;
+}
+
+.keys-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: grid;
+  place-items: center;
+  background: var(--scrim);
+}
+.keys-dialog {
+  width: min(480px, 90vw);
+  padding: 24px;
+  border-radius: 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 40px var(--shadow);
+}
+.keys-dialog dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  margin: 0 0 20px;
+}
+.keys-dialog dd {
+  margin: 0;
+}
+
+/* Cold-start screen: brand pair of the mark, deliberately not the app tokens (BRAND.md §Colour). */
+.start {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: var(--start-bg);
+  color: var(--start-ink);
+}
+.start[data-mode="dark"] {
+  --start-bg: #1a1d22;
+  --start-ink: #ece6dc;
+  --start-muted: #9ba0a8;
+  --start-accent: #c08a4a;
+  color-scheme: dark;
+}
+.start[data-mode="light"] {
+  --start-bg: #f4f1ea;
+  --start-ink: #1a1d22;
+  --start-muted: #5b6068;
+  --start-accent: #94642d;
+  color-scheme: light;
+}
+.start[inert] {
+  pointer-events: none;
+}
+.start[data-leaving] {
+  opacity: 0;
+  transition: opacity 200ms linear;
+}
+.start img {
+  display: block;
+  width: min(52vw, 820px);
+  height: auto;
+}
+.start-status,
+.start-error {
+  position: absolute;
+  bottom: 48px;
+  margin: 0;
+  color: var(--start-muted);
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+.start-error {
+  max-width: min(640px, 86vw);
+  text-align: center;
+  color: var(--start-ink);
+}
+.start-error p {
+  margin: 0 0 6px;
+}
+.start-retry {
+  color: var(--start-ink);
+  background: transparent;
+  border-color: var(--start-muted);
+}
+.start-retry:focus-visible {
+  outline-color: var(--start-accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .start[data-leaving] {
+    transition: none;
+  }
+}
