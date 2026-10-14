@@ -12,8 +12,14 @@ workspace = true
 crank-domain.workspace = true
 crank-devices.workspace = true
 futures-util = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+specta = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+
+[features]
+specta = ["dep:specta", "crank-domain/specta"]
 
 [dev-dependencies]
 crank-store.workspace = true

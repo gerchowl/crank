@@ -14,6 +14,14 @@ pub const LOSS_TICKS: u32 = 8;
 /// Consecutive ticks of cadence = 0 and power = 0 that mean stopped pedalling (3 s).
 pub const STOPPED_TICKS: u32 = 12;
 
+/// Seconds in `ticks` ticks, as the contract carries time (ADR-0001 §4.1).
+#[must_use]
+pub fn ticks_to_seconds(ticks: u64) -> f64 {
+    #[expect(clippy::cast_precision_loss, reason = "ride lengths fit f64 exactly")]
+    let t = ticks as f64;
+    t / 4.0
+}
+
 /// Session time: ticks since the ride started, running while riding and paused.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionTicks(pub u64);
