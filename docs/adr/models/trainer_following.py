@@ -27,7 +27,9 @@ from dataclasses import dataclass, replace
 L_S, N_FOLLOW, T_VERIFY_S, T_MISMATCH_S = 2, 3, 2, 2
 P_S = {"erg": 1, "track": 2, "wind": 2}  # reply period per component (§4.4.1 echo schedule)
 # §4.4.1 T_unknown(c) = 4·P_c + 1 s: a healthy component may lose three replies in a row (HIL #44 Part A)
-T_UNKNOWN_S = {c: 4 * p + 1 for c, p in P_S.items()}   # erg 5 s, track and wind 9 s
+UNK_MULT, UNK_PAD = 4, 1   # T_unknown(c) = UNK_MULT·P_c + UNK_PAD s
+DECIDE_MULT = 3            # T_decide(c) = T_verify + T_mismatch + DECIDE_MULT·P_c
+T_UNKNOWN_S = {c: UNK_MULT * p + UNK_PAD for c, p in P_S.items()}   # erg 5 s, track and wind 9 s
 
 
 @dataclass(frozen=True)
@@ -41,12 +43,17 @@ class K:
     @property
     def T_mismatch(self): return T_MISMATCH_S * self.unit
     def T_unk(self, c): return T_UNKNOWN_S[c] * self.unit
+    def T_spec(self, c):
+        # The ADR's formula T_unknown(c) = 4·P_c + 1 s, derived from P_c independently of the
+        # T_UNKNOWN_S table the machine uses. The monitors and scenarios compare the machine
+        # against this, so a wrong table entry fails behaviourally, not only check_constants.
+        return (UNK_MULT * P_S[c] + UNK_PAD) * self.unit
     def P(self, c): return P_S[c] * self.unit
     def T_decide(self, c):
         # §4.4.1 decision deadline: T_verify + T_mismatch + 3·P_c
         return self.T_decide_p(self.P(c))
     def T_decide_p(self, p):
-        return self.T_verify + self.T_mismatch + 3 * p
+        return self.T_verify + self.T_mismatch + DECIDE_MULT * p
     def V(self, c):
         # §4.4.1 guarantee 4: time from a component's first agreeing reply (replies every P_c)
         # to its verification: P_c · max(N_follow − 1, ⌈T_verify / P_c⌉)
@@ -363,8 +370,12 @@ CONFIGS = {
     "sim": (["keep", ("sim", 0, 0), ("sim", 1, 0), ("erg", 0)],
             [None, ("echo", "track", 0), ("echo", "track", 1), ("echo", "wind", 0),
              ("echo", "wind", 1), ("echo", "erg", 0)]),
+    # SIM silence: one SIM mode, the agreeing replies of both components, and silent steps; deep
+    # enough (12 s) to pass T_unknown(c) = 9 s, which the full SIM alphabet cannot reach.
+    "sim-silence": (["keep", ("sim", 0, 0)],
+                    [None, ("echo", "track", 0), ("echo", "wind", 0)]),
 }
-LINK_EVENTS = {"erg": True, "sim": False}
+LINK_EVENTS = {"erg": True, "sim": False, "sim-silence": False}
 
 
 def classify(m_before: Machine, r, now, k: K):
@@ -409,9 +420,9 @@ def check_invariants(m: Machine, mon: Mon, k: K, ctx):
         if cm[c].state == "silent":
             assert agg in ("unknown", "not_following"), ("d", c, ctx)
         # silence is exactly T_unknown of required time without a reply about c
-        assert (cm[c].state == "silent") == (mon_get(mon, c)[5] >= k.T_unk(c)), ("d-sil", c, ctx)
+        assert (cm[c].state == "silent") == (mon_get(mon, c)[5] >= k.T_spec(c)), ("d-sil", c, ctx)
     if m.active and agg != "unknown":
-        good = all(mon_get(mon, c)[4] and mon_get(mon, c)[5] < k.T_unk(c) for c in req)
+        good = all(mon_get(mon, c)[4] and mon_get(mon, c)[5] < k.T_spec(c) for c in req)
         if good:
             assert agg == "following", ("c", ctx)
 
@@ -438,7 +449,7 @@ def mon_update(mon: Mon, m_prev: Machine, m_pre: Machine, m_after: Machine, r, n
         a_n, a_age, d_n, d_age, a_ok, sil = mon_get(mon, c) if m_prev.active else (0, None, 0, None, False, 0)
         a_age, d_age = age(a_age, k.T_verify), age(d_age, k.T_mismatch)
         if c in req_prev:
-            sil = min(sil + 1, k.T_unk(c))          # required time up to this instant
+            sil = min(sil + 1, k.T_spec(c))          # required time up to this instant
         if c in req_after and c not in req_prev:
             a_n, a_age, a_ok = 0, None, False      # verification never carries over (C8/C9)
             p = cm_pre[c]
@@ -446,7 +457,7 @@ def mon_update(mon: Mon, m_prev: Machine, m_pre: Machine, m_after: Machine, r, n
                                      and p.state == "unverified"):
                 d_n, d_age, sil = 0, None, 0       # fresh component (C1)
         cls = classes.get(c)
-        if cls is not None and sil >= k.T_unk(c):
+        if cls is not None and sil >= k.T_spec(c):
             a_n, a_age, a_ok, d_n, d_age = 0, None, False, 0, None   # evidence too old (C2)
         if cls == "A":
             a_n, a_age = (1, 0) if a_n == 0 else (min(a_n + 1, N_FOLLOW), a_age)
@@ -458,7 +469,7 @@ def mon_update(mon: Mon, m_prev: Machine, m_pre: Machine, m_after: Machine, r, n
             sil = 0
             if d_n >= 2 and d_age >= k.T_mismatch:
                 out = replace(out, hit=tuple(sorted(set(out.hit) | {c})))
-        if c in req_after and sil >= k.T_unk(c):
+        if c in req_after and sil >= k.T_spec(c):
             a_n, a_age, d_n, d_age, a_ok = 0, None, 0, None, False   # silent (C7)
         if cm[c].state == "following":
             d_n, d_age = 0, None
@@ -478,6 +489,7 @@ def explore(k: K, config: str, fair=False, depth=None, limit=3_000_000):
     seen = {start}
     q = deque([(start, 0)])
     max_undecided = {}
+    silent = set()
     while q:
         (m, mon, parity), level = q.popleft()
         if depth is not None and level >= depth:
@@ -510,12 +522,14 @@ def explore(k: K, config: str, fair=False, depth=None, limit=3_000_000):
                     ctx = (m, mon, link, d, r)
                     check_invariants(m2, mon2, k, ctx)
                     s = (normalise(m2, now, k), replace(mon2, hit=()), (parity + 1) % 2 if fair else 0)
+                    if any(c.state == "silent" for _, c in m2.comps):
+                        silent.add(s)
                     if s not in seen:
                         seen.add(s)
                         if len(seen) > limit:
                             raise RuntimeError("state space exceeds limit")
                         q.append((s, level + 1))
-    return len(seen), max_undecided
+    return len(seen), max_undecided, len(silent)
 
 
 def _fair_reply(m: Machine, link, d, r, parity):
@@ -599,7 +613,7 @@ def explore_component(k: K, name="erg", period=None):
     """Free walk (period None): every step may start, stop or resume the requirement and carry
     no reply, an Agree or a Disagree. Fair walk (period P): always required, a reply of either
     class exactly every P steps; checks the decision deadline. Returns (states, max undecided)."""
-    tu = k.T_unk(name)
+    tu = k.T_spec(name)   # monitor side: the ADR formula, not the machine's table
     cap_sil, cap_gap = tu, tu + 1
     start = (fresh(BASE, name), True, CMon(), 0, 0)   # comp, required, monitor, phase, undecided age
     seen, q, worst = {start}, deque([start]), 0
@@ -896,6 +910,14 @@ def scenarios():
         all(out[s] == "checking" for s in range(0, T_UNKNOWN_S["erg"]))
         and all(out[s] == "unknown" for s in range(T_UNKNOWN_S["erg"], 13)))
 
+    # SIM silent trainer (guarantee 7): both components need T_unknown(c) = 4·P_c + 1 = 9 s.
+    out = run({0: {"link": "ready", "desired": ("sim", 1, 0)}}, k, 14)
+    sim_silence = UNK_MULT * P_S["track"] + UNK_PAD
+    res["silent_trainer_sim_checking_then_unknown"] = (
+        sim_silence == 9
+        and all(out[s] == "checking" for s in range(0, sim_silence))
+        and all(out[s] == "unknown" for s in range(sim_silence, 14)))
+
     # reconnect mid-ramp: unknown → checking → following.
     ev = ramp(0, 30, lag=0)
     ev[10] = {"link": "lost"}
@@ -958,7 +980,12 @@ def check_constants(adr_path):
         r"^\| `T_unknown\(c\)`[^|]*\|[^|]*= (\d+) s \(ERG[^)]*\), (\d+) s \(SIM", "T_unknown(c)"))
     assert (unk_erg, unk_sim) == (T_UNKNOWN_S["erg"], T_UNKNOWN_S["track"]) and \
         T_UNKNOWN_S["track"] == T_UNKNOWN_S["wind"], ("T_unknown(c)", unk_erg, unk_sim)
-    assert all(T_UNKNOWN_S[c] == 4 * P_S[c] + 1 for c in P_S)
+    assert all(T_UNKNOWN_S[c] == UNK_MULT * P_S[c] + UNK_PAD for c in P_S)
+    # the formulas as written: `4·P_c + 1 s` and `T_verify + T_mismatch + 3·P_c`
+    mult, pad = (int(x) for x in find(r"^\| `T_unknown\(c\)`[^|]*\| `(\d+)·P_c \+ (\d+) s`", "T_unknown formula"))
+    assert (mult, pad) == (UNK_MULT, UNK_PAD), ("T_unknown formula", mult, pad)
+    (dmult,) = find(r"^\| `T_decide\(c\)`[^|]*\| `T_verify \+ T_mismatch \+ (\d+)·P_c`", "T_decide formula")
+    assert int(dmult) == DECIDE_MULT, ("T_decide formula", dmult)
     # T_decide(c) = T_verify + T_mismatch + 3·P_c
     k = K()
     d_erg, d_sim = (int(x) for x in find(
@@ -969,6 +996,13 @@ def check_constants(adr_path):
         r"(\d+) s \+ r for ERG, (\d+) s \+ r for a SIM", "guarantee 1"))
     assert (g_erg, g_sim) == (L_S + 2 * P_S["erg"] + T_MISMATCH_S, L_S + 2 * P_S["track"] + T_MISMATCH_S), \
         ("guarantee 1", g_erg, g_sim)
+    # guarantee 3: the fair component walks' maxima and bounds, as stated
+    m_erg, m_sim, b_erg, b_sim = (int(x) for x in find(
+        r"measure a maximum of (\d+) s\s+\(`P_c` = 1 s\) and (\d+) s \(`P_c` = 2 s\) against bounds of (\d+) s and (\d+) s", "guarantee 3"))
+    w_erg = explore_component(k, "erg", period=1)[1]
+    w_sim = explore_component(k, "track", period=2)[1]
+    assert (m_erg, m_sim) == (w_erg // k.unit, w_sim // k.unit), ("guarantee 3 measured", m_erg, m_sim, w_erg, w_sim)
+    assert (b_erg, b_sim) == (k.T_decide("erg"), k.T_decide("track")), ("guarantee 3 bounds", b_erg, b_sim)
     # guarantee 4: SIM aggregate following no later than T_poll + V after the first reply
     (v_sim,) = find(r"`T_poll \+ 4 s` = \*\*(\d+) s\*\*", "guarantee 4")
     assert int(v_sim) == P_S["erg"] + k.V("track") == P_S["erg"] + k.V("wind"), ("guarantee 4", v_sim)
@@ -976,8 +1010,13 @@ def check_constants(adr_path):
     s_erg, s_sim = (int(x) for x in find(
         r"`checking` for `T_unknown\(c\)` \((\d+) s for ERG[^)]*, (\d+) s for SIM", "guarantee 7"))
     assert (s_erg, s_sim) == (T_UNKNOWN_S["erg"], T_UNKNOWN_S["track"]), ("guarantee 7", s_erg, s_sim)
+    # guarantee 7, second sentence: the fallback shows `checking` for the same times
+    f_erg, f_sim = (int(x) for x in find(
+        r"shows `checking` for the first (\d+) s \(ERG\) or (\d+) s \(SIM\) of every activation", "guarantee 7 fallback"))
+    assert (f_erg, f_sim) == (T_UNKNOWN_S["erg"], T_UNKNOWN_S["track"]), ("guarantee 7 fallback", f_erg, f_sim)
 
 
+SIM_SILENCE_DEPTH = 12  # reduced alphabet, passes T_unknown(c) = 9 s
 SIM_FREE_DEPTH = 6  # every input sequence of length ≤ 6 (137 k states, ~30 s)
 
 
@@ -988,7 +1027,7 @@ def main(argv):
     check_table_order(adr)
     print("table order: ADR §4.4.1 rows == model evaluation order (C1–C9, C2 pre-step), ok")
     check_constants(adr)
-    print("constants: ADR §4.4.1 == model (table, P_c, T_unknown(c), T_decide, guarantees 1, 4, 7), ok")
+    print("constants: ADR §4.4.1 == model (table, P_c, T_unknown(c) and T_decide formulas, guarantees 1, 3, 4, 7), ok")
     for name, passed in scenarios().items():
         print(f"scenario {name}: {'ok' if passed else 'FAIL'}")
         ok &= passed
@@ -1006,10 +1045,14 @@ def main(argv):
         print(f"component walk (fair, P={p}s): {n} states to fixpoint, "
               f"max undecided {worst}s <= T_decide {k.T_decide_p(p * k.unit)}s, ok")
     for config, fair, depth in (("erg", False, None), ("erg", True, None),
-                                ("sim", True, None), ("sim", False, SIM_FREE_DEPTH)):
-        n, und = explore(k, config, fair=fair, depth=depth)
+                                ("sim", True, None), ("sim", False, SIM_FREE_DEPTH),
+                                ("sim-silence", False, SIM_SILENCE_DEPTH)):
+        n, und, silent = explore(k, config, fair=fair, depth=depth)
         bound = "fixpoint" if depth is None else f"all sequences of length <= {depth}"
-        print(f"machine walk {config} fair={fair}: {n} states ({bound}), ok; max undecided {und}")
+        print(f"machine walk {config} fair={fair}: {n} states ({bound}), ok; max undecided {und}; "
+              f"{silent} states with a silent component")
+        if config == "sim-silence":
+            assert silent > 0, "SIM silence is not reachable: the walk no longer exercises guarantee 2"
     print("all checks passed" if ok else "SCENARIO FAILURES")
     return 0 if ok else 1
 
