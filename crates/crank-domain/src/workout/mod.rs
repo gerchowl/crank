@@ -6,8 +6,8 @@ pub use model::*;
 mod compile;
 mod compiled;
 pub use compile::{
-    LAP_EXPECTED_S, LAP_RANGE_S, TRAINER_MAX_W, WORK_THRESHOLD_PCT, compile_workout, is_work_step,
-    normalized_power, target_pct, target_watts,
+    LAP_EXPECTED_S, LAP_RANGE_S, TRAINER_MAX_W, WORK_THRESHOLD_PCT, compile_workout, hr_steady,
+    is_work_step, normalized_power, target_pct, target_watts,
 };
 pub use compiled::*;
 mod tree;

@@ -44,14 +44,18 @@ fn display_number(value: f64) -> String {
         value.to_string()
     }
 }
-// Compiler-only subset of athlete.ts; the wider athlete API belongs to #136.
+// Compiler subset of athlete.ts; the wider athlete API belongs to #136.
 fn power_for_hr(bpm: f64, ftp: f64, a: &Athlete) -> f64 {
     js_max(
         ((bpm - (a.rest_hr + 12.)) / (js_round(a.max_hr * 0.9) - (a.rest_hr + 12.))) * ftp,
         0.,
     )
 }
-fn hr_steady(power: f64, ftp: f64, a: &Athlete) -> f64 {
+/// Steady-state heart rate (bpm) for a sustained `power` in watts at threshold
+/// `ftp`, with a soft cap below `max_hr`; port of `athlete.ts::hrSteady`.
+/// Shared with the device simulator (`crank-devices::sim`, #67); no behaviour change.
+#[must_use]
+pub fn hr_steady(power: f64, ftp: f64, a: &Athlete) -> f64 {
     let raw =
         a.rest_hr + 12. + (js_round(a.max_hr * 0.9) - (a.rest_hr + 12.)) * (power.max(0.) / ftp);
     let knee = a.max_hr - 8.;
