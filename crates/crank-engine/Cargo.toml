@@ -22,8 +22,13 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 specta = ["dep:specta", "crank-domain/specta"]
 
 [dev-dependencies]
+# Enables the crate's own `specta` feature for tests, so the TypeScript export test
+# runs in every workspace test run (#271).
+crank-engine = { path = ".", features = ["specta"] }
 crank-store.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "test-util", "time"] }
+specta-typescript.workspace = true
+specta-serde = "=0.0.12"
