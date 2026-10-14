@@ -1,0 +1,244 @@
+# FMEA: ride failure modes × ride phase
+
+Status: **step 1 of #255** (document and data). The owner reviews the severities. Step 2 (#255) is a test-only
+harness that runs every row: SimRig + engine + a stream subscriber, recording the trainer-command, engine-state
+and UI-contract traces and comparing each with `wanted`. Step 3 is the sim extension (#258); step 4 drives the
+same rows through WDIO once the UI exists (#34).
+
+`fmea.toml` is the source of truth. The table below is rendered from it, and `check_fmea.py` fails when the two
+differ (re-render with `just fmea --write`).
+
+**Two modes.** `just fmea` is strict: every check is fatal, including that each test cited by a `guarded` row
+exists. The `fmea` flake check (`nix flake check`, CI) is fatal on the schema, the guards, test-or-issue,
+`UNDECIDED` questions, the severity scale and table drift, but only **warns** when a cited test does not exist, so
+a PR that renames or removes a test is not failed by this document. Whoever renames a guarding test updates
+`fmea.toml` in the same PR; `just fmea` shows the rows it broke.
+
+## Method
+
+- **One row per failure mode × ride phase.** A failure mode that behaves differently in two phases gets two rows.
+- **Wanted, not observed.** Every `wanted.*` is taken from a cited rule: an ADR or DESIGN section, or a decided
+  issue. Where those are silent the field is `UNDECIDED` and the row names an open question (below). Nothing is
+  guessed.
+- **Three traces per row**, the three things step 2 compares:
+  - `wanted.trainer`: the `TrainerCommand::SetMode(ControlMode)` trace the engine sends: `Erg{w}`,
+    `Resistance{pct}`, `Sim{…}`, `Free`. Timing is in engine ticks (250 ms, 4 per second; ADR-0001 §5).
+  - `wanted.engine`: `RideState` / `PauseReason` and the `RideStatus` fields
+    (`crank-engine::engine`).
+  - `wanted.ui`: what the UI renders, in the wire names of `StreamFrame` / `StreamStatus`
+    (`crank-engine::stream::types`, camelCase): `state.kind` / `state.reason`, `blockIndex`, `lateSamples`,
+    `recordError`, `links[trainer|hr]`, `resync`, sample `v`; and, added by #249 (`pending-merge`),
+    `trainerFollowing`, `notFollowingComponent`, `ergReleased`, `compliance`, `cap`. DESIGN §17's `editSeq`,
+    `blockCount` and `undo` land with #240.
+- **Fault plan** names the existing `crank-devices::sim::SimFault` variant (`Dropout`, `Echo{component, Lag |
+  Stuck | Silent | DropWrites}`, `CadenceStall`, `ErgSpiral`, `HrLoss`), an engine input (command, mock link,
+  clock), or a new fault mode with its issue (#258).
+- **Guard** is the rule that mandates the behaviour; **detection** is how the system notices the failure.
+
+## Severity scale
+
+The severity is that of the failure's effect if the guard is absent, not of the row as guarded.
+
+| Severity | Meaning | Examples |
+|---|---|---|
+| S1 | injury or strain | torque on a rider who is not pedalling; a target jump; a target above the health cap; an ERG target left active |
+| S2 | ride lost | the ride stops, cannot start or cannot resume; the engine blocks |
+| S3 | data loss | record, compliance or HR data wrong or missing |
+| S4 | cosmetic | a wrong or late claim in the UI with no effect on control or the record |
+
+## Ride phases
+
+| Phase | Meaning |
+|---|---|
+| `start` | Load and Start up to the first engaged ERG target |
+| `ramp` | a soft start (ADR-0002 §7.5) or a ramp block (§7.3) is running |
+| `steady` | ERG engaged on a block target, rider pedalling |
+| `released` | ERG released for low cadence (ADR-0002 §7.4) |
+| `free_sim` | a `Free` or SIM block (ADR-0002 §7.9) |
+| `paused` | `paused(user | stopped_pedalling | trainer_lost)` (ADR-0001 §5) |
+| `finishing` | the last block ends, End, shutdown |
+
+## How to read a row
+
+- **status** `guarded`: the cited tests exist on `dev`; the validator greps each `path::fn` (fatal under
+  `just fmea`, a warning in the flake check).
+  `pending-merge`: the tests are in the open PR named in the row (#249); the row flips to `guarded` when it
+  merges, and the validator then checks them. `missing`: no test; the row names the issue that adds one.
+- **Rows for failure modes the sim cannot produce yet** (unpowered stop, power at 0 rpm, second central, garbled
+  or unsupported pages, reply loss, app crash, clock stall, storage failure, HR garbage, pre-control echo) are
+  `missing` with #258 even where a unit or driver test covers part of them. Those partial tests are named in the
+  row's `note` in `fmea.toml`; the FMEA row needs the system-level scenario.
+- **"soft start"** in a trainer trace is ADR-0002 §7.5 as amended by #231: `Erg{0}` until the first trainer sample
+  with cadence > 0 of the link epoch, then five 1 Hz steps (ticks +0, +4, +8, +12, +16) from the 3 s power to the
+  target, holding the last step while samples are missing; never more than one `SetMode` per tick (§4.4).
+- **Time bounds** come from ADR-0002 §4.4.1: `L` = 2 s, `N_follow` = 3, `T_verify` = 2 s, `T_mismatch` = 2 s,
+  `T_unknown` = 5 s (ERG) / 9 s (SIM components), `T_decide` = 7 s / 10 s.
+
+## Coverage
+
+Counts by severity and status head the generated table. The `missing` rows cite #258 (sim fault modes), #240
+(live edits, DESIGN §17), #81 (medical stop), #245 (cap exceedance), #250 (ride-start soft start) and #264 (user
+pause leaves the ERG target applied).
+
+Review findings and where they landed (PRs #225, #246, #249 and issues #231, #239, #252):
+
+| Finding | Rows |
+|---|---|
+| cross-ride state leakage (#249 round 2) | FM-START-03 |
+| a bare `Ready` re-engaging ERG while released (#249 round 4) | FM-REL-01 |
+| stopping during a soft start with no release (#249 round 5) | FM-RAMP-06 |
+| release cleared by a Free block (#249 round 5, M7) | FM-REL-03 |
+| final-second tally (#249 round 5) | FM-FIN-01, FM-STEADY-20 |
+| 60× pacing (#246 round 2) | FM-STEADY-25 |
+| a dead or stalled stream consumer (#246 round 2) | FM-STEADY-21 |
+| filter-chain cost (#246 round 2, #252) | FM-STEADY-22 |
+| soft-start origin and epoch (#231, #225 rounds 2–6, #239) | FM-RAMP-01 … FM-RAMP-05, FM-RAMP-07, FM-STEADY-03 |
+| non-finite values, byte budget (#246, #252) | FM-STEADY-23, FM-STEADY-24 |
+| following machine, routing, #226 (#249 round 1) | FM-RAMP-10, FM-RAMP-11, FM-STEADY-08, FM-STEADY-09, FM-STEADY-13, FM-FREE-04 |
+| health cap (#249, #244, #245) | FM-START-04, FM-RAMP-09, FM-STEADY-06, FM-STEADY-07 |
+
+## Table
+
+<!-- fmea:table:begin (generated by check_fmea.py --write) -->
+
+64 rows: 30 S1, 19 S2, 5 S3, 10 S4; 24 guarded, 19 pending-merge, 21 missing.
+
+### Phase `start`
+
+| id | sev | failure mode · cause | fault plan | wanted: trainer | wanted: engine | wanted: UI | detection | guard | test |
+|---|---|---|---|---|---|---|---|---|---|
+| FM-START-01 | S2 | **Start without a Ready trainer** · link absent, Connecting or Lost at Start | no trainer link / link held in Connecting (mock link) | no SetMode | Start refused NoTrainer / TrainerNotReady; state Idle | state.kind=idle; links[trainer] shows the link state | CommandError at Start | ADR-0001 §5 (No trainer, no ride); DESIGN §5.4; #95 | `crates/crank-engine/src/tests.rs::start_needs_a_ready_trainer` |
+| FM-START-02 | S1 | **Ride starts at 0 rpm in ERG: block target torque on a still rider** · rider not yet pedalling when Start is pressed | none needed: no sample with cadence>0 after Start | Erg{0} until the first cadence>0 sample of the epoch; then 5 steps at 1 Hz (ticks +0,+4,+8,+12,+16) from the 3 s power to the target; ≤1 SetMode per tick (ride start = reconnect rule) | ride start is a §7.8(c) engagement: 10 s settle excluded | compliance excludes the 10 s settle; trainerFollowing checking→following | engine monitor: no non-zero Erg before a pedalling sample | #250 (decided: hold Erg{0} until cadence>0, then §7.5 soft start; §7.8(c) settle); ADR-0002 §7.5 | **missing** (#250) |
+| FM-START-03 | S1 | **Cross-ride state leakage: ride 2 inherits ride 1's release, owed ramp or tally** · policy state held across Load; ride 1 stopped mid soft start or while released | ride 1: ErgSpiral or Dropout then Stop; ride 2: Load+Start on the same link | ride 2 starts like a first ride (no carried release or ramp step) | fresh policy per Load: ergReleased=false, no owed ramp, compliance empty | ergReleased=false; compliance zeroed at Load | per-Load reset tests | ADR-0001 §5 (Per-ride state reset, #3); ADR-0002 §4.4.1 guarantee 8 | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::a_ride_stopped_mid_soft_start_leaves_nothing_to_the_next`<br>`crates/crank-engine/src/erg_tests.rs::a_ride_that_ends_released_leaves_the_next_unreleased`<br>`crates/crank-engine/src/erg_tests.rs::a_new_ride_starts_with_an_empty_compliance_tally` |
+| FM-START-04 | S1 | **Capped rider starts a workout above the cap or with a non-ERG block** · workout over cap_w; Free/SIM block under a cap | RideSetup.cap_w below a block target / with a Free block | no SetMode | Start refused CapExceededTarget / CapRequiresErg; never edits the workout | state.kind=idle; refusal names the cap source | start guard | DESIGN §15.2 (health cap point 2); DESIGN §5.8 | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::a_capped_ride_refuses_free_and_over_cap_blocks_and_starts_otherwise`<br>`crates/crank-engine/src/erg_tests.rs::a_ramp_above_the_cap_is_refused_at_start` |
+| FM-START-05 | S1 | **Planned or coached ride starts under a medical stop or unwell day** · start path bypasses the single core start guard | core start command with medical stop set (no sim fault) | no SetMode | core refuses every planned/coached start; free ride only as logged choice, never with a cap | blocked-start reason shown (workouts-start-blocked etc.) | core start guard | DESIGN §5.8 (Medical stop); #81 | **missing** (#81) |
+| FM-START-06 | S2 | **Another central holds the NEO at connect** · Zwift/Tacx app/phone connected (single central) | new SimFault SecondCentral (#258) | no SetMode (no link) | no ride starts (TrainerNotReady); scan continues | remembered trainer not seen: likely causes (another app, asleep/unpowered) | connect hangs or fails; trainer not seen in scan | ADR-0002 §5 (Single central); #44 (phone hung at connecting) | **missing** (#258) |
+| FM-START-07 | S2 | **Cold start on an unpowered NEO: ERG not honoured at low speed** · rider pedals the unplugged NEO, then connects (#44 11c) | new SimFault UnpoweredStop cold-start variant (#258) | Erg{0} until the first cadence>0 sample of the epoch; then 5 steps at 1 Hz (ticks +0,+4,+8,+12,+16) from the 3 s power to the target; ≤1 SetMode per tick | UNDECIDED | UNDECIDED | #44 check 11c (not yet run) | #44 check 11c; ADR-0002 §7.5 | **missing** (#258) · Q7 |
+| FM-START-08 | S4 | **Pre-control page-71 echo (0x30, FF FF FF 00) read as a disagreement** · NEO answers page 70 before any control page | new SimFault PreControlEcho (#258) | unchanged (no retry on observations) | not a Disagree for any component | trainerFollowing never not_following from this echo | following machine routing | ADR-0002 §4.4 (#44 Part A result) | **missing** (#258) |
+
+### Phase `ramp`
+
+| id | sev | failure mode · cause | fault plan | wanted: trainer | wanted: engine | wanted: UI | detection | guard | test |
+|---|---|---|---|---|---|---|---|---|---|
+| FM-RAMP-01 | S1 | **Reconnect mid-ramp jumps to the block target** · Link(Lost) then Ready during a ramp or ERG block | SimFault::Dropout{at, down} | Erg{0} until the first cadence>0 sample of the epoch; then 5 steps at 1 Hz (ticks +0,+4,+8,+12,+16) from the 3 s power to the target; ≤1 SetMode per tick; nothing while not Ready (commands discarded, never replayed) | paused(trainer_lost) until Ready + re-applied mode + cadence>0; soft start owed | links[trainer] lost→connecting→ready; state.kind=paused reason trainer_lost; trainerFollowing unknown→checking→following | DeviceDisconnected or 8 ticks without a sample | ADR-0002 §6, §7.5 (#231) | `crates/crank-engine/src/tests.rs::after_ready_only_zero_watts_is_sent_until_a_pedalling_sample_then_the_ramp_starts`<br>`crates/crank-engine/src/tests.rs::the_soft_start_never_jumps_and_never_uses_old_epoch_power`<br>`crates/crank-engine/tests/scenarios.rs::reconnect_reissues_the_mode_with_a_soft_start_and_resumes_on_cadence`<br>`crates/crank-ble/src/tests/ble147.rs::commands_sent_while_disconnected_are_discarded_not_replayed` |
+| FM-RAMP-02 | S1 | **Pre-loss power used as soft-start origin** · 3 s window or flow start not reset on a loss | SimFault::Dropout (link path); silent dropout (8 missed ticks) | Erg{0} until the first cadence>0 sample of the epoch; then 5 steps at 1 Hz (ticks +0,+4,+8,+12,+16) from the 3 s power to the target; ≤1 SetMode per tick; origin from the new epoch only | soft-start state reset on every applied link transition and every 8-tick silence | trainerFollowing unknown→checking | origin check | ADR-0002 §7.5 (#231) | `crates/crank-engine/src/tests.rs::pre_loss_power_is_not_a_soft_start_origin_on_the_link_path`<br>`crates/crank-engine/src/tests.rs::pre_loss_power_is_not_a_soft_start_origin_on_the_silence_path`<br>`crates/crank-engine/src/tests.rs::soft_start_state_a_long_flow_does_not_survive_lost_and_ready`<br>`crates/crank-engine/src/tests.rs::soft_start_state_b_short_flow_does_not_survive_lost_and_ready`<br>`crates/crank-engine/src/tests.rs::soft_start_state_c_samples_while_connecting_do_not_survive_ready`<br>`crates/crank-engine/src/tests.rs::p1_a_second_silence_while_already_lost_resets_the_soft_start`<br>`crates/crank-engine/src/tests.rs::p1b_the_same_through_silence_losses_only` |
+| FM-RAMP-03 | S1 | **Soft start spent in silence, or resumed from stale power** · samples stop mid soft start (< 2 s gap) | SimFault::Dropout{down < 2 s} / CadenceStall | holds the last ramp step while samples are missing; restarts from the then-current 3 s power | ramp not advanced without samples | no change | ramp-step monitor | ADR-0002 §7.5 (#231) | `crates/crank-engine/src/tests.rs::the_soft_start_is_not_spent_in_silence_and_starts_from_current_power`<br>`crates/crank-engine/src/tests.rs::the_ramp_restarts_when_samples_stop_mid_ramp_and_return` |
+| FM-RAMP-04 | S1 | **Pedalling sample without power makes the ramp jump** · cadence>0 but power None in the new epoch | scripted TrainerSample (mock link); no sim fault | ramp from 0 W, never a jump to the target | origin 0 W | no change | origin check | ADR-0002 §7.5 (#231: no power value → origin 0 W) | `crates/crank-engine/src/tests.rs::a_pedalling_sample_without_power_ramps_from_zero_and_never_jumps` |
+| FM-RAMP-05 | S1 | **Bare Ready (Connecting→Ready, no Lost) skips the soft start** · link re-established without a Lost event | Link(Connecting) then Link(Ready) (mock link) | Erg{0} until the first cadence>0 sample of the epoch; then 5 steps at 1 Hz (ticks +0,+4,+8,+12,+16) from the 3 s power to the target; ≤1 SetMode per tick | every applied transition away from Ready owes a soft start | trainerFollowing unknown→checking | epoch counter | ADR-0002 §7.5 (#231) | `crates/crank-engine/src/tests.rs::connecting_then_ready_without_lost_is_still_a_soft_start` |
+| FM-RAMP-06 | S1 | **Rider stops pedalling during a soft start and is never released** · release gated on owed/flow state instead of applied torque | SimFault::CadenceStall during the post-loss / post-Free / post-release ramp | Resistance{pct: 0} within 8 ticks (2 s) of cadence < 40 rpm while the last sent command is Erg{w>0} | ergReleased=true; block timer runs; released seconds excluded | ergReleased=true ("ERG released, spin up") | release counter on applied ERG | ADR-0002 §7.4 | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::stopping_during_a_post_loss_soft_start_releases`<br>`crates/crank-engine/src/erg_tests.rs::stopping_at_every_ramp_step_releases_within_two_seconds`<br>`crates/crank-engine/src/erg_tests.rs::stopping_during_the_post_free_ramp_releases`<br>`crates/crank-engine/src/erg_tests.rs::stopping_during_a_post_release_ramp_releases_again` |
+| FM-RAMP-07 | S1 | **Target change mid soft start becomes a step** · skip or block boundary during the ramp | SkipBlock during a soft start (varying block targets) | the ramp continues toward the new target on its 1 Hz schedule | no restart, no direct step | blockIndex advances; no target jump | ramp-step monitor | ADR-0002 §7.5; DESIGN §17.3 rule 5a | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::the_ramp_follows_a_target_that_changes_mid_ramp` |
+| FM-RAMP-08 | S1 | **Live edit (end_set) during a soft-start ramp cuts the ramp** · edit replaces the in-flight ramp | end_set during the ride-start / reconnect ramp | every write is the ramp's own next step toward the new target | edit moves the cursor; ramp kept; settle starts when the ramp ends | editSeq changes; blockIndex per ride_plan | engine proptest (§17.7 test 9) | DESIGN §17.3 rule 5a | **missing** (#240) |
+| FM-RAMP-09 | S1 | **Ramp or soft start commands above the health cap** · clamp applied to block targets only, not each ramp step | RideSetup.cap_w below a ramp end / below the soft-start origin | every Erg{w} ≤ cap_w | cap clamp on every command | cap shown (cap field) | clamp monitor | DESIGN §15.2 (health cap point 3); DESIGN §17.3 rule 2 | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::the_cap_clamps_every_erg_command_of_a_ramp`<br>`crates/crank-engine/src/erg_tests.rs::the_soft_start_from_above_the_cap_never_commands_above_it` |
+| FM-RAMP-10 | S2 | **Stuck ERG echo during a ramp reported as following** · trainer keeps a stale target | SimFault::Echo{Erg, Stuck} | unchanged: 1 Hz ramp, 2 s keep-alive, no retry on observations | not_following ≤ L + 2·P + T_mismatch + r (6 s + r); seconds excluded from compliance | trainerFollowing=not_following; notFollowingComponent=erg | following machine C5/A3 | ADR-0002 §4.4.1 guarantee 1 | pending-merge (#249): `crates/crank-engine/tests/erg_scenarios.rs::a_stuck_echo_is_not_following_within_the_bound_and_excluded_from_compliance` |
+| FM-RAMP-11 | S4 | **Echo lag misread** · echo lag below or above L = 2 s | SimFault::Echo{Erg, Lag(d)} | unchanged | lag < L: following; lag > L: not following | trainerFollowing per lag | following machine R2 | ADR-0002 §4.4.1 (L) | pending-merge (#249): `crates/crank-engine/tests/erg_scenarios.rs::echo_lag_below_l_stays_following_and_lag_above_l_does_not` |
+| FM-RAMP-12 | S4 | **Ramp writes more than once per tick or above the trainer maximum** · 1 Hz update not enforced; clamp missing | ramp block (no fault) | one update per 4 ticks, 1 W resolution, clamped to caps.max_target_w | none | none | control-log check | ADR-0002 §7.3; ADR-0002 §4.4 | `crates/crank-engine/src/tests.rs::ramp_target_moves_once_per_second_and_clamps_to_the_trainer_maximum` |
+
+### Phase `steady`
+
+| id | sev | failure mode · cause | fault plan | wanted: trainer | wanted: engine | wanted: UI | detection | guard | test |
+|---|---|---|---|---|---|---|---|---|---|
+| FM-STEADY-01 | S2 | **BLE link lost mid-interval** · DeviceDisconnected | SimFault::Dropout{at, down} | nothing while not Ready; on Ready: Erg{0} until the first cadence>0 sample of the epoch; then 5 steps at 1 Hz (ticks +0,+4,+8,+12,+16) from the 3 s power to the target; ≤1 SetMode per tick | paused(trainer_lost) from the detecting tick; workout time and block timer frozen; record null; reconnect backoff 0.5/1/2/4 s then 5 s | state.kind=paused reason trainer_lost; links[trainer] lost→connecting→ready; trainerFollowing unknown | Link(Lost) | ADR-0002 §6; ADR-0001 §5 | `crates/crank-engine/tests/scenarios.rs::dropout_mid_interval_freezes_ride_time_and_the_block_timer`<br>`crates/crank-engine/src/tests.rs::link_loss_pauses_and_reconnect_reissues_mode_with_soft_start`<br>`crates/crank-ble/src/tests/ble147.rs::trainer_reconnects_on_the_exact_schedule_reapplies_rider_and_never_restores_mode` |
+| FM-STEADY-02 | S2 | **Silent loss: link Ready but no samples** · notifications stop without a disconnect | silent dropout (8 missed ticks) | Erg{0} re-issued at the detecting tick (link still Ready), then Erg{0} until the first cadence>0 sample of the epoch; then 5 steps at 1 Hz (ticks +0,+4,+8,+12,+16) from the 3 s power to the target; ≤1 SetMode per tick | 8 missed ticks stay workout time (no rollback), then paused(trainer_lost); 7 missed ticks do not lose | state.kind=paused reason trainer_lost after 2 s | 8 ticks without a trainer sample | ADR-0001 §5; ADR-0002 §6 | `crates/crank-engine/tests/scenarios.rs::silent_dropout_keeps_the_two_second_window_in_workout_time`<br>`crates/crank-engine/src/tests.rs::eight_missed_ticks_lose_the_trainer_without_rollback`<br>`crates/crank-engine/src/tests.rs::seven_missed_ticks_then_a_sample_do_not_lose_the_trainer` |
+| FM-STEADY-03 | S2 | **Stale sample resumes the ride after a loss** · pre-loss or Connecting-epoch sample enters the hold | Dropout with a sample stamped before the link event | no target before a pedalling sample of the new epoch | resume needs Ready + re-applied mode + a fresh cadence>0 sample; transition clears the hold | state stays paused trainer_lost | link-epoch tag on samples | ADR-0001 §5 (Link events) | `crates/crank-engine/src/tests.rs::a_sample_from_before_the_loss_cannot_resume_the_ride`<br>`crates/crank-engine/src/tests.rs::a_sample_received_while_connecting_is_not_a_resume_signal`<br>`crates/crank-engine/src/tests.rs::lost_clears_the_trainer_hold`<br>`crates/crank-engine/src/tests.rs::resume_waits_for_link_ready_and_the_reapplied_mode_even_when_pedalling` · #232 |
+| FM-STEADY-04 | S1 | **ERG spiral: cadence collapses under ERG torque** · rider fades; torque = P/ω rises | SimFault::ErgSpiral{from, dip_rpm} | Resistance{pct: 0} after 8 ticks < 40 rpm with target > 0; on ≥ 60 rpm for 8 ticks: soft start, 5 steps at 1 Hz from the 3 s power to the target | ergReleased=true; block timer runs; released seconds excluded; 40 rpm exactly is not low; a 0 W target is never released | ergReleased=true then false | release counter | ADR-0002 §7.4 | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::low_cadence_for_two_seconds_releases_and_sixty_for_two_seconds_re_engages`<br>`crates/crank-engine/tests/erg_scenarios.rs::an_erg_spiral_is_released_and_re_engaged_with_a_soft_start`<br>`crates/crank-engine/src/erg_tests.rs::exactly_forty_rpm_is_not_low_cadence`<br>`crates/crank-engine/src/erg_tests.rs::a_zero_target_is_never_released` |
+| FM-STEADY-05 | S2 | **Power reported with cadence 0** · NEO reports 4–5 W at 0 rpm (#44 hand-spin); coasting | new SimFault PowerAtZeroCadence{watts} (#258) | Resistance{pct: 0} after 8 ticks < 40 rpm with target > 0 (§7.4) | UNDECIDED | UNDECIDED | release counter; stopped_pedalling needs cadence = 0 and power = 0 | ADR-0002 §7.4; ADR-0001 §5 (stopped_pedalling) | **missing** (#258) · Q1 |
+| FM-STEADY-06 | S1 | **Target above the health cap reaches the trainer** · ride got past the start guard; ± offset or coach change | RideSetup.cap_w below a block target | every Erg{w} ≤ cap_w | clamp at the control point | cap field set | clamp monitor | DESIGN §15.2 (health cap point 3) | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::the_policy_clamps_a_target_above_the_cap_even_if_a_ride_got_through` |
+| FM-STEADY-07 | S1 | **Measured power above the cap goes unflagged** · rider overpowers; trainer ripple | measured power above the cap (rider overpowers, no new sim fault) | unchanged (clamp already applied) | one CapExceeded{at, watts, forS} per episode; a sample at or below ends it | row 1 warning status; coach ease_off ask; warning tone | trigger: measured power > cap_w × 1.03 sustained for ≥ 3 s (12 ticks); one sample at or below ends the episode (DESIGN §15.2, #245) | DESIGN §15.2 (health cap point 3) | **missing** (#245) |
+| FM-STEADY-08 | S2 | **Trainer not following (stuck, silent, dropped write) in steady ERG** · stale target, page-71 silent, write lost | SimFault::Echo{Erg, Stuck \| Silent \| DropWrites} | unchanged: keep-alive every 2 s, no retry on observations | stuck: not_following; silent: checking 5 s then unknown; recovers on replies | trainerFollowing=not_following (notFollowingComponent=erg) or unknown (no component named) | following machine C5/C7/A2/A3 | ADR-0002 §4.4.1 guarantees 1, 2, 7 | pending-merge (#249): `crates/crank-engine/tests/erg_scenarios.rs::a_silent_page_71_goes_unknown_after_t_unknown_and_recovers`<br>`crates/crank-engine/src/erg_tests.rs::a_silent_trainer_names_no_component`<br>`crates/crank-engine/src/erg_tests.rs::silence_is_t_unknown_of_required_time_and_all_silent_is_unknown` |
+| FM-STEADY-09 | S4 | **Single, duplicate or burst replies verify a component** · 0x4E copies of a reply; delayed burst | duplicated page-71 frames (driver transport) | unchanged | following only after N_follow = 3 agreeing replies spanning T_verify = 2 s | trainerFollowing stays checking | following machine C3 | ADR-0002 §4.4 (#44 repeated replies); ADR-0002 §4.4.1 guarantee 5 | `crates/crank-ble/src/tests.rs::receive_pipeline_preserves_duplicate_replies_and_transport_loss`<br>`crates/crank-ble/src/tests.rs::every_reply_is_observed_once_in_arrival_order_with_all_status_codes` |
+| FM-STEADY-10 | S4 | **Isolated lost page-71 replies flag a healthy trainer silent** · NEO drops 7.8 % of replies | new SimFault ReplyLoss{p} (#258) | unchanged | silent only after T_unknown(c) = 5 s ERG / 9 s SIM of required time | trainerFollowing stays following | following machine C7 | ADR-0002 §4.4.1 (T_unknown, #44 Part A) | **missing** (#258) |
+| FM-STEADY-11 | S2 | **GATT write failure** · BLE write error | write fault on the transport (crank-ble fake transport) | Fault(DeviceError::Gatt), no Delivered; next keep-alive within 2 s | Fault is not an input to the following machine | UNDECIDED | GATT error | ADR-0002 §4.4 (Transport acknowledgement) | `crates/crank-ble/src/tests.rs::write_failure_faults_without_delivery_and_link_loss_stops_writer` · Q5 |
+| FM-STEADY-12 | S2 | **Garbled FE-C frames** · bad checksum, truncated or malformed notification | new SimFault GarbledPage (#258) | unchanged | faulted frame dropped; valid successors still decoded | UNDECIDED | DeviceError fault on the malformed frame | ADR-0002 §4.3 | **missing** (#258) · Q5 |
+| FM-STEADY-13 | S4 | **Unsupported-page reply (NotControl + NotSupported) read as a disagreement** · page-70 request for an unsupported page overwrites page 71's last-page field (#226) | new SimFault UnsupportedPage (#258) | unchanged | R1: neutral in every mode, whatever the status | trainerFollowing unchanged | following machine R1 | ADR-0002 §4.4.1 R1; #226 | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::an_unsupported_page_request_reply_is_neutral_in_every_mode`<br>`crates/crank-ble/src/routing_tests.rs::it_is_neutral_to_the_following_machine_in_every_mode` · #258 |
+| FM-STEADY-14 | S2 | **Second central contends mid-ride** · phone/Zwift tries to connect while crank holds the NEO | new SimFault SecondCentral (#258) | unchanged | ride unaffected | no change | none needed (#44: crank unaffected) | ADR-0002 §5 (Single central); #44 | **missing** (#258) |
+| FM-STEADY-15 | S2 | **Clock stall: ticks run late in a burst** · engine task stalled (GC-free, but host load / sleep) | new SimFault ClockStall{from, dur} (#258) | ≤ 1 SetMode per tick; writer coalesces, newest mode wins | missed ticks replayed in order with their own samples; session time never drifts; link transitions inside the stall applied at its end | lateSamples counts late arrivals | tick catch-up | ADR-0001 §5 (Tick scheduling and catch-up); #232 | **missing** (#258) |
+| FM-STEADY-16 | S1 | **App crash mid-ride** · process dies (panic, kill, power) | new SimFault AppCrash (#258) | UNDECIDED | next process that acquires ride.lock closes the ride as aborted with data intact (≤ 5 s lost) | review shows the aborted ride | ride.lock recovery at next start | ADR-0001 §6 (Crash safety); #50 | **missing** (#258) · Q4 |
+| FM-STEADY-17 | S3 | **Storage write failure** · disk full, I/O error, lock lost | new SimFault StoreWriteFailure{at} (#258) | unchanged | first failure kept in record_error; recording stops; the ride continues | recordError (≤ 256 bytes) | recorder error | ADR-0001 §5; ADR-0001 §6 | **missing** (#258) |
+| FM-STEADY-18 | S3 | **HR strap lost** · strap off, battery, range | SimFault::HrLoss{at, down} | unchanged | ride continues; HR null after 12 ticks hold; HR reconnect backoff; hr_recovery falls back to maxS; HR steering frozen | links[hr] lost; HR widgets null | HR link event / silence | ADR-0001 §5; ADR-0002 §6 (HR strap dropout); ADR-0002 §7.7 | `crates/crank-engine/tests/scenarios.rs::hr_loss_nulls_hr_while_the_ride_continues`<br>`crates/crank-engine/src/tests.rs::hr_values_hold_three_seconds_then_null`<br>`crates/crank-ble/src/tests/ble147.rs::hr_strap_dropout_reconnects_on_the_backoff_schedule` |
+| FM-STEADY-19 | S3 | **HR garbage or spikes** · bad contact, interference, framing errors | new SimFault HrGarbage / HrSpike (#258) | UNDECIDED | UNDECIDED | UNDECIDED | HRS parser fault on framing errors | ADR-0002 §5 (Heart rate); ADR-0002 §7.7 | **missing** (#258) · Q6 |
+| FM-STEADY-20 | S3 | **Compliance counts seconds it must exclude** · suspect/not_following/released/paused/settle seconds counted | Echo faults, ErgSpiral, pauses (no new fault) | unchanged | every ride second in exactly one bucket; excluded: settle, released, paused, suspect, not_following, 0 W waiting | compliance tally | compliance property | ADR-0002 §7.8; ADR-0002 §4.4.1 (aggregate) | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::every_ride_second_lands_in_exactly_one_compliance_bucket`<br>`crates/crank-engine/src/erg_tests.rs::compliance_excludes_suspect_and_not_following_seconds_only`<br>`crates/crank-engine/src/erg_tests.rs::paused_and_released_seconds_are_excluded`<br>`crates/crank-engine/src/erg_tests.rs::seconds_waiting_at_zero_watts_do_not_count_against_the_block_target`<br>`crates/crank-engine/src/erg_tests.rs::a_block_boundary_settles_only_when_the_target_jumps` |
+| FM-STEADY-21 | S2 | **Dead or stalled stream consumer blocks the ride** · webview stalled, hidden or closed; channel full | consumer never reads or acks (no device fault) | unchanged | tick and record never wait on a consumer; try_send; a closed or full stream is dropped and reaped; ≤ 16 streams | frames stop for that window; reopen gets resync + current status | flow control | ADR-0001 §4.3 (Flow control, #219 notes) | `crates/crank-engine/tests/streams.rs::a_stalled_consumer_never_blocks_the_ride_or_the_record`<br>`crates/crank-engine/tests/streams.rs::a_dead_subscriber_is_dropped_and_the_ride_carries_on`<br>`crates/crank-engine/src/stream/tests.rs::a_consumer_that_never_reads_or_acks_is_bounded`<br>`crates/crank-engine/src/stream/tests.rs::a_blocked_dead_stream_is_reaped`<br>`crates/crank-engine/src/stream/tests.rs::closed_receivers_are_reaped_without_anything_to_send` |
+| FM-STEADY-22 | S2 | **Filter-chain cost overruns the tick** · uncapped chains × subscriptions × streams | subscriptions at the caps (no device fault) | unchanged | ≤ 4 filters, SMA/EMA ≤ 300 s, median ≤ 256 (InvalidFilter); tick cost bounded at the caps | no change | subscribe validation; lateSamples | ADR-0001 §4.3 (Chain caps) | `crates/crank-engine/src/stream/tests.rs::filter_chains_are_capped_and_the_caps_themselves_are_accepted`<br>`crates/crank-engine/src/stream/tests.rs::the_tick_cost_stays_bounded_at_every_cap` · #252 |
+| FM-STEADY-23 | S4 | **Frame over the IPC budget or lost discrete state** · 64 subscriptions, 8 nudges, maximal status | maximal frame state (no device fault) | unchanged | frames ≤ 8 000 bytes; samples split; discrete state over budget → bare resync frame | resync=true → UI re-reads ride_status / device_links / stream_snapshot | byte budget | ADR-0001 §4.3 (Byte budget) | `crates/crank-engine/src/stream/tests.rs::every_frame_stays_under_the_byte_budget_at_every_cap`<br>`crates/crank-engine/src/stream/tests.rs::discrete_state_over_budget_becomes_the_bare_resync_frame`<br>`crates/crank-engine/src/stream/tests.rs::flow_control_holds_over_arbitrary_interleavings` |
+| FM-STEADY-24 | S4 | **Non-finite value poisons a filter chain** · NaN/±∞ from a source or chain | non-finite source value (no device fault) | unchanged | non-finite source → missing sample; non-finite output → null | v=null (a gap) | chain input/output check | ADR-0001 §4.3 (Non-finite values are gaps) | `crates/crank-engine/src/stream/tests.rs::non_finite_values_are_gaps_and_do_not_poison_the_chain` · #252 |
+| FM-STEADY-25 | S4 | **60× simulation floods the UI channel** · frame pacing scaled with simulated time | VirtualClock at 10× / 60× | unchanged | session time scales; frame spacing ≥ 100 ms and 2 Hz heartbeat on Clock::pacing_now | ≤ 10 frames/s, status 2 Hz | pacing axis | ADR-0001 §4.3 (Rates; #219 notes) | `crates/crank-engine/tests/streams.rs::pacing_does_not_scale_with_speed_60x`<br>`crates/crank-engine/tests/streams.rs::pacing_does_not_scale_with_speed_10x`<br>`crates/crank-engine/tests/streams.rs::frames_stay_within_ten_hertz_and_status_beats_at_two_hertz` |
+
+### Phase `released`
+
+| id | sev | failure mode · cause | fault plan | wanted: trainer | wanted: engine | wanted: UI | detection | guard | test |
+|---|---|---|---|---|---|---|---|---|---|
+| FM-REL-01 | S1 | **Bare Ready while released re-engages ERG at low cadence** · a link epoch change cleared released (round-4 blocker: Erg{300} at 20 rpm) | Dropout (or Connecting→Ready) while released, cadence 20 rpm | no Erg{w>0}: Erg{0} until §7.4 re-engage (≥ 60 rpm for 8 ticks), then soft start from the 3 s power | epoch change keeps released, owes a soft start, resets counters | ergReleased stays true | release monitor rule 5 | ADR-0002 §7.4, §7.5 (#231) | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::a_ready_while_released_at_low_cadence_never_commands_erg`<br>`crates/crank-engine/src/erg_tests.rs::a_bare_ready_while_released_leaves_release_only_through_the_cadence_criteria`<br>`crates/crank-engine/src/erg_tests.rs::connecting_then_ready_while_released_is_the_same`<br>`crates/crank-engine/src/erg_tests.rs::old_link_cadence_does_not_count_toward_re_engagement` |
+| FM-REL-02 | S1 | **Leaving release jumps to the block target** · release exit keeps the old ramp state | ErgSpiral then recovery to ≥ 60 rpm | soft start: 5 steps at 1 Hz from the 3 s power to the block target | released → engaged; settle = ramp 5 s + 5 s | ergReleased=false | ramp-step monitor | ADR-0002 §7.4, §7.5, §7.8(c) | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::leaving_a_release_resets_the_ramp_so_the_target_is_never_a_jump`<br>`crates/crank-engine/src/erg_tests.rs::an_engagement_settles_the_ramp_plus_five_seconds` |
+| FM-REL-03 | S1 | **Release cleared by a Free block** · leave_erg cleared released (mutant M7) | ErgSpiral, then a Free block, then an ERG block at low cadence | no Erg{w>0} until ≥ 60 rpm for 8 ticks (counted in Free too), then soft start | released persists across Free; left only via §7.4 | ergReleased stays true through the Free block | release monitor rule 5 | ADR-0002 §7.4 | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::a_release_survives_a_free_block`<br>`crates/crank-engine/src/erg_tests.rs::the_re_engagement_criteria_are_evaluated_in_a_free_block_too` |
+| FM-REL-04 | S1 | **Live edit while released sends a target** · edit moves the cursor and sends its block target | end_set / Skip while released | no target until the re-engagement rules produce one (Erg{0}, then soft start to the then-current block) | edit moves state only | editSeq changes; ergReleased stays true | engine proptest (§17.7 test 8) | DESIGN §17.3 rule 6 | **missing** (#240) |
+
+### Phase `free_sim`
+
+| id | sev | failure mode · cause | fault plan | wanted: trainer | wanted: engine | wanted: UI | detection | guard | test |
+|---|---|---|---|---|---|---|---|---|---|
+| FM-FREE-01 | S1 | **ERG target left active when entering Free** · Free sent as "nothing"; trainer keeps its last control page | ERG block then Free block | Free sent explicitly as flat-road SIM: page 50 defaults, page 51 grade 0 % | none | none | control-log check; HIL check 12 | ADR-0002 §7.9 | `crates/crank-devices/tests/contract.rs::free_is_explicit_flat_road_sim_with_adr_defaults`<br>`crates/crank-devices/tests/sim_driver.rs::free_is_explicit_flat_sim` · #44 |
+| FM-FREE-02 | S1 | **Free → ERG block steps straight to the target** · leaving free/SIM not treated as an engagement | Free block then ERG block | soft start from the 3 s power (5 × 1 Hz) | soft start owed on leaving free/SIM; settle 10 s | no target jump | ramp-step monitor | ADR-0002 §7.5 item 5; DESIGN §17.3 rule 5b | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::leaving_free_without_a_loss_also_ramps_from_the_current_power` |
+| FM-FREE-03 | S1 | **Loss during a Free block not repaid when work starts** · soft start completed inside the Free block | SimFault::Dropout during a Free block | on the next ERG block: Erg{0} until pedalling, then soft start | soft start repaid only by a completed ERG ramp | no target jump | ramp-step monitor | ADR-0002 §7.5 item 5 (#231) | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::a_loss_during_a_free_block_is_repaid_when_work_starts` |
+| FM-FREE-04 | S1 | **Dropped SIM page 51 after ERG leaves the ERG target active** · track write lost; trainer keeps ERG | SimFault::Echo{Track, DropWrites \| Silent} | unchanged: SIM pages alternate 1 s apart, each every 2 s | track not_following within T_decide = 10 s | trainerFollowing=not_following; notFollowingComponent=track | following machine (R5/C5, C7) | ADR-0002 §4.4.1 (#32 scenario ERG → free ride with page 51 dropped) | pending-merge (#249): `crates/crank-engine/tests/erg_scenarios.rs::a_free_ride_with_track_page_silent_is_not_following_naming_track`<br>`crates/crank-engine/src/erg_tests.rs::a_mode_toggle_cannot_mask_a_missing_track_component` |
+| FM-FREE-05 | S1 | **Live edit enters a Free/SIM block under a cap or into ERG without a soft start** · edit validated on planned, not controlled, targets | end_set / suppress making a Free or ERG block current | no non-ERG mode under a cap; entering ERG from Free: soft start from the 3 s power | edit refused cap_requires_erg / cap_exceeded_target; refused edit changes nothing | refusal line in the lane | edit validator | DESIGN §17.3 rules 1, 5b | **missing** (#240) |
+
+### Phase `paused`
+
+| id | sev | failure mode · cause | fault plan | wanted: trainer | wanted: engine | wanted: UI | detection | guard | test |
+|---|---|---|---|---|---|---|---|---|---|
+| FM-PAUSE-01 | S1 | **User pause leaves the ERG target applied** · rider presses Pause in ERG; the engine keeps the last Erg{w} | EngineCmd::Pause | Resistance{pct: 0} on the pause tick, held while paused; on resume: soft start, 5 steps at 1 Hz from the 3 s power to the target (Erg{0} until a pedalling sample) | paused(user): workout time and block timer frozen; session time runs; record null | state.kind=paused reason user, at once | command | DESIGN §5.2 (Paused (user): trainer at 0 % resistance, ERG re-engages with the soft start); ADR-0001 §5 | **missing** (#264) |
+| FM-PAUSE-02 | S2 | **Stopped pedalling not detected, or resumed on a stale sample** · cadence = 0 and power = 0 | SimFault::CadenceStall{from, until} | release first: Resistance{pct: 0} after 8 ticks < 40 rpm with target > 0 (§7.4) | paused(stopped_pedalling) after 12 zero ticks (no rollback); resume on cadence > 0; one non-zero tick resets the run | state.kind=paused reason stopped_pedalling; ergReleased=true | 12-tick zero run | ADR-0001 §5; ADR-0002 §7.4 | `crates/crank-engine/tests/scenarios.rs::stopped_pedalling_pauses_then_resumes_on_cadence`<br>`crates/crank-engine/src/tests.rs::stopped_pedalling_pauses_after_twelve_zero_ticks_and_resumes_on_cadence`<br>`crates/crank-engine/src/tests.rs::one_nonzero_tick_resets_the_stopped_run` |
+| FM-PAUSE-03 | S2 | **Rider's pause lost across a reconnect** · pause flags not independent | EngineCmd::Pause then Dropout | nothing while not Ready; on Ready: Erg{0} (pedalling rules) | user and trainer_lost are independent flags (priority lost, user, stopped); user pause survives | reason trainer_lost, then user | pause flags | ADR-0001 §5 (#217 notes) | `crates/crank-engine/src/tests.rs::user_pause_survives_a_trainer_loss_and_reconnect` |
+| FM-PAUSE-04 | S2 | **Unpowered NEO shuts down when the rider stops** · flywheel-powered NEO depowers (#44 11b) | new SimFault UnpoweredStop (#258) | nothing while not Ready; after reconnect: Erg{0} until the first cadence>0 sample of the epoch; then 5 steps at 1 Hz (ticks +0,+4,+8,+12,+16) from the 3 s power to the target; ≤1 SetMode per tick | paused(stopped_pedalling) then trainer_lost; reconnect loop runs while the ride is active | links[trainer] lost→connecting (attempt n)→ready | Link(Lost) after the stop | ADR-0002 §6; #44 check 11b | **missing** (#258) |
+| FM-PAUSE-05 | S4 | **Paused ticks publish stale values** · hold continues while paused | EngineCmd::Pause | unchanged | paused ticks record null for every metric and workout_s | samples v=null while paused | stream null | ADR-0001 §5; ADR-0001 §4.3 (#219 notes) | `crates/crank-engine/tests/streams.rs::paused_ticks_publish_null`<br>`crates/crank-engine/src/tests.rs::block_timer_and_block_boundaries_freeze_while_paused` |
+| FM-PAUSE-06 | S1 | **Live edit while paused or lost sends torque** · edit sends the new block target at once | end_set / Skip while paused, trainer lost or reconnecting | no target write until the re-engagement rules produce one: Erg{0}, then soft start to the then-current block | edit moves state only | editSeq changes; state stays paused | engine proptest (§17.7 test 8) | DESIGN §17.3 rule 6; DESIGN §17.2 (Interactions) | **missing** (#240) |
+
+### Phase `finishing`
+
+| id | sev | failure mode · cause | fault plan | wanted: trainer | wanted: engine | wanted: UI | detection | guard | test |
+|---|---|---|---|---|---|---|---|---|---|
+| FM-FIN-01 | S3 | **Final second of the ride not accounted** · finishing tick skipped by the policy | ride to its last block (no fault) | none (finishing tick sends nothing) | finishing tick accounted: counted + excluded = session seconds | compliance final | compliance property | ADR-0002 §7.8 | pending-merge (#249): `crates/crank-engine/src/erg_tests.rs::a_finished_ride_accounts_its_final_second` |
+| FM-FIN-02 | S1 | **Ride ends: what the trainer is left in** · last block completes, End, or every EngineHandle dropped | last block completes / EngineCmd::Stop / drop all handles | UNDECIDED | finished; record closed via RideRecorder::finish; ride-active gate cleared; partial last second not recorded | state.kind=finished | block end / command | ADR-0001 §5 (Shutdown); ADR-0002 §7.9 | `crates/crank-engine/src/tests.rs::skip_jumps_to_the_next_block_and_finishing_the_last_ends_the_ride`<br>`crates/crank-engine/tests/scenarios.rs::dropping_every_handle_mid_ride_closes_the_record_and_clears_the_gate`<br>`crates/crank-engine/src/tests.rs::ride_gate_follows_load_finish_and_unload` · Q2 |
+| FM-FIN-03 | S1 | **Symptom report does not stop the ride and release the trainer** · Report symptom binding or End-dialog symptom choice | core symptom command (no sim fault) | Resistance{pct: 0} (trainer released) | ride stops at once and is closed; medical stop set; nothing resumes the ride | ride-symptom-stop screen: emergency line, "stop pedalling, sit down" | command | DESIGN §5.8 (During a ride); #81 | **missing** (#81) |
+| FM-FIN-04 | S2 | **Reconnect loop keeps running after the ride ends** · RideGate not cleared on finish/stop/release | Dropout, then Stop during backoff | nothing | backoff loop stops when the gate goes inactive, on Disconnect or Release | links[trainer] lost (surfaced, not retried) | RideGate | ADR-0002 §6 (Implementation #147) | `crates/crank-ble/src/tests/ble147.rs::ride_ending_during_backoff_stops_the_loop`<br>`crates/crank-ble/src/tests/ble147.rs::release_during_backoff_stops_the_loop`<br>`crates/crank-engine/src/tests.rs::ride_gate_stays_active_while_paused_and_clears_on_stop` |
+
+<!-- fmea:table:end -->
+
+## Open questions
+
+The spec is silent on these; the rows say `UNDECIDED` until the owner or architect decides, and the decision is
+written into the ADR or DESIGN section first.
+
+**Q1** (FM-STEADY-05). The NEO reports 4–5 W at 0 rpm (#44 hand-spin). `stopped_pedalling` needs cadence = 0
+**and** power = 0 for 3 s (ADR-0001 §5), so such a ride never auto-pauses. Should cadence = 0 alone (or power
+below a threshold) count as stopped? What should the UI show meanwhile?
+
+**Q2** (FM-FIN-02, S1). What does the engine send the trainer when a ride ends (last block, End, every handle
+dropped)? ADR-0002 §7.9 rules out silence after ERG for `Free`, and DESIGN §5.8 specifies `Resistance{pct: 0}` only
+for a symptom stop. Is the last ERG target left active on the trainer after a normal end? (A paused ride is
+decided: DESIGN §5.2, FM-PAUSE-01.)
+
+*Q3 (trainer mode during a user pause) is decided by DESIGN §5.2: 0 % resistance, soft start on resume (FM-PAUSE-01, #264).*
+
+**Q4** (FM-STEADY-16). After an app crash mid-ERG the central vanishes. Does the NEO keep the last ERG target,
+fall back to its standalone mode, or release? ADR-0002 §6 says only "may have been in its standalone mode" (HIL
+check 11). Is a mitigation needed beyond §6's soft start on the next connect?
+
+**Q5** (FM-STEADY-11, FM-STEADY-12). What does the UI show for `TrainerEvent::Fault` (GATT write failure, a
+malformed frame)? It is not an input to the following machine (§4.4.1), and no status field or link change
+carries it.
+
+**Q6** (FM-STEADY-19). Is there a plausibility filter for HR (bpm range, step limit, sensor-contact bit) before HR
+steering (ADR-0002 §7.7), the record and the coach? What does the engine do with a spike?
+
+**Q7** (FM-START-07). Cold start on an unpowered NEO (#44 11c): if ERG targets are not honoured at low speed while
+the page-71 echo agrees, the following machine cannot see it (it compares echoes, not power). #44 expects
+`not_following`, not a fault. Which signal is meant: a power-versus-target check, or a page-25 target-limit flag
+(§7.6)?
+
+## Follow-ups
+
+- #258: sim fault modes for every `missing` row that cites it.
+- #250: amend ADR-0002 §7.5 / §7.8 (c) for the ride start; flip `the_first_block_is_not_settled_and_a_ride_start_is_not_an_engagement` in #249.
+- #44 Part B: checks 11a–c and 12 calibrate FM-START-07, FM-PAUSE-04 and FM-FREE-01.
+- When #249 merges, its rows change from `pending-merge` to `guarded` (the validator then greps their tests).

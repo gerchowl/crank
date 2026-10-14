@@ -714,9 +714,7 @@ impl TrainerDriver for SimTrainer {
             }
             rig.attach(|w| {
                 if w.trainer.tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
-                    return Err(DeviceError::ConnectFailed(
-                        "driver already connected".into(),
-                    ));
+                    return Err(DeviceError::AlreadyConnected);
                 }
                 w.core
                     .set_mass_kg(f64::from(rider.rider_kg) + f64::from(rider.bike_kg));
@@ -768,9 +766,7 @@ impl HeartRateDriver for SimHeart {
             }
             rig.attach(|w| {
                 if w.heart.tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
-                    return Err(DeviceError::ConnectFailed(
-                        "driver already connected".into(),
-                    ));
+                    return Err(DeviceError::AlreadyConnected);
                 }
                 w.next_generation += 1;
                 w.heart = HeartSide {
