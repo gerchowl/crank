@@ -2,7 +2,7 @@
 (250000, true, Ok(AntFrame { msg_type: Broadcast, channel: 5, page: Trainer(TrainerData { event_count: 255, cadence_rpm: Some(90), accumulated_power_w: 4660, power_w: Some(2748), status: 7, target_limit: 2, state: 3, lap_toggle: true }) }))
 (500000, true, Ok(AntFrame { msg_type: Broadcast, channel: 5, page: GeneralFe(GeneralFe { equipment_type: 25, elapsed_s: 0.0, distance_m: 0, speed_mps: None, heart_rate_bpm: None, state: 3, lap_toggle: false, flags: 0 }) }))
 (750000, true, Ok(AntFrame { msg_type: Broadcast, channel: 5, page: Trainer(TrainerData { event_count: 0, cadence_rpm: None, accumulated_power_w: 0, power_w: None, status: 15, target_limit: 3, state: 3, lap_toggle: false }) }))
-(1000000, true, Ok(AntFrame { msg_type: Broadcast, channel: 5, page: Capabilities(FeCapabilities { max_resistance_n: Some(4660), modes: 7 }) }))
+(1000000, true, Ok(AntFrame { msg_type: Broadcast, channel: 5, page: Capabilities(FeCapabilities { max_resistance_n: 4660, modes: 7 }) }))
 (1250000, true, Ok(AntFrame { msg_type: Broadcast, channel: 5, page: CommandStatus(CommandStatus { last_page: 49, sequence: 255, status: 4, echo: [255, 255, 33, 3] }) }))
 (1500000, true, Ok(AntFrame { msg_type: Broadcast, channel: 5, page: Manufacturer(ManufacturerInfo { hardware_revision: 7, manufacturer_id: 4660, model: 22136 }) }))
 (1750000, true, Ok(AntFrame { msg_type: Broadcast, channel: 5, page: Product(ProductInfo { software_revision: 7, supplemental_revision: Some(9), serial: 305419896 }) }))

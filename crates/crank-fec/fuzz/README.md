@@ -7,13 +7,14 @@ rust-overlay input, including rust-src for cargo-fuzz's build-std. It leaves the
 default production toolchain unchanged. From the repository root:
 
 ```sh
-export CARGO_BUILD_JOBS=8
-export CARGO_TARGET_DIR=$HOME/.cache/crank-target/crank-fuzz
+export CARGO_BUILD_JOBS=<jobs>              # optional; defaults to all cores
+export CARGO_TARGET_DIR=<task-specific-target-dir>
 nix develop .#fuzz -c cargo fuzz build --fuzz-dir crates/crank-fec/fuzz --target-dir "$CARGO_TARGET_DIR" decode
 nix develop .#fuzz -c cargo fuzz run --fuzz-dir crates/crank-fec/fuzz --target-dir "$CARGO_TARGET_DIR" decode -- -max_total_time=60 -max_len=512
 ```
 
-Choose a task-specific target directory on other hosts. Wrap long commands in
+Choose a task-specific target directory and, on shared hosts, a job count
+(the `fuzz` devShell does not set `CARGO_BUILD_JOBS`). Wrap long commands in
 watcher-s1 as AGENTS.md requires. AddressSanitizer, debug assertions and overflow
 checks use cargo-fuzz defaults. The target tests raw input and also wraps 8-byte
 inputs in a checksum-valid envelope to reach every page decoder. Committed
