@@ -16,6 +16,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 mod ble147;
+mod end_to_end;
 
 fn frame(page: [u8; 8]) -> Vec<u8> {
     let mut frame = vec![0xa4, 9, 0x4e, 5];
