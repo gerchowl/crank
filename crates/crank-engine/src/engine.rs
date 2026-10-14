@@ -1059,9 +1059,8 @@ impl Engine {
         let Some(control) = control else {
             return false;
         };
-        if s.last_sent == Some(END_MODE) {
-            return false;
-        }
+        // Always sent, even when the last command is already `END_MODE`: that command (a pause,
+        // a §7.4 release) may still be queued, and only its delivery is waited for.
         // The control channel holds 64 commands and the engine sends at most one per tick,
         // so a full channel means a driver that is not running: nothing to wait for.
         if control.try_send(TrainerCommand::SetMode(END_MODE)).is_err() {

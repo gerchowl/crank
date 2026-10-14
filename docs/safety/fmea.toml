@@ -37,10 +37,15 @@ cause = "rider not yet pedalling when Start is pressed"
 fault_plan = "none needed: no sample with cadence>0 after Start"
 detection = "engine monitor: no non-zero Erg before a pedalling sample"
 guard = "#250 (decided: hold Erg{0} until cadence>0, then §7.5 soft start; §7.8(c) settle); ADR-0002 §7.5"
-status = "missing"
-test = "missing"
+status = "guarded"
+test = [
+  "crates/crank-engine/src/erg_tests.rs::a_ride_start_holds_zero_watts_until_cadence_then_ramps_from_the_3s_power",
+  "crates/crank-engine/src/erg_tests.rs::a_ride_start_is_an_engagement_and_its_settle_is_excluded",
+  "crates/crank-engine/src/erg_tests.rs::a_free_first_block_is_unchanged_and_the_next_erg_block_owes_the_soft_start",
+  "crates/crank-engine/src/tests.rs::the_soft_start_never_jumps_and_never_uses_old_epoch_power",
+]
 issue = 250
-note = "#249 pins the opposite (current) behaviour in the_first_block_is_not_settled_and_a_ride_start_is_not_an_engagement; ADR-0002 §7.5/§7.8 text not yet amended"
+note = "fixed in #269; ADR-0002 §7.5/§7.8(c) amended 2026-10-14"
 wanted.trainer = "Erg{0} until the first cadence>0 sample of the epoch; then 5 steps at 1 Hz (ticks +0,+4,+8,+12,+16) from the 3 s power to the target; ≤1 SetMode per tick (ride start = reconnect rule)"
 wanted.engine = "ride start is a §7.8(c) engagement: 10 s settle excluded"
 wanted.ui = "compliance excludes the 10 s settle; trainerFollowing checking→following"
@@ -1016,10 +1021,16 @@ cause = "rider presses Pause in ERG; the engine keeps the last Erg{w}"
 fault_plan = "EngineCmd::Pause"
 detection = "command"
 guard = "DESIGN §5.2 (Paused (user): trainer at 0 % resistance, ERG re-engages with the soft start); ADR-0001 §5"
-status = "missing"
-test = "missing"
+status = "guarded"
+test = [
+  "crates/crank-engine/src/erg_tests.rs::a_user_pause_commands_zero_resistance_and_the_resume_soft_starts",
+  "crates/crank-engine/src/erg_tests.rs::a_resume_without_cadence_holds_zero_watts_until_the_rider_pedals",
+  "crates/crank-engine/src/erg_tests.rs::a_release_survives_a_user_pause_and_is_left_only_by_sixty_rpm",
+  "crates/crank-engine/src/erg_tests.rs::stopped_pedalling_leaves_no_torque_on_the_trainer",
+  "crates/crank-engine/src/tests.rs::the_soft_start_never_jumps_and_never_uses_old_epoch_power",
+]
 issue = 264
-note = "engine state and stream already guarded: crates/crank-engine/tests/scenarios.rs::manual_pause_freezes_workout_time_and_leaves_gaps, crates/crank-engine/tests/streams.rs::status_reports_a_pause_at_once_and_session_time_keeps_running"
+note = "fixed in #269; engine state and stream also guarded: crates/crank-engine/tests/scenarios.rs::manual_pause_freezes_workout_time_and_leaves_gaps, crates/crank-engine/tests/streams.rs::status_reports_a_pause_at_once_and_session_time_keeps_running"
 wanted.trainer = "Resistance{pct: 0} on the pause tick, held while paused; on resume: soft start, 5 steps at 1 Hz from the 3 s power to the target (Erg{0} until a pedalling sample)"
 wanted.engine = "paused(user): workout time and block timer frozen; session time runs; record null"
 wanted.ui = "state.kind=paused reason user, at once"
@@ -1142,9 +1153,20 @@ test = [
   "crates/crank-engine/src/tests.rs::skip_jumps_to_the_next_block_and_finishing_the_last_ends_the_ride",
   "crates/crank-engine/tests/scenarios.rs::dropping_every_handle_mid_ride_closes_the_record_and_clears_the_gate",
   "crates/crank-engine/src/tests.rs::ride_gate_follows_load_finish_and_unload",
+  "crates/crank-engine/src/erg_tests.rs::a_finished_ride_commands_the_end_mode_before_the_gate_clears",
+  "crates/crank-engine/src/erg_tests.rs::stopping_mid_ride_commands_the_end_mode_before_the_gate_clears",
+  "crates/crank-engine/src/erg_tests.rs::the_gate_does_not_wait_for_a_trainer_that_is_gone_or_silent",
+  "crates/crank-engine/src/erg_tests.rs::a_late_delivery_of_an_earlier_mode_does_not_clear_the_gate",
+  "crates/crank-engine/src/tests.rs::the_soft_start_never_jumps_and_never_uses_old_epoch_power",
+  "crates/crank-ble/src/tests.rs::delivered_waits_for_every_page_of_a_multi_page_mode",
+  "crates/crank-ble/src/tests/end_to_end.rs::dropping_every_handle_mid_erg_leaves_page_48_last",
+  "crates/crank-ble/src/tests/end_to_end.rs::stop_then_drop_leaves_page_48_last",
+  "crates/crank-ble/src/tests/end_to_end.rs::pause_then_drop_within_a_writer_tick_leaves_page_48_last",
+  "crates/crank-ble/src/tests/end_to_end.rs::pause_stop_drop_leaves_page_48_last",
+  "crates/crank-ble/src/tests/end_to_end.rs::a_natural_finish_leaves_page_48_last",
+  "crates/crank-ble/src/tests/end_to_end.rs::a_release_on_the_last_tick_leaves_page_48_last",
 ]
-question = "Q2"
-wanted.trainer = "UNDECIDED"
+wanted.trainer = "Resistance{pct: 0} (ADR-0002 §7.9 as amended, #266) sent before the ride-active gate clears; the gate waits for Delivered of that mode, link loss or 2 s; the last control page written is page 48"
 wanted.engine = "finished; record closed via RideRecorder::finish; ride-active gate cleared; partial last second not recorded"
 wanted.ui = "state.kind=finished"
 

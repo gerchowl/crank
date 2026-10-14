@@ -564,6 +564,7 @@ version = "0.1.0"
 dependencies = [
  "btleplug",
  "crank-devices",
+ "crank-domain",
  "crank-engine",
  "crank-fec",
  "crank-store",
