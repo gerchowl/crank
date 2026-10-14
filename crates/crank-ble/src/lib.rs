@@ -1,17 +1,26 @@
-//! FE-C driver over a transport seam (ADR-0002 §§3–6).
+//! BLE drivers over transport seams (ADR-0002 §§3–6): FE-C trainer, HRS strap,
+//! discovery, reconnect supervisors and pairing matching.
 //! Engine owns mode policy, counter rollover, gap filling and trainer following.
 mod capture;
+mod discovery;
 mod driver;
 mod gatt;
+mod hrs;
 mod pacing;
+mod pairing;
+mod reconnect;
 #[cfg(feature = "replay")]
 mod replay;
 mod telemetry;
 pub use capture::*;
 pub use crank_devices::Clock;
 use crank_devices::{DeviceError, ProtocolErrorKind};
+pub use discovery::*;
 pub use driver::*;
-pub use gatt::BtleplugTransport;
+pub use gatt::{BtleplugAdvertisements, BtleplugHrTransport, BtleplugTransport};
+pub use hrs::*;
+pub use pairing::Pairing;
+pub use reconnect::*;
 #[cfg(feature = "replay")]
 pub use replay::ReplayTrainer;
 fn protocol(error: impl std::fmt::Display, kind: ProtocolErrorKind) -> DeviceError {

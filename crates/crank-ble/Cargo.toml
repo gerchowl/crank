@@ -21,5 +21,7 @@ uuid = "1"
 replay = []
 
 [dev-dependencies]
+crank-store.workspace = true
+tempfile = "3"
 proptest = { version = "1", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["test-util"] }
