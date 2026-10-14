@@ -99,6 +99,10 @@ impl Pacer {
         self.mode = Some(mode);
         Ok(())
     }
+    /// Every page of the current mode has been written: nothing of it is pending.
+    pub fn delivered(&self) -> bool {
+        self.pending.is_empty()
+    }
     pub fn tick(&mut self, tick: u64) -> Result<Option<[u8; 13]>, DeviceError> {
         if self.mode.is_none() {
             return Ok(None);

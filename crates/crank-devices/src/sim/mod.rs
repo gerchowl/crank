@@ -8,7 +8,7 @@
 //! only on the seed, the commands and the fault plan, never on scheduling.
 //!
 //! Observable behaviour follows the FE-C driver in `crank-ble`: a `Sample` and its
-//! page-25 `Observed` per tick, `Delivered` per written component, a page-71 echo
+//! page-25 `Observed` per tick, one `Delivered` per mode once all its components are written, a page-71 echo
 //! every `T_poll` = 1 s while a controlled mode is active (SIM alternates wind and
 //! track), and `SetRider` on a live link is a protocol fault. A lost link follows the
 //! sequence of the real stack, `Reconnecting<FecTrainer>` (#206, ADR-0002 §6): `Lost`,
@@ -352,8 +352,9 @@ impl World {
                             self.trainer.history[c as usize].push((rel, control));
                             self.trainer.active = Some(c);
                         }
-                        out.trainer.push(TrainerEvent::Delivered { mode });
                     }
+                    // like the driver: `Delivered` once every page of the mode is written
+                    out.trainer.push(TrainerEvent::Delivered { mode });
                     self.trainer
                         .poll_next
                         .get_or_insert(rel / TICK_US + POLL_TICKS);
