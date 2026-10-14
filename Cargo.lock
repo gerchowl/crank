@@ -651,6 +651,7 @@ dependencies = [
  "crank-domain",
  "crank-store",
  "futures-util",
+ "proptest",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

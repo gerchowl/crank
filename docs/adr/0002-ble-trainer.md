@@ -833,7 +833,9 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    who is not pedalling (§7.4). Once samples flow the ramp runs from that origin to the target in five
    1 Hz steps; it holds its last step while samples are missing and restarts from the then-current 3 s
    power when they return. Pre-loss power is never an origin: all soft-start state (3 s window, flow start,
-   origin) is reset on every **applied** link transition and on a silence-detected loss. If the new epoch has cadence > 0 but no power value, the
+   origin) is reset on every **applied** link transition and on every 8-tick silence, also one that
+   starts while already paused. Every applied transition away from `Ready` (`Lost` or `Connecting`) makes
+   the next engagement a soft start, so `Connecting` → `Ready` without a `Lost` is covered. If the new epoch has cadence > 0 but no power value, the
    origin is 0 W (the ramp never jumps to the target).
 6. **Trainer target-limit flags** (page 25: speed too low / too high) are shown in the ride status;
    they do not change the target by themselves.

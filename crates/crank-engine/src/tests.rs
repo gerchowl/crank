@@ -127,11 +127,14 @@ impl Rig {
     }
     /// A trainer sample arriving at the start of tick `k`.
     fn sample(&self, k: u64, power: u16, cadence: u8) {
+        self.sample_opt(k, Some(power), Some(cadence));
+    }
+    fn sample_opt(&self, k: u64, power: Option<u16>, cadence: Option<u8>) {
         self.events
             .try_send(TrainerEvent::Sample(TrainerSample {
                 at: MonoTime(k * TICK_US + 1),
-                power_w: Some(power),
-                cadence_rpm: Some(cadence),
+                power_w: power,
+                cadence_rpm: cadence,
                 speed_mps: Some(10.0),
                 distance_m: None,
                 accumulated_power_w: None,
@@ -839,9 +842,10 @@ fn after_ready_only_zero_watts_is_sent_until_a_pedalling_sample_then_the_ramp_st
     r.link(LinkState::Lost);
     r.link(LinkState::Connecting);
     r.link(LinkState::Ready);
-    // 20 ticks, no samples at all: exactly one command, 0 W, and never the target
+    // 20 ticks, no samples at all: only 0 W (re-sent when the 8-tick silence is a new
+    // epoch), and never the target
     r.through(27);
-    assert_eq!(r.modes(), vec![erg(0)]);
+    assert_eq!(r.modes(), vec![erg(0), erg(0)]);
     // samples with cadence 0 (not pedalling) do not start the ramp either
     for k in 28..32 {
         r.sample(k, 0, 0);
@@ -1008,4 +1012,273 @@ fn soft_start_state_c_samples_while_connecting_do_not_survive_ready() {
     feed(&r, 12, 40, 50);
     r.through(12);
     assert_eq!(r.modes(), vec![erg(50)], "C");
+}
+
+#[test]
+fn p1_a_second_silence_while_already_lost_resets_the_soft_start() {
+    // 300 W, Lost/Ready, power-only samples (no cadence), 8 silent ticks, then 50 W
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 300);
+    r.through(7);
+    r.modes();
+    r.link(LinkState::Lost);
+    r.link(LinkState::Ready);
+    for k in 8..12 {
+        r.sample_opt(k, Some(300), None);
+    }
+    r.through(19);
+    r.modes();
+    feed(&r, 20, 40, 50);
+    r.through(20);
+    assert_eq!(r.modes().last(), Some(&erg(50)));
+}
+
+#[test]
+fn p1b_the_same_through_silence_losses_only() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 300);
+    r.through(15); // 8 silent ticks: lost
+    r.modes();
+    for k in 16..20 {
+        r.sample_opt(k, Some(300), None);
+    }
+    r.through(27); // a second 8-tick silence while still paused
+    r.modes();
+    feed(&r, 28, 50, 50);
+    r.through(28);
+    assert_eq!(r.modes().last(), Some(&erg(50)));
+}
+
+#[test]
+fn connecting_then_ready_without_lost_is_still_a_soft_start() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 150);
+    r.through(7);
+    assert_eq!(r.modes(), vec![erg(200)]);
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    feed(&r, 8, 30, 50);
+    r.through(8);
+    assert_eq!(
+        r.modes(),
+        vec![erg(50)],
+        "ramp from 50 W, not the target at once"
+    );
+    // and with no sample at all after Ready: 0 W only
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 150);
+    r.through(7);
+    r.modes();
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    r.through(12);
+    assert_eq!(r.modes(), vec![erg(0)]);
+}
+
+mod soft_start_property {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Sample {
+            power: Option<u16>,
+            cadence: Option<u8>,
+        },
+        Hr(u8),
+        Link(u8),
+        Silence(u8),
+        Skip,
+    }
+    fn op() -> impl Strategy<Value = Op> {
+        let cadence = prop_oneof![Just(None), Just(Some(0_u8)), (1_u8..=120).prop_map(Some)];
+        prop_oneof![
+            6 => (prop::option::weighted(0.8, 0_u16..=400), cadence)
+                .prop_map(|(power, cadence)| Op::Sample { power, cadence }),
+            1 => (40_u8..180).prop_map(Op::Hr),
+            2 => (0_u8..3).prop_map(Op::Link),
+            2 => (0_u8..=20).prop_map(Op::Silence),
+            1 => Just(Op::Skip),
+        ]
+    }
+
+    struct Run {
+        start: u64,
+        origin: f64,
+        last: Option<u16>,
+    }
+    /// What the soft start may do, restated from ADR-0002 §7.5 / #231 without the
+    /// engine's own state: one epoch per link event or 8-tick silence.
+    #[derive(Default)]
+    struct Model {
+        armed: bool,
+        silent: u32,
+        epoch: Vec<(u64, Option<u16>, Option<u8>)>,
+        run: Option<Run>,
+    }
+    impl Model {
+        fn sample(&mut self, k: u64, power: Option<u16>, cadence: Option<u8>) {
+            self.epoch.retain(|(j, ..)| *j != k);
+            self.epoch.push((k, power, cadence));
+        }
+        fn link(&mut self, state: LinkState) {
+            self.epoch.clear();
+            self.run = None;
+            self.armed |= state != LinkState::Ready;
+        }
+        /// After tick `k` was processed; `modes` are the commands it sent.
+        fn tick(
+            &mut self,
+            k: u64,
+            had_sample: bool,
+            modes: &[ControlMode],
+        ) -> Result<(), TestCaseError> {
+            if had_sample {
+                self.silent = 0;
+            } else {
+                self.silent += 1;
+                if self.silent == 8 {
+                    self.armed = true;
+                    self.epoch.clear();
+                    self.run = None;
+                }
+            }
+            let pedalling = self
+                .epoch
+                .iter()
+                .max_by_key(|(j, ..)| *j)
+                .is_some_and(|(j, _, c)| k - j <= 4 && c.is_some_and(|c| c > 0));
+            if !pedalling {
+                self.run = None;
+            } else if self.run.is_none() {
+                let live: Vec<f64> = self
+                    .epoch
+                    .iter()
+                    .filter(|(j, ..)| k - j < 12)
+                    .filter_map(|(_, p, _)| p.map(f64::from))
+                    .collect();
+                #[expect(clippy::cast_precision_loss, reason = "tiny")]
+                let origin = if live.is_empty() {
+                    0.0
+                } else {
+                    live.iter().sum::<f64>() / live.len() as f64
+                };
+                self.run = Some(Run {
+                    start: k,
+                    origin,
+                    last: None,
+                });
+            }
+            let exists = self.epoch.iter().any(|(_, _, c)| c.is_some_and(|c| c > 0));
+            for mode in modes {
+                let ControlMode::Erg { target_w } = *mode else {
+                    prop_assert!(false, "unexpected mode {mode:?}");
+                    continue;
+                };
+                let w = f64::from(target_w);
+                if !self.armed {
+                    continue;
+                }
+                if !exists {
+                    // inv. 1/3: no new-epoch pedalling sample yet: only 0 W
+                    prop_assert_eq!(target_w, 0, "k={} before a pedalling sample", k);
+                    continue;
+                }
+                let Some(run) = self.run.as_mut() else {
+                    prop_assert_eq!(target_w, 0, "k={} command while not pedalling", k);
+                    continue;
+                };
+                if target_w == 0 {
+                    if run.origin < 1.0 {
+                        run.last = Some(0);
+                    }
+                    continue;
+                }
+                let (lo, hi) = (run.origin.min(200.0) - 1.0, run.origin.max(200.0) + 1.0);
+                prop_assert!(
+                    (lo..=hi).contains(&w),
+                    "k={k}: {w} outside [{lo}, {hi}] (origin {})",
+                    run.origin
+                );
+                // the ramp is a function of the origin and the ticks since the samples
+                // started flowing: one step per second, five steps, no jump
+                #[expect(clippy::cast_precision_loss, reason = "tiny")]
+                let step = ((k - run.start) / 4).min(5) as f64;
+                let expected = run.origin + (200.0 - run.origin) * step / 5.0;
+                prop_assert!(
+                    (w - expected).abs() <= 1.0,
+                    "k={k}: command {w}, ramp expects {expected} (origin {}, started {})",
+                    run.origin,
+                    run.start
+                );
+                run.last = Some(target_w);
+            }
+            // the ramp is complete 20 ticks after it started: no longer after a loss
+            if self.run.as_ref().is_some_and(|r| k - r.start >= 20) {
+                self.armed = false;
+            }
+            Ok(())
+        }
+    }
+
+    fn execute(ops: &[Op]) -> Result<(), TestCaseError> {
+        let mut r = rig();
+        r.load(
+            (0..6)
+                .map(|_| block(600.0, 200.0, 200.0, Phase::Work))
+                .collect(),
+        );
+        r.start();
+        let (mut m, mut k) = (Model::default(), 0_u64);
+        let step = |r: &mut Rig, m: &mut Model, k: &mut u64, had: bool| {
+            r.through(*k);
+            let modes = r.modes();
+            let out = m.tick(*k, had, &modes);
+            *k += 1;
+            out
+        };
+        for op in ops {
+            match op {
+                Op::Sample { power, cadence } => {
+                    r.sample_opt(k, *power, *cadence);
+                    m.sample(k, *power, *cadence);
+                    step(&mut r, &mut m, &mut k, true)?;
+                }
+                Op::Silence(n) => {
+                    for _ in 0..*n {
+                        step(&mut r, &mut m, &mut k, false)?;
+                    }
+                }
+                Op::Link(i) => {
+                    let state =
+                        [LinkState::Lost, LinkState::Connecting, LinkState::Ready][usize::from(*i)];
+                    r.link(state);
+                    m.link(state);
+                }
+                Op::Hr(bpm) => r.heart(k, *bpm),
+                Op::Skip => {
+                    let _ = r.engine.command(EngineCmd::SkipBlock);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(2000))]
+        #[test]
+        fn the_soft_start_never_jumps_and_never_uses_old_epoch_power(
+            ops in prop::collection::vec(op(), 1..60)
+        ) {
+            execute(&ops)?;
+        }
+    }
 }
