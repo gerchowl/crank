@@ -92,10 +92,16 @@ impl From<DeviceError> for ApiError {
                      Bluetooth, allow crank, then try again.",
                 );
             }
+            DeviceError::AdapterUnavailable => {
+                return Self::new(
+                    ErrorCode::DeviceUnavailable,
+                    "Bluetooth is off or unavailable. Turn it on in Control Center or \
+                     System Settings → Bluetooth, then try again.",
+                );
+            }
             // Another link of the same driver is still up.
-            DeviceError::ConnectFailed(m) if m.contains("already connected") => ErrorCode::Conflict,
-            DeviceError::AdapterUnavailable
-            | DeviceError::NotFound
+            DeviceError::AlreadyConnected => ErrorCode::Conflict,
+            DeviceError::NotFound
             | DeviceError::ConnectFailed(_)
             | DeviceError::Gatt(_)
             | DeviceError::Disconnected => ErrorCode::DeviceUnavailable,
@@ -126,6 +132,38 @@ mod tests {
             serde_json::to_value(&e).unwrap(),
             serde_json::json!({"code": "device_unavailable", "message": "no trainer paired"})
         );
+    }
+    #[test]
+    fn every_device_error_has_its_own_tested_code() {
+        let code = |e: DeviceError| ApiError::from(e).code;
+        assert_eq!(
+            code(DeviceError::AdapterUnavailable),
+            ErrorCode::DeviceUnavailable
+        );
+        assert_eq!(
+            code(DeviceError::Disconnected),
+            ErrorCode::DeviceUnavailable
+        );
+        assert_eq!(code(DeviceError::AlreadyConnected), ErrorCode::Conflict);
+        assert_eq!(
+            code(DeviceError::PermissionDenied),
+            ErrorCode::PermissionDenied
+        );
+        assert_eq!(code(DeviceError::NotFound), ErrorCode::DeviceUnavailable);
+        assert_eq!(
+            code(DeviceError::Gatt("x".into())),
+            ErrorCode::DeviceUnavailable
+        );
+        assert_eq!(
+            code(DeviceError::ConnectFailed("x".into())),
+            ErrorCode::DeviceUnavailable
+        );
+        assert_eq!(code(DeviceError::Capture("x".into())), ErrorCode::Internal);
+    }
+    #[test]
+    fn an_unavailable_adapter_carries_the_instructions() {
+        let e = ApiError::from(DeviceError::AdapterUnavailable);
+        assert!(e.message.contains("System Settings"), "{}", e.message);
     }
     #[test]
     fn denied_bluetooth_carries_the_instructions() {

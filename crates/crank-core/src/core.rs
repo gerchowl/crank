@@ -486,6 +486,38 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_pairing_made_after_the_radio_exists_reaches_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.devices_scan(Some(200)).await.unwrap(); // the radio is created, empty
+        assert!(radio.remembered.lock().unwrap().is_empty());
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        assert_eq!(*radio.remembered.lock().unwrap(), ["neo"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pairing_forgotten_before_the_radio_exists_is_not_handed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let core = open(dir.path(), &fake(vec![], false));
+            core.device_pair("neo".into(), DeviceRole::Trainer)
+                .await
+                .unwrap();
+            core.device_pair("hrm".into(), DeviceRole::HeartRate)
+                .await
+                .unwrap();
+        }
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_forget(DeviceRole::Trainer).await.unwrap(); // radio not created yet
+        core.devices_scan(Some(200)).await.unwrap();
+        assert_eq!(*radio.remembered.lock().unwrap(), ["hrm"]);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn pairing_releases_the_trainer_and_a_new_pairing_replaces_the_old() {
         let dir = tempfile::tempdir().unwrap();
         let radio = fake(vec![], false);

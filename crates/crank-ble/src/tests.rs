@@ -667,10 +667,7 @@ async fn cancelled_setup_holds_admission_until_disconnect_finishes() {
         .await
         .err()
         .unwrap();
-    assert_eq!(
-        error,
-        DeviceError::ConnectFailed("driver already connected".into())
-    );
+    assert_eq!(error, DeviceError::AlreadyConnected);
     fake.disconnect_gate.add_permits(1);
     settle().await;
 }
