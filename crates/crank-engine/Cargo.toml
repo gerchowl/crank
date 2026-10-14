@@ -24,5 +24,6 @@ specta = ["dep:specta", "crank-domain/specta"]
 [dev-dependencies]
 crank-store.workspace = true
 proptest.workspace = true
+serde_json.workspace = true
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "test-util", "time"] }
