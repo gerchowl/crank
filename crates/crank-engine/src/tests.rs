@@ -947,3 +947,65 @@ fn an_hr_sample_from_before_an_hr_link_transition_does_not_enter_the_hold() {
     assert_eq!(rows[1].1.hr, None, "stale HR sample must not be held");
     assert_eq!(rows[2].1.hr, None);
 }
+
+#[test]
+fn soft_start_state_a_long_flow_does_not_survive_lost_and_ready() {
+    // A: long-running flow (300 W through tick 39), Lost and Ready in tick 40, 50 W after
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 40, 300);
+    r.through(39);
+    assert_eq!(r.modes(), vec![erg(200)]);
+    r.at(40 * TICK_US + 100_000);
+    r.link(LinkState::Lost);
+    r.link(LinkState::Ready);
+    feed(&r, 40, 70, 50);
+    r.through(40);
+    assert_eq!(
+        r.modes(),
+        vec![erg(50)],
+        "A: origin 50 W, not a jump to the target"
+    );
+    r.through(69);
+    assert_eq!(
+        r.modes(),
+        vec![erg(80), erg(110), erg(140), erg(170), erg(200)]
+    );
+}
+
+#[test]
+fn soft_start_state_b_short_flow_does_not_survive_lost_and_ready() {
+    // B: flow for 8 ticks only, Lost/Ready, 50 W in tick 8
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 300);
+    r.through(7);
+    r.modes();
+    r.link(LinkState::Lost);
+    r.link(LinkState::Ready);
+    feed(&r, 8, 30, 50);
+    r.through(8);
+    assert_eq!(r.modes(), vec![erg(50)], "B");
+}
+
+#[test]
+fn soft_start_state_c_samples_while_connecting_do_not_survive_ready() {
+    // C: 300 W samples while Connecting, Ready later, then 50 W
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 300);
+    r.through(7);
+    r.modes();
+    r.link(LinkState::Lost);
+    r.link(LinkState::Connecting);
+    feed(&r, 8, 12, 300);
+    r.through(11);
+    assert!(r.modes().is_empty());
+    r.link(LinkState::Ready);
+    feed(&r, 12, 40, 50);
+    r.through(12);
+    assert_eq!(r.modes(), vec![erg(50)], "C");
+}

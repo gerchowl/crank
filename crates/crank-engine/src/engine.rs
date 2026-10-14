@@ -246,6 +246,14 @@ impl Session {
             self.record_error = Some(e.to_string());
         }
     }
+    /// Forget everything the soft start learned on the previous link epoch: pre-loss
+    /// power is never an origin and its ramp never carries over (ADR-0002 §7.5, #231).
+    /// Every per-epoch soft-start field is reset here, nowhere else.
+    fn reset_soft_start(&mut self) {
+        self.recent_power.clear();
+        self.flow_start = None;
+        self.engage_power = None;
+    }
     /// Samples flow while a pedalling trainer value is present; the origin is the 3 s
     /// power of the new epoch at the tick they start (0 W if it has none: no jump).
     fn track_flow(&mut self, k: u64, pedalling: bool) {
@@ -534,8 +542,7 @@ impl Engine {
             // link may be held across it.
             s.reset_control();
             s.trainer.clear();
-            // power sampled on the old link is never a soft-start origin (#231)
-            s.recent_power.clear();
+            s.reset_soft_start();
             if state == LinkState::Lost {
                 s.pauses.lost = true;
                 s.after_loss = true;
@@ -629,7 +636,7 @@ impl Engine {
             s.pauses.lost = true;
             s.after_loss = true;
             s.reset_control();
-            s.recent_power.clear();
+            s.reset_soft_start();
         }
         let cadence = trainer.and_then(|t| t.cadence);
         if trainer.is_some_and(|t| t.power == Some(0) && t.cadence == Some(0)) {
