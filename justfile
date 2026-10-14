@@ -13,6 +13,8 @@ config-checks:
     scripts/check-licenses.py
     scripts/test-window-config.py
     scripts/test-install-app.sh
+    scripts/test-e2e-prune.sh
+    scripts/test-check-npm-prod-licenses.py
 
 test:
     # CI's feature set (flake.nix `nextest`), so the `hil_fec` example tests run locally too.
@@ -28,6 +30,10 @@ model:
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
     pnpm -C app lint
+
+# Production npm dependencies (bundled into the app) against the licence allow-list (#233).
+npm-licenses:
+    pnpm -C app licenses list --prod --json | scripts/check-npm-prod-licenses.py
 
 fmt:
     cargo fmt --all
@@ -50,9 +56,9 @@ dev:
 # ADR-0001 §9.3 / ADR-0002 §8 (#37): assemble crank.app with Nix, install it at a stable path and sign
 # it inside-out (by SHA-1, scripts/install-app.sh) with the local self-signed `nix-tcc` identity
 # (g-fleet bin/nix-tcc-cert), so the TCC Bluetooth grant, keyed on the designated requirement,
-# survives rebuilds. Runs on sage, outside the
-# sandbox. No hardened runtime and no App Sandbox: library validation would reject the nix-store dylibs
-# that are signed by nobody (distribution signing is #47). Never creates or modifies identities.
+# survives rebuilds. Runs on sage, outside the sandbox. No hardened runtime and no App Sandbox:
+# library validation would reject the nix-store dylibs that are signed by nobody (distribution
+# signing is #47). Never creates or modifies identities.
 bundle:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -69,8 +75,9 @@ icons:
     rm -rf app/src-tauri/icons/android app/src-tauri/icons/ios app/src-tauri/icons/64x64.png
     python3 scripts/icons.py record
 
-# ADR-0001 §8.3 (#35): build crank-desktop-e2e and run the WebdriverIO smoke spec in the GUI session
-# (Alacritty IPC; CRANK_E2E_DIRECT=1 from a GUI terminal). Output goes to app/e2e-out (gitignored).
+# ADR-0001 §8.3 (#35): build crank-desktop-e2e and run the WebdriverIO smoke spec in two app launches,
+# comparing screenshots across them, in the GUI session (Alacritty IPC; CRANK_E2E_DIRECT=1 from a GUI
+# terminal). Output goes to app/e2e-out (gitignored). Skips with a message on Linux.
 e2e:
     scripts/e2e.sh
 
