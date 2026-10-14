@@ -1,8 +1,11 @@
-//! Thin btleplug 0.13 adapter (ADR-0002 §§4.4, 6); scanning/reconnect are #147.
-use crate::{Clock, FecTransport, Notifications};
+//! Thin btleplug 0.13 adapter (ADR-0002 §§4.4, 5, 6). Real-device behaviour is HIL #44.
+use crate::{
+    Advertisement, Advertisements, Clock, FecTransport, HrTransport, Notifications, SCAN_SERVICES,
+};
 use btleplug::{
     api::{
-        Central as _, CentralEvent, Characteristic, Peripheral as _, ValueNotification, WriteType,
+        Central as _, CentralEvent, Characteristic, Peripheral as _, ScanFilter, ValueNotification,
+        WriteType,
     },
     platform::{Adapter, Peripheral, PeripheralId},
 };
@@ -17,7 +20,9 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use uuid::Uuid;
 const RX: Uuid = Uuid::from_u128(0x6e40fec2_b5a3_f393_e0a9_e50e24dcca9e);
 const TX: Uuid = Uuid::from_u128(0x6e40fec3_b5a3_f393_e0a9_e50e24dcca9e);
-/// Adapter for a selected peripheral and its central; never scans or changes TCC.
+/// Heart Rate Measurement (2A37).
+const HRM: Uuid = Uuid::from_u128(0x0000_2a37_0000_1000_8000_0080_5f9b_34fb);
+/// Adapter for a selected peripheral and its central; never changes TCC.
 #[derive(Clone)]
 pub struct BtleplugTransport {
     peripheral: Peripheral,
@@ -69,41 +74,62 @@ async fn identity(p: &Peripheral) -> Result<DeviceInfo, DeviceError> {
     }
     Ok(info)
 }
+/// Connect, subscribe `notify` and read DIS; `required` must also exist.
+fn open(
+    peripheral: Peripheral,
+    adapter: Adapter,
+    dev: DeviceRef,
+    clock: Arc<dyn Clock>,
+    notify: Uuid,
+    required: Option<Uuid>,
+) -> BoxFuture<'static, Result<(DeviceInfo, Notifications), DeviceError>> {
+    Box::pin(async move {
+        let p = peripheral;
+        if p.id().to_string() != dev.0 {
+            return Err(DeviceError::NotFound);
+        }
+        let events = adapter.events().await.map_err(gatt)?;
+        p.connect().await.map_err(|e| match e {
+            btleplug::Error::PermissionDenied => DeviceError::PermissionDenied,
+            other => DeviceError::ConnectFailed(other.to_string()),
+        })?;
+        let result = async {
+            p.discover_services().await.map_err(gatt)?;
+            let subscribed = characteristic(&p, notify)?;
+            if let Some(uuid) = required {
+                characteristic(&p, uuid)?;
+            }
+            let notifications = ingress(
+                p.notifications().await.map_err(gatt)?,
+                events,
+                p.id(),
+                clock,
+                notify,
+            );
+            p.subscribe(&subscribed).await.map_err(gatt)?;
+            Ok((identity(&p).await?, notifications))
+        }
+        .await;
+        if result.is_err() {
+            p.disconnect().await.map_err(gatt)?;
+        }
+        result
+    })
+}
 impl FecTransport for BtleplugTransport {
     fn connect(
         &self,
         dev: DeviceRef,
         clock: Arc<dyn Clock>,
     ) -> BoxFuture<'static, Result<(DeviceInfo, Notifications), DeviceError>> {
-        let (p, adapter) = (self.peripheral.clone(), self.adapter.clone());
-        Box::pin(async move {
-            if p.id().to_string() != dev.0 {
-                return Err(DeviceError::NotFound);
-            }
-            let events = adapter.events().await.map_err(gatt)?;
-            p.connect().await.map_err(|e| match e {
-                btleplug::Error::PermissionDenied => DeviceError::PermissionDenied,
-                other => DeviceError::ConnectFailed(other.to_string()),
-            })?;
-            let result = async {
-                p.discover_services().await.map_err(gatt)?;
-                let rx = characteristic(&p, RX)?;
-                characteristic(&p, TX)?;
-                let notifications = ingress(
-                    p.notifications().await.map_err(gatt)?,
-                    events,
-                    p.id(),
-                    clock,
-                );
-                p.subscribe(&rx).await.map_err(gatt)?;
-                Ok((identity(&p).await?, notifications))
-            }
-            .await;
-            if result.is_err() {
-                p.disconnect().await.map_err(gatt)?;
-            }
-            result
-        })
+        open(
+            self.peripheral.clone(),
+            self.adapter.clone(),
+            dev,
+            clock,
+            RX,
+            Some(TX),
+        )
     }
     fn write(&self, bytes: [u8; 13]) -> BoxFuture<'static, Result<(), DeviceError>> {
         let p = self.peripheral.clone();
@@ -118,6 +144,133 @@ impl FecTransport for BtleplugTransport {
         Box::pin(async move { p.disconnect().await.map_err(gatt) })
     }
 }
+/// Heart-rate strap over btleplug; same lifecycle as [`BtleplugTransport`].
+#[derive(Clone)]
+pub struct BtleplugHrTransport(BtleplugTransport);
+impl BtleplugHrTransport {
+    /// Wrap a peripheral selected by discovery and its owning central.
+    #[must_use]
+    pub fn new(peripheral: Peripheral, adapter: Adapter) -> Self {
+        Self(BtleplugTransport::new(peripheral, adapter))
+    }
+}
+impl HrTransport for BtleplugHrTransport {
+    fn connect(
+        &self,
+        dev: DeviceRef,
+        clock: Arc<dyn Clock>,
+    ) -> BoxFuture<'static, Result<(DeviceInfo, Notifications), DeviceError>> {
+        let t = &self.0;
+        open(
+            t.peripheral.clone(),
+            t.adapter.clone(),
+            dev,
+            clock,
+            HRM,
+            None,
+        )
+    }
+    fn disconnect(&self) -> BoxFuture<'static, Result<(), DeviceError>> {
+        FecTransport::disconnect(&self.0)
+    }
+}
+/// btleplug scan source (ADR-0002 §5): starts a filtered scan on the central and
+/// reports each peripheral's name and services; [`crate::Scanner`] post-filters.
+#[derive(Clone)]
+pub struct BtleplugAdvertisements(Adapter);
+impl BtleplugAdvertisements {
+    /// Scan on `adapter`.
+    #[must_use]
+    pub fn new(adapter: Adapter) -> Self {
+        Self(adapter)
+    }
+    /// Resolve a discovered or remembered platform id to its peripheral.
+    /// # Errors
+    /// `NotFound` if the central has not seen it (scan first).
+    pub async fn peripheral(&self, dev: &DeviceRef) -> Result<Peripheral, DeviceError> {
+        self.0
+            .peripherals()
+            .await
+            .map_err(gatt)?
+            .into_iter()
+            .find(|p| p.id().to_string() == dev.0)
+            .ok_or(DeviceError::NotFound)
+    }
+}
+impl Advertisements for BtleplugAdvertisements {
+    fn advertisements(&self) -> BoxStream<'static, Advertisement> {
+        let adapter = self.0.clone();
+        let (sender, receiver) = mpsc::channel(64);
+        let task = tokio::spawn({
+            let adapter = adapter.clone();
+            async move {
+                let Ok(mut events) = adapter.events().await else {
+                    return;
+                };
+                if let Err(error) = adapter
+                    .start_scan(ScanFilter {
+                        services: SCAN_SERVICES.to_vec(),
+                    })
+                    .await
+                {
+                    tracing::warn!(%error, "BLE scan failed to start");
+                    return;
+                }
+                while let Some(event) = events.next().await {
+                    let (CentralEvent::DeviceDiscovered(id)
+                    | CentralEvent::DeviceUpdated(id)
+                    | CentralEvent::ServicesAdvertisement { id, .. }) = event
+                    else {
+                        continue;
+                    };
+                    let Ok(p) = adapter.peripheral(&id).await else {
+                        continue;
+                    };
+                    let Ok(Some(props)) = p.properties().await else {
+                        continue;
+                    };
+                    let ad = Advertisement {
+                        device: DeviceRef(id.to_string()),
+                        name: props.local_name,
+                        services: props.services,
+                    };
+                    if sender.send(ad).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        Box::pin(ScanStream {
+            receiver,
+            task,
+            adapter,
+        })
+    }
+}
+struct ScanStream {
+    receiver: mpsc::Receiver<Advertisement>,
+    task: JoinHandle<()>,
+    adapter: Adapter,
+}
+impl Stream for ScanStream {
+    type Item = Advertisement;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.receiver.poll_recv(cx)
+    }
+}
+impl Drop for ScanStream {
+    fn drop(&mut self) {
+        self.task.abort();
+        let adapter = self.adapter.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Err(error) = adapter.stop_scan().await {
+                    tracing::warn!(%error, "BLE scan failed to stop");
+                }
+            });
+        }
+    }
+}
 // Stamp at application ingress independently of writes/DIS reads. The owning
 // stream cancels the pump on drop, including failed connection setup.
 fn ingress(
@@ -125,6 +278,7 @@ fn ingress(
     mut events: BoxStream<'static, CentralEvent>,
     id: PeripheralId,
     clock: Arc<dyn Clock>,
+    notify: Uuid,
 ) -> Notifications {
     let (sender, receiver) = mpsc::channel(256);
     let task = tokio::spawn(async move {
@@ -132,7 +286,7 @@ fn ingress(
             tokio::select! {
                 record = notifications.next() => {
                     let Some(n) = record else { break; };
-                    if n.uuid == RX && sender.send(Ok((clock.now(), n.value))).await.is_err() { break; }
+                    if n.uuid == notify && sender.send(Ok((clock.now(), n.value))).await.is_err() { break; }
                 }
                 event = events.next() => {
                     if event.is_none() || matches!(event, Some(CentralEvent::DeviceDisconnected(ref device)) if *device == id) {

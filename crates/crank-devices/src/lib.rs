@@ -49,7 +49,7 @@ pub struct DeviceInfo {
     /// Firmware revision.
     pub firmware: Option<String>,
 }
-/// Classified discovery result; scanning is implemented by #147. See ADR-0002 §3.
+/// Classified discovery result. See ADR-0002 §3.
 #[derive(Clone, Debug)]
 pub struct DiscoveredDevice {
     /// Host-local identity.
@@ -135,6 +135,13 @@ pub enum TrainerEvent {
     Observed(TrainerObservation),
     /// Transport/configuration readiness changed.
     Link(LinkState),
+    /// A reconnect attempt is starting after a loss (ADR-0002 §6); `attempt`
+    /// counts from 1 per loss. The driver never restores a control mode: the
+    /// engine re-issues `SetMode` on the following `Link(Ready)`.
+    Reconnecting {
+        /// 1-based attempt number within the current loss.
+        attempt: u32,
+    },
     /// Transport or protocol failure.
     Fault(DeviceError),
 }
@@ -246,7 +253,7 @@ impl From<u8> for CommandStatus {
         }
     }
 }
-/// Object-safe heart-rate connection factory (implementation #147). See ADR-0002 §3.
+/// Object-safe heart-rate connection factory. See ADR-0002 §3.
 pub trait HeartRateDriver: Send + Sync + 'static {
     /// Connect and subscribe to heart-rate notifications.
     fn connect(&self, dev: &DeviceRef) -> BoxFuture<'static, Result<HeartRateLink, DeviceError>>;
@@ -259,12 +266,19 @@ pub struct HeartRateLink {
     pub events: mpsc::Receiver<HrEvent>,
 }
 /// Heart-rate driver event. See ADR-0002 §3.
+/// Non-exhaustive so reconnect reporting can grow without breaking matches.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum HrEvent {
     /// Sensor sample.
     Sample(HrSample),
     /// Connection state.
     Link(LinkState),
+    /// A reconnect attempt is starting after a loss (ADR-0002 §6); 1-based.
+    Reconnecting {
+        /// 1-based attempt number within the current loss.
+        attempt: u32,
+    },
     /// Transport/protocol failure.
     Fault(DeviceError),
 }
@@ -280,7 +294,7 @@ pub struct HrSample {
     /// Sensor contact, when supported.
     pub contact: Option<bool>,
 }
-/// Object-safe, post-filtered discovery stream (implementation #147). See ADR-0002 §3.
+/// Object-safe, post-filtered discovery stream. See ADR-0002 §3.
 pub trait Discovery: Send + Sync + 'static {
     /// Scan and classify supported peripherals.
     fn scan(&self) -> BoxStream<'static, DiscoveredDevice>;
