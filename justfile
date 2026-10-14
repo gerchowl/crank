@@ -27,6 +27,10 @@ test:
 model:
     python3 docs/adr/models/trainer_following.py
 
+# FMEA validator (also the `fmea` flake check); `--write` re-renders the table into FMEA.md.
+fmea *ARGS:
+    python3 docs/safety/check_fmea.py {{ARGS}}
+
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
     pnpm -C app lint
