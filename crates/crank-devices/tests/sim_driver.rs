@@ -129,7 +129,7 @@ async fn second_connection_is_refused_while_the_first_lives() {
         .await
         .err()
         .expect("sim");
-    assert!(matches!(err, DeviceError::ConnectFailed(_)));
+    assert_eq!(err, DeviceError::AlreadyConnected);
 }
 #[tokio::test(start_paused = true)]
 async fn erg_tracks_target_and_echoes_page_49_each_second() {

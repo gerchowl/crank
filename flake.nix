@@ -202,6 +202,13 @@
           python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md} ${./crates/crank-engine/tests/fixtures/following.json}
           touch $out
         '';
+        # FMEA rows: schema, guards, table rendered from the TOML (#255); a missing cited test only
+        # warns here, `just fmea` (--strict) fails on it.
+        fmea = pkgs.runCommand "fmea" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          cp -r ${source (lib.fileset.unions [ ./docs/safety (lib.fileset.fileFilter (f: f.hasExt "rs" || f.hasExt "py") ./crates) ])} src
+          python3 src/docs/safety/check_fmea.py src
+          touch $out
+        '';
         # e2e.sh's run-dir pruning must survive zero, one and many prior runs under `set -euo pipefail` (#233).
         e2e-prune = pkgs.runCommand "e2e-prune" { } ''
           cp -r ${source (lib.fileset.unions [ ./scripts/e2e-lib.sh ./scripts/test-e2e-prune.sh ])} src

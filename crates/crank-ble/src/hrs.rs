@@ -104,7 +104,7 @@ impl HeartRateDriver for HrsDriver {
         Box::pin(async move {
             let guard = admission
                 .try_lock_owned()
-                .map_err(|_| DeviceError::ConnectFailed("driver already connected".into()))?;
+                .map_err(|_| DeviceError::AlreadyConnected)?;
             let (info, mut notifications) = transport.connect(dev, clock).await?;
             let release = transport.clone();
             let cleanup: Cleanup = Box::new(move || release.disconnect());
