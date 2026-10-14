@@ -50,6 +50,9 @@
   --warning-ink: #0a0e13;
   --status-serious: #f0883e;
   --status-critical: #ff5c6c;
+
+  --scrim: rgb(0 0 0 / 55%);
+  --shadow: rgb(0 0 0 / 40%);
 }
 
 :root[data-theme="light"] {
@@ -99,4 +102,7 @@
   --warning-ink: #ffffff;
   --status-serious: #bc4c00;
   --status-critical: #cf222e;
+
+  --scrim: rgb(20 26 33 / 40%);
+  --shadow: rgb(20 26 33 / 20%);
 }

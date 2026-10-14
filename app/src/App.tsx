@@ -2,15 +2,9 @@
 // a top-level error boundary, theme, the `?` keys dialog and the cold-start hand-off (BRAND.md §Start screen).
 import { useCallback, useEffect, useState, type ComponentType } from "react";
 import { waitForCore as defaultWaitForCore, type WaitForCore } from "./core";
-import {
-  isMode,
-  navigate,
-  PLACES,
-  useRoute,
-  type Place,
-  type View,
-} from "./router";
+import { isMode, navigate, useRoute, type View } from "./router";
 import { ErrorBoundary } from "./shell/ErrorBoundary";
+import { Rail } from "./shell/Rail";
 import { KeysDialog } from "./shell/KeysDialog";
 import { StartScreen, type Boot } from "./shell/StartScreen";
 import { useApplyTheme } from "./theme";
@@ -31,13 +25,6 @@ const DEFAULT_VIEWS: ViewRegistry = {
   ride: soon("Ride"),
   onboarding: soon("Welcome"),
   resume: soon("Resume your ride"),
-};
-
-const RAIL: Record<Place, [label: string, icon: string]> = {
-  today: ["Today", "◉"],
-  workouts: ["Workouts", "▤"],
-  history: ["History", "◷"],
-  settings: ["Settings", "⚙"],
 };
 
 function useBoot(wait: WaitForCore) {
@@ -105,22 +92,7 @@ function Destination({ views }: { views: ViewRegistry }) {
     );
   return (
     <div className="shell">
-      <nav className="rail" aria-label="Places">
-        <span className="brand">crank</span>
-        {PLACES.map((p) => (
-          <button
-            key={p}
-            type="button"
-            aria-current={route.view === p ? "page" : undefined}
-            onClick={() => navigate(p)}
-          >
-            <span className="rail-icon" aria-hidden>
-              {RAIL[p][1]}
-            </span>
-            <span className="rail-label">{RAIL[p][0]}</span>
-          </button>
-        ))}
-      </nav>
+      <Rail view={route.view} />
       <main id="main" data-destination tabIndex={-1}>
         {body}
       </main>
@@ -156,5 +128,14 @@ export function App({
       )}
       {keys.open && <KeysDialog onClose={keys.close} />}
     </>
+  );
+}
+
+/** The outermost boundary (DESIGN §10 #4): a throw in the rail, start screen or dialog is a panel, not a white window. */
+export function AppRoot(props: Parameters<typeof App>[0]) {
+  return (
+    <ErrorBoundary onBack={() => navigate("today")}>
+      <App {...props} />
+    </ErrorBoundary>
   );
 }

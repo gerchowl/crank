@@ -8,7 +8,15 @@ import {
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  onTestFinished,
+  test,
+  vi,
+} from "vitest";
 import { App, type ViewRegistry } from "./App";
 import { navigate } from "./router";
 import { HANDOFF_MS, STATUS_AFTER_MS } from "./shell/StartScreen";
@@ -172,7 +180,9 @@ describe("keys dialog", () => {
   test("? opens it, Tab is trapped, Escape closes it and is consumed, focus returns", async () => {
     const user = userEvent.setup();
     const behind = vi.fn();
-    document.addEventListener("keydown", (e) => e.key === "Escape" && behind());
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && behind();
+    document.addEventListener("keydown", onKey);
+    onTestFinished(() => document.removeEventListener("keydown", onKey));
     render(<App />);
     await ready();
     const today = screen.getByRole("button", { name: /Today/ });

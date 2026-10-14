@@ -141,10 +141,12 @@ main.mode {
   min-height: 100%;
 }
 .page {
-  padding: 28px 32px 40px;
-  max-width: 1368px;
+  /* Side padding runs 20 px at 1024 to 32 px at 1440 on the viewport, with no breakpoint: content is 912 px at
+     1024 and 1304 px at 1440 (§16.3). 2.885vw - 9.5px = 20 at 1024, 32 at 1440. */
+  padding: 28px clamp(20px, calc(2.885vw - 9.5px), 32px) 40px;
+  max-width: 1368px; /* 1440 minus the 72 px rail */
   width: 100%;
-} /* 1440 minus the 72 px rail (§16.3) */
+}
 .page-head {
   margin-bottom: 20px;
 }
@@ -178,7 +180,7 @@ main.mode {
   z-index: 150;
   display: grid;
   place-items: center;
-  background: rgb(0 0 0 / 55%);
+  background: var(--scrim);
 }
 .keys-dialog {
   width: min(480px, 90vw);
@@ -186,7 +188,7 @@ main.mode {
   border-radius: 12px;
   background: var(--surface-1);
   border: 1px solid var(--border);
-  box-shadow: 0 12px 40px rgb(0 0 0 / 40%);
+  box-shadow: 0 12px 40px var(--shadow);
 }
 .keys-dialog dl {
   display: grid;
