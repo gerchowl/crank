@@ -76,7 +76,7 @@ fn samples(second: u32) -> Vec<Sample> {
 fn migrate_empty_database() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_owner(dir.path()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 1);
+    assert_eq!(store.schema_version().unwrap(), 2);
     let db = Connection::open(dir.path().join("crank.db")).unwrap();
     let tables: Vec<String> = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -121,7 +121,7 @@ fn migrate_every_released_fixture() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("crank.db"), fixture).unwrap();
         let store = Store::open_owner(dir.path()).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 1);
+        assert_eq!(store.schema_version().unwrap(), 2);
         assert_eq!(
             store
                 .load_json::<SettingJson>(&["fixture"])
@@ -434,6 +434,7 @@ fn pairing_memory_and_typed_json_write() {
         name: Some("NEO".into()),
         platform_id: "uuid".into(),
         serial: Some("55624".into()),
+        model: Some("Neo".into()),
         last_seen: 1,
     };
     store.remember_device(dev.clone()).unwrap();
@@ -459,6 +460,138 @@ fn pairing_memory_and_typed_json_write() {
         store.load_json::<SettingJson>(&["key"]),
         Err(StoreError::InvalidJson { .. })
     ));
+}
+
+fn device(id: &str, platform_id: &str, last_seen: i64) -> Device {
+    Device {
+        id: id.into(),
+        kind: "trainer".into(),
+        name: Some("NEO".into()),
+        platform_id: platform_id.into(),
+        serial: Some("55624".into()),
+        model: Some("Neo".into()),
+        last_seen,
+    }
+}
+
+#[test]
+fn remembering_a_role_again_updates_one_row_and_returns_its_existing_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_owner(dir.path()).unwrap();
+    assert_eq!(
+        store.remember_device(device("neo", "uuid", 1)).unwrap(),
+        "neo"
+    );
+    // Same peripheral and role under another caller id: one row, original id returned.
+    assert_eq!(
+        store.remember_device(device("other", "uuid", 2)).unwrap(),
+        "neo"
+    );
+    assert_eq!(store.devices().unwrap(), vec![device("neo", "uuid", 2)]);
+    // CoreBluetooth re-assigned the platform id of a known device: updated in place.
+    assert_eq!(
+        store.remember_device(device("neo", "uuid-2", 3)).unwrap(),
+        "neo"
+    );
+    assert_eq!(store.devices().unwrap(), vec![device("neo", "uuid-2", 3)]);
+    // An id that already names another role is rejected, never silently reused.
+    let mut strap = device("neo", "uuid-3", 4);
+    strap.kind = "hr".into();
+    assert!(matches!(
+        store.remember_device(strap),
+        Err(StoreError::InvalidInput(_))
+    ));
+    let db = Connection::open(dir.path().join("crank.db")).unwrap();
+    let duplicate = db.execute(
+        "INSERT INTO device (id,kind,platform_id,last_seen) VALUES ('x','trainer','uuid-2',0)",
+        [],
+    );
+    assert!(
+        duplicate.is_err(),
+        "the schema itself enforces UNIQUE(platform_id, kind)"
+    );
+}
+
+#[test]
+fn migration_two_dedupes_within_a_kind_keeps_cross_kind_rows_and_fks() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("crank.db"),
+        include_bytes!("fixtures/v1.db"),
+    )
+    .unwrap();
+    {
+        let db = Connection::open(dir.path().join("crank.db")).unwrap();
+        db.execute_batch(
+            "INSERT INTO device VALUES ('old','trainer','NEO','uuid','1',10);
+             INSERT INTO device VALUES ('new','trainer','NEO','uuid','1',20);
+             INSERT INTO device VALUES ('strap','hr','Strap','uuid',NULL,15);
+             INSERT INTO device VALUES ('strap-old','hr','Strap','uuid',NULL,5);
+             INSERT INTO ride (id,started_at,workout_json,compiled_json,trainer_device_id,
+                               hr_device_id,telemetry_source)
+             VALUES ('r','1','{}','{}','old','strap-old','fec');",
+        )
+        .unwrap();
+    }
+    let store = Store::open_owner(dir.path()).unwrap();
+    let ids: Vec<_> = store.devices().unwrap().into_iter().map(|d| d.id).collect();
+    assert_eq!(
+        ids,
+        ["new", "strap"],
+        "cross-kind rows are kept, same-kind deduped"
+    );
+    let db = Connection::open(dir.path().join("crank.db")).unwrap();
+    let (trainer, hr): (String, String) = db
+        .query_row(
+            "SELECT trainer_device_id, hr_device_id FROM ride WHERE id='r'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((trainer.as_str(), hr.as_str()), ("new", "strap"));
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let violations = db
+        .prepare("PRAGMA foreign_key_check")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .count();
+    assert_eq!(violations, 0);
+}
+
+#[test]
+fn trainer_and_strap_on_one_platform_id_coexist_per_role() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_owner(dir.path()).unwrap();
+    let mut strap = device("strap", "uuid", 2);
+    strap.kind = "hr".into();
+    strap.name = Some("Strap".into());
+    store.remember_device(device("neo", "uuid", 1)).unwrap();
+    assert_eq!(store.remember_device(strap.clone()).unwrap(), "strap");
+    let devices = store.devices().unwrap();
+    assert_eq!(devices.len(), 2, "{devices:?}");
+    assert!(devices.contains(&device("neo", "uuid", 1)));
+    assert!(devices.contains(&strap));
+    // Same role again: updates that role's name/serial only.
+    let mut renamed = device("neo", "uuid", 5);
+    renamed.name = Some("NEO 2".into());
+    store.remember_device(renamed.clone()).unwrap();
+    let devices = store.devices().unwrap();
+    assert!(
+        devices.contains(&renamed) && devices.contains(&strap),
+        "{devices:?}"
+    );
+}
+
+#[test]
+fn pairing_memory_survives_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    Store::open_owner(dir.path())
+        .unwrap()
+        .remember_device(device("neo", "uuid", 7))
+        .unwrap();
+    let store = Store::open_read_only(dir.path()).unwrap();
+    assert_eq!(store.devices().unwrap(), vec![device("neo", "uuid", 7)]);
 }
 
 #[test]
@@ -570,7 +703,7 @@ fn read_only_refuses_a_newer_schema() {
         Store::open_read_only(dir.path()),
         Err(StoreError::SchemaTooNew {
             found: 999,
-            supported: 1
+            supported: 2
         })
     ));
 }
