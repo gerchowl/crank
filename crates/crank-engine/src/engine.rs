@@ -122,7 +122,7 @@ type Reply<T> = oneshot::Sender<Result<T, StreamError>>;
 enum StreamReq {
     Open(
         Option<String>,
-        oneshot::Sender<(StreamId, mpsc::Receiver<StreamFrame>)>,
+        Reply<(StreamId, mpsc::Receiver<StreamFrame>)>,
     ),
     Close(StreamId),
     CloseWindow(String),
@@ -165,17 +165,12 @@ impl EngineHandle {
     /// The consumer acknowledges frames with [`EngineHandle::stream_ack`].
     ///
     /// # Errors
-    /// `EngineStopped` if the engine has ended.
+    /// `TooManyStreams` beyond 16 live streams, or `EngineStopped`.
     pub async fn open_stream(
         &self,
         window: Option<String>,
     ) -> Result<(StreamId, mpsc::Receiver<StreamFrame>), StreamError> {
-        let (tx, rx) = oneshot::channel();
-        self.streams
-            .send(StreamReq::Open(window, tx))
-            .await
-            .map_err(|_| StreamError::EngineStopped)?;
-        rx.await.map_err(|_| StreamError::EngineStopped)
+        self.stream(|r| StreamReq::Open(window, r)).await
     }
     /// Drop a stream and its subscriptions.
     ///
@@ -500,16 +495,24 @@ impl Engine {
         }
         loop {
             self.catch_up();
-            let now_us = self.clock.now().0;
-            let due = [self.next_due().map(|d| d.0), self.hub.next_due_us(now_us)]
-                .into_iter()
-                .flatten()
-                .min()
+            // Ticks are due on the (possibly simulated-fast) engine clock; frames and
+            // heartbeats on its unscaled pacing axis (ADR-0001 §4.3).
+            let due = self.next_due();
+            let pace_due = self
+                .hub
+                .next_due_us(self.clock.pacing_now().0)
                 .map(MonoTime);
             let clock = self.clock.clone();
             let sleep = async move {
                 match due {
                     Some(at) => clock.sleep_until(at).await,
+                    None => pending().await,
+                }
+            };
+            let clock = self.clock.clone();
+            let pace = async move {
+                match pace_due {
+                    Some(at) => clock.pacing_sleep_until(at).await,
                     None => pending().await,
                 }
             };
@@ -519,6 +522,7 @@ impl Engine {
                 e = recv(&mut self.hr_events) => Wake::Hr(e),
                 r = recv(&mut self.stream_reqs) => Wake::Stream(r),
                 () = sleep => Wake::Timer,
+                () = pace => Wake::Timer,
             };
             match wake {
                 Wake::Cmd(None) => {
@@ -984,7 +988,7 @@ impl Engine {
     }
 
     fn stream_request(&mut self, req: StreamReq) {
-        let now = self.clock.now().0;
+        let now = self.clock.pacing_now().0;
         // A dropped reply means the requester gave up; the request still applied.
         match req {
             StreamReq::Open(window, reply) => {
@@ -1030,7 +1034,7 @@ impl Engine {
             late_samples: s.map_or(0, |s| s.late),
             record_error: s.and_then(|s| s.record_error.clone()),
         };
-        let now = self.clock.now().0;
+        let now = self.clock.pacing_now().0;
         self.hub.on_status(StreamStatus::from(&status), now);
         for (device, link) in [
             (LinkDevice::Trainer, self.trainer_link),

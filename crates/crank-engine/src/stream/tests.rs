@@ -61,7 +61,7 @@ enum Op {
 }
 fn op() -> impl Strategy<Value = Op> {
     prop_oneof![
-        4 => (0u8..6).prop_map(Op::Sample),
+        5 => (0u8..10).prop_map(Op::Sample),
         2 => Just(Op::Status),
         1 => (any::<bool>(), 0u8..3).prop_map(|(d, s)| Op::Link(d, s)),
         3 => (0u32..400_000).prop_map(Op::Advance),
@@ -74,20 +74,23 @@ fn link(s: u8) -> LinkStatus {
     [LinkStatus::Connecting, LinkStatus::Ready, LinkStatus::Lost][usize::from(s % 3)]
 }
 
-/// The oracle and the consumer, written independently of `Flow`: it counts in-flight
-/// frames itself and keeps its own idea of what is pending and when a resync is owed.
-#[derive(Default)]
+/// The oracle and the consumer, written from the ADR-0001 §4.3 text and independent of
+/// `Flow`: it counts in-flight frames itself, keeps its own pending set and decides from
+/// the ADR when a frame is due, what it must carry and when a resync is owed.
 struct World {
+    budget: usize,
     now: u64,
     counter: u64,
-    // what the engine side has been told, latest per key
+    // the latest state offered, per key
     latest: BTreeMap<u64, SubSample>,
     latest_status: Option<StreamStatus>,
     latest_links: BTreeMap<LinkDevice, LinkStatus>,
-    // oracle's pending sets and owed resync
+    // ADR: "bounded pending state": the oracle's own copy of what is waiting
     pend_samples: BTreeSet<u64>,
-    pend_status: bool,
-    pend_links: BTreeSet<LinkDevice>,
+    pend_status: Option<StreamStatus>,
+    pend_links: BTreeMap<LinkDevice, LinkStatus>,
+    // ADR: the next frame after the window reopens carries `resync` iff something was
+    // coalesced while the window was full
     owed_resync: bool,
     // consumer
     inflight: Vec<u64>,
@@ -97,8 +100,34 @@ struct World {
     view_status: Option<StreamStatus>,
     view_links: BTreeMap<LinkDevice, LinkStatus>,
     last_emit: Option<u64>,
+    split_batches: u32,
+    bare_frames: u32,
 }
 impl World {
+    fn new(budget: usize) -> Self {
+        Self {
+            budget,
+            now: 0,
+            counter: 0,
+            latest: BTreeMap::new(),
+            latest_status: None,
+            latest_links: BTreeMap::new(),
+            pend_samples: BTreeSet::new(),
+            pend_status: None,
+            pend_links: BTreeMap::new(),
+            owed_resync: false,
+            inflight: Vec::new(),
+            expected_seq: 0,
+            discard_next: false,
+            view: BTreeMap::new(),
+            view_status: None,
+            view_links: BTreeMap::new(),
+            last_emit: None,
+            split_batches: 0,
+            bare_frames: 0,
+        }
+    }
+    /// The window is full: three frames sent and not acknowledged.
     fn blocked(&self) -> bool {
         self.inflight.len() >= MAX_UNACKED
     }
@@ -110,7 +139,6 @@ impl World {
     }
     fn offer_sample(&mut self, flow: &mut Flow, sub: u64) {
         self.counter += 1;
-        #[expect(clippy::cast_precision_loss, reason = "small test counter")]
         let s = sample(sub, self.counter as f64, self.counter as f64);
         if !self.pend_samples.insert(sub) && self.blocked() {
             self.owed_resync = true;
@@ -121,15 +149,15 @@ impl World {
     fn offer_status(&mut self, flow: &mut Flow) {
         self.counter += 1;
         let s = riding(self.counter);
-        if self.pend_status && self.blocked() {
+        if self.pend_status.is_some() && self.blocked() {
             self.owed_resync = true;
         }
-        self.pend_status = true;
+        self.pend_status = Some(s.clone());
         self.latest_status = Some(s.clone());
         flow.offer_status(s);
     }
     fn offer_link(&mut self, flow: &mut Flow, device: LinkDevice, state: LinkStatus) {
-        if !self.pend_links.insert(device) && self.blocked() {
+        if self.pend_links.insert(device, state).is_some() && self.blocked() {
             self.owed_resync = true;
         }
         self.latest_links.insert(device, state);
@@ -139,20 +167,70 @@ impl World {
         self.inflight.retain(|&s| s > seq);
         flow.ack(seq);
     }
-    /// Poll the flow at `now` and run the consumer over what it sends.
+    fn anything_pending(&self) -> bool {
+        !self.pend_samples.is_empty()
+            || self.pend_status.is_some()
+            || !self.pend_links.is_empty()
+            || self.owed_resync
+    }
+    /// Poll the flow at `now`, check the batch against the ADR, run the consumer.
     fn poll(&mut self, flow: &mut Flow) {
         let frames = flow.drain(self.now);
+        // ≤ 10 Hz and "sends nothing while the window is full".
+        let due = self.anything_pending()
+            && !self.blocked()
+            && self
+                .last_emit
+                .is_none_or(|l| self.now - l >= MIN_FRAME_INTERVAL_US);
+        assert_eq!(!frames.is_empty(), due, "a frame iff something is due");
+        if frames.is_empty() {
+            assert_eq!(flow.unacked(), self.inflight.len(), "window agrees");
+            return;
+        }
+        // Discrete state alone over budget: the bare resync frame (step 3).
+        let links: Vec<_> = self
+            .pend_links
+            .iter()
+            .map(|(&device, &state)| super::types::LinkChange { device, state })
+            .collect();
+        let head = StreamFrame {
+            seq: self.expected_seq,
+            resync: self.owed_resync,
+            samples: Vec::new(),
+            status: self.pend_status.clone(),
+            links: links.clone(),
+        };
+        let bare = json(&head).len() > self.budget;
+        if bare {
+            self.bare_frames += 1;
+            assert_eq!(frames.len(), 1, "bare frame alone");
+            let f = &frames[0];
+            assert!(f.resync && f.samples.is_empty() && f.status.is_none() && f.links.is_empty());
+            self.pend_status = None;
+            self.pend_links.clear();
+        } else {
+            assert_eq!(frames[0].resync, self.owed_resync, "resync owed once");
+            assert_eq!(frames[0].status, self.pend_status.take());
+            assert_eq!(frames[0].links, links);
+            self.pend_links.clear();
+        }
+        if frames.len() > 1 {
+            self.split_batches += 1;
+        }
+        let mut carried = BTreeSet::new();
         for (i, f) in frames.iter().enumerate() {
             assert_eq!(f.seq, self.expected_seq, "consecutive seq");
-            assert!(json(f).len() <= FRAME_BUDGET_BYTES, "frame over budget");
-            // Resync is owed exactly once, on the first frame of the batch.
-            assert_eq!(f.resync, self.owed_resync && i == 0, "resync flag");
-            if let Some(last) = self.last_emit.filter(|_| i == 0) {
-                assert!(self.now - last >= MIN_FRAME_INTERVAL_US, "10 Hz bound");
-            }
+            assert!(bare || json(f).len() <= self.budget, "frame over budget");
+            assert!(bare || i == 0 || (!f.resync && f.status.is_none() && f.links.is_empty()));
             self.expected_seq += 1;
             self.inflight.push(f.seq);
             assert!(self.inflight.len() <= MAX_UNACKED, "more than 3 unacked");
+            for s in &f.samples {
+                // one per subscription per batch, always the latest, and it was pending
+                assert!(carried.insert(s.sub.0), "one sample per subscription");
+                assert!(self.pend_samples.contains(&s.sub.0));
+                assert_eq!(Some(s), self.latest.get(&s.sub.0), "latest wins");
+            }
             if self.discard_next {
                 // the window dropped the frame and re-reads durable state at once
                 self.discard_next = false;
@@ -172,25 +250,34 @@ impl World {
                 self.view_links.insert(l.device, l.state);
             }
         }
-        if !frames.is_empty() {
-            self.last_emit = Some(self.now);
-            self.owed_resync = false;
-            self.pend_samples.clear();
-            self.pend_status = false;
-            self.pend_links.clear();
+        for sub in &carried {
+            self.pend_samples.remove(sub);
         }
+        if !self.pend_samples.is_empty() && !bare {
+            assert!(
+                self.blocked(),
+                "samples are left over only when the window is full"
+            );
+        }
+        self.last_emit = Some(self.now);
+        self.owed_resync = false;
         assert_eq!(flow.unacked(), self.inflight.len(), "window agrees");
-        assert!(flow.pending_len() <= 6 + 1 + 2, "pending state is bounded");
+        assert!(flow.pending_len() <= 10 + 1 + 2, "pending state is bounded");
     }
 }
 
+// Budgets start at 120 bytes: an empty frame is 62 and a sample at most ~40, so a lone
+// sample always fits; real budgets are 8 000.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2048))]
 
     #[test]
-    fn flow_control_holds_over_arbitrary_interleavings(ops in prop::collection::vec(op(), 0..160)) {
-        let mut flow = Flow::new(FRAME_BUDGET_BYTES);
-        let mut w = World::default();
+    fn flow_control_holds_over_arbitrary_interleavings(
+        budget in prop_oneof![1 => Just(FRAME_BUDGET_BYTES), 3 => 120usize..400],
+        ops in prop::collection::vec(op(), 0..160),
+    ) {
+        let mut flow = Flow::new(budget);
+        let mut w = World::new(budget);
         for op in ops {
             match op {
                 Op::Sample(sub) => w.offer_sample(&mut flow, u64::from(sub)),
@@ -227,7 +314,7 @@ proptest! {
         }
         // Quiesce: acknowledge everything and let time pass; the consumer's view must
         // then be the latest state, whatever was dropped on the way (resync).
-        for _ in 0..8 {
+        for _ in 0..24 {
             if let Some(&seq) = w.inflight.last() {
                 w.ack(&mut flow, seq);
             }
@@ -236,9 +323,45 @@ proptest! {
         }
         prop_assert_eq!(flow.pending_len(), 0);
         prop_assert_eq!(&w.view, &w.latest);
-        prop_assert_eq!(&w.view_status, &w.latest_status);
-        prop_assert_eq!(&w.view_links, &w.latest_links);
+        // A bare resync drops discrete state: the consumer re-read it by query.
+        prop_assert!(w.bare_frames > 0 || w.view_status == w.latest_status);
+        prop_assert!(w.bare_frames > 0 || w.view_links == w.latest_links);
     }
+}
+
+/// The generator must actually reach the split and bare paths, or the property proves
+/// nothing about them (checked on a fixed seed sweep).
+#[test]
+fn the_generator_reaches_the_split_and_bare_paths() {
+    use proptest::test_runner::{Config, TestRunner};
+    let mut runner = TestRunner::new(Config::with_cases(300));
+    let (split, bare) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+    let strategy = (120usize..400, prop::collection::vec(op(), 0..160));
+    runner
+        .run(&strategy, |(budget, ops)| {
+            let mut flow = Flow::new(budget);
+            let mut w = World::new(budget);
+            for op in ops {
+                match op {
+                    Op::Sample(sub) => w.offer_sample(&mut flow, u64::from(sub)),
+                    Op::Status => w.offer_status(&mut flow),
+                    Op::Advance(us) => w.now += u64::from(us),
+                    Op::AckAll => {
+                        if let Some(&seq) = w.inflight.last() {
+                            w.ack(&mut flow, seq);
+                        }
+                    }
+                    _ => {}
+                }
+                w.poll(&mut flow);
+            }
+            split.set(split.get() + w.split_batches);
+            bare.set(bare.get() + w.bare_frames);
+            Ok(())
+        })
+        .expect("model holds");
+    assert!(split.get() > 50, "split batches: {}", split.get());
+    assert!(bare.get() > 5, "bare frames: {}", bare.get());
 }
 
 #[test]
@@ -405,7 +528,7 @@ fn hub_with_stream() -> (
     tokio::sync::mpsc::Receiver<StreamFrame>,
 ) {
     let mut hub = Hub::new();
-    let (id, rx) = hub.open(Some("main".into()), 0);
+    let (id, rx) = hub.open(Some("main".into()), 0).expect("open");
     (hub, id, rx)
 }
 fn drain(rx: &mut tokio::sync::mpsc::Receiver<StreamFrame>) -> Vec<StreamFrame> {
@@ -639,7 +762,7 @@ fn a_new_stream_starts_with_the_current_status_and_links() {
     let mut hub = Hub::new();
     hub.on_status(riding(7), 0);
     hub.on_link(LinkDevice::Trainer, LinkStatus::Ready);
-    let (_, mut rx) = hub.open(None, 0);
+    let (_, mut rx) = hub.open(None, 0).expect("open");
     hub.poll(0);
     let f = drain(&mut rx).remove(0);
     assert_eq!(f.status, Some(riding(7)));
@@ -665,11 +788,11 @@ fn link_changes_are_sent_only_when_they_change() {
 #[test]
 fn window_cleanup_drops_streams_and_dead_sinks() {
     let mut hub = Hub::new();
-    let (a, mut rx_a) = hub.open(Some("w1".into()), 0);
-    let (b, _rx_b) = hub.open(Some("w2".into()), 0);
+    let (a, mut rx_a) = hub.open(Some("w1".into()), 0).expect("open");
+    let (b, _rx_b) = hub.open(Some("w2".into()), 0).expect("open");
     assert_eq!(hub.stream_count(), 2);
     // a page reload: same label, the previous stream goes
-    let (a2, rx_a2) = hub.open(Some("w1".into()), 0);
+    let (a2, rx_a2) = hub.open(Some("w1".into()), 0).expect("open");
     assert_ne!(a, a2);
     assert_eq!(hub.stream_count(), 2);
     assert!(rx_a.try_recv().is_err());
@@ -700,4 +823,228 @@ fn a_consumer_that_never_reads_or_acks_is_bounded() {
     let flow = hub.flow(id).expect("stream alive");
     assert_eq!(flow.unacked(), MAX_UNACKED);
     assert!(flow.pending_len() <= MAX_SUBSCRIPTIONS + 3);
+}
+
+// ---- review round 2: caps, reaping, pacing anchors, gaps ---------------------------
+
+#[test]
+fn a_status_change_restarts_the_heartbeat_period() {
+    // Mutant: `last_status_us` not reset on a change would beat again 200 ms later.
+    let (mut hub, id, mut rx) = hub_with_stream();
+    let mut at = Vec::new();
+    for step in 0..=20_u64 {
+        let t = step * 100 * MS;
+        // a discrete change at 300 ms, clock fields advancing all the time
+        let mut s = riding(u64::from(t >= 300 * MS));
+        s.session_s = step as f64 / 10.0;
+        hub.on_status(s, t);
+        hub.poll(t);
+        at.extend(status_times(&mut hub, id, &mut rx, t));
+    }
+    assert_eq!(at[..2], [0, 300 * MS], "first status, then the change");
+    assert_eq!(
+        at[2],
+        800 * MS,
+        "next beat 500 ms after the change, not after the first"
+    );
+}
+
+#[test]
+fn unlabelled_streams_never_evict_each_other() {
+    // Mutant: `if window.is_some()` → `if true` would drop the first `None` stream.
+    let mut hub = Hub::new();
+    let (a, _ra) = hub.open(None, 0).expect("open");
+    let (b, _rb) = hub.open(None, 0).expect("open");
+    assert_eq!(hub.stream_count(), 2);
+    assert!(hub.ack(a, 0).is_ok() && hub.ack(b, 0).is_ok());
+}
+
+#[test]
+fn a_blocked_stream_neither_beats_nor_flags_resync_after_the_ack() {
+    // Mutant: heartbeat offered while blocked replaces the pending status → resync.
+    let (mut hub, id, mut rx) = hub_with_stream();
+    // three discrete changes fill the window
+    for k in 0..3_u64 {
+        hub.on_status(riding(k), k * 100 * MS);
+        hub.poll(k * 100 * MS);
+    }
+    assert_eq!(drain(&mut rx).len(), 3);
+    for k in 0..20_u64 {
+        let t = 1_000 * MS + k * 500 * MS;
+        let mut s = riding(2);
+        s.session_s = k as f64;
+        hub.on_status(s, t);
+        hub.poll(t);
+    }
+    assert!(drain(&mut rx).is_empty(), "blocked: nothing sent");
+    hub.ack(id, 2).expect("ack");
+    for k in 0..4_u64 {
+        let t = 12_000 * MS + k * 500 * MS;
+        hub.on_status(riding(2), t);
+        hub.poll(t);
+    }
+    let frames = drain(&mut rx);
+    assert!(!frames.is_empty());
+    assert!(
+        frames.iter().all(|f| !f.resync),
+        "nothing was coalesced: {frames:?}"
+    );
+}
+
+#[test]
+fn filter_chains_are_capped_and_the_caps_themselves_are_accepted() {
+    use super::types::{MAX_FILTER_SECONDS, MAX_FILTERS_PER_CHAIN, MAX_MEDIAN_SAMPLES};
+    let (mut hub, id, _rx) = hub_with_stream();
+    let at_cap = vec![
+        Filter::Median {
+            n: MAX_MEDIAN_SAMPLES,
+        },
+        Filter::Sma {
+            window_s: MAX_FILTER_SECONDS,
+        },
+        Filter::Ema {
+            tau_s: MAX_FILTER_SECONDS,
+        },
+        Filter::OneEuro {
+            min_cutoff: 1.0,
+            beta: 0.1,
+        },
+    ];
+    assert_eq!(at_cap.len(), MAX_FILTERS_PER_CHAIN);
+    hub.subscribe(id, MetricId::Power, opts(10.0, at_cap.clone()))
+        .expect("at the caps");
+    let mut too_long = at_cap;
+    too_long.push(Filter::Hold);
+    for bad in [
+        too_long,
+        vec![Filter::Median {
+            n: MAX_MEDIAN_SAMPLES + 1.0,
+        }],
+        vec![Filter::Median { n: 1e12 }],
+        vec![Filter::Sma {
+            window_s: MAX_FILTER_SECONDS + 0.1,
+        }],
+        vec![Filter::Sma { window_s: 1e300 }],
+        vec![Filter::Ema {
+            tau_s: MAX_FILTER_SECONDS + 0.1,
+        }],
+    ] {
+        assert!(
+            matches!(
+                hub.subscribe(id, MetricId::Power, opts(1.0, bad.clone())),
+                Err(StreamError::InvalidFilter(_))
+            ),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn the_tick_cost_stays_bounded_at_every_cap() {
+    use super::types::{MAX_FILTER_SECONDS, MAX_MEDIAN_SAMPLES};
+    let (mut hub, id, _rx) = hub_with_stream();
+    for _ in 0..MAX_SUBSCRIPTIONS {
+        hub.subscribe(
+            id,
+            MetricId::Power,
+            opts(
+                10.0,
+                vec![
+                    Filter::Median {
+                        n: MAX_MEDIAN_SAMPLES,
+                    },
+                    Filter::Sma {
+                        window_s: MAX_FILTER_SECONDS,
+                    },
+                    Filter::Ema {
+                        tau_s: MAX_FILTER_SECONDS,
+                    },
+                    Filter::OneEuro {
+                        min_cutoff: 1.0,
+                        beta: 0.1,
+                    },
+                ],
+            ),
+        )
+        .expect("at the caps");
+    }
+    // Past every window length (1 200 samples of the longest SMA), unoptimized build.
+    let steps = 3_000_u64;
+    let started = std::time::Instant::now();
+    for k in 1..=steps {
+        let t = k as f64 / 4.0;
+        hub.on_source(t, &[Some((k % 400) as f64), None, None, None, None]);
+        hub.poll(k * 250 * MS);
+    }
+    let per_tick = started.elapsed() / u32::try_from(steps).expect("small");
+    assert!(
+        per_tick < std::time::Duration::from_millis(20),
+        "{per_tick:?} per tick at the caps (a tick is 250 ms)"
+    );
+}
+
+#[test]
+fn closed_receivers_are_reaped_without_anything_to_send() {
+    // Mutant: reaping only on a failed send never frees a blocked or idle stream.
+    let mut hub = Hub::new();
+    let mut rxs = Vec::new();
+    for _ in 0..super::hub::MAX_STREAMS {
+        rxs.push(hub.open(None, 0).expect("open").1);
+    }
+    assert_eq!(hub.open(None, 0).err(), Some(StreamError::TooManyStreams));
+    drop(rxs);
+    for k in 0..10_u64 {
+        hub.poll(k * 100 * MS);
+    }
+    assert_eq!(
+        hub.stream_count(),
+        0,
+        "reaped with no status, no samples, no beat"
+    );
+    assert!(hub.open(None, 0).is_ok());
+}
+
+#[test]
+fn a_blocked_dead_stream_is_reaped() {
+    let mut hub = Hub::new();
+    let (_, rx) = hub.open(None, 0).expect("open");
+    for k in 0..3_u64 {
+        hub.on_status(riding(k), k * 100 * MS);
+        hub.poll(k * 100 * MS);
+    }
+    drop(rx);
+    // window full: nothing is attempted any more, yet the stream must go
+    hub.poll(1_000 * MS);
+    assert_eq!(hub.stream_count(), 0);
+}
+
+#[test]
+fn non_finite_values_are_gaps_and_do_not_poison_the_chain() {
+    // ADR-0001 §5: gaps are null, never interpolated. NaN would serialize as `null`
+    // anyway (indistinguishable) and poison an exponential mean for the rest of the ride.
+    let (mut hub, id, mut rx) = hub_with_stream();
+    let ema = hub
+        .subscribe(
+            id,
+            MetricId::Speed,
+            opts(10.0, vec![Filter::Ema { tau_s: 1.0 }]),
+        )
+        .expect("sub");
+    let mut out = Vec::new();
+    for (k, v) in [100.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 100.0]
+        .into_iter()
+        .enumerate()
+    {
+        let t = (k + 1) as f64 / 4.0;
+        hub.on_source(t, &[None, None, Some(v), None, None]);
+        hub.poll((k as u64 + 1) * 250 * MS);
+        for f in drain(&mut rx) {
+            hub.ack(id, f.seq).expect("ack");
+            out.extend(f.samples.into_iter().filter(|s| s.sub == ema).map(|s| s.v));
+        }
+    }
+    // EMA with no new value holds nothing: non-finite inputs are missing samples.
+    assert_eq!(out[0], Some(100.0));
+    assert_eq!(out[1..4], [None, None, None]);
+    assert_eq!(out[4], Some(100.0), "the chain recovered");
 }
