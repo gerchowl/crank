@@ -34,7 +34,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -97,10 +97,16 @@ struct Session {
 #[derive(Default)]
 struct State {
     session: Option<Session>,
-    /// A ride is being loaded (devices connecting) outside the state lock.
-    loading: bool,
     /// Id and final status of the last ride that finished, until the next load.
     last: Option<(String, StreamStatus)>,
+}
+/// Clears the loading flag when a `ride_load` ends in any way, including its future
+/// being dropped (a cancelled command) or panicking.
+struct LoadGuard(Arc<Inner>);
+impl Drop for LoadGuard {
+    fn drop(&mut self) {
+        self.0.loading.store(false, Ordering::SeqCst);
+    }
 }
 struct Inner {
     store: Arc<Store>,
@@ -115,6 +121,9 @@ struct Inner {
     state: Mutex<State>,
     /// Woken whenever a session has been released.
     released: Notify,
+    /// A ride is being loaded (devices connecting) outside the state lock. Atomic, not
+    /// part of [`State`], so a [`LoadGuard`] can clear it from `Drop`.
+    loading: AtomicBool,
     /// The next core stream id (never 0).
     next_stream: AtomicU32,
 }
@@ -204,6 +213,7 @@ impl Core {
             },
             state: Mutex::default(),
             released: Notify::new(),
+            loading: AtomicBool::new(false),
             next_stream: AtomicU32::new(1),
         })))
     }
@@ -228,7 +238,7 @@ impl Core {
     /// ride uses: not while a ride is loaded, in progress or still ending.
     async fn require_no_ride(&self) -> Result<(), ApiError> {
         let st = self.0.state.lock().await;
-        if st.session.is_some() || st.loading {
+        if st.session.is_some() || self.0.loading.load(Ordering::SeqCst) {
             return Err(ApiError::new(
                 ErrorCode::Conflict,
                 "a ride is loaded: end it first",
@@ -565,6 +575,11 @@ impl Core {
     /// Load a workout (or a free ride for `None`): connect the paired devices, build
     /// the engine and load the workout. The ride starts with `ride_start`.
     ///
+    /// A request that is invalid (unknown workout, a workout with errors) changes
+    /// nothing. Otherwise the load first replaces any loaded-but-unstarted ride (stops
+    /// it and waits for its devices): if connecting then fails, nothing is loaded and
+    /// the status is idle. A cancelled or panicking load leaves the core usable.
+    ///
     /// # Errors
     /// `Conflict` if a ride is in progress; `NotFound` for an unknown workout;
     /// `DeviceUnavailable` without a paired or reachable trainer.
@@ -599,21 +614,21 @@ impl Core {
             }
         }
         {
-            let mut st = self.0.state.lock().await;
-            if st.session.is_some() || st.loading {
+            let st = self.0.state.lock().await;
+            if st.session.is_some() || self.0.loading.swap(true, Ordering::SeqCst) {
                 return Err(ApiError::new(
                     ErrorCode::Conflict,
                     "another ride is loading or loaded",
                 ));
             }
-            st.loading = true;
         }
+        // From here every exit (error, cancellation, panic) clears the flag.
+        let _loading = LoadGuard(self.0.clone());
         // Connecting takes seconds: it runs outside the state lock, and `ride_status`
         // reports `loading` meanwhile.
         let built = self.build_session(workout, compiled).await;
-        let mut st = self.0.state.lock().await;
-        st.loading = false;
         let (session, hr_linked) = built?;
+        let mut st = self.0.state.lock().await;
         st.last = None;
         let ride_id = session.ride_id.clone();
         st.session = Some(session);
@@ -782,7 +797,7 @@ impl Core {
             (None, None) => self.0.idle.clone(),
         };
         Ok(RideStatusView {
-            loading: st.loading,
+            loading: self.0.loading.load(Ordering::SeqCst),
             status,
         })
     }
@@ -987,6 +1002,10 @@ mod tests {
         mode_gate: Arc<Mutex<Vec<bool>>>,
         /// How long a trainer connect takes.
         connect_delay: Duration,
+        /// Trainer connects fail while set.
+        fail_connect: Arc<std::sync::atomic::AtomicBool>,
+        /// Trainer connects panic while set.
+        panic_connect: Arc<std::sync::atomic::AtomicBool>,
     }
     use crank_devices::DiscoveredDevice;
     struct Recording(FakeRadio);
@@ -1003,8 +1022,16 @@ mod tests {
             let radio = self.0.clone();
             let dev = dev.clone();
             let delay = self.0.connect_delay;
+            let (fail, boom) = (self.0.fail_connect.clone(), self.0.panic_connect.clone());
             async move {
                 tokio::time::sleep(delay).await;
+                assert!(
+                    !boom.load(std::sync::atomic::Ordering::SeqCst),
+                    "the radio panicked while connecting"
+                );
+                if fail.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(crank_devices::DeviceError::NotFound);
+                }
                 let mut link = inner.connect(&dev, rider).await?;
                 let (tx, mut rx) = tokio::sync::mpsc::channel(64);
                 let real = std::mem::replace(&mut link.control, tx);
@@ -1094,6 +1121,8 @@ mod tests {
             disconnects: Arc::default(),
             mode_gate: Arc::default(),
             connect_delay: Duration::ZERO,
+            fail_connect: Arc::default(),
+            panic_connect: Arc::default(),
         }
     }
     /// Re-opening the data dir with a radio the test controls.
@@ -1342,8 +1371,9 @@ mod tests {
             core.ride_load(None).await.unwrap_err().code,
             ErrorCode::Conflict
         );
+        // A strap is not connected by the load, so only the `loading` check can refuse it.
         assert_eq!(
-            core.device_pair("neo".into(), DeviceRole::Trainer)
+            core.device_pair("hrm".into(), DeviceRole::HeartRate)
                 .await
                 .unwrap_err()
                 .code,
@@ -1352,5 +1382,89 @@ mod tests {
         loading.await.unwrap().unwrap();
         let view = core.ride_status().await.unwrap();
         assert!(!view.loading && view.status.loaded);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_load_leaves_the_core_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut radio = fake(vec![], false);
+        radio.connect_delay = Duration::from_secs(10);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        // The caller gives up (a dropped command future) in the middle of the connect.
+        let cancelled = tokio::time::timeout(Duration::from_secs(2), core.ride_load(None)).await;
+        assert!(cancelled.is_err(), "the load was cut off");
+        assert!(!core.ride_status().await.unwrap().loading);
+        core.device_pair("hrm".into(), DeviceRole::HeartRate)
+            .await
+            .unwrap();
+        core.devices_scan(Some(200)).await.unwrap();
+        core.device_forget(DeviceRole::HeartRate).await.unwrap();
+        core.ride_load(None).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_panicking_load_leaves_the_core_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        radio
+            .panic_connect
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let load = {
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_load(None).await })
+        };
+        assert!(load.await.unwrap_err().is_panic());
+        radio
+            .panic_connect
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(!core.ride_status().await.unwrap().loading);
+        core.ride_load(None).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_load_that_fails_to_connect_has_already_replaced_the_unstarted_ride() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.ride_load(None).await.unwrap();
+        assert!(core.ride_status().await.unwrap().status.loaded);
+        radio
+            .fail_connect
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let e = core.ride_load(None).await.unwrap_err();
+        assert_eq!(e.code, ErrorCode::DeviceUnavailable);
+        // Nothing is loaded and the devices are free again.
+        let view = core.ride_status().await.unwrap();
+        assert!(!view.status.loaded && !view.loading);
+        radio
+            .fail_connect
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        core.device_forget(DeviceRole::Trainer).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_invalid_load_leaves_the_loaded_ride_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.ride_load(Some("builtin-sensor-check".into()))
+            .await
+            .unwrap();
+        let e = core.ride_load(Some("nope".into())).await.unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotFound);
+        assert!(core.ride_status().await.unwrap().status.loaded);
     }
 }
