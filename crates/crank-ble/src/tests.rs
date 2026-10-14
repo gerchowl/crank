@@ -210,6 +210,8 @@ struct Fake {
     max_resistance_n: AtomicU16,
     disconnect_fail: AtomicBool,
     disconnects: AtomicUsize,
+    /// Each GATT write takes this long (ms): a busy radio, so queued pages stay unwritten.
+    write_delay_ms: AtomicU64,
     hold_disconnect: AtomicBool,
     hold_notifications: AtomicBool,
     notification_waiting: tokio::sync::Notify,
@@ -230,6 +232,7 @@ impl Fake {
             max_resistance_n: AtomicU16::new(1),
             disconnect_fail: AtomicBool::new(false),
             disconnects: AtomicUsize::new(0),
+            write_delay_ms: AtomicU64::new(0),
             hold_disconnect: AtomicBool::new(false),
             hold_notifications: AtomicBool::new(false),
             notification_waiting: tokio::sync::Notify::new(),
@@ -264,6 +267,10 @@ impl FecTransport for Arc<Fake> {
     fn write(&self, bytes: [u8; 13]) -> BoxFuture<'static, Result<(), DeviceError>> {
         let fake = self.clone();
         Box::pin(async move {
+            let delay = fake.write_delay_ms.load(Ordering::SeqCst);
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
             if fake.fail.swap(false, Ordering::SeqCst) {
                 return Err(DeviceError::Gatt("write rejected".into()));
             }
