@@ -201,6 +201,16 @@
           python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md}
           touch $out
         '';
+        # e2e.sh's run-dir pruning must survive zero, one and many prior runs under `set -euo pipefail` (#233).
+        e2e-prune = pkgs.runCommand "e2e-prune" { } ''
+          cp -r ${source (lib.fileset.unions [ ./scripts/e2e-lib.sh ./scripts/test-e2e-prune.sh ])} src
+          cd src && bash scripts/test-e2e-prune.sh
+          touch $out
+        '';
+        npm-licenses-test = pkgs.runCommand "npm-licenses-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          python3 ${./scripts/test-check-npm-prod-licenses.py}
+          touch $out
+        '';
       } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
         # just bundle is macOS-only (ADR-0001 §9.3): exercise its atomic install against a temp target (#165).
         install-app = pkgs.runCommand "install-app" { nativeBuildInputs = [ pkgs.python3 ]; } ''
@@ -208,6 +218,13 @@
           cd src && bash scripts/test-install-app.sh
           touch $out
         '';
+      } // {
+        # Production npm tree (bundled into the app) against the licence allow-list (#233).
+        npm-prod-licenses = (frontend "npm-prod-licenses"
+          "pnpm -C app licenses list --prod --json | python3 ${./scripts/check-npm-prod-licenses.py}").overrideAttrs (old: {
+            nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.python3 ];
+            installPhase = "touch $out";
+          });
       } // lib.genAttrs [ "app-typecheck" "app-lint" "app-test" "shared-test" "shared-typecheck" "vectors-drift" ] (name:
         (frontend name (if name == "shared-test" then "pnpm -C shared test"
           else if name == "shared-typecheck" then "pnpm -C shared typecheck"

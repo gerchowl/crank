@@ -6,6 +6,8 @@
 # CRANK_E2E_DIRECT=1 runs in the current terminal instead (use it from a GUI terminal).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=e2e-lib.sh
+. "$root/scripts/e2e-lib.sh"
 
 # Inside the wrapper (`--launches <dir>`): two launches, then compare. Used by both modes.
 if [ "${1:-}" = --launches ]; then
@@ -32,7 +34,7 @@ mkdir -p "$out"
 # A per-run directory: a run that outlives the wait below can never leak its result into the next one.
 run=$(mktemp -d "$out/run.XXXXXX")
 # Keep the 3 newest earlier run dirs for post-mortems; older ones are removed.
-ls -dt "$out"/run.* | grep -vxF "$run" | tail -n +4 | while read -r old; do rm -rf "$old"; done
+prune_runs "$out" "$run" 3
 
 nix build "$root#crank-desktop-e2e" --out-link "$out/app"
 app=$(readlink -f "$out/app")/bin/crank-desktop
