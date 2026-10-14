@@ -1,0 +1,13 @@
+{
+  "accounting": "see spacing.analysis.json (replies counted by sequence number; the original summary counted page-71 frames and hid lost requests, recomputed by hil_fec analyse)",
+  "check": "3-spacing",
+  "identity": {
+    "dis_serial_present": true,
+    "firmware": "0.7.4",
+    "id_prefix": "5c67045f",
+    "model": "Neo",
+    "name": "Tacx Neo *****"
+  },
+  "link_dropped_during_run": false,
+  "what_was_sent": "20 page-70 requests for page 71 at 250/500/1000/2000 ms; page 49 then request(71) after 100/250/500/1000 ms x10"
+}
