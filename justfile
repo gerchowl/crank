@@ -28,6 +28,10 @@ lint:
     cargo clippy --workspace --all-targets -- -D warnings
     pnpm -C app lint
 
+# Production npm dependencies (bundled into the app) against the licence allow-list (#233).
+npm-licenses:
+    pnpm -C app licenses list --prod --json | scripts/check-npm-prod-licenses.py
+
 fmt:
     cargo fmt --all
     pnpm -C app fmt
@@ -68,8 +72,9 @@ icons:
     rm -rf app/src-tauri/icons/android app/src-tauri/icons/ios app/src-tauri/icons/64x64.png
     python3 scripts/icons.py record
 
-# ADR-0001 §8.3 (#35): build crank-desktop-e2e and run the WebdriverIO smoke spec in the GUI session
-# (Alacritty IPC; CRANK_E2E_DIRECT=1 from a GUI terminal). Output goes to app/e2e-out (gitignored).
+# ADR-0001 §8.3 (#35): build crank-desktop-e2e and run the WebdriverIO smoke spec in two app launches,
+# comparing screenshots across them, in the GUI session (Alacritty IPC; CRANK_E2E_DIRECT=1 from a GUI
+# terminal). Output goes to app/e2e-out (gitignored). Skips with a message on Linux.
 e2e:
     scripts/e2e.sh
 
