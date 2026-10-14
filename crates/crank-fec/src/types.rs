@@ -26,9 +26,9 @@ pub struct AntFrame {
 /// Adding a page requires an ADR-0002 amendment first; evaluation of 17/19
 /// against HIL captures is tracked in <https://github.com/gerchowl/crank/issues/139>.
 /// Page 49 and page 51 Crr use the full numeric domains decided in ADR-0002 §4.3,
-/// including 0xFFFF target power and 0xFF Crr. Whether those endpoints are the
-/// profile's invalid sentinels is **tentative pending HIL #44**; the raw numeric
-/// value is kept, with no invented semantics.
+/// including 0xFFFF target power and 0xFF Crr. HIL #44 Part A showed the NEO
+/// treats both as invalid (0xFFFF reads back as 0 W, Crr 0xFF is ignored; #215);
+/// the raw numeric value is still kept, with no invented semantics.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Page {
     /// Page 16, general fitness equipment telemetry.
@@ -61,8 +61,9 @@ pub enum Page {
         /// Dimensionless rolling coefficient, resolution 0.00005; 0xFF is numeric.
         crr: f32,
     },
-    /// Page 54, fitness equipment capabilities; 0xFFFF max resistance is
-    /// raw and **tentative pending HIL #44**.
+    /// Page 54, fitness equipment capabilities; the NEO reports 200 N and modes
+    /// 7 (HIL #44 Part A). Whether 0xFFFF max resistance means unavailable is
+    /// raw and still **tentative pending HIL #44**.
     Capabilities(FeCapabilities),
     /// Page 55, user configuration, using the ANT+ FE profile layout (#70).
     UserConfig {
@@ -72,7 +73,8 @@ pub enum Page {
         bike_kg: Option<f32>,
         /// Wheel diameter in m, resolution 0.001 m; 0xFF coarse byte or
         /// offsets 10–14 give None. Treating 10–14 as reserved (rather than
-        /// valid millimetres) is **tentative pending HIL #44**.
+        /// valid millimetres) is **tentative pending HIL #44**; the NEO stores and
+        /// reports them verbatim (Part A), so it gives no evidence either way.
         /// Offset 0xF means no offset, so only the coarse diameter is used.
         wheel_m: Option<f32>,
         /// Gear ratio in 0.03 increments; zero is invalid.
@@ -82,8 +84,9 @@ pub enum Page {
     Request {
         /// Requested page number.
         page: u8,
-        /// Seven-bit transmission count (zero retained as received; its
-        /// meaning, possibly "until acknowledged", is **tentative pending HIL #44**).
+        /// Seven-bit transmission count (zero retained as received). On the NEO a
+        /// count of 0 was answered five times in the one HIL trial (#44 Part A, n = 1),
+        /// then stopped; the cap is unconfirmed and the meaning stays tentative.
         times: u8,
         /// Whether the reply should use acknowledged data.
         acknowledged: bool,
@@ -92,9 +95,9 @@ pub enum Page {
     },
     /// Page 71, uncorrelated trainer observation, never command confirmation.
     CommandStatus(CommandStatus),
-    /// Page 80, manufacturer information; NEO cross-check is #44.
+    /// Page 80, manufacturer information; layout verified on a NEO (HIL #44 Part A).
     Manufacturer(ManufacturerInfo),
-    /// Page 81, product information; NEO cross-check is #44.
+    /// Page 81, product information; layout verified on a NEO (HIL #44 Part A).
     Product(ProductInfo),
     /// Unrecognized page number and all eight original page bytes.
     Unknown {
@@ -147,7 +150,7 @@ pub struct TrainerData {
     pub lap_toggle: bool,
 }
 
-/// Page 54, subject to NEO verification in #44.
+/// Page 54; the NEO reports `max_resistance_n` 200 and `modes` 7 (HIL #44 Part A).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeCapabilities {
     /// Maximum resistance in N, raw; 0xFFFF may mean unavailable (**tentative
@@ -162,7 +165,9 @@ pub struct FeCapabilities {
 pub struct CommandStatus {
     /// Last received command page number.
     pub last_page: u8,
-    /// Uninterpreted sequence byte; semantics await #44.
+    /// Sequence byte. On the NEO it increments by one per control page (48–51)
+    /// and per page-70 request received, modulo 256, not for page 55 (HIL #44
+    /// Part A). It is still not used to correlate a reply with one command.
     pub sequence: u8,
     /// Status: 0 pass, 1 fail, 2 unsupported, 3 rejected, 4 pending; others retained.
     pub status: u8,
@@ -170,7 +175,7 @@ pub struct CommandStatus {
     pub echo: [u8; 4],
 }
 
-/// Page 80 common manufacturer fields, subject to NEO verification in #44.
+/// Page 80 common manufacturer fields, verified on a NEO in HIL #44 Part A.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ManufacturerInfo {
     /// Hardware revision byte.
@@ -181,7 +186,7 @@ pub struct ManufacturerInfo {
     pub model: u16,
 }
 
-/// Page 81 common product fields, subject to NEO verification in #44.
+/// Page 81 common product fields, verified on a NEO in HIL #44 Part A.
 /// Common-page layout cross-checked against Loghorn/ant-plus's
 /// `src/fitness-equipment-sensors.ts` (pages 0x50 and 0x51).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -225,7 +230,7 @@ pub enum ControlPage {
     },
     /// Page 55: ANT+ FE profile User Configuration layout, cross-checked
     /// against public implementations, with the corrected packing decided in #70.
-    /// #44 must confirm NEO acceptance. Diameter is rounded to integer mm, then
+    /// The NEO accepts this layout (HIL #44 Part A). Diameter is rounded to integer mm, then
     /// coarse byte = mm / 10, offset nibble = mm % 10: 708 mm gives 70 + 8.
     /// Unlike pycycling's rounded-centimetre residual, the offset is never negative
     /// and cannot borrow into bicycle mass. Gear ratio is unspecified (byte 7 = 0).

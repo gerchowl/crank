@@ -201,6 +201,13 @@ frames as `FrameError::Checksum` (counted in a metric and logged, never passed o
 confirms the NEO accepts XOR-checksummed writes. Writes use message type **`0x4F` (acknowledged data)**,
 as pycycling does against a NEO; HIL check 2 confirms.
 
+**HIL result (#44 Part A, 2026-10-14, `docs/hil/2026-10-14-fec.md`).** The NEO answered a page-70 request
+under all four checksum rules, including a deliberately wrong one: it **does not verify the checksum on
+writes** (11 of 12 requests were answered; the one lost reply is the §4.4 effect, not a rejection). It also accepted
+message type `0x4E` as well as `0x4F`, with and without GATT response; every effect check (page 49 followed by
+the page-71 echo) matched. The decisions above stand: the NEO's own frames always carry XOR including sync,
+and that is what crank sends and verifies. Nothing about the NEO's tolerance is relied on.
+
 ### 4.2 Pages
 
 From trainer (decoded):
@@ -227,18 +234,43 @@ To trainer (encoded):
 Unused bytes are `0xFF`. Unknown pages decode to `Page::Unknown { page, raw }` and are logged at debug.
 
 **Tentative pending HIL #44** (the ANT+ FE profile was not retrievable, §4.1; raw values are kept, no
-semantics invented):
+semantics invented). Part A results (2026-10-14, NEO fw 0.7.4) are marked; the rest stays tentative:
 
-- Page 16: `equipment_type` is masked with `0x1F` (bits 5–7 reserved); the mask itself is unverified on
-  hardware.
+- Page 16: `equipment_type` is masked with `0x1F` (bits 5–7 reserved). **Part A:** bits 5–7 were 0 in all
+  456 captured page-16 frames (type `0x19`), so the mask never mattered on this NEO; it stays tentative
+  because zero bits do not prove the bits are reserved.
 - Page 54: `max_resistance_n` is the raw `u16`; whether `0xFFFF` means unavailable is undecided and left to
-  the consumer (`crank-ble` currently maps it to `None`). Pages 54/80/81 are not cross-checked.
+  the consumer (`crank-ble` currently maps it to `None`). **Part A:** the NEO reports `200` N and modes
+  `0x07` (basic resistance, target power, simulation) in every reply; `0xFFFF` was never seen. Whether
+  `0xFFFF` means unavailable stays tentative.
 - Page 55: wheel offset nibble 0–9 is millimetres and `0xF` means no offset; 10–14 decode to `None` pending
-  confirmation that 10 is not valid.
-- Page 70: a count of 0 encodes `0x80` and decodes to `times: 0, acknowledged: true`; whether that means
-  "until acknowledged" is undecided.
-- Pages 48/50/51/49 `0xFF` / `0xFFFF` endpoints (100 % = 200, Crr 0.01275 = `0xFF`, 16 383.75 W = `0xFFFF`)
-  are kept as numeric values, not sentinels.
+  confirmation that 10 is not valid. **Part A:** the NEO accepts the corrected layout (708 mm sent as byte 6 =
+  70, nibble 8; read back byte for byte), and stores and reports nibbles 10, 12 and 14 verbatim; it reports a
+  sent `0xF` as `0`. The NEO therefore gives no evidence either way about 10–14, and the decode to `None`
+  stays a codec policy, tentative.
+- Page 70: a count of 0 encodes `0x80` and decodes to `times: 0, acknowledged: true`. **Part A (n = 1 trial
+  per count):** `times` = 1 gave one reply, 3 gave three, and 0 gave five replies within 0.82 s of the
+  request (an immediate pair, then one per ~0.24 s) and then none within the 4 s window. So the NEO
+  repeats a count-0 request a bounded number of times (five in the one trial), which fits "until
+  acknowledged" with a cap; the cap itself is one observation and stays tentative.
+- Requests for a page the NEO does not serve as data (16 and 25, one trial each). **Part A:** it answers
+  with page 71 whose last-page byte is the *requested* page (`0x10`, `0x19`) and status `2` (not
+  supported): `47 10 DD 02 FF FF FF FF`. An unsupported request therefore overwrites page 71's
+  last-page field, so the next poll no longer echoes the last control page (it reads `NotControl`, see
+  rule R1 in §4.4.1, engine routing tracked in #226). Whether a *supported* request (54, 80, 81, 55) also overwrites it is not
+  established by Part A (no request-then-poll capture); crank sends only 54 (at connect, before any
+  poll) and 71.
+- Pages 48/50 endpoints. **Part A (settled):** 100 % (`200`) and page 50 at 1.86 / +127 km/h / 1.0 are
+  applied as numbers (echo `C8` and `BA FE 64`).
+- Pages 49 and 51 endpoints. **Part A (settled, contradicts the earlier "numeric, not sentinels"):** the
+  NEO treats page 49 `0xFFFF` and page 51 Crr `0xFF` as invalid. The echo of `0xFFFF` reads `0x0000` (the
+  previous target is replaced by 0 W); the echo of Crr `0xFF` keeps the previous Crr. The codec keeps the
+  full numeric domain; the engine must never emit either value (#215).
+- Page 49 resolution. **Part A:** the NEO quantises the target to whole watts: 200.25 W is echoed as 200 W
+  and 200.5 W as 201 W, so §7.1's 1 W grid is the real resolution and 0.25 W is wire format only.
+- Pages 54/80/81 layout. **Part A (settled):** page 80 reads hardware revision 1, manufacturer 89
+  (`0x59`, Tacx), model 2800 (`0x0AF0`); page 81 reads supplemental revision 0, main software revision 7 (DIS
+  firmware reads 0.7.4) and a serial; all as the codec decodes them.
 
 ### 4.3 Codec API
 
@@ -297,8 +329,8 @@ written within two ticks of the desired change, except when the pair's first fre
 an already-deferred poll: then completion is within three ticks (0.75 s), never more. ERG, resistance,
 and single-page control remain within two ticks. This bounds observation starvation, which affects
 safety-relevant trainer_following. The extra SIM tick arises under back-to-back changes faster than
-real terrain; `L` = 2 s budgets 0.5 s nominal writer delay, and #44 check 3 measures end-to-end p99
-including slot/coalescing delay so the 0.75 s worst case is calibrated rather than assumed.
+real terrain; the writer's share of `L` is 0.5 s nominal. #44 check 3 measured the age of stale echoes
+including slot/coalescing delay (§4.4.1: at most about 0.8 s against `L` = 2 s).
 Latency is measured per page from the moment it first becomes pending; coalescing replaces the value, not the deadline.
 Rider configuration is written on connection; explicit SetRider on a live connection returns a
 protocol fault and requires a new connection. Reserving polls avoids five-second observation expiry;
@@ -340,6 +372,34 @@ one tick of single-page delay remains inside the control latency budget.
   latency from a desired change to the first reply echoing it, which calibrate the constants of §4.4.1. **Enhancement, gated on
   #44:** if the check shows that the sequence byte increments verifiably per received control page,
   command-specific correlation may be added later as a new ADR amendment; v1 does not depend on it.
+  **Result (#44 Part A, 2026-10-14):**
+  - *Gate passes.* The NEO answers page 70 → page 71 (request-to-reply p50 0.06 s) and echoes bytes 4–7 of
+    pages 48, 49, 50 and 51 exactly, with status `0` (pass) and the last control page in byte 1. Page 55 is
+    **not** echoed: after a page-55 write byte 1 still names the previous control page. Before any control
+    page, byte 1 is `0x30` and the echo is `FF FF FF 00`, which is a valid resistance echo of 0 %. Callers
+    must therefore not treat that echo as a trainer-following disagreement.
+  - *Sequence byte.* It increments by 1 for each control page (48–51) and for each page-70 request the
+    NEO receives (not for page 55), wrapping at 256. It does increment verifiably, so the gated enhancement
+    is feasible later (a reply whose sequence is exactly 1 above that of a request/control pair proves no
+    other message intervened); v1 stays as decided.
+  - *Lost replies.* A page-70 request for page 71 is sometimes never answered, with the sequence byte
+    showing it was received. Counted by sequence number over the Part A captures
+    (`frames::reply_accounting`, offline test with duplicates and gaps): 5 of 79 requests sent in a row
+    (250/500/1000/2000 ms apart), 4 of 40 requests 0.1–1 s after a control write, and 27 of 344 (7.8 %) of
+    the driver's own 1 s polls; 0 of 12 in check 2 and 3 of 32 in check 3. The loss does not depend on
+    spacing (2/19 at 250 ms, 0/19 at 500 ms, 3/19 at 1000 ms, 0/22 at 2000 ms) or envelope (§4.1). A
+    reply that does arrive does so within 0.12 s (n = 317); a lost one is not answered later. The next
+    poll is the recovery, which is already the design (never one reply). In SIM it costs one reply period
+    (2 s) for the affected component.
+  - *Repeated replies.* Of 397 page-71 frames in the driver run, 80 are `0x4E` (broadcast) copies of a
+    `0x4F` reply with the same sequence and bytes: 66 within 1 ms of the original, the rest up to one
+    4 Hz slot (0.24 s) later. Replies are not always `0x4F`. The driver turns every frame into its own
+    `Observed` event ("one reply, one observation", no deduplication). That is harmless to
+    §4.4.1: a copy carries the same value and sequence, so it can never disagree with its original, and
+    `T_verify` requires the agreeing replies of a verification to be spread over at least 2 s, so a burst
+    of copies cannot verify a component. A copy does count toward `N_follow`, so a verification may rest
+    on two distinct replies at least 2 s apart plus a copy; the sequence byte would allow deduplicating
+    copies exactly, which is the same gated enhancement as above.
 - **Connect sequence:** connect → discover → subscribe `fec2` → read DIS → page 55 (rider config) →
   request page 54 (capabilities) → `TrainerLink` returned with `Link(Ready)` → engine sets the mode. The
   driver never chooses a control mode itself; restoring control is always the engine's `SetMode`.
@@ -424,22 +484,23 @@ renew anything.
 | Constant | Value | Source |
 |---|---|---|
 | `T_poll` page-71 request period | 1 s | §4.4. Gives `P_c` above (SIM: alternation) |
-| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Budget: desired change → control write (≤ 2 writer ticks (0.5 s) nominal; ≤ 3 ticks (0.75 s) worst case for a SIM pair behind a deferred poll), plus the trainer applying it, plus the reply latency. **HIL calibration (#44 check 3)**: `L` ≥ p99 of (desired change → arrival of the first reply that echoes it), measured end to end, so slot and coalescing delay are included |
+| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Bounds the age of a **stale echo**: an echo of a value that has been superseded by a newer desired value. Budget: the writer delay (≤ 2 ticks (0.5 s) nominal; ≤ 3 ticks (0.75 s) worst case for a SIM pair behind a deferred poll, §4.4) during which polls still read the old value, plus reply latency (≤ 0.12 s). **HIL calibration (#44 check 3, Part A, 2026-10-14, `docs/hil/2026-10-14-fec.md`)**: in the driver run (60 ERG and 30 SIM changes, 397 page-71 frames, about 6 min) 2 echoes were stale after the new value was written, 16 ms and 22 ms after the write (both ERG; none in SIM track), so the age from the desired change is at most 0.75 s + 0.022 s ≈ 0.8 s. `L` = 2 s keeps 1.2 s of margin. (The first-echo latency of a new value, ERG ≤ 2.2 s and SIM ≤ 4.3 s, is **not** what `L` bounds; it is checked against `T_unknown(c)` below.) Reproduce: `hil_fec analyse` |
 | `N_follow` agreeing replies to verify a component | 3 | Design: a single or duplicated reply never decides |
 | `T_verify` minimum span of those replies | 2 s | Design: a burst of delayed replies arriving together never verifies |
 | `T_mismatch` minimum span of a disagreement episode before `not_following` | 2 s | The previous 2 s rule (8 ticks) |
-| `T_unknown` silence: required time without a reply about a component | 5 s | The previous 5 s rule. More than two SIM reply periods. **HIL check (#44 check 3)**: SIM replies alternate as the schedule requires |
+| `T_unknown(c)` silence: required time without a reply about component c | `4·P_c + 1 s` = 5 s (ERG, resistance), 9 s (SIM components) | **Per component (HIL #44 Part A).** A reply gap is `(m + 1)·P_c` after `m` consecutive lost replies; c is `silent` (C7) once the gap reaches `T_unknown(c)`, so `m` = ⌈`T_unknown(c)` / `P_c`⌉ − 1 losses in a row make a healthy component silent and then `not_following` (A3). The NEO never answered 27 of 344 polls (p = 7.8 %, `latency.analysis.json`; check 2: 0 of 12, check 3: 3 of 32 = 9.4 %, spacing: 5 of 79 = 6.3 % in a row and 4 of 40 = 10 % just after a control write). With independent losses a component slot of period `P_c` starts such a run at rate `p^m` per slot, i.e. `3600 / P_c · p^m` per hour. **Flat 5 s:** ERG `m` = 4, 0.14 per hour; one SIM component `m` = 2 (gap 6 s), `p²·1800` = 11 per hour, and a SIM ride has two (track, wind), so 22 per hour: unacceptable. **4·P_c + 1 s:** ERG `m` = 4 (gap 5 s), 0.14 per hour; one SIM component `m` = 4 (gap 10 s; three losses give 8 s and are tolerated), 0.068 per hour, 0.14 per hour per ride. At the highest rate measured after a control write (4 of 40 = 10 %) the new rule gives 0.36 per hour (ERG, or SIM per ride), at the in-a-row rate (5 of 79 = 6.3 %) 0.06. Measured, no component ever exceeded 4.05 s (SIM) or 2.04 s (ERG), and the largest first echo of a changed value was 4.21 s (SIM track) and 2.19 s (ERG). **Independence is assumed, not shown:** the 27 losses were all isolated (no two requests in a row), where independence expects 2.1 adjacent pairs (probability of none 0.12), and in the SIM phase no two replies of the same component were lost in a row (135 requests, 0.82 expected, probability of none 0.44). The data neither support nor contradict a burst-free loss process, so Part B counts `silent` episodes on a healthy NEO over a long SIM ride; the rule changes only if they exceed the rate above |
 | `T_decide(c)` decision deadline (derived, not tuned) | `T_verify + T_mismatch + 3·P_c` = 7 s (ERG, resistance), 10 s (SIM components) | Checked by the model's fair walk |
 
-A change to `L`, `T_unknown` or the reply periods is an ADR amendment backed by #44 numbers. The model's
-constants must be changed in the same commit.
+A change to `L`, `T_unknown(c)` or the reply periods is an ADR amendment backed by #44 numbers. The model's
+constants must be changed in the same commit; the model fails when its constants differ from this table
+(`check_constants`).
 
 **Reply routing.** A reply (`TrainerEvent::Observed`) arrives at `t` = `at`. It is routed by the first
 matching rule:
 
 | # | Reply | Effect |
 |---|---|---|
-| R1 | Page-25 flags, `control = None` or `NotControl` (e.g. page 55 was the last page received; it says nothing about any component), status `Pending` or `Other` | Neutral: no effect on anything |
+| R1 | Any of: page-25 flags; `control = None` or `NotControl` (e.g. page 55 or an unsupported request was the last page received; it says nothing about any component), **whatever the status** (an unsupported request gives `NotControl` with status `NotSupported`, #44 Part A); status `Pending` or `Other` | Neutral: no effect on anything |
 | R2 | About a required component c: status `Pass` and the echo equals c's current desired value, or a value c had at some instant in `[t − L, t]` | **Agree** for c |
 | R3 | About a required component c: anything else (other value; status `Fail`, `NotSupported` or `Rejected`, even with an equal echo) | **Disagree** for c |
 | R4 | About a component that is not required but was required at some instant in `[t − L, t]` | Neutral: the trainer still reports the previous mode |
@@ -468,15 +529,15 @@ and the model's ever diverge.
 
 | # | When | Guard | Next state | Actions |
 |---|---|---|---|---|
-| C1 | c starts: `Activate`, or required again after more than `T_unknown` not required | none | `unverified` | `streak` = empty, `dis_since` = none, `last_evidence` = now |
-| C2 | **pre-step** for any Agree/Disagree: c is `silent`, or `t − last_evidence ≥ T_unknown` (evidence too old even if C7 has not run, e.g. c stopped being required at that instant) | none | `unverified`, then continue with C3–C6 | `streak` = empty, `dis_since` = none |
+| C1 | c starts: `Activate`, or required again after more than `T_unknown(c)` not required | none | `unverified` | `streak` = empty, `dis_since` = none, `last_evidence` = now |
+| C2 | **pre-step** for any Agree/Disagree: c is `silent`, or `t − last_evidence ≥ T_unknown(c)` (evidence too old even if C7 has not run, e.g. c stopped being required at that instant) | none | `unverified`, then continue with C3–C6 | `streak` = empty, `dis_since` = none |
 | C3 | Agree | after adding it, `streak` has ≥ `N_follow` replies and `t − streak.first ≥ T_verify` | `following` | add to `streak`, `last_evidence` = t, `dis_since` = none |
 | C4 | Agree | otherwise | unchanged | add to `streak` (first = t if it was empty), `last_evidence` = t |
 | C5 | Disagree | `t − (dis_since or t) ≥ T_mismatch` | `not_following` | `streak` = empty, `last_evidence` = t, `dis_since` = `dis_since` or t |
 | C6 | Disagree | otherwise | `following` → `unverified`; others unchanged | as C5 |
-| C7 | tick, c required and not `silent` | `now − last_evidence ≥ T_unknown` | `silent` | `streak` = empty, `dis_since` = none |
+| C7 | tick, c required and not `silent` | `now − last_evidence ≥ T_unknown(c)` | `silent` | `streak` = empty, `dis_since` = none |
 | C8 | c stops being required | none | `following` → `unverified`; others unchanged | `streak` = empty, `not_required_since` = now. `dis_since` and `not_following` are **kept** |
-| C9 | c required again within `T_unknown` | none | unchanged | `last_evidence` += now − `not_required_since` (silence counts required time only), `not_required_since` = none |
+| C9 | c required again within `T_unknown(c)` | none | unchanged | `last_evidence` += now − `not_required_since` (silence counts required time only), `not_required_since` = none |
 
 Properties of this table:
 
@@ -512,11 +573,11 @@ as an invariant over every reachable state or as a named scenario.
    desired in the last `L`. Then the aggregate is `not_following` no later than `L + 2·P_c + T_mismatch + r`
    after the later of activation and the last instant c desired V: 6 s + r for ERG, 8 s + r for a SIM
    component. Desired changes in between, at any rate, change nothing.
-2. **Missing component.** A required component without a reply for `T_unknown` of required time is
+2. **Missing component.** A required component without a reply for `T_unknown(c)` of required time is
    `silent`. The aggregate is then `not_following` if any sibling is not silent, and `unknown` if all are.
    It is never `following` (A3/A4).
    - Mode toggling cannot restart this clock (C9) unless the component stays unrequired for more than
-     `T_unknown`. Then it is a new requirement and must verify from scratch, so it can still never be
+     `T_unknown(c)`. Then it is a new requirement and must verify from scratch, so it can still never be
      masked as `following`.
    - Lagging replies are not a separate class: an echo of a value desired within `L` is an Agree for its
      own component. It never refreshes another component.
@@ -548,10 +609,11 @@ as an invariant over every reachable state or as a named scenario.
    - One Disagree never produces `not_following`.
 6. **Leaving `not_following`.** A component leaves `not_following` only through its own verification (C3),
    silence (C7) or `Deactivate`. A new target does not end it.
-7. **Silence.** A trainer that sends no reply is `checking` for `T_unknown` (5 s) after each `Activate`, then
-   `unknown` (A2) until a reply arrives or the machine deactivates. A trainer that never answers page 70
-   (the #44 check-3 fallback) therefore shows `checking` for the first 5 s of every activation and
-   `unknown` after that.
+7. **Silence.** A trainer that sends no reply is `checking` for `T_unknown(c)` (5 s for ERG and resistance, 9 s for SIM
+   components, so 9 s in SIM where both components must be silent) after each `Activate`, then `unknown` (A2)
+   until a reply arrives or the machine deactivates. A trainer that never answers page 70 (the #44 check-3
+   fallback) therefore shows `checking` for the first 5 s (ERG) or 9 s (SIM) of every activation and `unknown`
+   after that.
 8. **Repeated rides.** Activity depends only on the link and the desired mode, so a second ride on an open
    connection activates and verifies exactly like the first.
 
@@ -591,7 +653,7 @@ for those issues.
       disagreement, silence or re-requirement, so a single stale reply or a burst never verifies;
     - **(c)** that evidence while the component is required and not silent gives `following`, so
       recovery always completes;
-    - **(d)** `silent` holds exactly after `T_unknown` of required time without a reply, and requirement
+    - **(d)** `silent` holds exactly after `T_unknown(c)` of required time without a reply, and requirement
       toggles cannot restart that clock;
     - a single Disagree never gives `not_following`;
     - `not_following` ends only through verification, silence or a fresh start.
@@ -635,7 +697,7 @@ for those issues.
      latency 0..r), the Rust verdict sequence equals the model's. The model is invoked as a test oracle
      through a fixture file generated by the model, not at run time.
   3. Every guarantee above (1–8) as a property, including transition storms at every tick, ERG ↔ SIM
-     toggles faster than `T_unknown`, and recovery after silence.
+     toggles faster than `T_unknown(c)`, and recovery after silence.
   4. Compliance: exactly the seconds with a `suspect` or `not_following` tick are excluded.
   5. Classification: every desired change gets exactly one class, and the `Transition` set equals the §7.8
      settle triggers.
@@ -665,8 +727,10 @@ for those issues.
      `ObservedControl` equals the `grid_key` projection of the mode that produced the page. Page 55 and
      unknown pages give `NotControl(page)`. All status byte values decode, and unknown ones become `Other`.
   6. **Replay.** The #44 check-3 capture, replayed through `ReplayTrainer` into the machine, gives
-     `following` for its steady ERG and SIM segments. Its desired-change → echo latency is below `L`, and
-     each SIM component gets a reply within `T_unknown`.
+     `following` for its steady ERG and SIM segments. Every stale echo in it (an echo of a superseded value) is at
+     most `L` old, measured from the first write of the superseding value plus the writer delay, and the first
+     echo of each changed value arrives within `T_unknown(c)`; each SIM component gets a reply within
+     `T_unknown(c)`.
 
 ## 5. Decision: sensor sources, discovery, pairing memory
 
@@ -693,8 +757,11 @@ for those issues.
   ignored in v1.
 - **Pairing memory** (`device` table, ADR-0001 §6): platform peripheral id (CoreBluetooth UUID on macOS,
   stable per host), advertised name, and DIS serial (2A25) + model. Reconnect tries the stored platform id
-  first (CoreBluetooth can connect a known peripheral without scanning), then a scan matched by name +
-  serial. No BLE bonding: the NEO and standard HR straps work without it (to confirm in #44).
+  first, then a scan matched by name + serial. **#44 Part A:** btleplug resolves only peripherals the central has
+  already seen in the current process (a fresh process with the stored id gave `NotFound`; after a scan the
+  same id resolved), so the id-first path works only after a scan and the scan is the normal path. The id
+  was identical across separate processes. No BLE bonding: connect, subscribe and control writes worked
+  with no pairing prompt (confirmed on the NEO; HR strap still to confirm).
 - **Single central:** while crank is connected, no other app can control the NEO, and while another app
   (Zwift, Tacx app, a second crank process) is connected, crank cannot. crank therefore connects when the
   rider enters pre-ride or ride, stays connected while the app is open, and offers "Release trainer" in
@@ -820,7 +887,7 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
     relies on it), whether its sequence byte advances (the gated enhancement of §4.4), and the
     distribution of the latency from a desired change, through the writer's slot delay and the control write,
     to the first reply echoing it (end to end). It also checks that SIM replies alternate between pages 50
-    and 51, which gives the SIM reply periods behind `T_unknown`. These calibrate the constants of §4.4.1.
+    and 51, which gives the SIM reply periods behind `T_unknown(c)`. These calibrate the constants of §4.4.1.
   - Check 10 (single central) needs a second central device; done with the owner's phone in the same
     sitting.
   - Results go to `docs/hil/<date>-fec.md`; any contradiction with this ADR amends it before #43 merges.
