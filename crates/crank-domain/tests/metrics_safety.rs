@@ -373,6 +373,16 @@ fn finite_negative_filter_parameters_are_clamped_with_ts_values() {
             .map(|(&t, v)| chain.push(t, Some(v)).unwrap())
             .collect()
     };
+    // A NaN timestamp does not trigger the backwards-time reset, so a later, smaller `t` reaches
+    // the SMA stage with an older sample still in the window. There `t - window_s` decides eviction:
+    // with the clamp (window 0) the t=10 sample stays and the mean is 2.0; without it (t + 5 = 11)
+    // it is evicted and the mean is 2.5. TS (`t - Math.max(0, windowS)`) gives 2.0.
+    let mut sma = FilterChain::new([Filter::Sma { window_s: -5. }]).unwrap();
+    let got: Vec<f64> = [(10., 1.), (f64::NAN, 2.), (6., 3.)]
+        .into_iter()
+        .map(|(t, v)| sma.push(t, Some(v)).unwrap())
+        .collect();
+    assert_eq!(got, [1., 1.5, 2.], "SMA window clamp");
     // window 0, tau 0 and n 1 all pass the input through; negatives clamp to exactly those.
     for f in [
         Filter::Sma { window_s: -5. },

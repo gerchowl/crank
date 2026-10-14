@@ -76,7 +76,7 @@ fn samples(second: u32) -> Vec<Sample> {
 fn migrate_empty_database() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_owner(dir.path()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 2);
+    assert_eq!(store.schema_version().unwrap(), 3);
     let db = Connection::open(dir.path().join("crank.db")).unwrap();
     let tables: Vec<String> = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -116,12 +116,15 @@ fn migrate_empty_database() {
 
 #[test]
 fn migrate_every_released_fixture() {
-    const FIXTURES: &[&[u8]] = &[include_bytes!("fixtures/v1.db")];
+    const FIXTURES: &[&[u8]] = &[
+        include_bytes!("fixtures/v1.db"),
+        include_bytes!("fixtures/v2.db"),
+    ];
     for fixture in FIXTURES {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("crank.db"), fixture).unwrap();
         let store = Store::open_owner(dir.path()).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 2);
+        assert_eq!(store.schema_version().unwrap(), 3);
         assert_eq!(
             store
                 .load_json::<SettingJson>(&["fixture"])
@@ -513,6 +516,31 @@ fn remembering_a_role_again_updates_one_row_and_returns_its_existing_id() {
 }
 
 #[test]
+fn migration_three_renames_par_q_result_and_preserves_the_value() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("crank.db"),
+        include_bytes!("fixtures/v2.db"),
+    )
+    .unwrap();
+    drop(Store::open_owner(dir.path()).unwrap());
+    let db = Connection::open(dir.path().join("crank.db")).unwrap();
+    let value: String = db
+        .query_row(
+            "SELECT health_check_result FROM athlete_profile WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, r#"{"v":1,"cleared":true}"#);
+    assert!(
+        db.prepare("SELECT par_q_result FROM athlete_profile")
+            .is_err(),
+        "the old column name is gone"
+    );
+}
+
+#[test]
 fn migration_two_dedupes_within_a_kind_keeps_cross_kind_rows_and_fks() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -703,7 +731,7 @@ fn read_only_refuses_a_newer_schema() {
         Store::open_read_only(dir.path()),
         Err(StoreError::SchemaTooNew {
             found: 999,
-            supported: 2
+            supported: 3
         })
     ));
 }
