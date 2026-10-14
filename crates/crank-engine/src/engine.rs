@@ -100,10 +100,11 @@ pub struct RideSetup {
     /// refusal, not the derivation (#244); detecting `CapExceeded` is #245.
     pub cap_w: Option<u16>,
 }
-/// The mode a ride ends in: ADR-0002 §7.9, "no block" is explicit flat-road SIM, because
-/// "an FE-C trainer keeps its last control page, so silence after ERG could leave the ERG
-/// target active" (#266). The policy's own "no block" mode is the same.
-const END_MODE: ControlMode = ControlMode::Free;
+/// The mode a ride ends in: 0 % resistance, one control page, the same mode as the user
+/// pause (DESIGN §5.2) and the §7.4 release (ADR-0002 §7.9 as amended: "an FE-C trainer
+/// keeps its last control page, so silence after ERG could leave the ERG target active",
+/// #266). `Free` is two SIM pages and is not on the trainer until both are written.
+const END_MODE: ControlMode = ControlMode::Resistance { pct: 0.0 };
 /// How long the ride-active signal waits for the end mode to reach the trainer: 2 s, eight
 /// writer ticks of the 4 Hz control slot (ADR-0002 §4.4).
 const END_DELIVERY_US: u64 = 2_000_000;

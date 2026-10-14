@@ -64,8 +64,8 @@ impl Ride {
             .iter()
             .filter_map(|(t, m)| match m {
                 ControlMode::Erg { target_w } => Some((*t, *target_w)),
-                // the end mode of a finished ride (ADR-0002 §7.9, #266)
-                ControlMode::Free => None,
+                // the end mode of a finished ride (ADR-0002 §7.9, #266), or a release
+                ControlMode::Resistance { pct } if *pct == 0.0 => None,
                 other => panic!("unexpected {other:?}"),
             })
             .collect()
@@ -477,7 +477,7 @@ async fn the_end_mode_is_delivered_before_the_engine_shuts_down() {
     assert_eq!(*gate.lock().expect("test mutex"), vec![true, false]);
     assert_eq!(
         sent.lock().expect("test mutex").last().map(|(_, m)| *m),
-        Some(ControlMode::Free)
+        Some(ControlMode::Resistance { pct: 0.0 })
     );
 }
 
