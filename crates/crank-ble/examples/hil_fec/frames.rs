@@ -826,4 +826,44 @@ mod tests {
         assert_eq!(answered, [false, true]);
         assert_eq!((acc.distinct, acc.copies, acc.copies_4e), (1, 1, 1));
     }
+
+    #[test]
+    fn copy_matching_includes_the_sequence_byte() {
+        // R1, R2 answered (sequences 10, 11) with identical payloads except the sequence byte;
+        // the 0x4F original of R3 (sequence 12) is lost and only its 0x4E frame arrives. Matching
+        // without the sequence would take that frame for a copy of R1/R2 and report R3 lost.
+        let echo = [0xff; 4];
+        let r = vec![
+            rec(0, false, req71()),
+            rec(250_000, false, req71()),
+            rec(500_000, false, req71()),
+            rec(40_000, true, reply71(0x4f, 0x30, 10, echo)),
+            rec(290_000, true, reply71(0x4f, 0x30, 11, echo)),
+            rec(540_000, true, reply71(0x4e, 0x30, 12, echo)),
+        ];
+        let acc = reply_accounting(&r);
+        let answered: Vec<bool> = acc.outcomes.iter().map(|o| o.answered).collect();
+        assert_eq!(answered, [true, true, true]);
+        assert_eq!((acc.distinct, acc.copies), (3, 0));
+    }
+
+    #[test]
+    fn copy_of_an_earlier_answer_is_not_taken_for_a_later_one() {
+        // R1 and R2 answered, R3 lost; then the 0x4E copy of R1's reply arrives, after R2's
+        // answer and inside R3's window. Matching only the latest answer would not recognise
+        // it and would credit R3.
+        let echo = [0xff; 4];
+        let r = vec![
+            rec(0, false, req71()),
+            rec(250_000, false, req71()),
+            rec(500_000, false, req71()),
+            rec(40_000, true, reply71(0x4f, 0x30, 10, echo)),
+            rec(290_000, true, reply71(0x4f, 0x30, 11, echo)),
+            rec(600_000, true, reply71(0x4e, 0x30, 10, echo)), // late copy of R1's reply
+        ];
+        let acc = reply_accounting(&r);
+        let answered: Vec<bool> = acc.outcomes.iter().map(|o| o.answered).collect();
+        assert_eq!(answered, [true, true, false]);
+        assert_eq!((acc.distinct, acc.copies, acc.copies_within_1ms), (2, 1, 0));
+    }
 }
