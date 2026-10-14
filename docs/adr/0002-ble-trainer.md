@@ -484,14 +484,14 @@ renew anything.
 | Constant | Value | Source |
 |---|---|---|
 | `T_poll` page-71 request period | 1 s | §4.4. Gives `P_c` above (SIM: alternation) |
-| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Bounds the age of a **stale echo**: an echo of a value that has been superseded by a newer desired value. Budget: the writer delay (≤ 2 ticks (0.5 s) nominal; ≤ 3 ticks (0.75 s) worst case for a SIM pair behind a deferred poll, §4.4) during which polls still read the old value, plus reply latency (≤ 0.12 s). **HIL calibration (#44 check 3, Part A, 2026-10-14, `docs/hil/2026-10-14-fec.md`)**: in the driver run (60 ERG and 30 SIM changes, 397 page-71 frames, about 6 min) 2 echoes were stale after the new value was written, 16 ms and 22 ms after the write (both ERG; none in SIM track), so the age from the desired change is at most 0.75 s + 0.022 s ≈ 0.8 s. `L` = 2 s keeps 1.2 s of margin. (The first-echo latency of a new value, ERG ≤ 2.2 s and SIM ≤ 4.3 s, is **not** what `L` bounds; it is checked against `T_unknown` below.) Reproduce: `hil_fec analyse` |
+| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Bounds the age of a **stale echo**: an echo of a value that has been superseded by a newer desired value. Budget: the writer delay (≤ 2 ticks (0.5 s) nominal; ≤ 3 ticks (0.75 s) worst case for a SIM pair behind a deferred poll, §4.4) during which polls still read the old value, plus reply latency (≤ 0.12 s). **HIL calibration (#44 check 3, Part A, 2026-10-14, `docs/hil/2026-10-14-fec.md`)**: in the driver run (60 ERG and 30 SIM changes, 397 page-71 frames, about 6 min) 2 echoes were stale after the new value was written, 16 ms and 22 ms after the write (both ERG; none in SIM track), so the age from the desired change is at most 0.75 s + 0.022 s ≈ 0.8 s. `L` = 2 s keeps 1.2 s of margin. (The first-echo latency of a new value, ERG ≤ 2.2 s and SIM ≤ 4.3 s, is **not** what `L` bounds; it is checked against `T_unknown(c)` below.) Reproduce: `hil_fec analyse` |
 | `N_follow` agreeing replies to verify a component | 3 | Design: a single or duplicated reply never decides |
 | `T_verify` minimum span of those replies | 2 s | Design: a burst of delayed replies arriving together never verifies |
 | `T_mismatch` minimum span of a disagreement episode before `not_following` | 2 s | The previous 2 s rule (8 ticks) |
-| `T_unknown` silence: required time without a reply about a component | 5 s | The previous 5 s rule. More than two SIM reply periods. **HIL check (#44 check 3, Part A)**, distinct `0x4F` replies in the driver run: ERG replies every 0.99 s (median; max 2.04 s, 7 gaps above 2 s, one lost reply each); SIM page-50 and page-51 replies alternate, median gap 2.01 s per component, maximum 4.05 s (6 gaps above 3 s per component, n = 60 and 62). First-echo latency of a changed value: ERG max 2.19 s, SIM track max 4.21 s (n = 60 / 30). No component exceeded 5 s, so the constant is **not contradicted**; the SIM margin is 0.95 s, i.e. one lost reply on top of a 4 s gap would make a healthy component `silent`. The Part B ride must count `silent` episodes on a healthy NEO; if there are any, amend per component (candidate rule: `T_unknown(c)` = 4·`P_c` + 1 s, which is 5 s ERG and 9 s SIM) |
+| `T_unknown(c)` silence: required time without a reply about component c | `4·P_c + 1 s` = 5 s (ERG, resistance), 9 s (SIM components) | **Per component (HIL #44 Part A).** A reply gap is `(m + 1)·P_c` after `m` consecutive lost replies; c is `silent` (C7) once the gap reaches `T_unknown(c)`, so `m` = ⌈`T_unknown(c)` / `P_c`⌉ − 1 losses in a row make a healthy component silent and then `not_following` (A3). The NEO never answered 27 of 344 polls (p = 7.8 %, `latency.analysis.json`; 5–10 % in the other captures, up to 10 % just after a control write). With independent losses a component slot of period `P_c` starts such a run at rate `p^m` per slot, i.e. `3600 / P_c · p^m` per hour. **Flat 5 s:** ERG `m` = 4, 0.14 per hour; SIM `m` = 2 (gap 6 s), `p²·3600` = 22 per hour per ride, which is unacceptable. **4·P_c + 1 s:** ERG `m` = 4 (gap 5 s), SIM `m` = 4 (gap 10 s; three losses give 8 s and are tolerated), 0.14 per hour each. At p = 10 % that is 0.36 per hour, at p = 4 % (bare requests) 0.01. Measured, no component ever exceeded 4.05 s (SIM) or 2.04 s (ERG), and the largest first echo of a changed value was 4.21 s (SIM track) and 2.19 s (ERG). **Independence is assumed, not shown:** the 27 losses were all isolated (no two requests in a row), where independence expects 2.1 adjacent pairs (probability of none 0.12), and in the SIM phase no two replies of the same component were lost in a row (135 requests, 0.82 expected, probability of none 0.44). The data neither support nor contradict a burst-free loss process, so Part B counts `silent` episodes on a healthy NEO over a long SIM ride; the rule changes only if they exceed the rate above |
 | `T_decide(c)` decision deadline (derived, not tuned) | `T_verify + T_mismatch + 3·P_c` = 7 s (ERG, resistance), 10 s (SIM components) | Checked by the model's fair walk |
 
-A change to `L`, `T_unknown` or the reply periods is an ADR amendment backed by #44 numbers. The model's
+A change to `L`, `T_unknown(c)` or the reply periods is an ADR amendment backed by #44 numbers. The model's
 constants must be changed in the same commit; the model fails when its constants differ from this table
 (`check_constants`).
 
@@ -529,15 +529,15 @@ and the model's ever diverge.
 
 | # | When | Guard | Next state | Actions |
 |---|---|---|---|---|
-| C1 | c starts: `Activate`, or required again after more than `T_unknown` not required | none | `unverified` | `streak` = empty, `dis_since` = none, `last_evidence` = now |
-| C2 | **pre-step** for any Agree/Disagree: c is `silent`, or `t − last_evidence ≥ T_unknown` (evidence too old even if C7 has not run, e.g. c stopped being required at that instant) | none | `unverified`, then continue with C3–C6 | `streak` = empty, `dis_since` = none |
+| C1 | c starts: `Activate`, or required again after more than `T_unknown(c)` not required | none | `unverified` | `streak` = empty, `dis_since` = none, `last_evidence` = now |
+| C2 | **pre-step** for any Agree/Disagree: c is `silent`, or `t − last_evidence ≥ T_unknown(c)` (evidence too old even if C7 has not run, e.g. c stopped being required at that instant) | none | `unverified`, then continue with C3–C6 | `streak` = empty, `dis_since` = none |
 | C3 | Agree | after adding it, `streak` has ≥ `N_follow` replies and `t − streak.first ≥ T_verify` | `following` | add to `streak`, `last_evidence` = t, `dis_since` = none |
 | C4 | Agree | otherwise | unchanged | add to `streak` (first = t if it was empty), `last_evidence` = t |
 | C5 | Disagree | `t − (dis_since or t) ≥ T_mismatch` | `not_following` | `streak` = empty, `last_evidence` = t, `dis_since` = `dis_since` or t |
 | C6 | Disagree | otherwise | `following` → `unverified`; others unchanged | as C5 |
-| C7 | tick, c required and not `silent` | `now − last_evidence ≥ T_unknown` | `silent` | `streak` = empty, `dis_since` = none |
+| C7 | tick, c required and not `silent` | `now − last_evidence ≥ T_unknown(c)` | `silent` | `streak` = empty, `dis_since` = none |
 | C8 | c stops being required | none | `following` → `unverified`; others unchanged | `streak` = empty, `not_required_since` = now. `dis_since` and `not_following` are **kept** |
-| C9 | c required again within `T_unknown` | none | unchanged | `last_evidence` += now − `not_required_since` (silence counts required time only), `not_required_since` = none |
+| C9 | c required again within `T_unknown(c)` | none | unchanged | `last_evidence` += now − `not_required_since` (silence counts required time only), `not_required_since` = none |
 
 Properties of this table:
 
@@ -573,11 +573,11 @@ as an invariant over every reachable state or as a named scenario.
    desired in the last `L`. Then the aggregate is `not_following` no later than `L + 2·P_c + T_mismatch + r`
    after the later of activation and the last instant c desired V: 6 s + r for ERG, 8 s + r for a SIM
    component. Desired changes in between, at any rate, change nothing.
-2. **Missing component.** A required component without a reply for `T_unknown` of required time is
+2. **Missing component.** A required component without a reply for `T_unknown(c)` of required time is
    `silent`. The aggregate is then `not_following` if any sibling is not silent, and `unknown` if all are.
    It is never `following` (A3/A4).
    - Mode toggling cannot restart this clock (C9) unless the component stays unrequired for more than
-     `T_unknown`. Then it is a new requirement and must verify from scratch, so it can still never be
+     `T_unknown(c)`. Then it is a new requirement and must verify from scratch, so it can still never be
      masked as `following`.
    - Lagging replies are not a separate class: an echo of a value desired within `L` is an Agree for its
      own component. It never refreshes another component.
@@ -609,10 +609,11 @@ as an invariant over every reachable state or as a named scenario.
    - One Disagree never produces `not_following`.
 6. **Leaving `not_following`.** A component leaves `not_following` only through its own verification (C3),
    silence (C7) or `Deactivate`. A new target does not end it.
-7. **Silence.** A trainer that sends no reply is `checking` for `T_unknown` (5 s) after each `Activate`, then
-   `unknown` (A2) until a reply arrives or the machine deactivates. A trainer that never answers page 70
-   (the #44 check-3 fallback) therefore shows `checking` for the first 5 s of every activation and
-   `unknown` after that.
+7. **Silence.** A trainer that sends no reply is `checking` for `T_unknown(c)` (5 s for ERG and resistance, 9 s for SIM
+   components, so 9 s in SIM where both components must be silent) after each `Activate`, then `unknown` (A2)
+   until a reply arrives or the machine deactivates. A trainer that never answers page 70 (the #44 check-3
+   fallback) therefore shows `checking` for the first 5 s (ERG) or 9 s (SIM) of every activation and `unknown`
+   after that.
 8. **Repeated rides.** Activity depends only on the link and the desired mode, so a second ride on an open
    connection activates and verifies exactly like the first.
 
@@ -652,7 +653,7 @@ for those issues.
       disagreement, silence or re-requirement, so a single stale reply or a burst never verifies;
     - **(c)** that evidence while the component is required and not silent gives `following`, so
       recovery always completes;
-    - **(d)** `silent` holds exactly after `T_unknown` of required time without a reply, and requirement
+    - **(d)** `silent` holds exactly after `T_unknown(c)` of required time without a reply, and requirement
       toggles cannot restart that clock;
     - a single Disagree never gives `not_following`;
     - `not_following` ends only through verification, silence or a fresh start.
@@ -696,7 +697,7 @@ for those issues.
      latency 0..r), the Rust verdict sequence equals the model's. The model is invoked as a test oracle
      through a fixture file generated by the model, not at run time.
   3. Every guarantee above (1–8) as a property, including transition storms at every tick, ERG ↔ SIM
-     toggles faster than `T_unknown`, and recovery after silence.
+     toggles faster than `T_unknown(c)`, and recovery after silence.
   4. Compliance: exactly the seconds with a `suspect` or `not_following` tick are excluded.
   5. Classification: every desired change gets exactly one class, and the `Transition` set equals the §7.8
      settle triggers.
@@ -727,7 +728,7 @@ for those issues.
      unknown pages give `NotControl(page)`. All status byte values decode, and unknown ones become `Other`.
   6. **Replay.** The #44 check-3 capture, replayed through `ReplayTrainer` into the machine, gives
      `following` for its steady ERG and SIM segments. Its desired-change → echo latency is below `L`, and
-     each SIM component gets a reply within `T_unknown`.
+     each SIM component gets a reply within `T_unknown(c)`.
 
 ## 5. Decision: sensor sources, discovery, pairing memory
 
@@ -884,7 +885,7 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
     relies on it), whether its sequence byte advances (the gated enhancement of §4.4), and the
     distribution of the latency from a desired change, through the writer's slot delay and the control write,
     to the first reply echoing it (end to end). It also checks that SIM replies alternate between pages 50
-    and 51, which gives the SIM reply periods behind `T_unknown`. These calibrate the constants of §4.4.1.
+    and 51, which gives the SIM reply periods behind `T_unknown(c)`. These calibrate the constants of §4.4.1.
   - Check 10 (single central) needs a second central device; done with the owner's phone in the same
     sitting.
   - Results go to `docs/hil/<date>-fec.md`; any contradiction with this ADR amends it before #43 merges.
