@@ -2,6 +2,7 @@
 //! discovery, reconnect supervisors and pairing matching.
 //! Engine owns mode policy, counter rollover, gap filling and trainer following.
 mod capture;
+mod central;
 mod discovery;
 mod driver;
 mod gatt;
@@ -13,6 +14,7 @@ mod reconnect;
 mod replay;
 mod telemetry;
 pub use capture::*;
+pub use central::BleCentral;
 pub use crank_devices::Clock;
 use crank_devices::{DeviceError, ProtocolErrorKind};
 pub use discovery::*;
