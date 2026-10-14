@@ -649,6 +649,12 @@ version = "0.1.0"
 dependencies = [
  "crank-devices",
  "crank-domain",
+ "crank-store",
+ "futures-util",
+ "proptest",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
