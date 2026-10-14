@@ -85,7 +85,8 @@ pub enum Page {
         /// Requested page number.
         page: u8,
         /// Seven-bit transmission count (zero retained as received). On the NEO a
-        /// count of 0 is answered about five times, then stops (HIL #44 Part A).
+        /// count of 0 was answered five times in the one HIL trial (#44 Part A, n = 1),
+        /// then stopped; the cap is unconfirmed and the meaning stays tentative.
         times: u8,
         /// Whether the reply should use acknowledged data.
         acknowledged: bool,

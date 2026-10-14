@@ -297,8 +297,12 @@ const ANSWER_WINDOW_US: u64 = 1_500_000;
 /// receives (mod 256, not page 55), so a reply with sequence `s` answers the counted
 /// write numbered `s - base`. `base` is re-derived from the most recent unanswered
 /// request whenever the arithmetic does not land on a request (the counter holds 0xFF
-/// for one or two writes at its wrap). Repeats of an answered reply (the `0x4E` copies)
-/// are recognised by sequence and counted separately, so duplicates cannot hide a loss.
+/// for one or two writes at its wrap). A `0x4E` frame whose sequence and bytes equal an
+/// earlier answering `0x4F` reply is a copy of it and is attributed to that original, by
+/// sequence and arrival order, however many writes came between; copies are counted
+/// separately and never answer a request. Limits: a `0x4E` frame whose `0x4F` original
+/// was lost is indistinguishable from an original and counts as the answer; a `0x4F`
+/// frame repeating a sequence (the counter holds 0xFF at its wrap) is a new reply.
 pub fn reply_accounting(records: &[Record]) -> ReplyAccounting {
     let mut sorted: Vec<&Record> = records.iter().collect();
     sorted.sort_by_key(|r| r.at_us); // stable: ties keep file order
@@ -331,6 +335,21 @@ pub fn reply_accounting(records: &[Record]) -> ReplyAccounting {
         } else if r.rx && page == 71 {
             out.frames += 1;
             let seq = u64::from(r.bytes[6]);
+            let is_copy = r.bytes[2] == 0x4e
+                && answers
+                    .iter()
+                    .any(|(_, b)| b[2] == 0x4f && b[6..12] == r.bytes[6..12] && b[5] == r.bytes[5]);
+            if is_copy {
+                out.copies += 1;
+                out.copies_4e += 1;
+                let same = answers
+                    .iter()
+                    .rev()
+                    .find(|(_, b)| b[2] == 0x4f && b[5..12] == r.bytes[5..12])
+                    .map(|(t, _)| r.at_us.saturating_sub(*t));
+                out.copies_within_1ms += usize::from(same.is_some_and(|d| d <= 1000));
+                continue;
+            }
             let live = |j: u64| {
                 requests.get(&j).is_some_and(|o| {
                     !answered_at.contains_key(&j)
@@ -464,6 +483,56 @@ pub fn stale_echoes(records: &[Record]) -> (Vec<StaleEcho>, usize) {
     (stale, checked)
 }
 
+/// Run lengths of consecutive unanswered requests for `page`, in write order, as
+/// `(run length, number of runs)`.
+pub fn lost_runs(outcomes: &[RequestOutcome], page: u8) -> Vec<(usize, usize)> {
+    let mut runs: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut current = 0;
+    for o in outcomes.iter().filter(|o| o.page == page) {
+        if o.answered {
+            if current > 0 {
+                *runs.entry(current).or_default() += 1;
+            }
+            current = 0;
+        } else {
+            current += 1;
+        }
+    }
+    if current > 0 {
+        *runs.entry(current).or_default() += 1;
+    }
+    runs.into_iter().collect()
+}
+
+/// Whether the losses look independent: observed adjacent lost pairs against the
+/// `(n - 1)·p²` expected for independent losses, with the Poisson probability of seeing
+/// at most that many (`p` = lost / requests).
+pub fn independence(requests: usize, lost: usize, runs: &[(usize, usize)]) -> Value {
+    if requests < 2 {
+        return Value::Null;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let p = lost as f64 / requests as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let expected = (requests - 1) as f64 * p * p;
+    let observed: usize = runs.iter().map(|(len, n)| (len - 1) * n).sum();
+    // Poisson CDF at `observed`.
+    let mut term = (-expected).exp();
+    let mut cdf = term;
+    for i in 1..=observed {
+        #[allow(clippy::cast_precision_loss)]
+        let i = i as f64;
+        term *= expected / i;
+        cdf += term;
+    }
+    json!({
+        "p_lost": p,
+        "expected_adjacent_lost_pairs": expected,
+        "observed_adjacent_lost_pairs": observed,
+        "poisson_p_at_most_observed": cdf,
+    })
+}
+
 /// Reproducible reply accounting and stale-echo summary of one capture.
 pub fn analysis(records: &[Record]) -> Value {
     let acc = reply_accounting(records);
@@ -484,6 +553,8 @@ pub fn analysis(records: &[Record]) -> Value {
         "copies": acc.copies,
         "copies_msg_4e": acc.copies_4e,
         "copies_within_1ms": acc.copies_within_1ms,
+        "lost_run_lengths": lost_runs(&acc.outcomes, 71).iter().map(|(len, n)| json!({"run": len, "count": n})).collect::<Vec<_>>(),
+        "independence": independence(r71.len(), r71.len() - answered, &lost_runs(&acc.outcomes, 71)),
         "loss_by_preceding_gap": loss_by_gap(&acc.outcomes, 71).iter().map(|(control, gap, n, a)| json!({
             "preceded_by": if *control { "control_write" } else { "request" },
             "gap_ms_nominal": gap, "requests": n, "answered": a,
@@ -736,5 +807,23 @@ mod tests {
                 age_us: 22_000
             }]
         );
+    }
+
+    #[test]
+    fn probe_late_copy_after_control_write() {
+        // A lost, B answered, a control write, then the 0x4E copy of B. The copy must not be
+        // taken for A's answer.
+        let echo = [0xff; 4];
+        let r = vec![
+            rec(0, false, req71()),       // A: sequence 10
+            rec(250_000, false, req71()), // B: sequence 11
+            rec(290_000, true, reply71(0x4f, 0x30, 11, echo)),
+            rec(300_000, false, ctl49(100.0)), // sequence 12
+            rec(340_000, true, reply71(0x4e, 0x30, 11, echo)), // late copy of B
+        ];
+        let acc = reply_accounting(&r);
+        let answered: Vec<bool> = acc.outcomes.iter().map(|o| o.answered).collect();
+        assert_eq!(answered, [false, true]);
+        assert_eq!((acc.distinct, acc.copies, acc.copies_4e), (1, 1, 1));
     }
 }

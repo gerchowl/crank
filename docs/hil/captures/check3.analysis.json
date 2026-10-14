@@ -5,6 +5,12 @@
   "copies_msg_4e": 1,
   "copies_within_1ms": 0,
   "distinct_replies": 29,
+  "independence": {
+    "expected_adjacent_lost_pairs": 0.2724609375,
+    "observed_adjacent_lost_pairs": 0,
+    "p_lost": 0.09375,
+    "poisson_p_at_most_observed": 0.7615031748119981
+  },
   "loss_by_preceding_gap": [
     {
       "answered": 1,
@@ -56,6 +62,12 @@
     }
   ],
   "lost": 3,
+  "lost_run_lengths": [
+    {
+      "count": 3,
+      "run": 1
+    }
+  ],
   "method": "replies matched to requests by the page-71 sequence byte (counts control pages 48-51 and page-70 requests, mod 256); repeats of an answered reply are copies; a request is lost when no reply carries its sequence",
   "page71_frames": 30,
   "reply_latency_us": {
