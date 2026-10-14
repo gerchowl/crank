@@ -1,6 +1,6 @@
 # ADR-0002: Bluetooth stack and Trainer abstraction (FE-C first)
 
-- **Status:** Proposed, Amended (#54)
+- **Status:** Proposed, Amended (#54, #250, #264, #266)
 - **Date:** 2026-10-13
 - **Issue:** #27 (decides the design questions of #23); amendment #54 (trainer-following state machine, §4.4.1)
 - **Related:** ADR-0001 (crate layout, clock, testing), `spec/TRAINER-BLE.md`
@@ -830,6 +830,17 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    updates). The block timer keeps running (the rider is still riding). Released seconds are excluded
    from compliance. Thresholds are initial values checked in HIL check 9.
 5. **Soft start** is also used when ERG is (re-)engaged after a reconnect or after leaving `free`/`sim`.
+   **Ride start and user pause (amendment, #250 / #264, 2026-10-14).** A ride start is treated as a
+   reconnect: on the NEO, ERG at the target torque with a stopped flywheel is the low-cadence hazard of §7.4
+   (the rider pushes off against the full target at near-zero cadence). So the engine holds `Erg { target_w: 0 }`
+   from the first tick until the first sample with cadence > 0, then runs this soft start from the 3 s power.
+   A first block that is `free` or `sim` sends no ERG and is unchanged; the soft start is then owed at the
+   next ERG block (the paragraph below). Resuming from a **user pause** is the same engagement: while paused the
+   engine commands `Resistance { pct: 0 }` (DESIGN §5.2 "Paused (user)": "the trainer is at 0 % resistance"),
+   and the resume owes the soft start with the 0 W hold until cadence. A release in force at the pause
+   stays in force after the resume until §7.4 leaves it (60 rpm for 2 s). Stopped pedalling (auto-pause, ADR-0001 §5)
+   needs nothing of its own: cadence 0 for 3 s is past the 2 s release of §7.4, which already commands
+   `Resistance { pct: 0 }`.
    **Origin and 0 W (amendment, #231).** The origin is the 3 s power (12 ticks, pruned by tick time, so
    nothing older than 3 s counts) at the tick the first trainer sample with cadence > 0 of the new link
    epoch arrives. After `Link(Ready)`, or after a loss detected by silence, until that sample the engine
@@ -854,7 +865,9 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    *settle* seconds. Settle is triggered only by **discontinuities**, never by continuous target updates:
    (a) the first 5 s of each block whose start target differs from the previous block's end target (the
    mock's per-block settle); (b) a manual ± or coach change: 5 s; (c) an ERG (re-)engagement: the soft
-   start's 5 s plus 5 s. These are the `Transition` class of §4.4.1, which only settle uses (the
+   start's 5 s plus 5 s (**amended, #250 / #264, 2026-10-14:** a ride start and a resume from a user pause are
+   (re-)engagements, §7.5; the first block has no previous block for (a), but its start is an engagement under (c),
+   so the first 10 s of an ERG ride are settle). These are the `Transition` class of §4.4.1, which only settle uses (the
    trainer-following machine ignores the class). Within `ramp` blocks and HR-steered steps the target moves continuously
    (`Continuous`) and is compared second by second with no settle. Released (§7.4) and paused seconds are
    excluded, and so is every second with a `suspect` or `not_following` tick (§4.4.1). Compliance consumes
@@ -866,6 +879,11 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    **sent explicitly** as flat-road SIM (page 50 defaults, page 51 grade 0 %), never as "send nothing": an
    FE-C trainer keeps its last control page, so silence after ERG could leave the ERG target active.
    HIL check 12 (#44) confirms that ERG → `Free` releases the target on the NEO.
+   **Ride end (amendment, #266, 2026-10-14).** The same reasoning applies when the ride ends: after a natural
+   finish, `Stop` or the loss of every handle, the engine sends `Free` (the "no block" mode) before it clears
+   the ride-active signal (`RideGate`), and holds the signal until the driver reports that mode delivered, the
+   link is lost, or 2 s (eight writer ticks) have passed. Silence at the end would leave the last `Erg { target_w }`
+   applied at 0 rpm.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 

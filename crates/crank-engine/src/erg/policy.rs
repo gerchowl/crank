@@ -2,11 +2,13 @@
 //!
 //! Per tick the policy answers one question, "what mode do we want now?":
 //!
+//! 0. **User pause** (DESIGN §5.2, #264): `Resistance { 0 }`, the same 0 % resistance command
+//!    as a release (ADR-0002 §7.4); a soft start is owed on resume.
 //! 1. **Free / no block** (§7.9): `Free` (explicit flat-road SIM). Leaving it owes a soft start.
 //! 2. **Release** (§7.4): cadence < 40 rpm for 2 s with a target > 0 → `Resistance { 0 }`;
 //!    cadence ≥ 60 rpm for 2 s re-engages with a soft start. The block timer is not touched.
-//! 3. **Soft start** (§7.5, #231): owed after a loss epoch, after leaving free/SIM and after a
-//!    release. Until a pedalling sample: `Erg { 0 }`; then five 1 Hz steps from the 3 s power
+//! 3. **Soft start** (§7.5, #231): owed at ride start (#250: a start is a reconnect), after a
+//!    loss epoch, after leaving free/SIM, after a release and after a user pause. Until a pedalling sample: `Erg { 0 }`; then five 1 Hz steps from the 3 s power
 //!    to the block target. A running ramp holds its last step while samples are missing and
 //!    restarts from the then-current 3 s power. The debt survives a Free block: a loss during
 //!    `Free` is repaid when the next ERG block starts (§7.5 item 5, #218).
@@ -32,8 +34,8 @@ struct Ramp {
     start: u64,
     origin: f64,
 }
-/// The ERG policy. Stateful: one per engine.
-#[derive(Debug, Default)]
+/// The ERG policy. Stateful: one per ride.
+#[derive(Debug)]
 pub struct ErgPolicy {
     link_epoch: u64,
     /// A soft start is owed (see the module docs).
@@ -61,11 +63,39 @@ fn seconds(ticks: u64) -> f64 {
     (ticks / TICKS_PER_SECOND) as f64
 }
 
+impl Default for ErgPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ErgPolicy {
-    /// A policy with nothing owed.
+    /// A policy at ride start. **A ride start is a reconnect** (ADR-0002 §7.5 and §7.8 c as
+    /// amended 2026-10-14, #250): the soft start is owed from the first tick, so `Erg { 0 }`
+    /// is held until the first pedalling sample, then the 5 s ramp runs from the 3 s power,
+    /// and the 10 s of settle are excluded from compliance. A first block that is free or
+    /// SIM sends no ERG; the debt is repaid at the next ERG block (§7.5 item 5).
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            link_epoch: 0,
+            owed: true,
+            ramp: None,
+            released: false,
+            low: 0,
+            high: 0,
+            block: None,
+            settle: (0, 0),
+            compliance: Accumulator::default(),
+        }
+    }
+    /// A policy with nothing owed, for tests of the block line alone.
+    #[cfg(test)]
+    pub(crate) fn settled() -> Self {
+        Self {
+            owed: false,
+            ..Self::new()
+        }
     }
     /// A discontinuity: ticks `from..until` are settle, joined to a window still running.
     fn settle(&mut self, now: u64, from: u64, until: u64) {
@@ -147,6 +177,17 @@ impl TargetPolicy for ErgPolicy {
             self.low = 0;
             self.high = 0;
         }
+        if ctx.user_paused {
+            // DESIGN §5.2 "Paused (user)": "While paused the trainer is at 0 % resistance;
+            // ERG re-engages with the soft start" (#264). The command is ADR-0002 §7.4's
+            // `Resistance { 0 }`; resume owes the §7.5 soft start (0 W until a pedalling
+            // sample, then the ramp; settle excluded, §7.8 c). A release is kept and left
+            // only by §7.4, also while paused.
+            self.leave_erg();
+            self.update_release(ctx, false);
+            self.account(ctx, false, 0.0);
+            return Some(ControlMode::Resistance { pct: 0.0 });
+        }
         let Some(block) = ctx.block.filter(|b| b.phase != Phase::Free) else {
             self.leave_erg();
             self.update_release(ctx, false);
@@ -155,9 +196,8 @@ impl TargetPolicy for ErgPolicy {
         };
         // A block boundary is a discontinuity when its start target differs from the
         // previous block's end target (ADR-0002 §7.8 a). The first block has no previous
-        // block, and today's ride start has no soft start (§7.5 owes one only after a
-        // reconnect or after leaving free/SIM; whether a start is a §7.8 c engagement is
-        // #250), so it is never settled. That behaviour is pinned pending #250. At the boundary tick the engine has already
+        // block; its ride start is the §7.8 c engagement of the soft start owed from `new`
+        // (#250). At the boundary tick the engine has already
         // advanced the index (the new target is sent on it, §7.2) but the tick is still the
         // old block's: compliance keeps its target.
         let boundary = ctx.block_elapsed_ticks == 0;
