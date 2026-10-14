@@ -6,3 +6,6 @@ packages:
   - spikes/*
 allowBuilds:
   esbuild: true
+  # WDIO's optional browser drivers download binaries on install; the harness drives the app itself (#35).
+  edgedriver: false
+  geckodriver: false

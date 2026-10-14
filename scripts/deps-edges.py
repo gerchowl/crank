@@ -50,6 +50,9 @@ packages, nodes = graph(json.load(sys.stdin))
 for root, forbidden in [("crank-domain", "tokio"), ("crank-engine", "crank-ble"), ("crank-devices", "crank-fec")]:
     if any(packages[p]["name"] == forbidden for p in reachable(root, packages, nodes)):
         fail(f"{root} must not depend on {forbidden}")
+# The e2e feature must really wire the plugin in, or the production check below proves nothing.
+if not any(packages[p]["name"] == "tauri-plugin-wdio-webdriver" for p in reachable("crank-desktop", packages, nodes)):
+    fail("crank-desktop's e2e feature does not pull tauri-plugin-wdio-webdriver")
 
 with open(sys.argv[1], encoding="utf-8") as production_file:
     packages, nodes = graph(json.load(production_file))
@@ -57,3 +60,6 @@ with open(sys.argv[1], encoding="utf-8") as production_file:
 for node in reachable("crank-desktop", packages, nodes):
     if "e2e" in nodes[node]["features"]:
         fail(f"production desktop enables e2e in {packages[node]['name']}")
+    # The embedded WebDriver server opens an automation HTTP endpoint (ADR-0001 §8.3, #35).
+    if packages[node]["name"].startswith("tauri-plugin-wdio"):
+        fail(f"production desktop depends on {packages[node]['name']}")

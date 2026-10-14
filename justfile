@@ -68,9 +68,10 @@ icons:
     rm -rf app/src-tauri/icons/android app/src-tauri/icons/ios app/src-tauri/icons/64x64.png
     python3 scripts/icons.py record
 
-# The macOS embedded WebDriver harness is gated by #35.
+# ADR-0001 §8.3 (#35): build crank-desktop-e2e and run the WebdriverIO smoke spec in the GUI session
+# (Alacritty IPC; CRANK_E2E_DIRECT=1 from a GUI terminal). Output goes to app/e2e-out (gitignored).
 e2e:
-    @echo 'BLOCKED: embedded WebDriver harness requires #35'; exit 1
+    scripts/e2e.sh
 
 screens:
-    @echo 'BLOCKED: screenshot matrix requires #35'; exit 1
+    @echo 'BLOCKED: screenshot matrix awaits the UI waves (#229)'; exit 1
