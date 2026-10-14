@@ -13,9 +13,13 @@ the activity rule and the aggregate function (A1–A6) of §4.4.1 literally, and
   after normalising timestamps.
 * scenarios(): named regressions, one per pre-mortem counterexample so far.
 
-Run: python3 docs/adr/models/trainer_following.py [path/to/0002-ble-trainer.md]   (exit 0 = all
-checks pass; the ADR path defaults to the sibling file); CI runs it as the
-`following-model` flake check, `just model` locally.
+Run: python3 docs/adr/models/trainer_following.py [path/to/0002-ble-trainer.md [fixture.json]]
+(exit 0 = all checks pass; the ADR path defaults to the sibling file; with a fixture path it
+also fails when the committed Rust refinement fixture differs from `--emit-fixture` output);
+CI runs it as the `following-model` flake check, `just model` locally.
+`python3 trainer_following.py --emit-fixture PATH` writes the fixture the Rust implementation
+(`crank-engine::erg::following`, #218) reads: constants, table order, reply rows and verdict
+traces. `just model-fixture` regenerates the committed copy.
 """
 from __future__ import annotations
 
@@ -756,13 +760,19 @@ def check_routing(k: K):
 
 
 # --- named regression scenarios (every pre-mortem counterexample so far) ---
+TRACES = []   # every run() of this process, for the Rust refinement fixture (emit_fixture)
+
+
 def run(events, k: K, until):
     """events: {time: dict(link=..., desired=..., rep=...)}; returns aggregate per instant."""
-    m, out = Machine(), {}
+    m, out, states = Machine(), {}, []
     for t in range(0, until + 1):
         e = events.get(t, {})
         m = step(m, t, k, link=e.get("link"), desired=e.get("desired", "keep"), rep=e.get("rep"))
         out[t] = aggregate(m)
+        states.append((out[t], [f"{c}:{s.state}" for c, s in m.comps if c in components(m.desired)]
+                       if m.active else []))
+    TRACES.append((events, k.unit, until, states))
     return out
 
 
@@ -876,6 +886,18 @@ def scenarios():
     out = run(ev, k, 20)
     res["r54_4_erg_recovery_exact"] = out[9] == "unknown" and first(out, "following") == 10 + k.V("erg")
 
+    # C9 / C1 boundary (§4.4.1): a component required again after exactly T_unknown(c) not
+    # required resumes (its disagreement episode survives: `not_following` is kept); one unit
+    # later it starts fresh (C1: `unverified`, episode gone).
+    base = {0: {"link": "ready", "desired": ("erg", 100)}, 1: {"rep": ("echo", "erg", 99)},
+            3: {"rep": ("echo", "erg", 99)}, 4: {"desired": ("sim", 0, 0)}}
+    back = 4 + T_UNKNOWN_S["erg"]
+    out_at = run({**base, back: {"desired": ("erg", 100)}}, k, back + 1)
+    out_after = run({**base, back + 1: {"desired": ("erg", 100)}}, k, back + 2)
+    res["r54_5_resume_boundary_exact"] = (
+        out_at[back] == "not_following" and out_after[back + 1] == "checking"
+        and out_after[back] != "not_following")
+
     # #54 r3-2: grade changes every second, only lagging track echoes, no wind ever:
     # the missing wind component must surface as not_following.
     ev = {0: {"link": "ready", "desired": ("sim", 0, 0)}}
@@ -928,6 +950,85 @@ def scenarios():
     res["reconnect_mid_ramp"] = (out[11] == "unknown" and out[13] == "checking"
                                  and first(out, "following", after=13) is not None)
     return res
+
+
+FIXTURE_SEED = 54
+FIXTURE_RANDOM_TRACES = 40
+FIXTURE_STEPS = 72
+
+
+def _random_traces():
+    """Seeded random input sequences over the model's alphabets at 0.25 s resolution (unit 4):
+    link events, every desired change, echo and failure replies, silence."""
+    import random
+    rnd = random.Random(FIXTURE_SEED)
+    modes = [("erg", 0), ("erg", 1), ("sim", 0, 0), ("sim", 1, 0), ("sim", 0, 1)]
+    replies = [("echo", c, v) for c in ("erg", "track", "wind") for v in (0, 1)] \
+        + [("fail", c) for c in ("erg", "track", "wind")]
+    k = K(unit=4)
+    for i in range(FIXTURE_RANDOM_TRACES):
+        ev = {0: {"link": "ready", "desired": rnd.choice(modes)}}
+        # a reply rate that varies per trace: dense, one per second, sparse
+        every = rnd.choice((1, 2, 4, 8))
+        for t in range(1, FIXTURE_STEPS):
+            e = {}
+            if rnd.random() < 0.04:
+                e["link"] = rnd.choice(("lost", "ready"))
+            if rnd.random() < 0.08:
+                e["desired"] = rnd.choice(modes + [None])
+            if t % every == 0 and rnd.random() < 0.9:
+                e["rep"] = rnd.choice(replies)
+            if e:
+                ev[t] = e
+        yield ev, k, FIXTURE_STEPS
+
+
+def emit_fixture():
+    """The shared table for the Rust implementation (crank-engine::erg::following): constants,
+    the component-table row order and reply rows, and verdict traces (every named scenario of
+    this file plus seeded random input sequences). Nothing runs Python at Rust test time; the
+    `following-model` flake check fails when the committed file differs from this output."""
+    import json
+    del TRACES[:]
+    assert all(scenarios().values())
+    for ev, k, until in _random_traces():
+        run(ev, k, until)
+    enc = lambda v: None if v is None else list(v)
+    traces = []
+    for events, unit, until, states in TRACES:
+        steps = []
+        for t in sorted(events):
+            e = events[t]
+            step_ = {"t": t}
+            if "link" in e:
+                step_["link"] = e["link"]
+            if "desired" in e:
+                step_["desired"] = enc(e["desired"])
+            if "rep" in e:
+                step_["rep"] = enc(e["rep"])
+            steps.append(step_)
+        traces.append({"unit": unit, "until": until, "events": steps,
+                       "agg": [a for a, _ in states], "comps": [c for _, c in states]})
+    fx = {
+        "constants": {"L_s": L_S, "N_follow": N_FOLLOW, "T_verify_s": T_VERIFY_S,
+                      "T_mismatch_s": T_MISMATCH_S, "P_s": P_S, "T_unknown_s": T_UNKNOWN_S,
+                      "unknown_mult": UNK_MULT, "unknown_pad_s": UNK_PAD},
+        "table_order": list(TABLE_ORDER),
+        "reply_rows": [{"id": r.id, "on": r.on, "pre": r.pre} for r in REPLY_ROWS],
+        "traces": traces,
+    }
+    # one trace per line: reviewable diffs, still plain JSON
+    dump = lambda v: json.dumps(v, sort_keys=True, separators=(",", ":"))
+    head = dump({k: v for k, v in fx.items() if k != "traces"})
+    lines = ",\n".join(dump(t) for t in traces)
+    return head[:-1] + ',"traces":[\n' + lines + "\n]}\n"
+
+
+def check_fixture(path):
+    """The committed Rust fixture is exactly what this model emits."""
+    committed = open(path, encoding="utf-8").read()
+    assert committed == emit_fixture(), \
+        ("fixture is stale: regenerate with `just model-fixture`", path)
 
 
 def check_table_order(adr_path):
@@ -1034,6 +1135,11 @@ SIM_FREE_DEPTH = 6  # every input sequence of length ≤ 6 (137 k states, ~30 s)
 def main(argv):
     ok = True
     import os
+    if len(argv) == 3 and argv[1] == "--emit-fixture":
+        open(argv[2], "w", encoding="utf-8").write(emit_fixture())
+        print("wrote", argv[2])
+        return 0
+    fixture = argv[2] if len(argv) > 2 else None
     adr = argv[1] if len(argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "0002-ble-trainer.md")
     check_table_order(adr)
     print("table order: ADR §4.4.1 rows == model evaluation order (C1–C9, C2 pre-step), ok")
@@ -1064,6 +1170,9 @@ def main(argv):
               f"{silent} states with a silent component")
         if config == "sim-silence":
             assert silent > 0, "SIM silence is not reachable: the walk no longer exercises guarantee 2"
+    if fixture:
+        check_fixture(fixture)
+        print("fixture: committed Rust refinement fixture == model output, ok")
     print("all checks passed" if ok else "SCENARIO FAILURES")
     return 0 if ok else 1
 
