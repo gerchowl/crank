@@ -23,6 +23,11 @@ pub struct SecondRow {
     pub hr: Option<f32>,
     /// Workout position at the end of the second; `None` if no tick of it was riding.
     pub workout_s: Option<f32>,
+    /// Index of the block the engine was in at the last riding tick of the second; `None`
+    /// if no tick of it was riding. A skip moves it while `workout_s` keeps counting, so
+    /// per-block statistics must use this, never `workout_s` against the planned ranges.
+    /// Not in [`METRICS`]: the sink stores it as the extra record metric `block`.
+    pub block: Option<u32>,
 }
 impl SecondRow {
     /// Values in [`METRICS`] order.
