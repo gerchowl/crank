@@ -956,8 +956,9 @@ fn a_ready_event_restarts_the_release_count() {
     pedal(&r, 14, 16, 150, 39);
     r.through(15);
     assert!(!r.status().erg_released);
-    pedal(&r, 16, 22, 150, 39);
-    r.through(21);
+    // the re-issued ramp step is applied at tick 14; eight fresh ticks follow (15..=22)
+    pedal(&r, 16, 24, 150, 39);
+    r.through(22);
     assert!(r.status().erg_released, "8 fresh ticks release");
 }
 
@@ -1357,4 +1358,200 @@ fn every_ride_second_lands_in_exactly_one_compliance_bucket() {
     let c = st.compliance;
     assert_eq!(c.counted_s + c.excluded_s, 20, "{c:?}");
     assert!(c.excluded_s >= 10, "the lost seconds are excluded: {c:?}");
+}
+
+// ---- release is judged against what is applied on the trainer (round 5) --------------------
+
+fn last_mode(r: &mut Rig) -> Option<ControlMode> {
+    r.modes().last().copied()
+}
+#[test]
+fn stopping_during_a_post_loss_soft_start_releases() {
+    // the falsifier's repro: 300 W, 100 W at 90 rpm, Connecting, Ready, 6 ticks, then 0 rpm
+    let mut r = rig();
+    r.load(vec![work(300.0)]);
+    r.start();
+    pedal(&r, 0, 8, 100, 90);
+    r.through(7);
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    pedal(&r, 8, 14, 100, 90);
+    r.through(13);
+    r.modes();
+    pedal(&r, 14, 120, 0, 0);
+    r.through(119);
+    assert!(r.status().erg_released, "torque held at 0 rpm for 26 s");
+    assert_eq!(
+        last_mode(&mut r),
+        Some(ControlMode::Resistance { pct: 0.0 })
+    );
+}
+#[test]
+fn stopping_at_every_ramp_step_releases_within_two_seconds() {
+    for stop in 9..8 + 26 {
+        let mut r = rig();
+        r.load(vec![work(300.0)]);
+        r.start();
+        pedal(&r, 0, 8, 100, 90);
+        r.through(7);
+        r.link(LinkState::Connecting);
+        r.link(LinkState::Ready);
+        pedal(&r, 8, stop, 100, 90);
+        r.through(stop - 1);
+        r.modes();
+        pedal(&r, stop, stop + 12, 0, 0);
+        r.through(stop + 11);
+        assert!(r.status().erg_released, "stop at tick {stop}");
+        let sent = r.modes();
+        assert_eq!(
+            sent.last(),
+            Some(&ControlMode::Resistance { pct: 0.0 }),
+            "stop at tick {stop}: {sent:?}"
+        );
+    }
+}
+#[test]
+fn stopping_during_the_post_free_ramp_releases() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 0.0, 0.0, Phase::Free), work(300.0)]);
+    r.start();
+    pedal(&r, 0, 8, 100, 90);
+    r.through(7);
+    r.modes();
+    r.engine.command(EngineCmd::SkipBlock).expect("skip");
+    pedal(&r, 8, 14, 100, 90); // two ramp steps in
+    r.through(13);
+    assert!(!positive_erg(&r.modes()).is_empty());
+    pedal(&r, 14, 40, 0, 0);
+    r.through(39);
+    assert!(r.status().erg_released);
+    assert_eq!(
+        last_mode(&mut r),
+        Some(ControlMode::Resistance { pct: 0.0 })
+    );
+}
+#[test]
+fn stopping_during_a_post_release_ramp_releases_again() {
+    let mut r = released_rig(); // released at tick 15
+    pedal(&r, 16, 24, 150, 90); // 8 ticks ≥ 60 rpm: re-engaged at tick 23
+    r.through(23);
+    assert!(!r.status().erg_released);
+    pedal(&r, 24, 28, 150, 90); // one step into the ramp
+    r.through(27);
+    r.modes();
+    pedal(&r, 28, 44, 0, 0);
+    r.through(43);
+    assert!(r.status().erg_released);
+    assert_eq!(
+        last_mode(&mut r),
+        Some(ControlMode::Resistance { pct: 0.0 })
+    );
+}
+#[test]
+fn a_release_survives_a_free_block() {
+    // released → Free → ERG at 20 rpm: stays released, no ERG torque (§7.4 leaves only by 60 rpm)
+    let mut r = rig();
+    r.load(vec![
+        work(300.0),
+        block(600.0, 0.0, 0.0, Phase::Free),
+        work(300.0),
+    ]);
+    r.start();
+    pedal(&r, 0, 8, 200, 90);
+    pedal(&r, 8, 16, 150, 20);
+    r.through(15);
+    assert!(r.status().erg_released);
+    r.engine.command(EngineCmd::SkipBlock).expect("skip");
+    pedal(&r, 16, 24, 150, 20);
+    r.through(23);
+    r.modes();
+    r.engine.command(EngineCmd::SkipBlock).expect("skip");
+    pedal(&r, 24, 48, 150, 20);
+    r.through(47);
+    let sent = r.modes();
+    assert!(r.status().erg_released);
+    assert!(positive_erg(&sent).is_empty(), "{sent:?}");
+}
+#[test]
+fn leaving_a_release_resets_the_ramp_so_the_target_is_never_a_jump() {
+    // ramp started, cut by a release, re-engaged ≥ 20 ticks after it started: it restarts
+    let mut r = rig();
+    r.load(vec![work(300.0)]);
+    r.start();
+    pedal(&r, 0, 8, 100, 90);
+    r.through(7);
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    pedal(&r, 8, 10, 100, 90); // ramp starts at tick 8
+    pedal(&r, 10, 24, 100, 20); // released
+    pedal(&r, 24, 40, 100, 90); // re-engaged at tick 31
+    r.through(39);
+    let sent = positive_erg(&r.modes());
+    let after = &sent[sent.len().saturating_sub(3)..];
+    assert!(sent.iter().all(|w| *w <= 300) && !after.is_empty());
+    let first_after_release = sent.iter().rev().take_while(|w| **w != 100).count();
+    assert!(
+        first_after_release <= 2,
+        "restarts from 100 W, not the target: {sent:?}"
+    );
+    assert_ne!(
+        sent.get(sent.len().saturating_sub(first_after_release + 1)),
+        Some(&300)
+    );
+}
+#[test]
+fn old_link_cadence_does_not_count_toward_re_engagement() {
+    let mut r = released_rig();
+    pedal(&r, 16, 19, 150, 90); // 3 ticks ≥ 60 rpm
+    r.through(18);
+    r.link(LinkState::Ready); // stamped in tick 19
+    pedal(&r, 19, 24, 150, 90); // 5 more: 8 in total, but only 5 on the new epoch
+    r.through(23);
+    assert!(r.status().erg_released, "needs 8 ticks on the new link");
+    pedal(&r, 24, 27, 150, 90);
+    r.through(26);
+    assert!(!r.status().erg_released);
+}
+
+#[test]
+fn a_finished_ride_accounts_its_final_second() {
+    let mut r = rig();
+    r.load(vec![block(10.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    pedal(&r, 0, 40, 200, 90);
+    r.through(39);
+    let st = r.status();
+    assert_eq!(st.state, crate::RideState::Finished);
+    let c = st.compliance;
+    assert_eq!(
+        (c.counted_s, c.within_s, c.excluded_s),
+        (10, 10, 0),
+        "{c:?}"
+    );
+}
+#[test]
+fn the_re_engagement_criteria_are_evaluated_in_a_free_block_too() {
+    // released, then 14 ticks ≥ 60 rpm inside a Free block: the release is left there
+    // (§7.4), so the next ERG block opens with the soft start, not with Resistance.
+    let mut r = rig();
+    r.load(vec![
+        work(300.0),
+        block(600.0, 0.0, 0.0, Phase::Free),
+        work(300.0),
+    ]);
+    r.start();
+    pedal(&r, 0, 8, 200, 90);
+    pedal(&r, 8, 16, 150, 20);
+    r.through(15);
+    assert!(r.status().erg_released);
+    r.engine.command(EngineCmd::SkipBlock).expect("skip");
+    pedal(&r, 16, 30, 150, 90);
+    r.through(29);
+    r.modes();
+    r.engine.command(EngineCmd::SkipBlock).expect("skip");
+    pedal(&r, 30, 34, 150, 90);
+    r.through(33);
+    let sent = r.modes();
+    assert!(!r.status().erg_released);
+    assert_eq!(positive_erg(&sent).first(), Some(&150), "{sent:?}");
 }

@@ -1328,35 +1328,23 @@ mod soft_start_property {
             } else {
                 self.flow = None;
             }
+            let applied = self.current; // what was on the trainer when the tick began
             self.current = modes.last().copied().or(self.current);
             self.age += 1;
-            let want = self.want(k);
+            let want = self.want(k, applied);
             self.check(k, modes, &want)
         }
         /// What the rules require at tick `k` (state updated as a side effect).
-        fn want(&mut self, k: u64) -> Want {
+        fn want(&mut self, k: u64, applied: Option<ControlMode>) -> Want {
             if self.block >= self.blocks.len() {
                 return Want::Nothing; // finished: no commands, and none are checked
             }
             if !self.ready {
                 return Want::Nothing;
             }
-            let Some((lo, hi)) = self.target() else {
-                // §7.9: a free block is explicit flat-road SIM; ERG afterwards owes a soft start
-                self.armed = true;
-                self.ramp = None;
-                self.released = false;
-                self.low = 0;
-                self.high = 0;
-                return Want::Mode(ControlMode::Free);
-            };
             let cadence = self.held_cadence(k);
-            let target_pos = hi > 0.0;
-            // §7.4: released when cadence < 40 rpm for 2 s with a target > 0; re-engaged
-            // after 60 rpm for 2 s. §7.5 commands 0 W (no torque) while the owed soft start
-            // waits for its first pedalling sample, so no torque is applied to spiral on:
-            // the 2 s count runs only when a target is actually being applied.
-            let holding = self.armed && self.flow.is_none();
+            // §7.4: a release is left only by 60 rpm for 2 s (in any block kind, and it
+            // survives link epochs and free blocks), and then the §7.5 soft start is owed.
             if self.released {
                 self.high = if cadence.is_some_and(|c| c >= 60) {
                     self.high + 1
@@ -1369,8 +1357,21 @@ mod soft_start_property {
                     self.ramp = None;
                     self.low = 0;
                 }
-            } else if target_pos && !holding {
-                self.low = if cadence.is_some_and(|c| c < 40) {
+            }
+            let Some((lo, hi)) = self.target() else {
+                // §7.9: a free block is explicit flat-road SIM; ERG afterwards owes a soft start
+                self.armed = true;
+                self.ramp = None;
+                self.low = 0;
+                return Want::Mode(ControlMode::Free);
+            };
+            let _ = hi;
+            // §7.4 (architect decision, round 5): judged against what is applied on the
+            // trainer. A non-zero ERG on the trainer and cadence < 40 rpm (unknown is 0)
+            // for 2 s releases, whatever the policy's own target, debt or flow.
+            if !self.released {
+                let torque = matches!(applied, Some(ControlMode::Erg { target_w }) if target_w > 0);
+                self.low = if torque && cadence.is_none_or(|c| c < 40) {
                     self.low + 1
                 } else {
                     0
@@ -1422,6 +1423,161 @@ mod soft_start_property {
             Want::Erg(at(lo).min(at(hi)), at(lo).max(at(hi)))
         }
     }
+    /// An output monitor that knows nothing of the policy: it sees only the command
+    /// stream and the inputs (samples, link events, block kinds, the cap) and asserts the
+    /// safety properties of ADR-0002 §7.4–7.5 and DESIGN §15.2. It exists because an oracle
+    /// that shares the policy's structure shares its holes (round 5, the stop-in-soft-start
+    /// hole): this one cannot.
+    ///
+    /// Documented exception: the ride's first command is sent at once, before any sample,
+    /// whatever the cadence (today's ride-start behaviour, pinned pending #250), so
+    /// "pedalled since the last epoch" starts true.
+    struct Monitor {
+        cap: Option<u16>,
+        applied: Option<ControlMode>,
+        hold: Option<(u64, Option<u8>)>,
+        powers: Vec<(u64, u16)>,
+        pedalled: bool,
+        silent: u32,
+        low: u32,
+        high: u32,
+        released: bool,
+        last_block: Option<usize>,
+    }
+    impl Monitor {
+        fn new(cap: Option<u16>) -> Self {
+            Self {
+                cap,
+                applied: None,
+                hold: None,
+                powers: vec![],
+                pedalled: true,
+                silent: 0,
+                low: 0,
+                high: 0,
+                released: false,
+                last_block: None,
+            }
+        }
+        /// An applied link transition, or 8 silent ticks: the old link is forgotten.
+        fn epoch(&mut self) {
+            self.applied = None;
+            self.hold = None;
+            self.powers.clear();
+            self.pedalled = false;
+            self.low = 0;
+        }
+        /// One processed tick. `sample` is a *valid* sample of the tick (a stale one is not).
+        fn tick(
+            &mut self,
+            k: u64,
+            sample: Option<(Option<u16>, Option<u8>)>,
+            block: Option<(usize, Blk)>,
+            modes: &[ControlMode],
+        ) -> Result<(), TestCaseError> {
+            if block.is_none() {
+                return Ok(()); // the ride is over: nothing is controlled any more
+            }
+            if let Some((power, cadence)) = sample {
+                self.silent = 0;
+                self.hold = Some((k, cadence));
+                if let Some(p) = power {
+                    self.powers.push((k, p));
+                }
+                if cadence.is_some_and(|c| c > 0) {
+                    self.pedalled = true;
+                }
+            } else {
+                self.silent += 1;
+                if self.silent == 8 {
+                    self.epoch();
+                }
+            }
+            let cadence = self
+                .hold
+                .filter(|(j, _)| k - j <= 4)
+                .and_then(|(_, c)| c)
+                .unwrap_or(0);
+            let before = self.applied;
+            // rule 1 bookkeeping: ticks on which non-zero ERG was applied at low cadence
+            let torque = |m: Option<ControlMode>| matches!(m, Some(ControlMode::Erg { target_w }) if target_w > 0);
+            self.low = if torque(before) && cadence < 40 {
+                self.low + 1
+            } else {
+                0
+            };
+            self.high = if cadence >= 60 { self.high + 1 } else { 0 };
+            let was_released = self.released;
+            if self.released && self.high >= 8 {
+                self.released = false;
+            }
+            let p3 = self
+                .powers
+                .iter()
+                .filter(|(j, _)| k - j < 12)
+                .map(|(_, p)| *p)
+                .max()
+                .unwrap_or(0);
+            let peak = block.map_or(0, |(_, b)| b.peak());
+            let step = f64::from(peak).div_euclid(5.0) + 2.0;
+            let mut prev = before;
+            for m in modes {
+                if let ControlMode::Erg { target_w } = *m
+                    && target_w > 0
+                {
+                    // 5: while released, nothing until 60 rpm for 2 s
+                    prop_assert!(
+                        !self.released,
+                        "k={k}: {m:?} while released ({was_released})"
+                    );
+                    // 2: not before the rider pedalled since the epoch / release
+                    prop_assert!(self.pedalled, "k={k}: {m:?} before any pedalling sample");
+                    // 3: the cap
+                    if let Some(c) = self.cap {
+                        prop_assert!(target_w <= c, "k={k}: {m:?} above cap {c}");
+                    }
+                    // 4: no jump: one ramp step above what was applied (or above the rider's
+                    // own power on entry); a block change is a discontinuity by design
+                    let same_block = self.last_block == block.map(|(i, _)| i);
+                    if k > 0 && same_block {
+                        // a ramp restarts from the rider's current power (§7.5), so that
+                        // is as good a base as the previous command
+                        let base = match prev {
+                            Some(ControlMode::Erg { target_w: w }) if w > 0 => {
+                                f64::from(w).max(f64::from(p3))
+                            }
+                            _ => f64::from(p3),
+                        };
+                        prop_assert!(
+                            f64::from(target_w) <= base + step,
+                            "k={k}: {m:?} is more than a step ({step}) above {base}"
+                        );
+                    }
+                }
+                if matches!(m, ControlMode::Resistance { .. }) && !self.released {
+                    // a release (not a re-issue of one after an epoch)
+                    self.released = true;
+                    self.high = 0;
+                    self.pedalled = false;
+                }
+                prev = Some(*m);
+            }
+            if !modes.is_empty() {
+                self.applied = prev;
+            }
+            self.last_block = block.map(|(i, _)| i);
+            // 1: 2 s below 40 rpm with torque applied ⇒ released by the end of the window
+            if self.low >= 8 {
+                prop_assert!(
+                    !torque(self.applied),
+                    "k={k}: {:?} still applied after {} ticks below 40 rpm",
+                    self.applied,
+                    self.low
+                );
+            }
+            Ok(())
+        }
+    }
     enum Want {
         Nothing,
         Mode(ControlMode),
@@ -1463,10 +1619,19 @@ mod soft_start_property {
                 continue;
             }
             let mut m = Model::new(blocks.clone(), *cap);
-            let step = |r: &mut Rig, m: &mut Model, k: &mut u64, had: bool| {
+            let mut mon = Monitor::new(*cap);
+            // `valid`: the tick's valid sample, which the monitor sees as an input
+            let step = |r: &mut Rig,
+                        m: &mut Model,
+                        mon: &mut Monitor,
+                        k: &mut u64,
+                        valid: Option<(Option<u16>, Option<u8>)>| {
                 r.through(*k);
                 let modes = r.modes();
-                let out = m.tick(*k, had, &modes);
+                let block = m.blocks.get(m.block).map(|b| (m.block, *b));
+                let out = m
+                    .tick(*k, valid.is_some(), &modes)
+                    .and_then(|()| mon.tick(*k, valid, block, &modes));
                 *k += 1;
                 out
             };
@@ -1475,7 +1640,7 @@ mod soft_start_property {
                     Op::Sample { power, cadence } => {
                         r.sample_opt(k, *power, *cadence);
                         m.sample(k, *power, *cadence);
-                        step(&mut r, &mut m, &mut k, true)?;
+                        step(&mut r, &mut m, &mut mon, &mut k, Some((*power, *cadence)))?;
                     }
                     Op::Stale {
                         link,
@@ -1486,16 +1651,18 @@ mod soft_start_property {
                         r.sample_opt(k, *power, *cadence);
                         r.link(state(*link));
                         m.link(state(*link));
-                        step(&mut r, &mut m, &mut k, false)?;
+                        mon.epoch();
+                        step(&mut r, &mut m, &mut mon, &mut k, None)?;
                     }
                     Op::Silence(n) => {
                         for _ in 0..*n {
-                            step(&mut r, &mut m, &mut k, false)?;
+                            step(&mut r, &mut m, &mut mon, &mut k, None)?;
                         }
                     }
                     Op::Link(i) => {
                         r.link(state(*i));
                         m.link(state(*i));
+                        mon.epoch();
                     }
                     Op::Hr(bpm) => r.heart(k, *bpm),
                     Op::Skip => {
@@ -1507,14 +1674,12 @@ mod soft_start_property {
             }
             // every second of the ride is in exactly one compliance bucket (§7.8)
             let st = r.status();
-            if st.state != RideState::Finished {
-                prop_assert_eq!(
-                    u64::from(st.compliance.counted_s + st.compliance.excluded_s),
-                    st.session.0 / 4,
-                    "{:?}",
-                    st.compliance
-                );
-            }
+            prop_assert_eq!(
+                u64::from(st.compliance.counted_s + st.compliance.excluded_s),
+                st.session.0 / 4,
+                "{:?}",
+                st.compliance
+            );
             // the next ride begins with the engine in whatever state this one left it
             let _ = r.engine.command(EngineCmd::Stop);
         }
@@ -1522,7 +1687,7 @@ mod soft_start_property {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(2000))]
+        #![proptest_config(ProptestConfig::with_cases(5000))]
         #[test]
         fn the_soft_start_never_jumps_and_never_uses_old_epoch_power(
             rides in prop::collection::vec(
