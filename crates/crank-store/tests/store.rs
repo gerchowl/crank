@@ -777,13 +777,16 @@ fn workout_constructor_adds_the_version_envelope() {
 fn rides_lists_newest_first_and_forget_device_unlinks_history() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_owner(dir.path()).unwrap();
-    let trainer = device("t", "p-t", 1);
-    store.remember_device(trainer).unwrap();
+    store.remember_device(device("t", "p-t", 1)).unwrap();
+    let mut strap = device("h", "p-h", 1);
+    strap.kind = "hr".into();
+    store.remember_device(strap).unwrap();
     for (id, started_at) in [("a", 10), ("b", 20)] {
         let mut r = ride();
         r.id = id.into();
         r.started_at = started_at;
         r.trainer_device_id = Some("t".into());
+        r.hr_device_id = Some("h".into());
         store.start_ride(r).unwrap();
         store.append_second(id, 0, samples(0)).unwrap();
         store
@@ -794,9 +797,41 @@ fn rides_lists_newest_first_and_forget_device_unlinks_history() {
             )
             .unwrap();
     }
-    let ids: Vec<_> = store.rides().unwrap().into_iter().map(|r| r.id).collect();
-    assert_eq!(ids, ["b", "a"]);
+    let listing = store.rides().unwrap();
+    assert_eq!(
+        listing.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        ["b", "a"]
+    );
+    assert_eq!(
+        (
+            listing[0].workout_id.as_str(),
+            listing[0].workout_name.as_str()
+        ),
+        ("w", "Ride")
+    );
+    assert_eq!(listing[0].state, RideState::Finished);
+    assert!(listing[0].summary.is_some());
+
+    let links = |kind: &str| -> Vec<Option<String>> {
+        let db = Connection::open(dir.path().join("crank.db")).unwrap();
+        let sql = format!("SELECT {kind}_device_id FROM ride ORDER BY id");
+        db.prepare(&sql)
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(links("hr"), [Some("h".into()), Some("h".into())]);
+    assert!(store.forget_device("h").unwrap());
+    assert_eq!(links("hr"), [None, None], "the strap link is cleared");
+    assert_eq!(
+        links("trainer"),
+        [Some("t".into()), Some("t".into())],
+        "the other role is untouched"
+    );
     assert!(store.forget_device("t").unwrap());
+    assert_eq!(links("trainer"), [None, None]);
     assert!(!store.forget_device("t").unwrap());
     assert!(store.devices().unwrap().is_empty());
     assert_eq!(
