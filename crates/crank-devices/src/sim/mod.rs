@@ -10,9 +10,12 @@
 //! Observable behaviour follows the FE-C driver in `crank-ble`: a `Sample` and its
 //! page-25 `Observed` per tick, `Delivered` per written component, a page-71 echo
 //! every `T_poll` = 1 s while a controlled mode is active (SIM alternates wind and
-//! track), `SetRider` on a live link is a protocol fault, and a lost link recovers
-//! with `Connecting`, `Ready` and no control mode (the engine re-issues `SetMode`,
-//! ADR-0002 §6). Writer tick allocation and keep-alives (#43) are not modelled.
+//! track), and `SetRider` on a live link is a protocol fault. A lost link follows the
+//! sequence of the real stack, `Reconnecting<FecTrainer>` (#206, ADR-0002 §6): `Lost`,
+//! then per attempt after [`reconnect_backoff`] a `Reconnecting { attempt }` plus a
+//! `Fault` while the outage lasts, then `Connecting`, `Ready` and no control mode (the
+//! engine re-issues `SetMode`); commands sent meanwhile are discarded. The strap
+//! follows the same sequence through `HrEvent`. Writer tick allocation and keep-alives (#43) are not modelled.
 //!
 //! Known limits: derived metrics, the metric bus, coach hooks and full `RideSim`
 //! parity (`simulator.json` beyond the raw power, cadence, speed, HR and RR streams)
@@ -170,6 +173,40 @@ impl Default for SimConfig {
 fn to_f32(x: f64) -> f32 {
     x as f32
 }
+/// Reconnect delay before attempt `attempt` (1-based): 0.5, 1, 2, 4 s, then 5 s
+/// (ADR-0002 §6). Mirrors `crank_ble::reconnect::backoff`, which this crate cannot
+/// depend on; `crank-ble` tests assert the two agree.
+#[must_use]
+pub fn reconnect_backoff(attempt: u32) -> Duration {
+    Duration::from_millis(match attempt {
+        0 | 1 => 500,
+        2 => 1_000,
+        3 => 2_000,
+        4 => 4_000,
+        _ => 5_000,
+    })
+}
+/// Times (µs from the rig epoch) of the reconnect attempts after a loss at `at` that
+/// lasts `down`, and the time the link is back. The supervisor of #206 waits
+/// `reconnect_backoff(n)` before attempt `n`, counted from the previous failed
+/// attempt (the sim's connect fails instantly), and the first attempt at or after
+/// `at + down` succeeds.
+fn outage(at: Duration, down: Duration) -> (Vec<u64>, u64) {
+    let (start, end) = (us(at), us(at + down));
+    let (mut attempts, mut t) = (Vec::new(), start);
+    loop {
+        t += us(reconnect_backoff(
+            u32::try_from(attempts.len() + 1).unwrap_or(u32::MAX),
+        ));
+        attempts.push(t);
+        if t >= end {
+            return (attempts, t);
+        }
+    }
+}
+fn outage_error() -> DeviceError {
+    DeviceError::ConnectFailed("simulated outage".into())
+}
 fn us(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
@@ -243,13 +280,31 @@ impl World {
     }
     fn trainer_down(&self, rel: u64) -> bool {
         self.window(rel, |f| match *f {
-            SimFault::Dropout { at, down } => Some((us(at), us(at + down))),
+            SimFault::Dropout { at, down } => Some((us(at), outage(at, down).1)),
             _ => None,
         })
     }
+    /// `Reconnecting`/failed-attempt pairs due in `(prev, rel]` for the given losses.
+    fn reconnects(&self, prev: u64, rel: u64, trainer: bool) -> Vec<(u32, bool)> {
+        let mut due = Vec::new();
+        for f in &self.cfg.faults {
+            let (at, down) = match *f {
+                SimFault::Dropout { at, down } if trainer => (at, down),
+                SimFault::HrLoss { at, down } if !trainer => (at, down),
+                _ => continue,
+            };
+            let (attempts, back) = outage(at, down);
+            for (i, t) in attempts.iter().enumerate() {
+                if (prev + 1..=rel).contains(t) {
+                    due.push((u32::try_from(i + 1).unwrap_or(u32::MAX), *t < back));
+                }
+            }
+        }
+        due
+    }
     fn hr_down(&self, rel: u64) -> bool {
         self.window(rel, |f| match *f {
-            SimFault::HrLoss { at, down } => Some((us(at), us(at + down))),
+            SimFault::HrLoss { at, down } => Some((us(at), outage(at, down).1)),
             _ => None,
         })
     }
@@ -311,7 +366,10 @@ impl World {
                 }));
             }
             TrainerCommand::Disconnect => {
-                out.trainer.push(TrainerEvent::Link(LinkState::Lost));
+                // while lost the link already reported `Lost` (ADR-0002 §6)
+                if !self.trainer_down(rel) {
+                    out.trainer.push(TrainerEvent::Link(LinkState::Lost));
+                }
                 self.trainer = TrainerSide::default();
             }
         }
@@ -393,6 +451,14 @@ impl World {
         if self.trainer.tx.is_some() {
             if down && !self.trainer.was_down {
                 out.trainer.push(TrainerEvent::Link(LinkState::Lost));
+            }
+            if down || self.trainer.was_down {
+                for (attempt, failed) in self.reconnects(rel.saturating_sub(TICK_US), rel, true) {
+                    out.trainer.push(TrainerEvent::Reconnecting { attempt });
+                    if failed {
+                        out.trainer.push(TrainerEvent::Fault(outage_error()));
+                    }
+                }
             }
             if !down && self.trainer.was_down {
                 // the trainer fell back to standalone: the engine must re-issue SetMode
@@ -486,6 +552,14 @@ impl World {
             if hr_down && !self.heart.was_down {
                 out.heart.push(HrEvent::Link(LinkState::Lost));
                 self.heart.rr.clear();
+            }
+            if hr_down || self.heart.was_down {
+                for (attempt, failed) in self.reconnects(rel.saturating_sub(TICK_US), rel, false) {
+                    out.heart.push(HrEvent::Reconnecting { attempt });
+                    if failed {
+                        out.heart.push(HrEvent::Fault(outage_error()));
+                    }
+                }
             }
             if !hr_down && self.heart.was_down {
                 out.heart.push(HrEvent::Link(LinkState::Connecting));
