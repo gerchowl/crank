@@ -1,0 +1,63 @@
+{
+  "check": "idle",
+  "duration_s": 60,
+  "frames_rx": 226,
+  "identity": {
+    "dis_serial_present": true,
+    "firmware": "0.7.4",
+    "id_prefix": "5c67045f",
+    "model": "Neo",
+    "name": "Tacx Neo *****"
+  },
+  "link_dropped_during_run": false,
+  "page_rates": {
+    "16": {
+      "count": 43,
+      "gap_us_max": 2518737,
+      "gap_us_min": 239952,
+      "rate_hz": 0.733736533204941
+    },
+    "240": {
+      "count": 4,
+      "gap_us_max": 16981177,
+      "gap_us_min": 16019417,
+      "rate_hz": 0.06002294677255115
+    },
+    "25": {
+      "count": 166,
+      "gap_us_max": 1259603,
+      "gap_us_min": 210103,
+      "rate_hz": 2.7721859427087954
+    },
+    "250": {
+      "count": 4,
+      "gap_us_max": 32760508,
+      "gap_us_min": 240157,
+      "rate_hz": 0.09024984315329342
+    },
+    "251": {
+      "count": 3,
+      "gap_us_max": 32760688,
+      "gap_us_min": 268085,
+      "rate_hz": 0.06055326366498689
+    },
+    "80": {
+      "count": 2,
+      "gap_us_max": 240435,
+      "gap_us_min": 240435,
+      "rate_hz": 4.159128246719487
+    },
+    "81": {
+      "count": 4,
+      "gap_us_max": 32761392,
+      "gap_us_min": 236692,
+      "rate_hz": 0.09025668821615297
+    }
+  },
+  "reserved": {
+    "page16_byte1_bits_5_to_7_values_seen": [
+      0
+    ]
+  },
+  "what_was_sent": "nothing (subscribe fec2 only; no writes)"
+}
