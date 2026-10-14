@@ -75,13 +75,14 @@
         install -m644 ${./app/src-tauri/icons/icon.icns} $app/Resources/icon.icns
         install -m644 ${./app/src-tauri/Info.plist} $app/Info.plist
       '';
-      # deny.toml stays the single policy file; Nix only injects where the database lives.
-      # cargo-deny needs a git checkout it can lock, so the pinned input is copied into one at build time.
-      denyConfig = (pkgs.formats.toml { }).generate "deny.toml" (let cfg = builtins.fromTOML (builtins.readFile ./deny.toml); in
+      # deny.toml (root) and deny-fuzz.toml (fuzz workspace, #199) stay the policy files; Nix only injects
+      # where the database lives. cargo-deny needs a git checkout it can lock, so the pinned input is
+      # copied into one at build time.
+      denyConfigFor = policy: (pkgs.formats.toml { }).generate "deny.toml" (let cfg = builtins.fromTOML (builtins.readFile policy); in
         cfg // { advisories = cfg.advisories // { db-path = "@advisoryDbRoot@"; }; });
       # RustSec advisories run offline against the pinned `advisory-db` input (ADR-0001 §9.5, #124).
       # The directory name is cargo-deny's hash of the default db URL (see AGENTS.md).
-      denyCheck = { pname, src, cargoDenyChecks, manifest ? "Cargo.toml", cargoVendorDir ? null }:
+      denyCheck = { pname, src, cargoDenyChecks, policy ? ./deny.toml, manifest ? "Cargo.toml", cargoVendorDir ? null }:
         craneLib.cargoDeny ({
           inherit pname; version = "0.1.0"; inherit src cargoDenyChecks;
           cargoDenyExtraArgs = "--offline --manifest-path ${manifest} --config $TMPDIR/deny.toml";
@@ -90,7 +91,7 @@
             export advisoryDbRoot=$TMPDIR/advisory-dbs
             db=$advisoryDbRoot/advisory-db-3157b0e258782691
             mkdir -p $db && cp -R ${advisory-db}/. $db && chmod -R u+w $db
-            substitute ${denyConfig} $TMPDIR/deny.toml --subst-var advisoryDbRoot
+            substitute ${denyConfigFor policy} $TMPDIR/deny.toml --subst-var advisoryDbRoot
             export GIT_AUTHOR_NAME=nix GIT_AUTHOR_EMAIL=nix@invalid GIT_COMMITTER_NAME=nix GIT_COMMITTER_EMAIL=nix@invalid
             export GIT_AUTHOR_DATE="@${toString advisory-db.lastModified}" GIT_COMMITTER_DATE="@${toString advisory-db.lastModified}"
             git -C $db init -q && git -C $db add -A && git -C $db commit -q -m pinned
@@ -103,8 +104,6 @@
         nextest = craneLib.cargoNextest (rustCheck // { cargoNextestExtraArgs = "--features crank-ble/replay"; });
         doctest = craneLib.cargoDocTest rustCheck;
         doc = craneLib.cargoDoc (rustCheck // { RUSTDOCFLAGS = "-D warnings"; });
-        # RustSec advisories run offline against the pinned `advisory-db` input (ADR-0001 §9.5, #124).
-        # The directory name is cargo-deny's hash of the default db URL (see AGENTS.md).
         deny = denyCheck {
           pname = "crank";
           src = source cargoFiles;
@@ -121,6 +120,7 @@
             ./crates/crank-fec/fuzz/Cargo.toml ./crates/crank-fec/fuzz/Cargo.lock ./crates/crank-fec/fuzz/fuzz_targets ]);
           cargoVendorDir = craneLib.vendorCargoDeps { cargoLock = ./crates/crank-fec/fuzz/Cargo.lock; };
           cargoDenyChecks = "advisories -A index-failure";
+          policy = ./deny-fuzz.toml;
           manifest = "crates/crank-fec/fuzz/Cargo.toml";
         };
         bindings-drift = craneLib.mkCargoDerivation (rustCheck // {

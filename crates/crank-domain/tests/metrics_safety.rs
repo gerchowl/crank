@@ -358,3 +358,49 @@ fn heatmap_axis_cap_is_a_clamp_not_an_error() {
     let hist = histogram_from("power", &[0., 1e6], 1., None).unwrap();
     assert!(hist.bins.len() <= 401 && hist.bin_width > 1.);
 }
+
+/// DIVERGENCES.md claims finite negative filter parameters are clamped as in TS. Expected values
+/// are the outputs of `shared/src/filters.ts` (`createFilterChain`) for the same samples, so the
+/// clamp is pinned by value, not just by "produces something".
+#[test]
+fn finite_negative_filter_parameters_are_clamped_with_ts_values() {
+    const T: [f64; 6] = [0., 1., 2.5, 3., 7., 7.5];
+    const V: [f64; 6] = [10., 20., 15., 40., 5., 30.];
+    let run = |f: Filter| -> Vec<f64> {
+        let mut chain = FilterChain::new([f]).unwrap();
+        T.iter()
+            .zip(V)
+            .map(|(&t, v)| chain.push(t, Some(v)).unwrap())
+            .collect()
+    };
+    // window 0, tau 0 and n 1 all pass the input through; negatives clamp to exactly those.
+    for f in [
+        Filter::Sma { window_s: -5. },
+        Filter::Ema { tau_s: -5. },
+        Filter::Median { n: -3. },
+        Filter::Median { n: 0.4 },
+    ] {
+        assert_eq!(run(f.clone()), V, "{f:?}");
+    }
+    // minCutoff -1 clamps to 1e-3 and beta -2 to 0 (not to a passthrough, so the value is a real check).
+    let expected = [
+        10.,
+        10.062_439_533_909_748,
+        10.108_540_454_034_557,
+        10.202_153_150_788_833,
+        10.074_614_185_625_913,
+        10.137_015_591_521_957,
+    ];
+    let got = run(Filter::OneEuro {
+        min_cutoff: -1.,
+        beta: -2.,
+    });
+    for (g, e) in got.iter().zip(expected) {
+        assert!((g - e).abs() <= 1e-12, "{got:?}");
+    }
+    let clamped = run(Filter::OneEuro {
+        min_cutoff: 1e-3,
+        beta: 0.,
+    });
+    assert_eq!(got, clamped);
+}

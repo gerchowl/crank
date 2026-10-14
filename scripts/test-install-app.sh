@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Exercise scripts/install-app.sh against a temp target with a stub codesign (#165): fresh install,
-# atomic swap over an existing app, and a requirement mismatch that must leave the old app untouched.
+# swap over an existing app, and a requirement mismatch that must leave the old app untouched.
+# Limit (#165): this checks the swap's outcome only. Replacing renamex_np with `rm -rf; mv` would
+# still pass, because a single-threaded script cannot observe the absent-path window between the
+# two steps; atomicity is by construction (the exchange is one syscall), not asserted here.
 set -euo pipefail
 # install-app.sh swaps with renamex_np, which exists on Darwin only; the recipe is macOS-only by design
 # (ADR-0001 §9.3), so there is nothing to exercise elsewhere.
