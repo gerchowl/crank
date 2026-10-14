@@ -9,12 +9,13 @@ use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 /// Forward-only migrations; the schema version is their count.
-const MIGRATIONS: [&str; 2] = [
+const MIGRATIONS: [&str; 3] = [
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_device_platform_id_unique.sql"),
+    include_str!("../migrations/0003_health_check_result.sql"),
 ];
 /// Newest `user_version` this build reads or writes.
-pub(crate) const SCHEMA_VERSION: u32 = 2;
+pub(crate) const SCHEMA_VERSION: u32 = 3;
 type Job = Box<dyn FnOnce(&mut Writer) + Send>;
 /// Owns the worker thread and the advisory `ride.lock`.
 ///

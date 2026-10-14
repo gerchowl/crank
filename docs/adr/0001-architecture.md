@@ -349,7 +349,7 @@ Schema v1 (#33):
 | Table | Key columns | Notes |
 |---|---|---|
 | `athlete_estimate` | `param, value, sd, source, n, updated_at` | append-only history; current = latest per `param` (ONBOARDING.md §3) |
-| `athlete_profile` | singleton: weight, age, sex, crank length, health-check result (column `par_q_result`; name predates #193, rename tracked in #210) | |
+| `athlete_profile` | singleton: weight, age, sex, crank length, health-check result (column `health_check_result`; renamed from `par_q_result` by migration 0003, #210) | |
 | `workout` | `id, name, dsl, tree_json, ftp_at_creation, source, created_at` | `dsl` canonical text; `tree_json` validated on read |
 | `snippet`, `layout` | `id, name, json, updated_at` | validated on read (#4); built-in defaults live in code |
 | `ride` | `id, started_at (UTC), ended_at, state (finished/aborted), workout_json, compiled_json, trainer_device_id, hr_device_id, telemetry_source, summary_json` | snapshot of the workout as ridden, incl. coach changes (#16) |
@@ -466,9 +466,13 @@ server inside the app ([platform support](https://webdriver.io/docs/desktop-test
 The embedded provider works on sage (macOS 26, aarch64, WKWebView) against the Nix-built
 `crank-desktop-e2e`, launched in the GUI session through the Alacritty wrapper: `just e2e` passes. It
 covers app launch, `$`/`toHaveText`/`toHaveTitle` element queries, a Rust command round trip through
-`window.__TAURI_INTERNALS__.invoke` with a DOM change, and `saveScreenshot` (1440×900 PNG). Two
-screenshots of an unchanged page are byte-identical, and so are those of separate app launches, so
-no extra font or animation pinning was needed for the shell.
+`window.__TAURI_INTERNALS__.invoke` with a DOM change, and `saveScreenshot` (1440×900 PNG).
+
+Determinism, exactly what is checked: within one launch the spec compares two screenshots of an unchanged
+page byte for byte, and `scripts/e2e.sh` runs the specs in two separate app launches and compares the
+screenshots of launch 1 and launch 2 byte for byte (`cmp`). Both held on sage with no font or animation
+pinning for the shell. No golden hash is recorded, because a hash would change with the macOS version and
+fonts; the comparison across launches on one machine is the guard. It says nothing about other machines.
 
 | Part | Pin |
 |---|---|
@@ -488,12 +492,13 @@ Decisions and findings:
   if a spec needs them.
 - The plugin's build script writes generated files next to its manifest, which is read-only in the Nix
   vendor tree; `nix/patches/tauri-plugin-wdio-webdriver-writable-build.patch` runs it from a writable
-  copy (flake `cargoVendorDir`). The plugin declares no commands, so it needs no capability.
+  copy (flake `cargoVendorDirE2e`, used by the e2e package only; other builds vendor the crate unpatched; upstream tracking in `nix/patches/README.md`). The plugin declares no commands, so it needs no capability.
 - The plugin is optional in `crank-desktop`. The `deps-edges` check fails if `crank-desktop`'s production
   graph reaches any `tauri-plugin-wdio*` crate or enables `e2e`, and fails if the `e2e` feature stops
   pulling the plugin in. `build-e2e` keeps the package building in CI.
 - A flock pane has no GUI session; `scripts/e2e.sh` hands the run to Alacritty over IPC and reads
-  the log and exit code back (`CRANK_E2E_DIRECT=1` runs in the current terminal). `nix develop`
+  the log and exit code back from a per-run directory, the exit file written atomically (`CRANK_E2E_DIRECT=1`
+  runs in the current terminal). On Linux the script skips with a message. `nix develop`
   repoints `TMPDIR`, so the Alacritty socket is looked up in the per-user temp dir.
 - Still open: `--sim --seed --clock virtual` with `debug_advance` (#228) and the `just screens` matrix (#229).
 
