@@ -348,6 +348,10 @@ pub enum DeviceError {
     /// Connection closed.
     #[error("disconnected")]
     Disconnected,
+    /// The driver already has a live link: a second `connect` is refused until the first
+    /// is released.
+    #[error("driver already connected")]
+    AlreadyConnected,
 }
 /// Categories shared by real, simulator and replay drivers. See ADR-0002 §3.
 /// Non-exhaustive to support future FTMS additions (#45).

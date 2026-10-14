@@ -110,7 +110,7 @@ impl TrainerDriver for FecTrainer {
         Box::pin(async move {
             let guard = guard
                 .try_lock_owned()
-                .map_err(|_| DeviceError::ConnectFailed("driver already connected".into()))?;
+                .map_err(|_| DeviceError::AlreadyConnected)?;
             let config = encode(&ControlPage::UserConfig {
                 rider_kg: rider.rider_kg,
                 bike_kg: rider.bike_kg,

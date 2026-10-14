@@ -603,9 +603,16 @@ dependencies = [
  "crank-engine",
  "crank-intervals",
  "crank-store",
+ "futures-util",
  "serde",
  "serde_json",
  "specta",
+ "specta-serde",
+ "specta-typescript",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -651,12 +658,15 @@ version = "0.1.0"
 dependencies = [
  "crank-devices",
  "crank-domain",
+ "crank-engine",
  "crank-store",
  "futures-util",
  "proptest",
  "serde",
  "serde_json",
  "specta",
+ "specta-serde",
+ "specta-typescript",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
