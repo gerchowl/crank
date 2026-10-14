@@ -461,6 +461,42 @@ server inside the app ([platform support](https://webdriver.io/docs/desktop-test
   so #35 must record the trade-off and amend this section. Either way `just e2e` and `just screens` keep
   their names and outputs, so §8.1 holds.
 
+#### 8.3.1 Validated setup (#35 part 1, 2026-10-14)
+
+The embedded provider works on sage (macOS 26, aarch64, WKWebView) against the Nix-built
+`crank-desktop-e2e`, launched in the GUI session through the Alacritty wrapper: `just e2e` passes. It
+covers app launch, `$`/`toHaveText`/`toHaveTitle` element queries, a Rust command round trip through
+`window.__TAURI_INTERNALS__.invoke` with a DOM change, and `saveScreenshot` (1440×900 PNG). Two
+screenshots of an unchanged page are byte-identical, and so are those of separate app launches, so
+no extra font or animation pinning was needed for the shell.
+
+| Part | Pin |
+|---|---|
+| `tauri-plugin-wdio-webdriver` (cargo feature `e2e`) | `=1.5.0`, with Tauri 2.12.3 |
+| `@wdio/tauri-service` | `1.5.0`, `driverProvider: 'embedded'` |
+| `webdriverio`, `@wdio/cli`, `@wdio/local-runner`, `@wdio/mocha-framework` | `9.31.9` |
+| `@wdio/globals`, `@wdio/spec-reporter` | `9.31.3`, `9.31.2` (the versions the service pins) |
+
+Decisions and findings:
+
+- Only `tauri-plugin-wdio-webdriver` is built in. The service's second plugin `tauri-plugin-wdio` (and its
+  frontend import `@wdio/tauri-plugin`, `withGlobalTauri`) is **not** used: it would put test code into
+  the production frontend bundle, and IPC from specs works through `window.__TAURI_INTERNALS__` anyway.
+  Without it the service's multi-window auto-focus times out for 5 s before every query, so the config
+  issues one explicit WebDriver `switchToWindow` in `before`, which turns the auto-focus off (the shell
+  is single-window). The service-only helpers (`browser.tauri.execute`, `mock`) are unavailable; revisit
+  if a spec needs them.
+- The plugin's build script writes generated files next to its manifest, which is read-only in the Nix
+  vendor tree; `nix/patches/tauri-plugin-wdio-webdriver-writable-build.patch` runs it from a writable
+  copy (flake `cargoVendorDir`). The plugin declares no commands, so it needs no capability.
+- The plugin is optional in `crank-desktop`. The `deps-edges` check fails if `crank-desktop`'s production
+  graph reaches any `tauri-plugin-wdio*` crate or enables `e2e`, and fails if the `e2e` feature stops
+  pulling the plugin in. `build-e2e` keeps the package building in CI.
+- A flock pane has no GUI session; `scripts/e2e.sh` hands the run to Alacritty over IPC and reads
+  the log and exit code back (`CRANK_E2E_DIRECT=1` runs in the current terminal). `nix develop`
+  repoints `TMPDIR`, so the Alacritty socket is looked up in the per-user temp dir.
+- Still open: `--sim --seed --clock virtual` with `debug_advance` (#228) and the `just screens` matrix (#229).
+
 ### 8.4 Hardware-in-the-loop protocol
 
 Test scripts live in `hil/` and run in a terminal that has the Bluetooth grant (on sage: an Alacritty

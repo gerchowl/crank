@@ -32,7 +32,7 @@
         # pnpm leaves an empty v11/links directory on macOS but not Linux.
         # Empty store directories carry no cache data; normalize before packing.
         postInstall = ''find "$storePath" -type d -empty -delete'';
-        fetcherVersion = 4; hash = "sha256-iEoUtgzaQ8Zz7/R5OoZGuXh0p7APj5hsL2IE0Xnk8VA=";
+        fetcherVersion = 4; hash = "sha256-rhB1aUKBCcj3AepOD649wrLyZU0usI3An54QyXPyxVk=";
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
         pname = name; version = "0.1.0"; src = frontendSrc;
@@ -42,8 +42,18 @@
         installPhase = "mkdir -p $out; cp -r app/dist/. $out/";
       };
       appDist = frontend "crank-app-dist" "pnpm -C app build";
+      # tauri-plugin-wdio-webdriver's build script writes generated files next to its manifest, which
+      # is read-only in the Nix vendor tree; the patch runs it from a writable copy (#35).
+      cargoVendorDir = craneLib.vendorCargoDeps {
+        cargoLock = ./Cargo.lock;
+        overrideVendorCargoPackage = p: drv:
+          if p.name == "tauri-plugin-wdio-webdriver"
+          then drv.overrideAttrs (_: { patches = [ ./nix/patches/tauri-plugin-wdio-webdriver-writable-build.patch ]; })
+          else drv;
+      };
       common = {
         pname = "crank"; version = "0.1.0"; src = source rustFiles;
+        inherit cargoVendorDir;
         strictDeps = true;
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
@@ -99,6 +109,8 @@
         } // lib.optionalAttrs (cargoVendorDir != null) { inherit cargoVendorDir; });
       checks = {
         build = desktop "";
+        # The e2e package must keep building where CI runs (ADR-0001 §8.3, #35); the harness itself is `just e2e`.
+        build-e2e = desktop ",e2e";
         fmt = craneLib.cargoFmt { pname = "crank"; version = "0.1.0"; src = source cargoFiles; };
         clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--features crank-ble/replay --all-targets -- -D warnings"; });
         nextest = craneLib.cargoNextest (rustCheck // { cargoNextestExtraArgs = "--features crank-ble/replay"; });
