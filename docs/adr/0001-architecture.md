@@ -321,6 +321,16 @@ thresholds are initial values verified in HIL session 1 (#44).
 - **Per-ride state reset** (#3): a ride is a `RideSession` value created by `ride_load`; nothing ride-scoped
   lives outside it, so a new workout cannot see the previous ride.
 
+**Implementation notes (#217, `crank-engine` core).** Conventions the rules above leave open, fixed by code and tests:
+
+- A tick is workout time iff nothing paused the ride when it began; every detection (8 missed ticks, 12 zero ticks, link event) takes effect from the next tick. So the 8 missed ticks of the loss window, and the 12 zero ticks of stopped pedalling, stay workout time (no rollback). Hold: a value is usable for the tick it arrived in and the next 4 (trainer) or 12 (HR).
+- Link events carry no timestamp. They are applied before the next unprocessed tick, so after a stall a `Lost`/`Ready` pair is seen before the replayed ticks. A `Link(Lost)` clears the trainer hold; an HR `Lost` clears the HR hold.
+- Pauses compose: `user`, `trainer_lost` and `stopped_pedalling` are independent flags (reported in that priority: lost, user, stopped), so a rider's pause survives a reconnect. Ticks of a paused ride record `null` for every metric and `workout_s`.
+- After a loss detected by silence (no `Link(Lost)`), the engine re-issues the mode as soon as it detects the loss, because the link is still `Ready`. Control is sent only while the link is `Ready`; resume needs a re-applied mode and cadence > 0 on a tick.
+- The engine finishes the ride when the last block completes (or is skipped); a partial last second is not recorded. Block duration is `FlatBlock.dur_s` rounded to ticks; open-ended end rules are #224, gap filling from accumulated power is #223.
+- `crank-engine` depends on neither `crank-ble` nor `crank-store`: the ride-active signal is the `RideActivity` trait (core passes `|a| gate.set_active(a)`), the record is the `RideRecorder` trait (core adapts it to `Store`).
+- `VirtualClock::new(speed)` runs `speed`× faster than the tokio timer under it; with `start_paused` tests it is exact and takes no wall time.
+
 Engine sketch:
 
 ```rust
