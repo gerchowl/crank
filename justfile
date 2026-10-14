@@ -15,7 +15,8 @@ config-checks:
     scripts/test-install-app.sh
 
 test:
-    cargo nextest run --workspace
+    # CI's feature set (flake.nix `nextest`), so the `hil_fec` example tests run locally too.
+    cargo nextest run --workspace --features crank-ble/replay,crank-ble/hil
     cargo test --workspace --doc
     pnpm -C app test
     pnpm -C shared test

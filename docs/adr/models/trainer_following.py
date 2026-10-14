@@ -956,7 +956,7 @@ def check_constants(adr_path):
     """The ADR's §4.4.1 numbers and this model's constants are the same (the model does not read
     the ADR; this fails when either side is edited alone): the constants table, the reply periods
     P_c, T_unknown(c) = 4·P_c + 1 s, the decision deadlines, the guarantee-1 stuck-component bounds,
-    the SIM recovery bound and the guarantee-7 silence time."""
+    the SIM recovery bound, the guarantee-7 silence times and the T_unknown(c) rationale."""
     import re
     text = open(adr_path, encoding="utf-8").read()
     section = text[text.index("#### 4.4.1"):text.index("## 5. Decision")]
@@ -1010,6 +1010,17 @@ def check_constants(adr_path):
     s_erg, s_sim = (int(x) for x in find(
         r"`checking` for `T_unknown\(c\)` \((\d+) s for ERG[^)]*, (\d+) s for SIM", "guarantee 7"))
     assert (s_erg, s_sim) == (T_UNKNOWN_S["erg"], T_UNKNOWN_S["track"]), ("guarantee 7", s_erg, s_sim)
+    # guarantee 7, first sentence: the SIM total ("so 9 s in SIM where both components must be silent")
+    (t_sim,) = find(r"so (\d+) s in SIM where both components must be silent", "guarantee 7 SIM total")
+    assert int(t_sim) == T_UNKNOWN_S["track"] == T_UNKNOWN_S["wind"], ("guarantee 7 SIM total", t_sim)
+    # the rationale in the T_unknown(c) row: bold formula and the m, gap arithmetic per component
+    b_mult, b_pad, m_e, gap_e, m_s, gap_s = (int(x) for x in find(
+        r"\*\*(\d+)·P_c \+ (\d+) s:\*\* ERG `m` = (\d+) \(gap (\d+) s\)[^;]*; one SIM component `m` = (\d+) \(gap (\d+) s;",
+        "T_unknown rationale"))
+    assert (b_mult, b_pad) == (UNK_MULT, UNK_PAD), ("rationale formula", b_mult, b_pad)
+    for c, m, gap in (("erg", m_e, gap_e), ("track", m_s, gap_s)):
+        need = -(-T_UNKNOWN_S[c] // P_S[c]) - 1  # m = ceil(T_unknown / P_c) - 1 losses in a row
+        assert (m, gap) == (need, (need + 1) * P_S[c]), ("rationale m, gap", c, m, gap, need)
     # guarantee 7, second sentence: the fallback shows `checking` for the same times
     f_erg, f_sim = (int(x) for x in find(
         r"shows `checking` for the first (\d+) s \(ERG\) or (\d+) s \(SIM\) of every activation", "guarantee 7 fallback"))

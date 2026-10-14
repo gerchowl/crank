@@ -58,7 +58,8 @@ pub enum Page {
     Track {
         /// Grade percent, resolution 0.01%; 0xFFFF is unspecified.
         grade_pct: Option<f32>,
-        /// Dimensionless rolling coefficient, resolution 0.00005; 0xFF is numeric.
+        /// Dimensionless rolling coefficient, resolution 0.00005. On the NEO `0xFF`
+        /// is invalid and ignored (HIL #44 Part A, confirmed); decoded as received.
         crr: f32,
     },
     /// Page 54, fitness equipment capabilities; the NEO reports 200 N and modes
@@ -207,9 +208,11 @@ pub enum ControlPage {
         /// Resistance in percent, rounded to 0.5%.
         pct: f32,
     },
-    /// Page 49: target power, 0..=16383.75 W.
+    /// Page 49: target power, 0..=16383.5 W. The NEO treats `0xFFFF` (16383.75 W)
+    /// as invalid and applies 0 W instead, so `encode` rejects it (HIL #44 Part A,
+    /// confirmed; ADR-0002 §4.2, #215).
     TargetPower {
-        /// Watts, rounded to 0.25 W.
+        /// Watts, rounded to 0.25 W; a value that rounds to 16383.75 is rejected.
         watts: f32,
     },
     /// Page 50: wind resistance parameters.
@@ -225,7 +228,9 @@ pub enum ControlPage {
     Track {
         /// Grade percent, -200..=200, rounded to 0.01%.
         grade_pct: f32,
-        /// Rolling coefficient, 0..=0.01275, rounded to 0.00005.
+        /// Rolling coefficient, 0..=0.0127, rounded to 0.00005. A value that rounds
+        /// to `0xFF` (0.01275) is rejected: the NEO ignores it and keeps the previous
+        /// Crr (HIL #44 Part A, confirmed; ADR-0002 §4.2, #215).
         crr: f32,
     },
     /// Page 55: ANT+ FE profile User Configuration layout, cross-checked
@@ -246,7 +251,9 @@ pub enum ControlPage {
     Request {
         /// Requested page number.
         page: u8,
-        /// Seven-bit transmission count, 0..=127.
+        /// Seven-bit transmission count, 0..=127. A count of 0 is sent as byte `0x80`;
+        /// the NEO answered it five times in one HIL trial (#44 Part A, n = 1), so its
+        /// meaning stays **tentative pending HIL #44**.
         times: u8,
     },
 }
