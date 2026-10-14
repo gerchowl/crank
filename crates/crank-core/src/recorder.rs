@@ -9,6 +9,9 @@ use crank_store::{
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// The record metric holding the engine's block index per second.
+pub(crate) const BLOCK_METRIC: &str = "block";
+
 /// UTC Unix seconds now.
 pub(crate) fn unix_now() -> i64 {
     SystemTime::now()
@@ -59,7 +62,14 @@ impl RideRecorder for StoreRecorder {
                 trainer_device_id: m.trainer_device_id.clone(),
                 hr_device_id: m.hr_device_id.clone(),
                 telemetry_source: m.telemetry_source.into(),
-                metrics: metrics.iter().map(|s| (*s).to_owned()).collect(),
+                // The engine's metrics plus the block cursor of each second (the engine
+                // is the single source of truth for which block a second belongs to).
+                metrics: metrics
+                    .iter()
+                    .copied()
+                    .chain([BLOCK_METRIC])
+                    .map(str::to_owned)
+                    .collect(),
             })
             .map_err(|e| record_error(&e))
     }
@@ -72,6 +82,15 @@ impl RideRecorder for StoreRecorder {
                 value,
                 estimated: false,
             })
+            .chain([Sample {
+                metric: BLOCK_METRIC.to_owned(),
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "block indices are far below 2^24"
+                )]
+                value: row.block.map(|b| b as f32),
+                estimated: false,
+            }])
             .collect();
         self.store
             .append_second(&self.meta.id, session_s, samples)
@@ -107,20 +126,21 @@ fn mean(values: impl Iterator<Item = f64>) -> Option<f64> {
     let (sum, n) = values.fold((0.0, 0_u32), |(s, n), v| (s + v, n + 1));
     (n > 0).then(|| sum / f64::from(n))
 }
-/// The summary of a ride's seconds against its planned blocks.
+/// The summary of a ride's seconds against its planned blocks. Normalized power is
+/// `crank_domain::workout::normalized_power` (the one NP implementation, a dense 1 Hz
+/// trace) over the recorded power seconds; it defines no gap semantics, so seconds
+/// without power are left out of the trace rather than filled.
 pub(crate) fn summarize(rows: &[SecondRow], blocks: &[FlatBlock]) -> RideSummary {
     let power: Vec<f64> = rows.iter().filter_map(|r| r.power.map(f64::from)).collect();
     let blocks = blocks
         .iter()
         .enumerate()
         .map(|(i, b)| {
+            // The engine reports the block of every second; seconds are never placed by
+            // comparing the workout position to the plan (a skip breaks that).
             let inside: Vec<&SecondRow> = rows
                 .iter()
-                .filter(|r| {
-                    r.workout_s.is_some_and(|w| {
-                        f64::from(w) > b.start_s && f64::from(w) <= b.start_s + b.dur_s
-                    })
-                })
+                .filter(|r| r.block.is_some_and(|k| usize::try_from(k) == Ok(i)))
                 .collect();
             BlockSummary {
                 index: u32::try_from(i).unwrap_or(u32::MAX),
@@ -161,22 +181,22 @@ mod tests {
             dur_range_s: None,
         }
     }
-    fn row(power: Option<f32>, hr: Option<f32>, workout_s: Option<f32>) -> SecondRow {
+    fn row(power: Option<f32>, hr: Option<f32>, block: Option<u32>) -> SecondRow {
         SecondRow {
             power,
             hr,
-            workout_s,
+            block,
             ..SecondRow::default()
         }
     }
 
     #[test]
-    fn summary_attributes_seconds_to_blocks_and_skips_gaps() {
+    fn summary_attributes_seconds_by_the_engines_block_and_skips_gaps() {
         let rows = [
-            row(Some(100.0), Some(120.0), Some(1.0)),
-            row(Some(200.0), None, Some(2.0)),
-            row(None, Some(140.0), None), // paused second: no workout position
-            row(Some(300.0), Some(160.0), Some(3.0)),
+            row(Some(100.0), Some(120.0), Some(0)),
+            row(Some(200.0), None, Some(0)),
+            row(None, Some(140.0), None), // paused second: no block
+            row(Some(300.0), Some(160.0), Some(1)),
         ];
         let s = summarize(&rows, &[block(0.0, 2.0, 150.0), block(2.0, 2.0, 250.0)]);
         assert!((s.duration_s - 4.0).abs() < f64::EPSILON);
@@ -187,7 +207,34 @@ mod tests {
         assert!((s.blocks[0].actual_s - 2.0).abs() < f64::EPSILON);
         assert!((s.blocks[0].actual_w.unwrap() - 150.0).abs() < 1e-9);
         assert!((s.blocks[1].actual_s - 1.0).abs() < f64::EPSILON);
+        assert!((s.blocks[1].actual_w.unwrap() - 300.0).abs() < 1e-9);
         assert!((s.blocks[1].planned_w - 250.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_skip_does_not_misplace_seconds() {
+        // 10 s in block 0, a skip, then 20 s in block 1 of a 30 s + 30 s plan. The
+        // workout position keeps counting through the skip (it ends at 30 s inside the
+        // first block's planned range), so only the engine's block index is right.
+        let mut rows = vec![row(Some(100.0), None, Some(0)); 10];
+        rows.extend(vec![row(Some(200.0), None, Some(1)); 20]);
+        let s = summarize(&rows, &[block(0.0, 30.0, 100.0), block(30.0, 30.0, 200.0)]);
+        assert!((s.blocks[0].actual_s - 10.0).abs() < f64::EPSILON);
+        assert!((s.blocks[1].actual_s - 20.0).abs() < f64::EPSILON);
+        assert!((s.blocks[0].actual_w.unwrap() - 100.0).abs() < 1e-9);
+        assert!((s.blocks[1].actual_w.unwrap() - 200.0).abs() < 1e-9);
+        // Skipping twice: a block that was skipped through has no seconds, no power.
+        let mut rows = vec![row(Some(100.0), None, Some(0)); 5];
+        rows.extend(vec![row(Some(300.0), None, Some(2)); 7]);
+        let plan = [
+            block(0.0, 30.0, 100.0),
+            block(30.0, 30.0, 200.0),
+            block(60.0, 30.0, 300.0),
+        ];
+        let s = summarize(&rows, &plan);
+        let secs: Vec<f64> = s.blocks.iter().map(|b| b.actual_s).collect();
+        assert_eq!(secs, [5.0, 0.0, 7.0]);
+        assert!(s.blocks[1].actual_w.is_none());
     }
 
     #[test]

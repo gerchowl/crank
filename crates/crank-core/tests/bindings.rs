@@ -47,7 +47,8 @@ fn stream_types_export_to_typescript() {
         .register::<SubscribeOpts>()
         .register::<StreamFrame>()
         .register::<StreamStatus>()
-        .register::<StreamSnapshot>();
+        .register::<StreamSnapshot>()
+        .register::<crank_core::RideStatusView>();
     let ts = Typescript::default()
         .export(&types, specta_serde::PhasesFormat)
         .unwrap_or_else(|e| panic!("TypeScript export failed: {e}"));
