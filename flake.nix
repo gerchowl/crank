@@ -20,7 +20,7 @@
       rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./clippy.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
-        (lib.fileset.difference ./app ./app/src-tauri) ./shared
+        (lib.fileset.difference ./app ./app/src-tauri) ./shared ./assets/brand
         ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures
         ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ]);
       pnpmDeps = pkgs.fetchPnpmDeps {
@@ -32,7 +32,7 @@
         # pnpm leaves an empty v11/links directory on macOS but not Linux.
         # Empty store directories carry no cache data; normalize before packing.
         postInstall = ''find "$storePath" -type d -empty -delete'';
-        fetcherVersion = 4; hash = "sha256-rhB1aUKBCcj3AepOD649wrLyZU0usI3An54QyXPyxVk=";
+        fetcherVersion = 4; hash = "sha256-vXa9T4Z10I53+L/3womR+RLALIddxrTrAmFg4L1ZPGk=";
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
         pname = name; version = "0.1.0"; src = frontendSrc;
