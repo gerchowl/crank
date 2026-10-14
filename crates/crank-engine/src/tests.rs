@@ -151,8 +151,15 @@ impl Rig {
             }))
             .unwrap();
     }
-    fn link(&self, s: LinkState) {
+    /// A link event received now: stamped with the manual clock, i.e. before the next
+    /// unprocessed tick, in order with the samples queued so far.
+    fn link(&mut self, s: LinkState) {
         self.events.try_send(TrainerEvent::Link(s)).unwrap();
+        self.engine.drain();
+    }
+    /// Move the manual clock without processing ticks.
+    fn at(&mut self, us: u64) {
+        self.clock.0.store(us, Ordering::SeqCst);
     }
     /// Process every tick whose window has closed by the end of tick `k`.
     fn through(&mut self, k: u64) {
@@ -361,13 +368,12 @@ fn link_loss_pauses_and_reconnect_reissues_mode_with_soft_start() {
     r.through(12);
     assert!(r.modes().is_empty(), "no commands while connecting");
     r.link(LinkState::Ready);
-    r.sample(14, 0, 0);
     r.through(13);
-    // re-issued from the pre-loss 3 s power (150 W) towards 200 W, 1 Hz
-    assert_eq!(r.modes(), vec![erg(150)]);
-    // ready and mode re-applied, but no cadence yet: still paused
+    // no power in the last 3 s yet: the documented fallback sends the target as is
+    // (design question #231), and the ride stays paused until a sample arrives
+    assert_eq!(r.modes(), vec![erg(200)]);
     assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
-    r.sample(14, 80, 85);
+    r.sample(14, 90, 85);
     r.through(14);
     assert_eq!(r.state(), RideState::Riding);
     assert_eq!(
@@ -375,17 +381,16 @@ fn link_loss_pauses_and_reconnect_reissues_mode_with_soft_start() {
         8,
         "the resuming tick itself was paused"
     );
-    r.sample(15, 90, 85);
-    r.through(15);
-    assert_eq!(r.status().workout.0, 9);
-    // keep going: 1 Hz updates over 5 s
-    for k in 16..40 {
+    // the soft start begins with the first sample: the 3 s power is (5 x 150 W from
+    // ticks 3..=7, 90 W now) / 6 = 140 W, then five 1 Hz steps to the target
+    assert_eq!(r.modes(), vec![erg(140)]);
+    for k in 15..40 {
         r.sample(k, 150, 85);
     }
     r.through(39);
     assert_eq!(
         r.modes(),
-        vec![erg(160), erg(170), erg(180), erg(190), erg(200)]
+        vec![erg(152), erg(164), erg(176), erg(188), erg(200)]
     );
 }
 
@@ -669,4 +674,151 @@ fn ramp_target_moves_once_per_second_and_clamps_to_the_trainer_maximum() {
         Some(ControlMode::Free),
         "no block: explicit free ride"
     );
+}
+
+#[test]
+fn a_sample_from_before_the_loss_cannot_resume_the_ride() {
+    // Counterexample of the review of 3d92dc0: a sample in tick 9, then Lost,
+    // Connecting and Ready inside the same window and no new sample.
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    for k in 0..9 {
+        r.sample(k, 150, 90);
+    }
+    r.through(8);
+    r.at(9 * TICK_US + 100_000);
+    r.sample(9, 150, 90);
+    r.link(LinkState::Lost);
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    r.through(14);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    assert_eq!(r.status().workout.0, 9);
+    // a cadence sample received after Ready is the resume signal
+    r.sample(15, 80, 85);
+    r.through(15);
+    assert_eq!(r.state(), RideState::Riding);
+}
+
+#[test]
+fn a_sample_received_while_connecting_is_not_a_resume_signal() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    for k in 0..4 {
+        r.sample(k, 150, 90);
+    }
+    r.through(3);
+    r.link(LinkState::Lost);
+    r.link(LinkState::Connecting);
+    r.sample(5, 150, 90);
+    r.through(6);
+    r.link(LinkState::Ready);
+    r.through(9);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    r.sample(10, 150, 90);
+    r.through(10);
+    assert_eq!(r.state(), RideState::Riding);
+}
+
+#[test]
+fn lost_clears_the_trainer_hold() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    for k in 0..5 {
+        r.sample(k, 150, 90);
+    }
+    r.through(4);
+    // Lost and an immediate Ready: the held cadence of tick 4 must not carry over
+    r.link(LinkState::Lost);
+    r.link(LinkState::Ready);
+    r.through(6);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+}
+
+/// Samples of 100 W at ticks `from..to`.
+fn feed(r: &Rig, from: u64, to: u64, w: u16) {
+    for k in from..to {
+        r.sample(k, w, 90);
+    }
+}
+
+#[test]
+fn the_soft_start_is_not_spent_in_silence_and_starts_from_current_power() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 150);
+    r.through(7);
+    assert_eq!(r.modes(), vec![erg(200)]);
+    // 33 silent ticks: lost after 8, the mode is re-issued once, no ramp is played
+    r.through(40);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    assert_eq!(r.modes(), vec![erg(200)]);
+    // samples return at 100 W; 150 W from 30 ticks ago is not "the current power"
+    feed(&r, 41, 70, 100);
+    r.through(41);
+    assert_eq!(r.modes(), vec![erg(100)]);
+    r.through(69);
+    assert_eq!(
+        r.modes(),
+        vec![erg(120), erg(140), erg(160), erg(180), erg(200)]
+    );
+    assert_eq!(r.state(), RideState::Riding);
+}
+
+#[test]
+fn the_ramp_restarts_when_samples_stop_mid_ramp_and_return() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 150);
+    r.through(40);
+    feed(&r, 41, 51, 100); // ramp from 100 W: engaged at tick 41, step 2 at tick 49
+    r.through(50);
+    // start, re-issue on loss, then the ramp from 100 W
+    assert_eq!(
+        r.modes(),
+        vec![erg(200), erg(200), erg(100), erg(120), erg(140)]
+    );
+    // 6 ticks without samples (a hold of 4 ticks, no loss yet): the ramp holds its last
+    // step (160 W at tick 53), then 140 W returns. The 3 s power at tick 57 is
+    // (5 x 100 W from ticks 46..=50 + 140 W) / 6 = 106.7 W: the ramp restarts there.
+    feed(&r, 57, 85, 140);
+    r.through(57);
+    assert_eq!(r.modes(), vec![erg(160), erg(107)]);
+    r.through(80);
+    assert_eq!(
+        r.modes(),
+        vec![erg(125), erg(144), erg(163), erg(181), erg(200)]
+    );
+}
+
+#[test]
+fn start_needs_a_ready_trainer() {
+    let clock = Arc::new(ManualClock(AtomicU64::new(0)));
+    let (mut engine, _h) = Engine::new(clock, None, None, Arc::new(|_: bool| {}));
+    let setup = || RideSetup {
+        blocks: vec![],
+        recorder: Box::new(Recorder(Arc::default())),
+    };
+    engine.command(EngineCmd::Load(setup())).unwrap();
+    assert_eq!(
+        engine.command(EngineCmd::Start),
+        Err(CommandError::NoTrainer)
+    );
+    assert_eq!(engine.status.borrow().state, RideState::Idle);
+
+    let mut r = rig();
+    r.load(vec![]);
+    r.link(LinkState::Connecting);
+    assert_eq!(
+        r.engine.command(EngineCmd::Start),
+        Err(CommandError::TrainerNotReady)
+    );
+    r.link(LinkState::Ready);
+    r.start();
+    assert_eq!(r.state(), RideState::Riding);
 }

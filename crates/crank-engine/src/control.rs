@@ -20,12 +20,13 @@ pub struct PolicyContext<'a> {
     pub block: Option<&'a FlatBlock>,
     /// Workout ticks spent in the current block.
     pub block_elapsed_ticks: u64,
-    /// Ticks since control was (re-)engaged on this link.
+    /// Ticks since trainer samples last started flowing (0 while none are).
     pub engaged_ticks: u64,
-    /// Control is being re-engaged after a trainer loss (soft start applies).
+    /// A trainer loss has not yet been followed by a complete soft start.
     pub after_loss: bool,
-    /// Mean trainer power over the last 3 s of samples at the moment control was
-    /// (re-)engaged, if any arrived (the soft-start origin).
+    /// Mean trainer power over the last 3 s (12 ticks) at the tick the samples last
+    /// started flowing: the soft-start origin. `None` while no trainer value is present;
+    /// the policy then has no origin and sends the target as is (design question #231).
     pub engage_power_w: Option<f64>,
     /// Largest target the driver can represent.
     pub max_target_w: u16,

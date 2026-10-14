@@ -1,5 +1,5 @@
 //! The ride actor: state machine, tick assignment, loss rules, record (ADR-0001 §5).
-use crate::control::{BlockTarget, PolicyContext, RideActivity, TargetPolicy};
+use crate::control::{BlockTarget, PolicyContext, RideActivity, SOFT_START_TICKS, TargetPolicy};
 use crate::record::{METRICS, Mean, RecordError, RideRecorder, SecondRow};
 use crate::ticks::{
     HR_HOLD_TICKS, Hold, LOSS_TICKS, STOPPED_TICKS, SessionTicks, TICKS_PER_SECOND,
@@ -95,6 +95,14 @@ pub enum CommandError {
     /// The command is not valid in the current state.
     #[error("not valid in this state")]
     WrongState,
+    /// The engine has no trainer: a ride never starts without one (#95: "Start disabled
+    /// until trainer: connected", "makes impossible: a ride starting without a
+    /// connected trainer").
+    #[error("no trainer")]
+    NoTrainer,
+    /// The trainer link is not `Ready` (connecting, lost or reconnecting).
+    #[error("trainer not ready")]
+    TrainerNotReady,
     /// The record could not be opened.
     #[error(transparent)]
     Record(#[from] RecordError),
@@ -160,6 +168,18 @@ struct TrainerValues {
     cadence: Option<u8>,
     speed: Option<f32>,
 }
+/// Link transitions seen on one device link, in channel order.
+///
+/// Driver link events carry no timestamp, so each is stamped with the engine clock on
+/// receipt and applied before the tick that contains the stamp. `received` counts
+/// events in channel order and tags every sample that arrives after them; a sample
+/// whose tag is below `applied` has an applied link transition after it and is stale.
+#[derive(Default)]
+struct LinkLog {
+    received: u64,
+    applied: u64,
+    queue: VecDeque<(MonoTime, LinkState)>,
+}
 #[derive(Default)]
 struct SecondAcc {
     power: Mean,
@@ -180,8 +200,8 @@ struct Session {
     recorder: Box<dyn RideRecorder>,
     window: TickWindow,
     next_tick: u64,
-    pending_trainer: BTreeMap<u64, TrainerSample>,
-    pending_hr: BTreeMap<u64, HrSample>,
+    pending_trainer: BTreeMap<u64, (u64, TrainerSample)>,
+    pending_hr: BTreeMap<u64, (u64, HrSample)>,
     trainer: Hold<TrainerValues>,
     hr: Hold<f64>,
     recent_power: VecDeque<(u64, f64)>,
@@ -193,7 +213,7 @@ struct Session {
     block_idx: usize,
     block_elapsed: u64,
     last_sent: Option<ControlMode>,
-    engaged_at: Option<u64>,
+    flow_start: Option<u64>,
     engage_power: Option<f64>,
     after_loss: bool,
     acc: SecondAcc,
@@ -203,7 +223,6 @@ struct Session {
 impl Session {
     fn reset_control(&mut self) {
         self.last_sent = None;
-        self.engaged_at = None;
     }
     fn append_second(&mut self) {
         let acc = std::mem::take(&mut self.acc);
@@ -271,6 +290,8 @@ pub struct Engine {
     hr_link: Option<LinkState>,
     cmds: mpsc::Receiver<Request>,
     pub(crate) status: watch::Sender<RideStatus>,
+    trainer_log: LinkLog,
+    hr_log: LinkLog,
     session: Option<Session>,
 }
 impl Engine {
@@ -316,6 +337,8 @@ impl Engine {
                 record_error: None,
             })
             .0,
+            trainer_log: LinkLog::default(),
+            hr_log: LinkLog::default(),
             session: None,
         };
         let handle = EngineHandle {
@@ -355,7 +378,13 @@ impl Engine {
                 () = sleep => Wake::Timer,
             };
             match wake {
-                Wake::Cmd(None) => return,
+                Wake::Cmd(None) => {
+                    // Every handle is gone: end the ride cleanly (record closed, gate
+                    // cleared) instead of leaving a live ride record and an active gate.
+                    self.catch_up();
+                    self.end();
+                    return;
+                }
                 Wake::Cmd(Some((cmd, reply))) => {
                     // Ticks already due belong before the command's effect.
                     self.catch_up();
@@ -392,7 +421,7 @@ impl Engine {
         }
         self.publish();
     }
-    fn drain(&mut self) {
+    pub(crate) fn drain(&mut self) {
         use mpsc::error::TryRecvError::{Disconnected, Empty};
         while let Some(rx) = self.trainer_events.as_mut() {
             match rx.try_recv() {
@@ -415,15 +444,18 @@ impl Engine {
             }
         }
     }
-    /// Device events are timestamped at arrival; link events carry no time and take
-    /// effect before the next unprocessed tick.
-    fn on_trainer_event(&mut self, event: TrainerEvent) {
+    /// Samples keep their driver timestamp; a link event has none and is stamped with
+    /// the engine clock on receipt (see [`LinkLog`]).
+    pub(crate) fn on_trainer_event(&mut self, event: TrainerEvent) {
+        let now = self.clock.now();
+        let active = self.active();
         match event {
             TrainerEvent::Sample(sample) => {
-                if let Some(s) = self.session.as_mut().filter(|s| s.phase == Phase::Active) {
+                let tag = self.trainer_log.received;
+                if let Some(s) = self.session.as_mut().filter(|_| active) {
                     match s.window.tick_of(sample.at) {
                         Some(k) if k >= s.next_tick => {
-                            s.pending_trainer.insert(k, sample);
+                            s.pending_trainer.insert(k, (tag, sample));
                         }
                         Some(_) => s.late += 1,
                         None => {}
@@ -431,16 +463,12 @@ impl Engine {
                 }
             }
             TrainerEvent::Link(state) => {
-                self.trainer_link = Some(state);
-                if let Some(s) = self.session.as_mut().filter(|s| s.phase == Phase::Active) {
-                    // The driver never restores a mode (ADR-0002 §6): after any
-                    // reconnect the engine re-issues control from scratch.
-                    s.reset_control();
-                    if state == LinkState::Lost {
-                        s.pauses.lost = true;
-                        s.after_loss = true;
-                        s.trainer.clear();
-                    }
+                self.trainer_log.received += 1;
+                if active {
+                    self.trainer_log.queue.push_back((now, state));
+                } else {
+                    self.trainer_log.applied = self.trainer_log.received;
+                    self.trainer_link = Some(state);
                 }
             }
             // Delivery, echoes and faults feed the following machine (#218).
@@ -448,12 +476,15 @@ impl Engine {
         }
     }
     fn on_hr_event(&mut self, event: HrEvent) {
+        let now = self.clock.now();
+        let active = self.active();
         match event {
             HrEvent::Sample(sample) => {
-                if let Some(s) = self.session.as_mut().filter(|s| s.phase == Phase::Active) {
+                let tag = self.hr_log.received;
+                if let Some(s) = self.session.as_mut().filter(|_| active) {
                     match s.window.tick_of(sample.at) {
                         Some(k) if k >= s.next_tick => {
-                            s.pending_hr.insert(k, sample);
+                            s.pending_hr.insert(k, (tag, sample));
                         }
                         Some(_) => s.late += 1,
                         None => {}
@@ -461,12 +492,51 @@ impl Engine {
                 }
             }
             HrEvent::Link(state) => {
-                self.hr_link = Some(state);
-                if let (LinkState::Lost, Some(s)) = (state, self.session.as_mut()) {
-                    s.hr.clear();
+                self.hr_log.received += 1;
+                if active {
+                    self.hr_log.queue.push_back((now, state));
+                } else {
+                    self.hr_log.applied = self.hr_log.received;
+                    self.hr_link = Some(state);
                 }
             }
             _ => {}
+        }
+    }
+    fn active(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|s| s.phase == Phase::Active)
+    }
+    /// Apply the link transitions stamped at or before tick `k`'s window.
+    fn apply_links(&mut self, s: &mut Session, k: u64) {
+        let window = s.window;
+        let due = |at: MonoTime| window.tick_of(at).is_none_or(|t| t <= k);
+        while let Some(&(at, state)) = self.trainer_log.queue.front() {
+            if !due(at) {
+                break;
+            }
+            self.trainer_log.queue.pop_front();
+            self.trainer_log.applied += 1;
+            self.trainer_link = Some(state);
+            // The driver never restores a mode (ADR-0002 §6): after any transition the
+            // engine re-issues control from scratch, and nothing sampled on the old
+            // link may be held across it.
+            s.reset_control();
+            s.trainer.clear();
+            if state == LinkState::Lost {
+                s.pauses.lost = true;
+                s.after_loss = true;
+            }
+        }
+        while let Some(&(at, state)) = self.hr_log.queue.front() {
+            if !due(at) {
+                break;
+            }
+            self.hr_log.queue.pop_front();
+            self.hr_log.applied += 1;
+            self.hr_link = Some(state);
+            s.hr.clear();
         }
     }
 
@@ -476,29 +546,46 @@ impl Engine {
         };
         let k = s.next_tick;
         s.next_tick += 1;
-        if let Some(t) = s.pending_trainer.remove(&k) {
-            s.missed = 0;
-            s.trainer.push(
-                k,
-                TrainerValues {
-                    power: t.power_w,
-                    cadence: t.cadence_rpm,
-                    speed: t.speed_mps,
-                },
-            );
-            if let Some(p) = t.power_w {
-                s.recent_power.push_back((k, f64::from(p)));
-                while s.recent_power.front().is_some_and(|(at, _)| k - at >= 12) {
-                    s.recent_power.pop_front();
+        self.apply_links(&mut s, k);
+        // The 3 s power window moves with tick time, not with arrivals.
+        while s.recent_power.front().is_some_and(|(at, _)| k - at >= 12) {
+            s.recent_power.pop_front();
+        }
+        match s.pending_trainer.remove(&k) {
+            Some((tag, t)) if tag >= self.trainer_log.applied => {
+                s.missed = 0;
+                s.trainer.push(
+                    k,
+                    TrainerValues {
+                        power: t.power_w,
+                        cadence: t.cadence_rpm,
+                        speed: t.speed_mps,
+                    },
+                );
+                if let Some(p) = t.power_w {
+                    s.recent_power.push_back((k, f64::from(p)));
                 }
             }
-        } else {
-            s.missed = s.missed.saturating_add(1);
+            // none, or sampled before a link transition that has since been applied
+            _ => s.missed = s.missed.saturating_add(1),
         }
-        if let Some(bpm) = s.pending_hr.remove(&k).and_then(|h| h.bpm) {
+        if let Some((_, h)) = s
+            .pending_hr
+            .remove(&k)
+            .filter(|(tag, _)| *tag >= self.hr_log.applied)
+            && let Some(bpm) = h.bpm
+        {
             s.hr.push(k, f64::from(bpm));
         }
         let (trainer, hr) = (s.trainer.get(k), s.hr.get(k));
+        // Samples are flowing while a trainer value is present. The soft start runs only
+        // then and restarts, from the current 3 s power, whenever they return.
+        if trainer.is_none() {
+            s.flow_start = None;
+        } else if s.flow_start.is_none() {
+            s.flow_start = Some(k);
+            s.engage_power = s.power_3s();
+        }
         // The tick is workout time iff nothing paused the ride when it began; a loss
         // detected on this tick takes effect on the next (no rollback, ADR-0001 §5).
         let riding = s.pauses.reason().is_none();
@@ -569,16 +656,17 @@ impl Engine {
         let Some(control) = self.trainer_control.as_ref() else {
             return;
         };
-        let engaged = *s.engaged_at.get_or_insert(k);
-        if engaged == k && s.last_sent.is_none() {
-            s.engage_power = s.power_3s();
+        // A ramp that is already running holds its last step while samples are
+        // missing; it restarts from the current power when they return.
+        if s.after_loss && s.flow_start.is_none() && s.last_sent.is_some() {
+            return;
         }
         let ctx = PolicyContext {
             block: s.blocks.get(s.block_idx),
             block_elapsed_ticks: s.block_elapsed,
-            engaged_ticks: k - engaged,
+            engaged_ticks: s.flow_start.map_or(0, |f| k - f),
             after_loss: s.after_loss,
-            engage_power_w: s.engage_power,
+            engage_power_w: s.flow_start.and(s.engage_power),
             max_target_w: self.max_target_w,
         };
         if let Some(mode) = self.policy.desired(&ctx)
@@ -587,11 +675,36 @@ impl Engine {
         {
             s.last_sent = Some(mode);
         }
+        if s.after_loss && s.flow_start.is_some_and(|f| k - f >= SOFT_START_TICKS) {
+            s.after_loss = false;
+        }
+    }
+    /// End whatever is loaded: finish a started ride, unload one that never started.
+    fn end(&mut self) {
+        match self.session.as_ref().map(|s| &s.phase) {
+            Some(Phase::Active) => self.finish(),
+            Some(Phase::Loaded) => {
+                self.session = None;
+                self.activity.set_active(false);
+            }
+            _ => {}
+        }
+        self.publish();
     }
     fn finish(&mut self) {
         if let Some(s) = self.session.as_mut().filter(|s| s.phase == Phase::Active) {
             // Only complete seconds are recorded; a partial last second is dropped.
             s.phase = Phase::Finished;
+            for (log, link) in [
+                (&mut self.trainer_log, &mut self.trainer_link),
+                (&mut self.hr_log, &mut self.hr_link),
+            ] {
+                if let Some(&(_, state)) = log.queue.back() {
+                    *link = Some(state);
+                }
+                log.queue.clear();
+                log.applied = log.received;
+            }
             if s.record_error.is_none()
                 && let Err(e) = s.recorder.finish()
             {
@@ -630,7 +743,7 @@ impl Engine {
                     block_idx: 0,
                     block_elapsed: 0,
                     last_sent: None,
-                    engaged_at: None,
+                    flow_start: None,
                     engage_power: None,
                     after_loss: false,
                     acc: SecondAcc::default(),
@@ -641,9 +754,17 @@ impl Engine {
             }
             EngineCmd::Start => {
                 let now = self.clock.now();
+                let ready = self.trainer_link == Some(LinkState::Ready);
+                let has_trainer = self.trainer_control.is_some();
                 let s = self.session.as_mut().ok_or(CommandError::NotLoaded)?;
                 if s.phase != Phase::Loaded {
                     return Err(CommandError::WrongState);
+                }
+                if !has_trainer {
+                    return Err(CommandError::NoTrainer);
+                }
+                if !ready {
+                    return Err(CommandError::TrainerNotReady);
                 }
                 s.recorder.start(&METRICS)?;
                 s.window = TickWindow::new(now);

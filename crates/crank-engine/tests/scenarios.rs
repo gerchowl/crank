@@ -229,8 +229,10 @@ async fn full_45_minute_workout() {
             assert!(row.power.is_some() && row.cadence.is_some() && row.speed.is_some());
         }
     }
-    // Controls: one mode per block on its boundary tick (ADR-0002 §7.2). The blip
-    // re-issues the mode with a soft start from the 3 s power (~203.5 W), and every
+    // Controls: one mode per block on its boundary tick (ADR-0002 §7.2). The blip is
+    // detected at 915.6 s and the mode re-issued then (the fallback: no power in the
+    // last 3 s, target as is, #231); the soft start runs once samples flow again, from
+    // the then-current 3 s power (205 W) to the target, one step per second. Every
     // later boundary lies 1.25 s later in session time.
     assert_eq!(
         r.modes(),
@@ -239,11 +241,13 @@ async fn full_45_minute_workout() {
             (300_100, 200),
             (600_100, 100),
             (780_100, 200),
-            (915_600, 204),
-            (916_600, 203),
-            (917_600, 202),
-            (918_600, 201),
-            (920_600, 200),
+            (915_600, 200),
+            (916_850, 205),
+            (917_850, 204),
+            (918_850, 203),
+            (919_850, 202),
+            (920_850, 201),
+            (921_850, 200),
             (1_081_350, 100),
             (1_261_350, 200),
             (1_561_350, 100),
@@ -367,7 +371,7 @@ async fn reconnect_reissues_the_mode_with_a_soft_start_and_resumes_on_cadence() 
     assert_eq!(
         modes[1..],
         [
-            (112_600, 188), // from the 3 s power before the loss (pedalling at ~188 W)
+            (112_600, 188), // from the 3 s power of the first sample after Ready
             (113_600, 190),
             (114_600, 193),
             (115_600, 195),
@@ -596,4 +600,17 @@ async fn the_record_lands_in_the_store_with_gaps_as_missing_values() {
     assert_eq!(workout[99], Some(99.75));
     assert_eq!(workout[112], Some(100.25));
     assert!(power[98].is_some() && power[112].is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_every_handle_mid_ride_closes_the_record_and_clears_the_gate() {
+    let r = launch(vec![block(600.0, 200.0, Phase::Work)], vec![]).await;
+    sleep(secs(10)).await;
+    assert!(!r.rec.lock().expect("test mutex").finished);
+    let (rec, gate) = (r.rec.clone(), r.gate.clone());
+    drop(r.handle);
+    sleep(ms(500)).await;
+    assert!(rec.lock().expect("test mutex").finished);
+    assert_eq!(*gate.lock().expect("test mutex"), vec![true, false]);
+    assert_eq!(rec.lock().expect("test mutex").rows.len(), 10);
 }
