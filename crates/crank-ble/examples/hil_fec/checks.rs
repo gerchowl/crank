@@ -2,8 +2,9 @@
 use crate::{
     cli::{Args, Check, write_summary},
     frames::{
-        Checksum, build, command_status, distribution, hex, page_of, page_rates, parse_capture,
-        redact_capture, redact_frame, redact_name, request_latencies, with_page_byte,
+        Checksum, analysis, build, command_status, distribution, hex, page_of, page_rates,
+        parse_capture, redact_capture, redact_frame, redact_name, request_latencies,
+        with_page_byte,
     },
     session::{Exchange, Result, Session, adapter, find_trainer, scan},
 };
@@ -36,6 +37,7 @@ const BROADCAST: u8 = 0x4e;
 pub async fn run(args: &Args) -> Result<Outcome> {
     match args.check {
         Check::Redact => return redact(args),
+        Check::Analyse => return analyse(args),
         Check::Scan => return scan_check(args).await,
         Check::Known => return known(args).await,
         _ => {}
@@ -58,7 +60,9 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             Check::Check3 => check3(&s).await,
             Check::Check4 => check4(&s).await,
             Check::Spacing => spacing(&s).await,
-            Check::Scan | Check::Known | Check::Latency | Check::Redact => unreachable!(),
+            Check::Scan | Check::Known | Check::Latency | Check::Redact | Check::Analyse => {
+                unreachable!()
+            }
         };
         let ended = s.pump_ended();
         s.close().await;
@@ -84,6 +88,25 @@ fn redact(args: &Args) -> Result<Outcome> {
     let dest = args.out.join(name);
     let header = "# Real Tacx NEO capture (HIL #44); page-81 serial redacted to FF FF FF FF.\n";
     std::fs::write(&dest, format!("{header}{}", redact_capture(&text)))?;
+    Ok(Outcome::Done(dest))
+}
+
+/// Offline: reply accounting and stale-echo summary of a committed capture.
+fn analyse(args: &Args) -> Result<Outcome> {
+    let src = args
+        .target
+        .as_deref()
+        .ok_or("analyse needs --target <.fecap>")?;
+    let text = std::fs::read_to_string(src)?;
+    let stem = std::path::Path::new(src)
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .ok_or("bad --target")?;
+    std::fs::create_dir_all(&args.out)?;
+    let dest = args.out.join(format!("{stem}.analysis.json"));
+    let mut body = serde_json::to_string_pretty(&analysis(&parse_capture(&text)))?;
+    body.push('\n');
+    std::fs::write(&dest, body)?;
     Ok(Outcome::Done(dest))
 }
 
@@ -345,49 +368,32 @@ async fn control_then_status(s: &Session, label: &str, page: &ControlPage) -> Va
 
 /// Reply loss against request spacing (no control) and against control→request delay.
 async fn spacing(s: &Session) -> Value {
-    let mut requests = Vec::new();
     for gap_ms in [250_u64, 500, 1000, 2000] {
-        let mark = s.mark();
         for _ in 0..20 {
             let _ = s.send(request(71, 1, ACK, XOR), true).await;
             sleep(Duration::from_millis(gap_ms)).await;
         }
         sleep(Duration::from_millis(1500)).await;
-        let n = s
-            .since(mark)
-            .iter()
-            .filter(|r| page_of(&r.bytes) == Some(71))
-            .count();
-        requests.push(json!({"gap_ms": gap_ms, "requests": 20, "page71_replies": n}));
     }
-    let mut after_control = Vec::new();
     for delay_ms in [100_u64, 250, 500, 1000] {
-        let mut answered = 0;
         for i in 0..10 {
             let w = if i % 2 == 0 { 100.0 } else { 110.0 };
             let control = build(&ControlPage::TargetPower { watts: w }, ACK, XOR).expect("encodes");
             let _ = s.send(control, true).await;
             sleep(Duration::from_millis(delay_ms)).await;
-            let x = s
-                .exchange(
-                    request(71, 1, ACK, XOR),
-                    true,
-                    71,
-                    Duration::from_millis(1500),
-                )
-                .await;
-            answered += usize::from(x.reply.is_some());
+            let _ = s.send(request(71, 1, ACK, XOR), true).await;
             sleep(Duration::from_millis(1500)).await;
         }
-        after_control.push(json!({"control_to_request_ms": delay_ms, "trials": 10, "answered_within_1500ms": answered}));
     }
+    sleep(Duration::from_millis(1500)).await;
     park(s).await;
+    // Counted from the capture by sequence number (frames::reply_accounting), not by
+    // number of page-71 frames: the NEO repeats some replies as 0x4E copies.
     json!({
         "check": "3-spacing",
         "what_was_sent": "20 page-70 requests for page 71 at 250/500/1000/2000 ms; page 49 then request(71) after 100/250/500/1000 ms x10",
         "identity": identity(s),
-        "bare_request_spacing": requests,
-        "control_to_request_delay": after_control,
+        "accounting": analysis(&read_capture(s)),
     })
 }
 
@@ -687,7 +693,8 @@ async fn latency(
             },
         ));
     }
-    // SIM: alternate grade 1 % / 2 % so each change moves both components' desired state.
+    // SIM: alternate grade 1 % / 2 %. Only the track component changes and is calibrated;
+    // wind stays at its default (its calibration is a Part B item, docs/hil/2026-10-14-fec.md).
     let mut sim_changes = Vec::new();
     let sim_start = run.observed.len();
     for i in 0..30_u8 {
@@ -794,6 +801,7 @@ fn latency_summary(c: &Calibration<'_>) -> Value {
         "sim_echo_counts": { "wind": sim_obs.iter().filter(|(_, c)| matches!(c, ObservedControl::Wind{..})).count(),
                               "track": sim_obs.iter().filter(|(_, c)| matches!(c, ObservedControl::Track{..})).count() },
         "faults": faults,
+        "accounting": analysis(records),
         "scan_secs": scan_secs,
     })
 }

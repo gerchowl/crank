@@ -253,6 +253,251 @@ pub fn distribution(sample: &[u64]) -> Value {
     })
 }
 
+/// What happened to one page-70 request in a capture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestOutcome {
+    /// Write time, µs from capture start.
+    pub at_us: u64,
+    /// Requested page.
+    pub page: u8,
+    /// A distinct page-71 reply carries this request's sequence number.
+    pub answered: bool,
+    /// Arrival minus write time of that reply.
+    pub latency_us: Option<u64>,
+    /// Gap to the previous counted write (control page or request), µs.
+    pub prev_gap_us: Option<u64>,
+    /// The previous counted write was a control page (48–51) rather than a request.
+    pub prev_was_control: bool,
+}
+
+/// Page-71 reply accounting for one capture (see [`reply_accounting`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReplyAccounting {
+    /// Every page-70 request, in write order.
+    pub outcomes: Vec<RequestOutcome>,
+    /// Page-71 frames received.
+    pub frames: usize,
+    /// Frames that answered a request (one per answered request).
+    pub distinct: usize,
+    /// Frames that repeat an earlier reply (same sequence, no new request between, or
+    /// the same bytes again later).
+    pub copies: usize,
+    /// Copies sent as message type `0x4E`.
+    pub copies_4e: usize,
+    /// Copies arriving within 1 ms of the reply they repeat.
+    pub copies_within_1ms: usize,
+}
+
+/// Replies older than this cannot answer a request (longest observed: 1.1 s).
+const ANSWER_WINDOW_US: u64 = 1_500_000;
+
+/// Attribute page-71 replies to page-70 requests by sequence number.
+///
+/// The NEO's sequence byte counts the control pages (48–51) and page-70 requests it
+/// receives (mod 256, not page 55), so a reply with sequence `s` answers the counted
+/// write numbered `s - base`. `base` is re-derived from the most recent unanswered
+/// request whenever the arithmetic does not land on a request (the counter holds 0xFF
+/// for one or two writes at its wrap). Repeats of an answered reply (the `0x4E` copies)
+/// are recognised by sequence and counted separately, so duplicates cannot hide a loss.
+pub fn reply_accounting(records: &[Record]) -> ReplyAccounting {
+    let mut sorted: Vec<&Record> = records.iter().collect();
+    sorted.sort_by_key(|r| r.at_us); // stable: ties keep file order
+    let mut out = ReplyAccounting::default();
+    let mut counted = 0_u64;
+    let mut prev: Option<(u64, bool)> = None;
+    let mut requests: BTreeMap<u64, usize> = BTreeMap::new(); // counted index -> outcome index
+    let mut answered_at: BTreeMap<u64, u64> = BTreeMap::new(); // counted index -> arrival
+    let mut answered_when: BTreeMap<u64, u64> = BTreeMap::new(); // counted index -> counted when answered
+    let mut base: Option<u64> = None;
+    let mut answers: Vec<(u64, Vec<u8>)> = Vec::new(); // arrival, bytes of distinct replies
+    for r in sorted {
+        let Some(page) = page_of(&r.bytes) else {
+            continue;
+        };
+        if !r.rx && matches!(page, 48..=51 | 70) {
+            counted += 1;
+            if page == 70 {
+                requests.insert(counted, out.outcomes.len());
+                out.outcomes.push(RequestOutcome {
+                    at_us: r.at_us,
+                    page: r.bytes[10],
+                    answered: false,
+                    latency_us: None,
+                    prev_gap_us: prev.map(|(t, _)| r.at_us.saturating_sub(t)),
+                    prev_was_control: prev.is_some_and(|(_, control)| control),
+                });
+            }
+            prev = Some((r.at_us, page != 70));
+        } else if r.rx && page == 71 {
+            out.frames += 1;
+            let seq = u64::from(r.bytes[6]);
+            let live = |j: u64| {
+                requests.get(&j).is_some_and(|o| {
+                    !answered_at.contains_key(&j)
+                        && r.at_us >= out.outcomes[*o].at_us
+                        && r.at_us - out.outcomes[*o].at_us <= ANSWER_WINDOW_US
+                })
+            };
+            let mut hit = None;
+            if let Some(b) = base {
+                let c = (seq + 256 - b % 256) % 256;
+                // Candidate indices congruent to `c` (mod 256) within the last 256 writes.
+                let j = counted - (counted + 256 - c % 256) % 256;
+                if j > 0 && answered_at.contains_key(&j) && answered_when.get(&j) == Some(&counted)
+                {
+                    hit = Some(None); // repeat of a reply, no write since
+                } else if j > 0 && live(j) {
+                    hit = Some(Some(j));
+                }
+            }
+            let target = match hit {
+                Some(t) => t,
+                None => requests
+                    .keys()
+                    .rev()
+                    .copied()
+                    .find(|j| live(*j))
+                    .inspect(|j| {
+                        base = Some((seq + 256 - j % 256) % 256);
+                    }),
+            };
+            if let Some(j) = target {
+                answered_at.insert(j, r.at_us);
+                answered_when.insert(j, counted);
+                answers.push((r.at_us, r.bytes.clone()));
+                out.distinct += 1;
+                if let Some(o) = requests.get(&j) {
+                    let o = &mut out.outcomes[*o];
+                    o.answered = true;
+                    o.latency_us = Some(r.at_us - o.at_us);
+                }
+            } else {
+                out.copies += 1;
+                out.copies_4e += usize::from(r.bytes[2] == 0x4e);
+                let same = answers
+                    .iter()
+                    .rev()
+                    .find(|(_, b)| b[5..12] == r.bytes[5..12])
+                    .map(|(t, _)| r.at_us.saturating_sub(*t));
+                out.copies_within_1ms += usize::from(same.is_some_and(|d| d <= 1000));
+            }
+        }
+    }
+    out
+}
+
+/// Requests for page `page` grouped by what preceded them: (preceded by control?, nominal
+/// gap in ms) → (requests, answered). Gaps are bucketed to the nearest of the harness's
+/// nominal spacings when within 40 %, else 0.
+pub fn loss_by_gap(outcomes: &[RequestOutcome], page: u8) -> Vec<(bool, u64, usize, usize)> {
+    const NOMINAL: [u64; 6] = [100, 250, 500, 1000, 1500, 2000];
+    let mut groups: BTreeMap<(bool, u64), (usize, usize)> = BTreeMap::new();
+    for o in outcomes.iter().filter(|o| o.page == page) {
+        let Some(gap) = o.prev_gap_us.map(|g| g / 1000) else {
+            continue;
+        };
+        let near = NOMINAL
+            .iter()
+            .copied()
+            .min_by_key(|n| n.abs_diff(gap))
+            .filter(|n| n.abs_diff(gap) * 10 <= n * 4 + 150)
+            .unwrap_or(0);
+        let e = groups.entry((o.prev_was_control, near)).or_default();
+        e.0 += 1;
+        e.1 += usize::from(o.answered);
+    }
+    groups
+        .into_iter()
+        .map(|((c, g), (n, a))| (c, g, n, a))
+        .collect()
+}
+
+/// One page-71 echo of a control value that had already been superseded by a write.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaleEcho {
+    /// Control page the echo is about.
+    pub page: u8,
+    /// Arrival, µs from capture start.
+    pub at_us: u64,
+    /// Arrival minus the first write of the value that superseded the echoed one.
+    pub age_us: u64,
+}
+
+/// Echoes of an old value that arrive after a new value was written (ADR-0002 §4.4.1
+/// rule R2 / constant `L`). Per control page it keeps the runs of distinct written
+/// values; an echo that matches an earlier run and not the current one is stale, and
+/// its age is measured from the first write of the run that followed the echoed one.
+/// The desired change precedes that write by the writer delay (≤ 0.75 s, §4.4), which
+/// callers add to the age. Echoes of values never written (power-on state) are skipped.
+pub fn stale_echoes(records: &[Record]) -> (Vec<StaleEcho>, usize) {
+    let mut sorted: Vec<&Record> = records.iter().collect();
+    sorted.sort_by_key(|r| r.at_us);
+    let mut runs: BTreeMap<u8, Vec<(u64, [u8; 4])>> = BTreeMap::new();
+    let (mut stale, mut checked) = (Vec::new(), 0);
+    for r in sorted {
+        let Some(page) = page_of(&r.bytes) else {
+            continue;
+        };
+        let data = [r.bytes[8], r.bytes[9], r.bytes[10], r.bytes[11]];
+        if !r.rx && matches!(page, 48..=51) {
+            let entry = runs.entry(page).or_default();
+            if entry.last().is_none_or(|(_, v)| *v != data) {
+                entry.push((r.at_us, data));
+            }
+        } else if r.rx && page == 71 {
+            let Some(entry) = runs.get(&r.bytes[5]) else {
+                continue;
+            };
+            let Some(last_match) = entry.iter().rposition(|(_, v)| *v == data) else {
+                continue;
+            };
+            checked += 1;
+            if let Some((started, _)) = entry.get(last_match + 1) {
+                stale.push(StaleEcho {
+                    page: r.bytes[5],
+                    at_us: r.at_us,
+                    age_us: r.at_us.saturating_sub(*started),
+                });
+            }
+        }
+    }
+    (stale, checked)
+}
+
+/// Reproducible reply accounting and stale-echo summary of one capture.
+pub fn analysis(records: &[Record]) -> Value {
+    let acc = reply_accounting(records);
+    let r71: Vec<&RequestOutcome> = acc.outcomes.iter().filter(|o| o.page == 71).collect();
+    let answered = r71.iter().filter(|o| o.answered).count();
+    let latencies: Vec<u64> = r71.iter().filter_map(|o| o.latency_us).collect();
+    let (stale, checked) = stale_echoes(records);
+    let ages: Vec<u64> = stale.iter().map(|s| s.age_us).collect();
+    json!({
+        "method": "replies matched to requests by the page-71 sequence byte (counts control pages 48-51 and page-70 requests, mod 256); repeats of an answered reply are copies; a request is lost when no reply carries its sequence",
+        "requests_page71": r71.len(),
+        "answered": answered,
+        "lost": r71.len() - answered,
+        "answered_over_500ms": latencies.iter().filter(|l| **l > 500_000).count(),
+        "reply_latency_us": distribution(&latencies),
+        "page71_frames": acc.frames,
+        "distinct_replies": acc.distinct,
+        "copies": acc.copies,
+        "copies_msg_4e": acc.copies_4e,
+        "copies_within_1ms": acc.copies_within_1ms,
+        "loss_by_preceding_gap": loss_by_gap(&acc.outcomes, 71).iter().map(|(control, gap, n, a)| json!({
+            "preceded_by": if *control { "control_write" } else { "request" },
+            "gap_ms_nominal": gap, "requests": n, "answered": a,
+        })).collect::<Vec<_>>(),
+        "stale_echoes": {
+            "method": "echo of a control value after a different value of the same page was written; age from the first write of the superseding value (add the writer delay, at most 0.75 s, for age from the desired change)",
+            "echoes_checked": checked,
+            "stale": ages.len(),
+            "max_age_us": ages.iter().max(),
+            "ages_us": ages,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,7 +588,10 @@ mod tests {
             0xa4 ^ 9 ^ 0x4e ^ 5 ^ 0x19,
         ];
         assert_eq!(redact_frame(&other), other);
-        assert_eq!(redact_name("Tacx Neo 55624"), "Tacx Neo *****");
+        assert_eq!(
+            redact_name("Example Trainer 12345"),
+            "Example Trainer *****"
+        );
         assert_eq!(redact_name("HRM 3 pro"), "HRM 3 pro");
     }
 
@@ -378,5 +626,115 @@ mod tests {
         assert_eq!(percentile(&[], 99.0), None);
         let status = command_status(&recs[2].bytes).expect("page 71");
         assert_eq!(status.0, 0x31);
+    }
+
+    fn rec(at_us: u64, rx: bool, bytes: Vec<u8>) -> Record {
+        Record { at_us, rx, bytes }
+    }
+    fn req71() -> Vec<u8> {
+        build(
+            &ControlPage::Request { page: 71, times: 1 },
+            0x4f,
+            Checksum::XorInclSync,
+        )
+        .expect("encodes")
+        .to_vec()
+    }
+    fn ctl49(w: f32) -> Vec<u8> {
+        build(
+            &ControlPage::TargetPower { watts: w },
+            0x4f,
+            Checksum::XorInclSync,
+        )
+        .expect("encodes")
+        .to_vec()
+    }
+    fn reply71(msg: u8, last: u8, seq: u8, echo: [u8; 4]) -> Vec<u8> {
+        let mut f = vec![
+            0xa4, 9, msg, 5, 0x47, last, seq, 0, echo[0], echo[1], echo[2], echo[3], 0,
+        ];
+        f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
+        f
+    }
+
+    #[test]
+    fn duplicate_replies_cannot_hide_lost_requests() {
+        // Five requests 250 ms apart (sequence 10..14); request 12 and 14 are never answered,
+        // while 10 and 13 each arrive twice (0x4F then a 0x4E copy). Counting frames gives 5
+        // replies for 5 requests; counting sequences gives 3 answered, 2 lost.
+        let mut r = Vec::new();
+        for i in 0..5_u64 {
+            r.push(rec(i * 250_000, false, req71()));
+        }
+        let echo = [0xff; 4];
+        r.push(rec(40_000, true, reply71(0x4f, 0x30, 10, echo)));
+        r.push(rec(40_300, true, reply71(0x4e, 0x30, 10, echo)));
+        r.push(rec(290_000, true, reply71(0x4f, 0x30, 11, echo)));
+        r.push(rec(790_000, true, reply71(0x4f, 0x30, 13, echo)));
+        r.push(rec(790_200, true, reply71(0x4e, 0x30, 13, echo)));
+        let acc = reply_accounting(&r);
+        assert_eq!(acc.frames, 5);
+        assert_eq!(acc.distinct, 3);
+        assert_eq!(
+            (acc.copies, acc.copies_4e, acc.copies_within_1ms),
+            (2, 2, 2)
+        );
+        let answered: Vec<bool> = acc.outcomes.iter().map(|o| o.answered).collect();
+        assert_eq!(answered, [true, true, false, true, false]);
+        assert_eq!(acc.outcomes[1].prev_gap_us, Some(250_000));
+        // The first request has no predecessor, so it is not in a gap group.
+        assert_eq!(loss_by_gap(&acc.outcomes, 71), vec![(false, 250, 4, 2)]);
+        let j = analysis(&r);
+        assert_eq!(
+            (j["requests_page71"].as_u64(), j["lost"].as_u64()),
+            (Some(5), Some(2))
+        );
+    }
+
+    #[test]
+    fn sequence_wrap_and_held_counter_are_followed() {
+        // 300 requests; the counter wraps at 256 and holds 0xFF for one extra write.
+        let seqs = (250_u8..=255)
+            .chain([255])
+            .chain((0_u8..=255).cycle())
+            .take(300);
+        let mut r = Vec::new();
+        for (i, seq) in (0_u64..).zip(seqs) {
+            r.push(rec(i * 1_000_000, false, req71()));
+            r.push(rec(
+                i * 1_000_000 + 50_000,
+                true,
+                reply71(0x4f, 0x30, seq, [0xff; 4]),
+            ));
+        }
+        let acc = reply_accounting(&r);
+        assert_eq!((acc.distinct, acc.copies), (300, 0));
+        assert!(acc.outcomes.iter().all(|o| o.answered));
+    }
+
+    #[test]
+    fn stale_echo_is_an_old_value_after_the_new_write() {
+        let old = [0xff, 0xff, 0x90, 0x01];
+        let new = [0xff, 0xff, 0xb8, 0x01];
+        let mut r = vec![rec(0, false, ctl49(100.0))];
+        r.push(rec(100_000, true, reply71(0x4f, 0x31, 1, old)));
+        r.push(rec(1_000_000, false, ctl49(110.0)));
+        r.push(rec(1_022_000, true, reply71(0x4f, 0x31, 2, old))); // stale, 22 ms after the write
+        r.push(rec(2_000_000, true, reply71(0x4f, 0x31, 3, new))); // current: not stale
+        r.push(rec(
+            2_100_000,
+            true,
+            reply71(0x4f, 0x30, 4, [0xff, 0xff, 0xff, 0x00]),
+        )); // never written
+        let (stale, checked) = stale_echoes(&r);
+        assert_eq!(checked, 3);
+        assert_eq!(
+            stale,
+            vec![StaleEcho {
+                page: 0x31,
+                at_us: 1_022_000,
+                age_us: 22_000
+            }]
+        );
     }
 }

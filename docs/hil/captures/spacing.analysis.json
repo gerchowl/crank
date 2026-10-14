@@ -1,0 +1,82 @@
+{
+  "answered": 111,
+  "answered_over_500ms": 0,
+  "copies": 7,
+  "copies_msg_4e": 7,
+  "copies_within_1ms": 2,
+  "distinct_replies": 111,
+  "loss_by_preceding_gap": [
+    {
+      "answered": 17,
+      "gap_ms_nominal": 250,
+      "preceded_by": "request",
+      "requests": 19
+    },
+    {
+      "answered": 19,
+      "gap_ms_nominal": 500,
+      "preceded_by": "request",
+      "requests": 19
+    },
+    {
+      "answered": 16,
+      "gap_ms_nominal": 1000,
+      "preceded_by": "request",
+      "requests": 19
+    },
+    {
+      "answered": 22,
+      "gap_ms_nominal": 2000,
+      "preceded_by": "request",
+      "requests": 22
+    },
+    {
+      "answered": 3,
+      "gap_ms_nominal": 0,
+      "preceded_by": "control_write",
+      "requests": 4
+    },
+    {
+      "answered": 5,
+      "gap_ms_nominal": 100,
+      "preceded_by": "control_write",
+      "requests": 5
+    },
+    {
+      "answered": 11,
+      "gap_ms_nominal": 250,
+      "preceded_by": "control_write",
+      "requests": 11
+    },
+    {
+      "answered": 8,
+      "gap_ms_nominal": 500,
+      "preceded_by": "control_write",
+      "requests": 10
+    },
+    {
+      "answered": 9,
+      "gap_ms_nominal": 1000,
+      "preceded_by": "control_write",
+      "requests": 10
+    }
+  ],
+  "lost": 9,
+  "method": "replies matched to requests by the page-71 sequence byte (counts control pages 48-51 and page-70 requests, mod 256); repeats of an answered reply are copies; a request is lost when no reply carries its sequence",
+  "page71_frames": 118,
+  "reply_latency_us": {
+    "max_us": 123202,
+    "min_us": 36720,
+    "n": 111,
+    "p50_us": 49975,
+    "p99_us": 108421
+  },
+  "requests_page71": 120,
+  "stale_echoes": {
+    "ages_us": [],
+    "echoes_checked": 39,
+    "max_age_us": null,
+    "method": "echo of a control value after a different value of the same page was written; age from the first write of the superseding value (add the writer delay, at most 0.75 s, for age from the desired change)",
+    "stale": 0
+  }
+}

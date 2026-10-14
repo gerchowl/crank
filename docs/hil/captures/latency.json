@@ -1,4 +1,5 @@
 {
+  "accounting": "see latency.analysis.json (page-71 reply accounting by sequence number and stale-echo ages); request_to_reply_us above pairs each request with the first later reply and over-states latency when a reply was lost",
   "caps": "TrainerCaps { erg: true, sim: true, resistance: true, max_resistance_n: Some(200), max_target_w: 16383 }",
   "check": "3-latency",
   "end_to_end_erg_over_2s": 2,

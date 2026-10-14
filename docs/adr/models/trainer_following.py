@@ -24,8 +24,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 
 # --- constants (§4.4.1), in seconds; the model uses integer time in `unit` per second ---
-# L = 5 s: HIL #44 Part A measured an end-to-end p99 of 2.19 s (ERG) and 4.21 s (SIM) (ADR-0002 §4.4.1).
-L_S, N_FOLLOW, T_VERIFY_S, T_MISMATCH_S, T_UNKNOWN_S = 5, 3, 2, 2, 5
+L_S, N_FOLLOW, T_VERIFY_S, T_MISMATCH_S, T_UNKNOWN_S = 2, 3, 2, 2, 5
 P_S = {"erg": 1, "track": 2, "wind": 2}  # reply period per component (§4.4.1 echo schedule)
 
 
@@ -927,6 +926,19 @@ def check_table_order(adr_path):
             assert klass == row.on, ("input class", row.id, cell, row.on)
 
 
+def check_constants(adr_path):
+    """The ADR's constants table (§4.4.1) and this model's constants are the same numbers
+    (the model does not read the ADR; this check fails when either side is edited alone)."""
+    import re
+    text = open(adr_path, encoding="utf-8").read()
+    section = text[text.index("#### 4.4.1"):text.index("## 5. Decision")]
+    table = {name: int(v) for name, v in re.findall(
+        r"^\| `(T_poll|L|N_follow|T_verify|T_mismatch|T_unknown)`[^|]*\| (\d+)(?: s)? \|", section, flags=re.M)}
+    model = {"T_poll": P_S["erg"], "L": L_S, "N_follow": N_FOLLOW, "T_verify": T_VERIFY_S,
+             "T_mismatch": T_MISMATCH_S, "T_unknown": T_UNKNOWN_S}
+    assert table == model, ("ADR constants table != model constants", table, model)
+
+
 SIM_FREE_DEPTH = 6  # every input sequence of length ≤ 6 (137 k states, ~30 s)
 
 
@@ -936,6 +948,8 @@ def main(argv):
     adr = argv[1] if len(argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "0002-ble-trainer.md")
     check_table_order(adr)
     print("table order: ADR §4.4.1 rows == model evaluation order (C1–C9, C2 pre-step), ok")
+    check_constants(adr)
+    print("constants: ADR §4.4.1 table == model (T_poll, L, N_follow, T_verify, T_mismatch, T_unknown), ok")
     for name, passed in scenarios().items():
         print(f"scenario {name}: {'ok' if passed else 'FAIL'}")
         ok &= passed
