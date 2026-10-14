@@ -825,7 +825,7 @@ impl Core {
         let id = loop {
             let n = self.0.next_stream.fetch_add(1, Ordering::Relaxed);
             if n != 0 {
-                break StreamId(n.into());
+                break StreamId(n);
             }
         };
         session.streams.insert(id, (engine_id, window));
@@ -898,7 +898,7 @@ impl Core {
         seq: u32,
     ) -> Result<(), ApiError> {
         let (engine, id) = self.owned(window, stream).await?;
-        Ok(engine.stream_ack(id, seq.into()).await?)
+        Ok(engine.stream_ack(id, seq).await?)
     }
     /// Latest sample of every subscription, the status and the links.
     ///

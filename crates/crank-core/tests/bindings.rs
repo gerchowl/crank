@@ -35,11 +35,9 @@ fn every_command_dto_exports_to_typescript() {
     }
 }
 
-/// The wire types of the stream channel are `crank-engine`'s. They hold `u64` ids and
-/// counters, which specta-typescript forbids; the engine moves them to `u32` in a
-/// separate PR (#271), which un-ignores this test.
+/// The wire types of the stream channel are `crank-engine`'s (ids, `seq` and
+/// `late_samples` are `u32` since #271, which is what makes them exportable).
 #[test]
-#[ignore = "blocked on #271: u64 stream ids/seq are BigInt-forbidden"]
 fn stream_types_export_to_typescript() {
     let types = Types::default()
         .register::<StreamId>()
