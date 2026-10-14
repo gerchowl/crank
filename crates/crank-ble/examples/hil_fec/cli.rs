@@ -28,10 +28,12 @@ pub enum Check {
     Spacing,
     /// Redact a raw capture for committing.
     Redact,
+    /// Reply accounting and stale-echo ages of a capture (offline).
+    Analyse,
 }
 
 impl Check {
-    const ALL: [(&'static str, Self); 10] = [
+    const ALL: [(&'static str, Self); 11] = [
         ("scan", Self::Scan),
         ("known", Self::Known),
         ("idle", Self::Idle),
@@ -42,6 +44,7 @@ impl Check {
         ("check4", Self::Check4),
         ("spacing", Self::Spacing),
         ("redact", Self::Redact),
+        ("analyse", Self::Analyse),
     ];
     /// Subcommand spelling.
     pub fn name(self) -> &'static str {
@@ -68,7 +71,7 @@ pub struct Args {
 }
 
 /// Usage text.
-pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact> \
+pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse> \
 [--out DIR] [--scan-secs N] [--idle-secs N] [--target ID_OR_PATH]";
 
 fn number(flag: &str, text: &str) -> Result<u64, String> {

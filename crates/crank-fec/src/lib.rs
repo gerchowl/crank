@@ -13,9 +13,9 @@ pub use types::*;
 /// Finite values are range checked before rounding to the nearest wire unit
 /// (half units round upward). No clamping to field or trainer limits occurs.
 /// Page 70 requests acknowledged replies; its count must fit seven bits.
-/// A count of 0 is encoded as received (byte 0x80); whether the profile reads
-/// that as "until acknowledged" is how the NEO behaves: it answers about five
-/// times (HIL #44 Part A, ADR-0002 §4.2).
+/// A count of 0 is encoded as received (byte 0x80). On the NEO a count of 0
+/// was answered five times in the one HIL trial (#44 Part A, ADR-0002 §4.2),
+/// consistent with the profile's "until acknowledged"; the cap is unconfirmed.
 ///
 /// # Errors
 /// Returns the offending field for non-finite or out-of-domain values.

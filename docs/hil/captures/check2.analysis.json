@@ -1,0 +1,40 @@
+{
+  "answered": 12,
+  "answered_over_500ms": 0,
+  "copies": 1,
+  "copies_msg_4e": 1,
+  "copies_within_1ms": 1,
+  "distinct_replies": 12,
+  "loss_by_preceding_gap": [
+    {
+      "answered": 11,
+      "gap_ms_nominal": 250,
+      "preceded_by": "control_write",
+      "requests": 11
+    },
+    {
+      "answered": 1,
+      "gap_ms_nominal": 500,
+      "preceded_by": "control_write",
+      "requests": 1
+    }
+  ],
+  "lost": 0,
+  "method": "replies matched to requests by the page-71 sequence byte (counts control pages 48-51 and page-70 requests, mod 256); repeats of an answered reply are copies; a request is lost when no reply carries its sequence",
+  "page71_frames": 13,
+  "reply_latency_us": {
+    "max_us": 87996,
+    "min_us": 38505,
+    "n": 12,
+    "p50_us": 56442,
+    "p99_us": 87996
+  },
+  "requests_page71": 12,
+  "stale_echoes": {
+    "ages_us": [],
+    "echoes_checked": 13,
+    "max_age_us": null,
+    "method": "echo of a control value after a different value of the same page was written; age from the first write of the superseding value (add the writer delay, at most 0.75 s, for age from the desired change)",
+    "stale": 0
+  }
+}

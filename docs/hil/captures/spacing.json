@@ -1,49 +1,6 @@
 {
-  "bare_request_spacing": [
-    {
-      "gap_ms": 250,
-      "page71_replies": 21,
-      "requests": 20
-    },
-    {
-      "gap_ms": 500,
-      "page71_replies": 20,
-      "requests": 20
-    },
-    {
-      "gap_ms": 1000,
-      "page71_replies": 17,
-      "requests": 20
-    },
-    {
-      "gap_ms": 2000,
-      "page71_replies": 21,
-      "requests": 20
-    }
-  ],
+  "accounting": "see spacing.analysis.json (replies counted by sequence number; the original summary counted page-71 frames and hid lost requests, recomputed by hil_fec analyse)",
   "check": "3-spacing",
-  "control_to_request_delay": [
-    {
-      "answered_within_1500ms": 9,
-      "control_to_request_ms": 100,
-      "trials": 10
-    },
-    {
-      "answered_within_1500ms": 10,
-      "control_to_request_ms": 250,
-      "trials": 10
-    },
-    {
-      "answered_within_1500ms": 8,
-      "control_to_request_ms": 500,
-      "trials": 10
-    },
-    {
-      "answered_within_1500ms": 9,
-      "control_to_request_ms": 1000,
-      "trials": 10
-    }
-  ],
   "identity": {
     "dis_serial_present": true,
     "firmware": "0.7.4",
