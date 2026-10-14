@@ -4,7 +4,7 @@ use crate::error::{ApiError, ErrorCode};
 use crank_domain::workout::{
     CompiledWorkout, FlatBlock, Phase, Severity, ValidationIssue, ValidationKind, Workout,
 };
-use crank_engine::LinkStatus;
+use crank_engine::{LinkStatus, StreamStatus};
 use serde::{Deserialize, Serialize};
 
 /// What the running core is: answered by `core_ready`.
@@ -232,6 +232,17 @@ pub struct RideLoaded {
     pub workout_id: Option<String>,
     /// A strap is connected; without one the ride runs without heart rate.
     pub hr_linked: bool,
+}
+
+/// The ride's state (`ride_status`): the engine's status, and whether a ride is being
+/// loaded (devices connecting) right now.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RideStatusView {
+    /// `ride_load` is connecting devices; the other commands answer as before.
+    pub loading: bool,
+    /// The loaded ride's status, the last finished ride's, or idle.
+    pub status: StreamStatus,
 }
 
 /// How a stored ride ended.

@@ -13,7 +13,7 @@
 use crate::backend::{Backend, DeviceMode};
 use crate::dto::{
     CoreInfo, DeviceLinkInfo, DeviceRole, PairedDevice, RideLoaded, RideOutcome, RideRecord,
-    RideSummary, ScannedDevice, WorkoutDetail, WorkoutSummary,
+    RideStatusView, RideSummary, ScannedDevice, WorkoutDetail, WorkoutSummary,
 };
 use crate::error::{ApiError, ErrorCode};
 use crate::library::Library;
@@ -24,14 +24,18 @@ use crank_devices::{
 };
 use crank_domain::workout::{CompiledWorkout, Severity, Workout};
 use crank_engine::{
-    Engine, EngineCmd, EngineHandle, MetricId, MonotonicClock, RideSetup, RideState, StreamFrame,
-    StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts,
+    CommandError, Engine, EngineCmd, EngineHandle, MetricId, MonotonicClock, RideSetup, RideState,
+    StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts,
 };
 use crank_store::{Device, RideListing, Store};
 use futures_util::StreamExt;
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -83,6 +87,9 @@ pub struct SinkClosed;
 
 struct Session {
     handle: EngineHandle,
+    /// Core stream id → (the engine's id of it, owning window). Core ids are unique for
+    /// the process lifetime; the engine's restart with every ride.
+    streams: BTreeMap<StreamId, (StreamId, Option<String>)>,
     /// The engine task: ending it drops the device links.
     task: JoinHandle<()>,
     ride_id: String,
@@ -90,6 +97,8 @@ struct Session {
 #[derive(Default)]
 struct State {
     session: Option<Session>,
+    /// A ride is being loaded (devices connecting) outside the state lock.
+    loading: bool,
     /// Id and final status of the last ride that finished, until the next load.
     last: Option<(String, StreamStatus)>,
 }
@@ -106,6 +115,8 @@ struct Inner {
     state: Mutex<State>,
     /// Woken whenever a session has been released.
     released: Notify,
+    /// The next core stream id (never 0).
+    next_stream: AtomicU32,
 }
 
 /// The application API. Cheap to clone; one per process (it owns `ride.lock`).
@@ -193,6 +204,7 @@ impl Core {
             },
             state: Mutex::default(),
             released: Notify::new(),
+            next_stream: AtomicU32::new(1),
         })))
     }
 
@@ -215,7 +227,8 @@ impl Core {
     /// Pairing, forgetting and scanning need the one BLE central and the pairing rows a
     /// ride uses: not while a ride is loaded, in progress or still ending.
     async fn require_no_ride(&self) -> Result<(), ApiError> {
-        if self.0.state.lock().await.session.is_some() {
+        let st = self.0.state.lock().await;
+        if st.session.is_some() || st.loading {
             return Err(ApiError::new(
                 ErrorCode::Conflict,
                 "a ride is loaded: end it first",
@@ -556,6 +569,10 @@ impl Core {
     /// `Conflict` if a ride is in progress; `NotFound` for an unknown workout;
     /// `DeviceUnavailable` without a paired or reachable trainer.
     pub async fn ride_load(&self, workout_id: Option<String>) -> Result<RideLoaded, ApiError> {
+        // Nothing is touched until the request is known to be good: a failed load leaves
+        // the previous status as it was.
+        let (workout, compiled) = self.resolve_workout(workout_id.as_deref())?;
+        self.ensure_start_allowed()?;
         // A loaded-but-unstarted or finished ride is replaced, but only once it has
         // released its devices.
         loop {
@@ -581,16 +598,50 @@ impl Core {
                 None => break,
             }
         }
-        let mut st = self.0.state.lock().await;
-        if st.session.is_some() {
-            return Err(ApiError::new(
-                ErrorCode::Conflict,
-                "another ride was loaded first",
-            ));
+        {
+            let mut st = self.0.state.lock().await;
+            if st.session.is_some() || st.loading {
+                return Err(ApiError::new(
+                    ErrorCode::Conflict,
+                    "another ride is loading or loaded",
+                ));
+            }
+            st.loading = true;
         }
+        // Connecting takes seconds: it runs outside the state lock, and `ride_status`
+        // reports `loading` meanwhile.
+        let built = self.build_session(workout, compiled).await;
+        let mut st = self.0.state.lock().await;
+        st.loading = false;
+        let (session, hr_linked) = built?;
         st.last = None;
-        let (workout, compiled) = self.resolve_workout(workout_id.as_deref())?;
-        self.ensure_start_allowed()?;
+        let ride_id = session.ride_id.clone();
+        st.session = Some(session);
+        drop(st);
+        // `Load` raised the ride-active signal; the ride's devices are released when it
+        // falls again. The watcher holds the core weakly: dropping the last `Core` handle
+        // drops the engine handle, which ends and finishes the ride (ADR-0001 §5).
+        let mut active = self.0.active.subscribe();
+        let (weak, id) = (Arc::downgrade(&self.0), ride_id.clone());
+        tokio::spawn(async move {
+            let _ = active.wait_for(|on| !*on).await;
+            if let Some(inner) = weak.upgrade() {
+                Core(inner).reap(&id).await;
+            }
+        });
+        Ok(RideLoaded {
+            ride_id,
+            workout_id,
+            hr_linked,
+        })
+    }
+
+    /// Connect the devices, build the engine and load the workout into it.
+    async fn build_session(
+        &self,
+        workout: Workout,
+        compiled: CompiledWorkout,
+    ) -> Result<(Session, bool), ApiError> {
         let (trainer, hr, [trainer_device_id, hr_device_id]) = self.connect_links().await?;
         let hr_linked = hr.is_some();
         let (gate, active) = (self.0.gate.clone(), self.0.active.clone());
@@ -629,24 +680,15 @@ impl Core {
                 cap_w: None,
             }))
             .await?;
-        // `Load` raised the ride-active signal; the ride's devices are released when it
-        // falls again.
-        let mut active = self.0.active.subscribe();
-        let (core, id) = (self.clone(), ride_id.clone());
-        tokio::spawn(async move {
-            let _ = active.wait_for(|on| !*on).await;
-            core.reap(&id).await;
-        });
-        st.session = Some(Session {
-            handle,
-            task,
-            ride_id: ride_id.clone(),
-        });
-        Ok(RideLoaded {
-            ride_id,
-            workout_id,
+        Ok((
+            Session {
+                handle,
+                streams: BTreeMap::new(),
+                task,
+                ride_id,
+            },
             hr_linked,
-        })
+        ))
     }
 
     async fn engine(&self) -> Result<EngineHandle, ApiError> {
@@ -705,7 +747,14 @@ impl Core {
                 Some(s) => {
                     let state = s.handle.status().state;
                     if state != RideState::Finished {
-                        s.handle.send(EngineCmd::Stop).await?;
+                        match s.handle.send(EngineCmd::Stop).await {
+                            Ok(()) => {}
+                            // The ride finished on its own between the status read and
+                            // the command: ending it again is not an error.
+                            Err(CommandError::WrongState)
+                                if s.handle.status().state == RideState::Finished => {}
+                            Err(e) => return Err(e.into()),
+                        }
                     }
                     (s.ride_id.clone(), state != RideState::Idle)
                 }
@@ -725,19 +774,25 @@ impl Core {
     ///
     /// # Errors
     /// Never fails today.
-    pub async fn ride_status(&self) -> Result<StreamStatus, ApiError> {
+    pub async fn ride_status(&self) -> Result<RideStatusView, ApiError> {
         let st = self.0.state.lock().await;
-        Ok(match (&st.session, &st.last) {
+        let status = match (&st.session, &st.last) {
             (Some(s), _) => StreamStatus::from(&s.handle.status()),
             (None, Some((_, last))) => last.clone(),
             (None, None) => self.0.idle.clone(),
+        };
+        Ok(RideStatusView {
+            loading: st.loading,
+            status,
         })
     }
 
     // ---- streams ----------------------------------------------------------------
 
     /// Open the window's multiplexed stream on the loaded ride (dropping that window's
-    /// previous streams). Frames go to `sink` until the ride ends or `sink` fails.
+    /// previous streams). Frames go to `sink` until the ride ends or `sink` fails. The
+    /// returned id is unique for the process lifetime and belongs to `window`: every
+    /// other stream command names the same window and is refused for any other.
     ///
     /// # Errors
     /// `Conflict` without a loaded ride, or with 16 streams open.
@@ -746,7 +801,20 @@ impl Core {
         window: Option<String>,
         sink: impl FrameSink,
     ) -> Result<StreamId, ApiError> {
-        let (id, mut frames) = self.engine().await?.open_stream(window).await?;
+        let mut st = self.0.state.lock().await;
+        let session = st
+            .session
+            .as_mut()
+            .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "no ride loaded"))?;
+        let (engine_id, mut frames) = session.handle.open_stream(window.clone()).await?;
+        let id = loop {
+            let n = self.0.next_stream.fetch_add(1, Ordering::Relaxed);
+            if n != 0 {
+                break StreamId(n.into());
+            }
+        };
+        session.streams.insert(id, (engine_id, window));
+        drop(st);
         tokio::spawn(async move {
             while let Some(frame) = frames.recv().await {
                 if sink.send(frame).is_err() {
@@ -757,48 +825,86 @@ impl Core {
         });
         Ok(id)
     }
-    /// Subscribe to a metric on a stream.
+    /// The engine and engine-side id of a stream, if `window` owns it.
+    async fn owned(
+        &self,
+        window: Option<&str>,
+        stream: StreamId,
+    ) -> Result<(EngineHandle, StreamId), ApiError> {
+        let st = self.0.state.lock().await;
+        let session = st
+            .session
+            .as_ref()
+            .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "no ride loaded"))?;
+        match session.streams.get(&stream) {
+            Some((engine_id, owner)) if owner.as_deref() == window => {
+                Ok((session.handle.clone(), *engine_id))
+            }
+            // A stream of another window or ride is indistinguishable from none.
+            _ => Err(ApiError::new(ErrorCode::NotFound, "unknown stream")),
+        }
+    }
+    /// Subscribe to a metric on a stream of `window`.
     ///
     /// # Errors
-    /// `NotFound` stream, `Conflict` beyond 64 subscriptions, `InvalidInput` for a
-    /// rate or filter out of range.
+    /// `NotFound` for a stream `window` does not own, `Conflict` beyond 64
+    /// subscriptions, `InvalidInput` for a rate or filter out of range.
     pub async fn subscribe(
         &self,
+        window: Option<&str>,
         stream: StreamId,
         metric: MetricId,
         opts: SubscribeOpts,
     ) -> Result<SubId, ApiError> {
-        Ok(self
-            .engine()
-            .await?
-            .stream_subscribe(stream, metric, opts)
-            .await?)
+        let (engine, id) = self.owned(window, stream).await?;
+        Ok(engine.stream_subscribe(id, metric, opts).await?)
     }
-    /// End a subscription.
+    /// End a subscription of a stream of `window`.
     ///
     /// # Errors
     /// `NotFound`.
-    pub async fn unsubscribe(&self, stream: StreamId, sub: SubId) -> Result<(), ApiError> {
-        Ok(self.engine().await?.stream_unsubscribe(stream, sub).await?)
+    pub async fn unsubscribe(
+        &self,
+        window: Option<&str>,
+        stream: StreamId,
+        sub: SubId,
+    ) -> Result<(), ApiError> {
+        let (engine, id) = self.owned(window, stream).await?;
+        Ok(engine.stream_unsubscribe(id, sub).await?)
     }
     /// The window has applied every frame up to `seq`.
     ///
     /// # Errors
-    /// `Conflict` without a loaded ride.
-    pub async fn stream_ack(&self, stream: StreamId, seq: u64) -> Result<(), ApiError> {
-        Ok(self.engine().await?.stream_ack(stream, seq).await?)
+    /// `NotFound` for a stream `window` does not own.
+    pub async fn stream_ack(
+        &self,
+        window: Option<&str>,
+        stream: StreamId,
+        seq: u32,
+    ) -> Result<(), ApiError> {
+        let (engine, id) = self.owned(window, stream).await?;
+        Ok(engine.stream_ack(id, seq.into()).await?)
     }
     /// Latest sample of every subscription, the status and the links.
     ///
     /// # Errors
-    /// `NotFound` stream.
-    pub async fn stream_snapshot(&self, stream: StreamId) -> Result<StreamSnapshot, ApiError> {
-        Ok(self.engine().await?.stream_snapshot(stream).await?)
+    /// `NotFound` for a stream `window` does not own.
+    pub async fn stream_snapshot(
+        &self,
+        window: Option<&str>,
+        stream: StreamId,
+    ) -> Result<StreamSnapshot, ApiError> {
+        let (engine, id) = self.owned(window, stream).await?;
+        Ok(engine.stream_snapshot(id).await?)
     }
     /// A window was destroyed: drop its streams.
     pub async fn close_window(&self, window: String) {
-        if let Ok(engine) = self.engine().await {
-            let _ = engine.close_window(window).await;
+        let mut st = self.0.state.lock().await;
+        if let Some(session) = st.session.as_mut() {
+            session
+                .streams
+                .retain(|_, (_, owner)| owner.as_deref() != Some(window.as_str()));
+            let _ = session.handle.close_window(window).await;
         }
     }
 
@@ -877,6 +983,10 @@ mod tests {
         gate: Arc<Mutex<Option<RideGate>>>,
         /// For each `Disconnect` sent: was the gate still active?
         disconnects: Arc<Mutex<Vec<bool>>>,
+        /// For each `SetMode` sent: was the gate active?
+        mode_gate: Arc<Mutex<Vec<bool>>>,
+        /// How long a trainer connect takes.
+        connect_delay: Duration,
     }
     use crank_devices::DiscoveredDevice;
     struct Recording(FakeRadio);
@@ -892,7 +1002,9 @@ mod tests {
             let (inner, log) = (self.0.rig.trainer(), self.0.commands.clone());
             let radio = self.0.clone();
             let dev = dev.clone();
+            let delay = self.0.connect_delay;
             async move {
+                tokio::time::sleep(delay).await;
                 let mut link = inner.connect(&dev, rider).await?;
                 let (tx, mut rx) = tokio::sync::mpsc::channel(64);
                 let real = std::mem::replace(&mut link.control, tx);
@@ -914,6 +1026,15 @@ mod tests {
                     while let Some(cmd) = rx.recv().await {
                         if cmd == TrainerCommand::Disconnect {
                             release(&radio);
+                        }
+                        if matches!(cmd, TrainerCommand::SetMode(_)) {
+                            let active = radio
+                                .gate
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .is_some_and(RideGate::is_active);
+                            radio.mode_gate.lock().unwrap().push(active);
                         }
                         log.lock().unwrap().push(cmd);
                         if real.send(cmd).await.is_err() {
@@ -971,6 +1092,8 @@ mod tests {
             commands: Arc::default(),
             gate: Arc::default(),
             disconnects: Arc::default(),
+            mode_gate: Arc::default(),
+            connect_delay: Duration::ZERO,
         }
     }
     /// Re-opening the data dir with a radio the test controls.
@@ -1153,7 +1276,7 @@ mod tests {
         core.ride_start().await.unwrap();
         tokio::time::sleep(Duration::from_secs(185)).await; // the workout ends itself
         assert_eq!(
-            core.ride_status().await.unwrap().state,
+            core.ride_status().await.unwrap().status.state,
             crank_engine::StreamRideState::Finished
         );
         core.ride_end().await.unwrap();
@@ -1168,6 +1291,11 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, TrainerCommand::SetMode(_)))
         );
+        // The ride-active gate is up for every mode the engine sends (it is what the
+        // reconnect supervisors read) and down when the trainer is released.
+        let modes = radio.mode_gate.lock().unwrap().clone();
+        assert!(!modes.is_empty());
+        assert!(modes.iter().all(|active| *active), "{modes:?}");
         assert_eq!(*radio.disconnects.lock().unwrap(), [false]);
     }
 
@@ -1180,7 +1308,8 @@ mod tests {
             .await
             .unwrap();
         core.ride_load(None).await.unwrap();
-        let pair = core.device_pair("other".into(), DeviceRole::Trainer).await;
+        // A strap is not connected by the ride, so only the guard can refuse this.
+        let pair = core.device_pair("hrm".into(), DeviceRole::HeartRate).await;
         assert_eq!(pair.unwrap_err().code, ErrorCode::Conflict);
         let forget = core.device_forget(DeviceRole::Trainer).await;
         assert_eq!(forget.unwrap_err().code, ErrorCode::Conflict);
@@ -1190,5 +1319,38 @@ mod tests {
             .await
             .unwrap();
         core.device_forget(DeviceRole::Trainer).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn loading_is_reported_while_connecting_and_never_blocks_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut radio = fake(vec![], false);
+        radio.connect_delay = Duration::from_secs(10);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        let loading = {
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_load(None).await })
+        };
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        // Mid-connect: the status answers at once, says so, and nothing else may start.
+        let view = core.ride_status().await.unwrap();
+        assert!(view.loading);
+        assert_eq!(
+            core.ride_load(None).await.unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            core.device_pair("neo".into(), DeviceRole::Trainer)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        loading.await.unwrap().unwrap();
+        let view = core.ride_status().await.unwrap();
+        assert!(!view.loading && view.status.loaded);
     }
 }

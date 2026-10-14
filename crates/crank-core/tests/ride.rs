@@ -57,7 +57,9 @@ async fn pair_both(core: &Core) {
 async fn ack_all(core: &Core, stream: StreamId, frames: &Frames) {
     let last = frames.lock().expect("test mutex").last().map(|f| f.seq);
     if let Some(seq) = last {
-        core.stream_ack(stream, seq).await.expect("ack");
+        core.stream_ack(Some("main"), stream, u32::try_from(seq).expect("seq fits"))
+            .await
+            .expect("ack");
     }
 }
 async fn run_for(core: &Core, stream: StreamId, frames: &Frames, seconds: u64) {
@@ -105,12 +107,12 @@ async fn scan_pair_load_ride_pause_resume_skip_end_then_history() {
         .open_stream(Some("main".into()), sink(&frames))
         .await
         .unwrap();
-    core.subscribe(stream, MetricId::Power, opts())
+    core.subscribe(Some("main"), stream, MetricId::Power, opts())
         .await
         .unwrap();
     core.ride_start().await.unwrap();
     run_for(&core, stream, &frames, 20).await;
-    let status = core.ride_status().await.unwrap();
+    let status = core.ride_status().await.unwrap().status;
     assert_eq!(status.state, StreamRideState::Riding);
     assert_eq!(status.block_index, Some(0));
     let links = core.device_links().await.unwrap();
@@ -119,7 +121,7 @@ async fn scan_pair_load_ride_pause_resume_skip_end_then_history() {
     // Pause and resume: workout time freezes, session time runs.
     core.ride_pause().await.unwrap();
     run_for(&core, stream, &frames, 1).await;
-    let paused = core.ride_status().await.unwrap();
+    let paused = core.ride_status().await.unwrap().status;
     assert_eq!(
         paused.state,
         StreamRideState::Paused {
@@ -127,7 +129,7 @@ async fn scan_pair_load_ride_pause_resume_skip_end_then_history() {
         }
     );
     run_for(&core, stream, &frames, 5).await;
-    let later = core.ride_status().await.unwrap();
+    let later = core.ride_status().await.unwrap().status;
     assert!((later.workout_s - paused.workout_s).abs() < f64::EPSILON);
     assert!(later.session_s > paused.session_s);
     core.ride_resume().await.unwrap();
@@ -136,12 +138,15 @@ async fn scan_pair_load_ride_pause_resume_skip_end_then_history() {
     // Skip, then end.
     core.ride_skip().await.unwrap();
     run_for(&core, stream, &frames, 3).await;
-    assert_eq!(core.ride_status().await.unwrap().block_index, Some(1));
-    let snapshot = core.stream_snapshot(stream).await.unwrap();
+    assert_eq!(
+        core.ride_status().await.unwrap().status.block_index,
+        Some(1)
+    );
+    let snapshot = core.stream_snapshot(Some("main"), stream).await.unwrap();
     assert!(snapshot.status.is_some());
     let ride_id = core.ride_end().await.unwrap().expect("a finished ride");
     assert_eq!(
-        core.ride_status().await.unwrap().state,
+        core.ride_status().await.unwrap().status.state,
         StreamRideState::Finished
     );
 
@@ -182,7 +187,7 @@ async fn a_whole_workout_finishes_by_itself() {
     core.ride_start().await.unwrap();
     sleep(Duration::from_secs(185)).await;
     assert_eq!(
-        core.ride_status().await.unwrap().state,
+        core.ride_status().await.unwrap().status.state,
         StreamRideState::Finished
     );
     let id = core.ride_end().await.unwrap().expect("finished");
@@ -204,7 +209,10 @@ async fn a_dropout_shows_loss_then_reconnect_on_the_stream() {
         .await
         .unwrap();
     let frames: Frames = Arc::default();
-    let stream = core.open_stream(None, sink(&frames)).await.unwrap();
+    let stream = core
+        .open_stream(Some("main".into()), sink(&frames))
+        .await
+        .unwrap();
     core.ride_start().await.unwrap();
     run_for(&core, stream, &frames, 60).await;
 
@@ -323,15 +331,20 @@ async fn streams_belong_to_a_window_and_die_with_their_sink() {
         .await
         .unwrap();
     assert_eq!(
-        code(&core.stream_snapshot(first).await.unwrap_err()),
+        code(&core.stream_snapshot(Some("main"), first).await.unwrap_err()),
         ErrorCode::NotFound
     );
-    assert!(core.stream_snapshot(second).await.is_ok());
+    assert!(core.stream_snapshot(Some("main"), second).await.is_ok());
 
     // Destroying the window drops its streams.
     core.close_window("main".into()).await;
     assert_eq!(
-        code(&core.stream_snapshot(second).await.unwrap_err()),
+        code(
+            &core
+                .stream_snapshot(Some("main"), second)
+                .await
+                .unwrap_err()
+        ),
         ErrorCode::NotFound
     );
 
@@ -342,11 +355,14 @@ async fn streams_belong_to_a_window_and_die_with_their_sink() {
         .unwrap();
     sleep(Duration::from_secs(2)).await;
     assert_eq!(
-        code(&core.stream_snapshot(dead).await.unwrap_err()),
+        code(&core.stream_snapshot(Some("aux"), dead).await.unwrap_err()),
         ErrorCode::NotFound
     );
     // Bad subscription input is InvalidInput.
-    let live = core.open_stream(None, sink(&a)).await.unwrap();
+    let live = core
+        .open_stream(Some("main".into()), sink(&a))
+        .await
+        .unwrap();
     let bad = SubscribeOpts {
         rate_hz: 99.0,
         filters: Vec::new(),
@@ -354,10 +370,199 @@ async fn streams_belong_to_a_window_and_die_with_their_sink() {
     assert_eq!(
         code(
             &core
-                .subscribe(live, MetricId::Power, bad)
+                .subscribe(Some("main"), live, MetricId::Power, bad)
                 .await
                 .unwrap_err()
         ),
         ErrorCode::InvalidInput
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_window_cannot_use_another_windows_stream_nor_a_previous_rides() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path(), vec![])).unwrap();
+    pair_both(&core).await;
+    core.ride_load(None).await.unwrap();
+    let frames: Frames = Arc::default();
+    let mine = core
+        .open_stream(Some("main".into()), sink(&frames))
+        .await
+        .unwrap();
+    let sub = core
+        .subscribe(Some("main"), mine, MetricId::Power, opts())
+        .await
+        .unwrap();
+    // Another window, and a caller without a label, are refused for every operation.
+    for window in [Some("aux"), None] {
+        let e = |r: Result<(), ApiError>| code(&r.unwrap_err());
+        assert_eq!(
+            code(
+                &core
+                    .subscribe(window, mine, MetricId::Hr, opts())
+                    .await
+                    .unwrap_err()
+            ),
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            e(core.unsubscribe(window, mine, sub).await),
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            e(core.stream_ack(window, mine, 0).await),
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            code(&core.stream_snapshot(window, mine).await.unwrap_err()),
+            ErrorCode::NotFound
+        );
+    }
+    // The owner still can.
+    core.unsubscribe(Some("main"), mine, sub).await.unwrap();
+
+    // Ids are unique for the process lifetime: the next ride's first stream is not
+    // the previous ride's, and the old id is not honoured against the new engine.
+    core.ride_end().await.unwrap();
+    core.ride_load(None).await.unwrap();
+    let next = core
+        .open_stream(Some("main".into()), sink(&frames))
+        .await
+        .unwrap();
+    assert_ne!(next, mine);
+    assert_eq!(
+        code(&core.stream_snapshot(Some("main"), mine).await.unwrap_err()),
+        ErrorCode::NotFound
+    );
+    assert!(core.stream_snapshot(Some("main"), next).await.is_ok());
+}
+
+/// Ride `pattern` seconds per block with a skip between, on the sensor-check workout
+/// (three blocks): returns the summary of the ended ride.
+async fn ride_with_skips(core: &Core, pattern: &[u64]) -> crank_core::RideSummary {
+    core.ride_load(Some(SENSOR_CHECK.into()))
+        .await
+        .expect("ride step");
+    core.ride_start().await.expect("ride step");
+    for (i, secs) in pattern.iter().enumerate() {
+        sleep(Duration::from_secs(*secs)).await;
+        if i + 1 < pattern.len() {
+            core.ride_skip().await.expect("ride step");
+        }
+    }
+    let id = core.ride_end().await.expect("ride step").expect("a ride");
+    core.ride_summary(id)
+        .await
+        .expect("summary")
+        .summary
+        .expect("finished")
+}
+
+#[tokio::test(start_paused = true)]
+async fn per_block_seconds_follow_the_engine_through_skips() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path(), vec![])).unwrap();
+    pair_both(&core).await;
+    // 10 s, skip, 20 s... of a 60 s + 60 s + 60 s plan: block 0 must not absorb the
+    // rest because the workout position stays inside its planned range.
+    let s = ride_with_skips(&core, &[10, 20, 5]).await;
+    let secs: Vec<f64> = s.blocks.iter().map(|b| b.actual_s).collect();
+    for (got, want) in secs.iter().zip([10.0, 20.0, 5.0]) {
+        assert!((got - want).abs() <= 1.0, "{secs:?}");
+    }
+    assert!(s.blocks.iter().all(|b| b.actual_w.is_some()), "{s:?}");
+    // The first block's power is its own, the second's is higher (work vs warm-up).
+    assert!(s.blocks[1].actual_w.unwrap() > s.blocks[0].actual_w.unwrap());
+
+    // Skip twice in a row: the skipped-through block has no seconds.
+    let s = ride_with_skips(&core, &[10, 0, 8]).await;
+    let secs: Vec<f64> = s.blocks.iter().map(|b| b.actual_s).collect();
+    assert!((secs[0] - 10.0).abs() <= 1.0 && secs[1] <= 1.0, "{secs:?}");
+    assert!((secs[2] - 8.0).abs() <= 1.0, "{secs:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn ending_a_ride_is_idempotent_even_against_its_own_finish() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path(), vec![])).unwrap();
+    pair_both(&core).await;
+    // Skip off the last block while ending: whichever lands first, ending answers Ok.
+    let loaded = core.ride_load(Some(SENSOR_CHECK.into())).await.unwrap();
+    core.ride_start().await.unwrap();
+    sleep(Duration::from_secs(5)).await;
+    core.ride_skip().await.unwrap();
+    sleep(Duration::from_secs(5)).await;
+    core.ride_skip().await.unwrap(); // now on the last block
+    sleep(Duration::from_secs(5)).await;
+    let (_skip, end) = tokio::join!(core.ride_skip(), core.ride_end());
+    assert_eq!(end.unwrap(), Some(loaded.ride_id.clone()));
+    // Ending again returns the same id; so does ending after a natural finish.
+    assert_eq!(core.ride_end().await.unwrap(), Some(loaded.ride_id));
+
+    let natural = core.ride_load(Some(SENSOR_CHECK.into())).await.unwrap();
+    core.ride_start().await.unwrap();
+    sleep(Duration::from_secs(200)).await;
+    assert_eq!(
+        core.ride_end().await.unwrap(),
+        Some(natural.ride_id.clone())
+    );
+    assert_eq!(core.ride_end().await.unwrap(), Some(natural.ride_id));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_load_leaves_the_previous_status_and_never_blocks_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path(), vec![])).unwrap();
+    // No trainer paired: the load fails after resolving the workout.
+    assert_eq!(
+        code(&core.ride_load(None).await.unwrap_err()),
+        ErrorCode::DeviceUnavailable
+    );
+    assert!(!core.ride_status().await.unwrap().loading);
+    pair_both(&core).await;
+    // A finished ride's status survives an unknown workout and a failed device load.
+    core.ride_load(Some(SENSOR_CHECK.into())).await.unwrap();
+    core.ride_start().await.unwrap();
+    sleep(Duration::from_secs(200)).await;
+    core.ride_end().await.unwrap();
+    let before = core.ride_status().await.unwrap();
+    assert_eq!(before.status.state, StreamRideState::Finished);
+    assert_eq!(
+        code(&core.ride_load(Some("nope".into())).await.unwrap_err()),
+        ErrorCode::NotFound
+    );
+    assert_eq!(core.ride_status().await.unwrap(), before);
+    core.device_forget(DeviceRole::Trainer).await.unwrap();
+    assert!(core.ride_load(None).await.is_err());
+    assert_eq!(core.ride_status().await.unwrap(), before);
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_the_core_mid_ride_finishes_the_ride_and_frees_the_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let core = Core::open(config(dir.path(), vec![])).unwrap();
+        pair_both(&core).await;
+        core.ride_load(Some("builtin-endurance-45".into()))
+            .await
+            .unwrap();
+        core.ride_start().await.unwrap();
+        sleep(Duration::from_secs(30)).await;
+    } // the last handle is gone mid-ride
+    let mut reopened = None;
+    for _ in 0..100 {
+        match Core::open(config(dir.path(), vec![])) {
+            Ok(core) => {
+                reopened = Some(core);
+                break;
+            }
+            Err(e) => assert_eq!(e.code, ErrorCode::Conflict, "{e}"),
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    let core = reopened.expect("ride.lock is released once the engine has ended");
+    let rides = core.rides_list().await.unwrap();
+    assert_eq!(rides.len(), 1);
+    assert_eq!(rides[0].outcome, RideOutcome::Finished, "{:?}", rides[0]);
+    assert!(rides[0].summary.is_some());
 }
