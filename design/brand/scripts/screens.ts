@@ -35,7 +35,9 @@ const server = await createServer({ root, logLevel: "warn", server: { port: 0 } 
 await server.listen();
 const base = server.resolvedUrls?.local[0];
 if (!base) throw new Error("vite did not report a local URL");
-const browser = await chromium.launch();
+// Byte-identical captures (#189): partial raster and multi-threaded raster make the same page rasterise to
+// different PNGs (1-level anti-aliasing noise) from run to run; one raster thread painting every tile fresh does not.
+const browser = await chromium.launch({ args: ["--disable-gpu", "--disable-partial-raster", "--num-raster-threads=1"] });
 const failures: string[] = [];
 /** Static start screens, kept for the A-vs-F exactness check: `${id}.${w}x${h}.${theme}`. */
 const shots = new Map<string, Buffer>();
@@ -48,12 +50,26 @@ const spinEnds = [...LETTER_START.map((s) => s + SPIN.letter), SPIN.slice[0] + S
 if (SPIN.end > 1100 || Math.max(...spinEnds) > SPIN.end) failures.push(`spin: motion ends at ${Math.max(...spinEnds)} ms (end ${SPIN.end}, target 1100)`);
 console.log(`  spin: R A N K start at ${LETTER_START.join(" / ")} ms; at rest by ${Math.max(...spinEnds)} ms`);
 
-/** `paused`: the fake clock moves only by `runFor` (installed clocks otherwise also flow in real time). */
-async function open(page: Page, name: string, query: string, paused = false) {
+/** `paused`: the fake clock moves only by `runFor` (installed clocks otherwise also flow in real time).
+ *  `freezeCss`: every CSS animation is created paused at its start. CSS animations run on the document timeline, which
+ *  the fake clock does not drive: without this a 300–800 ms `backwards`-fill animation can finish during a slow load,
+ *  drop out of `document.getAnimations()` and render at rest, so a frame set "to t" is a blank or settled frame (#189). */
+async function open(page: Page, name: string, query: string, paused = false, freezeCss = false) {
   page.on("pageerror", (e) => failures.push(`${name}: ${e.message}`));
   page.on("console", (m) => m.type() === "error" && failures.push(`${name}: console: ${m.text()}`));
   await page.clock.install({ time: 0 });
   if (paused) await page.clock.pauseAt(1000);
+  if (freezeCss)
+    await page.addInitScript(() => {
+      const style = document.createElement("style");
+      style.textContent = "*, ::before, ::after { animation-play-state: paused !important; }";
+      // the document element does not exist yet when init scripts run
+      new MutationObserver((_, o) => {
+        if (!document.head) return;
+        document.head.append(style);
+        o.disconnect();
+      }).observe(document, { childList: true, subtree: true });
+    });
   await page.goto(`${base}?${query}`);
   await page.waitForSelector("svg");
   const m = await page.evaluate(() => {
@@ -86,7 +102,7 @@ try {
     for (const t of FRAMES) {
       const name = `motion.${id}.${String(t).padStart(4, "0")}ms`;
       const page = await ctx.newPage();
-      await open(page, name, `concept=${id}&theme=dark`);
+      await open(page, name, `concept=${id}&theme=dark`, false, true);
       const over = await page.evaluate((at) => {
         let longest = 0;
         for (const a of document.getAnimations()) {
@@ -130,7 +146,7 @@ async function bootAndHandOff() {
       await page.close();
 
       page = await ctx.newPage();
-      await open(page, `handoff.${tag}`, `concept=slice&theme=${theme}&ready=600`);
+      await open(page, `handoff.${tag}`, `concept=slice&theme=${theme}&ready=600`, false, true);
       await page.clock.runFor(600);
       const s = await page.evaluate(() => ({
         start: !!document.querySelector(".start"),
@@ -191,6 +207,24 @@ async function spinStoryboards() {
     }
     await ctx.close();
   }
+}
+
+/** Pin a hand-off frame to its nominal time before a screenshot: F's frame at `t` and the fade's opacity at `fade`
+ *  (0 … 1 into the 200 ms). The page paints from performance.now(), which Playwright's fake clock reports with ±1 ms
+ *  of real-time jitter after a paused install, so the painted t and fade phase differ by a frame from run to run
+ *  (#189); the assertions read the page's own state first, the PNG shows the exact nominal frame. Nothing runs
+ *  after this: the fake clock only moves with runFor. */
+async function pin(page: Page, t: number, fade: number) {
+  await page.evaluate(
+    async ({ t, fade, end, mod }) => {
+      const { frame, paint } = await import(/* @vite-ignore */ mod); // the page's own module, as its dev server serves it
+      const start = document.querySelector<HTMLElement>(".start")!;
+      paint(start.querySelector("svg")!, frame(Math.min(t, end)), { ink: "var(--ink)", accent: "var(--accent)" });
+      start.dataset.t = String(Math.min(t, end));
+      start.style.opacity = String(1 - fade);
+    },
+    { t, fade, end: SPIN.end, mod: "/src/spin.ts" },
+  );
 }
 
 /** F's boot behaviours on the fake clock (BRAND.md §F · Spin-up → Boot): (a) on ready the motion runs on at 1:1
@@ -256,6 +290,7 @@ async function spinBoot() {
       s = await state(p);
       if (s.t === null || Math.abs(s.t - 700) > 17 || s.opacity === null || s.opacity < 0.4 || s.opacity > 0.6)
         fail(`100 ms into the hand-off: t = ${s.t}, opacity = ${s.opacity} (expected ≈ 700, half faded)`);
+      await pin(p, 700, 0.5);
       await p.screenshot({ path: `${out}spin.handoff-100ms.1440x900.${theme}.png` });
       await p.clock.runFor(120);
       if (await p.locator(".start").count()) fail("start screen still there 220 ms after ready");
@@ -315,6 +350,7 @@ async function spinEarly() {
           // rAF on the fake clock paints every ~16 ms: the painted t trails the clock by less than a frame.
           if (a > 0 && (Math.abs(s.t - (r + a)) > 17 || s.opacity === null || Math.abs(s.opacity - (1 - a / 200)) > 0.1))
             fail(`ready ${r} ms, +${a} ms: t = ${s.t} (expected ≈ ${r + a}), opacity = ${s.opacity} (expected ≈ ${1 - a / 200})`);
+          await pin(p, r + a, a / 200);
           const png = await p.screenshot();
           if (a === 100) mid.set(r, png);
           cells.push({ label: `ready ${r} ms · +${a} ms`, png });
@@ -357,7 +393,7 @@ async function compareSheet(theme: (typeof THEMES)[number]) {
   const cells: { label: string; png: Buffer }[] = [];
   for (const [i, t] of STORY.entries()) {
     const page = await ctx.newPage();
-    await open(page, `compare.${theme}.${t}`, `concept=slice&theme=${theme}`);
+    await open(page, `compare.${theme}.${t}`, `concept=slice&theme=${theme}`, false, true);
     await page.evaluate((at) => {
       for (const a of document.getAnimations()) {
         a.pause();
