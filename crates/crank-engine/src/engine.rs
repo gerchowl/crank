@@ -246,6 +246,16 @@ impl Session {
             self.record_error = Some(e.to_string());
         }
     }
+    /// Samples flow while a pedalling trainer value is present; the origin is the 3 s
+    /// power of the new epoch at the tick they start (0 W if it has none: no jump).
+    fn track_flow(&mut self, k: u64, pedalling: bool) {
+        if !pedalling {
+            self.flow_start = None;
+        } else if self.flow_start.is_none() {
+            self.flow_start = Some(k);
+            self.engage_power = Some(self.power_3s().unwrap_or(0.0));
+        }
+    }
     fn power_3s(&self) -> Option<f64> {
         let n = u32::try_from(self.recent_power.len())
             .ok()
@@ -582,14 +592,7 @@ impl Engine {
         let (trainer, hr) = (s.trainer.get(k), s.hr.get(k));
         // Samples are flowing while a pedalling trainer value is present. The soft start
         // runs only then and restarts, from the current 3 s power, whenever they return.
-        let pedalling = trainer.and_then(|t| t.cadence).is_some_and(|c| c > 0);
-        if !pedalling {
-            s.flow_start = None;
-        } else if s.flow_start.is_none() {
-            s.flow_start = Some(k);
-            // no power in the new epoch: the ramp starts from 0 W, it never jumps
-            s.engage_power = Some(s.power_3s().unwrap_or(0.0));
-        }
+        s.track_flow(k, trainer.and_then(|t| t.cadence).is_some_and(|c| c > 0));
         // The tick is workout time iff nothing paused the ride when it began; a loss
         // detected on this tick takes effect on the next (no rollback, ADR-0001 §5).
         let riding = s.pauses.reason().is_none();
