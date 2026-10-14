@@ -244,6 +244,61 @@ async fn hr_strap_dropout_reconnects_on_the_backoff_schedule() {
     assert!(matches!(events.last(), Some(HrEvent::Sample(s)) if s.bpm == Some(80)));
 }
 
+#[tokio::test(start_paused = true)]
+async fn outside_a_ride_a_strap_loss_is_surfaced_and_not_retried() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    // A second connection exists, so a retry would succeed and show up in `connects`.
+    let (fake, senders) = fake_hr(&clock, 2);
+    let inner = HrsDriver::new(Arc::new(fake.clone()), clock.clone());
+    let driver = ReconnectingHr::new(inner, clock, RideGate::new(false));
+    let mut link = driver.connect(&DeviceRef("strap".into())).await.unwrap();
+    settle().await;
+    drain(&mut link.events);
+    senders[0].send(Err(DeviceError::Disconnected)).unwrap();
+    settle().await;
+    advance(Duration::from_mins(1)).await;
+    assert_eq!(
+        fake.connects.lock().unwrap().len(),
+        1,
+        "no reconnect attempt"
+    );
+    assert_eq!(
+        drain(&mut link.events),
+        [
+            HrEvent::Fault(DeviceError::Disconnected),
+            HrEvent::Link(LinkState::Lost)
+        ]
+    );
+    assert!(
+        link.events.recv().await.is_none(),
+        "stream ends; rediscovery takes over"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn ride_ending_during_strap_backoff_stops_the_loop() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    // Only the first connection exists: attempt 1 fails and the loop backs off.
+    let (fake, senders) = fake_hr(&clock, 1);
+    let gate = RideGate::new(true);
+    let inner = HrsDriver::new(Arc::new(fake.clone()), clock.clone());
+    let driver = ReconnectingHr::new(inner, clock, gate.clone());
+    let _link = driver.connect(&DeviceRef("strap".into())).await.unwrap();
+    settle().await;
+    senders[0].send(Err(DeviceError::Disconnected)).unwrap();
+    settle().await;
+    advance(ms(500)).await; // attempt 1 fails; now backing off 1 s
+    assert_eq!(fake.connects.lock().unwrap().len(), 2);
+    gate.set_active(false);
+    settle().await;
+    advance(Duration::from_mins(1)).await;
+    assert_eq!(
+        fake.connects.lock().unwrap().len(),
+        2,
+        "no attempts after the ride ended"
+    );
+}
+
 // ---- discovery ---------------------------------------------------------------------------
 
 fn short(n: u16) -> Uuid {
@@ -652,7 +707,7 @@ async fn outside_a_ride_a_loss_is_surfaced_and_not_retried() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn ride_ending_during_backoff_stops_the_loop_and_a_new_ride_enables_it() {
+async fn ride_ending_during_backoff_stops_the_loop() {
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
     let first = device_link();
     let script = script(&clock, vec![Ok(first.link)]);

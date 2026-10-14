@@ -66,7 +66,9 @@ items require documentation. Clippy pedantic warnings fail the gate; unwrap
 is denied outside tests. Domain cannot depend on tokio; engine cannot depend
 on BLE (including transitively). UI consumes generated Rust bindings.
 
-On shared sage use `CARGO_BUILD_JOBS=8` and a task-specific `CARGO_TARGET_DIR`.
+On shared sage use `CARGO_BUILD_JOBS=8` and a task-specific `CARGO_TARGET_DIR`. The devShell
+sets neither (a job count is a host property, not a project one): export them in your own environment
+before `nix develop`; `nix develop` inherits them.
 Wrap long commands in watcher-s1 (`watcher-s1 guide`). Hardware BLE runs require
 an Alacritty IPC wrapper: flock processes are denied Bluetooth because their
 responsible process is sshd-keygen-wrapper. Never modify TCC. See

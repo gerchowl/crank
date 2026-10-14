@@ -248,7 +248,6 @@
         inputsFrom = [ (desktop "") ];
         packages = [ toolchain pkgs.nodejs pkgs.pnpm_12 pkgs.just pkgs.cargo-nextest
           pkgs.cargo-deny pkgs.cargo-fuzz pkgs.python3 ];
-        CARGO_BUILD_JOBS = "8";
       };
     };
   in {
