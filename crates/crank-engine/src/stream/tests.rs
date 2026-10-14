@@ -144,7 +144,7 @@ impl World {
     }
     fn offer_sample(&mut self, flow: &mut Flow, sub: u32) {
         self.counter += 1;
-        let s = sample(sub, self.counter as f64, self.counter as f64);
+        let s = sample(sub, f64::from(self.counter), f64::from(self.counter));
         if !self.pend_samples.insert(sub) && self.blocked() {
             self.owed_resync = true;
         }
@@ -440,7 +440,7 @@ fn worst_status() -> StreamStatus {
 #[test]
 fn every_frame_stays_under_the_byte_budget_at_every_cap() {
     let mut flow = Flow::new(FRAME_BUDGET_BYTES);
-    for sub in 0..MAX_SUBSCRIPTIONS as u32 {
+    for sub in 0..u32::try_from(MAX_SUBSCRIPTIONS).unwrap() {
         flow.offer_sample(SubSample {
             sub: SubId(u32::MAX - sub),
             t: f64::MIN,
@@ -506,7 +506,7 @@ fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
     const BUDGET: usize = 360;
     let mut flow = Flow::new(BUDGET);
     for sub in 0..12_u32 {
-        flow.offer_sample(sample(sub, 1.5, 100.0 + sub as f64));
+        flow.offer_sample(sample(sub, 1.5, 100.0 + f64::from(sub)));
     }
     flow.offer_status(riding(1));
     let frames = flow.drain(0);

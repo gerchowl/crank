@@ -650,6 +650,7 @@ version = "0.1.0"
 dependencies = [
  "crank-devices",
  "crank-domain",
+ "crank-engine",
  "crank-store",
  "futures-util",
  "proptest",
