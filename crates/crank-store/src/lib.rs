@@ -400,38 +400,43 @@ impl Store {
     /// Returns `InvalidJson`, SQL or worker errors.
     pub fn ride(&self, id: &str) -> Result<Option<Ride>, StoreError> {
         self.read(|db| {
-            let row = db
-                .query_row(
-                    "SELECT id,started_at,ended_at,state,workout_json,compiled_json,summary_json
-                 FROM ride WHERE id=?1",
-                    [id],
-                    |r| {
-                        Ok((
-                            r.get(0)?,
-                            r.get(1)?,
-                            r.get(2)?,
-                            r.get::<_, Option<String>>(3)?,
-                            r.get::<_, String>(4)?,
-                            r.get::<_, String>(5)?,
-                            r.get::<_, Option<String>>(6)?,
-                        ))
-                    },
-                )
-                .optional()?;
-            row.map(
-                |(id, started_at, ended_at, state, workout, compiled, summary)| {
-                    Ok(Ride {
-                        id,
-                        started_at,
-                        ended_at,
-                        state: RideState::from_column(state.as_deref())?,
-                        workout: RideWorkoutJson::parse(&workout)?,
-                        compiled: CompiledJson::parse(&compiled)?,
-                        summary: summary.map(|s| RideSummaryJson::parse(&s)).transpose()?,
-                    })
-                },
-            )
-            .transpose()
+            db.query_row(&format!("{RIDE_SELECT} WHERE id=?1"), [id], ride_row)
+                .optional()?
+                .map(Ride::try_from_row)
+                .transpose()
+        })
+    }
+    /// Every ride, newest first, with validated snapshots.
+    /// # Errors
+    /// Returns `InvalidJson`, SQL or worker errors.
+    pub fn rides(&self) -> Result<Vec<Ride>, StoreError> {
+        self.read(|db| {
+            db.prepare(&format!("{RIDE_SELECT} ORDER BY started_at DESC, id DESC"))?
+                .query_map([], ride_row)?
+                .map(|row| Ride::try_from_row(row?))
+                .collect()
+        })
+    }
+    /// Forget a pairing. Rides that referenced it keep their telemetry but lose the
+    /// device link (`trainer_device_id`/`hr_device_id` become NULL), so history never
+    /// blocks forgetting. Returns whether a row existed.
+    /// # Errors
+    /// Returns read-only, SQL or worker errors.
+    pub fn forget_device(&self, id: &str) -> Result<bool, StoreError> {
+        let id = id.to_owned();
+        self.write(move |w| {
+            let tx = w.db.transaction()?;
+            tx.execute(
+                "UPDATE ride SET trainer_device_id=NULL WHERE trainer_device_id=?1",
+                [&id],
+            )?;
+            tx.execute(
+                "UPDATE ride SET hr_device_id=NULL WHERE hr_device_id=?1",
+                [&id],
+            )?;
+            let deleted = tx.execute("DELETE FROM device WHERE id=?1", [&id])?;
+            tx.commit()?;
+            Ok(deleted > 0)
         })
     }
     /// Decode persisted metric chunks ordered by session second.
@@ -456,6 +461,44 @@ impl Store {
                 writer::decode(start, usize::from(n), &data, &estimated)
             })
             .collect()
+        })
+    }
+}
+
+const RIDE_SELECT: &str =
+    "SELECT id,started_at,ended_at,state,workout_json,compiled_json,summary_json FROM ride";
+type RideRow = (
+    String,
+    i64,
+    Option<i64>,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+);
+fn ride_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RideRow> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+    ))
+}
+impl Ride {
+    fn try_from_row(
+        (id, started_at, ended_at, state, workout, compiled, summary): RideRow,
+    ) -> Result<Self, StoreError> {
+        Ok(Self {
+            id,
+            started_at,
+            ended_at,
+            state: RideState::from_column(state.as_deref())?,
+            workout: RideWorkoutJson::parse(&workout)?,
+            compiled: CompiledJson::parse(&compiled)?,
+            summary: summary.map(|s| RideSummaryJson::parse(&s)).transpose()?,
         })
     }
 }
