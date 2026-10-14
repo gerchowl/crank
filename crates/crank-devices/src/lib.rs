@@ -93,7 +93,9 @@ pub struct TrainerCaps {
     pub sim: bool,
     /// Supports basic resistance.
     pub resistance: bool,
-    /// Maximum resistance in newtons, if reported.
+    /// Maximum resistance in newtons, if reported. The FE-C driver maps page 54
+    /// `0xFFFF` to `None`; that meaning is **tentative pending HIL #44** (the NEO
+    /// reports 200 N and never sent `0xFFFF`, Part A; ADR-0002 §4.2).
     pub max_resistance_n: Option<u16>,
     /// Maximum target watts representable by the driver.
     pub max_target_w: u16,

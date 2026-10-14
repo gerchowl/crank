@@ -141,6 +141,8 @@ impl TrainerDriver for FecTrainer {
                             }
                             if let Ok(frame) = decode(&bytes)
                                 && let Page::Capabilities(p) = frame.page {
+                                    // 0xFFFF as "unavailable" is tentative pending HIL #44: the NEO reports 200 N
+                                    // and never sent it (Part A, ADR-0002 §4.2).
                                     break Ok(TrainerCaps { erg: p.modes & 2 != 0, sim: p.modes & 4 != 0,
                                         resistance: p.modes & 1 != 0, max_resistance_n: (p.max_resistance_n != 0xffff).then_some(p.max_resistance_n), max_target_w: 16383 });
                                 }
