@@ -1,8 +1,9 @@
 //! Rule-level tests: each drives the actor synchronously on a manual clock, so every
 //! assertion is about exact ticks. Scenario tests with the simulator are in
 //! `tests/scenarios.rs`.
-use crate::control::{BlockTarget, PolicyContext, TargetPolicy};
+use crate::control::{PolicyContext, TargetPolicy};
 use crate::engine::{CommandError, Engine, EngineCmd, PauseReason, RideSetup, RideState};
+use crate::erg::{ErgPolicy, TrainerFollowing};
 use crate::record::{RecordError, RideRecorder, SecondRow};
 use crate::ticks::{Hold, TICK_US, TickWindow};
 use crank_devices::{
@@ -18,7 +19,7 @@ use std::sync::{
 };
 use tokio::sync::mpsc;
 
-struct ManualClock(AtomicU64);
+pub(crate) struct ManualClock(AtomicU64);
 impl Clock for ManualClock {
     fn now(&self) -> MonoTime {
         MonoTime(self.0.load(Ordering::SeqCst))
@@ -28,13 +29,13 @@ impl Clock for ManualClock {
     }
 }
 #[derive(Default)]
-struct Log {
+pub(crate) struct Log {
     started: bool,
     finished: bool,
     rows: Vec<(u32, SecondRow)>,
     fail_after: Option<usize>,
 }
-struct Recorder(Arc<Mutex<Log>>);
+pub(crate) struct Recorder(pub(crate) Arc<Mutex<Log>>);
 impl RideRecorder for Recorder {
     fn start(&mut self, metrics: &[&str]) -> Result<(), RecordError> {
         assert_eq!(metrics, crate::METRICS);
@@ -54,16 +55,16 @@ impl RideRecorder for Recorder {
         Ok(())
     }
 }
-struct Rig {
-    engine: Engine,
-    clock: Arc<ManualClock>,
-    events: mpsc::Sender<TrainerEvent>,
-    hr: mpsc::Sender<HrEvent>,
-    control: mpsc::Receiver<TrainerCommand>,
-    log: Arc<Mutex<Log>>,
-    gate: Arc<Mutex<Vec<bool>>>,
+pub(crate) struct Rig {
+    pub(crate) engine: Engine,
+    pub(crate) clock: Arc<ManualClock>,
+    pub(crate) events: mpsc::Sender<TrainerEvent>,
+    pub(crate) hr: mpsc::Sender<HrEvent>,
+    pub(crate) control: mpsc::Receiver<TrainerCommand>,
+    pub(crate) log: Arc<Mutex<Log>>,
+    pub(crate) gate: Arc<Mutex<Vec<bool>>>,
 }
-fn block(dur_s: f64, from: f64, to: f64, phase: Phase) -> FlatBlock {
+pub(crate) fn block(dur_s: f64, from: f64, to: f64, phase: Phase) -> FlatBlock {
     FlatBlock {
         path: vec![],
         iteration: vec![],
@@ -76,7 +77,7 @@ fn block(dur_s: f64, from: f64, to: f64, phase: Phase) -> FlatBlock {
         dur_range_s: None,
     }
 }
-fn rig() -> Rig {
+pub(crate) fn rig() -> Rig {
     let (events, event_rx) = mpsc::channel(4096);
     let (control_tx, control) = mpsc::channel(4096);
     let link = TrainerLink {
@@ -113,23 +114,24 @@ fn rig() -> Rig {
     }
 }
 impl Rig {
-    fn load(&mut self, blocks: Vec<FlatBlock>) {
+    pub(crate) fn load(&mut self, blocks: Vec<FlatBlock>) {
         let rec = Box::new(Recorder(self.log.clone()));
         self.engine
             .command(EngineCmd::Load(RideSetup {
                 blocks,
                 recorder: rec,
+                cap_w: None,
             }))
             .unwrap();
     }
-    fn start(&mut self) {
+    pub(crate) fn start(&mut self) {
         self.engine.command(EngineCmd::Start).unwrap();
     }
     /// A trainer sample arriving at the start of tick `k`.
-    fn sample(&self, k: u64, power: u16, cadence: u8) {
+    pub(crate) fn sample(&self, k: u64, power: u16, cadence: u8) {
         self.sample_opt(k, Some(power), Some(cadence));
     }
-    fn sample_opt(&self, k: u64, power: Option<u16>, cadence: Option<u8>) {
+    pub(crate) fn sample_opt(&self, k: u64, power: Option<u16>, cadence: Option<u8>) {
         self.events
             .try_send(TrainerEvent::Sample(TrainerSample {
                 at: MonoTime(k * TICK_US + 1),
@@ -144,11 +146,11 @@ impl Rig {
             }))
             .unwrap();
     }
-    fn hr_link(&mut self, s: LinkState) {
+    pub(crate) fn hr_link(&mut self, s: LinkState) {
         self.hr.try_send(HrEvent::Link(s)).unwrap();
         self.engine.drain();
     }
-    fn heart(&self, k: u64, bpm: u8) {
+    pub(crate) fn heart(&self, k: u64, bpm: u8) {
         self.hr
             .try_send(HrEvent::Sample(HrSample {
                 at: MonoTime(k * TICK_US + 1),
@@ -160,37 +162,37 @@ impl Rig {
     }
     /// A link event received now: stamped with the manual clock, i.e. before the next
     /// unprocessed tick, in order with the samples queued so far.
-    fn link(&mut self, s: LinkState) {
+    pub(crate) fn link(&mut self, s: LinkState) {
         self.events.try_send(TrainerEvent::Link(s)).unwrap();
         self.engine.drain();
     }
     /// Move the manual clock without processing ticks.
-    fn at(&mut self, us: u64) {
+    pub(crate) fn at(&mut self, us: u64) {
         self.clock.0.store(us, Ordering::SeqCst);
     }
     /// Process every tick whose window has closed by the end of tick `k`.
-    fn through(&mut self, k: u64) {
+    pub(crate) fn through(&mut self, k: u64) {
         self.clock.0.store((k + 1) * TICK_US, Ordering::SeqCst);
         self.engine.catch_up();
     }
-    fn state(&self) -> RideState {
+    pub(crate) fn state(&self) -> RideState {
         self.status().state
     }
-    fn status(&self) -> crate::RideStatus {
+    pub(crate) fn status(&self) -> crate::RideStatus {
         self.engine.status.borrow().clone()
     }
-    fn modes(&mut self) -> Vec<ControlMode> {
+    pub(crate) fn modes(&mut self) -> Vec<ControlMode> {
         let mut out = vec![];
         while let Ok(TrainerCommand::SetMode(m)) = self.control.try_recv() {
             out.push(m);
         }
         out
     }
-    fn rows(&self) -> Vec<(u32, SecondRow)> {
+    pub(crate) fn rows(&self) -> Vec<(u32, SecondRow)> {
         self.log.lock().unwrap().rows.clone()
     }
 }
-fn erg(w: u16) -> ControlMode {
+pub(crate) fn erg(w: u16) -> ControlMode {
     ControlMode::Erg { target_w: w }
 }
 
@@ -630,7 +632,8 @@ fn commands_are_checked_against_the_state() {
     assert_eq!(
         r.engine.command(EngineCmd::Load(RideSetup {
             blocks: vec![],
-            recorder: Box::new(Recorder(r.log.clone()))
+            recorder: Box::new(Recorder(r.log.clone())),
+            cap_w: None,
         })),
         Err(CommandError::WrongState)
     );
@@ -656,17 +659,24 @@ fn record_failure_is_reported_and_stops_recording_not_the_ride() {
 fn ramp_target_moves_once_per_second_and_clamps_to_the_trainer_maximum() {
     let ctx = |elapsed, max| PolicyContext {
         block: None,
+        block_index: 0,
         block_elapsed_ticks: elapsed,
-        engaged_ticks: 0,
-        after_loss: false,
-        engage_power_w: None,
+        tick: 0,
+        link_epoch: 0,
+        flow_start: Some(0),
+        power_3s_w: None,
+        cadence_rpm: Some(90),
+        last_sent: None,
+        riding: true,
+        following: TrainerFollowing::Unknown,
         max_target_w: max,
+        cap_w: None,
     };
     let b = block(100.0, 100.0, 200.0, Phase::Work);
     let at = |elapsed, max| {
         let mut c = ctx(elapsed, max);
         c.block = Some(&b);
-        BlockTarget.desired(&c)
+        ErgPolicy::new().desired(&c)
     };
     assert_eq!(at(0, 2000), Some(erg(100)));
     assert_eq!(
@@ -678,7 +688,7 @@ fn ramp_target_moves_once_per_second_and_clamps_to_the_trainer_maximum() {
     assert_eq!(at(4 * 100, 2000), Some(erg(200)));
     assert_eq!(at(4 * 100, 120), Some(erg(120)));
     assert_eq!(
-        BlockTarget.desired(&ctx(0, 2000)),
+        ErgPolicy::new().desired(&ctx(0, 2000)),
         Some(ControlMode::Free),
         "no block: explicit free ride"
     );
@@ -811,6 +821,7 @@ fn start_needs_a_ready_trainer() {
     let setup = || RideSetup {
         blocks: vec![],
         recorder: Box::new(Recorder(Arc::default())),
+        cap_w: None,
     };
     engine.command(EngineCmd::Load(setup())).unwrap();
     assert_eq!(
@@ -1087,9 +1098,16 @@ mod soft_start_property {
     use super::*;
     use proptest::prelude::*;
 
+    /// One generated step. `Stale` is a sample stamped before a link event that is
+    /// delivered after it was sent (#239 N1): queued, then the link, then the tick.
     #[derive(Clone, Debug)]
     enum Op {
         Sample {
+            power: Option<u16>,
+            cadence: Option<u8>,
+        },
+        Stale {
+            link: u8,
             power: Option<u16>,
             cadence: Option<u8>,
         },
@@ -1099,40 +1117,195 @@ mod soft_start_property {
         Skip,
     }
     fn op() -> impl Strategy<Value = Op> {
-        let cadence = prop_oneof![Just(None), Just(Some(0_u8)), (1_u8..=120).prop_map(Some)];
+        let cadence = prop_oneof![
+            Just(None),
+            Just(Some(0_u8)),
+            (1_u8..=120).prop_map(Some),
+            (60_u8..=120).prop_map(Some),
+        ];
+        let power = prop::option::weighted(0.8, 0_u16..=400);
         prop_oneof![
-            6 => (prop::option::weighted(0.8, 0_u16..=400), cadence)
+            6 => (power.clone(), cadence.clone())
                 .prop_map(|(power, cadence)| Op::Sample { power, cadence }),
+            2 => (0_u8..3, power, cadence)
+                .prop_map(|(link, power, cadence)| Op::Stale { link, power, cadence }),
             1 => (40_u8..180).prop_map(Op::Hr),
             2 => (0_u8..3).prop_map(Op::Link),
             2 => (0_u8..=20).prop_map(Op::Silence),
-            1 => Just(Op::Skip),
+            2 => Just(Op::Skip),
         ]
     }
+    /// A 600 s block (longer than any generated ride segment): free, flat or a ramp.
+    #[derive(Clone, Copy, Debug)]
+    enum Blk {
+        Free,
+        Flat(u16),
+        Ramp(u16, u16),
+    }
+    impl Blk {
+        fn flat_block(self) -> FlatBlock {
+            match self {
+                Blk::Free => block(600.0, 0.0, 0.0, Phase::Free),
+                Blk::Flat(w) => block(600.0, f64::from(w), f64::from(w), Phase::Work),
+                Blk::Ramp(a, b) => block(600.0, f64::from(a), f64::from(b), Phase::Work),
+            }
+        }
+        fn peak(self) -> u16 {
+            match self {
+                Blk::Free => 0,
+                Blk::Flat(w) => w,
+                Blk::Ramp(a, b) => a.max(b),
+            }
+        }
+    }
+    fn blk() -> impl Strategy<Value = Blk> {
+        prop_oneof![
+            1 => Just(Blk::Free),
+            1 => Just(Blk::Flat(0)),
+            5 => (60_u16..=320).prop_map(Blk::Flat),
+            2 => (60_u16..=320, 60_u16..=320).prop_map(|(a, b)| Blk::Ramp(a, b)),
+        ]
+    }
+    /// A ride: its blocks and an optional health cap (DESIGN §15.2).
+    fn ride() -> impl Strategy<Value = (Vec<Blk>, Option<u16>)> {
+        (
+            prop::collection::vec(blk(), 2..=6),
+            prop::option::weighted(0.4, 120_u16..=400),
+        )
+    }
 
-    struct Run {
+    struct Ramp {
         start: u64,
         origin: f64,
-        last: Option<u16>,
     }
-    /// What the soft start may do, restated from ADR-0002 §7.5 / #231 without the
-    /// engine's own state: one epoch per link event or 8-tick silence.
-    #[derive(Default)]
+    /// What ADR-0002 §7.4–7.5 and DESIGN §15.2 allow, restated without the engine's
+    /// state. One epoch per applied link event or 8-tick silence; a soft start is owed
+    /// after one, after leaving a free block and after a release, and is repaid only by a
+    /// completed ERG ramp. A ramp block's target is only known as an interval (workout
+    /// time freezes in pauses the oracle does not model): between its value at the block's
+    /// start and at the block's session age.
     struct Model {
+        blocks: Vec<Blk>,
+        cap: Option<u16>,
+        block: usize,
+        /// Session ticks since the current block was entered (an upper bound of its timer).
+        age: u64,
+        ready: bool,
         armed: bool,
         silent: u32,
         epoch: Vec<(u64, Option<u16>, Option<u8>)>,
-        run: Option<Run>,
+        flow: Option<u64>,
+        ramp: Option<Ramp>,
+        released: bool,
+        low: u32,
+        high: u32,
+        /// The last mode the engine sent in this epoch (the engine forgets it at an epoch).
+        current: Option<ControlMode>,
     }
     impl Model {
+        fn new(blocks: Vec<Blk>, cap: Option<u16>) -> Self {
+            Self {
+                blocks,
+                cap,
+                block: 0,
+                age: 0,
+                ready: true,
+                armed: false,
+                silent: 0,
+                epoch: vec![],
+                flow: None,
+                ramp: None,
+                released: false,
+                low: 0,
+                high: 0,
+                current: None,
+            }
+        }
+        fn skipped(&mut self) {
+            self.block += 1;
+            self.age = 0;
+        }
+        /// A link epoch (§7.5, #231): an applied link transition or 8 silent ticks. What
+        /// was sampled before it is forgotten and a soft start is owed. Nothing re-engages
+        /// ERG by itself: a release is kept (§7.4 leaves it only after 60 rpm for 2 s).
+        fn new_epoch(&mut self) {
+            self.epoch.clear();
+            self.flow = None;
+            self.ramp = None;
+            self.low = 0;
+            self.high = 0;
+            self.current = None;
+            self.armed = true;
+        }
         fn sample(&mut self, k: u64, power: Option<u16>, cadence: Option<u8>) {
             self.epoch.retain(|(j, ..)| *j != k);
             self.epoch.push((k, power, cadence));
         }
         fn link(&mut self, state: LinkState) {
-            self.epoch.clear();
-            self.run = None;
-            self.armed |= state != LinkState::Ready;
+            self.ready = state == LinkState::Ready;
+            self.new_epoch();
+        }
+        fn held_cadence(&self, k: u64) -> Option<u8> {
+            self.epoch
+                .iter()
+                .filter(|(j, ..)| *j <= k && k - j <= 4)
+                .max_by_key(|(j, ..)| *j)
+                .and_then(|(_, _, c)| *c)
+        }
+        /// The block target as an interval: value at the block start, value at its age.
+        fn target(&self) -> Option<(f64, f64)> {
+            Some(match *self.blocks.get(self.block)? {
+                Blk::Free => return None,
+                Blk::Flat(w) => (f64::from(w), f64::from(w)),
+                Blk::Ramp(a, b) => {
+                    #[expect(clippy::cast_precision_loss, reason = "tiny")]
+                    let f = (self.age.min(2400) as f64) / 2400.0;
+                    let end = f64::from(a) + (f64::from(b) - f64::from(a)) * f;
+                    (f64::from(a).min(end), f64::from(a).max(end))
+                }
+            })
+        }
+        /// Check what the engine sent in the tick just processed.
+        fn check(&self, k: u64, modes: &[ControlMode], want: &Want) -> Result<(), TestCaseError> {
+            match want {
+                Want::Nothing => prop_assert!(modes.is_empty(), "k={k}: {modes:?} on a dead link"),
+                Want::Mode(m) => {
+                    for x in modes {
+                        prop_assert_eq!(x, m, "k={}", k);
+                    }
+                    prop_assert_eq!(self.current.as_ref(), Some(m), "k={}", k);
+                }
+                Want::Hold => {
+                    for x in modes {
+                        prop_assert_eq!(*x, erg(0), "k={} not pedalling", k);
+                    }
+                    if !matches!(self.current, Some(ControlMode::Erg { .. })) {
+                        prop_assert_eq!(
+                            self.current,
+                            Some(erg(0)),
+                            "k={}: owed soft start, not pedalling, must hold 0 W",
+                            k
+                        );
+                    }
+                }
+                Want::Erg(lo, hi) => {
+                    let ok = |m: &ControlMode| {
+                        matches!(*m, ControlMode::Erg { target_w }
+                            if (*lo - 1.0..=*hi + 1.0).contains(&f64::from(target_w)))
+                    };
+                    for m in modes {
+                        prop_assert!(ok(m), "k={k}: {m:?} outside [{lo}, {hi}]");
+                    }
+                    prop_assert!(
+                        self.current.as_ref().is_some_and(ok),
+                        "k={k}: engine holds {:?}, rules expect [{lo}, {hi}] (armed {}, flow {:?})",
+                        self.current,
+                        self.armed,
+                        self.flow
+                    );
+                }
+            }
+            Ok(())
         }
         /// After tick `k` was processed; `modes` are the commands it sent.
         fn tick(
@@ -1146,19 +1319,81 @@ mod soft_start_property {
             } else {
                 self.silent += 1;
                 if self.silent == 8 {
-                    self.armed = true;
-                    self.epoch.clear();
-                    self.run = None;
+                    self.new_epoch();
                 }
             }
-            let pedalling = self
-                .epoch
-                .iter()
-                .max_by_key(|(j, ..)| *j)
-                .is_some_and(|(j, _, c)| k - j <= 4 && c.is_some_and(|c| c > 0));
-            if !pedalling {
-                self.run = None;
-            } else if self.run.is_none() {
+            let cadence = self.held_cadence(k);
+            if cadence.is_some_and(|c| c > 0) {
+                self.flow.get_or_insert(k);
+            } else {
+                self.flow = None;
+            }
+            let applied = self.current; // what was on the trainer when the tick began
+            self.current = modes.last().copied().or(self.current);
+            self.age += 1;
+            let want = self.want(k, applied);
+            self.check(k, modes, &want)
+        }
+        /// What the rules require at tick `k` (state updated as a side effect).
+        fn want(&mut self, k: u64, applied: Option<ControlMode>) -> Want {
+            if self.block >= self.blocks.len() {
+                return Want::Nothing; // finished: no commands, and none are checked
+            }
+            if !self.ready {
+                return Want::Nothing;
+            }
+            let cadence = self.held_cadence(k);
+            // §7.4: a release is left only by 60 rpm for 2 s (in any block kind, and it
+            // survives link epochs and free blocks), and then the §7.5 soft start is owed.
+            if self.released {
+                self.high = if cadence.is_some_and(|c| c >= 60) {
+                    self.high + 1
+                } else {
+                    0
+                };
+                if self.high >= 8 {
+                    self.released = false;
+                    self.armed = true;
+                    self.ramp = None;
+                    self.low = 0;
+                }
+            }
+            let Some((lo, hi)) = self.target() else {
+                // §7.9: a free block is explicit flat-road SIM; ERG afterwards owes a soft start
+                self.armed = true;
+                self.ramp = None;
+                self.low = 0;
+                return Want::Mode(ControlMode::Free);
+            };
+            let _ = hi;
+            // §7.4 (architect decision, round 5): judged against what is applied on the
+            // trainer. A non-zero ERG on the trainer and cadence < 40 rpm (unknown is 0)
+            // for 2 s releases, whatever the policy's own target, debt or flow.
+            if !self.released {
+                let torque = matches!(applied, Some(ControlMode::Erg { target_w }) if target_w > 0);
+                self.low = if torque && cadence.is_none_or(|c| c < 40) {
+                    self.low + 1
+                } else {
+                    0
+                };
+                if self.low >= 8 {
+                    self.released = true;
+                    self.high = 0;
+                }
+            }
+            if self.released {
+                return Want::Mode(ControlMode::Resistance { pct: 0.0 });
+            }
+            let clamp = |w: f64| self.cap.map_or(w, |c| w.min(f64::from(c)));
+            if !self.armed {
+                return Want::Erg(clamp(lo), clamp(hi));
+            }
+            let Some(flow) = self.flow else {
+                self.ramp = None;
+                return Want::Hold;
+            };
+            let _ = flow;
+            if self.ramp.is_none() {
                 let live: Vec<f64> = self
                     .epoch
                     .iter()
@@ -1171,114 +1406,297 @@ mod soft_start_property {
                 } else {
                     live.iter().sum::<f64>() / live.len() as f64
                 };
-                self.run = Some(Run {
-                    start: k,
-                    origin,
-                    last: None,
-                });
+                self.ramp = Some(Ramp { start: k, origin });
             }
-            let exists = self.epoch.iter().any(|(_, _, c)| c.is_some_and(|c| c > 0));
-            for mode in modes {
-                let ControlMode::Erg { target_w } = *mode else {
-                    prop_assert!(false, "unexpected mode {mode:?}");
-                    continue;
-                };
-                let w = f64::from(target_w);
-                if !self.armed {
-                    continue;
-                }
-                if !exists {
-                    // inv. 1/3: no new-epoch pedalling sample yet: only 0 W
-                    prop_assert_eq!(target_w, 0, "k={} before a pedalling sample", k);
-                    continue;
-                }
-                let Some(run) = self.run.as_mut() else {
-                    prop_assert_eq!(target_w, 0, "k={} command while not pedalling", k);
-                    continue;
-                };
-                if target_w == 0 {
-                    if run.origin < 1.0 {
-                        run.last = Some(0);
-                    }
-                    continue;
-                }
-                let (lo, hi) = (run.origin.min(200.0) - 1.0, run.origin.max(200.0) + 1.0);
-                prop_assert!(
-                    (lo..=hi).contains(&w),
-                    "k={k}: {w} outside [{lo}, {hi}] (origin {})",
-                    run.origin
-                );
-                // the ramp is a function of the origin and the ticks since the samples
-                // started flowing: one step per second, five steps, no jump
-                #[expect(clippy::cast_precision_loss, reason = "tiny")]
-                let step = ((k - run.start) / 4).min(5) as f64;
-                let expected = run.origin + (200.0 - run.origin) * step / 5.0;
-                prop_assert!(
-                    (w - expected).abs() <= 1.0,
-                    "k={k}: command {w}, ramp expects {expected} (origin {}, started {})",
-                    run.origin,
-                    run.start
-                );
-                run.last = Some(target_w);
-            }
-            // the ramp is complete 20 ticks after it started: no longer after a loss
-            if self.run.as_ref().is_some_and(|r| k - r.start >= 20) {
+            let r = self.ramp.as_ref().expect("just set");
+            if k - r.start >= 20 {
+                // five 1 Hz steps are done: the debt is repaid
                 self.armed = false;
+                self.ramp = None;
+                return Want::Erg(clamp(lo), clamp(hi));
+            }
+            // one step per second, five steps, from the origin: no jump, and a target that
+            // changes mid-ramp is followed
+            #[expect(clippy::cast_precision_loss, reason = "tiny")]
+            let step = ((k - r.start) / 4) as f64;
+            let at = |t: f64| clamp(r.origin + (t - r.origin) * step / 5.0);
+            Want::Erg(at(lo).min(at(hi)), at(lo).max(at(hi)))
+        }
+    }
+    /// An output monitor that knows nothing of the policy: it sees only the command
+    /// stream and the inputs (samples, link events, block kinds, the cap) and asserts the
+    /// safety properties of ADR-0002 §7.4–7.5 and DESIGN §15.2. It exists because an oracle
+    /// that shares the policy's structure shares its holes (round 5, the stop-in-soft-start
+    /// hole): this one cannot.
+    ///
+    /// Documented exception: the ride's first command is sent at once, before any sample,
+    /// whatever the cadence (today's ride-start behaviour, pinned pending #250), so
+    /// "pedalled since the last epoch" starts true.
+    struct Monitor {
+        cap: Option<u16>,
+        applied: Option<ControlMode>,
+        hold: Option<(u64, Option<u8>)>,
+        powers: Vec<(u64, u16)>,
+        pedalled: bool,
+        silent: u32,
+        low: u32,
+        high: u32,
+        released: bool,
+        last_block: Option<usize>,
+    }
+    impl Monitor {
+        fn new(cap: Option<u16>) -> Self {
+            Self {
+                cap,
+                applied: None,
+                hold: None,
+                powers: vec![],
+                pedalled: true,
+                silent: 0,
+                low: 0,
+                high: 0,
+                released: false,
+                last_block: None,
+            }
+        }
+        /// An applied link transition, or 8 silent ticks: the old link is forgotten.
+        fn epoch(&mut self) {
+            self.applied = None;
+            self.hold = None;
+            self.powers.clear();
+            self.pedalled = false;
+            self.low = 0;
+        }
+        /// One processed tick. `sample` is a *valid* sample of the tick (a stale one is not).
+        fn tick(
+            &mut self,
+            k: u64,
+            sample: Option<(Option<u16>, Option<u8>)>,
+            block: Option<(usize, Blk)>,
+            modes: &[ControlMode],
+        ) -> Result<(), TestCaseError> {
+            if block.is_none() {
+                return Ok(()); // the ride is over: nothing is controlled any more
+            }
+            if let Some((power, cadence)) = sample {
+                self.silent = 0;
+                self.hold = Some((k, cadence));
+                if let Some(p) = power {
+                    self.powers.push((k, p));
+                }
+                if cadence.is_some_and(|c| c > 0) {
+                    self.pedalled = true;
+                }
+            } else {
+                self.silent += 1;
+                if self.silent == 8 {
+                    self.epoch();
+                }
+            }
+            let cadence = self
+                .hold
+                .filter(|(j, _)| k - j <= 4)
+                .and_then(|(_, c)| c)
+                .unwrap_or(0);
+            let before = self.applied;
+            // rule 1 bookkeeping: ticks on which non-zero ERG was applied at low cadence
+            let torque = |m: Option<ControlMode>| matches!(m, Some(ControlMode::Erg { target_w }) if target_w > 0);
+            self.low = if torque(before) && cadence < 40 {
+                self.low + 1
+            } else {
+                0
+            };
+            self.high = if cadence >= 60 { self.high + 1 } else { 0 };
+            let was_released = self.released;
+            if self.released && self.high >= 8 {
+                self.released = false;
+            }
+            let p3 = self
+                .powers
+                .iter()
+                .filter(|(j, _)| k - j < 12)
+                .map(|(_, p)| *p)
+                .max()
+                .unwrap_or(0);
+            let peak = block.map_or(0, |(_, b)| b.peak());
+            let step = f64::from(peak).div_euclid(5.0) + 2.0;
+            let mut prev = before;
+            for m in modes {
+                if let ControlMode::Erg { target_w } = *m
+                    && target_w > 0
+                {
+                    // 5: while released, nothing until 60 rpm for 2 s
+                    prop_assert!(
+                        !self.released,
+                        "k={k}: {m:?} while released ({was_released})"
+                    );
+                    // 2: not before the rider pedalled since the epoch / release
+                    prop_assert!(self.pedalled, "k={k}: {m:?} before any pedalling sample");
+                    // 3: the cap
+                    if let Some(c) = self.cap {
+                        prop_assert!(target_w <= c, "k={k}: {m:?} above cap {c}");
+                    }
+                    // 4: no jump: one ramp step above what was applied (or above the rider's
+                    // own power on entry); a block change is a discontinuity by design
+                    let same_block = self.last_block == block.map(|(i, _)| i);
+                    if k > 0 && same_block {
+                        // a ramp restarts from the rider's current power (§7.5), so that
+                        // is as good a base as the previous command
+                        let base = match prev {
+                            Some(ControlMode::Erg { target_w: w }) if w > 0 => {
+                                f64::from(w).max(f64::from(p3))
+                            }
+                            _ => f64::from(p3),
+                        };
+                        prop_assert!(
+                            f64::from(target_w) <= base + step,
+                            "k={k}: {m:?} is more than a step ({step}) above {base}"
+                        );
+                    }
+                }
+                if matches!(m, ControlMode::Resistance { .. }) && !self.released {
+                    // a release (not a re-issue of one after an epoch)
+                    self.released = true;
+                    self.high = 0;
+                    self.pedalled = false;
+                }
+                prev = Some(*m);
+            }
+            if !modes.is_empty() {
+                self.applied = prev;
+            }
+            self.last_block = block.map(|(i, _)| i);
+            // 1: 2 s below 40 rpm with torque applied ⇒ released by the end of the window
+            if self.low >= 8 {
+                prop_assert!(
+                    !torque(self.applied),
+                    "k={k}: {:?} still applied after {} ticks below 40 rpm",
+                    self.applied,
+                    self.low
+                );
             }
             Ok(())
         }
     }
+    enum Want {
+        Nothing,
+        Mode(ControlMode),
+        Hold,
+        Erg(f64, f64),
+    }
 
-    fn execute(ops: &[Op]) -> Result<(), TestCaseError> {
+    fn state(i: u8) -> LinkState {
+        [LinkState::Lost, LinkState::Connecting, LinkState::Ready][usize::from(i)]
+    }
+    /// Run several rides on one engine, so nothing may leak from one to the next.
+    fn execute(rides: &[(Vec<Blk>, Option<u16>, Vec<Op>)]) -> Result<(), TestCaseError> {
         let mut r = rig();
-        r.load(
-            (0..6)
-                .map(|_| block(600.0, 200.0, 200.0, Phase::Work))
-                .collect(),
-        );
-        r.start();
-        let (mut m, mut k) = (Model::default(), 0_u64);
-        let step = |r: &mut Rig, m: &mut Model, k: &mut u64, had: bool| {
-            r.through(*k);
-            let modes = r.modes();
-            let out = m.tick(*k, had, &modes);
-            *k += 1;
-            out
-        };
-        for op in ops {
-            match op {
-                Op::Sample { power, cadence } => {
-                    r.sample_opt(k, *power, *cadence);
-                    m.sample(k, *power, *cadence);
-                    step(&mut r, &mut m, &mut k, true)?;
+        let mut k = 0_u64; // absolute tick, kept across rides
+        for (blocks, cap, ops) in rides {
+            r.link(LinkState::Ready);
+            r.at(k * TICK_US);
+            r.engine
+                .command(EngineCmd::Load(RideSetup {
+                    blocks: blocks.iter().map(|b| b.flat_block()).collect(),
+                    recorder: Box::new(Recorder(r.log.clone())),
+                    cap_w: *cap,
+                }))
+                .expect("load");
+            let expected = match cap {
+                Some(_) if blocks.iter().any(|b| matches!(b, Blk::Free)) => {
+                    Some(CommandError::CapRequiresErg)
                 }
-                Op::Silence(n) => {
-                    for _ in 0..*n {
-                        step(&mut r, &mut m, &mut k, false)?;
+                Some(c) if blocks.iter().any(|b| b.peak() > *c) => {
+                    Some(CommandError::CapExceededTarget)
+                }
+                _ => None,
+            };
+            let started = r.engine.command(EngineCmd::Start);
+            let refused = started.is_err();
+            prop_assert_eq!(started.err(), expected);
+            if refused {
+                r.engine.command(EngineCmd::Stop).expect("unload");
+                continue;
+            }
+            let mut m = Model::new(blocks.clone(), *cap);
+            let mut mon = Monitor::new(*cap);
+            // `valid`: the tick's valid sample, which the monitor sees as an input
+            let step = |r: &mut Rig,
+                        m: &mut Model,
+                        mon: &mut Monitor,
+                        k: &mut u64,
+                        valid: Option<(Option<u16>, Option<u8>)>| {
+                r.through(*k);
+                let modes = r.modes();
+                let block = m.blocks.get(m.block).map(|b| (m.block, *b));
+                let out = m
+                    .tick(*k, valid.is_some(), &modes)
+                    .and_then(|()| mon.tick(*k, valid, block, &modes));
+                *k += 1;
+                out
+            };
+            for op in ops {
+                match op {
+                    Op::Sample { power, cadence } => {
+                        r.sample_opt(k, *power, *cadence);
+                        m.sample(k, *power, *cadence);
+                        step(&mut r, &mut m, &mut mon, &mut k, Some((*power, *cadence)))?;
+                    }
+                    Op::Stale {
+                        link,
+                        power,
+                        cadence,
+                    } => {
+                        // sent before the link event, processed after it: dropped as stale
+                        r.sample_opt(k, *power, *cadence);
+                        r.link(state(*link));
+                        m.link(state(*link));
+                        mon.epoch();
+                        step(&mut r, &mut m, &mut mon, &mut k, None)?;
+                    }
+                    Op::Silence(n) => {
+                        for _ in 0..*n {
+                            step(&mut r, &mut m, &mut mon, &mut k, None)?;
+                        }
+                    }
+                    Op::Link(i) => {
+                        r.link(state(*i));
+                        m.link(state(*i));
+                        mon.epoch();
+                    }
+                    Op::Hr(bpm) => r.heart(k, *bpm),
+                    Op::Skip => {
+                        if r.engine.command(EngineCmd::SkipBlock).is_ok() {
+                            m.skipped();
+                        }
                     }
                 }
-                Op::Link(i) => {
-                    let state =
-                        [LinkState::Lost, LinkState::Connecting, LinkState::Ready][usize::from(*i)];
-                    r.link(state);
-                    m.link(state);
-                }
-                Op::Hr(bpm) => r.heart(k, *bpm),
-                Op::Skip => {
-                    let _ = r.engine.command(EngineCmd::SkipBlock);
-                }
             }
+            // every second of the ride is in exactly one compliance bucket (§7.8)
+            let st = r.status();
+            prop_assert_eq!(
+                u64::from(st.compliance.counted_s + st.compliance.excluded_s),
+                st.session.0 / 4,
+                "{:?}",
+                st.compliance
+            );
+            // the next ride begins with the engine in whatever state this one left it
+            let _ = r.engine.command(EngineCmd::Stop);
         }
         Ok(())
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(2000))]
+        #![proptest_config(ProptestConfig::with_cases(5000))]
         #[test]
         fn the_soft_start_never_jumps_and_never_uses_old_epoch_power(
-            ops in prop::collection::vec(op(), 1..60)
+            rides in prop::collection::vec(
+                (ride(), prop::collection::vec(op(), 1..60))
+                    .prop_map(|((b, c), o)| (b, c, o)),
+                1..=3,
+            )
         ) {
-            execute(&ops)?;
+            execute(&rides)?;
         }
     }
 }
