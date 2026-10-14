@@ -566,3 +566,52 @@ async fn dropping_the_core_mid_ride_finishes_the_ride_and_frees_the_lock() {
     assert_eq!(rides[0].outcome, RideOutcome::Finished, "{:?}", rides[0]);
     assert!(rides[0].summary.is_some());
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_block_metric_is_persisted_per_second_and_matches_the_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path(), vec![])).unwrap();
+    pair_both(&core).await;
+    core.ride_load(Some(SENSOR_CHECK.into())).await.unwrap();
+    core.ride_start().await.unwrap();
+    sleep(Duration::from_secs(6)).await;
+    core.ride_skip().await.unwrap();
+    sleep(Duration::from_secs(9)).await;
+    core.ride_skip().await.unwrap();
+    sleep(Duration::from_secs(4)).await;
+    let id = core.ride_end().await.unwrap().expect("a ride");
+    let summary = core
+        .ride_summary(id.clone())
+        .await
+        .unwrap()
+        .summary
+        .unwrap();
+
+    // The Review path: read the stored per-second `block` back, without the core.
+    let store = crank_store::Store::open_read_only(dir.path()).unwrap();
+    let blocks: Vec<Option<f32>> = store
+        .chunks(&id, "block")
+        .unwrap()
+        .into_iter()
+        .flat_map(|c| c.values)
+        .collect();
+    let secs = |n: usize| f64::from(u32::try_from(n).expect("a short ride"));
+    assert!((secs(blocks.len()) - summary.duration_s).abs() < 1e-9);
+    let stored: Vec<usize> = [0.0_f32, 1.0, 2.0]
+        .iter()
+        .map(|k| blocks.iter().filter(|b| **b == Some(*k)).count())
+        .collect();
+    for (n, block) in stored.iter().zip(&summary.blocks) {
+        assert!(
+            (secs(*n) - block.actual_s).abs() < 1e-9,
+            "stored rows reproduce the summary: {stored:?} vs {summary:?}"
+        );
+    }
+    assert!(
+        stored.iter().all(|n| *n > 0),
+        "every block was ridden: {stored:?}"
+    );
+    // Non-decreasing along the ride: the cursor only moves forward.
+    let seq: Vec<f32> = blocks.iter().flatten().copied().collect();
+    assert!(seq.windows(2).all(|w| w[0] <= w[1]), "{seq:?}");
+}
