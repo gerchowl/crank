@@ -25,7 +25,11 @@ test:
 
 # Executable model of ADR-0002 §4.4.1 (also the `following-model` flake check).
 model:
-    python3 docs/adr/models/trainer_following.py
+    python3 docs/adr/models/trainer_following.py docs/adr/0002-ble-trainer.md crates/crank-engine/tests/fixtures/following.json
+
+# Regenerate the fixture crank-engine's `refines_the_model` test reads (#218).
+model-fixture:
+    python3 docs/adr/models/trainer_following.py --emit-fixture crates/crank-engine/tests/fixtures/following.json
 
 # FMEA validator, strict: a cited test that does not exist fails here (the `fmea` flake check
 # only warns about it). `just fmea --write` re-renders the table into FMEA.md.

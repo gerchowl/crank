@@ -25,6 +25,11 @@ fn status(state: StreamRideState, marker: u64) -> StreamStatus {
         block_elapsed_s: 0.0,
         late_samples: marker,
         record_error: None,
+        trainer_following: super::types::StreamFollowing::Unknown,
+        not_following_component: None,
+        erg_released: false,
+        compliance: super::types::StreamCompliance::default(),
+        cap: None,
     }
 }
 fn riding(marker: u64) -> StreamStatus {
@@ -417,6 +422,18 @@ fn worst_status() -> StreamStatus {
         block_elapsed_s: f64::MIN,
         late_samples: u64::MAX,
         record_error: Some("𝔘".repeat(1_000)),
+        trainer_following: super::types::StreamFollowing::NotFollowing,
+        not_following_component: Some(super::types::StreamComponent::Resistance),
+        erg_released: true,
+        compliance: super::types::StreamCompliance {
+            counted_s: u32::MAX,
+            within_s: u32::MAX,
+            excluded_s: u32::MAX,
+        },
+        cap: Some(super::types::StreamCap {
+            cap_w: u16::MAX,
+            erg_only: true,
+        }),
     }
 }
 
@@ -441,6 +458,18 @@ fn every_frame_stays_under_the_byte_budget_at_every_cap() {
         hr_link: None,
         late_samples: u64::MAX,
         record_error: Some("𝔘".repeat(1_000)),
+        trainer_following: crate::erg::TrainerFollowing::NotFollowing,
+        not_following_component: Some(crate::erg::Component::Resistance),
+        erg_released: true,
+        compliance: crate::erg::Compliance {
+            counted_s: u32::MAX,
+            within_s: u32::MAX,
+            excluded_s: u32::MAX,
+        },
+        cap: Some(crate::engine::CapState {
+            cap_w: u16::MAX,
+            erg_only: true,
+        }),
     };
     ride.state = crate::engine::RideState::Paused(crate::engine::PauseReason::StoppedPedalling);
     let from_engine = StreamStatus::from(&ride);
@@ -466,18 +495,23 @@ fn every_frame_stays_under_the_byte_budget_at_every_cap() {
 
 #[test]
 fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
-    // A small budget forces splitting: ~30 bytes per sample, a few per frame.
-    let mut flow = Flow::new(260);
-    for sub in 0..10_u64 {
+    // A small budget forces splitting: ~30 bytes per sample, a few per frame. The status
+    // alone is ~285 bytes since #218 (following, compliance, cap), so the budget is
+    // sized so that 12 samples split over exactly three frames.
+    const BUDGET: usize = 360;
+    let mut flow = Flow::new(BUDGET);
+    for sub in 0..12_u64 {
         flow.offer_sample(sample(sub, 1.5, 100.0 + sub as f64));
     }
     flow.offer_status(riding(1));
     let frames = flow.drain(0);
-    assert!(frames.len() > 1);
+    // the status (~285 bytes) rides the first frame with a few samples: three frames, the
+    // whole window (MAX_UNACKED), carry the 12 samples
+    assert_eq!(frames.len(), 3);
     let mut got = Vec::new();
     for (i, f) in frames.iter().enumerate() {
         assert_eq!(f.seq, i as u64, "consecutive seq");
-        assert!(json(f).len() <= 260);
+        assert!(json(f).len() <= BUDGET);
         assert_eq!(
             f.status.is_some(),
             i == 0,
@@ -485,7 +519,7 @@ fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
         );
         got.extend(f.samples.iter().map(|s| s.sub.0));
     }
-    assert_eq!(got, (0..10).collect::<Vec<_>>(), "every sample, in order");
+    assert_eq!(got, (0..12).collect::<Vec<_>>(), "every sample, in order");
     assert_eq!(flow.unacked(), frames.len());
 }
 
@@ -1047,4 +1081,87 @@ fn non_finite_values_are_gaps_and_do_not_poison_the_chain() {
     assert_eq!(out[0], Some(100.0));
     assert_eq!(out[1..4], [None, None, None]);
     assert_eq!(out[4], Some(100.0), "the chain recovered");
+}
+
+#[test]
+fn the_worst_status_with_the_erg_fields_has_a_measured_size() {
+    // The discrete part at every cap with #218's fields (following, component, released,
+    // compliance at u32::MAX, cap) and the record error cut at its cap (256 bytes of
+    // 4-byte characters): measured, against the 8 000-byte frame budget.
+    let mut st = worst_status();
+    st.record_error = Some("𝔘".repeat(MAX_RECORD_ERROR_BYTES / 4));
+    let n = serde_json::to_vec(&st).expect("status").len();
+    eprintln!("worst status: {n} bytes");
+    assert!(n < 800, "worst status is {n} bytes");
+    assert!(n < FRAME_BUDGET_BYTES / 10);
+}
+
+#[test]
+fn the_wire_status_carries_the_erg_fields_with_their_meaning() {
+    use crate::engine::{CapState, RideState, RideStatus};
+    use crate::erg::{Compliance, Component, TrainerFollowing};
+    use crate::ticks::{SessionTicks, WorkoutTicks};
+    let ride = RideStatus {
+        state: RideState::Riding,
+        loaded: true,
+        session: SessionTicks(0),
+        workout: WorkoutTicks(0),
+        block_index: None,
+        block_elapsed: WorkoutTicks(0),
+        trainer_link: None,
+        hr_link: None,
+        late_samples: 0,
+        record_error: None,
+        trainer_following: TrainerFollowing::NotFollowing,
+        not_following_component: Some(Component::Track),
+        erg_released: true,
+        compliance: Compliance {
+            counted_s: 3,
+            within_s: 2,
+            excluded_s: 1,
+        },
+        cap: Some(CapState {
+            cap_w: 180,
+            erg_only: true,
+        }),
+    };
+    let v = serde_json::to_value(StreamStatus::from(&ride)).expect("status");
+    assert_eq!(v["trainerFollowing"], "not_following");
+    assert_eq!(v["notFollowingComponent"], "track");
+    assert_eq!(v["ergReleased"], true);
+    assert_eq!(v["compliance"]["countedS"], 3);
+    assert_eq!(v["compliance"]["withinS"], 2);
+    assert_eq!(v["compliance"]["excludedS"], 1);
+    assert_eq!(v["cap"]["capW"], 180);
+    assert_eq!(v["cap"]["ergOnly"], true);
+    for (c, name) in [
+        (Component::Erg, "erg"),
+        (Component::Resistance, "resistance"),
+        (Component::Wind, "wind"),
+    ] {
+        let mut r = ride.clone();
+        r.not_following_component = Some(c);
+        let v = serde_json::to_value(StreamStatus::from(&r)).expect("status");
+        assert_eq!(v["notFollowingComponent"], name);
+    }
+    let mut calm = ride;
+    calm.not_following_component = None;
+    calm.erg_released = false;
+    calm.cap = None;
+    calm.trainer_following = TrainerFollowing::Checking;
+    let v = serde_json::to_value(StreamStatus::from(&calm)).expect("status");
+    assert_eq!(
+        (
+            &v["trainerFollowing"],
+            &v["notFollowingComponent"],
+            &v["ergReleased"],
+            &v["cap"]
+        ),
+        (
+            &"checking".into(),
+            &serde_json::Value::Null,
+            &false.into(),
+            &serde_json::Value::Null
+        )
+    );
 }
