@@ -139,7 +139,7 @@ impl TrainerDriver for FecTrainer {
                             if let Ok(frame) = decode(&bytes)
                                 && let Page::Capabilities(p) = frame.page {
                                     break Ok(TrainerCaps { erg: p.modes & 2 != 0, sim: p.modes & 4 != 0,
-                                        resistance: p.modes & 1 != 0, max_resistance_n: p.max_resistance_n, max_target_w: 16383 });
+                                        resistance: p.modes & 1 != 0, max_resistance_n: (p.max_resistance_n != 0xffff).then_some(p.max_resistance_n), max_target_w: 16383 });
                                 }
                             for event in receive(at, &bytes) { events.try_send(event).map_err(|e| DeviceError::Gatt(e.to_string()))?; }
                         }

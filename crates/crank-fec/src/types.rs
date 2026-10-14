@@ -26,7 +26,9 @@ pub struct AntFrame {
 /// Adding a page requires an ADR-0002 amendment first; evaluation of 17/19
 /// against HIL captures is tracked in <https://github.com/gerchowl/crank/issues/139>.
 /// Page 49 and page 51 Crr use the full numeric domains decided in ADR-0002 §4.3,
-/// including 0xFFFF target power and 0xFF Crr; #44 must verify those endpoints.
+/// including 0xFFFF target power and 0xFF Crr. Whether those endpoints are the
+/// profile's invalid sentinels is **tentative pending HIL #44**; the raw numeric
+/// value is kept, with no invented semantics.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Page {
     /// Page 16, general fitness equipment telemetry.
@@ -59,7 +61,8 @@ pub enum Page {
         /// Dimensionless rolling coefficient, resolution 0.00005; 0xFF is numeric.
         crr: f32,
     },
-    /// Page 54, fitness equipment capabilities; hardware verification is #44.
+    /// Page 54, fitness equipment capabilities; 0xFFFF max resistance is
+    /// raw and **tentative pending HIL #44**.
     Capabilities(FeCapabilities),
     /// Page 55, user configuration, using the ANT+ FE profile layout (#70).
     UserConfig {
@@ -68,7 +71,8 @@ pub enum Page {
         /// Bicycle mass in kg, resolution 0.05 kg; 0xFFF is invalid.
         bike_kg: Option<f32>,
         /// Wheel diameter in m, resolution 0.001 m; 0xFF coarse byte or
-        /// reserved offsets 10–14 give None.
+        /// offsets 10–14 give None. Treating 10–14 as reserved (rather than
+        /// valid millimetres) is **tentative pending HIL #44**.
         /// Offset 0xF means no offset, so only the coarse diameter is used.
         wheel_m: Option<f32>,
         /// Gear ratio in 0.03 increments; zero is invalid.
@@ -78,7 +82,8 @@ pub enum Page {
     Request {
         /// Requested page number.
         page: u8,
-        /// Seven-bit transmission count (zero retained as received).
+        /// Seven-bit transmission count (zero retained as received; its
+        /// meaning, possibly "until acknowledged", is **tentative pending HIL #44**).
         times: u8,
         /// Whether the reply should use acknowledged data.
         acknowledged: bool,
@@ -103,7 +108,7 @@ pub enum Page {
 /// Page 16; elapsed time and distance are counters, not unwrapped totals.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeneralFe {
-    /// Equipment type code (25 is trainer).
+    /// Equipment type code (25 is trainer), bits 0-4; reserved bits 5-7 are masked.
     pub equipment_type: u8,
     /// Elapsed seconds, wrapping at 64 s, resolution 0.25 s.
     pub elapsed_s: f32,
@@ -145,8 +150,9 @@ pub struct TrainerData {
 /// Page 54, subject to NEO verification in #44.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeCapabilities {
-    /// Maximum resistance in N (0xFFFF means unavailable).
-    pub max_resistance_n: Option<u16>,
+    /// Maximum resistance in N, raw; 0xFFFF may mean unavailable (**tentative
+    /// pending HIL #44**, ADR-0002 §4.2), so callers decide.
+    pub max_resistance_n: u16,
     /// Supported modes: bits 0/1/2 basic resistance/target power/simulation.
     pub modes: u8,
 }
@@ -240,11 +246,62 @@ pub enum ControlPage {
     },
 }
 
-/// Input rejected before rounding; the field name identifies the domain violation.
+/// A [`ControlPage`] field that failed [`encode`](crate::encode) validation.
+///
+/// Callers match on the variant, not on a string. Variants are named after the
+/// `ControlPage` field they describe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Field {
+    /// `BasicResistance::pct`.
+    Pct,
+    /// `TargetPower::watts`.
+    Watts,
+    /// `Wind::cw_kg_per_m`.
+    CwKgPerM,
+    /// `Wind::speed_kmh`.
+    SpeedKmh,
+    /// `Wind::drafting`.
+    Drafting,
+    /// `Track::grade_pct`.
+    GradePct,
+    /// `Track::crr`.
+    Crr,
+    /// `UserConfig::rider_kg`.
+    RiderKg,
+    /// `UserConfig::bike_kg`.
+    BikeKg,
+    /// `UserConfig::wheel_m`.
+    WheelM,
+    /// `Request::times`.
+    Times,
+}
+
+impl Field {
+    /// The `ControlPage` field name this variant stands for.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Pct => "pct",
+            Self::Watts => "watts",
+            Self::CwKgPerM => "cw_kg_per_m",
+            Self::SpeedKmh => "speed_kmh",
+            Self::Drafting => "drafting",
+            Self::GradePct => "grade_pct",
+            Self::Crr => "crr",
+            Self::RiderKg => "rider_kg",
+            Self::BikeKg => "bike_kg",
+            Self::WheelM => "wheel_m",
+            Self::Times => "times",
+        }
+    }
+}
+
+/// Input rejected before rounding; `field` identifies the domain violation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EncodeError {
-    /// Invalid field name; includes non-finite input.
-    pub field: &'static str,
+    /// The invalid field; non-finite input is reported against its field too.
+    pub field: Field,
 }
 
 /// Rejected ANT framing; checksum failures are never passed to page decoding.
@@ -264,7 +321,7 @@ pub enum FrameError {
 
 impl core::fmt::Display for EncodeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "invalid FE-C field: {}", self.field)
+        write!(f, "invalid FE-C field: {}", self.field.name())
     }
 }
 impl std::error::Error for EncodeError {}
