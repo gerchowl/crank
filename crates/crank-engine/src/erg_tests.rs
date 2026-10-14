@@ -1662,7 +1662,8 @@ fn a_resume_without_cadence_holds_zero_watts_until_the_rider_pedals() {
 }
 #[test]
 fn a_release_survives_a_user_pause_and_is_left_only_by_sixty_rpm() {
-    // #249 ruling: a release is left only through §7.4, also across a pause (#264)
+    // #249 ruling: a release is left only through §7.4, also across a pause (#264). The
+    // pause is applied by ticks (a pause and resume between two ticks change nothing).
     let mut r = rig();
     r.load(vec![work(200.0)]);
     r.start();
@@ -1672,16 +1673,19 @@ fn a_release_survives_a_user_pause_and_is_left_only_by_sixty_rpm() {
     assert!(r.status().erg_released);
     r.modes();
     r.engine.command(EngineCmd::Pause).expect("pause");
+    pedal(&r, 24, 32, 100, 20);
+    r.through(31);
+    assert!(r.status().erg_released, "paused: still released");
     r.engine.command(EngineCmd::Resume).expect("resume");
-    pedal(&r, 24, 40, 100, 20);
-    r.through(39);
+    pedal(&r, 32, 48, 100, 20);
+    r.through(47);
     assert!(r.status().erg_released, "20 rpm does not re-engage");
     assert!(
         r.modes().iter().all(|m| *m == RESISTANCE_0),
-        "still at 0 % resistance"
+        "no ERG after the resume while released"
     );
-    pedal(&r, 40, 48, 100, 90);
-    r.through(47);
+    pedal(&r, 48, 56, 100, 90);
+    r.through(55);
     assert!(!r.status().erg_released);
     assert_eq!(r.modes(), vec![erg(100)], "re-engaged with the soft start");
 }
@@ -1712,13 +1716,13 @@ fn a_finished_ride_commands_the_end_mode_before_the_gate_clears() {
     pedal(&r, 0, 8, 200, 90);
     r.through(7);
     assert_eq!(r.state(), crate::RideState::Finished);
-    assert_eq!(r.modes().last(), Some(&ControlMode::Free));
+    assert_eq!(r.modes().last(), Some(&RESISTANCE_0));
     assert_eq!(
         r.gate.lock().unwrap().last(),
         Some(&true),
         "waits for delivery"
     );
-    r.delivered(ControlMode::Free);
+    r.delivered(RESISTANCE_0);
     assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
 }
 #[test]
@@ -1730,9 +1734,9 @@ fn stopping_mid_ride_commands_the_end_mode_before_the_gate_clears() {
     r.through(23);
     assert_eq!(r.modes().last(), Some(&erg(200)));
     r.engine.command(EngineCmd::Stop).expect("stop");
-    assert_eq!(r.modes(), vec![ControlMode::Free]);
+    assert_eq!(r.modes(), vec![RESISTANCE_0]);
     assert_eq!(r.gate.lock().unwrap().last(), Some(&true));
-    r.delivered(ControlMode::Free);
+    r.delivered(RESISTANCE_0);
     assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
 }
 #[test]
@@ -1766,19 +1770,36 @@ fn the_gate_does_not_wait_for_a_trainer_that_is_gone_or_silent() {
     assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
 }
 #[test]
-fn a_ride_that_ends_on_a_free_block_still_sends_the_end_mode_after_a_link_transition() {
-    // `Free` is already what the policy sent, but a transition wipes the trainer's mode
-    // (ADR-0002 §6): the end mode is owed again even though the engine still "knows" it
+fn an_unapplied_link_transition_owes_the_end_mode_again() {
+    // a transition wipes the trainer's mode (ADR-0002 §6): the end mode is sent although the
+    // engine's last command is the same 0 % resistance (a release)
     let mut r = rig();
-    r.load(vec![block(600.0, 0.0, 0.0, Phase::Free)]);
+    r.load(vec![work(200.0)]);
     r.start();
-    pedal(&r, 0, 8, 100, 90);
-    r.through(7);
-    assert_eq!(r.modes(), vec![ControlMode::Free]);
+    pedal(&r, 0, 8, 190, 90);
+    pedal(&r, 8, 24, 100, 20);
+    r.through(23);
+    assert!(r.status().erg_released);
+    r.modes();
     r.link(LinkState::Connecting);
     r.link(LinkState::Ready);
     r.engine.command(EngineCmd::Stop).expect("stop");
-    assert_eq!(r.modes(), vec![ControlMode::Free]);
+    assert_eq!(r.modes(), vec![RESISTANCE_0]);
+}
+#[test]
+fn a_late_delivery_of_an_earlier_mode_does_not_clear_the_gate() {
+    // only the end mode's own delivery releases the gate
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 24, 200, 90);
+    r.through(23);
+    r.engine.command(EngineCmd::Stop).expect("stop");
+    r.delivered(erg(200));
+    r.delivered(ControlMode::Free);
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&true));
+    r.delivered(RESISTANCE_0);
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
 }
 #[test]
 fn leaving_free_after_a_repaid_soft_start_owes_it_again() {

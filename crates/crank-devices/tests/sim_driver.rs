@@ -173,8 +173,8 @@ async fn sim_grade_slows_the_rider_and_echoes_wind_then_track() {
             .iter()
             .filter(|e| matches!(e, TrainerEvent::Delivered { .. }))
             .count(),
-        2,
-        "one Delivered per SIM component"
+        1,
+        "one Delivered per mode, after its last component"
     );
     let e = echoes(&hill_ev);
     assert!(matches!(e[0].1, ObservedControl::Wind { .. }));

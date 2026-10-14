@@ -599,9 +599,12 @@ fn ride_gate_follows_load_finish_and_unload() {
     assert_eq!(r.state(), RideState::Finished);
     // the end mode (ADR-0002 §7.9, #266) is out before the gate clears, and the gate
     // is held until the driver reports it delivered
-    assert_eq!(r.modes().last(), Some(&ControlMode::Free));
+    assert_eq!(
+        r.modes().last(),
+        Some(&ControlMode::Resistance { pct: 0.0 })
+    );
     assert_eq!(*r.gate.lock().unwrap(), vec![true, false, true]);
-    r.delivered(ControlMode::Free);
+    r.delivered(ControlMode::Resistance { pct: 0.0 });
     assert_eq!(*r.gate.lock().unwrap(), vec![true, false, true, false]);
     // a rejected command does not touch the gate
     assert_eq!(
@@ -625,7 +628,7 @@ fn ride_gate_stays_active_while_paused_and_clears_on_stop() {
         Some(&true),
         "end mode in flight"
     );
-    r.delivered(ControlMode::Free);
+    r.delivered(ControlMode::Resistance { pct: 0.0 });
     assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
 }
 
@@ -1338,7 +1341,9 @@ mod soft_start_property {
             match want {
                 Want::Nothing => prop_assert!(modes.is_empty(), "k={k}: {modes:?} on a dead link"),
                 Want::Over => prop_assert!(
-                    modes.iter().all(|m| *m == ControlMode::Free),
+                    modes
+                        .iter()
+                        .all(|m| *m == ControlMode::Resistance { pct: 0.0 }),
                     "k={k}: {modes:?} after the ride's end"
                 ),
                 Want::Mode(m) => {
@@ -1536,7 +1541,8 @@ mod soft_start_property {
         /// epoch, a pause, or a return from `Free`, SIM or resistance.
         engaging: bool,
         /// The block the engagement began in: a block change inside a soft start is a
-        /// discontinuity by design (ADR-0002 §7.8 a), so the origin bound is not asked of it.
+        /// discontinuity by design (ADR-0002 §7.8 a; the ramp continues at its progress, DESIGN §17.3),
+        /// so the origin bound is not asked of it.
         engage_block: Option<usize>,
     }
     /// What may stand on the trainer when no torque is allowed: no power target, no
