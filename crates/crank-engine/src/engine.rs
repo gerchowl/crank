@@ -246,9 +246,11 @@ impl Session {
             self.record_error = Some(e.to_string());
         }
     }
-    /// Forget everything the soft start learned on the previous link epoch: pre-loss
-    /// power is never an origin and its ramp never carries over (ADR-0002 §7.5, #231).
-    /// Every per-epoch soft-start field is reset here, nowhere else.
+    /// Forget everything the ramp learned on the previous epoch: the 3 s power window,
+    /// the flow start and the origin, so pre-loss power is never an origin and its ramp
+    /// never carries over (ADR-0002 §7.5, #231). Not in here, handled by the callers:
+    /// the trainer hold (`apply_links`), the last command (`reset_control`) and the
+    /// `after_loss` flag, which a completed ramp clears in `control`.
     fn reset_soft_start(&mut self) {
         self.recent_power.clear();
         self.flow_start = None;
@@ -543,9 +545,13 @@ impl Engine {
             s.reset_control();
             s.trainer.clear();
             s.reset_soft_start();
+            // Any transition away from `Ready` (Lost, or Connecting without a Lost)
+            // makes the next engagement a soft start (#231).
+            if state != LinkState::Ready {
+                s.after_loss = true;
+            }
             if state == LinkState::Lost {
                 s.pauses.lost = true;
-                s.after_loss = true;
             }
         }
         while let Some(&(at, state)) = self.hr_log.queue.front() {
@@ -632,7 +638,9 @@ impl Engine {
             s.block_elapsed = 0;
             finished = s.block_idx >= s.blocks.len();
         }
-        if s.missed >= LOSS_TICKS && !s.pauses.lost {
+        // Every silence of LOSS_TICKS ticks is a new epoch, also one that starts while
+        // the ride is already paused for a loss: power sampled before it is no origin.
+        if s.missed == LOSS_TICKS {
             s.pauses.lost = true;
             s.after_loss = true;
             s.reset_control();
