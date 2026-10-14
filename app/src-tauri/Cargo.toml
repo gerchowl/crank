@@ -15,11 +15,13 @@ tauri.workspace = true
 tauri-specta.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true
+tauri-plugin-wdio-webdriver = { workspace = true, optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
-# Embedded WebDriver integration is gated by #35.
-e2e = []
+# Embeds the WebDriver HTTP server (ADR-0001 §8.3, #35). Built only into the flake package
+# `crank-desktop-e2e`; never part of the production feature set (the `deps-edges` check).
+e2e = ["dep:tauri-plugin-wdio-webdriver"]

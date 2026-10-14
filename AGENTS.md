@@ -31,8 +31,9 @@ identity (by its SHA-1, the identity the requirement check verifies) and swaps i
 and the recipe is macOS-only, so on Linux the script skips with a message. `just bundle` reads the
 identity's SHA-1 from the keychain at run time, never creates or changes identities, and uses no
 hardened runtime or App Sandbox (library validation rejects the unsigned nix-store dylibs;
-distribution signing is #47). `just e2e` and `just screens` await the embedded macOS WebDriver
-gate #35; they fail explicitly until it lands. Playwright browsers are excluded from the devShell until #35
+distribution signing is #47). `just e2e` (`scripts/e2e.sh`, ADR-0001 §8.3.1) builds `.#crank-desktop-e2e` and runs the WebdriverIO specs of
+`app/e2e/` in the GUI session through Alacritty IPC (`CRANK_E2E_DIRECT=1` from a GUI terminal); output goes to the
+gitignored `app/e2e-out/`. `just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
 provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
 
 App icons are generated from `assets/icon/icon-1024.png`: run `just icons` after changing the mark. It runs
