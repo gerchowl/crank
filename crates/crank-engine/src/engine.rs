@@ -524,6 +524,8 @@ impl Engine {
             // link may be held across it.
             s.reset_control();
             s.trainer.clear();
+            // power sampled on the old link is never a soft-start origin (#231)
+            s.recent_power.clear();
             if state == LinkState::Lost {
                 s.pauses.lost = true;
                 s.after_loss = true;
@@ -585,7 +587,8 @@ impl Engine {
             s.flow_start = None;
         } else if s.flow_start.is_none() {
             s.flow_start = Some(k);
-            s.engage_power = s.power_3s();
+            // no power in the new epoch: the ramp starts from 0 W, it never jumps
+            s.engage_power = Some(s.power_3s().unwrap_or(0.0));
         }
         // The tick is workout time iff nothing paused the ride when it began; a loss
         // detected on this tick takes effect on the next (no rollback, ADR-0001 §5).
@@ -623,6 +626,7 @@ impl Engine {
             s.pauses.lost = true;
             s.after_loss = true;
             s.reset_control();
+            s.recent_power.clear();
         }
         let cadence = trainer.and_then(|t| t.cadence);
         if trainer.is_some_and(|t| t.power == Some(0) && t.cadence == Some(0)) {

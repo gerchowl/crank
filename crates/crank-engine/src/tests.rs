@@ -141,6 +141,10 @@ impl Rig {
             }))
             .unwrap();
     }
+    fn hr_link(&mut self, s: LinkState) {
+        self.hr.try_send(HrEvent::Link(s)).unwrap();
+        self.engine.drain();
+    }
     fn heart(&self, k: u64, bpm: u8) {
         self.hr
             .try_send(HrEvent::Sample(HrSample {
@@ -381,16 +385,17 @@ fn link_loss_pauses_and_reconnect_reissues_mode_with_soft_start() {
         8,
         "the resuming tick itself was paused"
     );
-    // the soft start begins with the first sample: the 3 s power is (5 x 150 W from
-    // ticks 3..=7, 90 W now) / 6 = 140 W, then five 1 Hz steps to the target
-    assert_eq!(r.modes(), vec![erg(140)]);
+    // the soft start begins with the first sample; the 150 W sampled before the loss
+    // is not part of the origin, so it is the 90 W of the new epoch, then five 1 Hz
+    // steps to the target
+    assert_eq!(r.modes(), vec![erg(90)]);
     for k in 15..40 {
         r.sample(k, 150, 85);
     }
     r.through(39);
     assert_eq!(
         r.modes(),
-        vec![erg(152), erg(164), erg(176), erg(188), erg(200)]
+        vec![erg(112), erg(134), erg(156), erg(178), erg(200)]
     );
 }
 
@@ -854,4 +859,91 @@ fn after_ready_only_zero_watts_is_sent_until_a_pedalling_sample_then_the_ramp_st
         r.modes(),
         vec![erg(66), erg(112), erg(158), erg(204), erg(250)]
     );
+}
+
+#[test]
+fn pre_loss_power_is_not_a_soft_start_origin_on_the_link_path() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 300);
+    r.through(7);
+    assert_eq!(r.modes(), vec![erg(200)]);
+    r.link(LinkState::Lost);
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    r.through(8);
+    assert_eq!(r.modes(), vec![erg(0)]);
+    // the rider is back at 50 W: the origin is 50 W, not an average with the 300 W
+    feed(&r, 9, 20, 50);
+    r.through(9);
+    assert_eq!(r.modes(), vec![erg(50)]);
+}
+
+#[test]
+fn pre_loss_power_is_not_a_soft_start_origin_on_the_silence_path() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 300);
+    // 8 silent ticks lose the trainer; 300 W from ticks 3..=7 is still inside 3 s
+    r.through(15);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    feed(&r, 16, 30, 50);
+    r.through(16);
+    assert_eq!(r.modes(), vec![erg(200), erg(0), erg(50)]);
+}
+
+#[test]
+fn a_pedalling_sample_without_power_ramps_from_zero_and_never_jumps() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 150);
+    r.through(7);
+    r.link(LinkState::Lost);
+    r.link(LinkState::Ready);
+    r.through(9);
+    assert_eq!(r.modes(), vec![erg(200), erg(0)]);
+    for k in 10..40 {
+        r.events
+            .try_send(TrainerEvent::Sample(TrainerSample {
+                at: MonoTime(k * TICK_US + 1),
+                power_w: None,
+                cadence_rpm: Some(80),
+                speed_mps: Some(8.0),
+                distance_m: None,
+                accumulated_power_w: None,
+                event_count: None,
+                status: TrainerStatus::default(),
+                target_limit: TargetLimit::AtTarget,
+            }))
+            .unwrap();
+    }
+    r.through(10);
+    // origin 0 W (no power in the new epoch), then the normal ramp: 0, 40, ... 200
+    assert_eq!(r.modes(), vec![]);
+    r.through(34);
+    assert_eq!(
+        r.modes(),
+        vec![erg(40), erg(80), erg(120), erg(160), erg(200)]
+    );
+}
+
+#[test]
+fn an_hr_sample_from_before_an_hr_link_transition_does_not_enter_the_hold() {
+    let mut r = rig();
+    r.load(vec![]);
+    r.start();
+    feed(&r, 0, 12, 150);
+    r.through(3);
+    // HR sample in tick 4, then the strap link drops and returns inside the same window
+    r.at(4 * TICK_US + 100_000);
+    r.heart(4, 150);
+    r.hr_link(LinkState::Lost);
+    r.hr_link(LinkState::Ready);
+    r.through(11);
+    let rows = r.rows();
+    assert_eq!(rows[1].1.hr, None, "stale HR sample must not be held");
+    assert_eq!(rows[2].1.hr, None);
 }
