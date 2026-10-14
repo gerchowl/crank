@@ -1,0 +1,30 @@
+--- a/build.rs
++++ b/build.rs
+@@ -1,6 +1,27 @@
++use std::{env, fs, path::Path};
++
+ const COMMANDS: &[&str] = &[];
+ 
++fn copy_dir(from: &Path, to: &Path) {
++    fs::create_dir_all(to).expect("create permissions copy");
++    for entry in fs::read_dir(from).expect("read permissions") {
++        let entry = entry.expect("permissions entry");
++        let target = to.join(entry.file_name());
++        if entry.file_type().expect("file type").is_dir() {
++            copy_dir(&entry.path(), &target);
++        } else {
++            fs::copy(entry.path(), target).expect("copy permission file");
++        }
++    }
++}
++
+ fn main() {
++    // tauri_plugin::Builder writes generated schemas and docs under ./permissions, relative to the
++    // manifest dir. A Nix-vendored source tree is read-only, so run it from a writable copy.
++    let work = Path::new(&env::var("OUT_DIR").expect("OUT_DIR")).join("plugin-src");
++    copy_dir(Path::new("permissions"), &work.join("permissions"));
++    println!("cargo:rerun-if-changed=permissions");
++    env::set_current_dir(&work).expect("enter writable plugin copy");
+     tauri_plugin::Builder::new(COMMANDS)
+         .android_path("android")
+         .ios_path("ios")
