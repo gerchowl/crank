@@ -349,7 +349,7 @@ Schema v1 (#33):
 | Table | Key columns | Notes |
 |---|---|---|
 | `athlete_estimate` | `param, value, sd, source, n, updated_at` | append-only history; current = latest per `param` (ONBOARDING.md §3) |
-| `athlete_profile` | singleton: weight, age, sex, crank length, PAR-Q result | |
+| `athlete_profile` | singleton: weight, age, sex, crank length, health-check result (column `par_q_result`; name predates #193, rename tracked in #210) | |
 | `workout` | `id, name, dsl, tree_json, ftp_at_creation, source, created_at` | `dsl` canonical text; `tree_json` validated on read |
 | `snippet`, `layout` | `id, name, json, updated_at` | validated on read (#4); built-in defaults live in code |
 | `ride` | `id, started_at (UTC), ended_at, state (finished/aborted), workout_json, compiled_json, trainer_device_id, hr_device_id, telemetry_source, summary_json` | snapshot of the workout as ridden, incl. coach changes (#16) |

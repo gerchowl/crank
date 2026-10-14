@@ -17,7 +17,7 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
       cargoFiles = lib.fileset.difference (craneLib.fileset.commonCargoSources ./.) ./crates/crank-fec/fuzz;
-      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./clippy.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
+      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./clippy.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
         (lib.fileset.difference ./app ./app/src-tauri) ./shared

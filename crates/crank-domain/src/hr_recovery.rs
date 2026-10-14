@@ -7,7 +7,11 @@
 //! weights amplify across platforms (#169). The one exception is the τ grid's power: with
 //! `libm::pow` a single grid point differs from the frozen TS reference by an ulp and the
 //! weights amplify that past the vectors' 1e-12 tolerance (`recovery.json`), whereas `powf`
-//! matches it on every CI libc (linux and macOS), so the grid keeps `f64::powf`.
+//! matched it on every platform tried, so the grid keeps `f64::powf`. That agreement is
+//! **observed on the linux and macOS CI matrix, not guaranteed**: `powf` delegates to the
+//! platform libm, and a one-ulp change at one τ grid point moves a weight by about 1.2e-11
+//! relative. The CI matrix running `recovery_vectors` is the guard; a libm update that breaks
+//! parity fails there with no code change (#186). See `DIVERGENCES.md`.
 use crate::metric_error::{MetricError, finite_parameters};
 use serde::{Deserialize, Serialize};
 
