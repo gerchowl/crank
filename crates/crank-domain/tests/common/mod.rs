@@ -79,11 +79,26 @@ fn validate(v: &Value, schema: &Value, root: &Value, path: &str) {
                 validate(x, child, root, &format!("{path}.{key}"));
             }
         }
+        Value::String(s) => {
+            let kind = scalar_kind(schema);
+            // Same rule as the TS comparator: strings are exact data, or the three encoded
+            // non-finite sentinels at a float node. Nothing else may sit at a numeric node.
+            assert!(
+                kind == Some("exact")
+                    || (kind == Some("float")
+                        && matches!(s.as_str(), "NaN" | "Infinity" | "-Infinity")),
+                "string at a node declared {}, only non-finite sentinels are allowed there: {path}",
+                kind.unwrap_or("structured")
+            );
+        }
+        Value::Bool(_) => assert!(
+            scalar_kind(schema) == Some("exact"),
+            "boolean at a node not declared exact: {path}"
+        ),
         Value::Null => assert!(
             schema["nullable"] == true,
             "null at a node not declared nullable: {path}"
         ),
-        _ => {} // Encoded nonfinite values compare exactly.
     }
 }
 fn compare(a: &Value, b: &Value, schema: &Value, root: &Value, path: &str) {
@@ -179,6 +194,33 @@ mod tests {
         expected["schemaVersion"] = serde_json::json!(2);
         expected["cases"][0]["input"]["unknown"] = serde_json::json!(1.);
         assert_vectors("filters", &actual, &expected);
+    }
+    #[test]
+    #[should_panic(expected = "boolean at a node not declared exact")]
+    fn rejects_boolean_at_a_float_node() {
+        let mut document = load("filters");
+        document["cases"][0]["output"][0] = serde_json::json!(true);
+        assert_vectors("filters", &document, &document);
+    }
+    #[test]
+    #[should_panic(expected = "only non-finite sentinels are allowed")]
+    fn rejects_arbitrary_string_at_a_float_node() {
+        let mut document = load("filters");
+        document["cases"][0]["output"][0] = serde_json::json!("abc");
+        assert_vectors("filters", &document, &document);
+    }
+    #[test]
+    fn accepts_encoded_nonfinite_strings_at_a_float_node() {
+        let mut document = load("filters");
+        document["cases"][0]["output"][0] = serde_json::json!("-Infinity");
+        assert_vectors("filters", &document, &document);
+    }
+    #[test]
+    #[should_panic(expected = "only non-finite sentinels are allowed")]
+    fn rejects_nonfinite_string_at_an_integer_node() {
+        let mut document = load("filters");
+        document["schemaVersion"] = serde_json::json!("NaN");
+        assert_vectors("filters", &document, &document);
     }
     #[test]
     #[should_panic(expected = "not declared nullable")]

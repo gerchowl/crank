@@ -166,23 +166,9 @@ fn norm_cdf(z: f64) -> f64 {
         0.5 * (1. - y)
     }
 }
-/// Synthetic mixture-of-normals reference distribution. FTP is in watts.
-/// Supported metrics are power (including smoothed variants), `pct_ftp`, HR and
-/// cadence. Other metrics have no typical model and return `Ok(None)`.
-/// The returned callback maps a bin's `(lo, hi)` bounds, in the metric's units, to the
-/// expected fraction of time in `[lo, hi)`.
-///
-/// # Errors
-/// Returns `InvalidMetricParameter("ftp")` unless `ftp` is finite and positive and its power
-/// components (means `0.25..1.05 × ftp`, deviations `0.07..0.12 × ftp`) are finite and the
-/// deviations nonzero, so the callback can never produce NaN (an FTP near `f64::MAX` overflows
-/// a mean; one near the smallest subnormal underflows a deviation to zero). This holds for every
-/// metric including those that do not use FTP, and before the metric is looked up. TS has no
-/// check and propagates NaN into the distribution; a typed error replaces that (#155).
-pub fn typical_distribution(
-    metric: &str,
-    ftp: f64,
-) -> Result<Option<impl Fn(f64, f64) -> f64>, MetricError> {
+/// Power mixture components `(weight, mean, sd)` scaled by `ftp`, or a typed error when the
+/// scaling is not finite and positive.
+fn power_components(ftp: f64) -> Result<Vec<(f64, f64, f64)>, MetricError> {
     let power = vec![
         (0.12, 0.25 * ftp, 0.12 * ftp),
         (0.45, 0.62 * ftp, 0.07 * ftp),
@@ -197,8 +183,32 @@ pub fn typical_distribution(
     {
         return Err(MetricError::InvalidMetricParameter("ftp"));
     }
+    Ok(power)
+}
+/// Synthetic mixture-of-normals reference distribution. FTP is in watts.
+/// Supported metrics are power (including smoothed variants), `pct_ftp`, HR and
+/// cadence. Other metrics have no typical model and return `Ok(None)`.
+/// The returned callback maps a bin's `(lo, hi)` bounds, in the metric's units, to the
+/// expected fraction of time in `[lo, hi)`.
+///
+/// Only the power metrics depend on FTP, so only they validate it, as in TS, where `hr`,
+/// `cadence` and `pct_ftp` return a finite result for any FTP. Their result is identical for
+/// every `ftp`.
+///
+/// # Errors
+/// For the power metrics (`power`, `power_3s`, `power_10s`, `power_30s`) returns
+/// `InvalidMetricParameter("ftp")` unless `ftp` is finite and positive and its power
+/// components (means `0.25..1.05 × ftp`, deviations `0.07..0.12 × ftp`) are finite and the
+/// deviations nonzero, so the callback can never produce NaN (an FTP near `f64::MAX` overflows
+/// a mean; one near the smallest subnormal underflows a deviation to zero). TS has no
+/// check and propagates NaN into the distribution; a typed error replaces that (#155, #186).
+/// Recorded in `DIVERGENCES.md`.
+pub fn typical_distribution(
+    metric: &str,
+    ftp: f64,
+) -> Result<Option<impl Fn(f64, f64) -> f64>, MetricError> {
     let components = match metric {
-        "power" | "power_3s" | "power_10s" | "power_30s" => power,
+        "power" | "power_3s" | "power_10s" | "power_30s" => power_components(ftp)?,
         "pct_ftp" => vec![
             (0.12, 25., 12.),
             (0.45, 62., 7.),
