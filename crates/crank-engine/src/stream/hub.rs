@@ -7,15 +7,19 @@
 //! writer; a failed send drops the stream.
 use super::flow::{FRAME_BUDGET_BYTES, Flow, HEARTBEAT_US};
 use super::types::{
-    LinkChange, LinkDevice, LinkStatus, MetricId, StreamError, StreamFrame, StreamId,
-    StreamSnapshot, StreamStatus, SubId, SubSample, SubscribeOpts,
+    LinkChange, LinkDevice, LinkStatus, MAX_FILTER_SECONDS, MAX_FILTERS_PER_CHAIN,
+    MAX_MEDIAN_SAMPLES, MetricId, StreamError, StreamFrame, StreamId, StreamSnapshot, StreamStatus,
+    SubId, SubSample, SubscribeOpts,
 };
-use crank_domain::filters::FilterChain;
+use crank_domain::filters::{Filter, FilterChain};
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
 
 /// Subscriptions per stream; `subscribe` returns `Conflict` beyond it.
 pub(crate) const MAX_SUBSCRIPTIONS: usize = 64;
+/// Live streams per engine: a main window, a few secondary windows and headroom for a
+/// reload racing its predecessor's cleanup.
+pub(crate) const MAX_STREAMS: usize = 16;
 /// Source metrics published per tick, in [`crate::METRICS`] order.
 pub(crate) const SOURCES: usize = 5;
 
@@ -63,9 +67,14 @@ impl Hub {
         &mut self,
         window: Option<String>,
         now_us: u64,
-    ) -> (StreamId, mpsc::Receiver<StreamFrame>) {
+    ) -> Result<(StreamId, mpsc::Receiver<StreamFrame>), StreamError> {
+        // Only a window label identifies a page; unlabelled streams never evict.
         if window.is_some() {
             self.streams.retain(|_, s| s.window != window);
+        }
+        self.reap();
+        if self.streams.len() >= MAX_STREAMS {
+            return Err(StreamError::TooManyStreams);
         }
         let (sink, rx) = mpsc::channel(super::flow::MAX_UNACKED + 1);
         let id = StreamId(self.next_stream);
@@ -87,7 +96,11 @@ impl Hub {
                 last_status_us: now_us,
             },
         );
-        (id, rx)
+        Ok((id, rx))
+    }
+    /// Drop streams whose receiver is gone, whether or not they have anything to send.
+    fn reap(&mut self) {
+        self.streams.retain(|_, s| !s.sink.is_closed());
     }
     /// Drop every stream of a window (its `Destroyed` event).
     pub(crate) fn close_window(&mut self, window: &str) {
@@ -113,6 +126,7 @@ impl Hub {
         if !(SubscribeOpts::MIN_RATE_HZ..=SubscribeOpts::MAX_RATE_HZ).contains(&opts.rate_hz) {
             return Err(StreamError::InvalidRate);
         }
+        validate_filters(&opts.filters)?;
         let chain = FilterChain::new(opts.filters)
             .map_err(|e| StreamError::InvalidFilter(e.to_string()))?;
         let id = SubId(self.next_sub);
@@ -167,7 +181,11 @@ impl Hub {
     pub(crate) fn on_source(&mut self, t: f64, values: &[Option<f64>; SOURCES]) {
         for s in self.streams.values_mut() {
             for (&id, sub) in &mut s.subs {
-                let v = sub.chain.push(t, values[sub.metric.index()]);
+                // A non-finite value is a gap (ADR-0001 §5: gaps are null, never
+                // interpolated): it would otherwise poison an exponential mean for good
+                // and serialize as `null` anyway, indistinguishable from a gap.
+                let input = values[sub.metric.index()].filter(|v| v.is_finite());
+                let v = sub.chain.push(t, input).filter(|v| v.is_finite());
                 let sample = SubSample { sub: id, t, v };
                 sub.latest = Some(sample);
                 if sub.last_sent_t.is_none_or(|l| t - l >= sub.period_s - 1e-9) {
@@ -202,6 +220,7 @@ impl Hub {
     }
     /// Heartbeat, then send what is due. Streams whose sink is closed or full are dropped.
     pub(crate) fn poll(&mut self, now_us: u64) {
+        self.reap();
         let beat = self.status.as_ref().filter(|s| s.in_progress());
         let mut dead = Vec::new();
         for (&id, s) in &mut self.streams {
@@ -245,4 +264,25 @@ impl Hub {
     pub(crate) fn stream_count(&self) -> usize {
         self.streams.len()
     }
+}
+
+/// Chain length and window caps: unbounded `n` or `window_s` would keep every sample and
+/// make the tick that writes the record pay for it.
+fn validate_filters(filters: &[Filter]) -> Result<(), StreamError> {
+    let bad = |what: &str| Err(StreamError::InvalidFilter(what.to_owned()));
+    if filters.len() > MAX_FILTERS_PER_CHAIN {
+        return bad("chain longer than 4 filters");
+    }
+    for f in filters {
+        match *f {
+            Filter::Sma { window_s: s } | Filter::Ema { tau_s: s } if s > MAX_FILTER_SECONDS => {
+                return bad("window or time constant over 300 s");
+            }
+            Filter::Median { n } if n > MAX_MEDIAN_SAMPLES => {
+                return bad("median over 256 samples");
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }

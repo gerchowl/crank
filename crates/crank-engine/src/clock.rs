@@ -72,4 +72,14 @@ impl Clock for VirtualClock {
             self.epoch + Duration::from_micros(real_us),
         ))
     }
+    /// Timer time, not simulated time: frame spacing and heartbeats do not scale with
+    /// simulation speed (ADR-0001 §4.3).
+    fn pacing_now(&self) -> MonoTime {
+        MonoTime(micros_since(self.epoch))
+    }
+    fn pacing_sleep_until(&self, at: MonoTime) -> BoxFuture<'static, ()> {
+        Box::pin(tokio::time::sleep_until(
+            self.epoch + Duration::from_micros(at.0),
+        ))
+    }
 }

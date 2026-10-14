@@ -50,7 +50,11 @@ fn work(dur_s: f64) -> FlatBlock {
     }
 }
 async fn launch(dur_s: f64) -> (EngineHandle, Arc<Mutex<Vec<u32>>>) {
-    let clock = Arc::new(VirtualClock::new(1));
+    launch_at(dur_s, 1).await
+}
+/// `speed`× simulated: session time runs `speed`× faster than the timer.
+async fn launch_at(dur_s: f64, speed: u32) -> (EngineHandle, Arc<Mutex<Vec<u32>>>) {
+    let clock = Arc::new(VirtualClock::new(speed));
     let rig = SimRig::new(SimConfig::default(), clock.clone());
     let rider = RiderConfig {
         rider_kg: 72.0,
@@ -264,4 +268,88 @@ async fn status_reports_a_pause_at_once_and_session_time_keeps_running() {
         "workout time is frozen: {}",
         last.workout_s
     );
+}
+
+/// ADR-0001 §4.3: "At 10× / 60× simulated speed the source rates scale with simulated
+/// session time, frame emission does not." Frames and heartbeats are paced in timer
+/// time; the source values advance in session time.
+async fn pacing_at(speed: u32) {
+    let (h, _) = launch_at(7_200.0, speed).await;
+    let (id, rx) = h.open_stream(Some("main".into())).await.expect("open");
+    h.stream_subscribe(id, MetricId::Power, opts(10.0))
+        .await
+        .expect("subscribe");
+    let frames = consume(h.clone(), id, rx);
+    sleep(Duration::from_secs(10)).await;
+    let log = frames.lock().expect("test mutex");
+    assert!(log.len() >= 20, "{speed}x: frames flow: {}", log.len());
+    assert!(
+        log.len() <= 102,
+        "{speed}x: ≤ 10 Hz in timer time: {}",
+        log.len()
+    );
+    for pair in log.windows(2) {
+        assert!(
+            pair[1].0 - pair[0].0 >= Duration::from_millis(100),
+            "{speed}x: {:?} then {:?}",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+    let beats = log.iter().filter(|(_, f)| f.status.is_some()).count();
+    assert!(
+        (18..=23).contains(&beats),
+        "{speed}x: status 2 Hz in timer time: {beats}"
+    );
+    let last_t = log
+        .iter()
+        .flat_map(|(_, f)| f.samples.iter())
+        .map(|s| s.t)
+        .fold(0.0, f64::max);
+    let min = 9.0 * f64::from(speed);
+    assert!(
+        last_t >= min,
+        "{speed}x: source advances in session time: {last_t} < {min}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pacing_does_not_scale_with_speed_10x() {
+    pacing_at(10).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn pacing_does_not_scale_with_speed_60x() {
+    pacing_at(60).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn paused_ticks_publish_null() {
+    // Mutant: publishing the held trainer values while paused instead of the record's gap.
+    let (h, _) = launch(600.0).await;
+    let (id, mut rx) = h.open_stream(None).await.expect("open");
+    let sub = h
+        .stream_subscribe(
+            id,
+            MetricId::Power,
+            SubscribeOpts {
+                rate_hz: 10.0,
+                filters: vec![],
+            },
+        )
+        .await
+        .expect("subscribe");
+    sleep(Duration::from_secs(5)).await;
+    let before = h.stream_snapshot(id).await.expect("snapshot");
+    assert!(before.samples[0].v.is_some(), "riding: a power value");
+    h.send(EngineCmd::Pause).await.expect("pause");
+    sleep(Duration::from_secs(2)).await;
+    let after = h.stream_snapshot(id).await.expect("snapshot");
+    let s = after.samples.iter().find(|s| s.sub == sub).expect("sub");
+    assert_eq!(s.v, None, "paused: a gap, never a held value");
+    assert!(
+        s.t > before.samples[0].t + 1.5,
+        "session time keeps advancing"
+    );
+    while rx.try_recv().is_ok() {}
 }

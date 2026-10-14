@@ -59,6 +59,17 @@ pub struct SubscribeOpts {
     /// every source sample, whatever the delivery rate.
     pub filters: Vec<Filter>,
 }
+/// Filters per subscription chain. DESIGN's widgets use one display filter each
+/// (`shared/src/layouts.ts`: a single `ema`; the default is `power_3s`); the cap leaves
+/// room for a median in front of a mean and a hold.
+pub const MAX_FILTERS_PER_CHAIN: usize = 4;
+/// Longest SMA window and EMA time constant, seconds. The longest display filter in
+/// the spike is 10 s (`shared/src/layouts.ts`); 300 s is 30× that and keeps an SMA to
+/// 1 200 samples at the 4 Hz source.
+pub const MAX_FILTER_SECONDS: f64 = 300.0;
+/// Largest median sample count: 64 s of the 4 Hz source.
+pub const MAX_MEDIAN_SAMPLES: f64 = 256.0;
+
 impl SubscribeOpts {
     /// Lowest delivery rate.
     pub const MIN_RATE_HZ: f64 = 0.1;
@@ -275,6 +286,9 @@ pub enum StreamError {
     /// More than 64 subscriptions on the stream (`Conflict`, ADR-0001 §4.3).
     #[error("too many subscriptions")]
     TooManySubscriptions,
+    /// More than 16 live streams on the engine (`Conflict`).
+    #[error("too many streams")]
+    TooManyStreams,
     /// `rate_hz` is outside 0.1–10 Hz or not finite.
     #[error("rate must be within 0.1..=10 Hz")]
     InvalidRate,
