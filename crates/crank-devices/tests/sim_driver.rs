@@ -2,6 +2,7 @@
 //! Time is tokio's paused clock behind the injected [`Clock`]; nothing sleeps for real.
 use crank_devices::sim::{
     Drive, EchoFault, SPIRAL_ONSET_RPM, SimComponent, SimConfig, SimCore, SimFault, SimRig,
+    reconnect_backoff,
 };
 use crank_devices::*;
 use futures_util::future::BoxFuture;
@@ -312,6 +313,98 @@ async fn same_seed_and_faults_reproduce_the_same_events() {
     }
     assert!(!runs[0].is_empty());
     assert_eq!(runs[0], runs[1]);
+}
+
+// ---- reconnect sequence (ADR-0002 §6, #206) ----
+
+fn link_trace(ev: &[TrainerEvent]) -> Vec<String> {
+    ev.iter()
+        .filter_map(|e| match e {
+            TrainerEvent::Link(s) => Some(format!("{s:?}")),
+            TrainerEvent::Reconnecting { attempt } => Some(format!("Reconnecting({attempt})")),
+            TrainerEvent::Fault(DeviceError::ConnectFailed(_)) => Some("Fault".into()),
+            _ => None,
+        })
+        .collect()
+}
+#[tokio::test(start_paused = true)]
+async fn dropout_follows_the_supervisor_sequence_and_backoff() {
+    // loss at 10 s lasting 5 s: attempts at +0.5, +1, +2, +4 s after each failure,
+    // i.e. 10.5, 11.5, 13.5 fail and 17.5 (>= 15) reconnects
+    let r = rig(vec![SimFault::Dropout {
+        at: s(10),
+        down: s(5),
+    }]);
+    let mut link = connect(&r).await;
+    set(&link, ControlMode::Erg { target_w: 200 }).await;
+    let ev = run(&mut link, 20).await;
+    let labels = link_trace(&ev);
+    assert_eq!(
+        labels,
+        [
+            "Connecting",
+            "Ready", // connect
+            "Lost",
+            "Reconnecting(1)",
+            "Fault",
+            "Reconnecting(2)",
+            "Fault",
+            "Reconnecting(3)",
+            "Fault",
+            "Reconnecting(4)",
+            "Connecting",
+            "Ready",
+        ]
+    );
+    let at = |want: &dyn Fn(&TrainerEvent) -> bool| {
+        // events carry no time of their own; use the samples around them
+        ev.iter().position(want).expect("sim")
+    };
+    let last_before_gap = at(&|e| *e == TrainerEvent::Link(LinkState::Lost));
+    let resumed = at(&|e| *e == TrainerEvent::Reconnecting { attempt: 4 });
+    let times: Vec<u64> = ev[last_before_gap..resumed]
+        .iter()
+        .filter_map(|e| {
+            if let TrainerEvent::Sample(x) = e {
+                Some(x.at.0)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        times.is_empty(),
+        "no telemetry between Lost and the successful attempt"
+    );
+    let first_after = samples(&ev)
+        .into_iter()
+        .find(|x| x.at.0 > 15_000_000)
+        .expect("sim");
+    assert!(
+        first_after.at.0 >= 17_500_000,
+        "back only at the 17.5 s attempt"
+    );
+    assert_eq!(reconnect_backoff(5), Duration::from_secs(5));
+}
+#[tokio::test(start_paused = true)]
+async fn disconnect_while_lost_does_not_report_lost_twice() {
+    let r = rig(vec![SimFault::Dropout {
+        at: s(5),
+        down: s(60),
+    }]);
+    let mut link = connect(&r).await;
+    let mut ev = run(&mut link, 8).await;
+    link.control
+        .send(TrainerCommand::Disconnect)
+        .await
+        .expect("sim");
+    ev.extend(run(&mut link, 2).await);
+    assert_eq!(
+        ev.iter()
+            .filter(|e| **e == TrainerEvent::Link(LinkState::Lost))
+            .count(),
+        1
+    );
 }
 
 // ---- link ownership ----
