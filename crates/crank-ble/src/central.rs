@@ -145,7 +145,26 @@ impl Source for OneScan<BtleplugAdvertisements> {
 pub struct BleCentral {
     adapter: Adapter,
     source: OneScan<BtleplugAdvertisements>,
-    pairings: Arc<Mutex<HashMap<String, Pairing>>>,
+    pairings: Arc<Pairings>,
+}
+
+/// What is remembered of the paired devices, by platform id.
+#[derive(Default)]
+struct Pairings(Mutex<HashMap<String, Pairing>>);
+impl Pairings {
+    fn remember(&self, pairing: Pairing) {
+        if let Ok(mut all) = self.0.lock() {
+            all.insert(pairing.platform_id.clone(), pairing);
+        }
+    }
+    fn forget(&self, platform_id: &str) {
+        if let Ok(mut all) = self.0.lock() {
+            all.remove(platform_id);
+        }
+    }
+    fn get(&self, platform_id: &str) -> Option<Pairing> {
+        self.0.lock().ok()?.get(platform_id).cloned()
+    }
 }
 impl BleCentral {
     /// Acquire the adapter.
@@ -177,12 +196,15 @@ impl BleCentral {
     /// when its platform id is no longer listed, and verify serial and model after
     /// connecting (ADR-0002 §5).
     pub fn remember(&self, pairing: Pairing) {
-        if let Ok(mut pairings) = self.pairings.lock() {
-            pairings.insert(pairing.platform_id.clone(), pairing);
-        }
+        self.pairings.remember(pairing);
+    }
+    /// Drop what [`BleCentral::remember`] stored for a platform id (the pairing was
+    /// forgotten): it no longer matches by name nor verifies serial and model.
+    pub fn forget(&self, platform_id: &str) {
+        self.pairings.forget(platform_id);
     }
     fn pairing(&self, dev: &DeviceRef) -> Option<Pairing> {
-        self.pairings.lock().ok()?.get(&dev.0).cloned()
+        self.pairings.get(&dev.0)
     }
     /// Post-filtered discovery over this adapter (one scan at a time).
     #[must_use]
@@ -327,6 +349,15 @@ mod tests {
         }
     }
     const SCAN: Duration = Duration::from_secs(4);
+
+    #[test]
+    fn forgotten_pairings_no_longer_match() {
+        let all = Pairings::default();
+        all.remember(pairing("neo", "NEO"));
+        assert!(all.get("neo").is_some());
+        all.forget("neo");
+        assert!(all.get("neo").is_none());
+    }
 
     #[test]
     fn denied_bluetooth_is_permission_denied_not_no_adapter() {

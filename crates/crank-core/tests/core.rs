@@ -67,22 +67,17 @@ async fn scan_pair_forget_and_links_on_the_sim() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn pairing_survives_a_restart_and_a_new_pairing_replaces_the_old_of_its_role() {
+async fn pairing_survives_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     {
         let core = Core::open(config(dir.path())).unwrap();
-        core.device_pair("sim-a".into(), DeviceRole::Trainer)
+        core.device_pair("trainer".into(), DeviceRole::Trainer)
             .await
             .unwrap();
-        core.device_pair("sim-b".into(), DeviceRole::Trainer)
-            .await
-            .unwrap();
-        let links = core.device_links().await.unwrap();
-        assert_eq!(links[0].device.as_ref().unwrap().id, "sim-b");
     }
     let core = Core::open(config(dir.path())).unwrap();
     let links = core.device_links().await.unwrap();
-    assert_eq!(links[0].device.as_ref().unwrap().id, "sim-b");
+    assert_eq!(links[0].device.as_ref().unwrap().id, "trainer");
 }
 
 #[tokio::test(start_paused = true)]

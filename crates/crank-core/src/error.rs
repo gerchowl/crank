@@ -84,10 +84,24 @@ impl From<StreamError> for ApiError {
 }
 impl From<DeviceError> for ApiError {
     fn from(e: DeviceError) -> Self {
-        let code = match e {
-            DeviceError::PermissionDenied => ErrorCode::PermissionDenied,
-            DeviceError::Protocol { .. } | DeviceError::Capture(_) => ErrorCode::Internal,
-            _ => ErrorCode::DeviceUnavailable,
+        let code = match &e {
+            DeviceError::PermissionDenied => {
+                return Self::new(
+                    ErrorCode::PermissionDenied,
+                    "Bluetooth access is denied. Open System Settings → Privacy & Security → \
+                     Bluetooth, allow crank, then try again.",
+                );
+            }
+            // Another link of the same driver is still up.
+            DeviceError::ConnectFailed(m) if m.contains("already connected") => ErrorCode::Conflict,
+            DeviceError::AdapterUnavailable
+            | DeviceError::NotFound
+            | DeviceError::ConnectFailed(_)
+            | DeviceError::Gatt(_)
+            | DeviceError::Disconnected => ErrorCode::DeviceUnavailable,
+            // Protocol and capture failures, and any variant added later (`DeviceError`
+            // is non-exhaustive): a bug until it is mapped here deliberately.
+            _ => ErrorCode::Internal,
         };
         Self::new(code, e.to_string())
     }
@@ -112,6 +126,12 @@ mod tests {
             serde_json::to_value(&e).unwrap(),
             serde_json::json!({"code": "device_unavailable", "message": "no trainer paired"})
         );
+    }
+    #[test]
+    fn denied_bluetooth_carries_the_instructions() {
+        let e = ApiError::from(DeviceError::PermissionDenied);
+        assert!(e.message.contains("Privacy & Security"), "{}", e.message);
+        assert!(e.message.contains("Bluetooth"));
     }
     #[test]
     fn lower_layers_map_to_the_adr_codes() {
