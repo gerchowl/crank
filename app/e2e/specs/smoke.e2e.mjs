@@ -1,5 +1,5 @@
 // Harness smoke spec (#35): launch, element query, IPC round trip with a DOM change, screenshots.
-// The shell has a single view, so this exercises an event-driven DOM change instead of navigation;
+// The shell's views are placeholders, so this exercises an event-driven DOM change instead of navigation;
 // navigation and the screenshot matrix arrive with the UI waves (see the deferred #35 follow-ups).
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -10,7 +10,8 @@ const outDir = process.env.CRANK_E2E_OUT ?? "e2e-out";
 describe("crank shell", () => {
   it("launches and renders the shell", async () => {
     await expect(browser).toHaveTitle("crank");
-    await expect($("h1")).toHaveText("crank");
+    await expect($("nav[aria-label='Places']")).toBeDisplayed();
+    await expect($("h1")).toHaveText("Today");
   });
 
   it("round-trips a Rust command and updates the DOM", async () => {

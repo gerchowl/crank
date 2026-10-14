@@ -20,7 +20,7 @@
       rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./crates/crank-engine/tests/fixtures ./docs/hil/captures/check4.fecap ./clippy.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
-        (lib.fileset.difference ./app ./app/src-tauri) ./shared
+        (lib.fileset.difference ./app ./app/src-tauri) ./shared ./assets/brand
         ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures
         ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ]);
       pnpmDeps = pkgs.fetchPnpmDeps {
@@ -32,7 +32,7 @@
         # pnpm leaves an empty v11/links directory on macOS but not Linux.
         # Empty store directories carry no cache data; normalize before packing.
         postInstall = ''find "$storePath" -type d -empty -delete'';
-        fetcherVersion = 4; hash = "sha256-rhB1aUKBCcj3AepOD649wrLyZU0usI3An54QyXPyxVk=";
+        fetcherVersion = 4; hash = "sha256-vXa9T4Z10I53+L/3womR+RLALIddxrTrAmFg4L1ZPGk=";
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
         pname = name; version = "0.1.0"; src = frontendSrc;
@@ -200,6 +200,13 @@
         # committed fixture crank-engine's refinement test reads (#218): it must equal the model's output.
         following-model = pkgs.runCommand "following-model" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md} ${./crates/crank-engine/tests/fixtures/following.json}
+          touch $out
+        '';
+        # FMEA rows: schema, guards, table rendered from the TOML (#255); a missing cited test only
+        # warns here, `just fmea` (--strict) fails on it.
+        fmea = pkgs.runCommand "fmea" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          cp -r ${source (lib.fileset.unions [ ./docs/safety (lib.fileset.fileFilter (f: f.hasExt "rs" || f.hasExt "py") ./crates) ])} src
+          python3 src/docs/safety/check_fmea.py src
           touch $out
         '';
         # e2e.sh's run-dir pruning must survive zero, one and many prior runs under `set -euo pipefail` (#233).
