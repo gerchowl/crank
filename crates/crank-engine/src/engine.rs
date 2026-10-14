@@ -1,9 +1,14 @@
 //! The ride actor: state machine, tick assignment, loss rules, record (ADR-0001 §5).
 use crate::control::{BlockTarget, PolicyContext, RideActivity, SOFT_START_TICKS, TargetPolicy};
 use crate::record::{METRICS, Mean, RecordError, RideRecorder, SecondRow};
+use crate::stream::hub::Hub;
+use crate::stream::types::StreamError;
+use crate::stream::{
+    LinkDevice, MetricId, StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts,
+};
 use crate::ticks::{
     HR_HOLD_TICKS, Hold, LOSS_TICKS, STOPPED_TICKS, SessionTicks, TICKS_PER_SECOND,
-    TRAINER_HOLD_TICKS, TickWindow, WorkoutTicks,
+    TRAINER_HOLD_TICKS, TickWindow, WorkoutTicks, ticks_to_seconds,
 };
 use crank_devices::{
     Clock, ControlMode, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime, TrainerCommand,
@@ -111,11 +116,27 @@ pub enum CommandError {
     EngineStopped,
 }
 type Request = (EngineCmd, oneshot::Sender<Result<(), CommandError>>);
+type Reply<T> = oneshot::Sender<Result<T, StreamError>>;
+
+/// A stream request; the engine answers it between ticks and never waits on a consumer.
+enum StreamReq {
+    Open(
+        Option<String>,
+        Reply<(StreamId, mpsc::Receiver<StreamFrame>)>,
+    ),
+    Close(StreamId),
+    CloseWindow(String),
+    Subscribe(StreamId, MetricId, SubscribeOpts, Reply<SubId>),
+    Unsubscribe(StreamId, SubId, Reply<()>),
+    Ack(StreamId, u64),
+    Snapshot(StreamId, Reply<StreamSnapshot>),
+}
 
 /// Send commands to a running engine and observe its status.
 #[derive(Clone)]
 pub struct EngineHandle {
     cmds: mpsc::Sender<Request>,
+    streams: mpsc::Sender<StreamReq>,
     status: watch::Receiver<RideStatus>,
 }
 impl EngineHandle {
@@ -130,6 +151,89 @@ impl EngineHandle {
             .await
             .map_err(|_| CommandError::EngineStopped)?;
         rx.await.map_err(|_| CommandError::EngineStopped)?
+    }
+    async fn stream<T>(&self, req: impl FnOnce(Reply<T>) -> StreamReq) -> Result<T, StreamError> {
+        let (tx, rx) = oneshot::channel();
+        self.streams
+            .send(req(tx))
+            .await
+            .map_err(|_| StreamError::EngineStopped)?;
+        rx.await.map_err(|_| StreamError::EngineStopped)?
+    }
+    /// Open a stream: the frames arrive on the receiver (ADR-0001 §4.3). With a
+    /// `window` label, that window's previous streams are dropped first (page reload).
+    /// The consumer acknowledges frames with [`EngineHandle::stream_ack`].
+    ///
+    /// # Errors
+    /// `TooManyStreams` beyond 16 live streams, or `EngineStopped`.
+    pub async fn open_stream(
+        &self,
+        window: Option<String>,
+    ) -> Result<(StreamId, mpsc::Receiver<StreamFrame>), StreamError> {
+        self.stream(|r| StreamReq::Open(window, r)).await
+    }
+    /// Drop a stream and its subscriptions.
+    ///
+    /// # Errors
+    /// `EngineStopped` if the engine has ended.
+    pub async fn close_stream(&self, stream: StreamId) -> Result<(), StreamError> {
+        self.streams
+            .send(StreamReq::Close(stream))
+            .await
+            .map_err(|_| StreamError::EngineStopped)
+    }
+    /// Drop every stream of a window (its `Destroyed` event).
+    ///
+    /// # Errors
+    /// `EngineStopped` if the engine has ended.
+    pub async fn close_window(&self, window: String) -> Result<(), StreamError> {
+        self.streams
+            .send(StreamReq::CloseWindow(window))
+            .await
+            .map_err(|_| StreamError::EngineStopped)
+    }
+    /// Subscribe to a metric with its own filter chain and rate.
+    ///
+    /// # Errors
+    /// Unknown stream, more than 64 subscriptions, a rate outside 0.1–10 Hz, an invalid
+    /// filter parameter, or `EngineStopped`.
+    pub async fn stream_subscribe(
+        &self,
+        stream: StreamId,
+        metric: MetricId,
+        opts: SubscribeOpts,
+    ) -> Result<SubId, StreamError> {
+        self.stream(|r| StreamReq::Subscribe(stream, metric, opts, r))
+            .await
+    }
+    /// End a subscription.
+    ///
+    /// # Errors
+    /// Unknown stream or subscription, or `EngineStopped`.
+    pub async fn stream_unsubscribe(
+        &self,
+        stream: StreamId,
+        sub: SubId,
+    ) -> Result<(), StreamError> {
+        self.stream(|r| StreamReq::Unsubscribe(stream, sub, r))
+            .await
+    }
+    /// The consumer has applied every frame up to and including `seq`.
+    ///
+    /// # Errors
+    /// `EngineStopped` if the engine has ended.
+    pub async fn stream_ack(&self, stream: StreamId, seq: u64) -> Result<(), StreamError> {
+        self.streams
+            .send(StreamReq::Ack(stream, seq))
+            .await
+            .map_err(|_| StreamError::EngineStopped)
+    }
+    /// The state a window re-reads after `resync` or a `seq` gap.
+    ///
+    /// # Errors
+    /// Unknown stream, or `EngineStopped`.
+    pub async fn stream_snapshot(&self, stream: StreamId) -> Result<StreamSnapshot, StreamError> {
+        self.stream(|r| StreamReq::Snapshot(stream, r)).await
     }
     /// Latest status.
     #[must_use]
@@ -309,6 +413,8 @@ pub struct Engine {
     trainer_link: Option<LinkState>,
     hr_link: Option<LinkState>,
     cmds: mpsc::Receiver<Request>,
+    stream_reqs: Option<mpsc::Receiver<StreamReq>>,
+    hub: Hub,
     pub(crate) status: watch::Sender<RideStatus>,
     trainer_log: LinkLog,
     hr_log: LinkLog,
@@ -325,6 +431,7 @@ impl Engine {
         activity: Arc<dyn RideActivity>,
     ) -> (Self, EngineHandle) {
         let (cmd_tx, cmds) = mpsc::channel(16);
+        let (stream_tx, stream_reqs) = mpsc::channel(64);
         let (trainer_link, hr_link) = (
             trainer.as_ref().map(|_| LinkState::Ready),
             hr.as_ref().map(|_| LinkState::Ready),
@@ -344,6 +451,8 @@ impl Engine {
             trainer_link,
             hr_link,
             cmds,
+            stream_reqs: Some(stream_reqs),
+            hub: Hub::new(),
             status: watch::channel(RideStatus {
                 state: RideState::Idle,
                 loaded: false,
@@ -363,6 +472,7 @@ impl Engine {
         };
         let handle = EngineHandle {
             cmds: cmd_tx,
+            streams: stream_tx,
             status: engine.status.subscribe(),
         };
         (engine, handle)
@@ -380,14 +490,29 @@ impl Engine {
             Cmd(Option<Request>),
             Trainer(Option<TrainerEvent>),
             Hr(Option<HrEvent>),
+            Stream(Option<StreamReq>),
             Timer,
         }
         loop {
             self.catch_up();
-            let (clock, due) = (self.clock.clone(), self.next_due());
+            // Ticks are due on the (possibly simulated-fast) engine clock; frames and
+            // heartbeats on its unscaled pacing axis (ADR-0001 §4.3).
+            let due = self.next_due();
+            let pace_due = self
+                .hub
+                .next_due_us(self.clock.pacing_now().0)
+                .map(MonoTime);
+            let clock = self.clock.clone();
             let sleep = async move {
                 match due {
                     Some(at) => clock.sleep_until(at).await,
+                    None => pending().await,
+                }
+            };
+            let clock = self.clock.clone();
+            let pace = async move {
+                match pace_due {
+                    Some(at) => clock.pacing_sleep_until(at).await,
                     None => pending().await,
                 }
             };
@@ -395,7 +520,9 @@ impl Engine {
                 c = self.cmds.recv() => Wake::Cmd(c),
                 e = recv(&mut self.trainer_events) => Wake::Trainer(e),
                 e = recv(&mut self.hr_events) => Wake::Hr(e),
+                r = recv(&mut self.stream_reqs) => Wake::Stream(r),
                 () = sleep => Wake::Timer,
+                () = pace => Wake::Timer,
             };
             match wake {
                 Wake::Cmd(None) => {
@@ -420,6 +547,11 @@ impl Engine {
                     self.hr_events = None;
                     self.on_hr_event(HrEvent::Link(LinkState::Lost));
                 }
+                Wake::Stream(Some(req)) => {
+                    self.catch_up();
+                    self.stream_request(req);
+                }
+                Wake::Stream(None) => self.stream_reqs = None,
                 Wake::Timer => {}
             }
             self.publish();
@@ -625,6 +757,7 @@ impl Engine {
                 .add(trainer.and_then(|t| t.speed).map(f64::from));
             s.acc.hr.add(hr);
         }
+        self.publish_source(&s, riding, trainer, hr);
         if s.clock_ticks % TICKS_PER_SECOND == 0 {
             s.append_second();
         }
@@ -671,6 +804,27 @@ impl Engine {
         if finished {
             self.finish();
         }
+    }
+    /// Feed the tick's values to the streams: the record's values, `null` while paused.
+    fn publish_source(
+        &mut self,
+        s: &Session,
+        riding: bool,
+        trainer: Option<TrainerValues>,
+        hr: Option<f64>,
+    ) {
+        let values = if riding {
+            [
+                trainer.and_then(|t| t.power).map(f64::from),
+                trainer.and_then(|t| t.cadence).map(f64::from),
+                trainer.and_then(|t| t.speed).map(f64::from),
+                hr,
+                Some(ticks_to_seconds(s.ride_ticks)),
+            ]
+        } else {
+            [None; 5]
+        };
+        self.hub.on_source(ticks_to_seconds(s.clock_ticks), &values);
     }
     fn control(&mut self, s: &mut Session, k: u64) {
         if self.trainer_link != Some(LinkState::Ready) {
@@ -833,7 +987,32 @@ impl Engine {
         Ok(())
     }
 
-    fn publish(&self) {
+    fn stream_request(&mut self, req: StreamReq) {
+        let now = self.clock.pacing_now().0;
+        // A dropped reply means the requester gave up; the request still applied.
+        match req {
+            StreamReq::Open(window, reply) => {
+                let _ = reply.send(self.hub.open(window, now));
+            }
+            StreamReq::Close(id) => self.hub.close(id),
+            StreamReq::CloseWindow(w) => self.hub.close_window(&w),
+            StreamReq::Subscribe(id, metric, opts, reply) => {
+                let _ = reply.send(self.hub.subscribe(id, metric, opts));
+            }
+            StreamReq::Unsubscribe(id, sub, reply) => {
+                let _ = reply.send(self.hub.unsubscribe(id, sub));
+            }
+            StreamReq::Ack(id, seq) => {
+                // An ack for a dropped stream is not an error worth surfacing.
+                let _ = self.hub.ack(id, seq);
+            }
+            StreamReq::Snapshot(id, reply) => {
+                let _ = reply.send(self.hub.snapshot(id));
+            }
+        }
+    }
+
+    fn publish(&mut self) {
         let s = self.session.as_ref();
         let state = match s {
             Some(s) if s.phase == Phase::Finished => RideState::Finished,
@@ -843,7 +1022,7 @@ impl Engine {
                 .map_or(RideState::Riding, RideState::Paused),
             _ => RideState::Idle,
         };
-        self.status.send_replace(RideStatus {
+        let status = RideStatus {
             state,
             loaded: s.is_some(),
             session: SessionTicks(s.map_or(0, |s| s.clock_ticks)),
@@ -854,6 +1033,18 @@ impl Engine {
             hr_link: self.hr_link,
             late_samples: s.map_or(0, |s| s.late),
             record_error: s.and_then(|s| s.record_error.clone()),
-        });
+        };
+        let now = self.clock.pacing_now().0;
+        self.hub.on_status(StreamStatus::from(&status), now);
+        for (device, link) in [
+            (LinkDevice::Trainer, self.trainer_link),
+            (LinkDevice::Hr, self.hr_link),
+        ] {
+            if let Some(link) = link {
+                self.hub.on_link(device, link.into());
+            }
+        }
+        self.hub.poll(now);
+        self.status.send_replace(status);
     }
 }

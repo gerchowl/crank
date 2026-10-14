@@ -21,6 +21,17 @@ pub trait Clock: Send + Sync + 'static {
     fn now(&self) -> MonoTime;
     /// Suspend until a monotonic deadline.
     fn sleep_until(&self, at: MonoTime) -> BoxFuture<'static, ()>;
+    /// Monotonic time for pacing what a human or an IPC channel sees (frame spacing,
+    /// heartbeats; ADR-0001 §4.3): unscaled by simulation speed. A clock that runs
+    /// faster than real time (`VirtualClock` at 10×/60×) overrides it; the default is
+    /// [`Clock::now`], right for every clock that is not scaled.
+    fn pacing_now(&self) -> MonoTime {
+        self.now()
+    }
+    /// Suspend until a deadline on the [`Clock::pacing_now`] axis.
+    fn pacing_sleep_until(&self, at: MonoTime) -> BoxFuture<'static, ()> {
+        self.sleep_until(at)
+    }
 }
 
 /// Trainer protocol selected by discovery. See ADR-0002 §3.
