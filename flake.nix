@@ -208,7 +208,8 @@
           touch $out
         '';
         npm-licenses-test = pkgs.runCommand "npm-licenses-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          python3 ${./scripts/test-check-npm-prod-licenses.py}
+          cp -r ${source (lib.fileset.unions [ ./scripts/check-npm-prod-licenses.py ./scripts/test-check-npm-prod-licenses.py ])} src
+          cd src && python3 scripts/test-check-npm-prod-licenses.py
           touch $out
         '';
       } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
