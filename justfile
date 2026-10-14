@@ -31,6 +31,11 @@ model:
 model-fixture:
     python3 docs/adr/models/trainer_following.py --emit-fixture crates/crank-engine/tests/fixtures/following.json
 
+# FMEA validator, strict: a cited test that does not exist fails here (the `fmea` flake check
+# only warns about it). `just fmea --write` re-renders the table into FMEA.md.
+fmea *ARGS:
+    python3 docs/safety/check_fmea.py --strict {{ARGS}}
+
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
     pnpm -C app lint
