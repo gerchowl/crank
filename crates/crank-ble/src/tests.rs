@@ -15,6 +15,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc;
+mod ble147;
 
 fn frame(page: [u8; 8]) -> Vec<u8> {
     let mut frame = vec![0xa4, 9, 0x4e, 5];
@@ -436,7 +437,8 @@ async fn synthetic_fecap_replays_through_real_driver_on_injected_clock() {
 mod capture_reader;
 #[test]
 fn capture_writer_roundtrips_with_existing_codec_fixture_reader() {
-    let path = std::env::temp_dir().join(format!("crank-43-{}.fecap", std::process::id()));
+    let dir = tempfile::tempdir().unwrap(); // RAII: removed even if an assertion panics (#201).
+    let path = dir.path().join("roundtrip.fecap");
     let capture = Capture::create(&path, MonoTime(100)).unwrap();
     let records = [
         (MonoTime(100), true, vec![0, 1, 255]),
@@ -462,7 +464,6 @@ fn capture_writer_roundtrips_with_existing_codec_fixture_reader() {
     assert_eq!(capture_reader::replay(&text), expected);
     assert!(capture.record(MonoTime(99), true, &[0]).is_err());
     assert!(Capture::create(&path, MonoTime(0)).is_err());
-    std::fs::remove_file(path).unwrap();
 }
 #[tokio::test(start_paused = true)]
 async fn receive_pipeline_preserves_duplicate_replies_and_transport_loss() {
@@ -586,10 +587,8 @@ impl tracing::Subscriber for Trace {
 #[tokio::test(start_paused = true)]
 async fn trace_capture_failure_is_reported_without_misreporting_gatt_or_stopping_control() {
     enable_trace();
-    let path = std::env::temp_dir().join(format!(
-        "crank-43-capture-fault-{}.fecap",
-        std::process::id()
-    ));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("capture-fault.fecap");
     let capture = Arc::new(Capture::create(&path, MonoTime(u64::MAX)).unwrap());
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
     let fake = Fake::new(clock.clone());
@@ -624,7 +623,6 @@ async fn trace_capture_failure_is_reported_without_misreporting_gatt_or_stopping
     assert_eq!(fake.writes.lock().unwrap().last().unwrap().1[4], 49);
     link.control.send(TrainerCommand::Disconnect).await.unwrap();
     tick().await;
-    std::fs::remove_file(path).unwrap();
 }
 
 fn enable_trace() {
@@ -686,7 +684,8 @@ async fn cancelled_setup_disconnects_and_failed_cleanup_preserves_both_errors() 
 #[tokio::test(start_paused = true)]
 async fn startup_capture_fault_is_nonfatal_and_rx_capture_keeps_arrival_time() {
     enable_trace();
-    let path = std::env::temp_dir().join(format!("crank-43-arrival-{}.fecap", std::process::id()));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("arrival.fecap");
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
     let capture = Arc::new(Capture::create(&path, MonoTime(0)).unwrap());
     let fake = Fake::new(clock.clone());
@@ -730,7 +729,6 @@ async fn startup_capture_fault_is_nonfatal_and_rx_capture_keeps_arrival_time() {
     assert_eq!(faults, 3); // page 55, request 54, reply 54
     link.control.send(TrainerCommand::Disconnect).await.unwrap();
     tick().await;
-    std::fs::remove_file(path).unwrap();
 }
 
 struct WakeClock {
@@ -1107,8 +1105,8 @@ async fn always_early_clock_yields_to_other_tasks_and_cancellation() {
 #[tokio::test(start_paused = true)]
 async fn capture_accepts_rx_arriving_before_tx_but_processed_after_it() {
     enable_trace();
-    let path =
-        std::env::temp_dir().join(format!("crank-43-interleave-{}.fecap", std::process::id()));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("interleave.fecap");
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
     let fake = Fake::new(clock.clone());
     let capture = Arc::new(Capture::create(&path, MonoTime(0)).unwrap());
@@ -1173,7 +1171,6 @@ async fn capture_accepts_rx_arriving_before_tx_but_processed_after_it() {
     assert_eq!(replay_observation(&text).await, observed[0]);
     link.control.send(TrainerCommand::Disconnect).await.unwrap();
     tick().await;
-    std::fs::remove_file(path).unwrap();
 }
 
 #[cfg(feature = "replay")]
