@@ -76,7 +76,7 @@ fn capabilities_status_and_identity() {
     else {
         panic!("caps")
     };
-    assert_eq!((p.max_resistance_n, p.modes), (Some(4660), 7));
+    assert_eq!((p.max_resistance_n, p.modes), (4660, 7));
     let Page::CommandStatus(p) = decode(&frame([71, 49, 255, 4, 0xff, 0xff, 33, 3]))
         .expect("observation")
         .page
@@ -179,7 +179,7 @@ fn optional_controls_and_common_page_sentinels() {
     else {
         panic!("capabilities")
     };
-    assert_eq!((p.max_resistance_n, p.modes), (None, 0xf8));
+    assert_eq!((p.max_resistance_n, p.modes), (0xffff, 0xf8));
     let Page::Product(p) = decode(&frame([81, 255, 255, 7, 255, 255, 255, 255]))
         .expect("product")
         .page

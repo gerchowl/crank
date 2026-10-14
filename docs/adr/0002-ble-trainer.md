@@ -224,7 +224,21 @@ To trainer (encoded):
 | 55 `0x37` | User configuration | 1–2: rider mass, 0.01 kg; 4–5: bike mass, 0.05 kg (12 bit) + wheel diameter offset; 6: wheel diameter, 0.01 m; 7: gear ratio, 0.03 |
 | 70 `0x46` | Request data page | 1–2: `0xFFFF`; 3–4: `0xFF`; 5: transmission count, bit 7 = reply acknowledged; 6: requested page; 7: `0x01` (data page) |
 
-Unused bytes are `0xFF`. Unknown pages decode to `Page::Unknown(u8, [u8; 8])` and are logged at debug.
+Unused bytes are `0xFF`. Unknown pages decode to `Page::Unknown { page, raw }` and are logged at debug.
+
+**Tentative pending HIL #44** (the ANT+ FE profile was not retrievable, §4.1; raw values are kept, no
+semantics invented):
+
+- Page 16: `equipment_type` is masked with `0x1F` (bits 5–7 reserved); the mask itself is unverified on
+  hardware.
+- Page 54: `max_resistance_n` is the raw `u16`; whether `0xFFFF` means unavailable is undecided and left to
+  the consumer (`crank-ble` currently maps it to `None`). Pages 54/80/81 are not cross-checked.
+- Page 55: wheel offset nibble 0–9 is millimetres and `0xF` means no offset; 10–14 decode to `None` pending
+  confirmation that 10 is not valid.
+- Page 70: a count of 0 encodes `0x80` and decodes to `times: 0, acknowledged: true`; whether that means
+  "until acknowledged" is undecided.
+- Pages 48/50/51/49 `0xFF` / `0xFFFF` endpoints (100 % = 200, Crr 0.01275 = `0xFF`, 16 383.75 W = `0xFFFF`)
+  are kept as numeric values, not sentinels.
 
 ### 4.3 Codec API
 
@@ -234,10 +248,17 @@ pub enum MsgType { Broadcast = 0x4E, Acknowledged = 0x4F }
 pub struct AntFrame { pub msg_type: MsgType, pub channel: u8, pub page: Page }
 
 pub enum Page {
-    GeneralFe(GeneralFe), Trainer(TrainerData), Capabilities(FeCapabilities),
+    GeneralFe(GeneralFe), Trainer(TrainerData),
+    BasicResistance { pct: Option<f32> }, TargetPower { watts: f32 },
+    Wind { cw_kg_per_m: Option<f32>, speed_kmh: Option<f32>, drafting: Option<f32> },
+    Track { grade_pct: Option<f32>, crr: f32 },
+    Capabilities(FeCapabilities),
+    UserConfig { rider_kg: Option<f32>, bike_kg: Option<f32>, wheel_m: Option<f32>, gear_ratio: Option<f32> },
+    Request { page: u8, times: u8, acknowledged: bool, command_type: u8 },
     CommandStatus(CommandStatus), Manufacturer(ManufacturerInfo), Product(ProductInfo),
-    Unknown(u8, [u8; 8]),
+    Unknown { page: u8, raw: [u8; 8] },     // all eight page bytes verbatim
 }
+// Control pages round-trip through decode, so the control variants above are also decoded.
 pub enum ControlPage {
     BasicResistance { pct: f32 }, TargetPower { watts: f32 },
     Wind { cw_kg_per_m: f32, speed_kmh: f32, drafting: f32 },
@@ -245,6 +266,8 @@ pub enum ControlPage {
     UserConfig { rider_kg: f32, bike_kg: f32, wheel_m: f32 },
     Request { page: u8, times: u8 },
 }
+#[non_exhaustive] pub enum Field { Pct, Watts, CwKgPerM, SpeedKmh, Drafting, GradePct, Crr, RiderKg, BikeKg, WheelM, Times }
+pub struct EncodeError { pub field: Field }
 pub fn encode(p: &ControlPage) -> Result<[u8; 13], EncodeError>;   // range-checked, never clamps silently
 pub fn decode(b: &[u8]) -> Result<AntFrame, FrameError>;           // Sync | Length | Checksum | Truncated
 ```
