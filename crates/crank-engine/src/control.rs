@@ -23,11 +23,9 @@ pub struct PolicyContext<'a> {
     /// The tick being processed, from the ride's start (session time).
     pub tick: u64,
     /// Increases at every applied link transition and every 8-tick silence: nothing the
-    /// policy learned before it (release counters, a running ramp) may be carried over.
+    /// policy learned before it (release counters, a running ramp) may be carried over, and
+    /// a soft start is owed (ADR-0002 §7.5, #231).
     pub link_epoch: u64,
-    /// Increases at every loss epoch: an applied link transition away from `Ready`, or
-    /// 8 ticks without a trainer sample. Every increase owes a soft start (ADR-0002 §7.5).
-    pub loss_epoch: u64,
     /// The tick at which samples last started flowing: a pedalling (cadence > 0) value is
     /// held since then. `None` while none is. Restarts at every applied link transition
     /// and every 8-tick silence, so a ramp that began before one is not continued.
@@ -65,6 +63,9 @@ pub struct PolicyStatus {
 pub trait TargetPolicy: Send + 'static {
     /// Desired mode for this tick.
     fn desired(&mut self, ctx: &PolicyContext<'_>) -> Option<ControlMode>;
+    /// A tick on which no control could be sent (the link is not ready): the policy may
+    /// still account for the tick.
+    fn skipped(&mut self, _ctx: &PolicyContext<'_>) {}
     /// State for the ride status.
     fn status(&self) -> PolicyStatus {
         PolicyStatus::default()

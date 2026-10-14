@@ -350,8 +350,6 @@ struct Session {
     block_elapsed: u64,
     last_sent: Option<ControlMode>,
     flow_start: Option<u64>,
-    /// Counts loss epochs; the policy owes a soft start for every increase.
-    loss_epoch: u64,
     /// Counts every applied link transition and silence.
     link_epoch: u64,
     cap_w: Option<u16>,
@@ -411,7 +409,7 @@ impl Session {
     /// the flow start and the origin, so pre-loss power is never an origin and its ramp
     /// never carries over (ADR-0002 §7.5, #231). Not in here, handled by the callers:
     /// the trainer hold (`apply_links`), the last command (`reset_control`) and the
-    /// loss epoch (`loss_epoch`), which the policy repays with its soft start.
+    /// link epoch (`link_epoch`), which the policy repays with its soft start.
     fn reset_soft_start(&mut self) {
         self.recent_power.clear();
         self.flow_start = None;
@@ -759,12 +757,9 @@ impl Engine {
             s.reset_control();
             s.trainer.clear();
             s.reset_soft_start();
+            // Any applied transition owes a soft start (#231) and never re-engages a
+            // release: the policy handles both off `link_epoch`.
             s.link_epoch += 1;
-            // Any transition away from `Ready` (Lost, or Connecting without a Lost)
-            // makes the next engagement a soft start (#231).
-            if state != LinkState::Ready {
-                s.loss_epoch += 1;
-            }
             if state == LinkState::Lost {
                 s.pauses.lost = true;
             }
@@ -858,7 +853,6 @@ impl Engine {
         // the ride is already paused for a loss: power sampled before it is no origin.
         if s.missed == LOSS_TICKS {
             s.pauses.lost = true;
-            s.loss_epoch += 1;
             s.link_epoch += 1;
             s.reset_control();
             s.reset_soft_start();
@@ -932,19 +926,12 @@ impl Engine {
     }
     fn control(&mut self, s: &mut Session, k: u64) {
         self.follow(s, k);
-        if self.trainer_link != Some(LinkState::Ready) {
-            return;
-        }
-        let Some(control) = self.trainer_control.as_ref() else {
-            return;
-        };
         let ctx = PolicyContext {
             block: s.blocks.get(s.block_idx),
             block_index: s.block_idx,
             block_elapsed_ticks: s.block_elapsed,
             tick: k,
             link_epoch: s.link_epoch,
-            loss_epoch: s.loss_epoch,
             flow_start: s.flow_start,
             power_3s_w: s.power_3s(),
             cadence_rpm: s.trainer.get(k).and_then(|t| t.cadence),
@@ -953,6 +940,14 @@ impl Engine {
             following: s.following.verdict(),
             max_target_w: self.max_target_w,
             cap_w: s.cap_w,
+        };
+        let control = self
+            .trainer_control
+            .as_ref()
+            .filter(|_| self.trainer_link == Some(LinkState::Ready));
+        let Some(control) = control else {
+            s.policy.skipped(&ctx);
+            return;
         };
         if let Some(mode) = s.policy.desired(&ctx)
             && s.last_sent != Some(mode)
@@ -1027,7 +1022,6 @@ impl Engine {
                     block_elapsed: 0,
                     last_sent: None,
                     flow_start: None,
-                    loss_epoch: 0,
                     link_epoch: 0,
                     cap_w: setup.cap_w,
                     policy: (self.policy_factory)(),

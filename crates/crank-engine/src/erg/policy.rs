@@ -36,7 +36,6 @@ struct Ramp {
 #[derive(Debug, Default)]
 pub struct ErgPolicy {
     link_epoch: u64,
-    loss_epoch: u64,
     /// A soft start is owed (see the module docs).
     owed: bool,
     ramp: Option<Ramp>,
@@ -131,14 +130,14 @@ impl ErgPolicy {
 
 impl TargetPolicy for ErgPolicy {
     fn desired(&mut self, ctx: &PolicyContext<'_>) -> Option<ControlMode> {
-        if ctx.loss_epoch != self.loss_epoch {
-            self.loss_epoch = ctx.loss_epoch;
-            self.owed = true;
-        }
+        // A link epoch (any applied transition, or 8 silent ticks) forgets what was learned
+        // on the old link and owes a soft start (#231: 0 W until a new-epoch sample with
+        // cadence > 0, then five steps). It never re-engages by itself: a release is left
+        // only by the §7.4 criteria (60 rpm for 2 s), and then by the §7.5 soft start.
         if ctx.link_epoch != self.link_epoch {
             self.link_epoch = ctx.link_epoch;
+            self.owed = true;
             self.ramp = None;
-            self.released = false;
             self.low = 0;
             self.high = 0;
         }
@@ -151,9 +150,9 @@ impl TargetPolicy for ErgPolicy {
         };
         // A block boundary is a discontinuity when its start target differs from the
         // previous block's end target (ADR-0002 §7.8 a). The first block has no previous
-        // block, and a ride start is not an engagement (§7.8 c: "the soft start's 5 s plus
-        // 5 s", and §7.5 starts a soft start only after a reconnect or after leaving
-        // free/SIM), so it is never settled. At the boundary tick the engine has already
+        // block, and today's ride start has no soft start (§7.5 owes one only after a
+        // reconnect or after leaving free/SIM; whether a start is a §7.8 c engagement is
+        // #250), so it is never settled. That behaviour is pinned pending #250. At the boundary tick the engine has already
         // advanced the index (the new target is sent on it, §7.2) but the tick is still the
         // old block's: compliance keeps its target.
         let boundary = ctx.block_elapsed_ticks == 0;
@@ -223,6 +222,10 @@ impl TargetPolicy for ErgPolicy {
         Some(ControlMode::Erg {
             target_w: watts(command, max),
         })
+    }
+    fn skipped(&mut self, ctx: &PolicyContext<'_>) {
+        // No control this tick (link not ready): the second still lands in a bucket.
+        self.account(ctx, false, 0.0);
     }
     fn status(&self) -> PolicyStatus {
         PolicyStatus {

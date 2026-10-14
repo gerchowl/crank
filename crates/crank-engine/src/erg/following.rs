@@ -483,6 +483,11 @@ impl Machine {
     /// status line ("grade not confirmed").
     #[must_use]
     pub fn blocking(&self) -> Option<Component> {
+        // Only a verdict of `not_following` names a component (§4.4.1 A3): when every
+        // component is silent the verdict is `unknown` (A2) and nothing is blamed.
+        if self.verdict() != TrainerFollowing::NotFollowing {
+            return None;
+        }
         self.components()
             .into_iter()
             .find(|(_, s)| matches!(s, ComponentState::NotFollowing | ComponentState::Silent))

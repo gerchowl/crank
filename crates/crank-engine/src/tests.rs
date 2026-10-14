@@ -663,7 +663,6 @@ fn ramp_target_moves_once_per_second_and_clamps_to_the_trainer_maximum() {
         block_elapsed_ticks: elapsed,
         tick: 0,
         link_epoch: 0,
-        loss_epoch: 0,
         flow_start: Some(0),
         power_3s_w: None,
         cadence_rpm: Some(90),
@@ -1226,15 +1225,17 @@ mod soft_start_property {
             self.block += 1;
             self.age = 0;
         }
-        fn new_epoch(&mut self, armed: bool) {
+        /// A link epoch (§7.5, #231): an applied link transition or 8 silent ticks. What
+        /// was sampled before it is forgotten and a soft start is owed. Nothing re-engages
+        /// ERG by itself: a release is kept (§7.4 leaves it only after 60 rpm for 2 s).
+        fn new_epoch(&mut self) {
             self.epoch.clear();
             self.flow = None;
             self.ramp = None;
-            self.released = false;
             self.low = 0;
             self.high = 0;
             self.current = None;
-            self.armed |= armed;
+            self.armed = true;
         }
         fn sample(&mut self, k: u64, power: Option<u16>, cadence: Option<u8>) {
             self.epoch.retain(|(j, ..)| *j != k);
@@ -1242,7 +1243,7 @@ mod soft_start_property {
         }
         fn link(&mut self, state: LinkState) {
             self.ready = state == LinkState::Ready;
-            self.new_epoch(state != LinkState::Ready);
+            self.new_epoch();
         }
         fn held_cadence(&self, k: u64) -> Option<u8> {
             self.epoch
@@ -1318,7 +1319,7 @@ mod soft_start_property {
             } else {
                 self.silent += 1;
                 if self.silent == 8 {
-                    self.new_epoch(true);
+                    self.new_epoch();
                 }
             }
             let cadence = self.held_cadence(k);
@@ -1503,6 +1504,16 @@ mod soft_start_property {
                         }
                     }
                 }
+            }
+            // every second of the ride is in exactly one compliance bucket (§7.8)
+            let st = r.status();
+            if st.state != RideState::Finished {
+                prop_assert_eq!(
+                    u64::from(st.compliance.counted_s + st.compliance.excluded_s),
+                    st.session.0 / 4,
+                    "{:?}",
+                    st.compliance
+                );
             }
             // the next ride begins with the engine in whatever state this one left it
             let _ = r.engine.command(EngineCmd::Stop);
