@@ -248,6 +248,12 @@ mod tests {
                 WorkoutBlock::try_from(&b).unwrap_err().code,
                 ErrorCode::Internal
             );
+            b.path = vec![1];
+            b.iteration = vec![big];
+            assert_eq!(
+                WorkoutBlock::try_from(&b).unwrap_err().code,
+                ErrorCode::Internal
+            );
         }
     }
 }
