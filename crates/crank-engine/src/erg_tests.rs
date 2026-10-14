@@ -1828,3 +1828,52 @@ fn leaving_free_after_a_repaid_soft_start_owes_it_again() {
     r.through(35);
     assert_eq!(r.modes(), vec![erg(100), erg(120)]);
 }
+#[test]
+fn a_load_keeps_the_previous_end_mode_owed_and_holds_the_new_ride_back() {
+    // #279: Stop → Load → Start. The end mode stays owed, the gate stays up through the
+    // delivery (a ride is loaded), and nothing is sent for the new ride before it.
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 24, 200, 90);
+    r.through(23);
+    r.modes();
+    r.engine.command(EngineCmd::Stop).expect("stop");
+    assert_eq!(r.modes(), vec![RESISTANCE_0]);
+    r.load(vec![work(200.0)]);
+    r.at(24 * TICK_US);
+    r.start();
+    pedal(&r, 24, 40, 150, 90);
+    r.through(29); // 1.5 s: inside the 2 s deadline
+    assert!(
+        r.modes().is_empty(),
+        "held back until the end mode is delivered"
+    );
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&true));
+    r.delivered(RESISTANCE_0);
+    assert_eq!(
+        r.gate.lock().unwrap().last(),
+        Some(&true),
+        "the new ride is open"
+    );
+    r.through(39);
+    assert_eq!(r.modes().first(), Some(&erg(150)), "its own soft start");
+}
+#[test]
+fn unloading_a_loaded_ride_waits_for_the_previous_end_mode() {
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 8, 200, 90);
+    r.through(7);
+    r.engine.command(EngineCmd::Stop).expect("stop");
+    r.load(vec![work(200.0)]);
+    r.engine.command(EngineCmd::Stop).expect("unload");
+    assert_eq!(
+        r.gate.lock().unwrap().last(),
+        Some(&true),
+        "end mode in flight"
+    );
+    r.delivered(RESISTANCE_0);
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
+}

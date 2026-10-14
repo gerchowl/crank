@@ -890,7 +890,14 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    the driver reports `Delivered { Resistance { 0 } }` (the mode's only page written), the link leaves `Ready`,
    or 2 s (eight writer ticks) pass, whichever is first; a `Delivered` of any other mode does not release it.
    `Delivered { mode }` means every control page of `mode` has been written, for every multi-page mode.
-   Silence at the end would leave the last `Erg { target_w }` applied at 0 rpm.
+   The end mode is always sent, also when the last command is already `Resistance { pct: 0 }`: that command
+   (a pause, a release) may still be queued and unwritten. **A `Load` does not cancel it (amendment, #279,
+   2026-10-14):** a previous ride's end mode stays owed across `Load`, `Start` and the unload of a loaded ride;
+   the ride-active signal is cleared by that delivery (or link loss, or the 2 s deadline), not by the unload,
+   and the engine awaits it on shutdown. While it is owed, a newly started ride sends nothing, so its own
+   engagement rules (§7.5: `Erg { 0 }` until cadence, then the soft start) begin only after page 48 has been
+   written and no torque can overtake or coalesce away the end mode. Silence at the end would leave the last
+   `Erg { target_w }` applied at 0 rpm.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 
