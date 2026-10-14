@@ -672,9 +672,26 @@ impl Engine {
         }
     }
     /// The end mode is out of the way (or never will be): clear the ride-active signal.
+    ///
+    /// A ride loaded (or started) while the previous end mode was in flight keeps the signal
+    /// up: it is that ride's own end that clears it (#279).
     fn release_gate(&mut self) {
         self.ending = None;
-        self.activity.set_active(false);
+        if !self
+            .session
+            .as_ref()
+            .is_some_and(|s| matches!(s.phase, Phase::Loaded | Phase::Active))
+        {
+            self.activity.set_active(false);
+        }
+    }
+    /// A loaded ride is unloaded. The signal clears now unless a previous ride's end mode is
+    /// still owed: then its delivery clears it (#279, ADR-0002 §7.9).
+    fn unload(&mut self) {
+        self.session = None;
+        if self.ending.is_none() {
+            self.activity.set_active(false);
+        }
     }
     pub(crate) fn catch_up(&mut self) {
         let now = self.clock.now();
@@ -1027,7 +1044,10 @@ impl Engine {
         let control = self
             .trainer_control
             .as_ref()
-            .filter(|_| self.trainer_link == Some(LinkState::Ready));
+            .filter(|_| self.trainer_link == Some(LinkState::Ready))
+            // the previous ride's end mode is still owed: nothing is queued behind it, or
+            // the writer's coalescing could replace page 48 with the new ride's first page
+            .filter(|_| self.ending.is_none());
         let Some(control) = control else {
             s.policy.skipped(&ctx);
             return;
@@ -1044,10 +1064,7 @@ impl Engine {
     fn end(&mut self) {
         match self.session.as_ref().map(|s| &s.phase) {
             Some(Phase::Active) => self.finish(),
-            Some(Phase::Loaded) => {
-                self.session = None;
-                self.activity.set_active(false);
-            }
+            Some(Phase::Loaded) => self.unload(),
             _ => {}
         }
         self.publish();
@@ -1082,12 +1099,6 @@ impl Engine {
         if let Some(s) = self.session.as_mut().filter(|s| s.phase == Phase::Active) {
             // Only complete seconds are recorded; a partial last second is dropped.
             s.phase = Phase::Finished;
-            // A link transition that has not been applied yet still wipes the trainer's
-            // mode (the driver restores nothing, ADR-0002 §6): what was sent no longer
-            // stands, so the end mode is owed.
-            if !self.trainer_log.queue.is_empty() {
-                s.reset_control();
-            }
             for (log, link) in [
                 (&mut self.trainer_log, &mut self.trainer_link),
                 (&mut self.hr_log, &mut self.hr_link),
@@ -1124,8 +1135,9 @@ impl Engine {
                 if active {
                     return Err(CommandError::WrongState);
                 }
-                // The previous ride's end mode is no longer awaited: the gate is up again.
-                self.ending = None;
+                // The previous ride's end mode (`self.ending`) stays owed across a `Load`: its
+                // delivery, a link loss or its deadline settle it (#279). Until then the new
+                // ride sends nothing (see `control`), so no torque can overtake page 48.
                 self.session = Some(Session {
                     phase: Phase::Loaded,
                     blocks: setup.blocks,
@@ -1206,10 +1218,7 @@ impl Engine {
             }
             EngineCmd::Stop => match self.session.as_ref().map(|s| &s.phase) {
                 Some(Phase::Active) => self.finish(),
-                Some(Phase::Loaded) => {
-                    self.session = None;
-                    self.activity.set_active(false);
-                }
+                Some(Phase::Loaded) => self.unload(),
                 _ => return Err(CommandError::WrongState),
             },
         }
