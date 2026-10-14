@@ -12,6 +12,11 @@ pub use types::*;
 ///
 /// Finite values are range checked before rounding to the nearest wire unit
 /// (half units round upward). No clamping to field or trainer limits occurs.
+/// The wire value is then checked against the two sentinels the NEO treats as
+/// invalid: page 49 `0xFFFF` (16383.75 W) and page 51 Crr `0xFF` (0.01275) are
+/// rejected, since the NEO replaces the target with 0 W or ignores the Crr
+/// (confirmed by HIL #44 Part A, `docs/hil/2026-10-14-fec.md` check 3; ADR-0002 §4.2).
+/// The largest valid values are 16383.5 W (`0xFFFE`) and Crr 0.0127 (`0xFE`).
 /// Page 70 requests acknowledged replies; its count must fit seven bits.
 /// A count of 0 is encoded as received (byte 0x80). On the NEO a count of 0
 /// was answered five times in the one HIL trial (#44 Part A, ADR-0002 §4.2),
@@ -28,9 +33,8 @@ pub fn encode(page: &ControlPage) -> Result<[u8; 13], EncodeError> {
         }
         ControlPage::TargetPower { watts } => {
             p[0] = 49;
-            p[6..8].copy_from_slice(
-                &quantize(watts, 0.0, 16_383.75, 4.0, 0.0, Field::Watts)?.to_le_bytes(),
-            );
+            let units = quantize(watts, 0.0, 16_383.75, 4.0, 0.0, Field::Watts)?;
+            p[6..8].copy_from_slice(&not_invalid(units, 0xffff, Field::Watts)?.to_le_bytes());
         }
         ControlPage::Wind {
             cw_kg_per_m,
@@ -49,7 +53,8 @@ pub fn encode(page: &ControlPage) -> Result<[u8; 13], EncodeError> {
                 &quantize(grade_pct, -200.0, 200.0, 100.0, 20_000.0, Field::GradePct)?
                     .to_le_bytes(),
             );
-            p[7] = quantize(crr, 0.0, 0.01275, 20_000.0, 0.0, Field::Crr)?.to_le_bytes()[0];
+            let units = quantize(crr, 0.0, 0.01275, 20_000.0, 0.0, Field::Crr)?;
+            p[7] = not_invalid(units, 0xff, Field::Crr)?.to_le_bytes()[0];
         }
         ControlPage::UserConfig {
             rider_kg,
@@ -111,6 +116,15 @@ fn quantize(
     Ok(lo)
 }
 
+// The NEO does not apply this wire value (HIL #44 Part A); it must never be sent.
+fn not_invalid(units: u16, invalid: u16, field: Field) -> Result<u16, EncodeError> {
+    if units == invalid {
+        Err(EncodeError { field })
+    } else {
+        Ok(units)
+    }
+}
+
 fn checksum(bytes: &[u8]) -> u8 {
     bytes.iter().fold(0, |xor, byte| xor ^ byte)
 }
@@ -160,7 +174,9 @@ pub fn decode(bytes: &[u8]) -> Result<AntFrame, FrameError> {
 fn decode_page(p: [u8; 8]) -> Page {
     match p[0] {
         16 => Page::GeneralFe(GeneralFe {
-            // Bits 5-7 are reserved in the profile; only the type code is kept.
+            // Masking bits 5-7 as reserved is **tentative pending HIL #44**: the profile
+            // was not retrievable (ADR-0002 §4.2) and the NEO sent them as 0 in all 456
+            // captured frames (Part A). Only the type code is kept.
             equipment_type: p[1] & 0x1f,
             elapsed_s: f32::from(p[2]) * 0.25,
             distance_m: p[3],

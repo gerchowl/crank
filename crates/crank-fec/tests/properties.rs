@@ -17,8 +17,9 @@ proptest! {
         let pct = f32::from(units) / 2.0;
         round_trip(C::BasicResistance { pct }, Page::BasicResistance { pct: Some(pct) });
     }
+    // 0xFFFF (page 49) and 0xFF (page 51 Crr) are invalid on the NEO and rejected (#215).
     #[test]
-    fn target_power(units in any::<u16>()) {
+    fn target_power(units in 0u16..=0xFFFE) {
         let watts = f32::from(units) / 4.0;
         round_trip(C::TargetPower { watts }, Page::TargetPower { watts });
     }
@@ -32,7 +33,7 @@ proptest! {
         });
     }
     #[test]
-    fn track(grade in -20_000i16..=20_000, rolling in any::<u8>()) {
+    fn track(grade in -20_000i16..=20_000, rolling in 0u8..=0xFE) {
         let grade_pct = f32::from(grade) / 100.0;
         let crr = f32::from(rolling) / 20_000.0;
         round_trip(C::Track { grade_pct, crr }, Page::Track { grade_pct: Some(grade_pct), crr });

@@ -233,14 +233,16 @@ To trainer (encoded):
 
 Unused bytes are `0xFF`. Unknown pages decode to `Page::Unknown { page, raw }` and are logged at debug.
 
-**Tentative pending HIL #44** (the ANT+ FE profile was not retrievable, §4.1; raw values are kept, no
-semantics invented). Part A results (2026-10-14, NEO fw 0.7.4) are marked; the rest stays tentative:
+**Tentative pending HIL #44** (the ANT+ FE profile was not retrievable, §4.1; the items below are codec
+policy, either raw values kept without meaning or a mask or validity rule, no semantics invented). Part A
+results (2026-10-14, NEO fw 0.7.4) are marked; the rest stays tentative:
 
 - Page 16: `equipment_type` is masked with `0x1F` (bits 5–7 reserved). **Part A:** bits 5–7 were 0 in all
   456 captured page-16 frames (type `0x19`), so the mask never mattered on this NEO; it stays tentative
   because zero bits do not prove the bits are reserved.
 - Page 54: `max_resistance_n` is the raw `u16`; whether `0xFFFF` means unavailable is undecided and left to
-  the consumer (`crank-ble` currently maps it to `None`). **Part A:** the NEO reports `200` N and modes
+  the consumer (`crank-ble` currently maps it to `None`, covered by the driver test
+  `page_54_max_resistance_0xffff_is_unavailable_and_other_values_are_kept`). **Part A:** the NEO reports `200` N and modes
   `0x07` (basic resistance, target power, simulation) in every reply; `0xFFFF` was never seen. Whether
   `0xFFFF` means unavailable stays tentative.
 - Page 55: wheel offset nibble 0–9 is millimetres and `0xF` means no offset; 10–14 decode to `None` pending
@@ -264,8 +266,10 @@ semantics invented). Part A results (2026-10-14, NEO fw 0.7.4) are marked; the r
   applied as numbers (echo `C8` and `BA FE 64`).
 - Pages 49 and 51 endpoints. **Part A (settled, contradicts the earlier "numeric, not sentinels"):** the
   NEO treats page 49 `0xFFFF` and page 51 Crr `0xFF` as invalid. The echo of `0xFFFF` reads `0x0000` (the
-  previous target is replaced by 0 W); the echo of Crr `0xFF` keeps the previous Crr. The codec keeps the
-  full numeric domain; the engine must never emit either value (#215).
+  previous target is replaced by 0 W); the echo of Crr `0xFF` keeps the previous Crr. **Confirmed by HIL
+  Part A** (`docs/hil/2026-10-14-fec.md`, check 3, "Endpoints"): `encode` rejects both with
+  `EncodeError` (`Field::Watts`, `Field::Crr`), judged on the wire value after rounding, so the largest valid
+  values are 16383.5 W (`0xFFFE`) and Crr 0.0127 (`0xFE`) (#215).
 - Page 49 resolution. **Part A:** the NEO quantises the target to whole watts: 200.25 W is echoed as 200 W
   and 200.5 W as 201 W, so §7.1's 1 W grid is the real resolution and 0.25 W is wire format only.
 - Pages 54/80/81 layout. **Part A (settled):** page 80 reads hardware revision 1, manufacturer 89
@@ -488,7 +492,7 @@ renew anything.
 | `N_follow` agreeing replies to verify a component | 3 | Design: a single or duplicated reply never decides |
 | `T_verify` minimum span of those replies | 2 s | Design: a burst of delayed replies arriving together never verifies |
 | `T_mismatch` minimum span of a disagreement episode before `not_following` | 2 s | The previous 2 s rule (8 ticks) |
-| `T_unknown(c)` silence: required time without a reply about component c | `4·P_c + 1 s` = 5 s (ERG, resistance), 9 s (SIM components) | **Per component (HIL #44 Part A).** A reply gap is `(m + 1)·P_c` after `m` consecutive lost replies; c is `silent` (C7) once the gap reaches `T_unknown(c)`, so `m` = ⌈`T_unknown(c)` / `P_c`⌉ − 1 losses in a row make a healthy component silent and then `not_following` (A3). The NEO never answered 27 of 344 polls (p = 7.8 %, `latency.analysis.json`; check 2: 0 of 12, check 3: 3 of 32 = 9.4 %, spacing: 5 of 79 = 6.3 % in a row and 4 of 40 = 10 % just after a control write). With independent losses a component slot of period `P_c` starts such a run at rate `p^m` per slot, i.e. `3600 / P_c · p^m` per hour. **Flat 5 s:** ERG `m` = 4, 0.14 per hour; one SIM component `m` = 2 (gap 6 s), `p²·1800` = 11 per hour, and a SIM ride has two (track, wind), so 22 per hour: unacceptable. **4·P_c + 1 s:** ERG `m` = 4 (gap 5 s), 0.14 per hour; one SIM component `m` = 4 (gap 10 s; three losses give 8 s and are tolerated), 0.068 per hour, 0.14 per hour per ride. At the highest rate measured after a control write (4 of 40 = 10 %) the new rule gives 0.36 per hour (ERG, or SIM per ride), at the in-a-row rate (5 of 79 = 6.3 %) 0.06. Measured, no component ever exceeded 4.05 s (SIM) or 2.04 s (ERG), and the largest first echo of a changed value was 4.21 s (SIM track) and 2.19 s (ERG). **Independence is assumed, not shown:** the 27 losses were all isolated (no two requests in a row), where independence expects 2.1 adjacent pairs (probability of none 0.12), and in the SIM phase no two replies of the same component were lost in a row (135 requests, 0.82 expected, probability of none 0.44). The data neither support nor contradict a burst-free loss process, so Part B counts `silent` episodes on a healthy NEO over a long SIM ride; the rule changes only if they exceed the rate above |
+| `T_unknown(c)` silence: required time without a reply about component c | `4·P_c + 1 s` = 5 s (ERG, resistance), 9 s (SIM components) | **Per component (HIL #44 Part A).** A reply gap is `(m + 1)·P_c` after `m` consecutive lost replies; c is `silent` (C7) once the gap reaches `T_unknown(c)`, so `m` = ⌈`T_unknown(c)` / `P_c`⌉ − 1 losses in a row make a healthy component silent and then `not_following` (A3). The NEO never answered 27 of 344 polls (p = 7.8 %, `latency.analysis.json`; check 2: 0 of 12, check 3: 3 of 32 = 9.4 %, spacing: 5 of 79 = 6.3 % in a row and 4 of 40 = 10 % just after a control write). With independent losses a component slot of period `P_c` starts such a run at rate `p^m` per slot, i.e. `3600 / P_c · p^m` per hour. **Flat 5 s:** ERG `m` = 4, 0.14 per hour; one SIM component `m` = 2 (gap 6 s), `p²·1800` = 11 per hour, and a SIM ride has two (track, wind), so 22 per hour: unacceptable. **4·P_c + 1 s:** ERG `m` = 4 (gap 5 s), 0.14 per hour; one SIM component `m` = 4 (gap 10 s; three losses give 8 s and are tolerated), 0.068 per hour, 0.14 per hour per ride. At the highest rate measured after a control write (4 of 40 = 10 %) the new rule gives 0.36 per hour (ERG, or SIM per ride), at the in-a-row rate (5 of 79 = 6.3 %) 0.06. Measured, no component ever exceeded 4.05 s (SIM) or 2.04 s (ERG), and the largest first echo of a changed value was 4.21 s (SIM track) and 2.19 s (ERG). **Independence is assumed, not shown:** the 27 losses of the latency capture were all isolated (no two requests in a row), where independence expects 2.1 adjacent pairs (probability of none 0.12); the spacing capture (`spacing.analysis.json`, 9 of 120 lost) has one adjacent pair (observed 1, expected 0.67); and in the SIM phase no two replies of the same component were lost in a row (135 requests, 0.82 expected, probability of none 0.44). The data neither support nor contradict a burst-free loss process, so Part B counts `silent` episodes on a healthy NEO over a long SIM ride; the rule changes only if they exceed the rate above |
 | `T_decide(c)` decision deadline (derived, not tuned) | `T_verify + T_mismatch + 3·P_c` = 7 s (ERG, resistance), 10 s (SIM components) | Checked by the model's fair walk |
 
 A change to `L`, `T_unknown(c)` or the reply periods is an ADR amendment backed by #44 numbers. The model's

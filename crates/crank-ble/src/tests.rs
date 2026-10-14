@@ -10,7 +10,7 @@ use proptest::prelude::*;
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -46,7 +46,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
     fn echo_grid_cannot_drift(target in 0..=16383u16, resistance in 0.0..100.0f32,
-        grade in -200.0..200.0f32, crr in 0.0..0.01275f32,
+        grade in -200.0..200.0f32, crr in 0.0..0.0127f32,
         cw in 0.0..1.86f32, speed in -127.0..127.0f32, drafting in 0.0..1.0f32) {
         for mode in [ControlMode::Erg { target_w: target }, ControlMode::Resistance { pct: resistance },
             ControlMode::Sim { grade_pct: grade, crr, wind: Wind { cw_kg_per_m: cw, speed_kmh: speed, drafting } }, ControlMode::Free] {
@@ -206,6 +206,7 @@ struct Fake {
     clock: Arc<dyn Clock>,
     fail: AtomicBool,
     no_caps: AtomicBool,
+    max_resistance_n: AtomicU16,
     disconnect_fail: AtomicBool,
     disconnects: AtomicUsize,
     hold_disconnect: AtomicBool,
@@ -225,6 +226,7 @@ impl Fake {
             clock,
             fail: AtomicBool::new(false),
             no_caps: AtomicBool::new(false),
+            max_resistance_n: AtomicU16::new(1),
             disconnect_fail: AtomicBool::new(false),
             disconnects: AtomicUsize::new(0),
             hold_disconnect: AtomicBool::new(false),
@@ -267,7 +269,8 @@ impl FecTransport for Arc<Fake> {
             fake.writes.lock().unwrap().push((fake.clock.now(), bytes));
             let notification =
                 if bytes[4] == 70 && bytes[10] == 54 && !fake.no_caps.load(Ordering::SeqCst) {
-                    Some(frame([54, 255, 255, 255, 255, 1, 0, 7]))
+                    let [lo, hi] = fake.max_resistance_n.load(Ordering::SeqCst).to_le_bytes();
+                    Some(frame([54, 255, 255, 255, 255, lo, hi, 7]))
                 } else if bytes[4] == 70 && bytes[10] == 71 {
                     fake.last.lock().unwrap().map(|last| reply(last, 0))
                 } else {
@@ -312,8 +315,13 @@ async fn tick() {
     settle().await;
 }
 async fn link() -> (Arc<Fake>, TrainerLink) {
+    link_with_max_resistance(1).await
+}
+async fn link_with_max_resistance(max_resistance_n: u16) -> (Arc<Fake>, TrainerLink) {
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
     let fake = Fake::new(clock.clone());
+    fake.max_resistance_n
+        .store(max_resistance_n, Ordering::SeqCst);
     let driver = FecTrainer::new(Arc::new(fake.clone()), clock);
     let link = driver
         .connect(&DeviceRef("fake".into()), rider())
@@ -321,6 +329,17 @@ async fn link() -> (Arc<Fake>, TrainerLink) {
         .unwrap();
     settle().await;
     (fake, link)
+}
+/// Page 54 `0xFFFF` reads as "unavailable" (`None`); the NEO itself reports 200 N and
+/// never sent `0xFFFF` (HIL #44 Part A), so the mapping is tentative (ADR-0002 §4.2).
+#[tokio::test(start_paused = true)]
+async fn page_54_max_resistance_0xffff_is_unavailable_and_other_values_are_kept() {
+    let (_, link) = link_with_max_resistance(0xffff).await;
+    assert_eq!(link.caps.max_resistance_n, None);
+    let (_, link) = link_with_max_resistance(200).await;
+    assert_eq!(link.caps.max_resistance_n, Some(200));
+    let (_, link) = link_with_max_resistance(0xfffe).await;
+    assert_eq!(link.caps.max_resistance_n, Some(0xfffe));
 }
 #[tokio::test(start_paused = true)]
 async fn faithful_sim_transport_alternates_echoes_and_respects_four_hz() {
