@@ -870,8 +870,11 @@ impl Engine {
             s.pauses.stopped = false;
             s.zero_run = 0;
         }
-        if !finished {
-            self.control(&mut s, k);
+        if finished {
+            // The finishing tick is a ride tick: account it (no command is sent).
+            self.control(&mut s, k, false);
+        } else {
+            self.control(&mut s, k, true);
             // ADR-0001 §5: resume once the mode is re-applied (`control` sends only on
             // a ready link) and the rider pedals.
             if s.pauses.lost && s.last_sent.is_some() && cadence.is_some_and(|c| c > 0) {
@@ -924,12 +927,20 @@ impl Engine {
         }
         s.following.tick(end);
     }
-    fn control(&mut self, s: &mut Session, k: u64) {
+    /// Ask the policy about tick `k` and send what it wants. `send = false` is the
+    /// finishing tick: the policy accounts for it (compliance) against the last block, and
+    /// nothing is sent.
+    fn control(&mut self, s: &mut Session, k: u64, send: bool) {
         self.follow(s, k);
+        let last = s.blocks.len().saturating_sub(1);
         let ctx = PolicyContext {
-            block: s.blocks.get(s.block_idx),
-            block_index: s.block_idx,
-            block_elapsed_ticks: s.block_elapsed,
+            block: s.blocks.get(if send { s.block_idx } else { last }),
+            block_index: if send { s.block_idx } else { last },
+            block_elapsed_ticks: if send {
+                s.block_elapsed
+            } else {
+                s.blocks.get(last).map_or(0, |b| block_ticks(b.dur_s))
+            },
             tick: k,
             link_epoch: s.link_epoch,
             flow_start: s.flow_start,
@@ -941,6 +952,10 @@ impl Engine {
             max_target_w: self.max_target_w,
             cap_w: s.cap_w,
         };
+        if !send {
+            let _ = s.policy.desired(&ctx);
+            return;
+        }
         let control = self
             .trainer_control
             .as_ref()

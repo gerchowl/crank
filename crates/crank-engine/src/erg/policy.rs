@@ -75,9 +75,13 @@ impl ErgPolicy {
             (from, until)
         };
     }
-    /// Release / re-engage on held cadence (§7.4). Not counted while a soft start is waiting
-    /// for the first pedalling sample: that commands 0 W already.
-    fn update_release(&mut self, ctx: &PolicyContext<'_>, target: f64) {
+    /// Release / re-engage on held cadence (§7.4). The release criterion is judged against
+    /// what is *applied on the trainer*, not against the policy's own target, owed or flow
+    /// state: whenever the last command is a non-zero `Erg` and cadence (unknown counts as
+    /// 0) stays < 40 rpm for 2 s, release (architect decision, round 5; ADR-0002 §7.4,
+    /// §7.5 "no torque on a rider who is not pedalling"). A release is left only by 60 rpm
+    /// for 2 s, in any block kind, and then by the §7.5 soft start.
+    fn update_release(&mut self, ctx: &PolicyContext<'_>, in_erg: bool) {
         let cadence = ctx.cadence_rpm;
         if self.released {
             self.high = if cadence.is_some_and(|c| c >= REENGAGE_RPM) {
@@ -91,8 +95,10 @@ impl ErgPolicy {
                 self.ramp = None;
                 self.low = 0;
             }
-        } else if target > 0.0 && (!self.owed || ctx.flow_start.is_some()) {
-            self.low = if cadence.is_some_and(|c| c < RELEASE_RPM) {
+        } else if in_erg {
+            let torque =
+                matches!(ctx.last_sent, Some(ControlMode::Erg { target_w }) if target_w > 0);
+            self.low = if torque && cadence.is_none_or(|c| c < RELEASE_RPM) {
                 self.low + 1
             } else {
                 0
@@ -103,12 +109,12 @@ impl ErgPolicy {
             }
         }
     }
+    /// Leaving ERG (a free or SIM block) owes a soft start on return. A release is *kept*:
+    /// it is left only through §7.4 (60 rpm for 2 s).
     fn leave_erg(&mut self) {
         self.owed = true;
         self.ramp = None;
-        self.released = false;
         self.low = 0;
-        self.high = 0;
     }
     fn account(&mut self, ctx: &PolicyContext<'_>, erg: bool, target_w: f64) {
         let counted = ctx.riding
@@ -142,9 +148,8 @@ impl TargetPolicy for ErgPolicy {
             self.high = 0;
         }
         let Some(block) = ctx.block.filter(|b| b.phase != Phase::Free) else {
-            if !self.owed || self.ramp.is_some() || self.released {
-                self.leave_erg();
-            }
+            self.leave_erg();
+            self.update_release(ctx, false);
             self.account(ctx, false, 0.0);
             return Some(ControlMode::Free);
         };
@@ -177,7 +182,7 @@ impl TargetPolicy for ErgPolicy {
         let target = f64::from(watts(line, max));
         let shown = previous_end.map_or(target, |e| e.min(f64::from(max)));
 
-        self.update_release(ctx, target);
+        self.update_release(ctx, true);
         if self.released {
             self.account(ctx, true, shown);
             return Some(ControlMode::Resistance { pct: 0.0 });
