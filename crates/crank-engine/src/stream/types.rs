@@ -2,6 +2,7 @@
 //! conventions of §4.1: camelCase structs, `snake_case` tagged enums, seconds as `f64`,
 //! `Option` as `T | null`.
 use crate::engine::{PauseReason, RideState, RideStatus};
+use crate::erg::{Component, TrainerFollowing};
 use crate::ticks::ticks_to_seconds;
 use crank_devices::LinkState;
 use crank_domain::filters::Filter;
@@ -162,6 +163,80 @@ pub struct LinkChange {
     pub state: LinkStatus,
 }
 
+/// Whether the trainer follows the commanded mode (ADR-0002 §4.4.1), on the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum StreamFollowing {
+    /// No claim.
+    Unknown,
+    /// Waiting for evidence.
+    Checking,
+    /// A disagreement is open.
+    Suspect,
+    /// Verified.
+    Following,
+    /// A required component is not following or silent.
+    NotFollowing,
+}
+impl From<TrainerFollowing> for StreamFollowing {
+    fn from(f: TrainerFollowing) -> Self {
+        match f {
+            TrainerFollowing::Unknown => Self::Unknown,
+            TrainerFollowing::Checking => Self::Checking,
+            TrainerFollowing::Suspect => Self::Suspect,
+            TrainerFollowing::Following => Self::Following,
+            TrainerFollowing::NotFollowing => Self::NotFollowing,
+        }
+    }
+}
+/// A commanded component (the control page the trainer echoes), on the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum StreamComponent {
+    /// Page 49.
+    Erg,
+    /// Page 48.
+    Resistance,
+    /// Page 51: grade and Crr.
+    Track,
+    /// Page 50: wind.
+    Wind,
+}
+impl From<Component> for StreamComponent {
+    fn from(c: Component) -> Self {
+        match c {
+            Component::Erg => Self::Erg,
+            Component::Resistance => Self::Resistance,
+            Component::Track => Self::Track,
+            Component::Wind => Self::Wind,
+        }
+    }
+}
+/// The compliance tally in whole seconds (ADR-0002 §7.8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct StreamCompliance {
+    /// Seconds that count.
+    pub counted_s: u32,
+    /// Of those, seconds within ±5 % of the controlled target.
+    pub within_s: u32,
+    /// Seconds excluded (settle, released, paused, suspect or not following).
+    pub excluded_s: u32,
+}
+/// The active health cap (DESIGN §15.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct StreamCap {
+    /// Cap in watts.
+    pub cap_w: u16,
+    /// Only ERG blocks are allowed.
+    pub erg_only: bool,
+}
+
 /// Longest `record_error` a frame carries, in bytes; the full message is in
 /// [`RideStatus`]. Keeps the discrete part of a frame bounded (ADR-0001 §4.3).
 pub const MAX_RECORD_ERROR_BYTES: usize = 256;
@@ -187,6 +262,16 @@ pub struct StreamStatus {
     pub late_samples: u64,
     /// First recording failure, cut to [`MAX_RECORD_ERROR_BYTES`].
     pub record_error: Option<String>,
+    /// Whether the trainer follows the commanded mode.
+    pub trainer_following: StreamFollowing,
+    /// The required component that is not following or silent, if any.
+    pub not_following_component: Option<StreamComponent>,
+    /// ERG is released for low cadence.
+    pub erg_released: bool,
+    /// The compliance tally.
+    pub compliance: StreamCompliance,
+    /// The active health cap; `null` when none applies.
+    pub cap: Option<StreamCap>,
 }
 impl From<&RideStatus> for StreamStatus {
     fn from(s: &RideStatus) -> Self {
@@ -216,6 +301,18 @@ impl From<&RideStatus> for StreamStatus {
                     end -= 1;
                 }
                 e[..end].to_owned()
+            }),
+            trainer_following: s.trainer_following.into(),
+            not_following_component: s.not_following_component.map(Into::into),
+            erg_released: s.erg_released,
+            compliance: StreamCompliance {
+                counted_s: s.compliance.counted_s,
+                within_s: s.compliance.within_s,
+                excluded_s: s.compliance.excluded_s,
+            },
+            cap: s.cap.map(|c| StreamCap {
+                cap_w: c.cap_w,
+                erg_only: c.erg_only,
             }),
         }
     }
