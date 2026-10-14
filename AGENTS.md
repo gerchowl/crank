@@ -33,8 +33,18 @@ identity's SHA-1 from the keychain at run time, never creates or changes identit
 hardened runtime or App Sandbox (library validation rejects the unsigned nix-store dylibs;
 distribution signing is #47). `just e2e` (`scripts/e2e.sh`, ADR-0001 §8.3.1) builds `.#crank-desktop-e2e` and runs the WebdriverIO specs of
 `app/e2e/` in the GUI session through Alacritty IPC (`CRANK_E2E_DIRECT=1` from a GUI terminal); output goes to the
-gitignored `app/e2e-out/`. `just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
+gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and compares screenshots across them; on Linux it skips with a message.
+`just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
 provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
+
+npm licences: `scripts/check-licenses.py` gates only our own `package.json` files. There is no licence gate for transitive
+**dev**Dependencies (about 446 came in with WebdriverIO, #233) by decision: they belong to the e2e harness and the shared
+frozen mock, run only on developer machines and CI, and are never shipped in the app. The production tree (react, react-dom,
+`@tauri-apps/api` and their transitives, which Vite bundles) is checked against an SPDX allow-list (parsed with
+`AND`/`OR`/`WITH` and parentheses, `scripts/check-npm-prod-licenses.py`, unit-tested by
+`scripts/test-check-npm-prod-licenses.py`). The `npm-prod-licenses` flake check runs it in CI on the installed tree;
+`just npm-licenses` is the same check locally after `pnpm install`. `just config-checks` also runs the unit tests and
+`scripts/test-e2e-prune.sh` (the `e2e-prune` and `npm-licenses-test` flake checks).
 
 App icons are generated from `assets/icon/icon-1024.png`: run `just icons` after changing the mark. It runs
 `tauri icon` and records every hash in `app/src-tauri/icons/MANIFEST.sha256`; the `icons-drift` flake check
@@ -56,7 +66,9 @@ items require documentation. Clippy pedantic warnings fail the gate; unwrap
 is denied outside tests. Domain cannot depend on tokio; engine cannot depend
 on BLE (including transitively). UI consumes generated Rust bindings.
 
-On shared sage use `CARGO_BUILD_JOBS=8` and a task-specific `CARGO_TARGET_DIR`.
+On shared sage use `CARGO_BUILD_JOBS=8` and a task-specific `CARGO_TARGET_DIR`. The devShell
+sets neither (a job count is a host property, not a project one): export them in your own environment
+before `nix develop`; `nix develop` inherits them.
 Wrap long commands in watcher-s1 (`watcher-s1 guide`). Hardware BLE runs require
 an Alacritty IPC wrapper: flock processes are denied Bluetooth because their
 responsible process is sshd-keygen-wrapper. Never modify TCC. See

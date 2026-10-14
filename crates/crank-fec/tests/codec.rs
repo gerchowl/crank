@@ -230,16 +230,14 @@ fn rejects_oversized_fields() {
 
 #[test]
 fn domain_endpoint_vectors() {
-    assert_eq!(
-        payload(C::TargetPower { watts: 16383.75 })[6..8],
-        [255, 255]
-    );
+    // Largest valid wire values; 0xFFFF and Crr 0xFF are invalid on the NEO (#215).
+    assert_eq!(payload(C::TargetPower { watts: 16383.5 })[6..8], [254, 255]);
     assert_eq!(
         payload(C::Track {
             grade_pct: 200.0,
-            crr: 0.01275
+            crr: 0.0127
         })[5..8],
-        [0x40, 0x9c, 255]
+        [0x40, 0x9c, 254]
     );
     assert_eq!(
         payload(C::Track {
@@ -341,5 +339,53 @@ fn page_70_zero_times_is_retained_tentative_44() {
             acknowledged: true,
             command_type: 1
         }
+    );
+}
+
+/// HIL #44 Part A (check 3): the NEO replaces a page-49 `0xFFFF` target with 0 W and
+/// ignores a page-51 Crr `0xFF`, so `encode` must never produce either (#215).
+#[test]
+fn rejects_the_wire_sentinels_the_neo_treats_as_invalid() {
+    use crank_fec::Field;
+    // Exact boundary: the largest valid value is accepted, the sentinel rejected.
+    assert!(encode(&C::TargetPower { watts: 16383.5 }).is_ok());
+    assert_eq!(
+        encode(&C::TargetPower { watts: 16383.75 })
+            .expect_err("0xFFFF")
+            .field,
+        Field::Watts
+    );
+    // Rejection is on the wire value: anything that rounds to 0xFFFF is the sentinel.
+    assert_eq!(
+        encode(&C::TargetPower { watts: 16383.63 })
+            .expect_err("rounds to 0xFFFF")
+            .field,
+        Field::Watts
+    );
+    assert!(encode(&C::TargetPower { watts: 16383.62 }).is_ok());
+    assert!(
+        encode(&C::Track {
+            grade_pct: 0.0,
+            crr: 0.0127
+        })
+        .is_ok()
+    );
+    assert_eq!(
+        encode(&C::Track {
+            grade_pct: 0.0,
+            crr: 0.01275
+        })
+        .expect_err("0xFF")
+        .field,
+        Field::Crr
+    );
+    assert_eq!(
+        encode(&C::Track {
+            grade_pct: 0.0,
+            crr: 0.012_74
+        })
+        .expect_err("rounds to 0xFF")
+        .field,
+        Field::Crr
     );
 }

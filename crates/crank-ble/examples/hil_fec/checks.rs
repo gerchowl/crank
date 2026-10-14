@@ -338,10 +338,22 @@ async fn park(s: &Session) {
     let _ = s.send(f, true).await;
 }
 
-async fn control_then_status(s: &Session, label: &str, page: &ControlPage) -> Value {
-    let Some(control) = build(page, ACK, XOR) else {
+/// Page bytes `(index, value)` patched over an encoded frame, for wire values the codec
+/// refuses to produce (page 49 `0xFFFF`, page 51 Crr `0xFF`, #215).
+type Overrides = &'static [(usize, u8)];
+
+async fn control_then_status(
+    s: &Session,
+    label: &str,
+    page: &ControlPage,
+    overrides: Overrides,
+) -> Value {
+    let Some(mut control) = build(page, ACK, XOR) else {
         return json!({"label": label, "encode_error": true});
     };
+    for &(index, value) in overrides {
+        control = with_page_byte(control, index, value, XOR);
+    }
     let (_, err) = s.send(control, true).await;
     sleep(Duration::from_millis(300)).await; // > one 4 Hz tick
     let mut x = s
@@ -397,6 +409,16 @@ async fn spacing(s: &Session) -> Value {
     })
 }
 
+/// Wire bytes patched over a case's encoded frame: the NEO's invalid sentinels, which
+/// `encode` rejects (#215), are sent to keep re-measuring the settled behaviour.
+fn overrides(label: &str) -> Overrides {
+    match label {
+        "track_crr_0xFF" => &[(7, 0xff)],
+        "erg_16383_75W_0xFFFF" => &[(6, 0xff)],
+        _ => &[],
+    }
+}
+
 /// Nominal and endpoint control values for check 3 (#44 pre-mortem, #146, #204).
 fn value_cases() -> Vec<(&'static str, ControlPage)> {
     vec![
@@ -419,9 +441,10 @@ fn value_cases() -> Vec<(&'static str, ControlPage)> {
         ),
         (
             "track_crr_0xFF",
+            // The largest valid Crr (0xFE); `overrides` patches byte 7 to 0xFF.
             ControlPage::Track {
                 grade_pct: 0.0,
-                crr: 0.01275,
+                crr: 0.0127,
             },
         ),
         (
@@ -458,7 +481,8 @@ fn value_cases() -> Vec<(&'static str, ControlPage)> {
         ),
         (
             "erg_16383_75W_0xFFFF",
-            ControlPage::TargetPower { watts: 16_383.75 },
+            // The largest valid target (0xFFFE); `overrides` patches byte 6 to 0xFF.
+            ControlPage::TargetPower { watts: 16_383.5 },
         ),
     ]
 }
@@ -493,15 +517,20 @@ async fn check3(s: &Session) -> Value {
     // C: values and endpoints.
     let cases = value_cases();
     for (label, page) in &cases {
-        steps.push(control_then_status(s, label, page).await);
+        steps.push(control_then_status(s, label, page, overrides(label)).await);
         sleep(Duration::from_millis(300)).await;
     }
     // D: does the sequence byte advance per control page / per request?
     let mut per_control = Vec::new();
     for i in 0..8 {
         let w = if i % 2 == 0 { 100.0 } else { 110.0 };
-        let t =
-            control_then_status(s, "seq_per_control", &ControlPage::TargetPower { watts: w }).await;
+        let t = control_then_status(
+            s,
+            "seq_per_control",
+            &ControlPage::TargetPower { watts: w },
+            &[],
+        )
+        .await;
         per_control.push(t["p71"]["sequence"].clone());
     }
     let mut per_request = Vec::new();
@@ -804,4 +833,43 @@ fn latency_summary(c: &Calibration<'_>) -> Value {
         "accounting": analysis(records),
         "scan_secs": scan_secs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two settled-invalid endpoints (#215) are still sent to the NEO: the codec now
+    /// refuses them, so the cases patch the largest valid frame to the sentinel bytes.
+    #[test]
+    fn invalid_endpoint_cases_send_the_sentinel_bytes() {
+        let sent = |label: &str| {
+            let (_, page) = value_cases()
+                .into_iter()
+                .find(|(l, _)| *l == label)
+                .expect("case");
+            let mut f = build(&page, ACK, XOR).expect("largest valid value encodes");
+            for &(index, value) in overrides(label) {
+                f = with_page_byte(f, index, value, XOR);
+            }
+            assert_eq!(f.iter().fold(0, |x, v| x ^ v), 0, "checksum stays valid");
+            f
+        };
+        let power = sent("erg_16383_75W_0xFFFF");
+        assert_eq!((power[4], power[10], power[11]), (49, 0xff, 0xff));
+        let crr = sent("track_crr_0xFF");
+        assert_eq!((crr[4], crr[11]), (51, 0xff));
+        assert!(build(&ControlPage::TargetPower { watts: 16_383.75 }, ACK, XOR).is_none());
+        assert!(
+            build(
+                &ControlPage::Track {
+                    grade_pct: 0.0,
+                    crr: 0.01275
+                },
+                ACK,
+                XOR
+            )
+            .is_none()
+        );
+    }
 }
