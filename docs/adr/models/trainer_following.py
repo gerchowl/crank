@@ -24,7 +24,8 @@ from collections import deque
 from dataclasses import dataclass, replace
 
 # --- constants (§4.4.1), in seconds; the model uses integer time in `unit` per second ---
-L_S, N_FOLLOW, T_VERIFY_S, T_MISMATCH_S, T_UNKNOWN_S = 2, 3, 2, 2, 5
+# L = 5 s: HIL #44 Part A measured an end-to-end p99 of 2.19 s (ERG) and 4.21 s (SIM) (ADR-0002 §4.4.1).
+L_S, N_FOLLOW, T_VERIFY_S, T_MISMATCH_S, T_UNKNOWN_S = 5, 3, 2, 2, 5
 P_S = {"erg": 1, "track": 2, "wind": 2}  # reply period per component (§4.4.1 echo schedule)
 
 

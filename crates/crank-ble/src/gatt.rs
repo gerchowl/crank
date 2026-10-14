@@ -38,6 +38,30 @@ impl BtleplugTransport {
         }
     }
 }
+impl BtleplugTransport {
+    fn write_type(
+        &self,
+        bytes: [u8; 13],
+        kind: WriteType,
+    ) -> BoxFuture<'static, Result<(), DeviceError>> {
+        let p = self.peripheral.clone();
+        Box::pin(async move {
+            p.write(&characteristic(&p, TX)?, &bytes, kind)
+                .await
+                .map_err(gatt)
+        })
+    }
+    /// HIL test hook (#44 check 2, feature `hil`, off by default): write one frame to
+    /// fec3 without GATT response, which [`FecTransport::write`] never does (ADR-0002 §4.4).
+    #[cfg(feature = "hil")]
+    #[must_use]
+    pub fn write_without_response(
+        &self,
+        bytes: [u8; 13],
+    ) -> BoxFuture<'static, Result<(), DeviceError>> {
+        self.write_type(bytes, WriteType::WithoutResponse)
+    }
+}
 fn gatt(error: btleplug::Error) -> DeviceError {
     match error {
         btleplug::Error::PermissionDenied => DeviceError::PermissionDenied,
@@ -132,12 +156,7 @@ impl FecTransport for BtleplugTransport {
         )
     }
     fn write(&self, bytes: [u8; 13]) -> BoxFuture<'static, Result<(), DeviceError>> {
-        let p = self.peripheral.clone();
-        Box::pin(async move {
-            p.write(&characteristic(&p, TX)?, &bytes, WriteType::WithResponse)
-                .await
-                .map_err(gatt)
-        })
+        self.write_type(bytes, WriteType::WithResponse)
     }
     fn disconnect(&self) -> BoxFuture<'static, Result<(), DeviceError>> {
         let p = self.peripheral.clone();
