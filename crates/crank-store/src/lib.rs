@@ -156,6 +156,24 @@ pub struct Ride {
     /// Optional summary.
     pub summary: Option<RideSummaryJson>,
 }
+/// One row of the ride list ([`Store::rides`]).
+#[derive(Debug)]
+pub struct RideListing {
+    /// Stable identifier.
+    pub id: String,
+    /// UTC Unix seconds at start.
+    pub started_at: i64,
+    /// UTC Unix seconds at finish/recovery; absent while live.
+    pub ended_at: Option<i64>,
+    /// Lifecycle state; `Open` while live.
+    pub state: RideState,
+    /// Id of the ridden workout.
+    pub workout_id: String,
+    /// Name of the ridden workout.
+    pub workout_name: String,
+    /// Optional summary.
+    pub summary: Option<RideSummaryJson>,
+}
 /// Pairing memory (ADR-0002 §5): one row per (`platform_id`, `kind`) role. Matching policy lives in `crank-ble`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
@@ -406,20 +424,55 @@ impl Store {
                 .transpose()
         })
     }
-    /// Every ride, newest first, with validated snapshots.
+    /// Every ride, newest first, as a list projection: the workout's id and name and the
+    /// summary, without parsing or returning the workout and compiled snapshots (use
+    /// [`Store::ride`] for those). The id and name are read from `workout_json` by `SQLite`;
+    /// the summary is validated.
     /// # Errors
     /// Returns `InvalidJson`, SQL or worker errors.
-    pub fn rides(&self) -> Result<Vec<Ride>, StoreError> {
+    pub fn rides(&self) -> Result<Vec<RideListing>, StoreError> {
         self.read(|db| {
-            db.prepare(&format!("{RIDE_SELECT} ORDER BY started_at DESC, id DESC"))?
-                .query_map([], ride_row)?
-                .map(|row| Ride::try_from_row(row?))
-                .collect()
+            db.prepare(
+                "SELECT id,started_at,ended_at,state,
+                        json_extract(workout_json,'$.id'),json_extract(workout_json,'$.name'),
+                        summary_json
+                 FROM ride ORDER BY started_at DESC, id DESC",
+            )?
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                ))
+            })?
+            .map(|row| {
+                let (id, started_at, ended_at, state, workout_id, workout_name, summary) = row?;
+                let missing = || StoreError::InvalidJson {
+                    table: "ride",
+                    column: "workout_json",
+                    reason: "missing id or name".into(),
+                };
+                Ok(RideListing {
+                    id,
+                    started_at,
+                    ended_at,
+                    state: RideState::from_column(state.as_deref())?,
+                    workout_id: workout_id.ok_or_else(missing)?,
+                    workout_name: workout_name.ok_or_else(missing)?,
+                    summary: summary.map(|s| RideSummaryJson::parse(&s)).transpose()?,
+                })
+            })
+            .collect()
         })
     }
     /// Forget a pairing. Rides that referenced it keep their telemetry but lose the
     /// device link (`trainer_device_id`/`hr_device_id` become NULL), so history never
-    /// blocks forgetting. Returns whether a row existed.
+    /// blocks forgetting. Returns whether a row existed. The caller must not forget a
+    /// device during an active ride; `crank-core` guards that, the store does not know.
     /// # Errors
     /// Returns read-only, SQL or worker errors.
     pub fn forget_device(&self, id: &str) -> Result<bool, StoreError> {
