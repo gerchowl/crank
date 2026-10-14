@@ -17,7 +17,7 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
       cargoFiles = lib.fileset.difference (craneLib.fileset.commonCargoSources ./.) ./crates/crank-fec/fuzz;
-      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./clippy.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
+      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./crates/crank-engine/tests/fixtures ./docs/hil/captures/check4.fecap ./clippy.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
         (lib.fileset.difference ./app ./app/src-tauri) ./shared ./assets/brand
@@ -196,9 +196,10 @@
           python3 ${./scripts/check-licenses.py} ${source (lib.fileset.intersection (lib.fileset.gitTracked ./.) (lib.fileset.fileFilter (f: f.name == "package.json") ./.))}
           touch $out
         '';
-        # Executable model of the trainer-following machine (ADR-0002 §4.4.1, #54).
+        # Executable model of the trainer-following machine (ADR-0002 §4.4.1, #54), and the
+        # committed fixture crank-engine's refinement test reads (#218): it must equal the model's output.
         following-model = pkgs.runCommand "following-model" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md}
+          python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md} ${./crates/crank-engine/tests/fixtures/following.json}
           touch $out
         '';
         # e2e.sh's run-dir pruning must survive zero, one and many prior runs under `set -euo pipefail` (#233).
