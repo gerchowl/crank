@@ -33,7 +33,11 @@ identity's SHA-1 from the keychain at run time, never creates or changes identit
 hardened runtime or App Sandbox (library validation rejects the unsigned nix-store dylibs;
 distribution signing is #47). `just e2e` (`scripts/e2e.sh`, ADR-0001 §8.3.1) builds `.#crank-desktop-e2e` and runs the WebdriverIO specs of
 `app/e2e/` in the GUI session through Alacritty IPC (`CRANK_E2E_DIRECT=1` from a GUI terminal); output goes to the
-gitignored `app/e2e-out/`. `just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
+gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and compares screenshots across them; on Linux it skips with a message.
+npm licences: `scripts/check-licenses.py` gates only our own `package.json` files. There is no licence gate for transitive
+npm packages (about 446 came in with WebdriverIO, #233) by decision: they are `devDependencies` of the e2e harness and the
+shared frozen mock, run only on developer machines and CI, and are never shipped in or linked into the app bundle, whose
+frontend is built by Vite from `app`'s runtime dependencies. If a runtime dependency is added, review its licence in that PR. `just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
 provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
 
 App icons are generated from `assets/icon/icon-1024.png`: run `just icons` after changing the mark. It runs

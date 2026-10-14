@@ -373,6 +373,9 @@ fn finite_negative_filter_parameters_are_clamped_with_ts_values() {
             .map(|(&t, v)| chain.push(t, Some(v)).unwrap())
             .collect()
     };
+    // The SMA `window_s.max(0.)` clamp is an equivalent mutant (#222): `FilterChain::push` resets
+    // the stages whenever time steps backwards, so every earlier sample has `t_old <= t` and is
+    // evicted for any window <= 0. The SMA case below therefore pins the passthrough, not the clamp.
     // window 0, tau 0 and n 1 all pass the input through; negatives clamp to exactly those.
     for f in [
         Filter::Sma { window_s: -5. },
