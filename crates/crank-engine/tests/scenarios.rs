@@ -230,10 +230,10 @@ async fn full_45_minute_workout() {
         }
     }
     // Controls: one mode per block on its boundary tick (ADR-0002 §7.2). The blip is
-    // detected at 915.6 s and the mode re-issued then (the fallback: no power in the
-    // last 3 s, target as is, #231); the soft start runs once samples flow again, from
-    // the then-current 3 s power (205 W) to the target, one step per second. Every
-    // later boundary lies 1.25 s later in session time.
+    // detected at 915.6 s and the mode re-issued then at 0 W (no pedalling sample yet,
+    // #231); the soft start runs once samples flow again, from the then-current 3 s
+    // power (72 W: the trainer is spinning up) to the target, one step per second. Every later boundary lies
+    // 1.25 s later in session time.
     assert_eq!(
         r.modes(),
         [
@@ -241,12 +241,12 @@ async fn full_45_minute_workout() {
             (300_100, 200),
             (600_100, 100),
             (780_100, 200),
-            (915_600, 200),
-            (916_850, 205),
-            (917_850, 204),
-            (918_850, 203),
-            (919_850, 202),
-            (920_850, 201),
+            (915_600, 0),
+            (916_850, 72),
+            (917_850, 98),
+            (918_850, 123),
+            (919_850, 149),
+            (920_850, 174),
             (921_850, 200),
             (1_081_350, 100),
             (1_261_350, 200),
