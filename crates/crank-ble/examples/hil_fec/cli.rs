@@ -71,6 +71,10 @@ pub struct Args {
 pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact> \
 [--out DIR] [--scan-secs N] [--idle-secs N] [--target ID_OR_PATH]";
 
+fn number(flag: &str, text: &str) -> Result<u64, String> {
+    text.parse().map_err(|e| format!("{flag}: {e}"))
+}
+
 /// Parse arguments (without the program name).
 pub fn parse<I: IntoIterator<Item = String>>(args: I, default_out: &Path) -> Result<Args, String> {
     let mut it = args.into_iter();
@@ -91,12 +95,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I, default_out: &Path) -> Res
         let mut value = || it.next().ok_or_else(|| format!("{flag} needs a value"));
         match flag.as_str() {
             "--out" => out.out = PathBuf::from(value()?),
-            "--scan-secs" => {
-                out.scan_secs = value()?.parse().map_err(|e| format!("--scan-secs: {e}"))?
-            }
-            "--idle-secs" => {
-                out.idle_secs = value()?.parse().map_err(|e| format!("--idle-secs: {e}"))?
-            }
+            "--scan-secs" => out.scan_secs = number(&flag, &value()?)?,
+            "--idle-secs" => out.idle_secs = number(&flag, &value()?)?,
             "--target" => out.target = Some(value()?),
             other => return Err(format!("unknown flag {other:?}\n{USAGE}")),
         }

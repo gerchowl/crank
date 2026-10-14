@@ -391,30 +391,9 @@ async fn spacing(s: &Session) -> Value {
     })
 }
 
-async fn check3(s: &Session) -> Value {
-    let mut steps = Vec::new();
-    // A: page 71 before any control page.
-    for i in 0..2 {
-        let x = s
-            .exchange(request(71, 1, ACK, XOR), true, 71, REPLY_WAIT)
-            .await;
-        steps.push(exchange_json(&format!("idle_request71_{i}"), &x));
-    }
-    // B: page-70 transmission count (reply count within 4 s).
-    let mut counts = Vec::new();
-    for times in [1_u8, 0, 3] {
-        let mark = s.mark();
-        let (_, err) = s.send(request(54, times, ACK, XOR), true).await;
-        sleep(Duration::from_secs(4)).await;
-        let n = s
-            .since(mark)
-            .iter()
-            .filter(|r| page_of(&r.bytes) == Some(54))
-            .count();
-        counts.push(json!({"times": times, "write_error": err, "page54_replies_in_4s": n}));
-    }
-    // C: values and endpoints.
-    let cases: Vec<(&str, ControlPage)> = vec![
+/// Nominal and endpoint control values for check 3 (#44 pre-mortem, #146, #204).
+fn value_cases() -> Vec<(&'static str, ControlPage)> {
+    vec![
         ("erg_100W", ControlPage::TargetPower { watts: 100.0 }),
         ("erg_200_25W", ControlPage::TargetPower { watts: 200.25 }),
         ("erg_200_5W", ControlPage::TargetPower { watts: 200.5 }),
@@ -475,7 +454,38 @@ async fn check3(s: &Session) -> Value {
             "erg_16383_75W_0xFFFF",
             ControlPage::TargetPower { watts: 16_383.75 },
         ),
-    ];
+    ]
+}
+
+/// Page-70 transmission count: replies counted within 4 s for `times` 1, 0 and 3.
+async fn transmission_counts(s: &Session) -> Vec<Value> {
+    let mut counts = Vec::new();
+    for times in [1_u8, 0, 3] {
+        let mark = s.mark();
+        let (_, err) = s.send(request(54, times, ACK, XOR), true).await;
+        sleep(Duration::from_secs(4)).await;
+        let n = s
+            .since(mark)
+            .iter()
+            .filter(|r| page_of(&r.bytes) == Some(54))
+            .count();
+        counts.push(json!({"times": times, "write_error": err, "page54_replies_in_4s": n}));
+    }
+    counts
+}
+
+async fn check3(s: &Session) -> Value {
+    let mut steps = Vec::new();
+    // A: page 71 before any control page.
+    for i in 0..2 {
+        let x = s
+            .exchange(request(71, 1, ACK, XOR), true, 71, REPLY_WAIT)
+            .await;
+        steps.push(exchange_json(&format!("idle_request71_{i}"), &x));
+    }
+    let counts = transmission_counts(s).await;
+    // C: values and endpoints.
+    let cases = value_cases();
     for (label, page) in &cases {
         steps.push(control_then_status(s, label, page).await);
         sleep(Duration::from_millis(300)).await;
@@ -593,22 +603,41 @@ fn erg(w: u16) -> ControlMode {
     ControlMode::Erg { target_w: w }
 }
 
-async fn drain(
-    link: &mut crank_devices::TrainerLink,
-    until: Instant,
-    observed: &mut Vec<(u64, ObservedControl)>,
-    faults: &mut Vec<String>,
-) {
-    while let Ok(Some(event)) = timeout_at(until, link.events.recv()).await {
-        match event {
-            TrainerEvent::Observed(o) if o.source == ObservationSource::Page71Echo => {
-                if let Some(c) = o.control {
-                    observed.push((o.at.0, c));
+/// The driver link plus what it reported, for the calibration run.
+struct Run {
+    link: crank_devices::TrainerLink,
+    clock: Arc<crank_ble::MonotonicClock>,
+    observed: Vec<(u64, ObservedControl)>,
+    faults: Vec<String>,
+}
+
+impl Run {
+    /// Collect driver events for `wait`.
+    async fn drain(&mut self, wait: Duration) {
+        let until = Instant::now() + wait;
+        while let Ok(Some(event)) = timeout_at(until, self.link.events.recv()).await {
+            match event {
+                TrainerEvent::Observed(o) if o.source == ObservationSource::Page71Echo => {
+                    if let Some(c) = o.control {
+                        self.observed.push((o.at.0, c));
+                    }
                 }
+                TrainerEvent::Fault(e) => self.faults.push(e.to_string()),
+                _ => {}
             }
-            TrainerEvent::Fault(e) => faults.push(e.to_string()),
-            _ => {}
         }
+    }
+
+    /// Issue `mode` now, then collect for `wait`; returns the issue time.
+    async fn change(&mut self, mode: ControlMode, wait: Duration) -> Result<u64> {
+        use crank_devices::Clock;
+        let issued = self.clock.now().0;
+        self.link
+            .control
+            .send(TrainerCommand::SetMode(mode))
+            .await?;
+        self.drain(wait).await;
+        Ok(issued)
     }
 }
 
@@ -636,33 +665,21 @@ async fn latency(
         bike_kg: 10.0,
         wheel_m: 0.708,
     };
-    let mut link = trainer.connect(&device, rider).await?;
+    let link = trainer.connect(&device, rider).await?;
     let caps = format!("{:?}", link.caps);
-    let mut observed: Vec<(u64, ObservedControl)> = Vec::new();
-    let mut faults = Vec::new();
-    let window = Duration::from_secs(3);
-    drain(
-        &mut link,
-        Instant::now() + Duration::from_secs(3),
-        &mut observed,
-        &mut faults,
-    )
-    .await;
+    let mut run = Run {
+        link,
+        clock,
+        observed: Vec::new(),
+        faults: Vec::new(),
+    };
+    run.drain(Duration::from_secs(3)).await;
     // ERG alternation: 100 <-> 150 W.
     let mut erg_changes = Vec::new();
     for i in 0..60_u16 {
         let target = if i % 2 == 0 { 150 } else { 100 };
-        let issued = clock.now().0;
-        link.control
-            .send(TrainerCommand::SetMode(erg(target)))
-            .await?;
-        drain(
-            &mut link,
-            Instant::now() + window + jitter(i.into()),
-            &mut observed,
-            &mut faults,
-        )
-        .await;
+        let wait = Duration::from_secs(3) + jitter(i.into());
+        let issued = run.change(erg(target), wait).await?;
         erg_changes.push((
             issued,
             ObservedControl::Erg {
@@ -672,53 +689,65 @@ async fn latency(
     }
     // SIM: alternate grade 1 % / 2 % so each change moves both components' desired state.
     let mut sim_changes = Vec::new();
-    let sim_start = observed.len();
+    let sim_start = run.observed.len();
     for i in 0..30_u8 {
-        let grade = if i % 2 == 0 { 2.0 } else { 1.0 };
-        let issued = clock.now().0;
-        link.control
-            .send(TrainerCommand::SetMode(ControlMode::Sim {
-                grade_pct: grade,
-                crr: 0.004,
-                wind: Wind::default(),
-            }))
-            .await?;
-        drain(
-            &mut link,
-            Instant::now() + Duration::from_secs(4) + jitter(i.into()),
-            &mut observed,
-            &mut faults,
-        )
-        .await;
+        let (grade_pct, centi) = if i % 2 == 0 { (2.0, 200) } else { (1.0, 100) };
+        let mode = ControlMode::Sim {
+            grade_pct,
+            crr: 0.004,
+            wind: Wind::default(),
+        };
+        let wait = Duration::from_secs(4) + jitter(i.into());
+        let issued = run.change(mode, wait).await?;
         sim_changes.push((
             issued,
             ObservedControl::Track {
-                grade_centi_pct: if i % 2 == 0 { 200 } else { 100 },
+                grade_centi_pct: centi,
                 crr_units: 80,
             },
         ));
     }
-    link.control
-        .send(TrainerCommand::SetMode(ControlMode::Resistance {
-            pct: 0.0,
-        }))
+    run.change(ControlMode::Resistance { pct: 0.0 }, Duration::from_secs(1))
         .await?;
-    drain(
-        &mut link,
-        Instant::now() + Duration::from_secs(1),
-        &mut observed,
-        &mut faults,
-    )
-    .await;
-    link.control.send(TrainerCommand::Disconnect).await?;
-    drain(
-        &mut link,
-        Instant::now() + Duration::from_secs(1),
-        &mut observed,
-        &mut faults,
-    )
-    .await;
+    run.link.control.send(TrainerCommand::Disconnect).await?;
+    run.drain(Duration::from_secs(1)).await;
 
+    let records = parse_capture(&std::fs::read_to_string(capture_path)?);
+    Ok(latency_summary(&Calibration {
+        observed: &run.observed,
+        erg_changes: &erg_changes,
+        sim_changes: &sim_changes,
+        sim_start,
+        records: &records,
+        faults: &run.faults,
+        caps: &caps,
+        scan_secs: args.scan_secs,
+    }))
+}
+
+/// Everything the latency summary is computed from.
+struct Calibration<'a> {
+    observed: &'a [(u64, ObservedControl)],
+    erg_changes: &'a [(u64, ObservedControl)],
+    sim_changes: &'a [(u64, ObservedControl)],
+    sim_start: usize,
+    records: &'a [crate::frames::Record],
+    faults: &'a [String],
+    caps: &'a str,
+    scan_secs: u64,
+}
+
+fn latency_summary(c: &Calibration<'_>) -> Value {
+    let Calibration {
+        observed,
+        erg_changes,
+        sim_changes,
+        sim_start,
+        records,
+        faults,
+        caps,
+        scan_secs,
+    } = *c;
     let e2e = |changes: &[(u64, ObservedControl)], from: usize| {
         let mut lat = Vec::new();
         let mut missed = 0;
@@ -734,10 +763,9 @@ async fn latency(
         (lat, missed)
     };
     let over = |lat: &[u64], limit_us: u64| lat.iter().filter(|l| **l > limit_us).count();
-    let (erg_lat, erg_missed) = e2e(&erg_changes, 0);
-    let (sim_lat, sim_missed) = e2e(&sim_changes, 0);
-    let records = parse_capture(&std::fs::read_to_string(capture_path)?);
-    let req = request_latencies(&records, 71, 71);
+    let (erg_lat, erg_missed) = e2e(erg_changes, 0);
+    let (sim_lat, sim_missed) = e2e(sim_changes, 0);
+    let req = request_latencies(records, 71, 71);
     let sim_obs = &observed[sim_start..];
     let gaps = |keep: fn(&ObservedControl) -> bool| {
         let t: Vec<u64> = sim_obs
@@ -749,7 +777,7 @@ async fn latency(
     };
     let wind_gaps = gaps(|c| matches!(c, ObservedControl::Wind { .. }));
     let track_gaps = gaps(|c| matches!(c, ObservedControl::Track { .. }));
-    Ok(json!({
+    json!({
         "check": "3-latency",
         "what_was_sent": "real FecTrainer connect (page 55 + request 54), SetMode ERG 100<->150 W x60 at 3 s + jitter, SIM grade 1<->2 % x30 at 4 s; driver polls page 71 at 1 s",
         "caps": caps,
@@ -766,6 +794,6 @@ async fn latency(
         "sim_echo_counts": { "wind": sim_obs.iter().filter(|(_, c)| matches!(c, ObservedControl::Wind{..})).count(),
                               "track": sim_obs.iter().filter(|(_, c)| matches!(c, ObservedControl::Track{..})).count() },
         "faults": faults,
-        "scan_secs": args.scan_secs,
-    }))
+        "scan_secs": scan_secs,
+    })
 }
