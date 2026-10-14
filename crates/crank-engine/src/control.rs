@@ -39,6 +39,9 @@ pub struct PolicyContext<'a> {
     pub last_sent: Option<ControlMode>,
     /// The tick is workout time (nothing paused the ride).
     pub riding: bool,
+    /// The rider paused the ride (`EngineCmd::Pause`, not yet resumed): DESIGN §5.2 puts
+    /// the trainer at 0 % resistance and re-engages ERG with the soft start (#264).
+    pub user_paused: bool,
     /// The trainer-following verdict at this tick (ADR-0002 §4.4.1).
     pub following: TrainerFollowing,
     /// Largest target the driver can represent.
