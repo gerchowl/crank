@@ -195,19 +195,32 @@ impl HrTransport for BtleplugHrTransport {
 }
 /// btleplug scan source (ADR-0002 §5): starts a filtered scan on the central and
 /// reports each peripheral's name and services; [`crate::Scanner`] post-filters.
+///
+/// btleplug keeps one scan per adapter, so scans of one source are serialised: a scan
+/// task holds `scan_lock` from before `start_scan` until after its `stop_scan` has
+/// completed, and the next scan waits for it. A stop therefore never lands on a newer
+/// scan (#265). This lock is the protection; `central::SharedScan` also awaits
+/// [`Advertisements::stopped`] before starting (belt and braces, and what the fake-source
+/// tests exercise). Concurrent requesters are shared one level up there.
 #[derive(Clone)]
-pub struct BtleplugAdvertisements(Adapter);
+pub struct BtleplugAdvertisements {
+    adapter: Adapter,
+    scan_lock: Arc<tokio::sync::Mutex<()>>,
+}
 impl BtleplugAdvertisements {
     /// Scan on `adapter`.
     #[must_use]
     pub fn new(adapter: Adapter) -> Self {
-        Self(adapter)
+        Self {
+            adapter,
+            scan_lock: Arc::default(),
+        }
     }
     /// Resolve a discovered or remembered platform id to its peripheral.
     /// # Errors
     /// `NotFound` if the central has not seen it (scan first).
     pub async fn peripheral(&self, dev: &DeviceRef) -> Result<Peripheral, DeviceError> {
-        self.0
+        self.adapter
             .peripherals()
             .await
             .map_err(gatt)?
@@ -218,76 +231,77 @@ impl BtleplugAdvertisements {
 }
 impl Advertisements for BtleplugAdvertisements {
     fn advertisements(&self) -> BoxStream<'static, Advertisement> {
-        let adapter = self.0.clone();
+        let adapter = self.adapter.clone();
+        let lock = self.scan_lock.clone();
         let (sender, receiver) = mpsc::channel(64);
-        let task = tokio::spawn({
-            let adapter = adapter.clone();
-            async move {
-                let Ok(mut events) = adapter.events().await else {
-                    return;
+        tokio::spawn(async move {
+            // Held until the scan has stopped, so the next scan starts after it.
+            let _slot = lock.lock_owned().await;
+            if sender.is_closed() {
+                return;
+            }
+            let Ok(mut events) = adapter.events().await else {
+                return;
+            };
+            if let Err(error) = adapter
+                .start_scan(ScanFilter {
+                    services: SCAN_SERVICES.to_vec(),
+                })
+                .await
+            {
+                tracing::warn!(%error, "BLE scan failed to start");
+                return;
+            }
+            loop {
+                let event = tokio::select! {
+                    () = sender.closed() => break,
+                    event = events.next() => event,
                 };
-                if let Err(error) = adapter
-                    .start_scan(ScanFilter {
-                        services: SCAN_SERVICES.to_vec(),
-                    })
-                    .await
-                {
-                    tracing::warn!(%error, "BLE scan failed to start");
-                    return;
-                }
-                while let Some(event) = events.next().await {
-                    let (CentralEvent::DeviceDiscovered(id)
+                let Some(
+                    CentralEvent::DeviceDiscovered(id)
                     | CentralEvent::DeviceUpdated(id)
-                    | CentralEvent::ServicesAdvertisement { id, .. }) = event
-                    else {
-                        continue;
-                    };
-                    let Ok(p) = adapter.peripheral(&id).await else {
-                        continue;
-                    };
-                    let Ok(Some(props)) = p.properties().await else {
-                        continue;
-                    };
-                    let ad = Advertisement {
-                        device: DeviceRef(id.to_string()),
-                        name: props.local_name,
-                        services: props.services,
-                    };
-                    if sender.send(ad).await.is_err() {
+                    | CentralEvent::ServicesAdvertisement { id, .. },
+                ) = event
+                else {
+                    if event.is_none() {
                         break;
                     }
+                    continue;
+                };
+                let Ok(p) = adapter.peripheral(&id).await else {
+                    continue;
+                };
+                let Ok(Some(props)) = p.properties().await else {
+                    continue;
+                };
+                let ad = Advertisement {
+                    device: DeviceRef(id.to_string()),
+                    name: props.local_name,
+                    services: props.services,
+                };
+                if sender.send(ad).await.is_err() {
+                    break;
                 }
             }
+            if let Err(error) = adapter.stop_scan().await {
+                tracing::warn!(%error, "BLE scan failed to stop");
+            }
         });
-        Box::pin(ScanStream {
-            receiver,
-            task,
-            adapter,
-        })
+        Box::pin(ScanStream { receiver })
+    }
+    fn stopped(&self) -> BoxFuture<'static, ()> {
+        let lock = self.scan_lock.clone();
+        Box::pin(async move { drop(lock.lock().await) })
     }
 }
+/// Dropping it closes the channel, which makes the scan task stop the adapter scan.
 struct ScanStream {
     receiver: mpsc::Receiver<Advertisement>,
-    task: JoinHandle<()>,
-    adapter: Adapter,
 }
 impl Stream for ScanStream {
     type Item = Advertisement;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.receiver.poll_recv(cx)
-    }
-}
-impl Drop for ScanStream {
-    fn drop(&mut self) {
-        self.task.abort();
-        let adapter = self.adapter.clone();
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                if let Err(error) = adapter.stop_scan().await {
-                    tracing::warn!(%error, "BLE scan failed to stop");
-                }
-            });
-        }
     }
 }
 // Stamp at application ingress independently of writes/DIS reads. The owning
