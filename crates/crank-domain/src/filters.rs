@@ -74,13 +74,35 @@ impl Stage {
             sorted.insert(at, v);
         }
     }
-    fn sorted_remove(sorted: &mut Vec<f64>, v: f64) {
-        if !v.is_nan() {
-            let at = sorted.partition_point(|x| x.total_cmp(&v).is_lt());
-            debug_assert!(sorted.get(at).is_some_and(|x| x.total_cmp(&v).is_eq()));
-            if at < sorted.len() {
-                sorted.remove(at);
-            }
+    /// Drop one `evicted` value from `sorted` after it left `values`.
+    ///
+    /// Invariant: `sorted` holds exactly the non-NaN values of `values`, ordered by `total_cmp`.
+    /// `evicted` was inserted with the same bits, and `total_cmp` distinguishes every bit
+    /// pattern, so the slot the binary search lands on holds it. If that ever fails (a future
+    /// edit desynchronising the two), removing whatever sits there would corrupt the median
+    /// silently, so `sorted` is rebuilt from `values`, the source of truth, instead. The result
+    /// is then still the correct window median, in debug and release alike.
+    fn sorted_remove(&mut self, evicted: f64) {
+        if evicted.is_nan() {
+            return;
+        }
+        let at = self
+            .sorted
+            .partition_point(|x| x.total_cmp(&evicted).is_lt());
+        if self
+            .sorted
+            .get(at)
+            .is_some_and(|x| x.total_cmp(&evicted).is_eq())
+        {
+            self.sorted.remove(at);
+        } else {
+            self.sorted = self
+                .values
+                .iter()
+                .map(|&(_, v)| v)
+                .filter(|v| !v.is_nan())
+                .collect();
+            self.sorted.sort_by(f64::total_cmp);
         }
     }
     fn push(&mut self, t: f64, v: Option<f64>) -> Option<f64> {
@@ -122,7 +144,7 @@ impl Stage {
                 Self::sorted_insert(&mut self.sorted, v);
                 if self.count > crate::js_round(n).max(1.) {
                     if let Some((_, evicted)) = self.values.pop_front() {
-                        Self::sorted_remove(&mut self.sorted, evicted);
+                        self.sorted_remove(evicted);
                     }
                     self.count -= 1.;
                 }
@@ -220,5 +242,27 @@ impl FilterChain {
             *stage = Stage::new(stage.filter.clone());
         }
         self.last_t = f64::NEG_INFINITY;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A desynchronised `sorted` mirror must neither panic (debug) nor drop the wrong element
+    /// (release): the stage resynchronises from `values` and keeps returning the true median.
+    #[test]
+    fn median_survives_a_broken_sorted_window_invariant() {
+        let mut stage = Stage::new(Filter::Median { n: 3. });
+        for (t, v) in [(0., 1.), (1., 5.), (2., 9.)] {
+            stage.push(t, Some(v));
+        }
+        // Corrupt the mirror: the next eviction (1.) is no longer present.
+        stage.sorted = vec![5., 9., 100.];
+        // Window becomes [5, 9, 7]; 1. is evicted and not found in `sorted`.
+        assert_eq!(stage.push(3., Some(7.)), Some(7.));
+        assert_eq!(stage.sorted, vec![5., 7., 9.]);
+        // Window [9, 7, 2]: back on the fast path.
+        assert_eq!(stage.push(4., Some(2.)), Some(7.));
     }
 }

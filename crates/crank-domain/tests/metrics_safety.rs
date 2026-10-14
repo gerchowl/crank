@@ -163,27 +163,92 @@ fn rounded_negative_indices_match_ts() {
     assert_eq!(h.bins.iter().map(|b| b.seconds).sum::<usize>(), 1);
 }
 
+// ---- #148, #150: intentional divergences from frozen `shared/` (see DIVERGENCES.md) -----
+
+/// #148: TS normalises finite zero/negative widths to one; Rust returns the typed error, also
+/// on empty input. Frozen width-zero vectors are checked for the same error in
+/// `distribution_vectors`.
+#[test]
+fn nonpositive_bin_widths_are_typed_errors_not_normalised() {
+    for width in [0., -0., -1., f64::MIN, f64::NAN, f64::INFINITY] {
+        for series in [&[][..], &[1., 2., 3.][..]] {
+            assert!(
+                matches!(
+                    histogram_from("power", series, width, None),
+                    Err(MetricError::InvalidBinWidth)
+                ),
+                "histogram {width} {series:?}"
+            );
+            assert!(
+                matches!(
+                    heatmap_from("power", "hr", series, series, width, 1.),
+                    Err(MetricError::InvalidBinWidth)
+                ),
+                "heatmap x {width} {series:?}"
+            );
+            assert!(
+                matches!(
+                    heatmap_from("power", "hr", series, series, 1., width),
+                    Err(MetricError::InvalidBinWidth)
+                ),
+                "heatmap y {width} {series:?}"
+            );
+        }
+    }
+    // The boundary stays valid: the smallest positive width is accepted or fails on range,
+    // never as a bad width.
+    assert!(!matches!(
+        histogram_from("power", &[], f64::from_bits(1), None),
+        Err(MetricError::InvalidBinWidth)
+    ));
+}
+
+/// #150: the reference loops with `s++` once a slot index is too large for `+ 1` to advance
+/// it. Rust walks the retained slots instead, so a query at an extreme finite timestamp
+/// terminates, is bounded by the bucket cap and only yields well-formed buckets.
+#[test]
+fn history_query_terminates_at_extreme_finite_timestamps() {
+    for t in [1e308, f64::MAX, 9.007_199_254_740_993e15] {
+        let mut series = MultiResSeries::default();
+        series.add(0., Some(1.));
+        series.add(t, Some(2.));
+        for (now, span) in [(t, t), (t, 1e300), (t, 60.), (f64::MAX, f64::MAX)] {
+            for scale in [TimeScale::Log, TimeScale::Fisheye] {
+                let buckets = series.query(now, span, 50, scale);
+                assert!(buckets.len() <= 50, "{t} {now} {span}");
+                for b in buckets {
+                    assert!(b.dur.is_finite() && b.dur > 0., "{t} {now} {span}");
+                    assert!(b.min <= b.max);
+                }
+            }
+        }
+    }
+}
+
 // ---- #155 -------------------------------------------------------------------------------
 
 const TYPICAL_METRICS: [&str; 5] = ["power", "power_30s", "pct_ftp", "hr", "cadence"];
+const POWER_METRICS: [&str; 4] = ["power", "power_3s", "power_10s", "power_30s"];
+const FTP_FREE_METRICS: [&str; 3] = ["pct_ftp", "hr", "cadence"];
+const BAD_FTPS: [f64; 10] = [
+    f64::NAN,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    0.,
+    -0.,
+    -1.,
+    -280.,
+    f64::MIN,
+    f64::MAX,
+    f64::from_bits(1),
+];
 
-/// A nonfinite or nonpositive FTP is a typed error for every metric, supported or not, and is
-/// checked before the metric is looked up (TS propagated NaN into the distribution).
+/// A nonfinite or nonpositive FTP is a typed error for every power metric (TS propagated NaN
+/// into the distribution).
 #[test]
-fn typical_distribution_rejects_invalid_ftp_for_every_metric() {
-    for ftp in [
-        f64::NAN,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        0.,
-        -0.,
-        -1.,
-        -280.,
-        f64::MIN,
-        f64::MAX,
-        f64::from_bits(1),
-    ] {
-        for metric in TYPICAL_METRICS.into_iter().chain(["unknown", ""]) {
+fn typical_distribution_rejects_invalid_ftp_for_power_metrics() {
+    for ftp in BAD_FTPS {
+        for metric in POWER_METRICS {
             assert!(
                 matches!(
                     typical_distribution(metric, ftp),
@@ -192,6 +257,27 @@ fn typical_distribution_rejects_invalid_ftp_for_every_metric() {
                 "{metric} at {ftp}"
             );
         }
+    }
+}
+
+/// `hr`, `cadence` and `pct_ftp` do not depend on FTP, so a bad FTP must not reject them, and
+/// their result must not depend on it (#186 item 3; TS returns the same finite result).
+#[test]
+fn typical_distribution_ignores_ftp_for_ftp_free_metrics() {
+    for metric in FTP_FREE_METRICS {
+        let reference = typical_distribution(metric, 280.).unwrap().unwrap();
+        for ftp in BAD_FTPS {
+            let f = typical_distribution(metric, ftp)
+                .unwrap_or_else(|e| panic!("{metric} at {ftp}: {e:?}"))
+                .expect("known metric");
+            for (lo, hi) in [(-1000., 1000.), (60., 90.), (100., 140.)] {
+                assert_eq!(f(lo, hi).to_bits(), reference(lo, hi).to_bits(), "{metric}");
+            }
+        }
+    }
+    // An unsupported metric is `Ok(None)` regardless of FTP, since no FTP is consulted.
+    for ftp in BAD_FTPS {
+        assert!(typical_distribution("unknown", ftp).unwrap().is_none());
     }
 }
 
@@ -212,7 +298,8 @@ proptest! {
   let result = typical_distribution(TYPICAL_METRICS[index], ftp);
   // Every power component must be a finite mean with a nonzero finite deviation.
   let usable = ftp.is_finite() && ftp > 0. && 1.05 * ftp < f64::MAX && 0.07 * ftp > 0.;
-  if usable {
+  let uses_ftp = POWER_METRICS.contains(&TYPICAL_METRICS[index]);
+  if usable || !uses_ftp {
    let share = result.unwrap().unwrap()(lo, lo + width);
    prop_assert!((0. ..=1. + 1e-9).contains(&share), "{share}");
   } else {
