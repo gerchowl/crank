@@ -42,9 +42,13 @@
         installPhase = "mkdir -p $out; cp -r app/dist/. $out/";
       };
       appDist = frontend "crank-app-dist" "pnpm -C app build";
+      cargoVendorDir = craneLib.vendorCargoDeps { cargoLock = ./Cargo.lock; };
       # tauri-plugin-wdio-webdriver's build script writes generated files next to its manifest, which
-      # is read-only in the Nix vendor tree; the patch runs it from a writable copy (#35).
-      cargoVendorDir = craneLib.vendorCargoDeps {
+      # is read-only in the Nix vendor tree; the patch runs it from a writable copy (#35). The patched
+      # vendor dir is used by the e2e package only (#233): every other build keeps the unpatched one and
+      # never compiles the plugin. Only that crate is overridden; the other vendored crates are the same
+      # store paths. Upstream tracking: see nix/patches/README.md.
+      cargoVendorDirE2e = craneLib.vendorCargoDeps {
         cargoLock = ./Cargo.lock;
         overrideVendorCargoPackage = p: drv:
           if p.name == "tauri-plugin-wdio-webdriver"
@@ -68,6 +72,7 @@
         postConfigure = "python3 scripts/relocate-tauri-permissions.py";
       };
       desktop = features: craneLib.buildPackage (rustCheck // {
+        cargoVendorDir = if lib.hasInfix "e2e" features then cargoVendorDirE2e else cargoVendorDir;
         pname = "crank-desktop"; cargoExtraArgs = "--locked -p crank-desktop --bin crank-desktop --features custom-protocol${features}";
         doCheck = false;
         preBuild = ''export TAURI_CONFIG='{"build":{"frontendDist":"${appDist}"}}' '';
