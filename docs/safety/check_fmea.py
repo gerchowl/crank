@@ -13,15 +13,17 @@ table between the `fmea:table` markers. The check fails unless:
   `pr` that adds it; `missing` needs `test = "missing"` and an `issue`;
 * every cited test exists: the file is in the repo and defines `fn <name>` (.rs) or
   `def <name>` (.py); pending-merge tests are checked against the PR when it merges (the row
-  flips to `guarded`), not here;
+  flips to `guarded`), not here. This check is fatal only with `--strict` (`just fmea`); without
+  it (the `fmea` flake check) a missing test is a warning, so a PR that renames a test is not
+  failed by a document it never touched. Every other check is fatal in both modes;
 * a wanted field is "UNDECIDED" only with a `question` that FMEA.md's "Open questions" lists;
 * the table in FMEA.md equals the one rendered from fmea.toml.
 
 A built-in self-test mutates a valid row once per rule and asserts that each mutation fails.
 
-Run: python3 docs/safety/check_fmea.py [repo-root]          (exit 0 = all checks pass)
-     python3 docs/safety/check_fmea.py --write [repo-root]  (re-render the table into FMEA.md)
-CI runs the check as the `fmea` flake check; `just fmea` locally.
+Run: python3 docs/safety/check_fmea.py [--strict] [repo-root]  (exit 0 = all checks pass)
+     python3 docs/safety/check_fmea.py --write [repo-root]     (re-render the table into FMEA.md)
+CI runs it without --strict as the `fmea` flake check; `just fmea` runs it with --strict.
 """
 from __future__ import annotations
 
@@ -70,7 +72,7 @@ def open_questions(md: str):
     return set(re.findall(r"^\*\*(Q\d+)\*\*", md.split("## Open questions", 1)[1], re.M))
 
 
-def validate(data: dict, md: str, root: Path, grep: bool = True):
+def validate(data: dict, md: str):
     errs = []
     meta = data.get("meta", {})
     if meta.get("phases") != PHASES:
@@ -130,16 +132,18 @@ def validate(data: dict, md: str, root: Path, grep: bool = True):
                 e(f"status {st} needs test path::name")
             if st == "pending-merge" and not isinstance(r.get("pr"), int):
                 e("status pending-merge needs the pr that adds the test")
-            if grep and st == "guarded":
-                for t in tests:
-                    if (msg := check_test(root, t)):
-                        e(msg)
     table = render(data)
     if BEGIN not in md or END not in md:
         errs.append("FMEA.md lacks the fmea:table markers")
     elif md.split(BEGIN, 1)[1].split(END, 1)[0].strip() != table.strip():
         errs.append("FMEA.md table differs from fmea.toml (run check_fmea.py --write)")
     return errs
+
+
+def missing_tests(data: dict, root: Path):
+    """Cited tests of `guarded` rows that the repo does not define."""
+    return [f"{r['id']}: {msg}" for r in data.get("row", []) if r.get("status") == "guarded"
+            for t in tests_of(r) if (msg := check_test(root, t))]
 
 
 def cell(s) -> str:
@@ -199,21 +203,21 @@ def self_test(data: dict, md: str, root: Path):
         "unknown key": lambda d, r: r.update(extra="x"),
         "scale changed": lambda d, r: d["meta"]["severity"].update(S4="trivial"),
     }
-    failed = []
+    failed, absent = [], set(missing_tests(data, root))
     for name, f in cases.items():
         d = mut(f)
         md2 = md.replace(render(data).strip(), render(d).strip())
-        if not validate(d, md2, root):
+        if not (validate(d, md2) or set(missing_tests(d, root)) - absent):
             failed.append(name)
     stale = md.replace(render(data).strip(), render(mut(lambda d, r: r.update(cause="x"))).strip())
-    if not validate(data, stale, root, grep=False):
+    if not validate(data, stale):
         failed.append("table drift")
     return [f"self-test: mutation '{n}' was not caught" for n in failed]
 
 
 def main(argv):
-    write = "--write" in argv
-    args = [a for a in argv if a != "--write"]
+    write, strict = "--write" in argv, "--strict" in argv
+    args = [a for a in argv if a not in ("--write", "--strict")]
     root = Path(args[0]) if args else Path(__file__).resolve().parents[2]
     toml_p, md_p = root / "docs/safety/fmea.toml", root / "docs/safety/FMEA.md"
     data = tomllib.loads(toml_p.read_text(encoding="utf-8"))
@@ -224,7 +228,12 @@ def main(argv):
         head, rest = md.split(BEGIN, 1)
         md = f"{head}{BEGIN}\n\n{render(data)}\n{END}{rest.split(END, 1)[1]}"
         md_p.write_text(md, encoding="utf-8")
-    errs = validate(data, md, root)
+    errs, absent = validate(data, md), missing_tests(data, root)
+    if strict:
+        errs += absent
+    else:
+        for x in absent:
+            print(f"fmea: warning: {x}", file=sys.stderr)
     if not errs:
         errs = self_test(data, md, root)
     if errs:

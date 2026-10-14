@@ -27,9 +27,10 @@ test:
 model:
     python3 docs/adr/models/trainer_following.py
 
-# FMEA validator (also the `fmea` flake check); `--write` re-renders the table into FMEA.md.
+# FMEA validator, strict: a cited test that does not exist fails here (the `fmea` flake check
+# only warns about it). `just fmea --write` re-renders the table into FMEA.md.
 fmea *ARGS:
-    python3 docs/safety/check_fmea.py {{ARGS}}
+    python3 docs/safety/check_fmea.py --strict {{ARGS}}
 
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
