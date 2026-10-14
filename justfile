@@ -47,8 +47,9 @@ dev:
     pnpm -C app exec tauri dev
 
 # ADR-0001 §9.3 / ADR-0002 §8 (#37): assemble crank.app with Nix, install it at a stable path and sign
-# it inside-out (by SHA-1, scripts/install-app.sh) with the local self-signed `nix-tcc` identity (g-fleet bin/nix-tcc-cert), so the TCC
-# Bluetooth grant, keyed on the designated requirement, survives rebuilds. Runs on sage, outside the
+# it inside-out (by SHA-1, scripts/install-app.sh) with the local self-signed `nix-tcc` identity
+# (g-fleet bin/nix-tcc-cert), so the TCC Bluetooth grant, keyed on the designated requirement,
+# survives rebuilds. Runs on sage, outside the
 # sandbox. No hardened runtime and no App Sandbox: library validation would reject the nix-store dylibs
 # that are signed by nobody (distribution signing is #47). Never creates or modifies identities.
 bundle:
