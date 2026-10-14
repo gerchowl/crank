@@ -11,6 +11,8 @@ mod pairing;
 mod reconnect;
 #[cfg(feature = "replay")]
 mod replay;
+#[cfg(test)]
+mod routing_tests;
 mod telemetry;
 pub use capture::*;
 pub use crank_devices::Clock;
