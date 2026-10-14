@@ -369,9 +369,9 @@ fn link_loss_pauses_and_reconnect_reissues_mode_with_soft_start() {
     assert!(r.modes().is_empty(), "no commands while connecting");
     r.link(LinkState::Ready);
     r.through(13);
-    // no power in the last 3 s yet: the documented fallback sends the target as is
-    // (design question #231), and the ride stays paused until a sample arrives
-    assert_eq!(r.modes(), vec![erg(200)]);
+    // no pedalling sample yet: the mode is re-issued at 0 W, never the target (#231),
+    // and the ride stays paused until a sample arrives
+    assert_eq!(r.modes(), vec![erg(0)]);
     assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
     r.sample(14, 90, 85);
     r.through(14);
@@ -756,7 +756,7 @@ fn the_soft_start_is_not_spent_in_silence_and_starts_from_current_power() {
     // 33 silent ticks: lost after 8, the mode is re-issued once, no ramp is played
     r.through(40);
     assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
-    assert_eq!(r.modes(), vec![erg(200)]);
+    assert_eq!(r.modes(), vec![erg(0)]);
     // samples return at 100 W; 150 W from 30 ticks ago is not "the current power"
     feed(&r, 41, 70, 100);
     r.through(41);
@@ -781,7 +781,7 @@ fn the_ramp_restarts_when_samples_stop_mid_ramp_and_return() {
     // start, re-issue on loss, then the ramp from 100 W
     assert_eq!(
         r.modes(),
-        vec![erg(200), erg(200), erg(100), erg(120), erg(140)]
+        vec![erg(200), erg(0), erg(100), erg(120), erg(140)]
     );
     // 6 ticks without samples (a hold of 4 ticks, no loss yet): the ramp holds its last
     // step (160 W at tick 53), then 140 W returns. The 3 s power at tick 57 is
@@ -821,4 +821,37 @@ fn start_needs_a_ready_trainer() {
     r.link(LinkState::Ready);
     r.start();
     assert_eq!(r.state(), RideState::Riding);
+}
+
+#[test]
+fn after_ready_only_zero_watts_is_sent_until_a_pedalling_sample_then_the_ramp_starts() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 250.0, 250.0, Phase::Work)]);
+    r.start();
+    feed(&r, 0, 8, 180);
+    r.through(7);
+    assert_eq!(r.modes(), vec![erg(250)]);
+    r.link(LinkState::Lost);
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    // 20 ticks, no samples at all: exactly one command, 0 W, and never the target
+    r.through(27);
+    assert_eq!(r.modes(), vec![erg(0)]);
+    // samples with cadence 0 (not pedalling) do not start the ramp either
+    for k in 28..32 {
+        r.sample(k, 0, 0);
+    }
+    r.through(31);
+    assert!(r.modes().is_empty());
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    // first pedalling sample: the 3 s power is (0 x 4 + 100 W) / 5 = 20 W, then 1 Hz
+    // steps to 250 W
+    feed(&r, 32, 60, 100);
+    r.through(32);
+    assert_eq!(r.modes(), vec![erg(20)]);
+    r.through(59);
+    assert_eq!(
+        r.modes(),
+        vec![erg(66), erg(112), erg(158), erg(204), erg(250)]
+    );
 }

@@ -783,7 +783,7 @@ for those issues.
   54, then emits `Link(Ready)`; (2) on `Ready` the engine issues `SetMode` with the current mode (in ERG via
   the soft start of §7, because the trainer may have been in its standalone mode while disconnected,
   measured in HIL check 11); this `SetMode` makes the following machine active again (`Activate`, §4.4.1), and
-  observations before it are ignored; (3) the ride resumes when cadence > 0 (ADR-0001 §5). The driver never re-sends
+  observations before it are ignored; (3) the ride resumes when cadence > 0 (ADR-0001 §5). Until the first pedalling sample the re-issued mode is `Erg { target_w: 0 }`, then the soft start of §7.5 runs from the current 3 s power (#231). The driver never re-sends
   a control mode on its own, so there is exactly one owner of control state.
 - **Implementation (#147):** `crank_ble::Reconnecting` / `ReconnectingHr` wrap any driver and keep the
   consumer's channels across losses. The first connect is not retried (its error reaches the UI). The
@@ -826,6 +826,13 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    updates). The block timer keeps running (the rider is still riding). Released seconds are excluded
    from compliance. Thresholds are initial values checked in HIL check 9.
 5. **Soft start** is also used when ERG is (re-)engaged after a reconnect or after leaving `free`/`sim`.
+   **Origin and 0 W (amendment, #231).** The origin is the 3 s power (12 ticks, pruned by tick time, so
+   nothing older than 3 s counts) at the tick the first trainer sample with cadence > 0 of the new link
+   epoch arrives. After `Link(Ready)`, or after a loss detected by silence, until that sample the engine
+   re-issues the mode as `Erg { target_w: 0 }`, never the block target: no torque is applied to a rider
+   who is not pedalling (§7.4). Once samples flow the ramp runs from that origin to the target in five
+   1 Hz steps; it holds its last step while samples are missing and restarts from the then-current 3 s
+   power when they return. Pre-loss power is never an origin.
 6. **Trainer target-limit flags** (page 25: speed too low / too high) are shown in the ride status;
    they do not change the target by themselves.
 7. **HR-target steps** (`140bpm` in the DSL): the engine steers the ERG target with a bounded integral

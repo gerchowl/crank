@@ -578,9 +578,10 @@ impl Engine {
             s.hr.push(k, f64::from(bpm));
         }
         let (trainer, hr) = (s.trainer.get(k), s.hr.get(k));
-        // Samples are flowing while a trainer value is present. The soft start runs only
-        // then and restarts, from the current 3 s power, whenever they return.
-        if trainer.is_none() {
+        // Samples are flowing while a pedalling trainer value is present. The soft start
+        // runs only then and restarts, from the current 3 s power, whenever they return.
+        let pedalling = trainer.and_then(|t| t.cadence).is_some_and(|c| c > 0);
+        if !pedalling {
             s.flow_start = None;
         } else if s.flow_start.is_none() {
             s.flow_start = Some(k);

@@ -25,8 +25,8 @@ pub struct PolicyContext<'a> {
     /// A trainer loss has not yet been followed by a complete soft start.
     pub after_loss: bool,
     /// Mean trainer power over the last 3 s (12 ticks) at the tick the samples last
-    /// started flowing: the soft-start origin. `None` while no trainer value is present;
-    /// the policy then has no origin and sends the target as is (design question #231).
+    /// started flowing with cadence > 0: the soft-start origin. `None` before that; after
+    /// a loss the policy then re-issues the mode at 0 W (ADR-0002 §7.5, #231).
     pub engage_power_w: Option<f64>,
     /// Largest target the driver can represent.
     pub max_target_w: u16,
@@ -64,6 +64,11 @@ impl TargetPolicy for BlockTarget {
         };
         if block.phase == Phase::Free {
             return Some(ControlMode::Free);
+        }
+        // After a loss, until a pedalling sample gives a current power, the mode is
+        // re-issued at 0 W, never the block target (ADR-0002 §7.5, #231).
+        if ctx.after_loss && ctx.engage_power_w.is_none() {
+            return Some(ControlMode::Erg { target_w: 0 });
         }
         // Ramps move along the line once per second (ADR-0002 §7.3).
         let frac = if block.dur_s > 0.0 {
