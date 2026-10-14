@@ -1,0 +1,10 @@
+# cargo-deny policy for the crates/crank-fec/fuzz workspace (#199, #185). Advisories only: licenses,
+# bans and sources are policy for shipped code, which the fuzz workspace is not. Same RustSec policy
+# as deny.toml but without its ignores: those name glib, proc-macro-error and paste, which the fuzz
+# tree does not contain, so carrying them there only prints `advisory-not-detected` warnings.
+# A new ignore here needs a reason and a tracking issue, like in deny.toml.
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
