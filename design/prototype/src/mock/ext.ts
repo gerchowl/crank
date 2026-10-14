@@ -288,7 +288,7 @@ export const usualHr = (hr: (number | null)[], vsTyp: (number | null)[]) => hr.m
 export type HealthAnswer = "yes" | "no" | null;
 /**
  * Red flags (DESIGN §5.8): any "yes" means see a doctor before training — the coach proposes nothing.
- * Source: spec/ONBOARDING.md §1.5 (PAR-Q-style screen); items follow the PAR-Q+ and the ACSM 2015
+ * Source: spec/ONBOARDING.md §1.5 (PAR-Q-style screen); items are informed by the PAR-Q+ and the ACSM 2015
  * pre-participation screening symptom list (knowledge-pack entry: #77).
  */
 export const HEALTH_QS = [

@@ -156,7 +156,7 @@ pub struct Ride {
     /// Optional summary.
     pub summary: Option<RideSummaryJson>,
 }
-/// Pairing memory only; discovery and pairing policy belong to #147.
+/// Pairing memory (ADR-0002 §5): one row per (`platform_id`, `kind`) role. Matching policy lives in `crank-ble`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     /// Stable database id.
@@ -169,6 +169,8 @@ pub struct Device {
     pub platform_id: String,
     /// DIS serial number.
     pub serial: Option<String>,
+    /// DIS model number (2A24).
+    pub model: Option<String>,
     /// UTC Unix seconds at last sighting.
     pub last_seen: i64,
 }
@@ -280,19 +282,62 @@ impl Store {
             Ok(())
         })
     }
-    /// Persist platform id, advertised name and DIS serial.
+    /// Persist a (peripheral, role) pairing: platform id, advertised name and DIS
+    /// serial + model. A row is unique per `(platform_id, kind)`, so one
+    /// peripheral can be both trainer and strap and roles never overwrite each
+    /// other. Re-remembering a role updates that row and **keeps its existing
+    /// id**, which is returned (the caller's `id` is used only for a new row).
+    /// An existing `id` of the same kind with a new platform id
+    /// (`CoreBluetooth` re-assigned it) is updated in place.
     /// # Errors
-    /// Returns read-only, SQL or worker errors.
-    pub fn remember_device(&self, device: Device) -> Result<(), StoreError> {
+    /// `InvalidInput` if `id` already names a row of a different kind; read-only,
+    /// SQL or worker errors.
+    pub fn remember_device(&self, device: Device) -> Result<String, StoreError> {
         self.write(move |w| {
-            w.db.execute(
-                "INSERT INTO device VALUES (?1,?2,?3,?4,?5,?6)
-                 ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,name=excluded.name,
-                 platform_id=excluded.platform_id,serial=excluded.serial,last_seen=excluded.last_seen",
-                params![device.id, device.kind, device.name, device.platform_id,
-                    device.serial, device.last_seen],
-            )?;
-            Ok(())
+            let tx = w.db.transaction()?;
+            let Device { id, kind, name, platform_id, serial, model, last_seen } = device;
+            let existing: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM device WHERE platform_id=?1 AND kind=?2",
+                    params![platform_id, kind],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let id = if let Some(existing) = existing {
+                tx.execute(
+                    "UPDATE device SET name=?1,serial=?2,model=?3,last_seen=?4 WHERE id=?5",
+                    params![name, serial, model, last_seen, existing],
+                )?;
+                existing
+            } else {
+                let taken: Option<String> = tx
+                    .query_row("SELECT kind FROM device WHERE id=?1", params![id], |r| r.get(0))
+                    .optional()?;
+                match taken {
+                    Some(other) if other != kind => {
+                        return Err(StoreError::InvalidInput(format!(
+                            "device id {id:?} already names a {other} pairing"
+                        )));
+                    }
+                    Some(_) => {
+                        tx.execute(
+                            "UPDATE device SET name=?1,serial=?2,model=?3,last_seen=?4,platform_id=?5
+                             WHERE id=?6",
+                            params![name, serial, model, last_seen, platform_id, id],
+                        )?;
+                    }
+                    None => {
+                        tx.execute(
+                            "INSERT INTO device (id,kind,name,platform_id,serial,model,last_seen)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                            params![id, kind, name, platform_id, serial, model, last_seen],
+                        )?;
+                    }
+                }
+                id
+            };
+            tx.commit()?;
+            Ok(id)
         })
     }
     /// Read pairing memory ordered by id.
@@ -302,7 +347,7 @@ impl Store {
         self.read(|db| {
             Ok(db
                 .prepare(
-                    "SELECT id,kind,name,platform_id,serial,last_seen FROM device ORDER BY id",
+                    "SELECT id,kind,name,platform_id,serial,model,last_seen FROM device ORDER BY id",
                 )?
                 .query_map([], |r| {
                     Ok(Device {
@@ -311,7 +356,8 @@ impl Store {
                         name: r.get(2)?,
                         platform_id: r.get(3)?,
                         serial: r.get(4)?,
-                        last_seen: r.get(5)?,
+                        model: r.get(5)?,
+                        last_seen: r.get(6)?,
                     })
                 })?
                 .collect::<Result<_, _>>()?)
