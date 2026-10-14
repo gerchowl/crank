@@ -169,7 +169,7 @@ enum StreamReq {
     CloseWindow(String),
     Subscribe(StreamId, MetricId, SubscribeOpts, Reply<SubId>),
     Unsubscribe(StreamId, SubId, Reply<()>),
-    Ack(StreamId, u64),
+    Ack(StreamId, u32),
     Snapshot(StreamId, Reply<StreamSnapshot>),
 }
 
@@ -263,7 +263,7 @@ impl EngineHandle {
     ///
     /// # Errors
     /// `EngineStopped` if the engine has ended.
-    pub async fn stream_ack(&self, stream: StreamId, seq: u64) -> Result<(), StreamError> {
+    pub async fn stream_ack(&self, stream: StreamId, seq: u32) -> Result<(), StreamError> {
         self.streams
             .send(StreamReq::Ack(stream, seq))
             .await
