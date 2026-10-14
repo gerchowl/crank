@@ -1,0 +1,73 @@
+{
+  "answered": 317,
+  "answered_over_500ms": 0,
+  "copies": 80,
+  "copies_msg_4e": 80,
+  "copies_within_1ms": 66,
+  "distinct_replies": 317,
+  "independence": {
+    "expected_adjacent_lost_pairs": 2.113025621957815,
+    "observed_adjacent_lost_pairs": 0,
+    "p_lost": 0.07848837209302326,
+    "poisson_p_at_most_observed": 0.12087170055048048
+  },
+  "loss_by_preceding_gap": [
+    {
+      "answered": 83,
+      "gap_ms_nominal": 1000,
+      "preceded_by": "request",
+      "requests": 89
+    },
+    {
+      "answered": 32,
+      "gap_ms_nominal": 0,
+      "preceded_by": "control_write",
+      "requests": 35
+    },
+    {
+      "answered": 155,
+      "gap_ms_nominal": 250,
+      "preceded_by": "control_write",
+      "requests": 169
+    },
+    {
+      "answered": 28,
+      "gap_ms_nominal": 500,
+      "preceded_by": "control_write",
+      "requests": 30
+    },
+    {
+      "answered": 19,
+      "gap_ms_nominal": 1000,
+      "preceded_by": "control_write",
+      "requests": 21
+    }
+  ],
+  "lost": 27,
+  "lost_run_lengths": [
+    {
+      "count": 27,
+      "run": 1
+    }
+  ],
+  "method": "replies matched to requests by the page-71 sequence byte (counts control pages 48-51 and page-70 requests, mod 256); repeats of an answered reply are copies; a request is lost when no reply carries its sequence",
+  "page71_frames": 397,
+  "reply_latency_us": {
+    "max_us": 121909,
+    "min_us": 35550,
+    "n": 317,
+    "p50_us": 61879,
+    "p99_us": 118816
+  },
+  "requests_page71": 344,
+  "stale_echoes": {
+    "ages_us": [
+      16203,
+      22440
+    ],
+    "echoes_checked": 397,
+    "max_age_us": 22440,
+    "method": "echo of a control value after a different value of the same page was written; age from the first write of the superseding value (add the writer delay, at most 0.75 s, for age from the desired change)",
+    "stale": 2
+  }
+}

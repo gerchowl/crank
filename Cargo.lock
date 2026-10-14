@@ -568,6 +568,7 @@ dependencies = [
  "crank-store",
  "futures-util",
  "proptest",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
