@@ -11,3 +11,12 @@ workspace = true
 [dependencies]
 crank-domain.workspace = true
 crank-devices.workspace = true
+futures-util = "0.3"
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+
+[dev-dependencies]
+crank-store.workspace = true
+proptest.workspace = true
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "test-util", "time"] }
