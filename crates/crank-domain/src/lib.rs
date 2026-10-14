@@ -1,4 +1,10 @@
 //! Pure domain logic; see ADR-0001 §2–4.
+//!
+//! Intentional divergences from the frozen TS reference, each with its pinning test, are
+//! listed in [`divergences`].
+/// Intentional divergences from the frozen TS reference (`DIVERGENCES.md`).
+#[doc = include_str!("../DIVERGENCES.md")]
+pub mod divergences {}
 pub mod distributions;
 pub mod filters;
 pub mod history;

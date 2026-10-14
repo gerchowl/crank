@@ -11,14 +11,19 @@ priors; imported history and rides refine them; the coach is conservative in pro
    guess) with a date. Unknown is fine.
 4. **Goals**: event and date (optional), focus (endurance / climbing / crits / general fitness / weight),
    days per week and time per session available, preferred ride types.
-5. **Health and safety**: short PAR-Q-style screen (heart issues, chest pain, dizziness, medication, injuries).
+5. **Health and safety**: short screen **informed by** the PAR-Q+ and ACSM 2015, not the PAR-Q+ (#193; heart issues,
+   chest pain, dizziness, medication, injuries, pregnancy), with a footer link to the official PAR-Q+ / ePARmed-X+.
    A red flag (chest pain, fainting/dizziness, racing or irregular heartbeat, unusual breathlessness, a heart
    condition a doctor limited exercise for) → **medical stop**: no plan, coach off, riding only as a deliberate,
-   logged free ride (not even that when an injury cap is also active: a free ride has no targets, so the cap
+   logged free ride (not even that when any health cap is also active: a free ride has no targets, so the cap
    cannot be held), lifted only by a dated clearance the rider records (DESIGN §5.8). crank refers, it never
    clears. Medication and injury answers are not red flags and do different things: a medication that changes
    heart rate switches off HR-based coaching (HR zones, HR-guided recoveries, HR-vs-usual; no power cap); an
    injury that limits hard efforts caps intensity at threshold with no sprints.
+   Two more items (DESIGN §5.8): **"Pregnant?"** (#196) is a medical stop, lifted by the same dated clearance;
+   when age > 45, **"Do you regularly do vigorous exercise?"** (#195): a *no* shows an advisory (consult a
+   qualified exercise professional before vigorous or maximal efforts) that the rider acknowledges, logged; until
+   then the planner holds the same cap as the injury cap and says why. It can be re-opened in Settings → Health.
    Item wording, sources and escalation: `spec/knowledge-pack/14-health-screening.md`.
 6. **Equipment**: trainer and HR strap pairing test, crank length, connectors (intervals.icu, later).
 
@@ -50,6 +55,11 @@ interface AthleteModel {
 - **Break and illness detection**: a gap > 10 days or a sudden HR-at-power shift → widen the uncertainty
   and plan conservatively (a "return" block).
 - **Periodic re-check-in** every ~6 weeks, or when goals change: goals, availability, health.
+- **Daily check-in health questions** (DESIGN §5.8): the five red flags again, then **"Since your last ride: any
+  new or changed medication that affects heart rate, or an injury that limits exercise?"** (#194; a yes routes to
+  the medication and injury answers, is logged and re-asks the five red flags in full) and **"Unwell today (cold,
+  fever, infection)?"** (#196; a yes means no planned or coached ride today and a rest proposal, a free ride only
+  as a logged choice; the answer resets the next day).
 
 ## 4. Coach behaviour by confidence
 - **Uncertainty-aware targets**: with high CP sd, intervals target the conservative side, and ramps include
