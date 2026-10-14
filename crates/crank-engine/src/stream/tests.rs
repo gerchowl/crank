@@ -6,16 +6,16 @@
     reason = "small test counters and indices are exact in f64"
 )]
 use super::flow::{FRAME_BUDGET_BYTES, Flow, HEARTBEAT_US, MAX_UNACKED, MIN_FRAME_INTERVAL_US};
-use super::hub::{Hub, MAX_SUBSCRIPTIONS};
+use super::hub::{Hub, MAX_SUBSCRIPTIONS, fresh_id};
 use super::types::{
-    LinkDevice, LinkStatus, MAX_RECORD_ERROR_BYTES, MetricId, StreamError, StreamFrame,
+    LinkDevice, LinkStatus, MAX_RECORD_ERROR_BYTES, MetricId, StreamError, StreamFrame, StreamId,
     StreamRideState, StreamStatus, SubId, SubSample, SubscribeOpts,
 };
 use crank_domain::filters::Filter;
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn status(state: StreamRideState, marker: u64) -> StreamStatus {
+fn status(state: StreamRideState, marker: u32) -> StreamStatus {
     StreamStatus {
         state,
         loaded: true,
@@ -32,13 +32,13 @@ fn status(state: StreamRideState, marker: u64) -> StreamStatus {
         cap: None,
     }
 }
-fn riding(marker: u64) -> StreamStatus {
+fn riding(marker: u32) -> StreamStatus {
     status(StreamRideState::Riding, marker)
 }
 fn json(f: &StreamFrame) -> Vec<u8> {
     serde_json::to_vec(f).expect("frame serializes")
 }
-fn sample(sub: u64, t: f64, v: f64) -> SubSample {
+fn sample(sub: u32, t: f64, v: f64) -> SubSample {
     SubSample {
         sub: SubId(sub),
         t,
@@ -85,23 +85,23 @@ fn link(s: u8) -> LinkStatus {
 struct World {
     budget: usize,
     now: u64,
-    counter: u64,
+    counter: u32,
     // the latest state offered, per key
-    latest: BTreeMap<u64, SubSample>,
+    latest: BTreeMap<u32, SubSample>,
     latest_status: Option<StreamStatus>,
     latest_links: BTreeMap<LinkDevice, LinkStatus>,
     // ADR: "bounded pending state": the oracle's own copy of what is waiting
-    pend_samples: BTreeSet<u64>,
+    pend_samples: BTreeSet<u32>,
     pend_status: Option<StreamStatus>,
     pend_links: BTreeMap<LinkDevice, LinkStatus>,
     // ADR: the next frame after the window reopens carries `resync` iff something was
     // coalesced while the window was full
     owed_resync: bool,
     // consumer
-    inflight: Vec<u64>,
-    expected_seq: u64,
+    inflight: Vec<u32>,
+    expected_seq: u32,
     discard_next: bool,
-    view: BTreeMap<u64, SubSample>,
+    view: BTreeMap<u32, SubSample>,
     view_status: Option<StreamStatus>,
     view_links: BTreeMap<LinkDevice, LinkStatus>,
     last_emit: Option<u64>,
@@ -142,7 +142,7 @@ impl World {
         self.view_status = self.latest_status.clone();
         self.view_links = self.latest_links.clone();
     }
-    fn offer_sample(&mut self, flow: &mut Flow, sub: u64) {
+    fn offer_sample(&mut self, flow: &mut Flow, sub: u32) {
         self.counter += 1;
         let s = sample(sub, self.counter as f64, self.counter as f64);
         if !self.pend_samples.insert(sub) && self.blocked() {
@@ -168,7 +168,7 @@ impl World {
         self.latest_links.insert(device, state);
         flow.offer_link(device, state);
     }
-    fn ack(&mut self, flow: &mut Flow, seq: u64) {
+    fn ack(&mut self, flow: &mut Flow, seq: u32) {
         self.inflight.retain(|&s| s > seq);
         flow.ack(seq);
     }
@@ -285,7 +285,7 @@ proptest! {
         let mut w = World::new(budget);
         for op in ops {
             match op {
-                Op::Sample(sub) => w.offer_sample(&mut flow, u64::from(sub)),
+                Op::Sample(sub) => w.offer_sample(&mut flow, u32::from(sub)),
                 Op::Status => w.offer_status(&mut flow),
                 Op::Link(trainer, s) => {
                     let d = if trainer { LinkDevice::Trainer } else { LinkDevice::Hr };
@@ -348,7 +348,7 @@ fn the_generator_reaches_the_split_and_bare_paths() {
             let mut w = World::new(budget);
             for op in ops {
                 match op {
-                    Op::Sample(sub) => w.offer_sample(&mut flow, u64::from(sub)),
+                    Op::Sample(sub) => w.offer_sample(&mut flow, u32::from(sub)),
                     Op::Status => w.offer_status(&mut flow),
                     Op::Advance(us) => w.now += u64::from(us),
                     Op::AckAll => {
@@ -420,7 +420,7 @@ fn worst_status() -> StreamStatus {
         workout_s: f64::MIN,
         block_index: Some(u32::MAX),
         block_elapsed_s: f64::MIN,
-        late_samples: u64::MAX,
+        late_samples: u32::MAX,
         record_error: Some("𝔘".repeat(1_000)),
         trainer_following: super::types::StreamFollowing::NotFollowing,
         not_following_component: Some(super::types::StreamComponent::Resistance),
@@ -440,9 +440,9 @@ fn worst_status() -> StreamStatus {
 #[test]
 fn every_frame_stays_under_the_byte_budget_at_every_cap() {
     let mut flow = Flow::new(FRAME_BUDGET_BYTES);
-    for sub in 0..MAX_SUBSCRIPTIONS as u64 {
+    for sub in 0..MAX_SUBSCRIPTIONS as u32 {
         flow.offer_sample(SubSample {
-            sub: SubId(u64::MAX - sub),
+            sub: SubId(u32::MAX - sub),
             t: f64::MIN,
             v: Some(-1.797_693_134_862_315_7e308),
         });
@@ -474,6 +474,11 @@ fn every_frame_stays_under_the_byte_budget_at_every_cap() {
     ride.state = crate::engine::RideState::Paused(crate::engine::PauseReason::StoppedPedalling);
     let from_engine = StreamStatus::from(&ride);
     assert_eq!(
+        from_engine.late_samples,
+        u32::MAX,
+        "the engine's u64 counter saturates on the wire"
+    );
+    assert_eq!(
         from_engine.record_error.as_ref().map(String::len),
         Some(MAX_RECORD_ERROR_BYTES),
         "cut on a character boundary at the cap"
@@ -500,7 +505,7 @@ fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
     // sized so that 12 samples split over exactly three frames.
     const BUDGET: usize = 360;
     let mut flow = Flow::new(BUDGET);
-    for sub in 0..12_u64 {
+    for sub in 0..12_u32 {
         flow.offer_sample(sample(sub, 1.5, 100.0 + sub as f64));
     }
     flow.offer_status(riding(1));
@@ -510,7 +515,7 @@ fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
     assert_eq!(frames.len(), 3);
     let mut got = Vec::new();
     for (i, f) in frames.iter().enumerate() {
-        assert_eq!(f.seq, i as u64, "consecutive seq");
+        assert_eq!(u64::from(f.seq), i as u64, "consecutive seq");
         assert!(json(f).len() <= BUDGET);
         assert_eq!(
             f.status.is_some(),
@@ -526,7 +531,7 @@ fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
 #[test]
 fn a_split_stops_at_the_window_and_leaves_the_rest_pending() {
     let mut flow = Flow::new(150);
-    for sub in 0..20_u64 {
+    for sub in 0..20_u32 {
         flow.offer_sample(sample(sub, 1.5, 1.0));
     }
     let frames = flow.drain(0);
@@ -691,7 +696,7 @@ fn frames_never_exceed_ten_per_second_however_fast_state_changes() {
             step as f64 * 0.1,
             &[Some(step as f64), None, None, None, None],
         );
-        hub.on_status(riding(step), now);
+        hub.on_status(riding(u32::try_from(step).unwrap()), now);
         hub.poll(now);
         for f in drain(&mut rx) {
             frames_at.push(now);
@@ -851,7 +856,7 @@ fn a_consumer_that_never_reads_or_acks_is_bounded() {
     }
     for step in 1..=20_000_u64 {
         hub.on_source(step as f64, &[Some(step as f64), None, None, None, None]);
-        hub.on_status(riding(step), step * 10 * MS);
+        hub.on_status(riding(u32::try_from(step).unwrap()), step * 10 * MS);
         hub.poll(step * 10 * MS);
     }
     let flow = hub.flow(id).expect("stream alive");
@@ -869,7 +874,7 @@ fn a_status_change_restarts_the_heartbeat_period() {
     for step in 0..=20_u64 {
         let t = step * 100 * MS;
         // a discrete change at 300 ms, clock fields advancing all the time
-        let mut s = riding(u64::from(t >= 300 * MS));
+        let mut s = riding(u32::from(t >= 300 * MS));
         s.session_s = step as f64 / 10.0;
         hub.on_status(s, t);
         hub.poll(t);
@@ -899,7 +904,7 @@ fn a_blocked_stream_neither_beats_nor_flags_resync_after_the_ack() {
     let (mut hub, id, mut rx) = hub_with_stream();
     // three discrete changes fill the window
     for k in 0..3_u64 {
-        hub.on_status(riding(k), k * 100 * MS);
+        hub.on_status(riding(u32::try_from(k).unwrap()), k * 100 * MS);
         hub.poll(k * 100 * MS);
     }
     assert_eq!(drain(&mut rx).len(), 3);
@@ -1043,7 +1048,7 @@ fn a_blocked_dead_stream_is_reaped() {
     let mut hub = Hub::new();
     let (_, rx) = hub.open(None, 0).expect("open");
     for k in 0..3_u64 {
-        hub.on_status(riding(k), k * 100 * MS);
+        hub.on_status(riding(u32::try_from(k).unwrap()), k * 100 * MS);
         hub.poll(k * 100 * MS);
     }
     drop(rx);
@@ -1164,4 +1169,89 @@ fn the_wire_status_carries_the_erg_fields_with_their_meaning() {
             &serde_json::Value::Null
         )
     );
+}
+
+// ---- u32 ids and seq (#271) -----------------------------------------------------
+
+#[test]
+fn seq_wraps_at_u32_max_and_the_ack_window_follows() {
+    let mut flow = Flow::starting_at(FRAME_BUDGET_BYTES, u32::MAX - 1);
+    let mut seqs = Vec::new();
+    // Three frames cross the wrap: MAX-1, MAX, 0. Each drain is one frame (a status).
+    for k in 0..3_u64 {
+        flow.offer_status(riding(u32::try_from(k).unwrap()));
+        let f = flow.drain(k * MIN_FRAME_INTERVAL_US);
+        assert_eq!(f.len(), 1);
+        seqs.push(f[0].seq);
+    }
+    assert_eq!(
+        seqs,
+        [u32::MAX - 1, u32::MAX, 0],
+        "consecutive across the wrap"
+    );
+    assert!(
+        flow.blocked(),
+        "three unacknowledged frames fill the window"
+    );
+    // A seq that was never sent is ignored, wherever it sits relative to the wrap.
+    assert!(!flow.ack(1));
+    assert!(!flow.ack(u32::MAX - 2));
+    assert_eq!(flow.unacked(), 3);
+    // Cumulative ack of the oldest, then of the frame after the wrap: the numerically
+    // smallest seq (0) is the newest, so a `<`/`>` comparison would get this wrong.
+    assert!(flow.ack(u32::MAX - 1));
+    assert_eq!(flow.unacked(), 2);
+    assert!(flow.ack(0));
+    assert_eq!(flow.unacked(), 0, "acking 0 acknowledges MAX and 0");
+    assert!(!flow.ack(0), "already acknowledged");
+    // The next frame is 1.
+    flow.offer_status(riding(9));
+    assert_eq!(flow.drain(10 * MIN_FRAME_INTERVAL_US)[0].seq, 1);
+}
+
+#[test]
+fn a_split_across_the_wrap_numbers_its_frames_consecutively() {
+    let mut flow = Flow::starting_at(360, u32::MAX);
+    for sub in 0..12_u32 {
+        flow.offer_sample(sample(sub, 1.5, 100.0));
+    }
+    flow.offer_status(riding(1));
+    let seqs: Vec<u32> = flow.drain(0).iter().map(|f| f.seq).collect();
+    assert_eq!(seqs, [u32::MAX, 0, 1]);
+}
+
+#[test]
+fn ids_skip_zero_and_live_ids_when_the_counter_wraps() {
+    let mut next = u32::MAX;
+    let live = |id: u32| id == 1 || id == 2;
+    assert_eq!(fresh_id(&mut next, live), u32::MAX);
+    assert_eq!(
+        fresh_id(&mut next, live),
+        3,
+        "0 is never issued; live 1 and 2 are skipped"
+    );
+    assert_eq!(fresh_id(&mut next, live), 4);
+}
+
+#[test]
+fn stream_and_subscription_ids_stay_unique_across_a_counter_wrap() {
+    let mut hub = Hub::new();
+    hub.counters_at(u32::MAX, u32::MAX);
+    let (a, _ra) = hub.open(None, 0).unwrap();
+    let (b, _rb) = hub.open(None, 0).unwrap();
+    assert_eq!((a, b), (StreamId(u32::MAX), StreamId(1)));
+    let opts = || SubscribeOpts {
+        rate_hz: 1.0,
+        filters: Vec::new(),
+    };
+    let s1 = hub.subscribe(a, MetricId::Power, opts()).unwrap();
+    let s2 = hub.subscribe(b, MetricId::Power, opts()).unwrap();
+    let s3 = hub.subscribe(a, MetricId::Hr, opts()).unwrap();
+    assert_eq!((s1, s2, s3), (SubId(u32::MAX), SubId(1), SubId(2)));
+    // Close a stream and wrap the counter again: a live id is never reissued.
+    hub.counters_at(1, 1);
+    let (c, _rc) = hub.open(None, 0).unwrap();
+    assert_eq!(c, StreamId(2), "stream 1 is live");
+    let s4 = hub.subscribe(c, MetricId::Cadence, opts()).unwrap();
+    assert_eq!(s4, SubId(3), "subscriptions 1 and 2 are live");
 }
