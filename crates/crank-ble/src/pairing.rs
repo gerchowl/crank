@@ -11,6 +11,8 @@ pub struct Pairing {
     pub name: Option<String>,
     /// DIS serial (2A25), known only after a connection.
     pub serial: Option<String>,
+    /// DIS model number (2A24), known only after a connection.
+    pub model: Option<String>,
 }
 impl Pairing {
     /// Remember a connected device from its reference and DIS identity.
@@ -20,6 +22,7 @@ impl Pairing {
             platform_id: dev.0.clone(),
             name: info.name.clone(),
             serial: info.serial.clone(),
+            model: info.model.clone(),
         }
     }
     /// Reference used to reconnect by stored platform id without scanning.
@@ -33,13 +36,14 @@ impl Pairing {
     pub fn matches(&self, found: &DiscoveredDevice) -> bool {
         found.device.0 == self.platform_id || self.name.is_some() && self.name == found.info.name
     }
-    /// After connecting: false only when both serials are known and differ,
-    /// i.e. a different unit that merely shares the advertised name.
+    /// After connecting: false only when both serials (or both models) are
+    /// known and differ, i.e. a different unit that merely shares the name.
     #[must_use]
     pub fn verify(&self, info: &DeviceInfo) -> bool {
-        match (&self.serial, &info.serial) {
+        let agrees = |stored: &Option<String>, read: &Option<String>| match (stored, read) {
             (Some(stored), Some(read)) => stored == read,
             _ => true,
-        }
+        };
+        agrees(&self.serial, &info.serial) && agrees(&self.model, &info.model)
     }
 }

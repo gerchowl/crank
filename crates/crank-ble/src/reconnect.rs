@@ -14,7 +14,40 @@ use crank_devices::{
 };
 use futures_util::future::BoxFuture;
 use std::{sync::Arc, time::Duration};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+
+/// Explicit "ride is active" input of the reconnect supervisors (ADR-0002 §6).
+///
+/// The link may be held while the app is open (§5), but the backoff loop runs
+/// only while the gate is active. Outside a ride a loss is surfaced
+/// (`Link(Lost)`, then the event stream closes) and normal rediscovery
+/// reconnects when the device is seen again. If the gate goes inactive during
+/// backoff the loop stops the same way. Clones share one state. Driving it
+/// from the engine/core is tracked in #208 (#32/#34).
+#[derive(Clone)]
+pub struct RideGate(Arc<watch::Sender<bool>>);
+impl RideGate {
+    /// A gate that starts as given; share clones with every wrapper.
+    #[must_use]
+    pub fn new(active: bool) -> Self {
+        Self(Arc::new(watch::channel(active).0))
+    }
+    /// Set whether a ride is loaded / the ride view is open.
+    pub fn set_active(&self, active: bool) {
+        self.0.send_replace(active);
+    }
+    /// Current state.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        *self.0.borrow()
+    }
+    /// Resolves once the gate is (or becomes) inactive.
+    async fn inactive(&self) {
+        let mut rx = self.0.subscribe();
+        // `wait_for` only errs if the sender drops, which `self` prevents.
+        let _ = rx.wait_for(|active| !*active).await;
+    }
+}
 
 /// Delay before reconnect attempt `attempt` (1-based): 0.5, 1, 2, 4, then 5 s.
 #[must_use]
@@ -36,17 +69,20 @@ async fn pause(clock: &Arc<dyn Clock>, attempt: u32) {
 
 /// Adds the ADR-0002 §6 reconnect loop to any [`TrainerDriver`]. The first
 /// connect is not retried: its error reaches the caller (UI "not found").
-/// After a loss the loop runs until `Disconnect`, or until the link is dropped.
+/// After a loss the loop runs while the [`RideGate`] is active, until
+/// `Disconnect`, or until the link is dropped.
 pub struct Reconnecting<D> {
     inner: Arc<D>,
     clock: Arc<dyn Clock>,
+    gate: RideGate,
 }
 impl<D: TrainerDriver> Reconnecting<D> {
     /// Wrap `inner`; `clock` times the backoff and must be the engine's clock.
-    pub fn new(inner: D, clock: Arc<dyn Clock>) -> Self {
+    pub fn new(inner: D, clock: Arc<dyn Clock>, gate: RideGate) -> Self {
         Self {
             inner: Arc::new(inner),
             clock,
+            gate,
         }
     }
 }
@@ -59,14 +95,19 @@ impl<D: TrainerDriver> TrainerDriver for Reconnecting<D> {
         dev: &DeviceRef,
         rider: RiderConfig,
     ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
-        let (inner, clock, dev) = (self.inner.clone(), self.clock.clone(), dev.clone());
+        let (inner, clock, dev, gate) = (
+            self.inner.clone(),
+            self.clock.clone(),
+            dev.clone(),
+            self.gate.clone(),
+        );
         Box::pin(async move {
             let link = inner.connect(&dev, rider).await?;
             let (info, caps) = (link.info.clone(), link.caps.clone());
             let (control, commands) = mpsc::channel(64);
             let (events_tx, events) = mpsc::channel(256);
             tokio::spawn(supervise_trainer(
-                inner, clock, dev, rider, link, commands, events_tx,
+                inner, clock, gate, dev, rider, link, commands, events_tx,
             ));
             Ok(TrainerLink {
                 info,
@@ -77,9 +118,11 @@ impl<D: TrainerDriver> TrainerDriver for Reconnecting<D> {
         })
     }
 }
+#[allow(clippy::too_many_arguments)]
 async fn supervise_trainer<D: TrainerDriver>(
     inner: Arc<D>,
     clock: Arc<dyn Clock>,
+    gate: RideGate,
     dev: DeviceRef,
     rider: RiderConfig,
     mut link: TrainerLink,
@@ -111,8 +154,8 @@ async fn supervise_trainer<D: TrainerDriver>(
                 },
             }
         }
-        if releasing {
-            return;
+        if releasing || !gate.is_active() {
+            return; // Outside a ride the loss is surfaced; rediscovery reconnects.
         }
         let mut attempt = 0;
         link = loop {
@@ -120,6 +163,7 @@ async fn supervise_trainer<D: TrainerDriver>(
             tokio::select! {
                 () = pause(&clock, attempt) => {}
                 () = released(&mut commands) => return,
+                () = gate.inactive() => return,
                 () = events.closed() => return,
             }
             if events
@@ -133,6 +177,7 @@ async fn supervise_trainer<D: TrainerDriver>(
             let connected = tokio::select! {
                 result = inner.connect(&dev, rider) => result,
                 () = released(&mut commands) => return,
+                () = gate.inactive() => return,
                 () = events.closed() => return,
             };
             match connected {
@@ -163,27 +208,35 @@ async fn released(commands: &mut mpsc::Receiver<TrainerCommand>) {
 /// Adds the ADR-0002 §6 reconnect loop to any [`HeartRateDriver`]. The ride
 /// does not pause on strap dropout; the consumer sees `Link(Lost)`, then
 /// `Reconnecting`, and drops the link to stop (there is no command channel).
+/// Like [`Reconnecting`] it retries only while the [`RideGate`] is active.
 pub struct ReconnectingHr<D> {
     inner: Arc<D>,
     clock: Arc<dyn Clock>,
+    gate: RideGate,
 }
 impl<D: HeartRateDriver> ReconnectingHr<D> {
     /// Wrap `inner`; `clock` times the backoff and must be the engine's clock.
-    pub fn new(inner: D, clock: Arc<dyn Clock>) -> Self {
+    pub fn new(inner: D, clock: Arc<dyn Clock>, gate: RideGate) -> Self {
         Self {
             inner: Arc::new(inner),
             clock,
+            gate,
         }
     }
 }
 impl<D: HeartRateDriver> HeartRateDriver for ReconnectingHr<D> {
     fn connect(&self, dev: &DeviceRef) -> BoxFuture<'static, Result<HeartRateLink, DeviceError>> {
-        let (inner, clock, dev) = (self.inner.clone(), self.clock.clone(), dev.clone());
+        let (inner, clock, dev, gate) = (
+            self.inner.clone(),
+            self.clock.clone(),
+            dev.clone(),
+            self.gate.clone(),
+        );
         Box::pin(async move {
             let link = inner.connect(&dev).await?;
             let info = link.info.clone();
             let (events_tx, events) = mpsc::channel(64);
-            tokio::spawn(supervise_hr(inner, clock, dev, link, events_tx));
+            tokio::spawn(supervise_hr(inner, clock, gate, dev, link, events_tx));
             Ok(HeartRateLink { info, events })
         })
     }
@@ -191,6 +244,7 @@ impl<D: HeartRateDriver> HeartRateDriver for ReconnectingHr<D> {
 async fn supervise_hr<D: HeartRateDriver>(
     inner: Arc<D>,
     clock: Arc<dyn Clock>,
+    gate: RideGate,
     dev: DeviceRef,
     mut link: HeartRateLink,
     events: mpsc::Sender<HrEvent>,
@@ -205,11 +259,15 @@ async fn supervise_hr<D: HeartRateDriver>(
                 break;
             }
         }
+        if !gate.is_active() {
+            return;
+        }
         let mut attempt = 0;
         link = loop {
             attempt += 1;
             tokio::select! {
                 () = pause(&clock, attempt) => {}
+                () = gate.inactive() => return,
                 () = events.closed() => return,
             }
             if events
@@ -222,6 +280,7 @@ async fn supervise_hr<D: HeartRateDriver>(
             tracing::info!(attempt, "reconnecting heart-rate strap");
             let connected = tokio::select! {
                 result = inner.connect(&dev) => result,
+                () = gate.inactive() => return,
                 () = events.closed() => return,
             };
             match connected {

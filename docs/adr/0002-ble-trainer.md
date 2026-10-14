@@ -696,12 +696,17 @@ for those issues.
   observations before it are ignored; (3) the ride resumes when cadence > 0 (ADR-0001 §5). The driver never re-sends
   a control mode on its own, so there is exactly one owner of control state.
 - **Implementation (#147):** `crank_ble::Reconnecting` / `ReconnectingHr` wrap any driver and keep the
-  consumer's channels across losses. The first connect is not retried (its error reaches the UI). After a
-  loss each attempt waits `backoff(n)` (0.5, 1, 2, 4 s, then 5 s) on the injected clock, emits
-  `TrainerEvent::Reconnecting { attempt }`, and calls the inner `connect` with the original rider config.
-  "Ride active" means the link is held: the loop ends on `Disconnect` or when the link is dropped. Commands
-  sent while disconnected are discarded, never replayed. A wrong-serial unit that merely shares the
-  advertised name is rejected by `Pairing::verify` after connecting (§5).
+  consumer's channels across losses. The first connect is not retried (its error reaches the UI). The
+  link may be held while the app is open (§5), but the backoff loop is enabled only while a ride is
+  active: the supervisors take an explicit `RideGate` input (wiring from engine/core: #208). Outside a
+  ride a loss is surfaced (`Link(Lost)`, stream ends) and normal rediscovery reconnects when the device
+  is seen again; a gate that goes inactive during backoff stops the loop. While active, each attempt
+  waits `backoff(n)` (0.5, 1, 2, 4 s, then 5 s) on the injected clock, emits
+  `TrainerEvent::Reconnecting { attempt }`, and calls the inner `connect` with the original rider
+  config. The loop also ends on `Disconnect` or when the link is dropped. Commands sent while
+  disconnected are discarded, never replayed. A unit that merely shares the advertised name is rejected
+  by `Pairing::verify` after connecting (serial and model, §5). A `device` row is one (peripheral, role)
+  pairing, unique per `(platform_id, kind)`: one peripheral may be both trainer and strap.
 - **HR strap dropout:** same reconnect loop; the ride does not pause; HR metrics are `null`; HR-dependent
   blocks and judge features behave as in ADR-0001 §5.
 - **Packet loss without disconnect:** handled by accumulated power (§5); single missing pages are not a
