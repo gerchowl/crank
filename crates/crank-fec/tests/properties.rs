@@ -52,6 +52,8 @@ proptest! {
             page, times, acknowledged: true, command_type: 1,
         });
     }
+    /// Regression guard, not a fails-without-change test: it also passed before
+    /// the #137/#146 changes and exists to keep `decode` total on arbitrary input.
     #[test]
     fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
         let _ = decode(&bytes);

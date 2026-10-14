@@ -214,7 +214,7 @@ fn rejects_oversized_fields() {
             })
             .expect_err("speed range")
             .field,
-            "speed_kmh"
+            crank_fec::Field::SpeedKmh
         );
     }
     for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
@@ -290,6 +290,56 @@ fn page_55_frame_and_typed_diameter_errors() {
             bike_kg: 10.0,
             wheel_m,
         };
-        assert_eq!(encode(&c), Err(crank_fec::EncodeError { field: "wheel_m" }));
+        assert_eq!(
+            encode(&c),
+            Err(crank_fec::EncodeError {
+                field: crank_fec::Field::WheelM
+            })
+        );
     }
+}
+
+#[test]
+fn upper_endpoints_pages_48_and_50() {
+    assert_eq!(payload(C::BasicResistance { pct: 100.0 })[7], 200);
+    let wind = payload(C::Wind {
+        cw_kg_per_m: 1.86,
+        speed_kmh: 127.0,
+        drafting: 1.0,
+    });
+    assert_eq!(wind[5..8], [186, 254, 100]);
+    assert_eq!(
+        decode(&frame(wind)).expect("wind").page,
+        Page::Wind {
+            cw_kg_per_m: Some(1.86),
+            speed_kmh: Some(127.0),
+            drafting: Some(1.0),
+        }
+    );
+}
+
+#[test]
+fn page_16_equipment_type_masks_reserved_bits() {
+    // Byte 1 = 0b111_11001: reserved bits 5-7 set around trainer code 25.
+    let p = [16, 0b1111_1001, 0, 0, 0xff, 0xff, 0xff, 0x30];
+    let Page::GeneralFe(g) = decode(&frame(p)).expect("page 16").page else {
+        panic!("general FE")
+    };
+    assert_eq!(g.equipment_type, 25);
+}
+
+#[test]
+fn page_70_zero_times_is_retained_tentative_44() {
+    // Tentative pending HIL #44: 0 is encoded/decoded as received, no semantics.
+    let p = payload(C::Request { page: 54, times: 0 });
+    assert_eq!(p[5], 0x80);
+    assert_eq!(
+        decode(&frame(p)).expect("page 70").page,
+        Page::Request {
+            page: 54,
+            times: 0,
+            acknowledged: true,
+            command_type: 1
+        }
+    );
 }
