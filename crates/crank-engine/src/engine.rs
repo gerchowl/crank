@@ -406,6 +406,12 @@ impl Session {
                 let v = (w / 4.0) as f32;
                 v
             }),
+            // The block of the last riding tick: `append_second` runs before the tick
+            // advances the cursor, so a block's final second still belongs to it.
+            block: acc
+                .riding
+                .then(|| u32::try_from(self.block_idx).ok())
+                .flatten(),
         };
         let second = u32::try_from(self.clock_ticks / TICKS_PER_SECOND - 1).unwrap_or(u32::MAX);
         if self.record_error.is_none()
