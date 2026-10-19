@@ -62,8 +62,10 @@ impl Ride {
             .lock()
             .expect("sim setup")
             .iter()
-            .map(|(t, m)| match m {
-                ControlMode::Erg { target_w } => (*t, *target_w),
+            .filter_map(|(t, m)| match m {
+                ControlMode::Erg { target_w } => Some((*t, *target_w)),
+                // the end mode of a finished ride (ADR-0002 §7.9, #266), or a release
+                ControlMode::Resistance { pct } if *pct == 0.0 => None,
                 other => panic!("unexpected {other:?}"),
             })
             .collect()
@@ -233,20 +235,26 @@ async fn full_45_minute_workout() {
     // Controls: one mode per block on its boundary tick (ADR-0002 §7.2). The blip is
     // detected at 915.6 s and the mode re-issued then at 0 W (no pedalling sample yet,
     // #231); the soft start runs once samples flow again, from the then-current 3 s
-    // power (72 W: the trainer is spinning up) to the target, one step per second. Every later boundary lies
-    // 1.25 s later in session time.
+    // power (71 W: the trainer is spinning up) to the target, one step per second. The ride
+    // start is a reconnect too (#250): the first ramp runs from the rider's 29 W to the first
+    // block's 120 W. Every later boundary lies 1.25 s later in session time.
     assert_eq!(
         r.modes(),
         [
-            (T0_MS + 250, 120),
+            (T0_MS + 250, 29),
+            (1_350, 47),
+            (2_350, 65),
+            (3_350, 84),
+            (4_350, 102),
+            (5_350, 120),
             (300_100, 200),
             (600_100, 100),
             (780_100, 200),
             (915_600, 0),
-            (916_850, 72),
-            (917_850, 98),
+            (916_850, 71),
+            (917_850, 97),
             (918_850, 123),
-            (919_850, 149),
+            (919_850, 148),
             (920_850, 174),
             (921_850, 200),
             (1_081_350, 100),
@@ -368,14 +376,19 @@ async fn reconnect_reissues_the_mode_with_a_soft_start_and_resumes_on_cadence() 
     // attempts at +0.5, +1.5, +3.5, +7.5, +12.5 s; the first one after the 10 s
     // outage succeeds: Link(Ready) at 112.5 s, mode re-issued on the next tick end
     let modes = r.modes();
-    assert_eq!(modes[0], (T0_MS + 250, 200), "first engagement");
+    // a ride start is a reconnect (#250): the ramp runs from the rider's power at the first
+    // sample, one step a second, to the 200 W target
+    assert_eq!(modes[0].0, T0_MS + 250, "first engagement");
+    assert!(modes[0].1 < 200, "{modes:?}");
+    let start = modes.iter().take_while(|(t, _)| *t < 100_000).count();
+    assert_eq!(modes[start - 1].1, 200, "the start's ramp is repaid");
     assert_eq!(
-        modes[1..],
+        modes[start..],
         [
-            (112_600, 188), // from the 3 s power of the first sample after Ready
-            (113_600, 190),
-            (114_600, 193),
-            (115_600, 195),
+            (112_600, 191), // from the 3 s power of the first sample after Ready
+            (113_600, 193),
+            (114_600, 195),
+            (115_600, 196),
             (116_600, 198),
             (117_600, 200),
         ],
@@ -440,10 +453,32 @@ async fn skip_starts_the_next_block_now_without_moving_workout_time() {
     assert_eq!(st.block_elapsed.0, 40);
     assert_eq!(st.workout.0, before.workout.0 + 40);
     let modes = r.modes();
-    assert_eq!(modes.len(), 2);
-    assert_eq!(modes[1].1, 220);
+    // the ride start's soft start (#250): six 1 Hz steps from the rider's power to 150 W,
+    // then the skip's 220 W
+    assert_eq!(modes.len(), 7, "{modes:?}");
+    assert_eq!(modes[5].1, 150);
+    assert_eq!(modes[6].1, 220);
     // sent on the first tick processed after the skip: window 120 ends at 30.35 s
-    assert_eq!(modes[1], (30_350, 220));
+    assert_eq!(modes[6], (30_350, 220));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_end_mode_is_delivered_before_the_engine_shuts_down() {
+    // #266: with every handle gone the actor ends the ride; the end mode must reach the
+    // trainer first (ADR-0002 §7.9), and only then the ride-active signal clears
+    let r = launch(vec![block(600.0, 200.0, Phase::Work)], vec![]).await;
+    sleep(secs(30)).await;
+    assert_eq!(r.modes().last(), Some(&(T0_MS + 250 + 5_000, 200)));
+    let Ride {
+        handle, gate, sent, ..
+    } = r;
+    drop(handle);
+    sleep(secs(3)).await;
+    assert_eq!(*gate.lock().expect("test mutex"), vec![true, false]);
+    assert_eq!(
+        sent.lock().expect("test mutex").last().map(|(_, m)| *m),
+        Some(ControlMode::Resistance { pct: 0.0 })
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -577,6 +612,8 @@ async fn the_record_lands_in_the_store_with_gaps_as_missing_values() {
     r.handle.send(EngineCmd::Stop).await.unwrap();
     assert_eq!(r.handle.status().state, RideState::Finished);
     assert_eq!(r.handle.status().record_error, None);
+    // the end mode is delivered by the sim trainer, then the gate clears (#266)
+    sleep(ms(500)).await;
     assert_eq!(*r.gate.lock().expect("test mutex"), vec![true, false]);
     let ride = store.ride("ride").unwrap().unwrap();
     assert_eq!(ride.state, StoredState::Finished);

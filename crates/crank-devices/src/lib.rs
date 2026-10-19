@@ -139,7 +139,8 @@ pub enum TrainerEvent {
     /// Telemetry at notification arrival time.
     Sample(TrainerSample),
     /// One control page's GATT write succeeded; no claim of trainer application.
-    /// SIM emits once per component, so the first event does not confirm the pair.
+    /// Emitted once every control page of `mode` has been written (a SIM pair after its
+    /// second page, not its first); the first page alone never confirms the mode.
     /// Diagnostic only; delivery is not an engine following input (ADR-0002 §4.4).
     Delivered {
         /// Desired mode whose control page reached the peripheral.
@@ -347,6 +348,10 @@ pub enum DeviceError {
     /// Connection closed.
     #[error("disconnected")]
     Disconnected,
+    /// The driver already has a live link: a second `connect` is refused until the first
+    /// is released.
+    #[error("driver already connected")]
+    AlreadyConnected,
 }
 /// Categories shared by real, simulator and replay drivers. See ADR-0002 §3.
 /// Non-exhaustive to support future FTMS additions (#45).

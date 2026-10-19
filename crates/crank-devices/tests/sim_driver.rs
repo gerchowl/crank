@@ -129,7 +129,7 @@ async fn second_connection_is_refused_while_the_first_lives() {
         .await
         .err()
         .expect("sim");
-    assert!(matches!(err, DeviceError::ConnectFailed(_)));
+    assert_eq!(err, DeviceError::AlreadyConnected);
 }
 #[tokio::test(start_paused = true)]
 async fn erg_tracks_target_and_echoes_page_49_each_second() {
@@ -173,8 +173,8 @@ async fn sim_grade_slows_the_rider_and_echoes_wind_then_track() {
             .iter()
             .filter(|e| matches!(e, TrainerEvent::Delivered { .. }))
             .count(),
-        2,
-        "one Delivered per SIM component"
+        1,
+        "one Delivered per mode, after its last component"
     );
     let e = echoes(&hill_ev);
     assert!(matches!(e[0].1, ObservedControl::Wind { .. }));
