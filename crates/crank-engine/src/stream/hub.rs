@@ -38,11 +38,24 @@ struct Stream {
     last_status_us: u64,
 }
 
+/// The next id of a per-process `u32` counter that starts at 1: it never issues 0 and,
+/// when the counter wraps, skips every id for which `live` is true, so ids that are live
+/// are unique. Terminates because at most 16 streams and 64 subscriptions each are live.
+pub(crate) fn fresh_id(next: &mut u32, live: impl Fn(u32) -> bool) -> u32 {
+    loop {
+        let id = *next;
+        *next = id.checked_add(1).unwrap_or(1);
+        if id != 0 && !live(id) {
+            return id;
+        }
+    }
+}
+
 /// All streams of an engine and the latest discrete state they are fed from.
 pub(crate) struct Hub {
     budget: usize,
-    next_stream: u64,
-    next_sub: u64,
+    next_stream: u32,
+    next_sub: u32,
     streams: BTreeMap<StreamId, Stream>,
     status: Option<StreamStatus>,
     links: BTreeMap<LinkDevice, LinkStatus>,
@@ -61,6 +74,12 @@ impl Hub {
             links: BTreeMap::new(),
         }
     }
+    /// Counters positioned for wrap tests.
+    #[cfg(test)]
+    pub(crate) fn counters_at(&mut self, stream: u32, sub: u32) {
+        self.next_stream = stream;
+        self.next_sub = sub;
+    }
     /// Open a stream for `window`, dropping that window's previous streams (a page
     /// reload). The new stream starts with the current status and links.
     pub(crate) fn open(
@@ -77,8 +96,9 @@ impl Hub {
             return Err(StreamError::TooManyStreams);
         }
         let (sink, rx) = mpsc::channel(super::flow::MAX_UNACKED + 1);
-        let id = StreamId(self.next_stream);
-        self.next_stream += 1;
+        let id = StreamId(fresh_id(&mut self.next_stream, |id| {
+            self.streams.contains_key(&StreamId(id))
+        }));
         let mut flow = Flow::new(self.budget);
         if let Some(s) = &self.status {
             flow.offer_status(s.clone());
@@ -118,7 +138,7 @@ impl Hub {
     ) -> Result<SubId, StreamError> {
         let s = self
             .streams
-            .get_mut(&stream)
+            .get(&stream)
             .ok_or(StreamError::UnknownStream)?;
         if s.subs.len() >= MAX_SUBSCRIPTIONS {
             return Err(StreamError::TooManySubscriptions);
@@ -129,8 +149,14 @@ impl Hub {
         validate_filters(&opts.filters)?;
         let chain = FilterChain::new(opts.filters)
             .map_err(|e| StreamError::InvalidFilter(e.to_string()))?;
-        let id = SubId(self.next_sub);
-        self.next_sub += 1;
+        let streams = &self.streams;
+        let id = SubId(fresh_id(&mut self.next_sub, |id| {
+            streams.values().any(|st| st.subs.contains_key(&SubId(id)))
+        }));
+        let s = self
+            .streams
+            .get_mut(&stream)
+            .ok_or(StreamError::UnknownStream)?;
         s.subs.insert(
             id,
             Sub {
@@ -152,7 +178,7 @@ impl Hub {
         s.flow.forget_sub(sub);
         Ok(())
     }
-    pub(crate) fn ack(&mut self, stream: StreamId, seq: u64) -> Result<(), StreamError> {
+    pub(crate) fn ack(&mut self, stream: StreamId, seq: u32) -> Result<(), StreamError> {
         let s = self
             .streams
             .get_mut(&stream)
