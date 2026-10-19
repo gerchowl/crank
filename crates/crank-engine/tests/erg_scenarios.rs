@@ -149,8 +149,9 @@ async fn a_healthy_ramp_is_verified_and_counts_toward_compliance() {
     sleep(secs(110)).await;
     let st = r.handle.status();
     assert_eq!(st.trainer_following, TrainerFollowing::Following);
-    assert_eq!(st.compliance.excluded_s, 0, "{:?}", st.compliance);
-    assert!(st.compliance.counted_s >= 115, "{:?}", st.compliance);
+    // the ride start is an engagement (#250): its 10 s of settle are the only exclusion
+    assert_eq!(st.compliance.excluded_s, 10, "{:?}", st.compliance);
+    assert!(st.compliance.counted_s >= 105, "{:?}", st.compliance);
 }
 
 #[tokio::test(start_paused = true)]
@@ -169,7 +170,7 @@ async fn echo_lag_below_l_stays_following_and_lag_above_l_does_not() {
     sleep(secs(60)).await;
     let st = r.handle.status();
     assert_eq!(st.trainer_following, TrainerFollowing::Following);
-    assert_eq!(st.compliance.excluded_s, 0, "{:?}", st.compliance);
+    assert_eq!(st.compliance.excluded_s, 10, "{:?}", st.compliance);
     // 4 s of lag is a stale echo beyond L: Disagree, then not_following
     let r = launch(
         ramp(),
@@ -275,7 +276,8 @@ async fn an_erg_spiral_is_released_and_re_engaged_with_a_soft_start() {
     assert_eq!(st.state, RideState::Riding);
     // after the re-engage the ERG commands ramp: more than one step, ending on the target
     let t = r.erg_targets();
-    assert_eq!(t.first(), Some(&200));
+    // the ride start ramps too (#250): its first command is the rider's own power
+    assert!(t.first().is_some_and(|w| *w < 200), "{t:?}");
     assert_eq!(t.last(), Some(&200));
     assert!(t.len() >= 5, "{t:?}");
     // the block timer kept running through the release

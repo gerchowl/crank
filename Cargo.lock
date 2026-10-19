@@ -564,6 +564,7 @@ version = "0.1.0"
 dependencies = [
  "btleplug",
  "crank-devices",
+ "crank-domain",
  "crank-engine",
  "crank-fec",
  "crank-store",
@@ -657,12 +658,15 @@ version = "0.1.0"
 dependencies = [
  "crank-devices",
  "crank-domain",
+ "crank-engine",
  "crank-store",
  "futures-util",
  "proptest",
  "serde",
  "serde_json",
  "specta",
+ "specta-serde",
+ "specta-typescript",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

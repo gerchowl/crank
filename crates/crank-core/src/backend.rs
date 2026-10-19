@@ -155,10 +155,6 @@ impl Backend {
             (Kind::Radio { .. }, _) => true,
         }
     }
-    #[expect(
-        dead_code,
-        reason = "recorded as the ride's telemetry source by B2 (#34)"
-    )]
     pub(crate) fn telemetry_source(&self) -> &'static str {
         if self.is_sim() { "sim" } else { "fec" }
     }
