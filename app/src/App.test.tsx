@@ -48,7 +48,16 @@ function stubMedia(opts: { dark: boolean; reduced?: boolean }) {
 }
 
 const theme = () => document.documentElement.dataset.theme;
-const ready = () => screen.findByRole("main");
+/**
+ * The shell is ready when the start screen's hand-off has focused the destination. `findByRole("main")` alone
+ * resolves at the DOM commit, before React's passive effects have run: the destination's route subscription
+ * (`useSyncExternalStore`) and the hand-off focus. A test acting at that point races both (#274).
+ */
+const ready = async () => {
+  const main = await screen.findByRole("main");
+  await waitFor(() => expect(document.activeElement).toBe(main));
+  return main;
+};
 
 beforeEach(() => {
   localStorage.clear();
