@@ -35,4 +35,4 @@ crank-store.workspace = true
 tempfile = "3"
 serde_json.workspace = true
 proptest = { version = "1", default-features = false, features = ["std"] }
-tokio = { version = "1", features = ["test-util"] }
+tokio = { version = "1", features = ["test-util", "rt-multi-thread"] }
