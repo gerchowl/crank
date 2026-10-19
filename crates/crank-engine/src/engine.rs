@@ -100,6 +100,15 @@ pub struct RideSetup {
     /// refusal, not the derivation (#244); detecting `CapExceeded` is #245.
     pub cap_w: Option<u16>,
 }
+/// The mode a ride ends in: 0 % resistance, one control page, the same mode as the user
+/// pause (DESIGN §5.2) and the §7.4 release (ADR-0002 §7.9 as amended: "an FE-C trainer
+/// keeps its last control page, so silence after ERG could leave the ERG target active",
+/// #266). `Free` is two SIM pages and is not on the trainer until both are written.
+const END_MODE: ControlMode = ControlMode::Resistance { pct: 0.0 };
+/// How long the ride-active signal waits for the end mode to reach the trainer: 2 s, eight
+/// writer ticks of the 4 Hz control slot (ADR-0002 §4.4).
+const END_DELIVERY_US: u64 = 2_000_000;
+
 /// Engine commands (ADR-0001 §5 sketch, the part of it this crate implements).
 pub enum EngineCmd {
     /// Load a ride and mark the ride active.
@@ -397,6 +406,12 @@ impl Session {
                 let v = (w / 4.0) as f32;
                 v
             }),
+            // The block of the last riding tick: `append_second` runs before the tick
+            // advances the cursor, so a block's final second still belongs to it.
+            block: acc
+                .riding
+                .then(|| u32::try_from(self.block_idx).ok())
+                .flatten(),
         };
         let second = u32::try_from(self.clock_ticks / TICKS_PER_SECOND - 1).unwrap_or(u32::MAX);
         if self.record_error.is_none()
@@ -473,6 +488,9 @@ pub struct Engine {
     trainer_log: LinkLog,
     hr_log: LinkLog,
     session: Option<Session>,
+    /// The end mode was sent and the ride-active signal is held until the driver reports it
+    /// delivered, the link is lost, or the deadline passes (#266).
+    ending: Option<(ControlMode, MonoTime)>,
 }
 impl Engine {
     /// Build an engine over connected links. `activity` receives the ride-active
@@ -529,6 +547,7 @@ impl Engine {
             trainer_log: LinkLog::default(),
             hr_log: LinkLog::default(),
             session: None,
+            ending: None,
         };
         let handle = EngineHandle {
             cmds: cmd_tx,
@@ -594,6 +613,7 @@ impl Engine {
                     // cleared) instead of leaving a live ride record and an active gate.
                     self.catch_up();
                     self.end();
+                    self.await_end().await;
                     return;
                 }
                 Wake::Cmd(Some((cmd, reply))) => {
@@ -623,8 +643,38 @@ impl Engine {
     }
 
     fn next_due(&self) -> Option<MonoTime> {
-        let s = self.session.as_ref().filter(|s| s.phase == Phase::Active)?;
-        Some(s.window.end_of(s.next_tick))
+        let tick = self
+            .session
+            .as_ref()
+            .filter(|s| s.phase == Phase::Active)
+            .map(|s| s.window.end_of(s.next_tick));
+        match (tick, self.ending) {
+            (Some(t), Some((_, d))) => Some(t.min(d)),
+            (t, e) => t.or(e.map(|(_, d)| d)),
+        }
+    }
+    /// Wait, with every handle gone, until the end mode is delivered or given up on: the
+    /// actor must not shut down with the command still queued (#266).
+    async fn await_end(&mut self) {
+        while let Some((_, deadline)) = self.ending {
+            let clock = self.clock.clone();
+            tokio::select! {
+                e = recv(&mut self.trainer_events) => {
+                    if let Some(e) = e {
+                        self.on_trainer_event(e);
+                    } else {
+                        self.trainer_events = None;
+                        self.on_trainer_event(TrainerEvent::Link(LinkState::Lost));
+                    }
+                }
+                () = clock.sleep_until(deadline) => self.release_gate(),
+            }
+        }
+    }
+    /// The end mode is out of the way (or never will be): clear the ride-active signal.
+    fn release_gate(&mut self) {
+        self.ending = None;
+        self.activity.set_active(false);
     }
     pub(crate) fn catch_up(&mut self) {
         let now = self.clock.now();
@@ -632,7 +682,15 @@ impl Engine {
     }
     fn catch_up_to(&mut self, now: MonoTime) {
         self.drain();
-        while self.next_due().is_some_and(|due| now >= due) {
+        if self.ending.is_some_and(|(_, deadline)| now >= deadline) {
+            self.release_gate();
+        }
+        while self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.phase == Phase::Active)
+            && self.next_due().is_some_and(|due| now >= due)
+        {
             self.process_tick();
         }
         self.publish();
@@ -685,6 +743,15 @@ impl Engine {
                 } else {
                     self.trainer_log.applied = self.trainer_log.received;
                     self.trainer_link = Some(state);
+                    // The end mode can no longer be delivered on a link that is gone.
+                    if state != LinkState::Ready && self.ending.is_some() {
+                        self.release_gate();
+                    }
+                }
+            }
+            TrainerEvent::Delivered { mode } => {
+                if self.ending.is_some_and(|(m, _)| m == mode) {
+                    self.release_gate();
                 }
             }
             // Page-71 echoes and page-25 flags feed the following machine, in tick order
@@ -948,6 +1015,7 @@ impl Engine {
             cadence_rpm: s.trainer.get(k).and_then(|t| t.cadence),
             last_sent: s.last_sent,
             riding: s.pauses.reason().is_none(),
+            user_paused: s.pauses.user,
             following: s.following.verdict(),
             max_target_w: self.max_target_w,
             cap_w: s.cap_w,
@@ -984,10 +1052,42 @@ impl Engine {
         }
         self.publish();
     }
+    /// Send [`END_MODE`] so the last ERG target is not left on the trainer (#266). `true`
+    /// when the command is queued and the ride-active signal must wait for its delivery.
+    fn send_end_mode(&mut self) -> bool {
+        let Some(s) = self.session.as_mut() else {
+            return false;
+        };
+        let control = self
+            .trainer_control
+            .as_ref()
+            .filter(|_| self.trainer_link == Some(LinkState::Ready));
+        let Some(control) = control else {
+            return false;
+        };
+        // Always sent, even when the last command is already `END_MODE`: that command (a pause,
+        // a §7.4 release) may still be queued, and only its delivery is waited for.
+        // The control channel holds 64 commands and the engine sends at most one per tick,
+        // so a full channel means a driver that is not running: nothing to wait for.
+        if control.try_send(TrainerCommand::SetMode(END_MODE)).is_err() {
+            return false;
+        }
+        s.last_sent = Some(END_MODE);
+        let now = self.clock.now().0;
+        self.ending = Some((END_MODE, MonoTime(now.saturating_add(END_DELIVERY_US))));
+        true
+    }
     fn finish(&mut self) {
+        let mut ended = false;
         if let Some(s) = self.session.as_mut().filter(|s| s.phase == Phase::Active) {
             // Only complete seconds are recorded; a partial last second is dropped.
             s.phase = Phase::Finished;
+            // A link transition that has not been applied yet still wipes the trainer's
+            // mode (the driver restores nothing, ADR-0002 §6): what was sent no longer
+            // stands, so the end mode is owed.
+            if !self.trainer_log.queue.is_empty() {
+                s.reset_control();
+            }
             for (log, link) in [
                 (&mut self.trainer_log, &mut self.trainer_link),
                 (&mut self.hr_log, &mut self.hr_link),
@@ -1003,8 +1103,15 @@ impl Engine {
             {
                 s.record_error = Some(e.to_string());
             }
+            ended = true;
         }
-        self.activity.set_active(false);
+        // ADR-0002 §7.9 / #266: command the trainer out of ERG *before* the ride-active
+        // signal clears (which lets the reconnect loop stand down and core release the
+        // devices), and keep the signal until the driver confirms the write.
+        if ended && self.send_end_mode() {
+            return;
+        }
+        self.release_gate();
     }
 
     pub(crate) fn command(&mut self, cmd: EngineCmd) -> Result<(), CommandError> {
@@ -1017,6 +1124,8 @@ impl Engine {
                 if active {
                     return Err(CommandError::WrongState);
                 }
+                // The previous ride's end mode is no longer awaited: the gate is up again.
+                self.ending = None;
                 self.session = Some(Session {
                     phase: Phase::Loaded,
                     blocks: setup.blocks,

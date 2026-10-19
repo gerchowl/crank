@@ -29,9 +29,10 @@ required-features = ["hil"]
 test = true
 
 [dev-dependencies]
+crank-domain.workspace = true
 crank-engine.workspace = true
 crank-store.workspace = true
 tempfile = "3"
 serde_json.workspace = true
 proptest = { version = "1", default-features = false, features = ["std"] }
-tokio = { version = "1", features = ["test-util"] }
+tokio = { version = "1", features = ["test-util", "rt-multi-thread"] }
