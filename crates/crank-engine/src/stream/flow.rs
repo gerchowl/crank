@@ -34,8 +34,8 @@ fn json_len<T: serde::Serialize>(v: &T) -> usize {
 /// Flow-control state of one stream.
 pub(crate) struct Flow {
     budget: usize,
-    next_seq: u64,
-    unacked: VecDeque<u64>,
+    next_seq: u32,
+    unacked: VecDeque<u32>,
     samples: BTreeMap<SubId, SubSample>,
     status: Option<StreamStatus>,
     links: BTreeMap<LinkDevice, LinkStatus>,
@@ -53,6 +53,14 @@ impl Flow {
             links: BTreeMap::new(),
             resync: false,
             last_emit_us: None,
+        }
+    }
+    /// A flow whose first frame carries `seq` (wrap tests).
+    #[cfg(test)]
+    pub(crate) fn starting_at(budget: usize, seq: u32) -> Self {
+        Self {
+            next_seq: seq,
+            ..Self::new(budget)
         }
     }
     /// The ack window is full: nothing is sent and every replacement is a coalescing.
@@ -99,15 +107,19 @@ impl Flow {
     pub(crate) fn forget_sub(&mut self, sub: SubId) {
         self.samples.remove(&sub);
     }
-    /// The consumer applied every frame up to and including `seq`. A `seq` that was
-    /// never sent is ignored. Returns whether anything was acknowledged.
-    pub(crate) fn ack(&mut self, seq: u64) -> bool {
-        if seq >= self.next_seq {
-            return false;
+    /// The consumer applied every frame up to and including `seq`. A `seq` that is not
+    /// outstanding (never sent, or already acknowledged) is ignored. Outstanding frames
+    /// are found by position in send order, never by comparing sequence numbers, so the
+    /// `u32::MAX` → 0 wrap needs no special case. Returns whether anything was
+    /// acknowledged.
+    pub(crate) fn ack(&mut self, seq: u32) -> bool {
+        match self.unacked.iter().position(|&s| s == seq) {
+            Some(i) => {
+                self.unacked.drain(..=i);
+                true
+            }
+            None => false,
         }
-        let before = self.unacked.len();
-        self.unacked.retain(|&s| s > seq);
-        self.unacked.len() != before
     }
     /// Earliest instant [`Flow::drain`] can emit, `None` when nothing is pending or the
     /// window is full (an ack, not time, reopens it).
@@ -154,7 +166,7 @@ impl Flow {
                     if self.unacked.len() + frames.len() + 1 >= MAX_UNACKED {
                         break;
                     }
-                    let seq = cur.seq + 1;
+                    let seq = cur.seq.wrapping_add(1);
                     frames.push(cur);
                     cur = StreamFrame {
                         seq,
@@ -177,7 +189,10 @@ impl Flow {
         for f in &frames {
             self.unacked.push_back(f.seq);
         }
-        self.next_seq += frames.len() as u64;
+        // `seq` wraps by design (see `StreamFrame::seq`); a drain emits a handful of frames.
+        self.next_seq = self
+            .next_seq
+            .wrapping_add(u32::try_from(frames.len()).unwrap_or(u32::MAX));
         self.last_emit_us = Some(now_us);
         frames
     }

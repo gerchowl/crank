@@ -10,13 +10,20 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// A stream: one per window, multiplexing every subscription of that window.
+///
+/// Ids are `u32` because TypeScript cannot carry a `u64` without precision loss
+/// (specta-typescript forbids it, #271). They are per-process counters starting at 1 and
+/// never 0. A counter that wraps skips every id still live (at most 16 streams), so live
+/// ids are always unique; a stale id from before a wrap would need 2^32 stream opens in
+/// one process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct StreamId(pub u64);
-/// A subscription on a stream.
+pub struct StreamId(pub u32);
+/// A subscription on a stream. A per-process `u32` counter with the same bounds and
+/// wrap rule as [`StreamId`] (live ids, at most 16 × 64, are skipped on wrap).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct SubId(pub u64);
+pub struct SubId(pub u32);
 
 /// A source metric the engine publishes every tick: the record's catalogue names
 /// ([`crate::METRICS`]).
@@ -258,8 +265,9 @@ pub struct StreamStatus {
     pub block_index: Option<u32>,
     /// Workout seconds in the current block.
     pub block_elapsed_s: f64,
-    /// Samples that arrived after their tick (dropped).
-    pub late_samples: u64,
+    /// Samples that arrived after their tick (dropped), saturating at `u32::MAX` (the
+    /// engine counts in `u64`; TypeScript cannot carry it, #271).
+    pub late_samples: u32,
     /// First recording failure, cut to [`MAX_RECORD_ERROR_BYTES`].
     pub record_error: Option<String>,
     /// Whether the trainer follows the commanded mode.
@@ -294,7 +302,7 @@ impl From<&RideStatus> for StreamStatus {
             workout_s: ticks_to_seconds(s.workout.0),
             block_index: s.block_index.and_then(|i| u32::try_from(i).ok()),
             block_elapsed_s: ticks_to_seconds(s.block_elapsed.0),
-            late_samples: s.late_samples,
+            late_samples: u32::try_from(s.late_samples).unwrap_or(u32::MAX),
             record_error: s.record_error.as_ref().map(|e| {
                 let mut end = e.len().min(MAX_RECORD_ERROR_BYTES);
                 while !e.is_char_boundary(end) {
@@ -345,8 +353,10 @@ impl StreamStatus {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct StreamFrame {
-    /// Per stream, +1 per frame.
-    pub seq: u64,
+    /// Per stream, +1 per frame, **wrapping** `u32::MAX` → 0: at the 10 Hz maximum frame
+    /// rate that is after about 13.6 years of continuous streaming. Consumers compare
+    /// `seq` for equality with the next expected value, never with `<`/`>`.
+    pub seq: u32,
     /// Frames were coalesced or discrete state dropped: re-query durable state.
     pub resync: bool,
     /// Latest value of each subscription that is due, at most one per subscription.
