@@ -16,6 +16,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 mod ble147;
+mod end_to_end;
 
 fn frame(page: [u8; 8]) -> Vec<u8> {
     let mut frame = vec![0xa4, 9, 0x4e, 5];
@@ -388,6 +389,68 @@ async fn faithful_sim_transport_alternates_echoes_and_respects_four_hz() {
                 | (ObservedControl::Track { .. }, ObservedControl::Wind { .. })
         ));
     }
+}
+/// `Delivered { mode }` is emitted once every page of the mode has been written (#250 round
+/// 2): a SIM pair is on the trainer only after both page 50 and page 51.
+#[tokio::test(start_paused = true)]
+async fn delivered_waits_for_every_page_of_a_multi_page_mode() {
+    let (fake, mut link) = link().await;
+    while link.events.try_recv().is_ok() {}
+    let mode = sim(2.0);
+    link.control
+        .send(TrainerCommand::SetMode(mode))
+        .await
+        .unwrap();
+    let mut delivered_with = None;
+    for _ in 0..24 {
+        tick().await;
+        while let Ok(event) = link.events.try_recv() {
+            if event == (TrainerEvent::Delivered { mode }) && delivered_with.is_none() {
+                let pages: Vec<u8> = fake
+                    .writes
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(_, p)| p[4])
+                    .collect();
+                delivered_with = Some(pages);
+            }
+        }
+    }
+    let pages = delivered_with.expect("delivered");
+    assert!(pages.contains(&50) && pages.contains(&51), "{pages:?}");
+}
+/// The engine drops its sender right after `Delivered { Resistance { 0 } }` (the end mode,
+/// ADR-0002 §7.9): the page is already on the trainer and the writer stops cleanly.
+#[tokio::test(start_paused = true)]
+async fn the_end_mode_is_written_when_the_sender_is_dropped_after_delivered() {
+    let (fake, mut link) = link().await;
+    while link.events.try_recv().is_ok() {}
+    let mode = ControlMode::Resistance { pct: 0.0 };
+    link.control
+        .send(TrainerCommand::SetMode(mode))
+        .await
+        .unwrap();
+    let mut delivered = false;
+    for _ in 0..8 {
+        tick().await;
+        while let Ok(event) = link.events.try_recv() {
+            delivered |= event == (TrainerEvent::Delivered { mode });
+        }
+        if delivered {
+            break;
+        }
+    }
+    assert!(delivered);
+    let TrainerLink { control, .. } = link;
+    drop(control);
+    for _ in 0..4 {
+        tick().await;
+    }
+    assert!(
+        fake.writes.lock().unwrap().iter().any(|(_, p)| p[4] == 48),
+        "page 48 was written"
+    );
 }
 #[tokio::test(start_paused = true)]
 async fn write_failure_faults_without_delivery_and_link_loss_stops_writer() {
