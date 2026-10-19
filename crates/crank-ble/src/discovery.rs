@@ -1,7 +1,11 @@
 //! Scan classification (ADR-0002 §5). The OS filter is advisory (Linux ignores
 //! it), so every advertisement is classified here regardless of platform.
 use crank_devices::{DeviceInfo, DeviceRef, DiscoveredDevice, Discovery, DriverKind};
-use futures_util::{StreamExt, future::ready, stream::BoxStream};
+use futures_util::{
+    StreamExt,
+    future::{BoxFuture, ready},
+    stream::BoxStream,
+};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -30,6 +34,12 @@ pub struct Advertisement {
 pub trait Advertisements: Send + Sync + 'static {
     /// Start scanning; dropping the stream stops the scan.
     fn advertisements(&self) -> BoxStream<'static, Advertisement>;
+    /// Resolves once every scan whose stream was dropped has actually stopped on the
+    /// adapter, so a new scan started afterwards cannot be stopped by a late stop (#265).
+    /// Sources whose stop is synchronous keep the default.
+    fn stopped(&self) -> BoxFuture<'static, ()> {
+        Box::pin(std::future::ready(()))
+    }
 }
 
 /// FE-C → `FeC`; FTMS without FE-C → `Ftms`; HRS sets `heart_rate`.

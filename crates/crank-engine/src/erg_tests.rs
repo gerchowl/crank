@@ -707,7 +707,7 @@ fn low_cadence_for_two_seconds_releases_and_sixty_for_two_seconds_re_engages() {
     r.start();
     pedal(&r, 0, 8, 190, 90);
     r.through(7);
-    assert_eq!(r.modes(), vec![erg(200)]);
+    assert_eq!(r.modes(), vec![erg(190), erg(192)]);
     // 39 rpm for 8 ticks = 2 s: released on the eighth
     pedal(&r, 8, 15, 120, 39);
     r.through(14);
@@ -715,7 +715,11 @@ fn low_cadence_for_two_seconds_releases_and_sixty_for_two_seconds_re_engages() {
     pedal(&r, 15, 16, 120, 39);
     r.through(15);
     assert!(r.status().erg_released);
-    assert_eq!(r.modes(), vec![ControlMode::Resistance { pct: 0.0 }]);
+    // the start's ramp (190 W origin) ran until the release
+    assert_eq!(
+        r.modes(),
+        vec![erg(194), erg(196), ControlMode::Resistance { pct: 0.0 }]
+    );
     // 59 rpm never re-engages; 60 for 8 ticks does, with a ramp from the current power
     pedal(&r, 16, 40, 100, 59);
     r.through(39);
@@ -838,6 +842,7 @@ fn the_policy_clamps_a_target_above_the_cap_even_if_a_ride_got_through() {
         cadence_rpm: Some(90),
         last_sent: None,
         riding: true,
+        user_paused: false,
         following: F::Unknown,
         max_target_w: 2000,
         cap_w: Some(180),
@@ -852,16 +857,17 @@ fn compliance_counts_settled_followed_erg_seconds_only() {
     let mut r = rig();
     r.load(vec![work(200.0), work(300.0)]);
     r.start();
-    // 20 s on target, answered every second so the trainer is `following` after 3 s
-    pedal(&r, 0, 80, 200, 90);
-    for k in (4..80).step_by(4) {
+    // 40 s on target, answered every second so the trainer is `following` after 3 s; the
+    // ride start is an engagement (#250), so its first 10 s are settle
+    pedal(&r, 0, 160, 200, 90);
+    for k in (4..160).step_by(4) {
         echo_at(&r, k, echo_erg(200));
     }
-    r.through(79);
+    r.through(159);
     let c = r.status().compliance;
-    assert_eq!(c.counted_s + c.excluded_s, 20);
+    assert_eq!(c.counted_s + c.excluded_s, 40);
     assert_eq!(c.counted_s, c.within_s, "all on target");
-    assert!(c.counted_s >= 15, "{c:?}");
+    assert!(c.counted_s >= 25, "{c:?}");
 }
 #[test]
 fn compliance_excludes_not_following_seconds_and_counts_the_rest_off_target() {
@@ -889,14 +895,15 @@ fn a_ramp_block_is_compared_second_by_second_without_settle() {
     }
     r.through(79);
     let c = r.status().compliance;
-    assert_eq!(c.excluded_s, 0, "continuous updates are no discontinuity");
-    assert!(c.counted_s >= 19);
+    // the ride start's settle is the only exclusion: continuous updates are no discontinuity
+    assert_eq!((c.excluded_s, c.counted_s), (10, 10), "{c:?}");
 }
 
 #[test]
 fn a_block_boundary_settles_only_when_the_target_jumps() {
     let mut r = rig();
-    // 10 s at 200 W, 10 s at 200 W (continuous: no settle), then 300 W (a step: 5 s settle)
+    // the ride start (10 s settle, #250); then 10 s at 200 W continuing the previous block's
+    // end (no settle), then 300 W (a step: 5 s settle)
     r.load(vec![
         block(10.0, 200.0, 200.0, Phase::Work),
         block(10.0, 200.0, 200.0, Phase::Work),
@@ -908,7 +915,7 @@ fn a_block_boundary_settles_only_when_the_target_jumps() {
     }
     r.through(119);
     let c = r.status().compliance;
-    assert_eq!((c.excluded_s, c.counted_s), (5, 25), "{c:?}");
+    assert_eq!((c.excluded_s, c.counted_s), (15, 15), "{c:?}");
     assert_eq!(c.within_s, c.counted_s);
 }
 #[test]
@@ -930,15 +937,16 @@ fn paused_and_released_seconds_are_excluded() {
     let mut r = rig();
     r.load(vec![work(200.0)]);
     r.start();
-    pedal(&r, 0, 16, 200, 90);
-    r.through(15);
+    // the ride start's 10 s settle (#250), then 4 counted seconds
+    pedal(&r, 0, 56, 200, 90);
+    r.through(55);
     assert_eq!(r.status().compliance.counted_s, 4);
-    // 20 rpm: released on the eighth tick (23), which closes second 5; seconds 6 and 7 are
-    // released throughout. Second 4 still counts (150 W against 200 W: off target).
-    pedal(&r, 16, 32, 150, 20);
-    r.through(31);
+    // 20 rpm: released on the eighth tick (63), which closes second 15; seconds 16 and 17
+    // are released throughout. Second 14 still counts (150 W against 200 W: off target).
+    pedal(&r, 56, 72, 150, 20);
+    r.through(71);
     let c = r.status().compliance;
-    assert_eq!((c.counted_s, c.within_s, c.excluded_s), (5, 4, 3), "{c:?}");
+    assert_eq!((c.counted_s, c.within_s, c.excluded_s), (5, 4, 13), "{c:?}");
     assert!(r.status().erg_released);
 }
 
@@ -989,6 +997,7 @@ fn ctx_at(b: &crank_domain::workout::FlatBlock, k: u64) -> crate::control::Polic
         cadence_rpm: Some(90),
         last_sent: None,
         riding: true,
+        user_paused: false,
         following: F::Following,
         max_target_w: 2000,
         cap_w: Some(180),
@@ -1023,7 +1032,7 @@ fn the_cap_clamps_every_erg_command_of_a_ramp() {
 fn tally(f: F, riding: bool) -> crate::erg::Compliance {
     use crate::control::TargetPolicy;
     let b = block(600.0, 200.0, 200.0, Phase::Work);
-    let mut p = crate::erg::ErgPolicy::new();
+    let mut p = crate::erg::ErgPolicy::settled();
     for k in 0..8 {
         let mut c = ctx_at(&b, k);
         c.following = f;
@@ -1054,16 +1063,25 @@ fn compliance_excludes_suspect_and_not_following_seconds_only() {
     assert_eq!(tally(F::Following, false).excluded_s, 2, "paused");
 }
 #[test]
-fn the_first_block_is_not_settled_and_a_ride_start_is_not_an_engagement() {
-    // ADR-0002 §7.8 (a) needs a previous block; (c) is the soft start of §7.5, which a ride
-    // start does not have. 100 W against a 200 W target: counted, off target, none excluded.
+fn a_ride_start_is_an_engagement_and_its_settle_is_excluded() {
+    // ADR-0002 §7.8 (c) as amended for #250: a ride start is an ERG engagement, its soft
+    // start (§7.5) plus 5 s are settle. 10 s at 100 W against a 200 W target: all excluded.
+    // The same rider after the settle is counted, and off target.
     let mut r = rig();
     r.load(vec![work(200.0)]);
     r.start();
     pedal(&r, 0, 40, 100, 90);
     r.through(39);
     let c = r.status().compliance;
-    assert_eq!((c.counted_s, c.within_s, c.excluded_s), (10, 0, 0), "{c:?}");
+    assert_eq!((c.counted_s, c.within_s, c.excluded_s), (0, 0, 10), "{c:?}");
+    pedal(&r, 40, 80, 100, 90);
+    r.through(79);
+    let c = r.status().compliance;
+    assert_eq!(
+        (c.counted_s, c.within_s, c.excluded_s),
+        (10, 0, 10),
+        "{c:?}"
+    );
 }
 
 // -- rides on one engine share nothing (the policy is per ride) --
@@ -1137,11 +1155,11 @@ fn a_new_ride_starts_with_an_empty_compliance_tally() {
     let mut r = rig();
     r.load(vec![work(200.0)]);
     r.start();
-    pedal(&r, 0, 40, 200, 90);
-    r.through(39);
+    pedal(&r, 0, 80, 200, 90);
+    r.through(79);
     assert_eq!(r.status().compliance.counted_s, 10);
     r.engine.command(EngineCmd::Stop).expect("stop");
-    let second = run_ride(&mut r, 40, vec![work(200.0)], 8, 150, 90);
+    let second = run_ride(&mut r, 80, vec![work(200.0)], 8, 150, 90);
     assert_eq!(
         second.1.compliance.counted_s + second.1.compliance.excluded_s,
         2
@@ -1281,7 +1299,7 @@ fn a_ready_in_the_middle_of_a_ramp_owes_a_new_soft_start() {
 fn policy_tally(power: f64, flow: Option<u64>, link_epoch: u64) -> crate::erg::Compliance {
     use crate::control::TargetPolicy;
     let b = block(600.0, 200.0, 200.0, Phase::Work);
-    let mut p = crate::erg::ErgPolicy::new();
+    let mut p = crate::erg::ErgPolicy::settled();
     for k in 0..4 {
         let mut c = ctx_at(&b, k);
         c.cap_w = None;
@@ -1313,19 +1331,20 @@ fn exactly_forty_rpm_is_not_low_cadence() {
     pedal(&r, 0, 40, 150, 40);
     r.through(39);
     assert!(!r.status().erg_released);
-    pedal(&r, 40, 60, 150, 39);
-    r.through(59);
+    pedal(&r, 80, 100, 150, 39);
+    r.through(99);
     assert!(r.status().erg_released);
 }
 #[test]
 fn the_first_tick_already_reports_checking_after_its_command() {
-    // the mode sent on tick 0 activates the machine on that same tick (second `follow`)
+    // the mode sent on tick 0 (the start's ramp, from the 3 s power) activates the machine
+    // on that same tick (second `follow`)
     let mut r = rig();
     r.load(vec![work(200.0)]);
     r.start();
     r.sample(0, 100, 90);
     r.through(0);
-    assert_eq!(r.modes(), vec![erg(200)]);
+    assert_eq!(r.modes(), vec![erg(100)]);
     assert_eq!(r.status().trainer_following, F::Checking);
 }
 #[test]
@@ -1516,18 +1535,15 @@ fn old_link_cadence_does_not_count_toward_re_engagement() {
 #[test]
 fn a_finished_ride_accounts_its_final_second() {
     let mut r = rig();
-    r.load(vec![block(10.0, 200.0, 200.0, Phase::Work)]);
+    r.load(vec![block(15.0, 200.0, 200.0, Phase::Work)]);
     r.start();
-    pedal(&r, 0, 40, 200, 90);
-    r.through(39);
+    pedal(&r, 0, 60, 200, 90);
+    r.through(59);
     let st = r.status();
     assert_eq!(st.state, crate::RideState::Finished);
     let c = st.compliance;
-    assert_eq!(
-        (c.counted_s, c.within_s, c.excluded_s),
-        (10, 10, 0),
-        "{c:?}"
-    );
+    // 10 s of the start's settle, then 5 counted seconds, the last one the finishing tick's
+    assert_eq!((c.counted_s, c.within_s, c.excluded_s), (5, 5, 10), "{c:?}");
 }
 #[test]
 fn the_re_engagement_criteria_are_evaluated_in_a_free_block_too() {
@@ -1554,4 +1570,261 @@ fn the_re_engagement_criteria_are_evaluated_in_a_free_block_too() {
     let sent = r.modes();
     assert!(!r.status().erg_released);
     assert_eq!(positive_erg(&sent).first(), Some(&150), "{sent:?}");
+}
+
+// -- ride start, user pause and ride end (#250, #264, #266) --
+
+const RESISTANCE_0: ControlMode = ControlMode::Resistance { pct: 0.0 };
+
+#[test]
+fn a_ride_start_holds_zero_watts_until_cadence_then_ramps_from_the_3s_power() {
+    // ADR-0002 §7.5 as amended for #250: a ride start is a reconnect. No torque for a rider
+    // who is not pedalling, then five 1 Hz steps from the 3 s power to the block target.
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 8, 0, 0);
+    r.through(7);
+    assert_eq!(r.modes(), vec![erg(0)], "0 W, sent once, never the target");
+    pedal(&r, 8, 32, 100, 90);
+    r.through(31);
+    // the origin is the 3 s mean at the first pedalling tick: eight 0 W samples and 100 W
+    assert_eq!(
+        r.modes(),
+        vec![erg(11), erg(49), erg(87), erg(124), erg(162), erg(200)]
+    );
+}
+#[test]
+fn a_free_first_block_is_unchanged_and_the_next_erg_block_owes_the_soft_start() {
+    // ADR-0002 §7.5 item 5: leaving free/SIM owes the soft start; the start itself has no ERG.
+    let mut r = rig();
+    r.load(vec![block(600.0, 0.0, 0.0, Phase::Free), work(200.0)]);
+    r.start();
+    pedal(&r, 0, 8, 150, 90);
+    r.through(7);
+    assert_eq!(r.modes(), vec![ControlMode::Free]);
+    r.engine.command(EngineCmd::SkipBlock).expect("skip");
+    pedal(&r, 8, 16, 150, 90);
+    r.through(15);
+    assert_eq!(r.modes(), vec![erg(150), erg(160)]);
+}
+#[test]
+fn a_user_pause_commands_zero_resistance_and_the_resume_soft_starts() {
+    // DESIGN §5.2 "Paused (user)": 0 % resistance, ERG re-engages with the soft start (#264)
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 24, 200, 90);
+    r.through(23);
+    assert_eq!(r.modes().last(), Some(&erg(200)));
+    r.engine.command(EngineCmd::Pause).expect("pause");
+    // the rider keeps pedalling at 150 W: no command until the resume
+    pedal(&r, 24, 40, 150, 90);
+    r.through(39);
+    assert_eq!(r.modes(), vec![RESISTANCE_0]);
+    assert_eq!(
+        r.state(),
+        crate::RideState::Paused(crate::PauseReason::User)
+    );
+    r.engine.command(EngineCmd::Resume).expect("resume");
+    pedal(&r, 40, 60, 150, 90);
+    r.through(59);
+    assert_eq!(
+        r.modes(),
+        vec![erg(150), erg(160), erg(170), erg(180), erg(190)],
+        "the soft start from the 3 s power, not the 200 W target"
+    );
+}
+#[test]
+fn a_resume_without_cadence_holds_zero_watts_until_the_rider_pedals() {
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 24, 200, 90);
+    r.through(23);
+    r.modes();
+    r.engine.command(EngineCmd::Pause).expect("pause");
+    pedal(&r, 24, 28, 0, 0);
+    r.through(27);
+    assert_eq!(r.modes(), vec![RESISTANCE_0]);
+    r.engine.command(EngineCmd::Resume).expect("resume");
+    pedal(&r, 28, 32, 0, 0);
+    r.through(31);
+    assert_eq!(
+        r.modes(),
+        vec![erg(0)],
+        "no torque for a rider who is not pedalling"
+    );
+    pedal(&r, 32, 36, 120, 90);
+    r.through(35);
+    // origin: the 3 s mean (12 ticks) = (3 x 200 W + 8 x 0 W + 120 W) / 12
+    assert_eq!(r.modes(), vec![erg(60)]);
+}
+#[test]
+fn a_release_survives_a_user_pause_and_is_left_only_by_sixty_rpm() {
+    // #249 ruling: a release is left only through §7.4, also across a pause (#264). The
+    // pause is applied by ticks (a pause and resume between two ticks change nothing).
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 8, 190, 90);
+    pedal(&r, 8, 24, 100, 20);
+    r.through(23);
+    assert!(r.status().erg_released);
+    r.modes();
+    r.engine.command(EngineCmd::Pause).expect("pause");
+    pedal(&r, 24, 32, 100, 20);
+    r.through(31);
+    assert!(r.status().erg_released, "paused: still released");
+    r.engine.command(EngineCmd::Resume).expect("resume");
+    pedal(&r, 32, 48, 100, 20);
+    r.through(47);
+    assert!(r.status().erg_released, "20 rpm does not re-engage");
+    assert!(
+        r.modes().iter().all(|m| *m == RESISTANCE_0),
+        "no ERG after the resume while released"
+    );
+    pedal(&r, 48, 56, 100, 90);
+    r.through(55);
+    assert!(!r.status().erg_released);
+    assert_eq!(r.modes(), vec![erg(100)], "re-engaged with the soft start");
+}
+#[test]
+fn stopped_pedalling_leaves_no_torque_on_the_trainer() {
+    // auto-pause (cadence and power 0 for 3 s): the §7.4 release is out before the pause
+    // begins, so DESIGN §5.2's 0 % resistance already holds (#264)
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 24, 200, 90);
+    r.through(23);
+    r.modes();
+    pedal(&r, 24, 40, 0, 0);
+    r.through(39);
+    assert_eq!(
+        r.state(),
+        crate::RideState::Paused(crate::PauseReason::StoppedPedalling)
+    );
+    assert_eq!(r.modes(), vec![RESISTANCE_0]);
+}
+#[test]
+fn a_finished_ride_commands_the_end_mode_before_the_gate_clears() {
+    // ADR-0002 §7.9 / #266: "silence after ERG could leave the ERG target active"
+    let mut r = rig();
+    r.load(vec![block(2.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    pedal(&r, 0, 8, 200, 90);
+    r.through(7);
+    assert_eq!(r.state(), crate::RideState::Finished);
+    assert_eq!(r.modes().last(), Some(&RESISTANCE_0));
+    assert_eq!(
+        r.gate.lock().unwrap().last(),
+        Some(&true),
+        "waits for delivery"
+    );
+    r.delivered(RESISTANCE_0);
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
+}
+#[test]
+fn stopping_mid_ride_commands_the_end_mode_before_the_gate_clears() {
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 24, 200, 90);
+    r.through(23);
+    assert_eq!(r.modes().last(), Some(&erg(200)));
+    r.engine.command(EngineCmd::Stop).expect("stop");
+    assert_eq!(r.modes(), vec![RESISTANCE_0]);
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&true));
+    r.delivered(RESISTANCE_0);
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
+}
+#[test]
+fn the_gate_does_not_wait_for_a_trainer_that_is_gone_or_silent() {
+    // link lost while the end mode is in flight: it cannot be delivered
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 8, 200, 90);
+    r.through(7);
+    r.engine.command(EngineCmd::Stop).expect("stop");
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&true));
+    r.link(LinkState::Lost);
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
+    // and a driver that never answers is given 2 s, not forever
+    r.link(LinkState::Ready);
+    r.at(8 * TICK_US);
+    r.load(vec![work(200.0)]);
+    r.start();
+    r.engine.command(EngineCmd::Stop).expect("stop");
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&true));
+    r.at(8 * TICK_US + 1_999_000);
+    r.engine.catch_up();
+    assert_eq!(
+        r.gate.lock().unwrap().last(),
+        Some(&true),
+        "inside the bound"
+    );
+    r.at(8 * TICK_US + 2_000_000);
+    r.engine.catch_up();
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
+}
+#[test]
+fn an_unapplied_link_transition_owes_the_end_mode_again() {
+    // a transition wipes the trainer's mode (ADR-0002 §6): the end mode is sent although the
+    // engine's last command is the same 0 % resistance (a release)
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 8, 190, 90);
+    pedal(&r, 8, 24, 100, 20);
+    r.through(23);
+    assert!(r.status().erg_released);
+    r.modes();
+    r.link(LinkState::Connecting);
+    r.link(LinkState::Ready);
+    r.engine.command(EngineCmd::Stop).expect("stop");
+    assert_eq!(r.modes(), vec![RESISTANCE_0]);
+}
+#[test]
+fn a_late_delivery_of_an_earlier_mode_does_not_clear_the_gate() {
+    // only the end mode's own delivery releases the gate
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 24, 200, 90);
+    r.through(23);
+    r.engine.command(EngineCmd::Stop).expect("stop");
+    r.delivered(erg(200));
+    r.delivered(ControlMode::Free);
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&true));
+    r.delivered(RESISTANCE_0);
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
+}
+#[test]
+fn leaving_free_after_a_repaid_soft_start_owes_it_again() {
+    // ADR-0002 §7.5: the start's soft start is repaid at tick 20; a free block in between
+    // and then ERG again must ramp from the 3 s power, not step to the target (#250)
+    let mut r = rig();
+    r.load(vec![
+        work(200.0),
+        block(600.0, 0.0, 0.0, Phase::Free),
+        work(200.0),
+    ]);
+    r.start();
+    pedal(&r, 0, 24, 100, 90);
+    r.through(23);
+    assert_eq!(
+        r.modes().last(),
+        Some(&erg(200)),
+        "the start's ramp is repaid"
+    );
+    r.engine.command(EngineCmd::SkipBlock).expect("skip");
+    pedal(&r, 24, 28, 100, 90);
+    r.through(27);
+    assert_eq!(r.modes(), vec![ControlMode::Free]);
+    r.engine.command(EngineCmd::SkipBlock).expect("skip");
+    pedal(&r, 28, 36, 100, 90);
+    r.through(35);
+    assert_eq!(r.modes(), vec![erg(100), erg(120)]);
 }
