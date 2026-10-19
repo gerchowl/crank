@@ -315,7 +315,11 @@ async fn run(
         if let Some(frame) = pacer.tick(tick)? {
             last_write = clock.now().0;
             write(&transport, &clock, capture.as_ref(), frame, &events).await?;
+            // `Delivered { mode }` means every page of the mode is on the trainer: a SIM
+            // pair is delivered by its second page, not its first (#250 round 2). Page 70
+            // is the data-page request, not a control page.
             if frame[4] != 70
+                && pacer.delivered()
                 && let Some(mode) = pacer.mode
             {
                 emit(&events, TrainerEvent::Delivered { mode }).await?;

@@ -4,7 +4,7 @@ use crate::error::{ApiError, ErrorCode};
 use crank_domain::workout::{
     CompiledWorkout, FlatBlock, Phase, Severity, ValidationIssue, ValidationKind, Workout,
 };
-use crank_engine::LinkStatus;
+use crank_engine::{LinkStatus, StreamStatus};
 use serde::{Deserialize, Serialize};
 
 /// What the running core is: answered by `core_ready`.
@@ -79,7 +79,6 @@ pub struct DeviceLinkInfo {
     /// Who is paired for it.
     pub device: Option<PairedDevice>,
     /// Live link state of the loaded ride; `null` without a ride, and after it ends.
-    /// Always `null` until ride lifecycle lands (#34 part B2).
     pub link: Option<LinkStatus>,
 }
 
@@ -221,6 +220,95 @@ impl TryFrom<&CompiledWorkout> for CompiledView {
             issues: c.issues.iter().map(WorkoutIssue::from).collect(),
         })
     }
+}
+
+/// Answer of `ride_load`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RideLoaded {
+    /// Id the ride record will have once started.
+    pub ride_id: String,
+    /// Workout, `null` for a free ride.
+    pub workout_id: Option<String>,
+    /// A strap is connected; without one the ride runs without heart rate.
+    pub hr_linked: bool,
+}
+
+/// The ride's state (`ride_status`): the engine's status, and whether a ride is being
+/// loaded (devices connecting) right now.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RideStatusView {
+    /// `ride_load` is connecting devices; the other commands answer as before.
+    pub loading: bool,
+    /// The loaded ride's status, the last finished ride's, or idle.
+    pub status: StreamStatus,
+}
+
+/// How a stored ride ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum RideOutcome {
+    /// Still recording.
+    Open,
+    /// Ended by the rider or the workout.
+    Finished,
+    /// Closed by crash recovery.
+    Aborted,
+}
+
+/// Planned vs actual for one block.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockSummary {
+    /// Index into the compiled blocks.
+    pub index: u32,
+    /// Planned duration, s.
+    pub planned_s: f64,
+    /// Planned mean power, W.
+    pub planned_w: f64,
+    /// Seconds actually ridden in the block.
+    pub actual_s: f64,
+    /// Mean power ridden in it, `null` if none was recorded.
+    pub actual_w: Option<f64>,
+}
+
+/// The minimal summary written when a ride finishes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RideSummary {
+    /// Recorded session seconds.
+    pub duration_s: f64,
+    /// Mean power, W.
+    pub avg_power_w: Option<f64>,
+    /// Normalized power, W.
+    pub np_w: Option<f64>,
+    /// Mean heart rate, bpm.
+    pub avg_hr_bpm: Option<f64>,
+    /// Work done, kJ.
+    pub kj: f64,
+    /// Planned vs actual per block.
+    pub blocks: Vec<BlockSummary>,
+}
+
+/// A stored ride (`rides_list`, `ride_summary`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RideRecord {
+    /// Ride id.
+    pub id: String,
+    /// UTC Unix seconds at start.
+    pub started_at: f64,
+    /// UTC Unix seconds at end.
+    pub ended_at: Option<f64>,
+    /// How it ended.
+    pub outcome: RideOutcome,
+    /// Ridden workout's id, `null` for a free ride.
+    pub workout_id: Option<String>,
+    /// Ridden workout's name.
+    pub workout_name: String,
+    /// The summary; `null` while open or aborted.
+    pub summary: Option<RideSummary>,
 }
 
 #[cfg(test)]
