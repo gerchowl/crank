@@ -857,17 +857,17 @@ mod tests {
     /// Two requesters dropping at the same moment: the pump must see both closes. A wake
     /// that is not stored (`notify_waiters`, M2) is lost when the pump is between two waits
     /// (it handled the first drop and has not yet re-armed), and the pump then re-sleeps with
-    /// the second requester already gone. Trials stop at the first leak and the run is bounded.
+    /// the second requester already gone. Four trial tasks run concurrently, each dropping
+    /// its two requesters from two tasks released by one barrier (no OS threads, no blocking
+    /// a worker: #293). Trials stop at the first leak and the run is bounded.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn two_requesters_dropping_together_never_leak_the_scan() {
         const TRIALS: usize = 3000;
-        let runtime = tokio::runtime::Handle::current();
         let leaked = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let threads: Vec<_> = (0..4)
+        let trials: Vec<_> = (0..4)
             .map(|_| {
-                let (runtime, leaked) = (runtime.clone(), leaked.clone());
-                std::thread::spawn(move || {
-                    let _entered = runtime.enter();
+                let leaked = leaked.clone();
+                tokio::spawn(async move {
                     for _ in 0..TRIALS {
                         if leaked.load(Ordering::SeqCst) {
                             return;
@@ -876,27 +876,28 @@ mod tests {
                         adapter.stop_delay = Duration::ZERO;
                         let source = shared(&adapter);
                         let (mut a, mut b) = (source.advertisements(), source.advertisements());
-                        runtime.block_on(async {
-                            a.next().await;
-                            b.next().await;
-                        });
-                        let start = Arc::new(std::sync::Barrier::new(2));
-                        let dropper = {
-                            let start = start.clone();
-                            std::thread::spawn(move || {
-                                start.wait();
-                                drop(b);
+                        a.next().await;
+                        b.next().await;
+                        let start = Arc::new(tokio::sync::Barrier::new(2));
+                        let droppers: Vec<_> = [a, b]
+                            .into_iter()
+                            .map(|requester| {
+                                let start = start.clone();
+                                tokio::spawn(async move {
+                                    start.wait().await;
+                                    drop(requester);
+                                })
                             })
-                        };
-                        start.wait();
-                        drop(a);
-                        dropper.join().unwrap();
-                        let stopped =
-                            runtime.block_on(tokio::time::timeout(Duration::from_secs(2), async {
-                                while adapter.stops.load(Ordering::SeqCst) == 0 {
-                                    tokio::task::yield_now().await;
-                                }
-                            }));
+                            .collect();
+                        for dropper in droppers {
+                            dropper.await.unwrap();
+                        }
+                        let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+                            while adapter.stops.load(Ordering::SeqCst) == 0 {
+                                tokio::task::yield_now().await;
+                            }
+                        })
+                        .await;
                         if stopped.is_err() {
                             leaked.store(true, Ordering::SeqCst);
                             return;
@@ -905,8 +906,8 @@ mod tests {
                 })
             })
             .collect();
-        for t in threads {
-            t.join().unwrap();
+        for t in trials {
+            t.await.unwrap();
         }
         assert!(
             !leaked.load(Ordering::SeqCst),

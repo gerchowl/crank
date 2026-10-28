@@ -11,6 +11,7 @@ use super::types::{
     MAX_MEDIAN_SAMPLES, MetricId, StreamError, StreamFrame, StreamId, StreamSnapshot, StreamStatus,
     SubId, SubSample, SubscribeOpts,
 };
+use super::work::{Counted, Work};
 use crank_domain::filters::{Filter, FilterChain};
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
@@ -33,7 +34,7 @@ struct Sub {
 struct Stream {
     window: Option<String>,
     sink: mpsc::Sender<StreamFrame>,
-    subs: BTreeMap<SubId, Sub>,
+    subs: Counted<SubId, Sub>,
     flow: Flow,
     last_status_us: u64,
 }
@@ -59,6 +60,8 @@ pub(crate) struct Hub {
     streams: BTreeMap<StreamId, Stream>,
     status: Option<StreamStatus>,
     links: BTreeMap<LinkDevice, LinkStatus>,
+    /// Work units counted for the cost tests (#293); zero-sized outside tests.
+    work: Work,
 }
 impl Hub {
     pub(crate) fn new() -> Self {
@@ -72,6 +75,7 @@ impl Hub {
             streams: BTreeMap::new(),
             status: None,
             links: BTreeMap::new(),
+            work: Work::default(),
         }
     }
     /// Counters positioned for wrap tests.
@@ -99,7 +103,7 @@ impl Hub {
         let id = StreamId(fresh_id(&mut self.next_stream, |id| {
             self.streams.contains_key(&StreamId(id))
         }));
-        let mut flow = Flow::new(self.budget);
+        let mut flow = Flow::with_work(self.budget, self.work.clone());
         if let Some(s) = &self.status {
             flow.offer_status(s.clone());
         }
@@ -111,7 +115,7 @@ impl Hub {
             Stream {
                 window,
                 sink,
-                subs: BTreeMap::new(),
+                subs: Counted::new(self.work.clone()),
                 flow,
                 last_status_us: now_us,
             },
@@ -206,11 +210,12 @@ impl Hub {
     /// subscription's latest value is offered when its rate makes it due.
     pub(crate) fn on_source(&mut self, t: f64, values: &[Option<f64>; SOURCES]) {
         for s in self.streams.values_mut() {
-            for (&id, sub) in &mut s.subs {
+            for (&id, sub) in s.subs.iter_mut() {
                 // A non-finite value is a gap (ADR-0001 §5: gaps are null, never
                 // interpolated): it would otherwise poison an exponential mean for good
                 // and serialize as `null` anyway, indistinguishable from a gap.
                 let input = values[sub.metric.index()].filter(|v| v.is_finite());
+                self.work.add(1);
                 let v = sub.chain.push(t, input).filter(|v| v.is_finite());
                 let sample = SubSample { sub: id, t, v };
                 sub.latest = Some(sample);
@@ -281,6 +286,10 @@ impl Hub {
             })
             .flatten()
             .min()
+    }
+    #[cfg(test)]
+    pub(crate) fn work(&self) -> usize {
+        self.work.total()
     }
     #[cfg(test)]
     pub(crate) fn flow(&self, stream: StreamId) -> Option<&Flow> {
