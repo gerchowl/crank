@@ -1172,6 +1172,7 @@ test = [
 wanted.trainer = "Resistance{pct: 0} (ADR-0002 §7.9 as amended, #266) sent before the ride-active gate clears; the gate waits for Delivered of that mode, link loss or 2 s; the last control page written is page 48"
 wanted.engine = "finished; record closed via RideRecorder::finish; ride-active gate cleared; partial last second not recorded"
 wanted.ui = "state.kind=finished"
+note = "residual (#288): a GATT write stalled for more than 2 s lets the deadline release the hold-back, and the new ride's first ERG page replaces the still-queued page 48, so 48 is never written. Accepted: the deadline exists so a silent or stalled trainer cannot hold the ride-active signal (and shutdown) forever; waiting longer would only trade that for an unbounded hold, and a link stalled that long is no longer taking control pages reliably (ADR-0002 §7.9)"
 
 [[row]]
 id = "FM-FIN-03"
