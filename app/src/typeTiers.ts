@@ -81,8 +81,12 @@ export interface FallbackTiers {
 
 export type Tiers = PhysicalTiers | FallbackTiers;
 
-export const FALLBACK_NOTICE =
-  "Screen size unknown: text sizes are approximated from the window, not measured for your distance.";
+/** Maximum lengths of the status-bar strings: each must stay on one line at 1024 px (DESIGN §6.1, §10 #7). */
+export const NOTICE_MAX_CHARS = 48;
+export const BANNER_MAX_CHARS = 36;
+
+export const FALLBACK_NOTICE = "Screen size unknown: text sized to the window.";
+export const TOO_SMALL_TEXT = "Window too small to read targets";
 
 const positive = (n: number | null): n is number =>
   n !== null && Number.isFinite(n) && n > 0;
