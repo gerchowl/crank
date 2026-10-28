@@ -10,7 +10,26 @@ import { computeTiers, type Monitor, type Tiers } from "./typeTiers";
 
 const subscribe = (notify: () => void) => {
   window.addEventListener("resize", notify);
-  return () => window.removeEventListener("resize", notify);
+  // The scale factor changes without a resize when the window moves to another monitor or the zoom changes;
+  // a resolution query matches only the current ratio, so it fires on any change and is re-armed each time.
+  let mq: MediaQueryList | null = null;
+  const onDpr = () => {
+    notify();
+    arm();
+  };
+  const arm = () => {
+    mq?.removeEventListener("change", onDpr);
+    mq =
+      typeof matchMedia === "function"
+        ? matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+        : null;
+    mq?.addEventListener("change", onDpr);
+  };
+  arm();
+  return () => {
+    window.removeEventListener("resize", notify);
+    mq?.removeEventListener("change", onDpr);
+  };
 };
 // A string snapshot keeps useSyncExternalStore referentially stable.
 const snapshot = () =>
@@ -60,18 +79,39 @@ export function TooSmallBanner() {
   );
 }
 
-/** Applies the tier tokens to its subtree and shows the too-small banner and the unknown-size notice. */
+/** Height reserved for the status-bar slot: one T3+ line, so showing or hiding the warning never reflows. */
+const SLOT_HEIGHT = "calc(var(--t3p) * 1.5)";
+
+/**
+ * Applies the tier tokens to its subtree. The too-small banner and the unknown-size notice go in a status-bar
+ * slot below the content that is always rendered at a fixed height (DESIGN §6.2, §10 #10), so the content's
+ * position does not depend on the warning.
+ */
 export function RideTiers({ children }: { children: ReactNode }) {
   const tiers = useTypeTiers();
   return (
-    <div style={tiers.tokens as CSSProperties}>
-      {tiers.tooSmallForT2 && <TooSmallBanner />}
-      {tiers.notice && (
-        <p role="status" style={{ fontSize: "var(--t3)" }}>
-          {tiers.notice}
-        </p>
-      )}
-      {children}
+    <div
+      style={{
+        ...(tiers.tokens as CSSProperties),
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+      }}
+    >
+      <div data-slot="content" style={{ flex: "1 1 0", minHeight: 0 }}>
+        {children}
+      </div>
+      <div
+        data-slot="status-bar"
+        style={{ flex: "none", height: SLOT_HEIGHT, overflow: "hidden" }}
+      >
+        {tiers.tooSmallForT2 && <TooSmallBanner />}
+        {tiers.notice && (
+          <p role="status" style={{ margin: 0, fontSize: "var(--t3)" }}>
+            {tiers.notice}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
