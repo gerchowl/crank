@@ -12,6 +12,7 @@
 pub(crate) mod flow;
 pub(crate) mod hub;
 pub mod types;
+pub(crate) mod work;
 
 pub use types::{
     LinkChange, LinkDevice, LinkStatus, MetricId, StreamFrame, StreamId, StreamRideState,
