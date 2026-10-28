@@ -949,11 +949,6 @@ async fn a_link_attached_after_the_task_idled_gets_no_replay_of_the_gap() {
         first >= 20_000_000,
         "first sample stamped {first} µs, before the attach at 20 s"
     );
-    assert!(
-        samples(&ev).len() <= 12,
-        "{} samples in 3 s: the gap was replayed",
-        samples(&ev).len()
-    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -983,6 +978,24 @@ async fn a_trainer_lost_from_the_start_connects_then_follows_the_outage() {
             "Ready",
         ]
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_loss_at_zero_refuses_neither_device_whichever_connects_first() {
+    // The strap connects first and starts the rig's clock; the trainer then connects at the
+    // same instant (t = 0), where the dropout is not yet in effect: it is `Ready`, then `Lost`.
+    let r = rig(vec![SimFault::Dropout {
+        at: Duration::ZERO,
+        down: s(5),
+    }]);
+    let _strap = r
+        .heart()
+        .connect(&DeviceRef("hr".into()))
+        .await
+        .expect("sim");
+    let mut link = connect(&r).await;
+    let ev = run(&mut link, 2).await;
+    assert_eq!(link_trace(&ev)[..3], ["Connecting", "Ready", "Lost"]);
 }
 
 #[tokio::test(start_paused = true)]

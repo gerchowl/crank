@@ -18,8 +18,9 @@
 //! follows the same sequence through `HrEvent`. A connect while a loss is still in
 //! progress fails with `ConnectFailed`, as the real stack's first connect does; losses
 //! that overlap in time are one outage (their schedules would otherwise interleave). The
-//! rig's epoch is its first connect, so nothing is down before it: a loss at `at: 0`
-//! starts with the first tick (`Lost` right after `Ready`), it never refuses that connect.
+//! rig's epoch is its first connect, so nothing is down at it: a loss at `at: 0` never
+//! refuses a connect at that instant, whichever device connects first, and starts with the
+//! first tick (`Lost` right after `Ready`).
 //! A link attached after the stepping task has idled starts at the present: the idle gap is
 //! not replayed to it.
 //! Writer tick allocation and keep-alives (#43) are not modelled.
@@ -782,7 +783,7 @@ impl TrainerDriver for SimTrainer {
                 if w.trainer.tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
                     return Err(DeviceError::AlreadyConnected);
                 }
-                if w.start.is_some() && w.trainer_down(w.rel(now)) {
+                if w.rel(now) > 0 && w.trainer_down(w.rel(now)) {
                     return Err(outage_error());
                 }
                 w.core
@@ -838,7 +839,7 @@ impl HeartRateDriver for SimHeart {
                 if w.heart.tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
                     return Err(DeviceError::AlreadyConnected);
                 }
-                if w.start.is_some() && w.hr_down(w.rel(now)) {
+                if w.rel(now) > 0 && w.hr_down(w.rel(now)) {
                     return Err(outage_error());
                 }
                 w.next_generation += 1;
