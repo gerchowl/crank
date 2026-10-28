@@ -122,12 +122,22 @@ async fn run(end: End, supervised: bool) -> (Arc<Fake>, bool) {
     };
     settle().await;
     let g = gate.clone();
+    // the last control page on the transport at each `set_active(false)`, read inside the
+    // callback: `step` only looks once per writer tick, which cannot see an unload that
+    // clears the gate while the end mode is still owed
+    let at_clear: Arc<Mutex<Vec<Option<u8>>>> = Arc::default();
+    let (cb_fake, cb_log) = (fake.clone(), at_clear.clone());
     let release_at = matches!(end, End::ReleaseOnLastTick).then_some(6);
     let (engine, handle) = Engine::new(
         clock,
         Some(link),
         None,
-        Arc::new(move |active: bool| g.set_active(active)),
+        Arc::new(move |active: bool| {
+            if !active {
+                cb_log.lock().unwrap().push(last_control_page(&cb_fake));
+            }
+            g.set_active(active);
+        }),
     );
     let engine = engine.with_policy_factory(move || Box::new(Scripted { release_at }));
     let task = tokio::spawn(engine.run());
@@ -195,6 +205,12 @@ async fn run(end: End, supervised: bool) -> (Arc<Fake>, bool) {
     }
     let finished = task.is_finished();
     assert!(!gate.is_active(), "the ride-active signal is cleared");
+    let at_clear = at_clear.lock().unwrap().clone();
+    assert!(!at_clear.is_empty(), "{end:?}: the signal was cleared");
+    assert!(
+        at_clear.iter().all(|p| *p == Some(48)),
+        "{end:?}: the last control page at each set_active(false): {at_clear:?}"
+    );
     (fake, finished)
 }
 async fn assert_ends_on_page_48(end: End, supervised: bool) {

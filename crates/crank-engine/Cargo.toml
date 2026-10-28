@@ -31,4 +31,4 @@ serde_json.workspace = true
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "test-util", "time"] }
 specta-typescript.workspace = true
-specta-serde = "=0.0.12"
+specta-serde.workspace = true
