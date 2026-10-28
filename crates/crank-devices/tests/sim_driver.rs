@@ -891,6 +891,122 @@ async fn connecting_the_strap_during_an_outage_fails_like_the_real_stack() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_second_loss_between_the_first_outages_end_and_recovery_joins_it() {
+    // The first outage is over at 15 s but the link is back only at the 17.5 s attempt; a loss
+    // at 16 s lands in that window and must extend it, not start a schedule of its own.
+    let r = rig(vec![
+        SimFault::Dropout {
+            at: s(10),
+            down: s(5),
+        },
+        SimFault::Dropout {
+            at: s(16),
+            down: s(1),
+        },
+    ]);
+    let mut link = connect(&r).await;
+    let ev = run(&mut link, 25).await;
+    assert_eq!(
+        link_trace(&ev),
+        [
+            "Connecting",
+            "Ready",
+            "Lost",
+            "Reconnecting(1)",
+            "Fault",
+            "Reconnecting(2)",
+            "Fault",
+            "Reconnecting(3)",
+            "Fault",
+            "Reconnecting(4)",
+            "Connecting",
+            "Ready",
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_link_attached_after_the_task_idled_gets_no_replay_of_the_gap() {
+    // The strap connects and goes away (the stepping task stops with no link); the trainer
+    // attaches at 20 s, after a dropout that fell in the gap (10-15 s). It starts at the
+    // present: no burst of old samples, no loss or reconnects from the gap.
+    let r = rig(vec![SimFault::Dropout {
+        at: s(10),
+        down: s(5),
+    }]);
+    let strap = r
+        .heart()
+        .connect(&DeviceRef("hr".into()))
+        .await
+        .expect("sim");
+    drop(strap);
+    sleep(s(20)).await;
+    let mut link = connect(&r).await;
+    let ev = run(&mut link, 3).await;
+    assert_eq!(link_trace(&ev), ["Connecting", "Ready"]);
+    let first = samples(&ev).first().map(|x| x.at.0).expect("samples");
+    assert!(
+        first >= 20_000_000,
+        "first sample stamped {first} µs, before the attach at 20 s"
+    );
+    assert!(
+        samples(&ev).len() <= 12,
+        "{} samples in 3 s: the gap was replayed",
+        samples(&ev).len()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_trainer_lost_from_the_start_connects_then_follows_the_outage() {
+    // The epoch is the first connect: a loss at 0 does not refuse it (before, `start` was still
+    // unset and every connect failed forever); the trainer is lost with the first tick.
+    let r = rig(vec![SimFault::Dropout {
+        at: Duration::ZERO,
+        down: s(5),
+    }]);
+    let mut link = connect(&r).await;
+    let ev = run(&mut link, 10).await;
+    assert_eq!(
+        link_trace(&ev),
+        [
+            "Connecting",
+            "Ready",
+            "Lost",
+            "Reconnecting(1)",
+            "Fault",
+            "Reconnecting(2)",
+            "Fault",
+            "Reconnecting(3)",
+            "Fault",
+            "Reconnecting(4)",
+            "Connecting",
+            "Ready",
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_strap_lost_from_the_start_connects_then_follows_the_outage() {
+    let r = rig(vec![SimFault::HrLoss {
+        at: Duration::ZERO,
+        down: s(5),
+    }]);
+    let ev = hr_events(&r, 10).await;
+    let attempts: Vec<u32> = ev
+        .iter()
+        .filter_map(|e| match e {
+            HrEvent::Reconnecting { attempt } => Some(*attempt),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(attempts, [1, 2, 3, 4]);
+    assert!(
+        ev.iter()
+            .any(|e| matches!(e, HrEvent::Link(LinkState::Lost)))
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_receiver_dropped_while_the_run_loop_waits_does_not_tear_down_its_successor() {
     // Nobody reads link A: its bounded channel fills and the run loop parks in `send`.
     let r = rig(vec![]);
