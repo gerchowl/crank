@@ -987,7 +987,7 @@ impl Core {
     }
     /// Finish the ride (or unload one that never started) and wait until its devices are
     /// released: the session is reaped and the trainer's and the strap's drivers have closed
-    /// their streams (bounded by [`RELEASE_TIMEOUT`]), so a pairing right after finds them free. Returns the id of the finished ride, `None` for an unloaded one; ending
+    /// their streams (bounded by `RELEASE_TIMEOUT`, 3 s), so a pairing right after finds them free. Returns the id of the finished ride, `None` for an unloaded one; ending
     /// a ride that already finished returns its id again.
     ///
     /// # Errors
