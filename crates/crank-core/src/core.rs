@@ -85,6 +85,20 @@ impl<F: Fn(StreamFrame) -> Result<(), SinkClosed> + Send + 'static> FrameSink fo
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SinkClosed;
 
+/// How [`Core::shutdown`] ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shutdown {
+    /// No ride was loaded: nothing to end.
+    Idle,
+    /// The ride was ended and its devices released (the end mode delivered, the link lost
+    /// or the engine's own deadline passed).
+    Released,
+    /// The devices were not released within the cap; the caller exits anyway.
+    TimedOut,
+    /// Ending the ride failed.
+    Failed(ApiError),
+}
+
 struct Session {
     handle: EngineHandle,
     /// Core stream id → (the engine's id of it, owning window). Core ids are unique for
@@ -912,6 +926,22 @@ impl Core {
         self.wait_released(&id).await;
         Ok(finishes.then_some(id))
     }
+    /// The application is quitting: end the loaded ride like `ride_end` and wait, for at
+    /// most `cap`, until its devices are released.
+    ///
+    /// Quitting is a ride end (ADR-0002 §7.9): the engine puts the trainer into its end
+    /// mode (`Resistance{0}`) and holds the ride-active gate until that was delivered, the
+    /// link was lost or its own 2 s deadline passed. A process that exits without waiting
+    /// can leave ERG torque on the trainer (S1), and on macOS exiting does not drop `Core`.
+    /// The cap bounds a trainer that never answers; it should exceed the engine's 2 s.
+    pub async fn shutdown(&self, cap: Duration) -> Shutdown {
+        match tokio::time::timeout(cap, self.ride_end()).await {
+            Err(_) => Shutdown::TimedOut,
+            Ok(Ok(_)) => Shutdown::Released,
+            Ok(Err(e)) if e.code == ErrorCode::Conflict => Shutdown::Idle,
+            Ok(Err(e)) => Shutdown::Failed(e),
+        }
+    }
     /// The ride's state; durable truth behind `resync` (ADR-0001 §4.3).
     ///
     /// # Errors
@@ -1132,6 +1162,10 @@ mod tests {
         /// How long releasing the trainer (its `Disconnect`, or its control channel
         /// closing) takes.
         disconnect_delay: Duration,
+        /// How long the trainer takes to take each `SetMode` (it delivers after that).
+        mode_delay: Duration,
+        /// The trainer never takes a `SetMode`: no `Delivered` ever reaches the engine.
+        swallow_modes: Arc<std::sync::atomic::AtomicBool>,
         /// Trainer connects fail while set.
         fail_connect: Arc<std::sync::atomic::AtomicBool>,
         /// Trainer connects panic while set.
@@ -1152,6 +1186,7 @@ mod tests {
             let radio = self.0.clone();
             let dev = dev.clone();
             let delay = self.0.connect_delay;
+            let (mode_delay, swallow) = (self.0.mode_delay, self.0.swallow_modes.clone());
             let (fail, boom) = (self.0.fail_connect.clone(), self.0.panic_connect.clone());
             async move {
                 tokio::time::sleep(delay).await;
@@ -1196,6 +1231,12 @@ mod tests {
                             radio.mode_gate.lock().unwrap().push(active);
                         }
                         log.lock().unwrap().push(cmd);
+                        if matches!(cmd, TrainerCommand::SetMode(_)) {
+                            if swallow.load(std::sync::atomic::Ordering::SeqCst) {
+                                continue;
+                            }
+                            tokio::time::sleep(mode_delay).await;
+                        }
                         if real.send(cmd).await.is_err() {
                             break;
                         }
@@ -1255,6 +1296,8 @@ mod tests {
             mode_gate: Arc::default(),
             connect_delay: Duration::ZERO,
             disconnect_delay: Duration::ZERO,
+            mode_delay: Duration::ZERO,
+            swallow_modes: Arc::default(),
             fail_connect: Arc::default(),
             panic_connect: Arc::default(),
         }
@@ -1425,7 +1468,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn devices_are_released_only_after_the_ride_active_gate_drops() {
         let dir = tempfile::tempdir().unwrap();
-        let radio = fake(vec![], false);
+        let mut radio = fake(vec![], false);
+        radio.mode_delay = Duration::from_secs(1);
         let core = open(dir.path(), &radio);
         core.device_pair("neo".into(), DeviceRole::Trainer)
             .await
@@ -1437,10 +1481,22 @@ mod tests {
             .await
             .unwrap();
         core.ride_start().await.unwrap();
-        tokio::time::sleep(Duration::from_secs(185)).await; // the workout ends itself
-        assert_eq!(
-            core.ride_status().await.unwrap().status.state,
-            crank_engine::StreamRideState::Finished
+        // The workout ends itself; the trainer takes the end mode a second later, so the
+        // gate stays up for that second after `Finished` is published (#269).
+        tokio::time::sleep(Duration::from_mins(3)).await;
+        let finished = async {
+            while core.ride_status().await.unwrap().status.state
+                != crank_engine::StreamRideState::Finished
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), finished)
+            .await
+            .expect("the workout finishes");
+        assert!(
+            radio.disconnects.lock().unwrap().is_empty(),
+            "the devices are not released on `Finished`, only when the gate drops"
         );
         core.ride_end().await.unwrap();
 
@@ -1701,5 +1757,80 @@ mod tests {
         let e = core.ride_load(Some("nope".into())).await.unwrap_err();
         assert_eq!(e.code, ErrorCode::NotFound);
         assert!(core.ride_status().await.unwrap().status.loaded);
+    }
+
+    /// A ride is under way when the application quits.
+    async fn riding(radio: &FakeRadio, dir: &std::path::Path) -> Core {
+        let core = open(dir, radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        radio.disconnects.lock().unwrap().clear();
+        radio.commands.lock().unwrap().clear();
+        core.ride_load(Some("builtin-sensor-check".into()))
+            .await
+            .unwrap();
+        core.ride_start().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        core
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn quitting_mid_ride_ends_it_with_the_end_mode_and_releases_after_the_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut radio = fake(vec![], false);
+        radio.mode_delay = Duration::from_millis(500);
+        let core = riding(&radio, dir.path()).await;
+        assert_eq!(
+            core.shutdown(Duration::from_secs(3)).await,
+            Shutdown::Released
+        );
+        // Released before `shutdown` returned, after the gate dropped, and the last thing
+        // the trainer was told is the non-torque end mode.
+        assert_eq!(*radio.disconnects.lock().unwrap(), [false]);
+        let commands = radio.commands.lock().unwrap().clone();
+        assert_eq!(
+            commands.last(),
+            Some(&TrainerCommand::SetMode(
+                crank_devices::ControlMode::Resistance { pct: 0.0 }
+            )),
+            "{commands:?}"
+        );
+        assert!(!core.ride_status().await.unwrap().loading);
+        assert_eq!(
+            core.shutdown(Duration::from_secs(3)).await,
+            Shutdown::Released
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn quitting_waits_for_a_trainer_that_never_confirms_only_up_to_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        radio
+            .swallow_modes
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let core = riding(&radio, dir.path()).await;
+        // Under the cap the engine's own 2 s deadline releases the ride...
+        let t = tokio::time::Instant::now();
+        let outcome = core.shutdown(Duration::from_secs(3)).await;
+        assert_eq!(outcome, Shutdown::Released);
+        assert!(t.elapsed() <= Duration::from_secs(3), "{:?}", t.elapsed());
+        // ... and a cap below it ends the wait at the cap.
+        let dir = tempfile::tempdir().unwrap();
+        let core = riding(&radio, dir.path()).await;
+        let t = tokio::time::Instant::now();
+        assert_eq!(
+            core.shutdown(Duration::from_millis(500)).await,
+            Shutdown::TimedOut
+        );
+        assert_eq!(t.elapsed(), Duration::from_millis(500));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn quitting_with_nothing_loaded_is_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open(dir.path(), &fake(vec![], false));
+        assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Idle);
     }
 }

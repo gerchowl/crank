@@ -905,6 +905,12 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    engagement rules (§7.5: `Erg { 0 }` until cadence, then the soft start) begin only after page 48 has been
    written and no torque can overtake or coalesce away the end mode. Silence at the end would leave the last
    `Erg { target_w }` applied at 0 rpm.
+   **App quit is a ride end (amendment, #34, 2026-10-28).** The desktop process does not exit on the
+   first quit request (Cmd+Q, last window closed): it holds the exit back, calls `Core::shutdown`, which ends
+   the loaded ride like `ride_end` (so the engine sends the end mode above) and waits until the devices are
+   released, at most 3 s (above the 2 s deadline), then exits. It cannot rely on dropping `Core`: on macOS the
+   event loop ends the process without running destructors, so the "loss of every handle" path never runs and
+   ERG could stay applied (S1). A trainer that never confirms costs the cap, not a hang.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 
