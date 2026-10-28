@@ -59,6 +59,9 @@ pub(crate) struct Hub {
     streams: BTreeMap<StreamId, Stream>,
     status: Option<StreamStatus>,
     links: BTreeMap<LinkDevice, LinkStatus>,
+    /// Filter-chain pushes since construction: the work one source tick costs (#293).
+    #[cfg(test)]
+    chain_pushes: usize,
 }
 impl Hub {
     pub(crate) fn new() -> Self {
@@ -72,6 +75,8 @@ impl Hub {
             streams: BTreeMap::new(),
             status: None,
             links: BTreeMap::new(),
+            #[cfg(test)]
+            chain_pushes: 0,
         }
     }
     /// Counters positioned for wrap tests.
@@ -211,6 +216,10 @@ impl Hub {
                 // interpolated): it would otherwise poison an exponential mean for good
                 // and serialize as `null` anyway, indistinguishable from a gap.
                 let input = values[sub.metric.index()].filter(|v| v.is_finite());
+                #[cfg(test)]
+                {
+                    self.chain_pushes += 1;
+                }
                 let v = sub.chain.push(t, input).filter(|v| v.is_finite());
                 let sample = SubSample { sub: id, t, v };
                 sub.latest = Some(sample);
@@ -281,6 +290,10 @@ impl Hub {
             })
             .flatten()
             .min()
+    }
+    #[cfg(test)]
+    pub(crate) fn chain_pushes(&self) -> usize {
+        self.chain_pushes
     }
     #[cfg(test)]
     pub(crate) fn flow(&self, stream: StreamId) -> Option<&Flow> {

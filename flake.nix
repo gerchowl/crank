@@ -128,9 +128,10 @@
         nextest = craneLib.cargoNextest (rustCheck // { cargoNextestExtraArgs = "--features crank-ble/replay,crank-ble/hil"; });
         doctest = craneLib.cargoDocTest rustCheck;
         # crank-engine's dev-dependency on itself enables its `specta` feature in every test
-        # build (#271), which hides the plain build; this check compiles it without (#252).
+        # build (#271), which hides the plain build; this check compiles the library alone (#252).
+        # crank-engine declares no default features, so no feature flag is needed (#293).
         engine-no-features = craneLib.mkCargoDerivation (rustCheck // {
-          buildPhaseCargoCommand = "cargo check --locked -p crank-engine --no-default-features";
+          buildPhaseCargoCommand = "cargo check --locked -p crank-engine";
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
         doc = craneLib.cargoDoc (rustCheck // { RUSTDOCFLAGS = "-D warnings"; });

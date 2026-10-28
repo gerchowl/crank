@@ -1034,24 +1034,36 @@ fn the_tick_cost_stays_bounded_at_every_cap() {
         )
         .expect("at the caps");
     }
-    // Past every window length (1 200 samples of the longest SMA), unoptimized build.
+    // Past every window length (1 200 samples of the longest SMA). The cost is counted, not
+    // timed (#293): one tick must push each chain once and ship at most one frame per
+    // subscription, so work per tick is linear in the subscriptions and cannot flake.
+    let subscriptions = MAX_STREAMS * MAX_SUBSCRIPTIONS;
     let steps = 3_000_u64;
-    let started = std::time::Instant::now();
+    let mut frames = 0_usize;
     for k in 1..=steps {
         let t = k as f64 / 4.0;
+        let before = hub.chain_pushes();
         hub.on_source(t, &[Some((k % 400) as f64), None, None, None, None]);
+        assert_eq!(
+            hub.chain_pushes() - before,
+            subscriptions,
+            "chain pushes in tick {k}: each subscription's chain runs exactly once"
+        );
         hub.poll(k * 250 * MS);
         // The consumers keep up, as the UI does.
         for (id, rx) in ids.iter().zip(&mut rxs) {
             for f in drain(rx) {
+                frames += 1;
                 hub.ack(*id, f.seq).expect("ack");
             }
         }
     }
-    let per_tick = started.elapsed() / u32::try_from(steps).expect("small");
+    // Ten per second against four ticks a second: at most one sample frame per
+    // subscription per tick, plus a bounded number of status frames per stream.
+    let per_tick_bound = subscriptions * usize::try_from(steps).expect("small");
     assert!(
-        per_tick < std::time::Duration::from_millis(20),
-        "{per_tick:?} per tick at the caps (a tick is 250 ms)"
+        frames <= per_tick_bound + MAX_STREAMS * 8,
+        "{frames} frames over {steps} ticks exceeds one per subscription per tick"
     );
 }
 
