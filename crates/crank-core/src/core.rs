@@ -102,10 +102,34 @@ struct State {
 }
 /// Clears the loading flag when a `ride_load` ends in any way, including its future
 /// being dropped (a cancelled command) or panicking.
-struct LoadGuard(Arc<Inner>);
+///
+/// It also owns the built session between the engine accepting `Load` and the session
+/// being installed in the state: if the load is cut off in that window, the guard hands
+/// the session to a task that installs it and stops it, so the engine is released and
+/// reaped like any unloaded ride, and the flag stays up until that is done (#278).
+struct LoadGuard {
+    core: Arc<Inner>,
+    built: Option<Session>,
+}
+impl LoadGuard {
+    fn new(core: Arc<Inner>) -> Self {
+        Self { core, built: None }
+    }
+}
 impl Drop for LoadGuard {
     fn drop(&mut self) {
-        self.0.loading.store(false, Ordering::SeqCst);
+        let core = self.core.clone();
+        match (self.built.take(), tokio::runtime::Handle::try_current()) {
+            (Some(session), Ok(runtime)) => {
+                runtime.spawn(async move {
+                    Core(core.clone()).discard(session).await;
+                    core.loading.store(false, Ordering::SeqCst);
+                });
+            }
+            // No built session, or no runtime left to wind it down (the engine ends when
+            // its handle drops).
+            _ => core.loading.store(false, Ordering::SeqCst),
+        }
     }
 }
 struct Inner {
@@ -623,32 +647,55 @@ impl Core {
             }
         }
         // From here every exit (error, cancellation, panic) clears the flag.
-        let _loading = LoadGuard(self.0.clone());
+        let mut loading = LoadGuard::new(self.0.clone());
         // Connecting takes seconds: it runs outside the state lock, and `ride_status`
         // reports `loading` meanwhile.
         let built = self.build_session(workout, compiled).await;
         let (session, hr_linked) = built?;
+        // The lock below may be contended, and waiting for it is a cancellation point:
+        // until the session is installed the guard owns it.
+        loading.built = Some(session);
         let mut st = self.0.state.lock().await;
+        let session = loading
+            .built
+            .take()
+            .ok_or_else(|| ApiError::new(ErrorCode::Internal, "built session missing"))?;
         st.last = None;
         let ride_id = session.ride_id.clone();
         st.session = Some(session);
         drop(st);
-        // `Load` raised the ride-active signal; the ride's devices are released when it
-        // falls again. The watcher holds the core weakly: dropping the last `Core` handle
-        // drops the engine handle, which ends and finishes the ride (ADR-0001 §5).
+        self.spawn_reaper(&ride_id);
+        Ok(RideLoaded {
+            ride_id,
+            workout_id,
+            hr_linked,
+        })
+    }
+
+    /// `Load` raised the ride-active signal; the ride's devices are released when it
+    /// falls again. The watcher holds the core weakly: dropping the last `Core` handle
+    /// drops the engine handle, which ends and finishes the ride (ADR-0001 §5).
+    fn spawn_reaper(&self, ride_id: &str) {
         let mut active = self.0.active.subscribe();
-        let (weak, id) = (Arc::downgrade(&self.0), ride_id.clone());
+        let (weak, id) = (Arc::downgrade(&self.0), ride_id.to_owned());
         tokio::spawn(async move {
             let _ = active.wait_for(|on| !*on).await;
             if let Some(inner) = weak.upgrade() {
                 Core(inner).reap(&id).await;
             }
         });
-        Ok(RideLoaded {
-            ride_id,
-            workout_id,
-            hr_linked,
-        })
+    }
+    /// Unload a session whose `ride_load` was cancelled before it was installed: install
+    /// it, so that it is replaced like any loaded ride, stop it and wait for its devices.
+    async fn discard(&self, session: Session) {
+        let ride_id = session.ride_id.clone();
+        let handle = session.handle.clone();
+        self.0.state.lock().await.session = Some(session);
+        self.spawn_reaper(&ride_id);
+        let _ = handle.send(EngineCmd::Stop).await;
+        // The engine ends only when every handle is gone, and the reaper waits for it.
+        drop(handle);
+        self.wait_released(&ride_id).await;
     }
 
     /// Connect the devices, build the engine and load the workout into it.
@@ -1403,6 +1450,53 @@ mod tests {
         core.devices_scan(Some(200)).await.unwrap();
         core.device_forget(DeviceRole::HeartRate).await.unwrap();
         core.ride_load(None).await.unwrap();
+    }
+
+    /// #278: the load is cut off after the engine was built and sent `Load`, while it waits
+    /// for the (contended) state lock to install the session. The engine must still be
+    /// wound down and its devices released, with no ride recorded.
+    #[tokio::test(start_paused = true)]
+    async fn a_load_cancelled_at_the_state_lock_releases_its_engine_and_records_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut radio = fake(vec![], false);
+        radio.connect_delay = Duration::from_secs(10);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        radio.disconnects.lock().unwrap().clear();
+
+        let load = {
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_load(None).await })
+        };
+        // Mid-connect the state lock is taken by someone else, so the load parks on it
+        // once it has connected and sent `Load`.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let held = core.0.state.lock().await;
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        assert!(core.0.loading.load(Ordering::SeqCst));
+        assert!(radio.gate.lock().unwrap().as_ref().unwrap().is_active());
+        load.abort();
+        assert!(load.await.unwrap_err().is_cancelled());
+        drop(held);
+        // The cut-off engine is still being released: the core reports loading, so
+        // nothing can start over its devices.
+        assert!(core.0.loading.load(Ordering::SeqCst));
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        assert!(!core.0.loading.load(Ordering::SeqCst));
+        assert!(!radio.gate.lock().unwrap().as_ref().unwrap().is_active());
+        assert_eq!(*radio.disconnects.lock().unwrap(), [false]);
+        assert!(core.0.state.lock().await.session.is_none());
+        assert!(core.rides_list().await.unwrap().is_empty());
+        assert!(!core.ride_status().await.unwrap().status.loaded);
+        core.device_pair("other".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.ride_load(None).await.unwrap();
+        core.ride_end().await.unwrap();
+        assert!(core.rides_list().await.unwrap().is_empty());
     }
 
     #[tokio::test(start_paused = true)]
