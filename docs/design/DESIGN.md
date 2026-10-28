@@ -479,6 +479,11 @@ T2 51′ / 52′, T3+ 20′ / 21′, T3 16.5′ / 16.9′.
 The vh rules only hold for the two reference devices. **Production computes px from the monitor's
 physical size, its scale factor and the rider's distance** (Settings → Ride screen, default 1.0 m) and warns
 when the window is too small to meet T2 (#52). Numbers: tabular, lining figures.
+**Too-small rule.** The window is too small for T2 when T2 px exceeds **13 %** of its inner height
+(`T2_MAX_HEIGHT_SHARE`, `app/src/typeTiers.ts`). Calibration: the reference devices in their real maximized
+windows (1440×900 less ≈ 50 px of menu and title bars ≈ 850 px: T2 101 px = 11.9 %; 1024×768 ≈ 715 px: T2 84 px
+= 11.7 %) must not warn, and 1200×700 @ 1.0 m (14.4 %) must. The warning (and the unknown-screen-size notice)
+appears in the status bar's reserved slot, never in the page flow (§10 #10); the banner text is T3+ size.
 
 ### 6.3 Colour and contrast
 Tokens and presets from `spec/THEMES.md` (Ocean by default; dark is designed, not inverted). On the ride

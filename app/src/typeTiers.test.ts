@@ -87,3 +87,12 @@ test("a farther rider needs bigger text, so the same window becomes too small", 
   expect(compute(tablet, 0.8, w).tooSmallForT2).toBe(false);
   expect(compute(tablet, 1.2, w).tooSmallForT2).toBe(true);
 });
+
+test("the reference devices in their real maximized windows do not warn", () => {
+  expect(compute(laptop, 1.0, { width: 1440, height: 850 }).tooSmallForT2).toBe(
+    false,
+  );
+  expect(compute(tablet, 0.8, { width: 1024, height: 715 }).tooSmallForT2).toBe(
+    false,
+  );
+});

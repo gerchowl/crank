@@ -18,11 +18,12 @@ const CAP_HEIGHT_EM = 0.72;
 const ARCMIN_RAD = Math.PI / (180 * 60);
 
 /**
- * The window can host T2 only while T2 stays within the share of the window height the ride layout budgets for
- * it: the prototype's `clamp(84px, 11.4vh, 128px)` (DESIGN §6.2, app.css `--t2`), which fits both reference
- * devices (101 of 900 px, 84 of 768 px).
+ * The window can host T2 only while T2 stays within this share of the window's inner height (DESIGN §6.2,
+ * "Too-small rule"). Calibrated on the reference devices in their real maximized windows: T2 is 101 px of
+ * ≈ 850 px (1440×900 less menu and title bars, 11.9 %) and 84 px of ≈ 715 px (1024×768, 11.7 %); 13 % keeps
+ * both quiet and warns at 1200×700 @ 1.0 m (101 of 700 px, 14.4 %).
  */
-export const T2_MAX_HEIGHT_SHARE = 0.114;
+export const T2_MAX_HEIGHT_SHARE = 0.13;
 
 /** Prototype `clamp(…vh, …)` rules (DESIGN §6.2 / §16.1): the fallback when the physical size is unknown. */
 export const FALLBACK_TOKENS = {
