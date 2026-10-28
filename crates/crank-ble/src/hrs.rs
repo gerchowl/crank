@@ -147,7 +147,8 @@ impl HeartRateDriver for HrsDriver {
                         break;
                     }
                 }
-                if let Err(error) = transport.disconnect().await {
+                if let Err(error) = crate::driver::disconnect_bounded(transport.disconnect()).await
+                {
                     let _ = events.send(HrEvent::Fault(error)).await;
                 }
                 let _ = events.send(HrEvent::Link(LinkState::Lost)).await;

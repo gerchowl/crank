@@ -917,6 +917,35 @@ async fn strap_release_waits_for_the_disconnect(sample_every: Option<Duration>) 
         .expect("the strap is released")
         .unwrap();
 }
+/// A platform disconnect that never completes ends the strap's stream anyway, after the
+/// disconnect timeout and not before.
+#[tokio::test(start_paused = true)]
+async fn a_hanging_strap_disconnect_does_not_hang_the_release() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let (fake, _senders) = fake_hr(&clock, 1);
+    fake.hold_disconnect
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let inner = HrsDriver::new(Arc::new(fake.clone()), clock.clone());
+    let driver = ReconnectingHr::new(inner, clock, RideGate::new(true));
+    let mut link = driver.connect(&DeviceRef("strap".into())).await.unwrap();
+    settle().await;
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let released = released.clone();
+        tokio::spawn(async move {
+            release_events(&mut link.events).await;
+            released.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    for _ in 0..90 {
+        advance(ms(20)).await;
+    }
+    assert!(!released.load(std::sync::atomic::Ordering::SeqCst), "1.8 s");
+    for _ in 0..20 {
+        advance(ms(20)).await;
+    }
+    assert!(released.load(std::sync::atomic::Ordering::SeqCst), "2.2 s");
+}
 #[tokio::test(start_paused = true)]
 async fn a_one_hertz_strap_is_released_only_after_its_disconnect() {
     strap_release_waits_for_the_disconnect(Some(Duration::from_secs(1))).await;
