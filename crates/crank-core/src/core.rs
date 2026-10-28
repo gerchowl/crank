@@ -2215,9 +2215,12 @@ mod tests {
         // lock is free again at once; awaiting it instead would hold the lock for a further
         // `RELEASE_TIMEOUT`.
         tokio::time::sleep(REAP_TIMEOUT + Duration::from_secs(1)).await;
-        tokio::time::timeout(Duration::from_millis(500), core.0.state.lock())
-            .await
-            .expect("the state lock is not held by an await of the hung engine");
+        let lock = tokio::time::timeout(Duration::from_millis(500), core.0.state.lock()).await;
+        assert!(
+            lock.is_ok(),
+            "the state lock is held by an await of the hung engine"
+        );
+        drop(lock);
         tokio::time::timeout(RELEASE_TIMEOUT + Duration::from_secs(5), replace)
             .await
             .expect("the load is not wedged")
