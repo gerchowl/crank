@@ -1035,11 +1035,10 @@ impl Core {
             let state = s.handle.status().state;
             if state != RideState::Finished {
                 match s.handle.send(EngineCmd::Stop).await {
-                    Ok(()) => {}
                     // `WrongState`: the ride is already ending (it finished on its own, or
                     // an overlapping end got in first, also on an unstarted ride). That is
                     // not an error, and the waits below must still run.
-                    Err(CommandError::WrongState) => {}
+                    Ok(()) | Err(CommandError::WrongState) => {}
                     Err(e) => return Err(e.into()),
                 }
             }
