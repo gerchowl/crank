@@ -11,7 +11,8 @@
 //! * every frame is serialized and measured: over [`FRAME_BUDGET_BYTES`] the samples
 //!   are split over consecutive frames, and discrete state that alone exceeds the
 //!   budget is dropped for a bare resync frame;
-//! * frames are at most [`MIN_FRAME_INTERVAL_US`] apart (≤ 10 Hz).
+//! * frames are at least [`MIN_FRAME_INTERVAL_US`] apart (≤ 10 Hz); a split batch is the
+//!   exception, its frames leave together (ADR-0001 §4.3).
 use super::types::{
     LinkChange, LinkDevice, LinkStatus, StreamFrame, StreamStatus, SubId, SubSample,
 };
@@ -190,9 +191,11 @@ impl Flow {
             self.unacked.push_back(f.seq);
         }
         // `seq` wraps by design (see `StreamFrame::seq`); a drain emits a handful of frames.
-        self.next_seq = self
-            .next_seq
-            .wrapping_add(u32::try_from(frames.len()).unwrap_or(u32::MAX));
+        let emitted = u32::try_from(frames.len()).unwrap_or_else(|_| {
+            debug_assert!(false, "a drain emits a handful of frames");
+            u32::MAX
+        });
+        self.next_seq = self.next_seq.wrapping_add(emitted);
         self.last_emit_us = Some(now_us);
         frames
     }

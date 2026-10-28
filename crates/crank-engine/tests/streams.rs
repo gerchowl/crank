@@ -135,7 +135,11 @@ async fn frames_stay_within_ten_hertz_and_status_beats_at_two_hertz() {
             pair[0].0,
             pair[1].0
         );
-        assert_eq!(pair[1].1.seq, pair[0].1.seq + 1, "consecutive seq");
+        assert_eq!(
+            pair[1].1.seq,
+            pair[0].1.seq.wrapping_add(1),
+            "consecutive seq"
+        );
     }
     // Steady riding, nothing but the clock changing: status only on the 500 ms beat.
     let beats: Vec<Duration> = log

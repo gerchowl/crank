@@ -679,11 +679,17 @@ mod tests {
         assert_eq!(adapter.scanning.load(Ordering::SeqCst), 1);
         drop(ui);
     }
+    /// 400 adverts from one chatty device, then 100 new devices, while nobody polls: a bounded
+    /// lossy channel (64 slots) is full of `d0` by the time the new devices arrive and drops
+    /// them; an inbox without coalescing (M5) holds 500 adverts, not 101.
     #[tokio::test(start_paused = true)]
-    async fn a_burst_delivers_every_device_to_slow_and_late_requesters() {
-        const IDS: [&str; 10] = ["d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9"];
-        let script = (0..500)
-            .map(|i| (IDS[i % IDS.len()], Some("X"), false))
+    async fn a_burst_delivers_every_device_once_to_slow_and_late_requesters() {
+        let fresh: Vec<&'static str> = (0..100)
+            .map(|i| &*Box::leak(format!("n{i}").into_boxed_str()))
+            .collect();
+        let script = std::iter::repeat_n("d0", 400)
+            .chain(fresh)
+            .map(|id| (id, Some("X"), false))
             .collect();
         let adapter = Adapter::new(script);
         let source = shared(&adapter);
@@ -692,14 +698,85 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
         let mut late = source.advertisements();
         for share in [&mut first, &mut second, &mut late] {
-            let mut devices = std::collections::HashSet::new();
+            let mut devices = Vec::new();
             while let Ok(Some(ad)) =
                 tokio::time::timeout(Duration::from_millis(10), share.next()).await
             {
-                devices.insert(ad.device.0);
+                devices.push(ad.device.0);
             }
-            assert_eq!(devices.len(), IDS.len(), "no device is lost");
+            let distinct: std::collections::HashSet<_> = devices.iter().collect();
+            assert_eq!(distinct.len(), 101, "no device is lost");
+            assert_eq!(devices.len(), 101, "each device once, coalesced");
         }
+    }
+    /// A device that advertises again updates its pending advert instead of keeping the old
+    /// one (M6), for a requester that polls late and for one that joins afterwards.
+    #[tokio::test(start_paused = true)]
+    async fn a_re_advertised_device_is_delivered_with_its_latest_advert() {
+        let adapter = Adapter::new(vec![
+            ("d0", Some("old"), false),
+            ("d1", Some("other"), false),
+            ("d0", Some("new"), false),
+        ]);
+        let source = shared(&adapter);
+        let mut slow = source.advertisements();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut late = source.advertisements();
+        for share in [&mut slow, &mut late] {
+            let mut names = std::collections::BTreeMap::new();
+            while let Ok(Some(ad)) =
+                tokio::time::timeout(Duration::from_millis(10), share.next()).await
+            {
+                names.insert(ad.device.0, ad.name);
+            }
+            assert_eq!(names.len(), 2);
+            assert_eq!(names["d0"].as_deref(), Some("new"), "the latest advert");
+        }
+    }
+    /// An inner scan that ends ends every share (M7): a requester polling it sees the end
+    /// instead of waiting for ever.
+    #[tokio::test(start_paused = true)]
+    async fn an_ended_scan_ends_every_share() {
+        let mut adapter = Adapter::new(vec![("neo", Some("NEO"), false)]);
+        adapter.fake.never_ends = false;
+        let source = shared(&adapter);
+        let (mut first, mut second) = (source.advertisements(), source.advertisements());
+        for share in [&mut first, &mut second] {
+            assert!(share.next().await.is_some());
+            let end = tokio::time::timeout(Duration::from_secs(5), share.next()).await;
+            assert_eq!(
+                end.expect("the share is not left waiting")
+                    .map(|a| a.device),
+                None
+            );
+        }
+    }
+    /// What the scan saw is replayed only to joiners of that scan: the record is cleared
+    /// when the last requester stops it and when the inner scan ends (M8), so a later scan
+    /// cannot start from the previous one's devices.
+    #[tokio::test(start_paused = true)]
+    async fn the_replay_record_is_cleared_when_a_scan_stops_or_ends() {
+        let adapter = Adapter::new(vec![("neo", Some("NEO"), false)]);
+        let source = shared(&adapter);
+        let mut share = source.advertisements();
+        assert!(share.next().await.is_some());
+        assert_eq!(lock(&source.shared.state).seen.len(), 1);
+        drop(share);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            lock(&source.shared.state).seen.is_empty(),
+            "cleared on stop"
+        );
+
+        let mut adapter = Adapter::new(vec![("neo", Some("NEO"), false)]);
+        adapter.fake.never_ends = false;
+        let source = shared(&adapter);
+        let mut share = source.advertisements();
+        assert!(share.next().await.is_some());
+        let end = tokio::time::timeout(Duration::from_secs(5), share.next()).await;
+        assert!(end.expect("the share is not left waiting").is_none());
+        assert!(lock(&source.shared.state).seen.is_empty(), "cleared on end");
+        assert!(!lock(&source.shared.state).running);
     }
     #[tokio::test(start_paused = true)]
     async fn the_last_requester_dropping_stops_the_scan_exactly_once() {
@@ -776,5 +853,64 @@ mod tests {
             .collect();
         let leaked: usize = threads.into_iter().map(|t| t.join().unwrap()).sum();
         assert_eq!(leaked, 0, "scans left running after their last requester");
+    }
+    /// Two requesters dropping at the same moment: the pump must see both closes. A wake
+    /// that is not stored (`notify_waiters`, M2) is lost when the pump is between two waits
+    /// (it handled the first drop and has not yet re-armed), and the pump then re-sleeps with
+    /// the second requester already gone. Trials stop at the first leak and the run is bounded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn two_requesters_dropping_together_never_leak_the_scan() {
+        const TRIALS: usize = 3000;
+        let runtime = tokio::runtime::Handle::current();
+        let leaked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let (runtime, leaked) = (runtime.clone(), leaked.clone());
+                std::thread::spawn(move || {
+                    let _entered = runtime.enter();
+                    for _ in 0..TRIALS {
+                        if leaked.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        let mut adapter = Adapter::new(vec![("neo", Some("NEO"), false)]);
+                        adapter.stop_delay = Duration::ZERO;
+                        let source = shared(&adapter);
+                        let (mut a, mut b) = (source.advertisements(), source.advertisements());
+                        runtime.block_on(async {
+                            a.next().await;
+                            b.next().await;
+                        });
+                        let start = Arc::new(std::sync::Barrier::new(2));
+                        let dropper = {
+                            let start = start.clone();
+                            std::thread::spawn(move || {
+                                start.wait();
+                                drop(b);
+                            })
+                        };
+                        start.wait();
+                        drop(a);
+                        dropper.join().unwrap();
+                        let stopped =
+                            runtime.block_on(tokio::time::timeout(Duration::from_secs(2), async {
+                                while adapter.stops.load(Ordering::SeqCst) == 0 {
+                                    tokio::task::yield_now().await;
+                                }
+                            }));
+                        if stopped.is_err() {
+                            leaked.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert!(
+            !leaked.load(Ordering::SeqCst),
+            "a scan was left running after both requesters dropped"
+        );
     }
 }
