@@ -78,6 +78,10 @@ def allowed(expr, allow=frozenset(ALLOWED)):
             if pos >= len(toks) or toks[pos] in "()" or toks[pos].upper() in ("AND", "OR", "WITH"):
                 raise ValueError(f"missing exception after WITH in {expr!r}")
             take()
+        # Deliberately case-sensitive, unlike SPDX matching (which ignores case): `mit` is not
+        # on the list. A package that spells its licence unusually fails the gate and gets a
+        # human look, the safe side for a deny-by-default allow-list; the operators AND/OR/WITH
+        # are matched case-insensitively. Pinned by the `mit OR gpl-3.0` case of the unit test.
         return lic in allow
 
     value = or_expr()
