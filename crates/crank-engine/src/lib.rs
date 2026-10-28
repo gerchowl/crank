@@ -33,7 +33,7 @@ pub use engine::{
 pub use erg::{Compliance, Component, ErgPolicy, TrainerFollowing};
 pub use record::{METRICS, RecordError, RideRecorder, SecondRow};
 pub use stream::types::{
-    StreamCap, StreamCompliance, StreamComponent, StreamError, StreamFollowing,
+    StreamCap, StreamCompliance, StreamComponent, StreamError, StreamFollowing, StreamPauseReason,
 };
 pub use stream::{
     LinkChange, LinkDevice, LinkStatus, MetricId, StreamFrame, StreamId, StreamRideState,
