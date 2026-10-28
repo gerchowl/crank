@@ -1328,3 +1328,51 @@ async fn always_early_spacing_sleep_yields_after_a_late_write() {
     tick().await;
     assert_eq!(fake.disconnects.load(Ordering::SeqCst), 1);
 }
+
+/// The real two-layer stack of production (`Reconnecting` over `FecTrainer` over a fake
+/// transport): the event stream ends for the consumer only after the transport has
+/// disconnected, whether the consumer drops the control channel or the event stream (#290).
+#[tokio::test(start_paused = true)]
+async fn a_supervised_trainer_is_released_only_after_its_disconnect() {
+    for drop_control in [true, false] {
+        let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+        let fake = Fake::new(clock.clone());
+        let inner = FecTrainer::new(Arc::new(fake.clone()), clock.clone());
+        let mut link = Reconnecting::new(inner, clock, RideGate::new(true))
+            .connect(&DeviceRef("fake".into()), rider())
+            .await
+            .unwrap();
+        settle().await;
+        assert_eq!(fake.disconnects.load(Ordering::SeqCst), 0);
+        // The disconnect takes a while: the stream must not end before it has finished.
+        fake.hold_disconnect.store(true, Ordering::SeqCst);
+        let ended = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            let ended = ended.clone();
+            tokio::spawn(async move {
+                if drop_control {
+                    drop(link.control);
+                    while link.events.recv().await.is_some() {}
+                } else {
+                    crank_devices::release_events(&mut link.events).await;
+                }
+                ended.store(true, Ordering::SeqCst);
+            })
+        };
+        // in small steps: the release poll sleeps between its checks
+        for _ in 0..50 {
+            tokio::time::advance(Duration::from_millis(20)).await;
+            settle().await;
+        }
+        assert_eq!(fake.disconnects.load(Ordering::SeqCst), 1);
+        assert!(
+            !ended.load(Ordering::SeqCst),
+            "drop_control={drop_control}: ended while the transport is still disconnecting"
+        );
+        fake.disconnect_gate.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(3), waiter)
+            .await
+            .expect("the trainer is released")
+            .unwrap();
+    }
+}
