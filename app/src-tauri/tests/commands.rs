@@ -31,7 +31,9 @@ fn app(dir: &std::path::Path) -> tauri::App<MockRuntime> {
         .expect("mock app");
     app.manage(core);
     for label in ["main", "other"] {
+        // Linux defaults the webview data dir under $HOME, which a build sandbox does not own.
         WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
+            .data_directory(dir.join(format!("webview-{label}")))
             .build()
             .expect("window");
     }
