@@ -214,11 +214,15 @@ async fn the_first_exit_request_is_held_back_the_ride_ended_and_only_then_the_ex
         -1,
         "not before the ride ends"
     );
-    for _ in 0..200 {
+    // The shutdown task runs on Tauri's runtime (real time) while the core's timers follow
+    // this test's paused clock: advance the clock and give the other runtime real time,
+    // until the exit is called (bounded, 10 s of real time).
+    for _ in 0..2000 {
         tokio::time::sleep(Duration::from_millis(20)).await;
         if exited.load(Ordering::SeqCst) != -1 {
             break;
         }
+        std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(exited.load(Ordering::SeqCst), 7, "the requested status");
     assert_eq!(outcomes(&core).await, [RideOutcome::Finished]);
