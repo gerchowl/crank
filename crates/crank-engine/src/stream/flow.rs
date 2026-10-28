@@ -16,6 +16,7 @@
 use super::types::{
     LinkChange, LinkDevice, LinkStatus, StreamFrame, StreamStatus, SubId, SubSample,
 };
+use super::work::{Counted, Work};
 use std::collections::{BTreeMap, VecDeque};
 
 /// Unacknowledged frames a stream may have in flight.
@@ -37,19 +38,26 @@ pub(crate) struct Flow {
     budget: usize,
     next_seq: u32,
     unacked: VecDeque<u32>,
-    samples: BTreeMap<SubId, SubSample>,
+    samples: Counted<SubId, SubSample>,
+    work: Work,
     status: Option<StreamStatus>,
     links: BTreeMap<LinkDevice, LinkStatus>,
     resync: bool,
     last_emit_us: Option<u64>,
 }
 impl Flow {
+    #[cfg(test)]
     pub(crate) fn new(budget: usize) -> Self {
+        Self::with_work(budget, Work::default())
+    }
+    /// A flow that counts its work units into `work` (test-only counting, see [`Work`]).
+    pub(crate) fn with_work(budget: usize, work: Work) -> Self {
         Self {
             budget,
             next_seq: 0,
             unacked: VecDeque::new(),
-            samples: BTreeMap::new(),
+            samples: Counted::new(work.clone()),
+            work,
             status: None,
             links: BTreeMap::new(),
             resync: false,
@@ -114,6 +122,7 @@ impl Flow {
     /// `u32::MAX` → 0 wrap needs no special case. Returns whether anything was
     /// acknowledged.
     pub(crate) fn ack(&mut self, seq: u32) -> bool {
+        self.work.add(1 + self.unacked.len());
         match self.unacked.iter().position(|&s| s == seq) {
             Some(i) => {
                 self.unacked.drain(..=i);
@@ -132,6 +141,7 @@ impl Flow {
     }
     /// The frames to send at `now_us`: none while blocked or inside the 10 Hz interval.
     pub(crate) fn drain(&mut self, now_us: u64) -> Vec<StreamFrame> {
+        self.work.add(1);
         if self.next_emit_at(now_us) != Some(now_us) {
             return Vec::new();
         }
@@ -187,6 +197,7 @@ impl Flow {
             }
             frames.push(cur);
         }
+        self.work.add(frames.len());
         for f in &frames {
             self.unacked.push_back(f.seq);
         }
