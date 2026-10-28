@@ -185,7 +185,7 @@ pub struct StreamFrame {
 pub struct SubSample { pub sub: SubId, pub t: f64, pub v: Option<f64> }  // t = session seconds (§5)
 
 #[tauri::command] #[specta::specta]
-async fn stream_ack(core: State<'_, Core>, stream: StreamId, seq: u64) -> Result<(), ApiError>;
+async fn stream_ack(core: State<'_, Core>, stream: StreamId, seq: u32) -> Result<(), ApiError>;
 ```
 
 **Flow control.** Tauri's `Channel::send` has no consumer backpressure: payloads under 8 KiB of JSON are
@@ -232,7 +232,7 @@ Rates:
 |---|---|---|
 | Engine tick / trainer source | **4 Hz** (250 ms) | FE-C native rate; Tacx recommends 4 Hz in both directions (ADR-0002 §4) |
 | HR source | per notification (~1 Hz), RR per beat | Heart Rate Service |
-| Frame emission | **≤ 10 Hz**, only when something is due | 10 Hz is the maximum display rate; bounds IPC to ≤ 10 messages/s per window regardless of widget count |
+| Frame emission | **≤ 10 Hz**, only when something is due | 10 Hz is the maximum display rate; bounds IPC to ≤ 10 messages/s per window regardless of widget count. One exception: a batch that exceeds the frame budget is split into up to 3 consecutive frames sent at the same instant (unreachable below 8 000 bytes of pending state) |
 | Status heartbeat | 2 Hz while riding, immediately on change | same as mock |
 | Ride record | 1 Hz per-second means | `streams()` and persistence |
 
