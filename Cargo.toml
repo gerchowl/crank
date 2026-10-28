@@ -22,6 +22,7 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 specta-typescript = "=0.0.12"
+specta-serde = "=0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tauri = "2.12.3"
 # Embedded WebDriver server for the macOS e2e harness (ADR-0001 §8.3, #35). Only `crank-desktop`'s `e2e` feature enables it.
