@@ -1036,10 +1036,10 @@ impl Core {
             if state != RideState::Finished {
                 match s.handle.send(EngineCmd::Stop).await {
                     Ok(()) => {}
-                    // The ride finished on its own between the status read and the
-                    // command: ending it again is not an error.
-                    Err(CommandError::WrongState)
-                        if s.handle.status().state == RideState::Finished => {}
+                    // `WrongState`: the ride is already ending (it finished on its own, or
+                    // an overlapping end got in first, also on an unstarted ride). That is
+                    // not an error, and the waits below must still run.
+                    Err(CommandError::WrongState) => {}
                     Err(e) => return Err(e.into()),
                 }
             }
@@ -2179,7 +2179,7 @@ mod tests {
             tokio::spawn(async move { core.ride_end().await })
         };
         // The session is reaped; the trainer still takes 2 s to hand itself back.
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
         assert!(core.0.state.lock().await.session.is_none());
         assert!(radio.disconnects.lock().unwrap().is_empty(), "releasing");
         let second = core.ride_end().await.unwrap();
@@ -2208,12 +2208,52 @@ mod tests {
             session.task.abort();
             session.task = tokio::spawn(std::future::pending());
         }
-        let replaced = tokio::time::timeout(
-            REAP_TIMEOUT + RELEASE_TIMEOUT + Duration::from_secs(5),
-            core.ride_load(None),
-        )
-        .await;
-        replaced.expect("the load is not wedged").unwrap();
+        let replace = {
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_load(None).await })
+        };
+        // The forced reap starts at `REAP_TIMEOUT`. It aborts the hung task, so the state
+        // lock is free again at once; awaiting it instead would hold the lock for a further
+        // `RELEASE_TIMEOUT`.
+        tokio::time::sleep(REAP_TIMEOUT + Duration::from_secs(1)).await;
+        tokio::time::timeout(Duration::from_millis(500), core.0.state.lock())
+            .await
+            .expect("the state lock is not held by an await of the hung engine");
+        tokio::time::timeout(RELEASE_TIMEOUT + Duration::from_secs(5), replace)
+            .await
+            .expect("the load is not wedged")
+            .unwrap()
+            .unwrap();
         assert!(core.ride_status().await.unwrap().status.loaded);
+    }
+
+    /// #290: two overlapping ends of an unstarted ride: the loser's `Stop` finds the engine
+    /// already ending (`WrongState`), and it must still wait for the same release.
+    #[tokio::test(start_paused = true)]
+    async fn two_concurrent_ends_of_an_unstarted_ride_both_await_the_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio) =
+            slow_release_core(dir.path(), Duration::from_secs(2), Duration::from_secs(2)).await;
+        core.ride_load(None).await.unwrap();
+        let ended = |core: Core, radio: FakeRadio| async move {
+            let outcome = core.ride_end().await;
+            let released = (
+                radio.disconnects.lock().unwrap().len(),
+                radio.hr_released.load(std::sync::atomic::Ordering::SeqCst),
+            );
+            (outcome, released)
+        };
+        let (first, second) = tokio::join!(
+            ended(core.clone(), radio.clone()),
+            ended(core.clone(), radio.clone())
+        );
+        for (outcome, released) in [first, second] {
+            assert_eq!(outcome.unwrap(), None);
+            assert_eq!(
+                released,
+                (1, 1),
+                "returned before the devices were released"
+            );
+        }
     }
 }

@@ -1329,6 +1329,39 @@ async fn always_early_spacing_sleep_yields_after_a_late_write() {
     assert_eq!(fake.disconnects.load(Ordering::SeqCst), 1);
 }
 
+/// A platform disconnect that never completes ends the trainer's stream anyway, after the
+/// disconnect timeout and not before.
+#[tokio::test(start_paused = true)]
+async fn a_hanging_trainer_disconnect_does_not_hang_the_release() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let fake = Fake::new(clock.clone());
+    fake.hold_disconnect.store(true, Ordering::SeqCst);
+    let inner = FecTrainer::new(Arc::new(fake.clone()), clock.clone());
+    let mut link = Reconnecting::new(inner, clock, RideGate::new(true))
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    settle().await;
+    drop(link.control);
+    let ended = Arc::new(AtomicBool::new(false));
+    {
+        let ended = ended.clone();
+        tokio::spawn(async move {
+            while link.events.recv().await.is_some() {}
+            ended.store(true, Ordering::SeqCst);
+        });
+    }
+    for _ in 0..90 {
+        tokio::time::advance(Duration::from_millis(20)).await;
+        settle().await;
+    }
+    assert!(!ended.load(Ordering::SeqCst), "1.8 s");
+    for _ in 0..60 {
+        tokio::time::advance(Duration::from_millis(20)).await;
+        settle().await;
+    }
+    assert!(ended.load(Ordering::SeqCst), "3 s");
+}
 /// The real two-layer stack of production (`Reconnecting` over `FecTrainer` over a fake
 /// transport): the event stream ends for the consumer only after the transport has
 /// disconnected, whether the consumer drops the control channel or the event stream (#290).
