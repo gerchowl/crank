@@ -15,7 +15,14 @@
 //! then per attempt after [`reconnect_backoff`] a `Reconnecting { attempt }` plus a
 //! `Fault` while the outage lasts, then `Connecting`, `Ready` and no control mode (the
 //! engine re-issues `SetMode`); commands sent meanwhile are discarded. The strap
-//! follows the same sequence through `HrEvent`. Writer tick allocation and keep-alives (#43) are not modelled.
+//! follows the same sequence through `HrEvent`. A connect while a loss is still in
+//! progress fails with `ConnectFailed`, as the real stack's first connect does; losses
+//! that overlap in time are one outage (their schedules would otherwise interleave).
+//! Writer tick allocation and keep-alives (#43) are not modelled.
+//!
+//! **Differs from the real stack:** the sim has no ride gate. `Reconnecting<FecTrainer>`
+//! only retries while a ride is active (`RideGate`, #206); the sim reconnects after every
+//! outage, as if one always were. Taking a ride-active input is part of the wiring (#208).
 //!
 //! Known limits: derived metrics, the metric bus, coach hooks and full `RideSim`
 //! parity (`simulator.json` beyond the raw power, cadence, speed, HR and RR streams)
@@ -141,7 +148,8 @@ pub struct SimConfig {
     pub seed: u32,
     /// Capabilities advertised on connect.
     pub caps: TrainerCaps,
-    /// Faults to inject.
+    /// Faults to inject. Overlapping [`SimFault::Dropout`]s (and overlapping
+    /// [`SimFault::HrLoss`]es) are merged into one outage when the rig is built.
     pub faults: Vec<SimFault>,
 }
 impl Default for SimConfig {
@@ -204,6 +212,47 @@ fn outage(at: Duration, down: Duration) -> (Vec<u64>, u64) {
         }
     }
 }
+/// Merge outages of one kind that overlap: a loss that starts before the previous one
+/// has recovered extends it. Without this two schedules would interleave their attempts.
+fn merge_outages(mut faults: Vec<SimFault>) -> Vec<SimFault> {
+    type Pick = fn(&SimFault) -> Option<(Duration, Duration)>;
+    type Make = fn(Duration, Duration) -> SimFault;
+    let kinds: [(Pick, Make); 2] = [
+        (
+            |f| match *f {
+                SimFault::Dropout { at, down } => Some((at, down)),
+                _ => None,
+            },
+            |at, down| SimFault::Dropout { at, down },
+        ),
+        (
+            |f| match *f {
+                SimFault::HrLoss { at, down } => Some((at, down)),
+                _ => None,
+            },
+            |at, down| SimFault::HrLoss { at, down },
+        ),
+    ];
+    for (pick, make) in kinds {
+        let mut losses: Vec<_> = faults.iter().filter_map(pick).collect();
+        if losses.len() < 2 {
+            continue;
+        }
+        faults.retain(|f| pick(f).is_none());
+        losses.sort_by_key(|&(at, _)| at);
+        let mut cur = losses[0];
+        for &(at, down) in &losses[1..] {
+            if us(at) < outage(cur.0, cur.1).1 {
+                cur.1 = (cur.0 + cur.1).max(at + down).saturating_sub(cur.0);
+            } else {
+                faults.push(make(cur.0, cur.1));
+                cur = (at, down);
+            }
+        }
+        faults.push(make(cur.0, cur.1));
+    }
+    faults
+}
 fn outage_error() -> DeviceError {
     DeviceError::ConnectFailed("simulated outage".into())
 }
@@ -254,7 +303,8 @@ struct Out {
 }
 
 impl World {
-    fn new(cfg: SimConfig) -> Self {
+    fn new(mut cfg: SimConfig) -> Self {
+        cfg.faults = merge_outages(std::mem::take(&mut cfg.faults));
         let d = cfg.default_rider;
         Self {
             core: SimCore::new(
@@ -270,6 +320,10 @@ impl World {
             trainer: TrainerSide::default(),
             heart: HeartSide::default(),
         }
+    }
+    /// Microseconds since the rig's first connection (0 before it).
+    fn rel(&self, now: MonoTime) -> u64 {
+        self.start.map_or(0, |s| now.0.saturating_sub(s.0))
     }
     fn window(&self, rel: u64, pick: impl Fn(&SimFault) -> Option<(u64, u64)>) -> bool {
         self.cfg
@@ -713,9 +767,13 @@ impl TrainerDriver for SimTrainer {
                     .try_send(TrainerEvent::Link(s))
                     .map_err(|e| DeviceError::Gatt(e.to_string()))?;
             }
+            let now = rig.clock.now();
             rig.attach(|w| {
                 if w.trainer.tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
                     return Err(DeviceError::AlreadyConnected);
+                }
+                if w.trainer_down(w.rel(now)) {
+                    return Err(outage_error());
                 }
                 w.core
                     .set_mass_kg(f64::from(rider.rider_kg) + f64::from(rider.bike_kg));
@@ -765,9 +823,13 @@ impl HeartRateDriver for SimHeart {
                     .try_send(HrEvent::Link(s))
                     .map_err(|e| DeviceError::Gatt(e.to_string()))?;
             }
+            let now = rig.clock.now();
             rig.attach(|w| {
                 if w.heart.tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
                     return Err(DeviceError::AlreadyConnected);
+                }
+                if w.hr_down(w.rel(now)) {
+                    return Err(outage_error());
                 }
                 w.next_generation += 1;
                 w.heart = HeartSide {
