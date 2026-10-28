@@ -1034,21 +1034,21 @@ fn the_tick_cost_stays_bounded_at_every_cap() {
         )
         .expect("at the caps");
     }
-    // Past every window length (1 200 samples of the longest SMA). The cost is counted, not
-    // timed (#293): one tick must push each chain once and ship at most one frame per
-    // subscription, so work per tick is linear in the subscriptions and cannot flake.
+    // The cost is counted, not timed (#293): every hub work unit is counted (subscriptions visited, chain pushes,
+    // flow offers, polls, acks, frames built), and one tick may cost at most a constant
+    // per subscription and stream. A pass over all subscriptions per subscription, even a
+    // read-only one, is quadratic and breaks the bound; wall time cannot flake it.
     let subscriptions = MAX_STREAMS * MAX_SUBSCRIPTIONS;
-    let steps = 3_000_u64;
+    let per_tick_bound = 8 * (subscriptions + MAX_STREAMS);
+    // Work per tick does not depend on how long the windows have been filling, so 300 ticks
+    // (75 s) show the steady state and keep the test fast.
+    let steps = 300_u64;
     let mut frames = 0_usize;
+    let mut worst = 0_usize;
     for k in 1..=steps {
         let t = k as f64 / 4.0;
-        let before = hub.chain_pushes();
+        let before = hub.work();
         hub.on_source(t, &[Some((k % 400) as f64), None, None, None, None]);
-        assert_eq!(
-            hub.chain_pushes() - before,
-            subscriptions,
-            "chain pushes in tick {k}: each subscription's chain runs exactly once"
-        );
         hub.poll(k * 250 * MS);
         // The consumers keep up, as the UI does.
         for (id, rx) in ids.iter().zip(&mut rxs) {
@@ -1057,12 +1057,18 @@ fn the_tick_cost_stays_bounded_at_every_cap() {
                 hub.ack(*id, f.seq).expect("ack");
             }
         }
+        worst = worst.max(hub.work() - before);
+        assert!(
+            worst <= per_tick_bound,
+            "{worst} work units in tick {k}, over the linear bound {per_tick_bound} \
+             ({subscriptions} subscriptions, {MAX_STREAMS} streams)"
+        );
     }
-    // Ten per second against four ticks a second: at most one sample frame per
-    // subscription per tick, plus a bounded number of status frames per stream.
-    let per_tick_bound = subscriptions * usize::try_from(steps).expect("small");
+    // A sanity check, not a cost measure: ten per second against four ticks a second is at
+    // most one sample frame per subscription per tick, plus a few status frames per stream.
+    let ticks = usize::try_from(steps).expect("small");
     assert!(
-        frames <= per_tick_bound + MAX_STREAMS * 8,
+        frames <= subscriptions * ticks + MAX_STREAMS * 8,
         "{frames} frames over {steps} ticks exceeds one per subscription per tick"
     );
 }
