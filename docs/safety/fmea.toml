@@ -1165,6 +1165,9 @@ test = [
   "crates/crank-ble/src/tests/end_to_end.rs::pause_stop_drop_leaves_page_48_last",
   "crates/crank-ble/src/tests/end_to_end.rs::a_natural_finish_leaves_page_48_last",
   "crates/crank-ble/src/tests/end_to_end.rs::a_release_on_the_last_tick_leaves_page_48_last",
+  "crates/crank-ble/src/tests/end_to_end.rs::stop_load_drop_writes_page_48_before_the_gate_clears",
+  "crates/crank-ble/src/tests/end_to_end.rs::stop_load_stop_drop_writes_page_48_before_the_gate_clears",
+  "crates/crank-ble/src/tests/end_to_end.rs::stop_load_start_writes_page_48_before_any_erg_page_of_the_new_ride",
 ]
 wanted.trainer = "Resistance{pct: 0} (ADR-0002 §7.9 as amended, #266) sent before the ride-active gate clears; the gate waits for Delivered of that mode, link loss or 2 s; the last control page written is page 48"
 wanted.engine = "finished; record closed via RideRecorder::finish; ride-active gate cleared; partial last second not recorded"

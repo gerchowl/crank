@@ -1966,6 +1966,8 @@ mod soft_start_property {
             if !over {
                 mon.end(&r.modes())?;
             }
+            // the driver confirms the end mode; until it does the next ride sends nothing (#279)
+            r.delivered(ControlMode::Resistance { pct: 0.0 });
         }
         Ok(())
     }
