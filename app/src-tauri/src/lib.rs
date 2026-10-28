@@ -120,7 +120,6 @@ pub fn run() -> tauri::Result<()> {
     #[cfg(feature = "e2e")]
     let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     let app = builder.build(tauri::generate_context!())?;
-    let quit = std::sync::Arc::new(lifecycle::Quit::default());
-    app.run(move |handle, event| lifecycle::on_run_event(handle, &event, &quit));
+    lifecycle::run(app);
     Ok(())
 }

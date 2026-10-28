@@ -92,5 +92,10 @@ icons:
 e2e:
     scripts/e2e.sh
 
+# macOS only, needs a GUI session: terminate a real Wry app with `NSApp terminate:` mid-ride and check
+# the ride was ended (Finished, not Aborted). Cmd+Q, Dock Quit and logout all end this way.
+quit-test:
+    cargo run -p crank-desktop --example quit_check
+
 screens:
     @echo 'BLOCKED: screenshot matrix awaits the UI waves (#229)'; exit 1

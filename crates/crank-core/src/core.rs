@@ -904,11 +904,11 @@ impl Core {
                     let state = s.handle.status().state;
                     if state != RideState::Finished {
                         match s.handle.send(EngineCmd::Stop).await {
-                            Ok(()) => {}
-                            // The ride finished on its own between the status read and
-                            // the command: ending it again is not an error.
-                            Err(CommandError::WrongState)
-                                if s.handle.status().state == RideState::Finished => {}
+                            // `WrongState`: the ride is already ending (it finished on its
+                            // own, or an overlapping end got in first) while this session is
+                            // still held. That is not an error, and the wait below must still
+                            // run: an end mode may be owed before the devices are released.
+                            Ok(()) | Err(CommandError::WrongState) => {}
                             Err(e) => return Err(e.into()),
                         }
                     }
@@ -1825,6 +1825,26 @@ mod tests {
             Shutdown::TimedOut
         );
         assert_eq!(t.elapsed(), Duration::from_millis(500));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn overlapping_ends_of_a_loaded_ride_both_wait_for_the_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut radio = fake(vec![], false);
+        radio.mode_delay = Duration::from_millis(500);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        radio.disconnects.lock().unwrap().clear();
+        core.ride_load(None).await.unwrap();
+        // A second end of a ride that is already being ended is not a `Conflict` that
+        // `shutdown` would read as "nothing loaded": it waits for the release like the first.
+        let (end, quit) = tokio::join!(core.ride_end(), core.shutdown(Duration::from_secs(3)));
+        end.unwrap();
+        assert_eq!(quit, Shutdown::Released);
+        assert!(!core.ride_status().await.unwrap().status.loaded);
+        assert_eq!(*radio.disconnects.lock().unwrap(), [false]);
     }
 
     #[tokio::test(start_paused = true)]
