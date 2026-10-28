@@ -28,8 +28,14 @@ pinned `advisory-db` input (bump: `nix flake update advisory-db`; ADR-0001 §9.5
 `crank-desktop` wires `crank-core` as Tauri commands (`app/src-tauri/src/commands.rs`, one per facade method; `ApiError` is the only
 error type that crosses) and manages one `Core`. Runtime configuration: `--sim` or `CRANK_SIM=1` (anything but empty, `0`, `false`)
 drives the seeded device simulator instead of Bluetooth; `CRANK_DATA_DIR` sets the directory of `crank.db` and `ride.lock` (default:
-the app-data directory of the bundle identifier). Streams belong to the calling window's label and are dropped when it is destroyed.
-`just dev` starts the window (`CRANK_SIM=1 just dev` rides without hardware). `just bundle` (sage only, outside the sandbox) builds
+the app-data directory of the bundle identifier). Streams belong to the calling window's label and are dropped when it is destroyed
+or its page (re)loads (a reload keeps the webview, so the old channel would not fail). **Quitting ends a ride** (Cmd+Q, last window
+closed): the first exit request is held back, `Core::shutdown` ends the ride (end mode `Resistance{0}`, ADR-0002 §7.9) and waits at most 3 s
+for the devices to be released (`app/src-tauri/src/lifecycle.rs`). If the core cannot open (a second crank holds `ride.lock`) a native
+dialog says so and the process exits with status 1. Tauri rejects malformed arguments with a plain string, not an `ApiError`:
+`app/src/api.ts` (`api()`, `toApiError`) maps it to `{code: "internal", message}`; UI code calls the generated commands through it.
+`just dev` starts the window on its own data dir (`./.crank-dev`, so it never shares `ride.lock` with the installed app; override with
+`CRANK_DATA_DIR`; `CRANK_SIM=1 just dev` rides without hardware). `just bundle` (sage only, outside the sandbox) builds
 `.#crank-app` (an unsigned, Nix-assembled `crank.app`), signs a copy inside-out with the local `nix-tcc`
 identity (by its SHA-1, the identity the requirement check verifies) and swaps it atomically into
 `~/Applications/crank.app` (`scripts/install-app.sh`), so the Bluetooth TCC grant survives rebuilds
