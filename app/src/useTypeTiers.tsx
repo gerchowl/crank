@@ -6,12 +6,19 @@ import {
   type ReactNode,
 } from "react";
 import { useMonitorWidthMmOverride, useRideDistanceM } from "./rideSettings";
-import { computeTiers, type Monitor, type Tiers } from "./typeTiers";
+import {
+  TOO_SMALL_TEXT,
+  computeTiers,
+  type Monitor,
+  type Tiers,
+} from "./typeTiers";
 
 const subscribe = (notify: () => void) => {
   window.addEventListener("resize", notify);
   // The scale factor changes without a resize when the window moves to another monitor or the zoom changes;
   // a resolution query matches only the current ratio, so it fires on any change and is re-armed each time.
+  // Limitation: a non-round ratio (e.g. 1.25 under browser zoom) is formatted by the engine and may not match
+  // exactly, in which case a change is still caught by the next resize.
   let mq: MediaQueryList | null = null;
   const onDpr = () => {
     notify();
@@ -74,18 +81,19 @@ export function TooSmallBanner() {
       className="too-small-banner"
       style={{ fontSize: "var(--t3p)" }}
     >
-      Window too small to read targets
+      {TOO_SMALL_TEXT}
     </div>
   );
 }
 
-/** Height reserved for the status-bar slot: one T3+ line, so showing or hiding the warning never reflows. */
+/** Height reserved for the status-bar slot: one T3+ line, the taller of the banner (T3+) and the notice (T4). */
 const SLOT_HEIGHT = "calc(var(--t3p) * 1.5)";
 
 /**
  * Applies the tier tokens to its subtree. The too-small banner and the unknown-size notice go in a status-bar
  * slot below the content that is always rendered at a fixed height (DESIGN §6.2, §10 #10), so the content's
- * position does not depend on the warning.
+ * position does not depend on the warning. The parent must give this component a defined height (e.g.
+ * `height: 100%` chain from the viewport, #96): the slot is pinned to the bottom of that height.
  */
 export function RideTiers({ children }: { children: ReactNode }) {
   const tiers = useTypeTiers();
@@ -107,7 +115,10 @@ export function RideTiers({ children }: { children: ReactNode }) {
       >
         {tiers.tooSmallForT2 && <TooSmallBanner />}
         {tiers.notice && (
-          <p role="status" style={{ margin: 0, fontSize: "var(--t3)" }}>
+          <p
+            role="status"
+            style={{ margin: 0, fontSize: "var(--t4)", whiteSpace: "nowrap" }}
+          >
             {tiers.notice}
           </p>
         )}

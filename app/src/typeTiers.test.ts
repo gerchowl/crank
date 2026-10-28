@@ -1,6 +1,9 @@
 import { expect, test } from "vitest";
 import {
+  BANNER_MAX_CHARS,
   FALLBACK_NOTICE,
+  NOTICE_MAX_CHARS,
+  TOO_SMALL_TEXT,
   FALLBACK_TOKENS,
   computeTiers,
   type Monitor,
@@ -95,4 +98,9 @@ test("the reference devices in their real maximized windows do not warn", () => 
   expect(compute(tablet, 0.8, { width: 1024, height: 715 }).tooSmallForT2).toBe(
     false,
   );
+});
+
+test("status-bar strings fit their one-line maximum", () => {
+  expect(FALLBACK_NOTICE.length).toBeLessThanOrEqual(NOTICE_MAX_CHARS);
+  expect(TOO_SMALL_TEXT.length).toBeLessThanOrEqual(BANNER_MAX_CHARS);
 });

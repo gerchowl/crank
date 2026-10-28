@@ -7,6 +7,7 @@ import * as settings from "./rideSettings";
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 const setViewport = (w: number, h: number) => {
@@ -107,5 +108,4 @@ test("a devicePixelRatio change without a resize recomputes the tiers", async ()
   await vi.waitFor(() =>
     expect(root.style.getPropertyValue("--t2")).toBe("51px"),
   );
-  vi.unstubAllGlobals();
 });
