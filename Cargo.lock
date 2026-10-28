@@ -620,12 +620,17 @@ name = "crank-desktop"
 version = "0.1.0"
 dependencies = [
  "crank-core",
+ "crank-devices",
+ "crank-engine",
+ "serde_json",
  "specta",
  "specta-typescript",
  "tauri",
  "tauri-build",
  "tauri-plugin-wdio-webdriver",
  "tauri-specta",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
