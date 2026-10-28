@@ -191,7 +191,8 @@ fn relay_events<E: Send + 'static>(
 }
 /// Resolve once the driver has dropped its sender. With `close` the channel is closed first,
 /// so the driver's next send fails; `recv` then ends as soon as the buffer is drained,
-/// whether or not the driver is done, so the sender count is what tells.
+/// whether or not the driver is done, so the sender count is what tells (a driver-side
+/// release signal would replace the polling: #295).
 async fn driver_closed<E>(events: &mut tokio::sync::mpsc::Receiver<E>, close: bool) {
     if close {
         events.close();
