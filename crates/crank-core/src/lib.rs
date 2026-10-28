@@ -20,11 +20,3 @@ pub use backend::DeviceMode;
 pub use core::{Core, CoreConfig, FrameSink, SinkClosed};
 pub use dto::*;
 pub use error::{ApiError, ErrorCode};
-
-/// Placeholder response used to exercise generated bindings before #34.
-#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct ScaffoldInfo {
-    /// Display name of the application.
-    pub app_name: String,
-}

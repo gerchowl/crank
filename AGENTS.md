@@ -25,7 +25,11 @@ feature graph, failing if expected crates are missing or e2e is enabled.
 pinned `advisory-db` input (bump: `nix flake update advisory-db`; ADR-0001 §9.5). The directory name
 `advisory-db-3157b0e258782691` in flake.nix is cargo-deny's hash of the default db URL.
 
-`just dev` starts the placeholder window. `just bundle` (sage only, outside the sandbox) builds
+`crank-desktop` wires `crank-core` as Tauri commands (`app/src-tauri/src/commands.rs`, one per facade method; `ApiError` is the only
+error type that crosses) and manages one `Core`. Runtime configuration: `--sim` or `CRANK_SIM=1` (anything but empty, `0`, `false`)
+drives the seeded device simulator instead of Bluetooth; `CRANK_DATA_DIR` sets the directory of `crank.db` and `ride.lock` (default:
+the app-data directory of the bundle identifier). Streams belong to the calling window's label and are dropped when it is destroyed.
+`just dev` starts the window (`CRANK_SIM=1 just dev` rides without hardware). `just bundle` (sage only, outside the sandbox) builds
 `.#crank-app` (an unsigned, Nix-assembled `crank.app`), signs a copy inside-out with the local `nix-tcc`
 identity (by its SHA-1, the identity the requirement check verifies) and swaps it atomically into
 `~/Applications/crank.app` (`scripts/install-app.sh`), so the Bluetooth TCC grant survives rebuilds
@@ -35,7 +39,7 @@ and the recipe is macOS-only, so on Linux the script skips with a message. `just
 identity's SHA-1 from the keychain at run time, never creates or changes identities, and uses no
 hardened runtime or App Sandbox (library validation rejects the unsigned nix-store dylibs;
 distribution signing is #47). `just e2e` (`scripts/e2e.sh`, ADR-0001 §8.3.1) builds `.#crank-desktop-e2e` and runs the WebdriverIO specs of
-`app/e2e/` in the GUI session through Alacritty IPC (`CRANK_E2E_DIRECT=1` from a GUI terminal); output goes to the
+`app/e2e/` (in sim mode, scratch data dir per launch) in the GUI session through Alacritty IPC (`CRANK_E2E_DIRECT=1` from a GUI terminal); output goes to the
 gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and compares screenshots across them; on Linux it skips with a message.
 `just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
 provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.

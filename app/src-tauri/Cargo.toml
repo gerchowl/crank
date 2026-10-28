@@ -11,11 +11,20 @@ workspace = true
 
 [dependencies]
 crank-core.workspace = true
+crank-devices.workspace = true
+crank-engine.workspace = true
 tauri.workspace = true
 tauri-specta.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true
 tauri-plugin-wdio-webdriver = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The mock runtime builds a window and managed state for the command-layer tests.
+tauri = { workspace = true, features = ["test"] }
+serde_json.workspace = true
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "test-util", "time"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

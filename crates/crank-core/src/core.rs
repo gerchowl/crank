@@ -1460,6 +1460,17 @@ mod tests {
         assert!(!modes.is_empty());
         assert!(modes.iter().all(|active| *active), "{modes:?}");
         assert_eq!(*radio.disconnects.lock().unwrap(), [false]);
+        // #269 / #34: the last mode the trainer is given is the non-torque end mode and
+        // nothing follows it but the release (by closing the link, which `disconnects`
+        // above saw with the gate down), so the release cannot drop it (S1).
+        let commands = radio.commands.lock().unwrap().clone();
+        assert_eq!(
+            commands.last(),
+            Some(&TrainerCommand::SetMode(
+                crank_devices::ControlMode::Resistance { pct: 0.0 }
+            )),
+            "{commands:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

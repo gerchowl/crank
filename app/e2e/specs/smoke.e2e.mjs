@@ -1,4 +1,4 @@
-// Harness smoke spec (#35): launch, element query, IPC round trip with a DOM change, screenshots.
+// Harness smoke spec (#35): launch, element query, IPC round trip (core_ready, workouts_list) with a DOM change, screenshots.
 // The shell's views are placeholders, so this exercises an event-driven DOM change instead of navigation;
 // navigation and the screenshot matrix arrive with the UI waves (see the deferred #35 follow-ups).
 import { readFileSync, mkdirSync } from "node:fs";
@@ -14,21 +14,26 @@ describe("crank shell", () => {
     await expect($("h1")).toHaveText("Today");
   });
 
-  it("round-trips a Rust command and updates the DOM", async () => {
-    const appName = await browser.executeAsync((done) => {
-      window.__TAURI_INTERNALS__
-        .invoke("scaffold_info")
-        .then((info) => {
+  // The app runs on the device simulator with a scratch data dir (`CRANK_SIM`, `CRANK_DATA_DIR`, set by
+  // scripts/e2e.sh), so these calls need no hardware (#34).
+  it("round-trips core_ready and workouts_list and updates the DOM", async () => {
+    const result = await browser.executeAsync((done) => {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      Promise.all([invoke("core_ready"), invoke("workouts_list")])
+        .then(([info, workouts]) => {
           const node = document.createElement("output");
           node.id = "e2e-probe";
-          node.textContent = info.appName;
+          node.textContent = `sim=${info.sim} workouts=${workouts.length}`;
           document.body.append(node);
-          done(info.appName);
+          done({ sim: info.sim, workouts: workouts.length });
         })
-        .catch((error) => done(`error: ${String(error)}`));
+        .catch((error) => done(`error: ${JSON.stringify(error)}`));
     });
-    expect(appName).toBe("crank");
-    await expect($("#e2e-probe")).toHaveText("crank");
+    expect(result.sim).toBe(true);
+    expect(result.workouts).toBeGreaterThan(0);
+    await expect($("#e2e-probe")).toHaveText(
+      `sim=true workouts=${result.workouts}`,
+    );
   });
 
   it("writes byte-identical screenshots for an unchanged page", async () => {
