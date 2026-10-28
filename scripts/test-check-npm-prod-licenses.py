@@ -25,6 +25,7 @@ CASES = [
     ("GPL-3.0 WITH Classpath-exception-2.0", False),
     ("mit OR gpl-3.0", False),                    # identifiers are case-sensitive; operators are not
     ("Apache-2.0 or GPL-3.0", True),
+    ("mit", False),                               # a deliberate safe-side policy, see check-npm-prod-licenses.py
     ("UNKNOWN", False),
     ("SEE LICENSE IN LICENSE.md", False),
     ("MIT OR", False),

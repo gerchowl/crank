@@ -774,3 +774,163 @@ async fn trainer_and_strap_share_one_rider() {
         "harder work raises the strap's HR"
     );
 }
+
+// ---- #214: fault plans, connects during an outage, run-loop guards ----
+
+#[tokio::test(start_paused = true)]
+async fn overlapping_dropouts_are_one_outage_not_interleaved_schedules() {
+    // The second loss starts before the first one has recovered (17.5 s): it extends the
+    // outage, which keeps a single schedule 1, 2, 3, 4 and one recovery.
+    let r = rig(vec![
+        SimFault::Dropout {
+            at: s(10),
+            down: s(5),
+        },
+        SimFault::Dropout {
+            at: s(12),
+            down: s(5),
+        },
+    ]);
+    let mut link = connect(&r).await;
+    let ev = run(&mut link, 25).await;
+    assert_eq!(
+        link_trace(&ev),
+        [
+            "Connecting",
+            "Ready",
+            "Lost",
+            "Reconnecting(1)",
+            "Fault",
+            "Reconnecting(2)",
+            "Fault",
+            "Reconnecting(3)",
+            "Fault",
+            "Reconnecting(4)",
+            "Connecting",
+            "Ready",
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn overlapping_strap_losses_are_one_outage_too() {
+    let r = rig(vec![
+        SimFault::HrLoss {
+            at: s(10),
+            down: s(5),
+        },
+        SimFault::HrLoss {
+            at: s(12),
+            down: s(5),
+        },
+    ]);
+    let ev = hr_events(&r, 25).await;
+    let attempts: Vec<u32> = ev
+        .iter()
+        .filter_map(|e| match e {
+            HrEvent::Reconnecting { attempt } => Some(*attempt),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(attempts, [1, 2, 3, 4]);
+}
+
+// The other side's link keeps the stepping task running through the outage; a task that
+// had stopped would replay the missed ticks to a late link (#297).
+#[tokio::test(start_paused = true)]
+async fn connecting_the_trainer_during_an_outage_fails_like_the_real_stack() {
+    let r = rig(vec![SimFault::Dropout {
+        at: s(10),
+        down: s(5),
+    }]);
+    let mut strap = r
+        .heart()
+        .connect(&DeviceRef("hr".into()))
+        .await
+        .expect("sim");
+    sleep(s(11)).await;
+    while strap.events.try_recv().is_ok() {}
+    let refused = r
+        .trainer()
+        .connect(&DeviceRef("sim".into()), RIDER)
+        .await
+        .err();
+    assert!(
+        matches!(refused, Some(DeviceError::ConnectFailed(_))),
+        "{refused:?}"
+    );
+    // Once the outage is over a connect is a plain one: no loss, no attempts from mid-schedule.
+    sleep(s(9)).await;
+    let mut link = connect(&r).await;
+    let ev = run(&mut link, 5).await;
+    assert_eq!(link_trace(&ev), ["Connecting", "Ready"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn connecting_the_strap_during_an_outage_fails_like_the_real_stack() {
+    let r = rig(vec![SimFault::HrLoss {
+        at: s(10),
+        down: s(5),
+    }]);
+    let mut trainer = connect(&r).await;
+    sleep(s(11)).await;
+    while trainer.events.try_recv().is_ok() {}
+    let refused = r.heart().connect(&DeviceRef("hr".into())).await.err();
+    assert!(
+        matches!(refused, Some(DeviceError::ConnectFailed(_))),
+        "{refused:?}"
+    );
+    sleep(s(9)).await;
+    while trainer.events.try_recv().is_ok() {}
+    let ev = hr_events(&r, 5).await;
+    assert!(!ev.iter().any(|e| matches!(
+        e,
+        HrEvent::Link(LinkState::Lost) | HrEvent::Reconnecting { .. }
+    )));
+    assert!(!hr_samples(&ev).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_receiver_dropped_while_the_run_loop_waits_does_not_tear_down_its_successor() {
+    // Nobody reads link A: its bounded channel fills and the run loop parks in `send`.
+    let r = rig(vec![]);
+    let a = connect(&r).await;
+    sleep(s(120)).await;
+    // A goes away and B connects before the parked send has noticed; when it fails,
+    // it must not reset B's side of the world.
+    drop(a);
+    let mut b = connect(&r).await;
+    set(&b, ControlMode::Erg { target_w: 200 }).await;
+    let ev = run(&mut b, 10).await;
+    assert!(!lost(&ev));
+    assert!(
+        samples(&ev).len() >= 30,
+        "{} samples on B",
+        samples(&ev).len()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_strap_receiver_dropped_while_the_run_loop_waits_does_not_tear_down_its_successor() {
+    let r = rig(vec![]);
+    let a = r
+        .heart()
+        .connect(&DeviceRef("hr".into()))
+        .await
+        .expect("sim");
+    sleep(s(600)).await;
+    drop(a);
+    let mut b = r
+        .heart()
+        .connect(&DeviceRef("hr".into()))
+        .await
+        .expect("sim");
+    let mut n = 0;
+    for _ in 0..8 {
+        sleep(s(1)).await;
+        while let Ok(e) = b.events.try_recv() {
+            n += usize::from(matches!(e, HrEvent::Sample(_)));
+        }
+    }
+    assert!(n >= 6, "{n} samples on the replacement strap link");
+}
