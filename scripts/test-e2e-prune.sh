@@ -9,13 +9,16 @@ t=$(mktemp -d)
 trap 'rm -rf "$t"' EXIT
 
 fail() { echo "e2e-prune: $*" >&2; exit 1; }
-# case <name> <number of prior runs> <expected survivors, oldest-first indices>
+# Each case below is `<number of prior runs>:<survivors, sorted, one trailing space each>`.
 mk() { # mk <out> <count>: run.1 oldest ... run.<count> newest, plus the current dir and a bystander
   mkdir -p "$1/app" "$1/cur"
   : > "$1/keepme.txt"
-  for i in $(seq 1 "$2"); do
+  # No `seq 1 0`: BSD seq counts down, so zero prior runs would create run.1 and run.0.
+  i=1
+  while [ "$i" -le "$2" ]; do
     mkdir "$1/run.$i"
     touch -t "2026010100$(printf %02d "$i")" "$1/run.$i"
+    i=$((i + 1))
   done
 }
 survivors() { (cd "$1" && ls -d run.* 2>/dev/null | sort | tr '\n' ' ') || true; }
