@@ -29,8 +29,8 @@ pinned `advisory-db` input (bump: `nix flake update advisory-db`; ADR-0001 §9.5
 error type that crosses) and manages one `Core`. Runtime configuration: `--sim` or `CRANK_SIM=1` (anything but empty, `0`, `false`)
 drives the seeded device simulator instead of Bluetooth; `CRANK_DATA_DIR` sets the directory of `crank.db` and `ride.lock` (default:
 the app-data directory of the bundle identifier). Streams belong to the calling window's label and are dropped when it is destroyed
-or its page (re)loads (a reload keeps the webview, so the old channel would not fail). **Quitting ends a ride**: an exit request (last window closed, `app.exit`, Cmd+Q, whose menu item replaces the default one so it calls
-`app.exit(0)`) is held back, `Core::shutdown` ends the ride (end mode `Resistance{0}`, ADR-0002 §7.9) and waits at most 3 s for the
+or its page (re)loads (a reload keeps the webview, so the old channel would not fail). **Quitting ends a ride**: an exit request (last window closed, `app.exit`, Cmd+Q, whose menu item replaces the default one, on macOS only and only after it is verified as the built-in Quit, so it calls
+`app.exit(0)`; Windows and Linux get no custom menu and quit through the run-event hold-back, #306) is held back, `Core::shutdown` ends the ride (end mode `Resistance{0}`, ADR-0002 §7.9) and waits at most 3 s for the
 devices to be released, then the app exits (`app/src-tauri/src/lifecycle.rs`). Exits that never ask (Dock Quit, logout, system shutdown:
 `NSApp terminate:` gives tao only `applicationWillTerminate:`, hence `RunEvent::Exit` and no `ExitRequested`) hit a backstop that runs
 the same shutdown synchronously on `Exit`; macOS may kill a terminating app a few seconds in, so the cap must stay at or below 3 s.

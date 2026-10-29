@@ -84,8 +84,14 @@ impl<R: Runtime> Wire<R> for tauri::Builder<R> {
     }
 }
 
-/// Register the window, page-load and menu handlers on `builder`. The run-event handler
-/// is registered by [`run`].
+/// Register the window and page-load handlers on `builder`, and on macOS the Quit menu
+/// (`menu`, which exists on macOS only, and [`menu_event`]). The run-event handler is registered by [`run`].
+///
+/// Per platform: macOS gets the replaced Quit item, so Cmd+Q goes through `app.exit(0)`.
+/// Windows and Linux get no custom menu (Tauri adds none there, so installing one would add
+/// a menu bar with a built-in Quit that bypasses the ride end); their quits are the exit
+/// requests of the module docs, held back by the run-event handler of [`run`]
+/// (`ExitRequested`, path 1), with the [`RunEvent::Exit`] backstop behind it (#306).
 #[must_use]
 pub fn install<R: Runtime, W: Wire<R>>(builder: W) -> W {
     install_with(builder, AppHandle::exit)
@@ -99,7 +105,7 @@ pub fn install_with<R: Runtime, W: Wire<R>>(
     builder: W,
     exit: impl Fn(&AppHandle<R>, i32) + Send + Sync + 'static,
 ) -> W {
-    builder
+    let builder = builder
         .on_page_load(|webview, payload| {
             page_load(
                 webview.app_handle(),
@@ -107,37 +113,131 @@ pub fn install_with<R: Runtime, W: Wire<R>>(
                 payload.event(),
             );
         })
-        .on_window_event(window_event)
+        .on_window_event(window_event);
+    #[cfg(target_os = "macos")]
+    let builder = builder
         .menu(menu)
-        .on_menu_event(move |app, event| menu_event(event.id(), |code| exit(app, code)))
+        .on_menu_event(move |app, event| menu_event(event.id(), |code| exit(app, code)));
+    // Only macOS has a menu to replace; Windows and Linux get no menu from Tauri and none here.
+    #[cfg(not(target_os = "macos"))]
+    drop(exit);
+    builder
 }
 
-/// The default menu, with its Quit item (Cmd+Q) replaced by [`QUIT_ITEM_ID`].
-///
-/// The default item sends `NSApp terminate:`, which exits without an `ExitRequested` the
-/// shutdown could hold back; the replacement goes through `app.exit(0)` ([`menu_event`]).
-/// Only macOS is replaced: there the Quit item is the last of the first (application)
-/// submenu. Other platforms keep the default menu.
+/// The last item of the application menu, as [`replace_quit`] needs to see it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastItem {
+    /// Whether it is one of Tauri's predefined items (not a custom item or a submenu).
+    pub predefined: bool,
+    /// Its title.
+    pub text: String,
+}
+
+/// The application menu, as far as [`replace_quit`] touches it: a trait so the decision can
+/// be tested, because a menu can only be built on the main thread on macOS.
+pub trait ApplicationMenu {
+    /// The last item, if there is one.
+    ///
+    /// # Errors
+    /// Any menu error from Tauri.
+    fn last(&self) -> tauri::Result<Option<LastItem>>;
+    /// Replace the last item with the [`QUIT_ITEM_ID`] item titled `title`.
+    ///
+    /// # Errors
+    /// Any menu error from Tauri.
+    fn replace_last_with_quit(&self, title: &str) -> tauri::Result<()>;
+}
+
+/// Replace the last item of `menu` with the [`QUIT_ITEM_ID`] item, but only if it is the
+/// built-in Quit: a predefined item titled `builtin_quit_text` (the title of a freshly made
+/// `PredefinedMenuItem::quit`; Tauri does not say which predefined item an item is). Any other
+/// last item is kept and logged, never dropped. Returns whether the item was replaced.
 ///
 /// # Errors
 /// Any menu error from Tauri.
-pub fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
-    let menu = Menu::default(app)?;
-    #[cfg(target_os = "macos")]
-    if let Some(tauri::menu::MenuItemKind::Submenu(application)) = menu.items()?.into_iter().next()
-        && let Some(quit) = application.items()?.len().checked_sub(1)
-    {
-        use tauri::menu::{MenuItem, MenuItemKind};
-        if let Some(MenuItemKind::Predefined(old)) = application.remove_at(quit)? {
-            let title = old.text()?;
-            application.append(&MenuItem::with_id(
-                app,
-                QUIT_ITEM_ID,
-                title,
-                true,
-                Some("CmdOrCtrl+Q"),
-            )?)?;
+pub fn replace_quit(menu: &impl ApplicationMenu, builtin_quit_text: &str) -> tauri::Result<bool> {
+    match menu.last()? {
+        Some(last) if last.predefined && last.text == builtin_quit_text => {
+            menu.replace_last_with_quit(&last.text)?;
+            Ok(true)
         }
+        other => {
+            tracing::warn!(
+                last = ?other,
+                "menu: the last application menu item is not the built-in Quit; keeping the default menu"
+            );
+            Ok(false)
+        }
+    }
+}
+
+/// The application (first) submenu of the default macOS menu.
+#[cfg(target_os = "macos")]
+struct Application<'a, R: Runtime>(&'a AppHandle<R>, tauri::menu::Submenu<R>);
+
+#[cfg(target_os = "macos")]
+impl<R: Runtime> ApplicationMenu for Application<'_, R> {
+    fn last(&self) -> tauri::Result<Option<LastItem>> {
+        use tauri::menu::MenuItemKind;
+        Ok(match self.1.items()?.pop() {
+            Some(MenuItemKind::Predefined(p)) => Some(LastItem {
+                predefined: true,
+                text: p.text()?,
+            }),
+            Some(MenuItemKind::MenuItem(i)) => Some(LastItem {
+                predefined: false,
+                text: i.text()?,
+            }),
+            Some(MenuItemKind::Submenu(s)) => Some(LastItem {
+                predefined: false,
+                text: s.text()?,
+            }),
+            Some(MenuItemKind::Check(c)) => Some(LastItem {
+                predefined: false,
+                text: c.text()?,
+            }),
+            Some(MenuItemKind::Icon(i)) => Some(LastItem {
+                predefined: false,
+                text: i.text()?,
+            }),
+            None => None,
+        })
+    }
+
+    fn replace_last_with_quit(&self, title: &str) -> tauri::Result<()> {
+        let last = self.1.items()?.len().saturating_sub(1);
+        self.1.remove_at(last)?;
+        self.1.append(&tauri::menu::MenuItem::with_id(
+            self.0,
+            QUIT_ITEM_ID,
+            title,
+            true,
+            Some("CmdOrCtrl+Q"),
+        )?)
+    }
+}
+
+/// The default menu, with its Quit item (Cmd+Q) replaced by [`QUIT_ITEM_ID`]. macOS only:
+/// [`install`] registers it nowhere else.
+///
+/// The default item sends `NSApp terminate:`, which exits without an `ExitRequested` the
+/// shutdown could hold back; the replacement goes through `app.exit(0)` ([`menu_event`]).
+/// The Quit item is the last of the first (application) submenu; it is replaced only after
+/// [`replace_quit`] verified it, otherwise the default menu stays as it is.
+///
+/// # Errors
+/// Any menu error from Tauri.
+#[cfg(target_os = "macos")]
+pub fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    use tauri::menu::{MenuItemKind, PredefinedMenuItem};
+    let menu = Menu::default(app)?;
+    if let Some(MenuItemKind::Submenu(application)) = menu.items()?.into_iter().next() {
+        let builtin = PredefinedMenuItem::quit(app, None)?.text()?;
+        replace_quit(&Application(app, application), &builtin)?;
+    } else {
+        tracing::warn!(
+            "menu: the first default menu item is not the application submenu; keeping the default menu"
+        );
     }
     Ok(menu)
 }
