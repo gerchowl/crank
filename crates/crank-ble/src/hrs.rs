@@ -127,7 +127,14 @@ impl HeartRateDriver for HrsDriver {
             guard.0 = None;
             tokio::spawn(async move {
                 let _held = held;
-                while let Some(record) = notifications.next().await {
+                loop {
+                    // A consumer that is gone (the channel closed or dropped) ends the link
+                    // at once, also on a strap that sends nothing.
+                    let record = tokio::select! {
+                        record = notifications.next() => record,
+                        () = events.closed() => break,
+                    };
+                    let Some(record) = record else { break };
                     let event = match record {
                         Ok((at, bytes)) => parse_heart_rate(at, &bytes)
                             .map_or_else(HrEvent::Fault, HrEvent::Sample),
@@ -140,7 +147,8 @@ impl HeartRateDriver for HrsDriver {
                         break;
                     }
                 }
-                if let Err(error) = transport.disconnect().await {
+                if let Err(error) = crate::driver::disconnect_bounded(transport.disconnect()).await
+                {
                     let _ = events.send(HrEvent::Fault(error)).await;
                 }
                 let _ = events.send(HrEvent::Link(LinkState::Lost)).await;

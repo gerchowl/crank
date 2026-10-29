@@ -115,6 +115,9 @@ struct FakeHr {
     connects: Mutex<Vec<MonoTime>>,
     clock: Arc<dyn Clock>,
     disconnects: Mutex<usize>,
+    /// While set, `disconnect` starts (and counts) but does not finish until a permit is added.
+    hold_disconnect: std::sync::atomic::AtomicBool,
+    disconnect_gate: tokio::sync::Semaphore,
 }
 impl HrTransport for Arc<FakeHr> {
     fn connect(
@@ -141,7 +144,16 @@ impl HrTransport for Arc<FakeHr> {
     }
     fn disconnect(&self) -> BoxFuture<'static, Result<(), DeviceError>> {
         *self.disconnects.lock().unwrap() += 1;
-        Box::pin(async { Ok(()) })
+        let fake = self.clone();
+        Box::pin(async move {
+            if fake
+                .hold_disconnect
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                fake.disconnect_gate.acquire().await.unwrap().forget();
+            }
+            Ok(())
+        })
     }
 }
 type HrSender = mpsc::UnboundedSender<Result<(MonoTime, Vec<u8>), DeviceError>>;
@@ -159,6 +171,8 @@ fn fake_hr(clock: &Arc<dyn Clock>, connections: usize) -> (Arc<FakeHr>, Vec<HrSe
         connects: Mutex::default(),
         clock: clock.clone(),
         disconnects: Mutex::new(0),
+        hold_disconnect: std::sync::atomic::AtomicBool::new(false),
+        disconnect_gate: tokio::sync::Semaphore::new(0),
     });
     (fake, senders)
 }
@@ -852,4 +866,91 @@ fn a_panicking_capture_test_leaves_no_file_behind() {
         !dir.exists(),
         "temp dir (and its .fecap) must be removed on unwind"
     );
+}
+
+// ---- release: the consumer's end of the stream means "handed back" ------------------------
+
+/// The real two-layer stack of production (`ReconnectingHr` over `HrsDriver` over a fake
+/// transport): the stream ends for the consumer only after the transport has disconnected,
+/// whether the strap sends every second or nothing at all (#290).
+async fn strap_release_waits_for_the_disconnect(sample_every: Option<Duration>) {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let (fake, senders) = fake_hr(&clock, 1);
+    let inner = HrsDriver::new(Arc::new(fake.clone()), clock.clone());
+    let driver = ReconnectingHr::new(inner, clock, RideGate::new(true));
+    let mut link = driver.connect(&DeviceRef("strap".into())).await.unwrap();
+    if let Some(every) = sample_every {
+        let sender = senders[0].clone();
+        tokio::spawn(async move {
+            while sender.send(Ok((at(1), vec![0x00, 70]))).is_ok() {
+                tokio::time::sleep(every).await;
+            }
+        });
+        advance(Duration::from_millis(2500)).await;
+    }
+    settle().await;
+    assert_eq!(*fake.disconnects.lock().unwrap(), 0, "riding");
+    // The disconnect takes a while. What the consumer of the link does when it is done with
+    // it must not complete before the transport has finished disconnecting.
+    fake.hold_disconnect
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waiter = {
+        let released = released.clone();
+        tokio::spawn(async move {
+            release_events(&mut link.events).await;
+            released.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    // in small steps: the release poll sleeps between its checks
+    for _ in 0..50 {
+        advance(ms(20)).await;
+    }
+    assert_eq!(*fake.disconnects.lock().unwrap(), 1, "disconnecting");
+    assert!(
+        !released.load(std::sync::atomic::Ordering::SeqCst),
+        "released while the transport is still disconnecting"
+    );
+    fake.disconnect_gate.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(3), waiter)
+        .await
+        .expect("the strap is released")
+        .unwrap();
+}
+/// A platform disconnect that never completes ends the strap's stream anyway, after the
+/// disconnect timeout and not before.
+#[tokio::test(start_paused = true)]
+async fn a_hanging_strap_disconnect_does_not_hang_the_release() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let (fake, _senders) = fake_hr(&clock, 1);
+    fake.hold_disconnect
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let inner = HrsDriver::new(Arc::new(fake.clone()), clock.clone());
+    let driver = ReconnectingHr::new(inner, clock, RideGate::new(true));
+    let mut link = driver.connect(&DeviceRef("strap".into())).await.unwrap();
+    settle().await;
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let released = released.clone();
+        tokio::spawn(async move {
+            release_events(&mut link.events).await;
+            released.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    for _ in 0..90 {
+        advance(ms(20)).await;
+    }
+    assert!(!released.load(std::sync::atomic::Ordering::SeqCst), "1.8 s");
+    for _ in 0..20 {
+        advance(ms(20)).await;
+    }
+    assert!(released.load(std::sync::atomic::Ordering::SeqCst), "2.2 s");
+}
+#[tokio::test(start_paused = true)]
+async fn a_one_hertz_strap_is_released_only_after_its_disconnect() {
+    strap_release_waits_for_the_disconnect(Some(Duration::from_secs(1))).await;
+}
+#[tokio::test(start_paused = true)]
+async fn a_silent_strap_is_released_only_after_its_disconnect() {
+    strap_release_waits_for_the_disconnect(None).await;
 }
