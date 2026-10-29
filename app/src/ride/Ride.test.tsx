@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MetricId, StreamStatus, SubSample } from "../bindings";
 import { navigate, useRoute } from "../router";
 import { status as makeStatus } from "../stream/testBackend";
+import { resetForcedEnds, wasForcedEnd } from "./forcedEnds";
 import { Ride, clock, targetNow } from "./Ride";
 import { BLOCKS, block, installRide, type RideWorld } from "./rideBackend";
 import { beginRide, useSession } from "./session";
@@ -32,6 +33,7 @@ beforeEach(() => {
   navigate("ride");
 });
 afterEach(() => {
+  resetForcedEnds();
   cleanup();
   clearMocks();
 });
@@ -471,6 +473,16 @@ describe("Ride", () => {
     await userEvent.click(screen.getByRole("button", { name: "End ride" }));
     await waitFor(() => expect(routeText()).toBe("history:ride-1"));
     expect(screen.queryByRole("alert")).toBeNull();
+    expect(wasForcedEnd("ride-1")).toBe(true);
+  });
+
+  test("an End the engine answered is not a forced end", async () => {
+    const rig = await open({ phase: "active" });
+    await push(rig, { state: { kind: "riding" } });
+    await userEvent.click(screen.getByRole("button", { name: "End" }));
+    await userEvent.click(screen.getByRole("button", { name: "End ride" }));
+    await waitFor(() => expect(routeText()).toBe("history:ride-1"));
+    expect(wasForcedEnd("ride-1")).toBe(false);
   });
 
   test("Resume with the engine stopped shows the core's internal error", async () => {
