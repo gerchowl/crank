@@ -30,8 +30,19 @@ fn status(state: StreamRideState, marker: u32) -> StreamStatus {
         erg_released: false,
         compliance: super::types::StreamCompliance::default(),
         cap: None,
+        user_paused: false,
+        trainer_lost_since_s: None,
+        reconnect_attempt: None,
+        soft_start_target_w: None,
+        last_gap_s: None,
+        reconnected_at_s: None,
     }
 }
+/// A frame budget and a sample count at which a default status and the samples split over exactly
+/// three frames. The status alone is 472 bytes (since #329's trainer-loss fields; it was ~340), so
+/// the budget leaves room for about one sample next to it and about thirteen in a bare frame.
+const SPLIT_BUDGET: usize = 520;
+const SPLIT_SAMPLES: u32 = 24;
 fn riding(marker: u32) -> StreamStatus {
     status(StreamRideState::Riding, marker)
 }
@@ -450,6 +461,12 @@ fn worst_status() -> StreamStatus {
             cap_w: u16::MAX,
             erg_only: true,
         }),
+        user_paused: true,
+        trainer_lost_since_s: Some(f64::MIN),
+        reconnect_attempt: Some(u32::MAX),
+        soft_start_target_w: Some(u16::MAX),
+        last_gap_s: Some(f64::MIN),
+        reconnected_at_s: Some(f64::MIN),
     }
 }
 
@@ -486,6 +503,12 @@ fn every_frame_stays_under_the_byte_budget_at_every_cap() {
             cap_w: u16::MAX,
             erg_only: true,
         }),
+        user_paused: true,
+        trainer_lost_since: Some(crate::ticks::SessionTicks(u64::MAX)),
+        reconnect_attempt: Some(u32::MAX),
+        soft_start_target_w: Some(u16::MAX),
+        last_gap: Some(crate::ticks::SessionTicks(u64::MAX)),
+        reconnected_at: Some(crate::ticks::SessionTicks(u64::MAX)),
     };
     ride.state = crate::engine::RideState::Paused(crate::engine::PauseReason::StoppedPedalling);
     let from_engine = StreamStatus::from(&ride);
@@ -516,18 +539,18 @@ fn every_frame_stays_under_the_byte_budget_at_every_cap() {
 
 #[test]
 fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
-    // A small budget forces splitting: ~30 bytes per sample, a few per frame. The status
-    // alone is ~285 bytes since #218 (following, compliance, cap), so the budget is
-    // sized so that 12 samples split over exactly three frames.
-    const BUDGET: usize = 360;
+    // A small budget forces splitting: ~38 bytes per sample. The status alone is 472 bytes, so
+    // the budget (see `SPLIT_BUDGET`) is sized so that the samples split over exactly three
+    // frames.
+    const BUDGET: usize = SPLIT_BUDGET;
     let mut flow = Flow::new(BUDGET);
-    for sub in 0..12_u32 {
+    for sub in 0..SPLIT_SAMPLES {
         flow.offer_sample(sample(sub, 1.5, 100.0 + f64::from(sub)));
     }
     flow.offer_status(riding(1));
     let frames = flow.drain(0);
-    // the status (~285 bytes) rides the first frame with a few samples: three frames, the
-    // whole window (MAX_UNACKED), carry the 12 samples
+    // the status (472 bytes) rides the first frame with a sample or so: three frames, the
+    // whole window (MAX_UNACKED), carry all the samples
     assert_eq!(frames.len(), 3);
     let mut got = Vec::new();
     for (i, f) in frames.iter().enumerate() {
@@ -540,7 +563,11 @@ fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
         );
         got.extend(f.samples.iter().map(|s| s.sub.0));
     }
-    assert_eq!(got, (0..12).collect::<Vec<_>>(), "every sample, in order");
+    assert_eq!(
+        got,
+        (0..SPLIT_SAMPLES).collect::<Vec<_>>(),
+        "every sample, in order"
+    );
     assert_eq!(flow.unacked(), frames.len());
 }
 
@@ -1184,14 +1211,16 @@ fn opening_a_stream_frees_the_closed_ones_before_the_cap_check() {
 #[test]
 fn the_worst_status_with_the_erg_fields_has_a_measured_size() {
     // The discrete part at every cap with #218's fields (following, component, released,
-    // compliance at u32::MAX, cap) and the record error cut at its cap (256 bytes of
-    // 4-byte characters): measured, against the 8 000-byte frame budget.
+    // compliance at u32::MAX, cap), #329's trainer-loss fields (three f64 timestamps at their
+    // widest, the attempt, the soft-start target, the rider pause) and the record error cut at
+    // its cap (256 bytes of 4-byte characters): measured (909 bytes), against the 8 000-byte frame
+    // budget.
     let mut st = worst_status();
     st.record_error = Some("𝔘".repeat(MAX_RECORD_ERROR_BYTES / 4));
     let n = serde_json::to_vec(&st).expect("status").len();
     eprintln!("worst status: {n} bytes");
-    assert!(n < 800, "worst status is {n} bytes");
-    assert!(n < FRAME_BUDGET_BYTES / 10);
+    assert!(n < 1_000, "worst status is {n} bytes");
+    assert!(n < FRAME_BUDGET_BYTES / 8);
 }
 
 #[test]
@@ -1222,6 +1251,12 @@ fn the_wire_status_carries_the_erg_fields_with_their_meaning() {
             cap_w: 180,
             erg_only: true,
         }),
+        user_paused: true,
+        trainer_lost_since: Some(SessionTicks(50)),
+        reconnect_attempt: Some(3),
+        soft_start_target_w: Some(253),
+        last_gap: Some(SessionTicks(122)),
+        reconnected_at: Some(SessionTicks(172)),
     };
     let v = serde_json::to_value(StreamStatus::from(&ride)).expect("status");
     assert_eq!(v["trainerFollowing"], "not_following");
@@ -1232,6 +1267,13 @@ fn the_wire_status_carries_the_erg_fields_with_their_meaning() {
     assert_eq!(v["compliance"]["excludedS"], 1);
     assert_eq!(v["cap"]["capW"], 180);
     assert_eq!(v["cap"]["ergOnly"], true);
+    // the loss fields, in seconds on the ride's clock (4 ticks a second)
+    assert_eq!(v["userPaused"], true);
+    assert_eq!(v["trainerLostSinceS"], 12.5);
+    assert_eq!(v["reconnectAttempt"], 3);
+    assert_eq!(v["softStartTargetW"], 253);
+    assert_eq!(v["lastGapS"], 30.5);
+    assert_eq!(v["reconnectedAtS"], 43.0);
     for (c, name) in [
         (Component::Erg, "erg"),
         (Component::Resistance, "resistance"),
@@ -1304,8 +1346,8 @@ fn seq_wraps_at_u32_max_and_the_ack_window_follows() {
 
 #[test]
 fn a_split_across_the_wrap_numbers_its_frames_consecutively() {
-    let mut flow = Flow::starting_at(360, u32::MAX);
-    for sub in 0..12_u32 {
+    let mut flow = Flow::starting_at(SPLIT_BUDGET, u32::MAX);
+    for sub in 0..SPLIT_SAMPLES {
         flow.offer_sample(sample(sub, 1.5, 100.0));
     }
     flow.offer_status(riding(1));
@@ -1375,4 +1417,67 @@ fn subscribe_opts_wire_contract_for_the_ui_mock() {
             "{good} Hz"
         );
     }
+}
+
+type Change = (&'static str, fn(&mut StreamStatus));
+
+#[test]
+fn the_loss_fields_are_discrete_so_they_cost_no_heartbeat_but_are_sent_on_change() {
+    // A tick moves the clock fields only: the status stays "the same" and rides the heartbeat.
+    let base = riding(0);
+    let mut ticked = base.clone();
+    ticked.session_s += 0.25;
+    ticked.workout_s += 0.25;
+    ticked.block_elapsed_s += 0.25;
+    assert!(base.same_discrete(&ticked));
+    // A loss held over many ticks does not change either: "lost for" is computed from the
+    // timestamp, so a ticking loss is not a status change.
+    let mut lost = base.clone();
+    lost.trainer_lost_since_s = Some(10.0);
+    let mut later = lost.clone();
+    later.session_s += 60.0;
+    assert!(lost.same_discrete(&later));
+    // Every loss field, on its own, is a change that is sent at once.
+    let changes: [Change; 6] = [
+        ("user_paused", |s| s.user_paused = true),
+        ("trainer_lost_since_s", |s| {
+            s.trainer_lost_since_s = Some(1.0);
+        }),
+        ("reconnect_attempt", |s| s.reconnect_attempt = Some(1)),
+        ("soft_start_target_w", |s| s.soft_start_target_w = Some(200)),
+        ("last_gap_s", |s| s.last_gap_s = Some(5.0)),
+        ("reconnected_at_s", |s| s.reconnected_at_s = Some(5.0)),
+    ];
+    for (name, change) in changes {
+        let mut other = base.clone();
+        change(&mut other);
+        assert!(!base.same_discrete(&other), "{name} is not discrete");
+    }
+}
+
+#[test]
+fn a_hub_sends_a_status_when_only_a_loss_field_changed() {
+    let mut hub = Hub::new();
+    let (id, mut rx) = hub.open(None, 0).expect("open");
+    hub.on_status(riding(0), 0);
+    hub.poll(0);
+    let first = drain(&mut rx);
+    assert_eq!(first.iter().filter(|f| f.status.is_some()).count(), 1);
+    for f in &first {
+        hub.ack(id, f.seq).expect("ack");
+    }
+    // nothing but the loss fields differs: still sent at once, not on the next heartbeat
+    let mut lost = riding(0);
+    lost.trainer_lost_since_s = Some(3.0);
+    lost.reconnect_attempt = Some(2);
+    hub.on_status(lost.clone(), 1);
+    hub.poll(MIN_FRAME_INTERVAL_US);
+    let frames = drain(&mut rx);
+    assert_eq!(
+        frames
+            .iter()
+            .filter_map(|f| f.status.clone())
+            .collect::<Vec<_>>(),
+        vec![lost]
+    );
 }
