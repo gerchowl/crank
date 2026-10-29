@@ -58,9 +58,11 @@ vectors:
 vectors-check:
     pnpm -C shared exec vitest run scripts
 
+# Runs on its own data dir (default: ./.crank-dev, gitignored): `tauri dev` has the installed app's bundle
+# identifier, so without it both would share one crank.db and one ride.lock. Override with CRANK_DATA_DIR.
 dev:
     pnpm install --frozen-lockfile
-    pnpm -C app exec tauri dev
+    CRANK_DATA_DIR="${CRANK_DATA_DIR:-{{justfile_directory()}}/.crank-dev}" pnpm -C app exec tauri dev
 
 # ADR-0001 §9.3 / ADR-0002 §8 (#37): assemble crank.app with Nix, install it at a stable path and sign
 # it inside-out (by SHA-1, scripts/install-app.sh) with the local self-signed `nix-tcc` identity
@@ -89,6 +91,11 @@ icons:
 # terminal). Output goes to app/e2e-out (gitignored). Skips with a message on Linux.
 e2e:
     scripts/e2e.sh
+
+# macOS only, needs a GUI session: terminate a real Wry app with `NSApp terminate:` mid-ride and check
+# the ride was ended (Finished, not Aborted). Cmd+Q, Dock Quit and logout all end this way.
+quit-test:
+    cargo run -p crank-desktop --example quit_check
 
 screens:
     @echo 'BLOCKED: screenshot matrix awaits the UI waves (#229)'; exit 1
