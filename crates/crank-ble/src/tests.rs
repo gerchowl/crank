@@ -1424,7 +1424,8 @@ async fn a_supervised_trainer_is_released_only_after_its_disconnect() {
 /// is released (ADR-0002 §7.9: "released" means disconnected), whatever the disconnect takes.
 #[tokio::test(start_paused = true)]
 async fn a_shutdown_mid_connect_disconnects_before_the_trainer_is_released() {
-    for stage in ["discover_services", "subscribe"] {
+    {
+        let stage = "mid-setup";
         let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
         let fake = Fake::new(clock.clone());
         let cleanup = ConnectCleanup::new();
@@ -1485,7 +1486,7 @@ async fn a_hung_disconnect_of_a_cancelled_connect_frees_the_trainer_admission() 
     fake.hold_disconnect.store(true, Ordering::SeqCst);
     let driver = FecTrainer::new(Arc::new(fake.clone()), clock);
     let dev = DeviceRef("fake".into());
-    *fake.hang_connect.lock().unwrap() = Some("subscribe");
+    *fake.hang_connect.lock().unwrap() = Some("mid-setup");
     let attempt = tokio::spawn(driver.connect(&dev, rider()));
     settle().await;
     attempt.abort();

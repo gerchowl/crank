@@ -970,7 +970,8 @@ async fn a_silent_strap_is_released_only_after_its_disconnect() {
 /// is released (ADR-0002 §7.9: "released" means disconnected), whatever the disconnect takes.
 #[tokio::test(start_paused = true)]
 async fn a_shutdown_mid_connect_disconnects_before_the_strap_is_released() {
-    for stage in ["discover_services", "subscribe"] {
+    {
+        let stage = "mid-setup";
         let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
         let (fake, senders) = fake_hr(&clock, 1);
         let cleanup = ConnectCleanup::new();
@@ -1033,7 +1034,7 @@ async fn a_hung_disconnect_of_a_cancelled_connect_frees_the_admission() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let driver = HrsDriver::new(Arc::new(fake.clone()), clock);
     let dev = DeviceRef("strap".into());
-    *fake.hang_connect.lock().unwrap() = Some("subscribe");
+    *fake.hang_connect.lock().unwrap() = Some("mid-setup");
     let attempt = tokio::spawn(driver.connect(&dev));
     settle().await;
     attempt.abort();

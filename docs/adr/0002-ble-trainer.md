@@ -921,6 +921,9 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    (2 s), before it drops its event stream; the driver arms that cleanup before the transport connects,
    and every driver disconnect is bounded, so a hung platform disconnect neither hangs the release nor
    keeps the driver's admission held.
+   The bound has a cost: after a disconnect that timed out (`DISCONNECT_TIMEOUT`, 2 s) the peripheral
+   **may still be connected** when "released" is signalled; that wait, and so that uncertainty, ends at
+   `DISCONNECT_TIMEOUT` (plus 1 s for the supervisor's wait on a cancelled connect).
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 
