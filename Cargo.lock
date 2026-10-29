@@ -619,6 +619,7 @@ dependencies = [
 name = "crank-desktop"
 version = "0.1.0"
 dependencies = [
+ "core-graphics",
  "crank-core",
  "crank-devices",
  "crank-engine",

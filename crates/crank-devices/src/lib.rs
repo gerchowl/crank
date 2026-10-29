@@ -290,6 +290,20 @@ pub struct HeartRateLink {
     /// Ordered events.
     pub events: mpsc::Receiver<HrEvent>,
 }
+/// Close `events` towards its driver and resolve once the driver has dropped its sender.
+///
+/// A heart-rate strap has no control channel: its driver disconnects when it learns that its
+/// consumer is gone, and holds its sender until the peripheral has actually been handed
+/// back. `recv` cannot tell that moment (after a close it ends as soon as the buffer is
+/// drained), so the sender count does. Polling stands in for a driver-side release signal
+/// (#295); events still buffered are dropped.
+pub async fn release_events<T>(events: &mut mpsc::Receiver<T>) {
+    events.close();
+    while events.sender_strong_count() > 0 {
+        while events.try_recv().is_ok() {}
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
 /// Heart-rate driver event. See ADR-0002 §3.
 /// Non-exhaustive so reconnect reporting can grow without breaking matches.
 #[derive(Clone, Debug, PartialEq)]

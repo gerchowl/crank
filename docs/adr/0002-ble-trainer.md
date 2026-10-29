@@ -894,17 +894,22 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    The end mode is always sent, also when the last command is already `Resistance { pct: 0 }`: that command
    (a pause, a release) may still be queued and unwritten. **A `Load` does not cancel it (amendment, #279,
    2026-10-14):** a previous ride's end mode stays owed across `Load`, `Start` and the unload of a loaded ride;
-   the ride-active signal is cleared by that delivery (or link loss, or the 2 s deadline), not by the unload,
-   and the engine awaits it on shutdown. **Link loss while a new ride runs (#288):** a link event that
-   arrives while the new ride is running is queued in tick order like any other trainer event, and does
-   not settle the owed end mode; only the 2 s deadline does (or the delivery). That is the safe direction:
-   the signal stays up for at most 2 s longer. The behaviour is kept and the text aligned to it.
-   **Residual (FM-FIN-02):** if a GATT write stalls for more than 2 s, the deadline releases the hold-back
-   and the new ride's first ERG page can replace the still-queued page 48, so 48 is never written; the
-   deadline exception allows this (a trainer that stalls this long is not taking writes reliably). While it is owed, a newly started ride sends nothing, so its own
-   engagement rules (§7.5: `Erg { 0 }` until cadence, then the soft start) begin only after page 48 has been
-   written and no torque can overtake or coalesce away the end mode. Silence at the end would leave the last
-   `Erg { target_w }` applied at 0 rpm.
+   the ride-active signal is cleared by that delivery (or by link loss while no ride is running, or by the
+   2 s deadline), not by the unload, and the engine awaits it on shutdown. While it is owed, a newly started
+   ride sends nothing, so its own engagement rules (§7.5: `Erg { 0 }` until cadence, then the soft start)
+   begin only after page 48 has been written and no torque can overtake or coalesce away the end mode.
+   Silence at the end would leave the last `Erg { target_w }` applied at 0 rpm.
+
+   **Link loss while a new ride runs (active-ride exception, #288).** A link event that arrives while the
+   new ride is running is queued in tick order like any other trainer event and does not settle the owed
+   end mode; only the delivery or the 2 s deadline does. That is the safe direction: the signal stays up
+   for at most 2 s longer. The behaviour is kept and the text aligned to it.
+
+   **Residual (FM-FIN-02).** If a GATT write stalls for more than 2 s, the deadline releases the
+   hold-back and the new ride's first ERG page can replace the still-queued page 48, so 48 is never
+   written. The deadline exception allows this: a trainer that stalls this long is not taking writes
+   reliably.
+
    **App quit is a ride end (amendment, #34, 2026-10-28).** The desktop process does not exit on the
    first quit request (Cmd+Q, last window closed): it holds the exit back, calls `Core::shutdown`, which ends
    the loaded ride like `ride_end` (so the engine sends the end mode above) and waits until the devices are

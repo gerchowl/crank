@@ -135,7 +135,7 @@ async fn quitting_mid_ride_ends_and_records_the_ride_before_the_exit_is_let_thro
 
     let quit = Quit::default();
     assert_eq!(quit.request(), Decision::Begin);
-    assert_eq!(quit.shut_down(&core).await, Shutdown::Released);
+    assert_eq!(quit.shut_down(&core).await, Shutdown::Ended);
     assert_eq!(quit.request(), Decision::Proceed, "the app may exit now");
     // The ride was ended and its devices are free again.
     let rides = core.rides_list().await.unwrap();

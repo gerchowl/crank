@@ -14,7 +14,7 @@ futures-util = "0.3"
 smallvec = "1"
 thiserror.workspace = true
 libm = "0.2.16"
-tokio = { version = "1", features = ["rt", "sync"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [dev-dependencies]
 serde_json.workspace = true
