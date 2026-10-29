@@ -1061,9 +1061,12 @@ impl Core {
     /// mode (`Resistance{0}`) and holds the ride-active gate until that was delivered, the
     /// link was lost or its own 2 s deadline passed. A process that exits without waiting
     /// can leave ERG torque on the trainer (S1), and on macOS exiting does not drop `Core`.
+    /// It does not wait for the drivers to hand the peripherals back (`end_ride(false)`):
+    /// process exit releases the radio, and a silent strap must not eat the cap with
+    /// `RELEASE_TIMEOUT`.
     /// The cap bounds a trainer that never answers; it should exceed the engine's 2 s.
     pub async fn shutdown(&self, cap: Duration) -> Shutdown {
-        match tokio::time::timeout(cap, self.ride_end()).await {
+        match tokio::time::timeout(cap, self.end_ride(false)).await {
             Err(_) => Shutdown::TimedOut,
             Ok(Ok(_)) => Shutdown::Released,
             Ok(Err(e)) if e.code == ErrorCode::Conflict => Shutdown::Idle,
@@ -1991,7 +1994,13 @@ mod tests {
         assert_eq!(outcome, Shutdown::Released);
         assert!(t.elapsed() <= Duration::from_secs(3), "{:?}", t.elapsed());
         // ... and a cap below it ends the wait at the cap.
+        // (quitting does not wait for the devices' release, so the first core still holds
+        // the fake radio: the second ride gets its own.)
         let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        radio
+            .swallow_modes
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let core = riding(&radio, dir.path()).await;
         let t = tokio::time::Instant::now();
         assert_eq!(
@@ -2026,6 +2035,43 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let core = open(dir.path(), &fake(vec![], false));
         assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Idle);
+    }
+
+    /// #290: quitting waits for the engine's end only. A strap that is slow to hand its
+    /// peripheral back (here beyond both `RELEASE_TIMEOUT` and the cap) neither makes the
+    /// quit time out nor delays it, and the trainer's last mode is still the end mode.
+    #[tokio::test(start_paused = true)]
+    async fn quitting_mid_ride_does_not_wait_for_a_silent_strap() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio) =
+            slow_release_core(dir.path(), Duration::ZERO, Duration::from_secs(30)).await;
+        radio.commands.lock().unwrap().clear();
+        core.ride_load(Some("builtin-sensor-check".into()))
+            .await
+            .unwrap();
+        core.ride_start().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let t = tokio::time::Instant::now();
+        assert_eq!(
+            core.shutdown(Duration::from_secs(3)).await,
+            Shutdown::Released
+        );
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        let commands = radio.commands.lock().unwrap().clone();
+        assert_eq!(
+            commands.last(),
+            Some(&TrainerCommand::SetMode(
+                crank_devices::ControlMode::Resistance { pct: 0.0 }
+            )),
+            "{commands:?}"
+        );
+        let status = core.ride_status().await.unwrap().status;
+        assert_eq!(status.state, crank_engine::StreamRideState::Finished);
+        assert_eq!(
+            radio.hr_released.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the strap is still being released: not reported early"
+        );
     }
 
     /// A core with a trainer (releasing in `trainer`) and a strap (in `strap`) paired.
