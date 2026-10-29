@@ -82,6 +82,7 @@ pub struct HrsDriver {
     transport: Arc<dyn HrTransport>,
     clock: Arc<dyn Clock>,
     connecting: Arc<tokio::sync::Mutex<()>>,
+    cleanup: crate::driver::ConnectCleanup,
 }
 impl HrsDriver {
     /// Build a driver over btleplug or a test fake.
@@ -90,29 +91,46 @@ impl HrsDriver {
             transport,
             clock,
             connecting: Arc::default(),
+            cleanup: crate::driver::ConnectCleanup::default(),
         }
+    }
+    /// Report the cleanups of cancelled connects to `cleanup`.
+    #[must_use]
+    pub fn with_cleanup(mut self, cleanup: crate::driver::ConnectCleanup) -> Self {
+        self.cleanup = cleanup;
+        self
     }
 }
 impl HeartRateDriver for HrsDriver {
     fn connect(&self, dev: &DeviceRef) -> BoxFuture<'static, Result<HeartRateLink, DeviceError>> {
-        let (transport, clock, admission, dev) = (
+        let (transport, clock, admission, dev, tracker) = (
             self.transport.clone(),
             self.clock.clone(),
             self.connecting.clone(),
             dev.clone(),
+            self.cleanup.clone(),
         );
         Box::pin(async move {
             let guard = admission
                 .try_lock_owned()
                 .map_err(|_| DeviceError::AlreadyConnected)?;
-            let (info, mut notifications) = transport.connect(dev, clock).await?;
+            // Armed before the connect (see `ConnectGuard`).
             let release = transport.clone();
             let cleanup: Cleanup = Box::new(move || release.disconnect());
             let mut guard = ConnectGuard(
                 Some(cleanup),
                 Some(guard),
                 tokio::runtime::Handle::current(),
+                Some(tracker.begin()),
             );
+            let (info, mut notifications) = match transport.connect(dev, clock).await {
+                Ok(connected) => connected,
+                Err(error) => {
+                    // The transport cleans up after its own failure.
+                    guard.0 = None;
+                    return Err(error);
+                }
+            };
             let (events, receiver) = mpsc::channel(64);
             let send = |event| async {
                 events

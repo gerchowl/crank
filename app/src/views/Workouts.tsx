@@ -8,6 +8,7 @@ import {
   type CompiledView,
   type WorkoutIssue,
 } from "../bindings";
+import { beginRide } from "../ride/session";
 import { navigate } from "../router";
 import { useCommand } from "../stream";
 
@@ -118,15 +119,17 @@ export function Workouts() {
   /**
    * The one seam for the start guard. When the health-stop guard lands (A6 `requestStart`, #81) it replaces
    * this call: `requestStart(workout, "workouts")` decides, and loads through `ride_load` itself. There is no
-   * guard today and none is faked. The ride screen (#96) is not built, so the route is the shell's `ride`
-   * mode stub.
+   * guard today and none is faked. The ride screen (#96) takes its session from `beginRide`.
    */
   const rideThis = useCallback(
     async (id: string) => {
       setRefusal(null);
       const outcome = await runLoad(id);
-      if (outcome.status === "ok") navigate("ride");
-      else setRefusal(outcome.error);
+      if (outcome.status === "ok") {
+        // One session per load: the ride screen reads its ride id and workout from it.
+        beginRide(outcome.data);
+        navigate("ride");
+      } else setRefusal(outcome.error);
     },
     [runLoad],
   );

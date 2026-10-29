@@ -17,6 +17,7 @@ import type {
   WorkoutSummary,
 } from "../bindings";
 import { navigate, useRoute } from "../router";
+import { currentSession } from "../ride/session";
 import { Workouts } from "./Workouts";
 
 afterEach(() => {
@@ -237,6 +238,9 @@ test("Ride this loads the picked workout and routes to the ride", async () => {
   expect(b.calls.find((c) => c.cmd === "ride_load")?.args).toEqual({
     workoutId: "w-easy",
   });
+  // The ride screen's session is the one ride_load made.
+  expect(currentSession()?.workoutId).toBe("w-easy");
+  expect(currentSession()?.rideId).toBe("ride-1");
 });
 
 test("a failing library list shows the error and can be retried", async () => {
