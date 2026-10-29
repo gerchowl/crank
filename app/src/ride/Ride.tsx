@@ -157,6 +157,9 @@ function Screen({ session }: { session: RideSession }) {
   // Guards against a second tap before the core has answered in its status (no timers): Start until the ride leaves
   // `idle`, Skip until the block index has moved past the one that was skipped.
   const [startSent, setStartSent] = useState(false);
+  // Pause and Resume are two buttons in two places, and the one just tapped stays disabled until the status shows
+  // its effect, so a double tap cannot become pause-then-resume.
+  const [pauseSent, setPauseSent] = useState<"pause" | "resume" | null>(null);
   const [skippedFrom, setSkippedFrom] = useState<number | null>(null);
 
   const workoutS = status?.workoutS ?? null;
@@ -186,6 +189,11 @@ function Screen({ session }: { session: RideSession }) {
     setStartSent(true);
     const outcome = await run(start.run);
     if (outcome.status === "error") setStartSent(false);
+  };
+  const pauseOrResume = async (which: "pause" | "resume") => {
+    setPauseSent(which);
+    const outcome = await run(which === "pause" ? pause.run : resume.run);
+    if (outcome.status === "error") setPauseSent(null);
   };
   const skipBlock = async () => {
     setConfirming(null);
@@ -224,12 +232,14 @@ function Screen({ session }: { session: RideSession }) {
     resume.pending ||
     skip.pending ||
     end.pending;
-  // A skip in the last block ends the ride (the engine finishes it): it asks like End. Without the plan we cannot
-  // tell, so Skip waits for it.
-  const planKnown = session.workoutId === null || compiled !== null;
+  // Skip needs a next block to skip: none for a free ride (the core refuses, engine.rs:1211) and none known until the
+  // plan has arrived. A skip in the last block ends the ride (the engine finishes it): it asks like End.
+  const canSkip = blocks.length > 0 && blockIdx !== null;
   const skipEnds = blocks.length > 0 && blockIdx === blocks.length - 1;
   const skipWaits = skippedFrom !== null && skippedFrom === blockIdx;
   const live = kind === "riding" || kind === "paused";
+  const canPause = live && !userPaused && !(pauseSent === "pause");
+  const canResume = userPaused && pauseSent !== "resume";
   const round = (v: number | null | undefined) =>
     v == null ? null : Math.round(v);
 
@@ -246,14 +256,21 @@ function Screen({ session }: { session: RideSession }) {
           </button>
           <button
             className="ride-btn"
-            disabled={busy || !live}
-            onClick={() => void run(userPaused ? resume.run : pause.run)}
+            disabled={busy || !canPause}
+            onClick={() => void pauseOrResume("pause")}
           >
-            {userPaused ? "Resume" : "Pause"}
+            Pause
           </button>
           <button
             className="ride-btn"
-            disabled={busy || !live || !planKnown || skipWaits}
+            disabled={busy || !canResume}
+            onClick={() => void pauseOrResume("resume")}
+          >
+            Resume
+          </button>
+          <button
+            className="ride-btn"
+            disabled={busy || !live || !canSkip || skipWaits}
             onClick={() =>
               skipEnds ? setConfirming("skip") : void skipBlock()
             }
