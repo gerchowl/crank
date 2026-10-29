@@ -1220,12 +1220,12 @@ detection = "Core::end_ride: Stop bounded by STOP_TIMEOUT (1 s) or EngineStopped
 guard = "ADR-0002 §7.9 (a ride end the engine cannot carry out, #331)"
 status = "guarded"
 test = [
-  "crates/crank-core/src/core.rs::tests::a_forced_end_puts_a_healthy_trainer_into_the_end_mode_before_disconnecting",
-  "crates/crank-core/src/core.rs::tests::a_forced_end_does_not_wait_for_a_stalled_trainer_write",
-  "crates/crank-core/src/core.rs::tests::a_stuck_engine_is_ended_by_force_within_the_deadline",
-  "crates/crank-core/src/core.rs::tests::a_dead_engine_is_ended_by_force",
-  "crates/crank-core/src/core.rs::tests::an_engine_stuck_in_synchronous_code_does_not_hang_end",
-  "crates/crank-core/src/core.rs::tests::quitting_with_a_stuck_engine_ends_and_records_the_ride_inside_the_cap",
+  "crates/crank-core/src/core.rs::a_forced_end_puts_a_healthy_trainer_into_the_end_mode_before_disconnecting",
+  "crates/crank-core/src/core.rs::a_forced_end_does_not_wait_for_a_stalled_trainer_write",
+  "crates/crank-core/src/core.rs::a_stuck_engine_is_ended_by_force_within_the_deadline",
+  "crates/crank-core/src/core.rs::a_dead_engine_is_ended_by_force",
+  "crates/crank-core/src/core.rs::an_engine_stuck_in_synchronous_code_does_not_hang_end",
+  "crates/crank-core/src/core.rs::quitting_with_a_stuck_engine_ends_and_records_the_ride_inside_the_cap",
 ]
 wanted.trainer = "the core itself sends Resistance{pct: 0} through its own hold on the control channel and waits for its Delivered (END_MODE_TIMEOUT, 500 ms) before the link is dropped; then the drivers disconnect"
 wanted.engine = "the engine task is aborted (detached if blocked in synchronous code); the ride is closed as aborted, off the async executor; the ride-active gate is cleared; a new ride can be loaded"
