@@ -202,9 +202,9 @@ function Screen({ session }: { session: RideSession }) {
       session.record(sampleT, workoutS, sampleV);
   }, [session, sampleT, sampleV, workoutS]);
 
-  const run = async (
+  const run = async <T,>(
     go: () => Promise<
-      { status: "ok"; data: unknown } | { status: "error"; error: ApiError }
+      { status: "ok"; data: T } | { status: "error"; error: ApiError }
     >,
   ) => {
     setRefusal(null);

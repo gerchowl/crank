@@ -1409,12 +1409,11 @@ impl Core {
                 Closed::Unknown
             }
         });
-        match tokio::time::timeout(STORE_TIMEOUT, job).await {
-            Ok(Ok(closed)) => closed,
-            _ => {
-                tracing::warn!(ride_id, "the store did not close the ride's record in time");
-                Closed::Unknown
-            }
+        if let Ok(Ok(closed)) = tokio::time::timeout(STORE_TIMEOUT, job).await {
+            closed
+        } else {
+            tracing::warn!(ride_id, "the store did not close the ride's record in time");
+            Closed::Unknown
         }
     }
     /// The application is quitting: end the loaded ride like `ride_end` and wait, for at
