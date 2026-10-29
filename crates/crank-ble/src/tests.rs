@@ -217,6 +217,9 @@ struct Fake {
     notification_waiting: tokio::sync::Notify,
     notification_gate: tokio::sync::Semaphore,
     disconnect_gate: tokio::sync::Semaphore,
+    /// The next `connect` is connected to the peripheral but hangs at this setup stage.
+    hang_connect: Mutex<Option<&'static str>>,
+    hung_at: Mutex<Vec<&'static str>>,
 }
 impl Fake {
     fn new(clock: Arc<dyn Clock>) -> Arc<Self> {
@@ -238,6 +241,8 @@ impl Fake {
             notification_waiting: tokio::sync::Notify::new(),
             notification_gate: tokio::sync::Semaphore::new(0),
             disconnect_gate: tokio::sync::Semaphore::new(0),
+            hang_connect: Mutex::default(),
+            hung_at: Mutex::default(),
         })
     }
 }
@@ -247,6 +252,10 @@ impl FecTransport for Arc<Fake> {
         _: DeviceRef,
         _: Arc<dyn Clock>,
     ) -> BoxFuture<'static, Result<(DeviceInfo, Notifications), DeviceError>> {
+        if let Some(stage) = self.hang_connect.lock().unwrap().take() {
+            self.hung_at.lock().unwrap().push(stage);
+            return Box::pin(std::future::pending());
+        }
         let Some(rx) = self.receiver.lock().unwrap().take() else {
             return Box::pin(async { Err(DeviceError::ConnectFailed("transport reused".into())) });
         };
@@ -1408,4 +1417,96 @@ async fn a_supervised_trainer_is_released_only_after_its_disconnect() {
             .expect("the trainer is released")
             .unwrap();
     }
+}
+
+/// #304: a shutdown that cancels a reconnect attempt mid-connect (during service discovery or
+/// subscribe, the peripheral already connected) disconnects the peripheral before the trainer
+/// is released (ADR-0002 §7.9: "released" means disconnected), whatever the disconnect takes.
+#[tokio::test(start_paused = true)]
+async fn a_shutdown_mid_connect_disconnects_before_the_trainer_is_released() {
+    for stage in ["discover_services", "subscribe"] {
+        let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+        let fake = Fake::new(clock.clone());
+        let cleanup = ConnectCleanup::new();
+        let inner =
+            FecTrainer::new(Arc::new(fake.clone()), clock.clone()).with_cleanup(cleanup.clone());
+        let mut link = Reconnecting::new(inner, clock, RideGate::new(true))
+            .with_cleanup(cleanup)
+            .connect(&DeviceRef("fake".into()), rider())
+            .await
+            .unwrap();
+        settle().await;
+        // The link drops; the reconnect attempt gets stuck mid-connect.
+        *fake.hang_connect.lock().unwrap() = Some(stage);
+        fake.sender.send(Err(DeviceError::Disconnected)).unwrap();
+        for _ in 0..80 {
+            tokio::time::advance(Duration::from_millis(20)).await;
+            settle().await;
+        }
+        assert_eq!(*fake.hung_at.lock().unwrap(), [stage]);
+        assert_eq!(fake.disconnects.load(Ordering::SeqCst), 1, "the lost link");
+        fake.hold_disconnect.store(true, Ordering::SeqCst);
+        let released = Arc::new(AtomicBool::new(false));
+        {
+            let released = released.clone();
+            tokio::spawn(async move {
+                drop(link.control);
+                while link.events.recv().await.is_some() {}
+                released.store(true, Ordering::SeqCst);
+            });
+        }
+        for _ in 0..25 {
+            tokio::time::advance(Duration::from_millis(20)).await;
+            settle().await;
+        }
+        assert_eq!(
+            fake.disconnects.load(Ordering::SeqCst),
+            2,
+            "{stage}: the half-open peripheral is disconnected"
+        );
+        assert!(
+            !released.load(Ordering::SeqCst),
+            "{stage}: released while the disconnect is still running"
+        );
+        fake.disconnect_gate.add_permits(1);
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_millis(20)).await;
+            settle().await;
+        }
+        assert!(released.load(Ordering::SeqCst), "{stage}");
+    }
+}
+/// #304: a cancelled connect whose disconnect hangs frees the driver's admission after the
+/// disconnect timeout, so a later connect is not refused with `AlreadyConnected` for ever.
+#[tokio::test(start_paused = true)]
+async fn a_hung_disconnect_of_a_cancelled_connect_frees_the_trainer_admission() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let fake = Fake::new(clock.clone());
+    fake.hold_disconnect.store(true, Ordering::SeqCst);
+    let driver = FecTrainer::new(Arc::new(fake.clone()), clock);
+    let dev = DeviceRef("fake".into());
+    *fake.hang_connect.lock().unwrap() = Some("subscribe");
+    let attempt = tokio::spawn(driver.connect(&dev, rider()));
+    settle().await;
+    attempt.abort();
+    tokio::time::advance(Duration::from_millis(100)).await;
+    settle().await;
+    assert_eq!(
+        fake.disconnects.load(Ordering::SeqCst),
+        1,
+        "cleanup started"
+    );
+    assert_eq!(
+        driver.connect(&dev, rider()).await.err(),
+        Some(DeviceError::AlreadyConnected),
+        "held while the cleanup runs"
+    );
+    for _ in 0..110 {
+        tokio::time::advance(Duration::from_millis(20)).await;
+        settle().await;
+    }
+    driver
+        .connect(&dev, rider())
+        .await
+        .expect("the admission is free after the disconnect timeout");
 }
