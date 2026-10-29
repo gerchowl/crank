@@ -151,6 +151,11 @@ export const commands = {
 	 *  As [`Core::ride_summary`].
 	 */
 	rideSummary: (id: string) => typedError<RideRecord, ApiError>(__TAURI_INVOKE("ride_summary", { id })),
+	/**
+	 *  The physical width in mm of the display the calling window is on, `None` when unknown
+	 *  (no EDID, no platform source, or the window has no monitor).
+	 */
+	displayWidthMm: () => __TAURI_INVOKE<number | null>("display_width_mm"),
 };
 
 /* Types */

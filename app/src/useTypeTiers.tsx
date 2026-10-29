@@ -1,10 +1,13 @@
 // Hook, CSS tokens and the too-small banner for the ride screen's type tiers (DESIGN §6.2, #91).
 // The ride screen (#96) mounts <RideTiers> around its content; descendants use `var(--t1)` … `var(--t4)`.
 import {
+  useEffect,
+  useState,
   useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { readDisplayWidthMm, watchMonitorChange } from "./displayMm";
 import { useMonitorWidthMmOverride, useRideDistanceM } from "./rideSettings";
 import {
   TOO_SMALL_TEXT,
@@ -47,18 +50,43 @@ const snapshot = () =>
     window.devicePixelRatio,
   ].join("x");
 
-/** The webview exposes no physical size; `widthMm` stays null until the override setting supplies one. */
-const monitorOf = (screenW: number, dpr: number): Monitor => ({
+/**
+ * The webview exposes no physical size, so `widthMm` is the shell's measurement (`display_width_mm`, #286),
+ * null while it is unknown or not yet answered. The override setting is applied after it in `computeTiers`.
+ */
+const monitorOf = (
+  screenW: number,
+  dpr: number,
+  widthMm: number | null,
+): Monitor => ({
   widthPx: screenW * dpr,
   scaleFactor: dpr,
-  widthMm: null,
+  widthMm,
 });
+
+/** The measured physical width of the window's display, refreshed when the window moves (see `watchMonitorChange`). */
+function useMeasuredWidthMm(): number | null {
+  const [mm, setMm] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    const refresh = () =>
+      void readDisplayWidthMm().then((v) => live && setMm(v));
+    refresh();
+    const stop = watchMonitorChange(refresh);
+    return () => {
+      live = false;
+      stop();
+    };
+  }, []);
+  return mm;
+}
 
 /** Live tiers for the current window, monitor, distance and override. */
 export function useTypeTiers(): Tiers {
   const snap = useSyncExternalStore(subscribe, snapshot);
   const distanceM = useRideDistanceM();
   const widthMmOverride = useMonitorWidthMmOverride();
+  const measuredMm = useMeasuredWidthMm();
   const [w, h, screenW, dpr] = snap.split("x").map(Number) as [
     number,
     number,
@@ -66,7 +94,7 @@ export function useTypeTiers(): Tiers {
     number,
   ];
   return computeTiers({
-    monitor: monitorOf(screenW, dpr),
+    monitor: monitorOf(screenW, dpr, measuredMm),
     widthMmOverride,
     distanceM,
     window: { width: w, height: h },
