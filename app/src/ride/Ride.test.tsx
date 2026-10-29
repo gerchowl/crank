@@ -93,6 +93,8 @@ describe("session", () => {
     expect(second).not.toBe(first);
     expect(first.disposed).toBe(true);
     expect(first.power).toHaveLength(0);
+    first.record(2, 11, 210);
+    expect(first.power).toHaveLength(0);
     expect(second.disposed).toBe(false);
     expect(a.result.current).toBe(second);
   });
@@ -117,7 +119,7 @@ describe("Ride", () => {
       sample(rig, "hr", 150),
     ]);
     expect(slot("power")?.textContent).toBe("242");
-    expect(slot("target")?.textContent).toBe("250");
+    expect(slot("plan")?.textContent).toBe("250");
     expect(slot("cadence")?.textContent).toBe("91");
     expect(slot("hr")?.textContent).toBe("150");
     expect(slot("countdown")?.textContent).toBe("4:40");
@@ -195,12 +197,189 @@ describe("Ride", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   });
 
-  test("skipping the last block finishes the ride and the window leaves once", async () => {
+  test("a Skip that would end the ride asks first; Keep riding sends nothing", async () => {
     const rig = await open({ phase: "active", blockIdx: 2 });
     await push(rig, { state: { kind: "riding" }, blockIndex: 2 });
     await userEvent.click(screen.getByRole("button", { name: "Skip block" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog.textContent).toMatch(/skipping it ends the ride/);
+    expect(rig.count("ride_skip")).toBe(0);
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Keep riding" }),
+    );
+    expect(rig.count("ride_skip")).toBe(0);
+    expect(routeText()).toBe("ride:");
+    await userEvent.click(screen.getByRole("button", { name: "Skip block" }));
+    await userEvent.click(screen.getByRole("button", { name: "End ride" }));
     await waitFor(() => expect(routeText()).toBe("history:ride-1"));
     expect(rig.count("ride_skip")).toBe(1);
+  });
+
+  test("a second tap on Skip waits for the core's status to move past the block", async () => {
+    const rig = await open({ phase: "active", publishes: false });
+    await push(rig, { state: { kind: "riding" }, blockIndex: 0 });
+    const skipBtn = () =>
+      screen.getByRole("button", { name: "Skip block" }) as HTMLButtonElement;
+    await userEvent.click(skipBtn());
+    await waitFor(() => expect(rig.count("ride_skip")).toBe(1));
+    await waitFor(() => expect(skipBtn().disabled).toBe(true));
+    await userEvent.click(skipBtn());
+    expect(rig.count("ride_skip")).toBe(1);
+    await push(rig, { state: { kind: "riding" }, blockIndex: 1 });
+    expect(skipBtn().disabled).toBe(false);
+  });
+
+  test("a refused Skip can be tried again", async () => {
+    const rig = await open({ phase: "active" });
+    await push(rig, { state: { kind: "riding" }, blockIndex: 0 });
+    rig.world.phase = "loaded";
+    await userEvent.click(screen.getByRole("button", { name: "Skip block" }));
+    await screen.findByRole("alert");
+    expect(
+      (screen.getByRole("button", { name: "Skip block" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+
+  test("a double click on Start sends start and nothing else", async () => {
+    const rig = await open();
+    await userEvent.dblClick(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(rig.count("ride_start")).toBe(1));
+    await waitFor(() =>
+      expect(screen.getByTestId("state").textContent).toBe("Riding"),
+    );
+    expect(rig.count("ride_pause")).toBe(0);
+    expect(
+      (screen.getByRole("button", { name: "Start" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  test("a refused Start can be tried again", async () => {
+    const rig = await open({ trainer: "connecting" });
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    await screen.findByRole("alert");
+    rig.world.trainer = "ready";
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(rig.world.phase).toBe("active"));
+  });
+
+  test("while a command is in flight nothing else can be sent", async () => {
+    const rig = await open({ phase: "active" });
+    await push(rig, { state: { kind: "riding" } });
+    const release = rig.hold("ride_skip");
+    await userEvent.click(screen.getByRole("button", { name: "Skip block" }));
+    await waitFor(() => expect(rig.count("ride_skip")).toBe(1));
+    for (const name of ["Pause", "Skip block", "End"])
+      expect(
+        (screen.getByRole("button", { name }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+    await act(async () => release());
+    await waitFor(() =>
+      expect(
+        (
+          screen.getByRole("button", {
+            name: "Skip block",
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false),
+    );
+  });
+
+  test("the Pause button follows the core: a refused pause leaves it Pause", async () => {
+    const rig = await open({ phase: "active" });
+    await push(rig, { state: { kind: "riding" } });
+    rig.world.phase = "loaded";
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+  });
+
+  test.each([
+    ["trainer_lost", "Pause"],
+    ["stopped_pedalling", "Pause"],
+    ["user", "Resume"],
+  ] as const)(
+    "a %s pause shows %s: Resume is for the rider's own pause",
+    async (reason, label) => {
+      const rig = await open({ phase: "active" });
+      await push(rig, { state: { kind: "paused", reason } });
+      expect(screen.getByRole("button", { name: label })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Resume" }) !== null).toBe(
+        label === "Resume",
+      );
+    },
+  );
+
+  test.each([
+    ["Start", {}, "idle"],
+    ["Pause", { phase: "active" }, "riding"],
+    ["Skip block", { phase: "active" }, "riding"],
+    ["End", { phase: "active" }, "riding"],
+  ] as [string, Partial<RideWorld>, string][])(
+    "%s with the engine stopped shows the core's internal error",
+    async (name, over, kind) => {
+      const rig = await open({ ...over, engineStopped: true });
+      await push(rig, { state: { kind } as StreamStatus["state"] });
+      await userEvent.click(screen.getByRole("button", { name }));
+      if (name === "End")
+        await userEvent.click(screen.getByRole("button", { name: "End ride" }));
+      const alert = await screen.findByRole("alert");
+      expect(alert.getAttribute("data-code")).toBe("internal");
+      expect(alert.textContent).toContain("engine stopped");
+      expect(routeText()).toBe("ride:");
+    },
+  );
+
+  test("Resume with the engine stopped shows the core's internal error", async () => {
+    const rig = await open({
+      phase: "active",
+      userPause: true,
+      engineStopped: true,
+    });
+    await push(rig, { state: { kind: "paused", reason: "user" } });
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "engine stopped",
+    );
+  });
+
+  test("the plan tile is labelled Plan, not Target", async () => {
+    await open();
+    expect(slot("plan")?.closest("[data-tile]")?.textContent).toContain("PLAN");
+    expect(document.body.textContent).not.toMatch(/TARGET/);
+  });
+
+  test("Escape closes the confirm and does not end the ride", async () => {
+    const rig = await open({ phase: "active" });
+    await push(rig, { state: { kind: "riding" } });
+    await userEvent.click(screen.getByRole("button", { name: "End" }));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(rig.count("ride_end")).toBe(0);
+  });
+
+  test("ending an unstarted ride disposes its session: a late Start finds no ride", async () => {
+    const rig = await open();
+    const session = renderHook(() => useSession()).result.current;
+    await userEvent.click(screen.getByRole("button", { name: "End" }));
+    await userEvent.click(screen.getByRole("button", { name: "End ride" }));
+    await waitFor(() => expect(routeText()).toBe("workouts:"));
+    expect(session?.disposed).toBe(true);
+    expect(renderHook(() => useSession()).result.current).toBeNull();
+    expect(rig.world.phase).toBe("none");
+  });
+
+  test("a new load re-opens the stream for the new ride", async () => {
+    const rig = await open();
+    expect(rig.base.count("open_stream")).toBe(1);
+    act(() => {
+      beginRide({ ...loaded, rideId: "ride-2" });
+    });
+    await waitFor(() => expect(rig.base.count("open_stream")).toBe(2));
+    await waitFor(() => expect(rig.base.liveSubs()).toBe(3));
   });
 
   test("End asks first; Keep riding sends nothing, End ride ends and shows the summary route with the ride id", async () => {
@@ -249,12 +428,24 @@ describe("Ride", () => {
     await push(rig, { state: { kind: "riding" } });
     await push(rig, { state: { kind: "finished" } });
     await waitFor(() => expect(routeText()).toBe("history:ride-1"));
-    await push(rig, { state: { kind: "finished" }, workoutS: 600 });
-    await push(rig, { state: { kind: "finished" }, workoutS: 601 });
+    // The effect fires again each time the state flips back to finished: still one navigation.
+    for (const workoutS of [600, 601]) {
+      await push(rig, { state: { kind: "riding" }, workoutS });
+      await push(rig, { state: { kind: "finished" }, workoutS });
+    }
     expect(routes.filter((r) => r.startsWith("history"))).toHaveLength(1);
     expect(
       routes.filter((r) => r !== "ride:" && r !== "history:ride-1"),
     ).toEqual([]);
+  });
+
+  test("a finished ride cannot be ended again", async () => {
+    const rig = await open({ phase: "active" });
+    await push(rig, { state: { kind: "finished" } });
+    expect(
+      (screen.getByRole("button", { name: "End" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 
   test("the device pill follows the links, with a word besides the colour", async () => {
@@ -305,7 +496,7 @@ describe("Ride", () => {
   test("no layout shift: a slot's size is set by its widest form, not by the value", async () => {
     const rig = await open();
     const sizes = () =>
-      ["power", "target", "hr", "cadence", "countdown", "elapsed", "left"].map(
+      ["power", "plan", "hr", "cadence", "countdown", "elapsed", "left"].map(
         (id) => (slot(id) as HTMLElement | null)?.style.width ?? "",
       );
     await push(rig, { workoutS: 5, blockElapsedS: 1 }, [

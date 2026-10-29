@@ -21,7 +21,7 @@ import { StreamProvider, useCommand, useLinks, useStatus } from "../stream";
 import { useSubscribe } from "../stream";
 import { RideTiers } from "../useTypeTiers";
 import { RideChart } from "./RideChart";
-import { usePower, useSession, type RideSession } from "./session";
+import { releaseRide, usePower, useSession, type RideSession } from "./session";
 
 /** `m:ss`, `h:mm:ss` from an hour; `—` while unknown. */
 export function clock(s: number | null): string {
@@ -77,6 +77,7 @@ const REFUSAL: Record<string, string> = {
   conflict: "Not possible right now",
   device_unavailable: "Trainer not ready",
   storage: "The ride could not be recorded",
+  internal: "The ride engine stopped",
 };
 
 /** One value of the grid: its slot reserves the widest form (`ch`), so a longer number moves nothing (P4, §16.1). */
@@ -152,7 +153,11 @@ function Screen({ session }: { session: RideSession }) {
   const skip = useCommand(commands.rideSkip);
   const end = useCommand(commands.rideEnd);
   const [refusal, setRefusal] = useState<ApiError | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState<"end" | "skip" | null>(null);
+  // Guards against a second tap before the core has answered in its status (no timers): Start until the ride leaves
+  // `idle`, Skip until the block index has moved past the one that was skipped.
+  const [startSent, setStartSent] = useState(false);
+  const [skippedFrom, setSkippedFrom] = useState<number | null>(null);
 
   const workoutS = status?.workoutS ?? null;
   const kind = status?.state.kind ?? "idle";
@@ -177,15 +182,29 @@ function Screen({ session }: { session: RideSession }) {
     if (outcome.status === "error") setRefusal(outcome.error);
     return outcome;
   };
+  const startRide = async () => {
+    setStartSent(true);
+    const outcome = await run(start.run);
+    if (outcome.status === "error") setStartSent(false);
+  };
+  const skipBlock = async () => {
+    setConfirming(null);
+    setSkippedFrom(blockIdx);
+    const outcome = await run(skip.run);
+    if (outcome.status === "error") setSkippedFrom(null);
+  };
   const endRide = async () => {
-    setConfirming(false);
+    setConfirming(null);
     const outcome = await run(end.run);
     if (outcome.status === "ok")
-      session.leaveOnce(() =>
-        typeof outcome.data === "string"
-          ? navigate("history", outcome.data)
-          : navigate("workouts"),
-      );
+      session.leaveOnce(() => {
+        if (typeof outcome.data === "string") navigate("history", outcome.data);
+        else {
+          // Never started: unloaded, nothing to review.
+          releaseRide(session);
+          navigate("workouts");
+        }
+      });
   };
 
   const blocks = compiled?.blocks ?? [];
@@ -205,6 +224,11 @@ function Screen({ session }: { session: RideSession }) {
     resume.pending ||
     skip.pending ||
     end.pending;
+  // A skip in the last block ends the ride (the engine finishes it): it asks like End. Without the plan we cannot
+  // tell, so Skip waits for it.
+  const planKnown = session.workoutId === null || compiled !== null;
+  const skipEnds = blocks.length > 0 && blockIdx === blocks.length - 1;
+  const skipWaits = skippedFrom !== null && skippedFrom === blockIdx;
   const live = kind === "riding" || kind === "paused";
   const round = (v: number | null | undefined) =>
     v == null ? null : Math.round(v);
@@ -213,34 +237,33 @@ function Screen({ session }: { session: RideSession }) {
     <div className="ride" data-testid="ride">
       <header className="ride-bar">
         <div className="ride-controls">
-          {kind === "idle" ? (
-            <button
-              className="primary ride-btn"
-              disabled={busy || status === null}
-              onClick={() => void run(start.run)}
-            >
-              Start
-            </button>
-          ) : (
-            <button
-              className="ride-btn"
-              disabled={busy || !live}
-              onClick={() => void run(userPaused ? resume.run : pause.run)}
-            >
-              {userPaused ? "Resume" : "Pause"}
-            </button>
-          )}
+          <button
+            className="primary ride-btn"
+            disabled={busy || status === null || kind !== "idle" || startSent}
+            onClick={() => void startRide()}
+          >
+            Start
+          </button>
           <button
             className="ride-btn"
             disabled={busy || !live}
-            onClick={() => void run(skip.run)}
+            onClick={() => void run(userPaused ? resume.run : pause.run)}
+          >
+            {userPaused ? "Resume" : "Pause"}
+          </button>
+          <button
+            className="ride-btn"
+            disabled={busy || !live || !planKnown || skipWaits}
+            onClick={() =>
+              skipEnds ? setConfirming("skip") : void skipBlock()
+            }
           >
             Skip block
           </button>
           <button
             className="ride-btn"
             disabled={busy || finished || status === null}
-            onClick={() => setConfirming(true)}
+            onClick={() => setConfirming("end")}
           >
             End
           </button>
@@ -283,7 +306,8 @@ function Screen({ session }: { session: RideSession }) {
           {clock(blockLeft)}
         </div>
         <div className="hero-band">
-          <Tile id="target" label="TARGET" unit="W" ch={4} value={target} />
+          {/* The core does not expose the commanded target (#324): this is the plan's line, not the trainer's target. */}
+          <Tile id="plan" label="PLAN" unit="W" ch={4} value={target} />
           <Tile
             id="power"
             label="POWER"
@@ -340,17 +364,27 @@ function Screen({ session }: { session: RideSession }) {
             aria-modal="true"
             aria-labelledby="end-title"
             className="confirm"
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setConfirming(null);
+            }}
           >
             <h2 id="end-title">End this ride?</h2>
             <p>
-              {kind === "idle"
-                ? "The ride has not started; it will be unloaded."
-                : "The ride is saved up to now and cannot be resumed."}
+              {confirming === "skip"
+                ? "This is the last block: skipping it ends the ride, saved up to now."
+                : kind === "idle"
+                  ? "The ride has not started; it will be unloaded."
+                  : "The ride is saved up to now and cannot be resumed."}
             </p>
-            <button autoFocus onClick={() => setConfirming(false)}>
+            <button autoFocus onClick={() => setConfirming(null)}>
               Keep riding
             </button>
-            <button className="primary" onClick={() => void endRide()}>
+            <button
+              className="primary"
+              onClick={() =>
+                void (confirming === "skip" ? skipBlock() : endRide())
+              }
+            >
               End ride
             </button>
           </div>
