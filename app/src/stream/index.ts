@@ -8,4 +8,4 @@ export {
   useStreamError,
   useSubscribe,
 } from "./hooks";
-export type { CommandState } from "./hooks";
+export type { CommandState, SubscribeRequest } from "./hooks";

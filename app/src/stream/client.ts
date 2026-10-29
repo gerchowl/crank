@@ -175,6 +175,7 @@ export class StreamClient {
     const gen = ++this.gen;
     this.expected = 0;
     this.ackWanted = this.ackSent = null;
+    this.acking = false;
     const channel = new Channel<StreamFrame>();
     channel.onmessage = (frame) => this.onFrame(gen, frame);
     const opened = await api(commands.openStream(channel));
@@ -193,6 +194,7 @@ export class StreamClient {
     this.gen += 1;
     this.stream = null;
     this.ackWanted = this.ackSent = null;
+    this.acking = false;
     this.snap = { state: EMPTY_STATE, error: null };
     for (const sub of this.subs) {
       sub.id = null;
@@ -253,8 +255,9 @@ export class StreamClient {
       !this.subs.has(sub) ||
       stream !== this.stream
     ) {
-      // Removed (or the stream closed) while the answer was on its way: do not leak the id.
-      if (r.status === "ok" && stream === this.stream)
+      // Removed (or the stream closed) while the answer was on its way: end it on the stream it was made on, which
+      // the core keeps until the window opens its next one. A `not_found` there means it is gone already.
+      if (r.status === "ok")
         void api(commands.streamUnsubscribe(stream, r.data));
       return;
     }
@@ -310,8 +313,9 @@ export class StreamClient {
     const seq = this.ackWanted;
     this.acking = true;
     void api(commands.streamAck(stream, seq)).then((r) => {
-      this.acking = false;
+      // An answer from an earlier stream must not touch this one's ack state (`open` and `close` reset it).
       if (gen !== this.gen) return;
+      this.acking = false;
       this.ackSent = seq;
       if (r.status === "error") this.fail(r.error);
       this.pumpAck();

@@ -14,6 +14,7 @@ import {
 import { api, type Result } from "../api";
 import type {
   ApiError,
+  Filter,
   MetricId,
   StreamStatus,
   SubscribeOpts,
@@ -46,21 +47,30 @@ function useClient(): StreamClient {
   return client;
 }
 
-/** The default subscription: the backend's own rate and no filters. */
-const NO_OPTS: SubscribeOpts = { rateHz: null, filters: [] };
+/** What a view asks of a subscription. */
+export interface SubscribeRequest {
+  /** Delivery rate in session time, 0.1–10 Hz. Required: the core's `rate_hz` is a plain number, there is no default. */
+  rateHz: number;
+  /** The subscription's own filter chain; none by default. */
+  filters?: Filter[];
+}
 
 /**
- * The latest sample of `metric`, delivered at `opts.rateHz` (0.1–10 Hz, in session time) through `opts.filters`;
- * unsubscribes on unmount. `error` is typed: `conflict` beyond 64 subscriptions, `invalid_input` for a rate or
- * filter out of range.
+ * The latest sample of `metric`, delivered at `opts.rateHz` through `opts.filters`; unsubscribes on unmount.
+ * The hook passes the options on and shows what arrives: the core does the rate limiting and validates the options
+ * (ADR-0001 §4.3). `error` is typed: `conflict` beyond 64 subscriptions, `invalid_input` for a rate or filter out of
+ * range, `internal` for arguments Tauri refuses.
  */
 export function useSubscribe(
   metric: MetricId,
-  opts: SubscribeOpts = NO_OPTS,
+  opts: SubscribeRequest,
 ): SubscriptionView {
   const client = useClient();
   // Options are plain JSON; a key keeps a re-created literal from resubscribing on every render.
-  const key = JSON.stringify(opts);
+  const key = JSON.stringify({
+    rateHz: opts.rateHz,
+    filters: opts.filters ?? [],
+  });
   const sub = useMemo(
     () => client.subscription(metric, JSON.parse(key) as SubscribeOpts),
     [client, metric, key],
