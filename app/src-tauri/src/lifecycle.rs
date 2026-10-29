@@ -88,6 +88,17 @@ impl<R: Runtime> Wire<R> for tauri::Builder<R> {
 /// is registered by [`run`].
 #[must_use]
 pub fn install<R: Runtime, W: Wire<R>>(builder: W) -> W {
+    install_with(builder, AppHandle::exit)
+}
+
+/// [`install`] with the exit action of the Quit menu item given, so a test can see the
+/// handler it registers start the exit (`AppHandle::exit` is unimplemented in the mock
+/// runtime). [`install`] passes `app.exit`.
+#[must_use]
+pub fn install_with<R: Runtime, W: Wire<R>>(
+    builder: W,
+    exit: impl Fn(&AppHandle<R>, i32) + Send + Sync + 'static,
+) -> W {
     builder
         .on_page_load(|webview, payload| {
             page_load(
@@ -98,7 +109,7 @@ pub fn install<R: Runtime, W: Wire<R>>(builder: W) -> W {
         })
         .on_window_event(window_event)
         .menu(menu)
-        .on_menu_event(|app, event| menu_event(event.id(), |code| app.exit(code)))
+        .on_menu_event(move |app, event| menu_event(event.id(), |code| exit(app, code)))
 }
 
 /// The default menu, with its Quit item (Cmd+Q) replaced by [`QUIT_ITEM_ID`].
@@ -245,6 +256,30 @@ pub fn on_exit(quit: &Quit, core: &Core) {
     }
 }
 
+/// What [`handle_exit_requested`] needs of the `ExitRequested` event's api: Tauri's
+/// [`tauri::ExitRequestApi`], as a trait because only the event loop can make one.
+pub trait ExitApi {
+    /// [`tauri::ExitRequestApi::prevent_exit`].
+    fn prevent_exit(&self);
+}
+
+impl ExitApi for tauri::ExitRequestApi {
+    fn prevent_exit(&self) {
+        Self::prevent_exit(self);
+    }
+}
+
+/// `ExitRequested` on the managed core: [`on_exit_requested`] with `api` to hold the exit back.
+pub fn handle_exit_requested(
+    quit: &Arc<Quit>,
+    core: &Core,
+    status: Option<i32>,
+    api: &impl ExitApi,
+    exit: impl FnOnce(i32) + Send + 'static,
+) {
+    on_exit_requested(quit, core, status, || api.prevent_exit(), exit);
+}
+
 /// The `App::run` callback: [`on_exit_requested`] and [`on_exit`] on the managed core.
 pub fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent, quit: &Arc<Quit>) {
     // Without a core (startup failed) there is no ride to end.
@@ -254,13 +289,7 @@ pub fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent, quit: &Arc
     match event {
         RunEvent::ExitRequested { code, api, .. } => {
             let app = app.clone();
-            on_exit_requested(
-                quit,
-                core.inner(),
-                *code,
-                || api.prevent_exit(),
-                move |code| app.exit(code),
-            );
+            handle_exit_requested(quit, core.inner(), *code, api, move |code| app.exit(code));
         }
         RunEvent::Exit => on_exit(quit, core.inner()),
         _ => {}
