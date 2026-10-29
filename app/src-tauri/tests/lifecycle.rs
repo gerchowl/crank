@@ -3,9 +3,9 @@ use crank_core::{
     Core, CoreConfig, DeviceMode, DeviceRole, EngineHost, ErrorCode, RideOutcome, Shutdown,
 };
 use crank_desktop::{
-    commands as cmd,
+    RuntimeConfig, commands as cmd,
     lifecycle::{self, Decision, ExitApi, Quit, Runner, Wire},
-    startup_failure,
+    open_core, startup_failure,
 };
 use crank_devices::sim::SimConfig;
 use crank_engine::{StreamFrame, VirtualClock};
@@ -472,6 +472,22 @@ fn the_quit_menu_item_exits_with_status_zero_and_others_do_not() {
     lifecycle::menu_event(&"crank-quit".into(), |c| exits.push(c));
     lifecycle::menu_event(&"something-else".into(), |c| exits.push(c));
     assert_eq!(exits, [0]);
+}
+
+/// #344: the application runs each ride's engine on its own thread, so an engine blocked in
+/// synchronous code cannot starve the core's End deadlines. (The tests elsewhere run the
+/// in-runtime host on paused time, so only this pins the application's host.)
+#[test]
+fn the_application_runs_the_engine_on_its_own_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    for sim in [true, false] {
+        let config = RuntimeConfig {
+            sim,
+            data_dir: None,
+        };
+        let core = open_core(&config, &dir.path().join(sim.to_string())).unwrap();
+        assert_eq!(core.engine_host(), EngineHost::Thread, "sim={sim}");
+    }
 }
 
 // ---- replacing the Quit item only once it is verified (#306) ----

@@ -435,6 +435,34 @@ fn relay_links(
     };
     (hold, release)
 }
+/// The engine's ride-active signal, as the core takes it: into the gate and `active`, until the
+/// core has taken the ride over ([`Takeover::CutOff`]); then the signal is the core's own.
+///
+/// The engine calls this on its own thread. The check and the set happen under the takeover's
+/// read lock, which the core's `send_replace(CutOff)` waits for: once that returns, no call of
+/// the cut-off engine is between its check and its set, so none can land after the core has
+/// cleared the signal or a next ride has raised it.
+fn ride_activity(
+    cut_off: watch::Receiver<Takeover>,
+    gate: RideGate,
+    active: watch::Sender<bool>,
+) -> impl Fn(bool) + Send + Sync + 'static {
+    move |on: bool| {
+        let takeover = cut_off.borrow();
+        if *takeover != Takeover::Engine {
+            return;
+        }
+        #[cfg(test)]
+        tests::BETWEEN_CHECK_AND_SET.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook();
+            }
+        });
+        gate.set_active(on);
+        active.send_replace(on);
+        drop(takeover);
+    }
+}
 /// Resolve once the driver has dropped its sender; with `close` the channel is closed towards
 /// it first so that a strap's driver, which has no control channel, learns that its consumer
 /// is gone (see [`crank_devices::release_events`]).
@@ -751,6 +779,12 @@ impl Core {
             #[cfg(test)]
             block_write: Arc::default(),
         })))
+    }
+
+    /// Where this core runs each ride's engine.
+    #[must_use]
+    pub fn engine_host(&self) -> EngineHost {
+        self.0.engine_host
     }
 
     /// Versions and mode.
@@ -1307,7 +1341,7 @@ impl Core {
         let (gate, active) = (self.0.gate.clone(), self.0.active.clone());
         #[cfg(test)]
         let pin = self.0.pin_active.clone();
-        let cut_off = takeover.subscribe();
+        let activity = ride_activity(takeover.subscribe(), gate, active);
         let (engine, handle) = Engine::new(
             self.0.clock.clone(),
             Some(trainer),
@@ -1317,12 +1351,7 @@ impl Core {
                 if !on && pin.load(Ordering::SeqCst) {
                     return;
                 }
-                // the core has taken the ride over: the signal is its own now
-                if *cut_off.borrow() != Takeover::Engine {
-                    return;
-                }
-                gate.set_active(on);
-                active.send_replace(on);
+                activity(on);
             }),
         );
         #[cfg(test)]
@@ -2071,6 +2100,52 @@ mod tests {
         .unwrap()
     }
 
+    thread_local! {
+        /// Called by `ride_activity` between its check and its set, on the calling thread.
+        pub(super) static BETWEEN_CHECK_AND_SET: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    /// #344 r2: an engine on its own thread that has passed the cut-off check when the core
+    /// cuts it off cannot set the ride-active signal afterwards: the core's cut-off waits for
+    /// it, so the next ride's raised signal stays raised.
+    #[test]
+    fn a_cut_off_engine_cannot_set_the_ride_active_signal_after_the_cut_off() {
+        let takeover = Arc::new(watch::channel(Takeover::Engine).0);
+        let (gate, active) = (RideGate::new(true), watch::channel(true).0);
+        let activity = ride_activity(takeover.subscribe(), gate.clone(), active.clone());
+        let (reached_tx, reached) = std::sync::mpsc::channel();
+        let (go, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = std::sync::Mutex::new(go_rx);
+        // the engine thread: its ride ends (`false`), and it stops between check and set
+        let engine = std::thread::spawn(move || {
+            BETWEEN_CHECK_AND_SET.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    reached_tx.send(()).unwrap();
+                    go_rx.lock().unwrap().recv().unwrap();
+                }));
+            });
+            activity(false);
+        });
+        reached.recv().unwrap();
+        // the core: cut off, clear, and the next ride raises the signal
+        let core = {
+            let (takeover, gate, active) = (takeover.clone(), gate.clone(), active.clone());
+            std::thread::spawn(move || {
+                takeover.send_replace(Takeover::CutOff);
+                gate.set_active(true);
+                active.send_replace(true);
+            })
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        go.send(()).unwrap();
+        engine.join().unwrap();
+        core.join().unwrap();
+        assert!(
+            gate.is_active(),
+            "the cut-off engine dropped the next ride's gate"
+        );
+        assert!(*active.borrow());
+    }
     /// As [`open`], on `host`, real time and the production clock.
     fn open_on(dir: &std::path::Path, radio: &FakeRadio, host: EngineHost) -> Core {
         let radio = radio.clone();
