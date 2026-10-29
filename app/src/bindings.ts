@@ -679,6 +679,35 @@ export type StreamStatus = {
 	compliance: StreamCompliance,
 	/**  The active health cap; `null` when none applies. */
 	cap: StreamCap | null,
+	/**
+	 *  The rider has paused the ride and not resumed, also while `state` says `trainer_lost`
+	 *  (that reason outranks the rider's in `state`; this field does not).
+	 */
+	userPaused: boolean,
+	/**
+	 *  Session second at which the current trainer loss began, `null` while the trainer is not
+	 *  lost. A timestamp on the ride's clock, not an elapsed time, so the status does not change
+	 *  every tick: "lost for" is `session_s - trainer_lost_since_s`, from the session time the
+	 *  heartbeat refreshes (DESIGN §6.5/§6.6).
+	 */
+	trainerLostSinceS: number | null,
+	/**
+	 *  The driver's reconnect attempt in the current loss (1-based); `null` when not lost or
+	 *  before the first attempt.
+	 */
+	reconnectAttempt: number | null,
+	/**
+	 *  While the soft start after a recovered loss runs: the target, W, the trainer is being
+	 *  eased back to; `null` otherwise.
+	 */
+	softStartTargetW: number | null,
+	/**
+	 *  Length of the last trainer loss, s, from the loss until the trainer was back; `null`
+	 *  until one has ended and again once the next one begins.
+	 */
+	lastGapS: number | null,
+	/**  Session second at which the last loss ended (with `last_gap_s`). */
+	reconnectedAtS: number | null,
 };
 
 /**

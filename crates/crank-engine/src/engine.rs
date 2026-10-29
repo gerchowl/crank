@@ -79,6 +79,29 @@ pub struct RideStatus {
     pub compliance: Compliance,
     /// The active health cap (DESIGN §15.2, §15.4); `None` when no cap applies.
     pub cap: Option<CapState>,
+    /// The rider paused the ride and has not resumed. Independent of `state`: a trainer loss
+    /// shows as `Paused(TrainerLost)` over a rider pause, and Resume is still the rider's to offer
+    /// (`Pauses::reason` ranks the reasons for `state`, it does not clear the others).
+    pub user_paused: bool,
+    /// Session time at which the current trainer loss began; `None` while the trainer is not
+    /// lost. A timestamp, not an elapsed time: it changes only at a transition, so the status
+    /// does not change every tick, and a consumer works out "lost for how long" from the session
+    /// time it already has (DESIGN §6.5, §6.6). A loss detected by silence is stamped when the
+    /// engine decides it (8 silent ticks), not when the first sample was missing.
+    pub trainer_lost_since: Option<SessionTicks>,
+    /// The reconnect attempt the driver is on during the current loss (1-based, ADR-0002 §6);
+    /// `None` while the trainer is not lost or before the first attempt of the loss.
+    pub reconnect_attempt: Option<u32>,
+    /// While a soft start after a recovered trainer loss is running (and until it is done):
+    /// the target in watts the trainer is being eased back to. `None` otherwise, also for the
+    /// soft start every ride begins with (#250) and for one owed on resume from a rider pause.
+    pub soft_start_target_w: Option<u16>,
+    /// How long the last trainer loss lasted, from the loss until the trainer was back (link
+    /// ready and samples flowing). Set when it is back, cleared when the next loss begins.
+    pub last_gap: Option<SessionTicks>,
+    /// Session time at which the last loss ended (with `last_gap`): a consumer times "back
+    /// after m:ss" from it.
+    pub reconnected_at: Option<SessionTicks>,
 }
 /// The ride's health cap as reported in the status (DESIGN §15.4): under a cap only ERG
 /// rides, and every ERG command is clamped to `cap_w`.
@@ -323,7 +346,16 @@ struct TrainerValues {
 struct LinkLog {
     received: u64,
     applied: u64,
-    queue: VecDeque<(MonoTime, LinkState)>,
+    queue: VecDeque<(MonoTime, LinkItem)>,
+}
+/// What a link log queues: a link transition, or the driver starting a reconnect attempt.
+/// Attempts ride the same queue as the transitions so they apply in the order they arrived
+/// (attempt 1 comes after the `Lost` it belongs to); only transitions are counted in
+/// `received`/`applied`, which tag samples.
+#[derive(Clone, Copy)]
+enum LinkItem {
+    State(LinkState),
+    Attempt(u32),
 }
 #[derive(Default)]
 struct SecondAcc {
@@ -369,10 +401,50 @@ struct Session {
     acc: SecondAcc,
     record_error: Option<String>,
     late: u64,
+    /// Session tick at which the current trainer loss began.
+    lost_at: Option<u64>,
+    reconnect_attempt: Option<u32>,
+    /// The trainer is back after a loss and its soft start has not finished yet.
+    after_loss: bool,
+    last_gap: Option<u64>,
+    reconnected_at: Option<u64>,
 }
 impl Session {
     fn reset_control(&mut self) {
         self.last_sent = None;
+    }
+    /// The trainer is lost: pause for it and stamp the loss (the first stamp of a loss stands, also
+    /// when a silence epoch begins while it is already lost).
+    fn lose(&mut self) {
+        self.pauses.lost = true;
+        if self.lost_at.is_none() {
+            self.lost_at = Some(self.clock_ticks);
+            self.reconnect_attempt = None;
+            self.after_loss = false;
+            self.last_gap = None;
+            self.reconnected_at = None;
+        }
+    }
+    /// The trainer is back once its link is ready and a sample of the new epoch has arrived.
+    fn recover_if_back(&mut self, link_ready: bool) {
+        if self.lost_at.is_some() && link_ready && self.missed == 0 {
+            self.recover();
+        }
+    }
+    /// The soft start after a recovered loss is over once the policy owes none.
+    fn end_after_loss(&mut self) {
+        if self.after_loss && self.policy.status().soft_start_target_w.is_none() {
+            self.after_loss = false;
+        }
+    }
+    /// The trainer is back: link ready and samples flowing again.
+    fn recover(&mut self) {
+        if let Some(at) = self.lost_at.take() {
+            self.last_gap = Some(self.clock_ticks.saturating_sub(at));
+            self.reconnected_at = Some(self.clock_ticks);
+            self.reconnect_attempt = None;
+            self.after_loss = true;
+        }
     }
     /// The engine's half of the single ride-start guard under a health cap (DESIGN §15.2):
     /// only ERG rides, and no target above the cap. The medical stop outranks it.
@@ -542,6 +614,12 @@ impl Engine {
                 erg_released: false,
                 compliance: Compliance::default(),
                 cap: None,
+                user_paused: false,
+                trainer_lost_since: None,
+                reconnect_attempt: None,
+                soft_start_target_w: None,
+                last_gap: None,
+                reconnected_at: None,
             })
             .0,
             trainer_log: LinkLog::default(),
@@ -753,10 +831,21 @@ impl Engine {
                     }
                 }
             }
+            TrainerEvent::Reconnecting { attempt } => {
+                // Only a running ride tracks a loss; the attempt is applied in order with the
+                // link transitions around it.
+                if active {
+                    self.trainer_log
+                        .queue
+                        .push_back((now, LinkItem::Attempt(attempt)));
+                }
+            }
             TrainerEvent::Link(state) => {
                 self.trainer_log.received += 1;
                 if active {
-                    self.trainer_log.queue.push_back((now, state));
+                    self.trainer_log
+                        .queue
+                        .push_back((now, LinkItem::State(state)));
                 } else {
                     self.trainer_log.applied = self.trainer_log.received;
                     self.trainer_link = Some(state);
@@ -810,7 +899,7 @@ impl Engine {
             HrEvent::Link(state) => {
                 self.hr_log.received += 1;
                 if active {
-                    self.hr_log.queue.push_back((now, state));
+                    self.hr_log.queue.push_back((now, LinkItem::State(state)));
                 } else {
                     self.hr_log.applied = self.hr_log.received;
                     self.hr_link = Some(state);
@@ -828,11 +917,20 @@ impl Engine {
     fn apply_links(&mut self, s: &mut Session, k: u64) {
         let window = s.window;
         let due = |at: MonoTime| window.tick_of(at).is_none_or(|t| t <= k);
-        while let Some(&(at, state)) = self.trainer_log.queue.front() {
+        while let Some(&(at, item)) = self.trainer_log.queue.front() {
             if !due(at) {
                 break;
             }
             self.trainer_log.queue.pop_front();
+            let state = match item {
+                LinkItem::Attempt(n) => {
+                    if s.lost_at.is_some() {
+                        s.reconnect_attempt = Some(n);
+                    }
+                    continue;
+                }
+                LinkItem::State(state) => state,
+            };
             self.trainer_log.applied += 1;
             self.trainer_link = Some(state);
             // The driver never restores a mode (ADR-0002 §6): after any transition the
@@ -845,14 +943,17 @@ impl Engine {
             // release: the policy handles both off `link_epoch`.
             s.link_epoch += 1;
             if state == LinkState::Lost {
-                s.pauses.lost = true;
+                s.lose();
             }
         }
-        while let Some(&(at, state)) = self.hr_log.queue.front() {
+        while let Some(&(at, item)) = self.hr_log.queue.front() {
             if !due(at) {
                 break;
             }
             self.hr_log.queue.pop_front();
+            let LinkItem::State(state) = item else {
+                continue;
+            };
             self.hr_log.applied += 1;
             self.hr_link = Some(state);
             s.hr.clear();
@@ -936,11 +1037,12 @@ impl Engine {
         // Every silence of LOSS_TICKS ticks is a new epoch, also one that starts while
         // the ride is already paused for a loss: power sampled before it is no origin.
         if s.missed == LOSS_TICKS {
-            s.pauses.lost = true;
+            s.lose();
             s.link_epoch += 1;
             s.reset_control();
             s.reset_soft_start();
         }
+        s.recover_if_back(self.trainer_link == Some(LinkState::Ready));
         let cadence = trainer.and_then(|t| t.cadence);
         if trainer.is_some_and(|t| t.power == Some(0) && t.cadence == Some(0)) {
             s.zero_run = s.zero_run.saturating_add(1);
@@ -964,6 +1066,7 @@ impl Engine {
             if s.pauses.lost && s.last_sent.is_some() && cadence.is_some_and(|c| c > 0) {
                 s.pauses.lost = false;
             }
+            s.end_after_loss();
         }
         self.session = Some(s);
         if finished {
@@ -1103,7 +1206,10 @@ impl Engine {
                 (&mut self.trainer_log, &mut self.trainer_link),
                 (&mut self.hr_log, &mut self.hr_link),
             ] {
-                if let Some(&(_, state)) = log.queue.back() {
+                if let Some(state) = log.queue.iter().rev().find_map(|(_, item)| match item {
+                    LinkItem::State(state) => Some(*state),
+                    LinkItem::Attempt(_) => None,
+                }) {
                     *link = Some(state);
                 }
                 log.queue.clear();
@@ -1168,6 +1274,11 @@ impl Engine {
                     acc: SecondAcc::default(),
                     record_error: None,
                     late: 0,
+                    lost_at: None,
+                    reconnect_attempt: None,
+                    after_loss: false,
+                    last_gap: None,
+                    reconnected_at: None,
                 });
                 self.activity.set_active(true);
             }
@@ -1282,6 +1393,12 @@ impl Engine {
                 cap_w,
                 erg_only: true,
             }),
+            user_paused: s.is_some_and(|s| s.pauses.user),
+            trainer_lost_since: s.and_then(|s| s.lost_at).map(SessionTicks),
+            reconnect_attempt: s.and_then(|s| s.reconnect_attempt),
+            soft_start_target_w: s.filter(|s| s.after_loss).and(policy.soft_start_target_w),
+            last_gap: s.and_then(|s| s.last_gap).map(SessionTicks),
+            reconnected_at: s.and_then(|s| s.reconnected_at).map(SessionTicks),
         };
         let now = self.clock.pacing_now().0;
         self.hub.on_status(StreamStatus::from(&status), now);
