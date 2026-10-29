@@ -288,3 +288,87 @@ fn factories_are_object_safe_and_connection_futures_own_their_inputs() {
     assert_eq!(trainer.kind(), DriverKind::Sim);
     drop((trainer, hr, discovery, trainer_future, hr_future));
 }
+
+// ---- #153: errors name the bad field; Display; PartialEq; status nibble ----
+
+/// The `detail` of the encode error `mode` is rejected with.
+fn rejected_detail(mode: ControlMode) -> String {
+    match mode.grid_key() {
+        Err(DeviceError::Protocol {
+            kind: ProtocolErrorKind::Encode,
+            detail,
+        }) => detail,
+        other => panic!("{mode:?} was not rejected: {other:?}"),
+    }
+}
+#[test]
+fn each_rejected_field_is_named_in_its_error() {
+    let wind = |f: fn(&mut Wind)| {
+        let mut w = Wind::default();
+        f(&mut w);
+        w
+    };
+    let cases: [(&str, ControlMode); 7] = [
+        ("target_w", ControlMode::Erg { target_w: 16384 }),
+        ("pct", ControlMode::Resistance { pct: 100.5 }),
+        ("grade_pct", sim(200.5, 0.004, Wind::default())),
+        ("crr", sim(0.0, 0.02, Wind::default())),
+        (
+            "wind.cw_kg_per_m",
+            sim(0.0, 0.004, wind(|w| w.cw_kg_per_m = 2.0)),
+        ),
+        (
+            "wind.speed_kmh",
+            sim(0.0, 0.004, wind(|w| w.speed_kmh = 128.0)),
+        ),
+        (
+            "wind.drafting",
+            sim(0.0, 0.004, wind(|w| w.drafting = f32::NAN)),
+        ),
+    ];
+    for (field, mode) in cases {
+        let detail = rejected_detail(mode);
+        assert!(detail.contains(field), "{field}: {detail}");
+        // and only that field: the other names must not appear
+        for (other, _) in &cases {
+            if *other != field && !field.ends_with(other) && !other.ends_with(field) {
+                assert!(!detail.contains(other), "{field} blamed {other}: {detail}");
+            }
+        }
+    }
+}
+#[test]
+fn a_protocol_error_prints_its_kind_with_display_not_debug() {
+    let e = DeviceError::Protocol {
+        kind: ProtocolErrorKind::UnexpectedPage,
+        detail: "page 0x42".into(),
+    };
+    assert_eq!(e.to_string(), "protocol unexpected page: page 0x42");
+    assert_eq!(
+        DeviceError::Protocol {
+            kind: ProtocolErrorKind::Checksum,
+            detail: "x".into()
+        }
+        .to_string(),
+        "protocol checksum: x"
+    );
+}
+#[test]
+fn discovered_devices_compare_by_value() {
+    let d = || DiscoveredDevice {
+        device: DeviceRef("a".into()),
+        info: DeviceInfo::default(),
+        trainer: Some(DriverKind::Sim),
+        heart_rate: false,
+    };
+    assert_eq!(d(), d());
+    let mut other = d();
+    other.heart_rate = true;
+    assert_ne!(d(), other);
+}
+#[test]
+fn trainer_status_keeps_only_the_four_bit_nibble() {
+    assert_eq!(TrainerStatus::from_raw(0xFF), TrainerStatus(0x0F));
+    assert_eq!(TrainerStatus::from_raw(0xA5), TrainerStatus(0x05));
+    assert_eq!(TrainerStatus::from_raw(0x07), TrainerStatus(0x07));
+}
