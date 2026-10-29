@@ -103,6 +103,9 @@ describe("rail", () => {
     await user.click(screen.getByRole("button", { name: /Settings/ }));
     await user.click(screen.getByRole("button", { name: "Devices" }));
     expect(screen.getByRole("heading", { name: "Devices" })).toBeTruthy();
+    // Only the real view has these: a bare heading must not pass.
+    expect(screen.getByRole("heading", { name: "Paired" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Scan" })).toBeTruthy();
   });
 });
 

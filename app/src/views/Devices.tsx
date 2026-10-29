@@ -2,7 +2,7 @@
 // reports (`devices_scan`, `device_pair`, `device_forget`, `device_links`) and branches on `ApiError.code`, never on
 // `message` (ADR-0001 §4.4). Out of this subset, each with its issue: live W/rpm/bpm while pairing (#267),
 // "Release trainer" (the core has no release command, #314) and a distinct "another app holds the NEO" signal (#314).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { commands } from "../bindings";
 import type {
   ApiError,
@@ -32,7 +32,7 @@ const PERMISSION_STEPS =
 
 function describe(
   error: ApiError,
-  during: "scan" | "pair" | "forget",
+  during: "load" | "scan" | "pair" | "forget",
   what: string,
 ): Notice {
   switch (error.code) {
@@ -96,53 +96,76 @@ function pairedLine(d: NonNullable<DeviceLinkInfo["device"]>): string {
 export function Devices() {
   const [found, setFound] = useState<ScannedDevice[] | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  /** The pairing in flight: device id and role, so a dual-role device shows "Pairing…" on one button only. */
   const [pairing, setPairing] = useState<string | null>(null);
   const getLinks = useCommand(commands.deviceLinks);
   const scan = useCommand(commands.devicesScan);
   const pair = useCommand(commands.devicePair);
   const forget = useCommand(commands.deviceForget);
-  const links = getLinks.data;
+  // `useCommand` drops its data on a failure: keep the last good list here, so a failed re-read leaves the rows.
+  const [links, setLinks] = useState<DeviceLinkInfo[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
-  // Re-read the pairings; a failure surfaces as a notice (the last good list stays).
-  const refresh = useCallback(async () => {
-    const r = await getLinks.run();
-    if (r.status === "error")
-      setNotice(describe(r.error, "scan", "the paired devices"));
-  }, [getLinks.run]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Re-read the pairings; a failure surfaces as a notice and the last good list stays.
   const load = getLinks.run;
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const runScan = useCallback(async () => {
-    setNotice(null);
-    const r = await scan.run(null);
-    if (r.status === "ok") setFound(r.data);
-    else {
-      setFound(null);
-      setNotice(describe(r.error, "scan", "for devices"));
+  const apply = useCallback((r: Awaited<ReturnType<typeof load>>) => {
+    if (r.status === "ok") {
+      setLinks(r.data);
+      setLoadFailed(false);
+    } else {
+      setLoadFailed(true);
+      setNotice(describe(r.error, "load", "the paired devices"));
     }
-  }, [scan.run]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
+  const refresh = useCallback(async () => apply(await load()), [load, apply]);
+  useEffect(() => {
+    void load().then(apply);
+  }, [load, apply]);
 
-  const runPair = async (d: ScannedDevice, role: DeviceRole) => {
-    setNotice(null);
-    setPairing(d.id);
-    const r = await pair.run(d.id, role);
-    setPairing(null);
-    if (r.status === "ok") await refresh();
-    else
-      setNotice(
-        describe(r.error, "pair", d.name ?? ROLE_LABEL[role].toLowerCase()),
-      );
+  // One command at a time: the core has one central. A ref, not the pending flags, because a second click can
+  // arrive before the render that disables the buttons.
+  const running = useRef(false);
+  const exclusive = async (op: () => Promise<void>) => {
+    if (running.current) return;
+    running.current = true;
+    try {
+      await op();
+    } finally {
+      running.current = false;
+    }
   };
-  const runForget = async (role: DeviceRole) => {
-    setNotice(null);
-    const r = await forget.run(role);
-    // `not_found`: already gone elsewhere; the refresh shows the truth either way.
-    if (r.status === "error" && r.error.code !== "not_found")
-      setNotice(describe(r.error, "forget", ROLE_LABEL[role].toLowerCase()));
-    await refresh();
-  };
+
+  const runScan = () =>
+    exclusive(async () => {
+      setNotice(null);
+      const r = await scan.run(null);
+      if (r.status === "ok") setFound(r.data);
+      else {
+        setFound(null);
+        setNotice(describe(r.error, "scan", "for devices"));
+      }
+    });
+  const runPair = (d: ScannedDevice, role: DeviceRole) =>
+    exclusive(async () => {
+      setNotice(null);
+      setPairing(`${d.id}:${role}`);
+      const r = await pair.run(d.id, role);
+      setPairing(null);
+      if (r.status === "ok") await refresh();
+      else
+        setNotice(
+          describe(r.error, "pair", d.name ?? ROLE_LABEL[role].toLowerCase()),
+        );
+    });
+  const runForget = (role: DeviceRole) =>
+    exclusive(async () => {
+      setNotice(null);
+      const r = await forget.run(role);
+      // `not_found`: already gone elsewhere; the refresh shows the truth either way.
+      if (r.status === "error" && r.error.code !== "not_found")
+        setNotice(describe(r.error, "forget", ROLE_LABEL[role].toLowerCase()));
+      await refresh();
+    });
 
   const busy = scan.pending || pair.pending || forget.pending;
   const pairedIds = new Set(
@@ -170,7 +193,9 @@ export function Devices() {
                   <strong>{ROLE_LABEL[role]}</strong>
                   <div className="muted">
                     {links === null
-                      ? "Loading…"
+                      ? loadFailed
+                        ? "Unknown"
+                        : "Loading…"
                       : device
                         ? pairedLine(device)
                         : "Not paired"}
@@ -235,7 +260,7 @@ export function Devices() {
                         aria-label={`Pair ${name} as ${ROLE_LABEL[role].toLowerCase()}`}
                         onClick={() => void runPair(d, role)}
                       >
-                        {pairing === d.id && pair.pending
+                        {pairing === `${d.id}:${role}` && pair.pending
                           ? "Pairing…"
                           : `Pair as ${role === "trainer" ? "trainer" : "strap"}`}
                       </button>
