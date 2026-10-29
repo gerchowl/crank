@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, test } from "vitest";
 import { Devices } from "./Devices";
-import { installDevices, strap, trainer } from "./devicesBackend";
+import { both, installDevices, strap, trainer } from "./devicesBackend";
 
 afterEach(() => {
   cleanup();
@@ -155,5 +155,113 @@ describe("Devices", () => {
   test("buttons are at least 48 px", () => {
     const css = readFileSync("src/shell.css", "utf8");
     expect(css).toMatch(/\.devices button \{[^}]*min-height:\s*48px/);
+  });
+
+  test("a failed re-read keeps the last good list; an initial failure is shown", async () => {
+    const st = installDevices({
+      nearby: [trainer],
+      paired: {
+        trainer: {
+          role: "trainer",
+          id: "neo-1",
+          name: "Tacx Neo 55624",
+          serial: null,
+          model: null,
+        },
+      },
+    });
+    const user = userEvent.setup();
+    render(<Devices />);
+    expect(await screen.findByText("Tacx Neo 55624")).toBeTruthy();
+    st.linksError = { code: "storage", message: "disk" };
+    await user.click(screen.getByRole("button", { name: "Forget trainer" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Could not load the paired devices",
+    );
+    // The core forgot it, but the read failed: the last good list is still on screen, not "Loading…".
+    expect(screen.queryByText("Loading…")).toBeNull();
+    expect(screen.getByText("Tacx Neo 55624")).toBeTruthy();
+  });
+
+  test("a failed first load is shown, not left on Loading", async () => {
+    installDevices({ linksError: { code: "storage", message: "disk" } });
+    render(<Devices />);
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Could not load the paired devices",
+    );
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  test("a double click pairs once; a double click scans once", async () => {
+    let open!: () => void;
+    const st = installDevices({
+      nearby: [trainer],
+      gate: new Promise<void>((r) => (open = r)),
+    });
+    const user = userEvent.setup();
+    render(<Devices />);
+    await user.dblClick(await screen.findByRole("button", { name: "Scan" }));
+    open();
+    await screen.findByText("Tacx Neo 55624");
+    expect(st.calls.filter((c) => c.cmd === "devices_scan").length).toBe(1);
+
+    let openPair!: () => void;
+    st.gate = new Promise<void>((r) => (openPair = r));
+    await user.dblClick(
+      screen.getByRole("button", { name: "Pair Tacx Neo 55624 as trainer" }),
+    );
+    openPair();
+    await screen.findByText(/S\/N 55624/);
+    expect(st.calls.filter((c) => c.cmd === "device_pair").length).toBe(1);
+  });
+
+  test("results are announced politely", async () => {
+    installDevices();
+    const user = userEvent.setup();
+    const { container } = render(<Devices />);
+    await scan(user);
+    const live = container.querySelector('[aria-live="polite"]');
+    expect(live?.textContent).toContain("No trainer or strap found");
+  });
+
+  test("a dual-role device shows Pairing… only on the role in flight", async () => {
+    let open!: () => void;
+    const st = installDevices({ nearby: [both] });
+    const user = userEvent.setup();
+    render(<Devices />);
+    await scan(user);
+    await screen.findByText("Dual Thing");
+    st.gate = new Promise<void>((r) => (open = r));
+    await user.click(
+      await screen.findByRole("button", { name: "Pair Dual Thing as trainer" }),
+    );
+    await waitFor(() => expect(screen.getAllByText("Pairing…").length).toBe(1));
+    expect(
+      screen.getByRole("button", { name: "Pair Dual Thing as trainer" })
+        .textContent,
+    ).toBe("Pairing…");
+    expect(
+      screen.getByRole("button", {
+        name: "Pair Dual Thing as heart-rate strap",
+      }).textContent,
+    ).toBe("Pair as strap");
+    open();
+    await screen.findByText(/S\/N 55624/);
+    expect(st.paired.trainer?.id).toBe("both-1");
+  });
+
+  test("the radio core fails an unfit role at connect; the sim refuses it up front", async () => {
+    // Not offered by the UI, but the contract both cores keep: no reliance on the sim's early refusal.
+    const radio = installDevices({ nearby: [strap] });
+    const { commands } = await import("../bindings");
+    const r = await commands.devicePair("hrm-1", "trainer");
+    expect(r.status === "error" && r.error).toMatchObject({
+      code: "device_unavailable",
+    });
+    radio.core = "sim";
+    const s = await commands.devicePair("hrm-1", "trainer");
+    expect(s.status === "error" && s.error).toMatchObject({
+      code: "invalid_input",
+    });
   });
 });

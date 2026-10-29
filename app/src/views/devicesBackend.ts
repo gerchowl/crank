@@ -1,7 +1,9 @@
 // A stand-in for the core's device commands behind `mockIPC`, for the Devices tests only. It enforces what the core
 // does (crank-core `Core::devices_scan` / `device_pair` / `device_forget` / `device_links`), not more permissive:
-// every one of them is `conflict` while a ride is loaded; pair refuses an empty id and an id that cannot act in the
-// role (`invalid_input`), replaces the role's earlier pairing, and answers the adapter's failures; forget of an
+// every one of them is `conflict` while a ride is loaded; pair refuses an empty id (`invalid_input`), and, on the
+// SIM core only (`core: "sim"`), an id that cannot act in the role (`invalid_input`; `Backend::accepts`). The RADIO
+// core (the default) accepts any id and role and fails at connect (`device_unavailable`), so the UI must not rely on
+// the sim's early refusal. Pair replaces the role's earlier pairing, and answers the adapter's failures; forget of an
 // empty role is `not_found`; a scan lists a peripheral once and marks `paired` for any role.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
@@ -27,6 +29,15 @@ export const strap: ScannedDevice = {
   paired: false,
 };
 
+/** A peripheral that offers both a trainer protocol and the Heart Rate Service. */
+export const both: ScannedDevice = {
+  id: "both-1",
+  name: "Dual Thing",
+  trainer: true,
+  heartRate: true,
+  paired: false,
+};
+
 export interface DevicesState {
   /** What the next scan sees. */
   nearby: ScannedDevice[];
@@ -35,6 +46,12 @@ export interface DevicesState {
   /** A connect failure for `device_pair` (after the adapter check). */
   connect: ApiError | null;
   rideLoaded: boolean;
+  /** A failure of `device_links` (the store); `null` is healthy. */
+  linksError: ApiError | null;
+  /** When set, `devices_scan` and `device_pair` wait for it before answering (a command in flight). */
+  gate: Promise<void> | null;
+  /** Which core answers: the seeded simulator or the Bluetooth radio (default). */
+  core: "sim" | "radio";
   paired: Partial<Record<DeviceRole, PairedDevice>>;
   calls: { cmd: string; args: Record<string, unknown> }[];
 }
@@ -45,6 +62,9 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
     adapter: null,
     connect: null,
     rideLoaded: false,
+    linksError: null,
+    gate: null,
+    core: "radio",
     paired: {},
     calls: [],
     ...init,
@@ -55,12 +75,13 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
   const noRide = () => {
     if (st.rideLoaded) fail("conflict", "a ride is loaded: end it first");
   };
-  mockIPC((cmd, args) => {
+  mockIPC(async (cmd, args) => {
     const a = (args ?? {}) as Record<string, unknown>;
     st.calls.push({ cmd, args: a });
     switch (cmd) {
       case "devices_scan": {
         noRide();
+        await st.gate;
         if (st.adapter) throw st.adapter;
         const known = new Set(Object.values(st.paired).map((p) => p.id));
         return st.nearby.map((d) => ({ ...d, paired: known.has(d.id) }));
@@ -71,10 +92,14 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
         const role = a.role as DeviceRole;
         if (id === "") fail("invalid_input", "empty device id");
         const d = st.nearby.find((n) => n.id === id);
-        if (!d || !(role === "trainer" ? d.trainer : d.heartRate))
+        const fits = d && (role === "trainer" ? d.trainer : d.heartRate);
+        if (st.core === "sim" && !fits)
           fail("invalid_input", `device "${id}" cannot be paired as ${role}`);
+        await st.gate;
         if (st.adapter) throw st.adapter;
         if (st.connect) throw st.connect;
+        // The radio finds out at connect.
+        if (!fits) fail("device_unavailable", "connect failed");
         const p: PairedDevice = {
           role,
           id,
@@ -93,6 +118,7 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
         return null;
       }
       case "device_links":
+        if (st.linksError) throw st.linksError;
         return (["trainer", "heart_rate"] as const).map(
           (role): DeviceLinkInfo => ({
             role,
