@@ -565,6 +565,28 @@ export type StreamCap = {
 	ergOnly: boolean,
 };
 
+/**
+ *  The mode the engine has commanded the trainer into, on the wire (#324). The rider-facing
+ *  reading of why there is no ERG target comes with it: `resistance` with `ergReleased` is a
+ *  release, with `userPaused` a pause, and with neither the end mode.
+ */
+export type StreamCommanded = 
+/**
+ *  ERG: the trainer holds this power (page 49). `watts` is what was sent (after the soft
+ *  start, the health cap and rounding), not the plan.
+ */
+{ kind: "erg"; 
+/**  Target watts. */
+watts: number } | 
+/**  Basic resistance (page 48), percent; 0 for a release, a rider pause and the end mode. */
+{ kind: "resistance"; 
+/**  Resistance percent, 0..=100. */
+pct: number | null } | 
+/**  Explicit flat-road simulation for a free block (ADR-0002 §7.9). */
+{ kind: "free" } | 
+/**  A track simulation. No policy sends it yet; it is here so the mapping is total. */
+{ kind: "sim" };
+
 /**  The compliance tally in whole seconds (ADR-0002 §7.8). */
 export type StreamCompliance = {
 	/**  Seconds that count. */
@@ -735,6 +757,14 @@ export type StreamStatus = {
 	lastGapS: number | null,
 	/**  Session second at which the last loss ended (with `last_gap_s`). */
 	reconnectedAtS: number | null,
+	/**
+	 *  What the engine has commanded the trainer into (#324): the ERG setpoint actually sent,
+	 *  or the reason there is none (`resistance`, `free`). `null` outside a running ride and
+	 *  while the trainer is being re-told after a loss. Not the plan. Changes at most once per
+	 *  tick (the engine sends at most one mode per tick), and in practice once per second at
+	 *  most: a ramp block and the soft start move in 1 Hz steps.
+	 */
+	commanded: StreamCommanded | null,
 };
 
 /**

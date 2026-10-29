@@ -15,7 +15,7 @@ import type { MetricId, StreamStatus, SubSample } from "../bindings";
 import { navigate, useRoute } from "../router";
 import { status as makeStatus } from "../stream/testBackend";
 import { Ride, clock, targetNow } from "./Ride";
-import { BLOCKS, installRide, type RideWorld } from "./rideBackend";
+import { BLOCKS, block, installRide, type RideWorld } from "./rideBackend";
 import { beginRide, useSession } from "./session";
 
 const loaded = { rideId: "ride-1", workoutId: "w1", hrLinked: true };
@@ -128,7 +128,7 @@ describe("Ride", () => {
       sample(rig, "hr", 150),
     ]);
     expect(slot("power")?.textContent).toBe("242");
-    expect(slot("plan")?.textContent).toBe("250");
+    expect(slot("plan")?.textContent).toBe("Plan 250 W");
     expect(slot("cadence")?.textContent).toBe("91");
     expect(slot("hr")?.textContent).toBe("150");
     expect(slot("countdown")?.textContent).toBe("4:40");
@@ -489,10 +489,198 @@ describe("Ride", () => {
     );
   });
 
-  test("the plan tile is labelled Plan, not Target", async () => {
-    await open();
-    expect(slot("plan")?.closest("[data-tile]")?.textContent).toContain("PLAN");
-    expect(document.body.textContent).not.toMatch(/TARGET/);
+  test("the TARGET tile shows what the engine commanded, the plan is the smaller line under it (#324)", async () => {
+    const rig = await open();
+    // a soft start: the plan says 250 W, the trainer was told 120 W
+    await push(rig, {
+      workoutS: 100,
+      blockIndex: 1,
+      blockElapsedS: 20,
+      commanded: { kind: "erg", watts: 120 },
+    });
+    const tile = slot("target")?.closest("[data-tile]");
+    expect(tile?.textContent).toContain("TARGET");
+    expect(slot("target")?.textContent).toBe("120");
+    expect(slot("plan")?.textContent).toBe("Plan 250 W");
+    expect(slot("plan")?.closest("[data-tile]")).toBe(tile);
+    expect(document.body.textContent).not.toMatch(/PLAN/);
+    await push(rig, {
+      workoutS: 101,
+      blockIndex: 1,
+      blockElapsedS: 21,
+      commanded: { kind: "erg", watts: 166 },
+    });
+    expect(slot("target")?.textContent).toBe("166");
+  });
+
+  test("nothing is commanded: the tile says — and the plan stays", async () => {
+    const rig = await open();
+    await push(rig, { blockIndex: 1, blockElapsedS: 20, commanded: null });
+    expect(slot("target")?.textContent).toBe("—");
+    expect(slot("plan")?.textContent).toBe("Plan 250 W");
+  });
+
+  test("a release, a pause and a free block say so instead of a number", async () => {
+    const rig = await open({ phase: "active" });
+    const shown = () => slot("target")?.textContent;
+    await act(async () => {
+      Object.assign(rig.world, { blockIdx: 1, ergReleased: true });
+      rig.publish();
+    });
+    expect(shown()).toBe("Released");
+    expect(rig.base.truth.status.commanded).toEqual({
+      kind: "resistance",
+      pct: 0,
+    });
+    await act(async () => {
+      Object.assign(rig.world, { ergReleased: false, userPause: true });
+      rig.publish();
+    });
+    expect(shown()).toBe("Paused");
+    await act(async () => {
+      Object.assign(rig.world, { userPause: false });
+      rig.publish();
+    });
+    expect(shown()).toBe("250");
+    // a free block: no watts, the engine sends the flat-road simulation
+    await act(async () => {
+      Object.assign(rig.world, {
+        blocks: [block(0, 600, 0, 0, "free")],
+        blockIdx: 0,
+      });
+      rig.publish();
+    });
+    expect(shown()).toBe("Free");
+    expect(
+      slot("target")?.closest("[data-tile]")?.querySelector(".tile-unit")
+        ?.textContent,
+    ).toBe("");
+  });
+
+  test("a rider pause outranks a release: paused and released says Paused, never Released (#330)", async () => {
+    const rig = await open({ phase: "active", blockIdx: 1 });
+    await act(async () => {
+      Object.assign(rig.world, { ergReleased: true, userPause: true });
+      rig.publish();
+    });
+    expect(rig.base.truth.status.ergReleased).toBe(true);
+    expect(rig.base.truth.status.userPaused).toBe(true);
+    expect(slot("target")?.textContent).toBe("Paused");
+  });
+
+  test("a free block is judged before a release: the mock sends Free, as the engine does", async () => {
+    const rig = await open({
+      phase: "active",
+      blocks: [block(0, 600, 0, 0, "free")],
+      blockIdx: 0,
+      ergReleased: true,
+    });
+    await act(async () => rig.publish());
+    expect(rig.base.truth.status.commanded).toEqual({ kind: "free" });
+    expect(slot("target")?.textContent).toBe("Free");
+  });
+
+  test('"Off" is never shown: Resume publishes the pause\'s command, then the soft start runs from 0 W (no pedalling) to the plan', async () => {
+    const rig = await open({ phase: "active", blockIdx: 1 });
+    await act(async () => rig.publish());
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(slot("target")?.textContent).toBe("Paused"));
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
+    // the status Resume published: riding again, still the pause's resistance command, no reason to name
+    expect(rig.base.truth.status.commanded).toEqual({
+      kind: "resistance",
+      pct: 0,
+    });
+    expect(slot("target")?.textContent).toBe("—");
+    // the next ticks without a pedalling sample: the owed soft start holds 0 W, never the plan's 250
+    await act(async () => rig.tick(null));
+    expect(slot("target")?.textContent).toBe("0");
+    await act(async () => rig.tick(null));
+    expect(slot("target")?.textContent).toBe("0");
+    expect(slot("plan")?.textContent).toBe("Plan 250 W");
+    // a soft start owed by a rider pause is not reported (engine.rs publish: `soft_start_target_w` only after a recovered
+    // loss; tests.rs `a_soft_start_owed_on_resume_is_not_shown_as_a_reconnected_state`), not in the hold and not in the ramp
+    expect(rig.base.truth.status.softStartTargetW).toBeNull();
+    expect(screen.queryByTestId("soft-start")).toBeNull();
+    // the first pedalling tick: step 0 is the rider's own 3 s power; then 1 Hz steps of (250 - 150) / 5 to the plan
+    const seen: (string | null | undefined)[] = [];
+    await act(async () => rig.tick(150));
+    seen.push(slot("target")?.textContent);
+    for (let n = 0; n < 5; n++) {
+      await act(async () => rig.tick(150));
+      seen.push(slot("target")?.textContent);
+    }
+    expect(seen).toEqual(["150", "170", "190", "210", "230", "250"]);
+    expect(screen.queryByTestId("soft-start")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/\bOff\b/);
+  });
+
+  test("Resume to a pedalling rider starts the soft start at the rider's power, not the plan", async () => {
+    const rig = await open({ phase: "active", blockIdx: 1, userPause: true });
+    await act(async () => rig.publish());
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
+    await act(async () => rig.tick(200));
+    expect(slot("target")?.textContent).toBe("200");
+    await act(async () => rig.tick(200));
+    expect(slot("target")?.textContent).toBe("210");
+  });
+
+  test("pedalling stops mid-ramp: the engine sends nothing and the tile holds the last step; the ramp restarts when pedalling returns", async () => {
+    const rig = await open({ phase: "active", blockIdx: 1, userPause: true });
+    await act(async () => rig.publish());
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
+    await act(async () => rig.tick(150));
+    await act(async () => rig.tick(150));
+    expect(slot("target")?.textContent).toBe("170");
+    // samples stop: policy.rs:242-248, `last_sent` is already `Erg`, so nothing is sent (not 0 W)
+    await act(async () => rig.tick(null));
+    expect(slot("target")?.textContent).toBe("170");
+    await act(async () => rig.tick(null));
+    expect(slot("target")?.textContent).toBe("170");
+    // pedalling returns: the ramp restarts from the then-current power
+    await act(async () => rig.tick(100));
+    expect(slot("target")?.textContent).toBe("100");
+    await act(async () => rig.tick(100));
+    expect(slot("target")?.textContent).toBe("130");
+  });
+
+  test("a ride without blocks commands Free, as the engine does for a free ride", async () => {
+    const rig = await open(
+      { phase: "active", blocks: [], blockIdx: 0 },
+      { workoutId: null },
+    );
+    await act(async () => rig.publish());
+    expect(rig.base.truth.status.commanded).toEqual({ kind: "free" });
+    expect(slot("target")?.textContent).toBe("Free");
+  });
+
+  test("a lost trainer commands nothing, and the tile does not keep showing the old target", async () => {
+    const rig = await open({ phase: "active" });
+    await act(async () => {
+      Object.assign(rig.world, { blockIdx: 1, commandedW: 180 });
+      rig.publish();
+    });
+    expect(slot("target")?.textContent).toBe("180");
+    await act(async () => {
+      Object.assign(rig.world, { trainerLost: true });
+      rig.publish();
+    });
+    expect(rig.base.truth.status.commanded).toBeNull();
+    expect(slot("target")?.textContent).toBe("—");
+  });
+
+  test("the tile shows the engine's watts as they are: no rounding or arithmetic of its own", async () => {
+    const rig = await open();
+    await push(rig, {
+      blockIndex: 1,
+      blockElapsedS: 20,
+      commanded: { kind: "erg", watts: 253 },
+    });
+    expect(slot("target")?.textContent).toBe("253");
+    expect(slot("plan")?.textContent).toBe("Plan 250 W");
   });
 
   test("Escape closes the confirm and does not end the ride", async () => {
@@ -640,9 +828,16 @@ describe("Ride", () => {
   test("no layout shift: a slot's size is set by its widest form, not by the value", async () => {
     const rig = await open();
     const sizes = () =>
-      ["power", "plan", "hr", "cadence", "countdown", "elapsed", "left"].map(
-        (id) => (slot(id) as HTMLElement | null)?.style.width ?? "",
-      );
+      [
+        "power",
+        "target",
+        "plan",
+        "hr",
+        "cadence",
+        "countdown",
+        "elapsed",
+        "left",
+      ].map((id) => (slot(id) as HTMLElement | null)?.style.width ?? "");
     await push(rig, { workoutS: 5, blockElapsedS: 1 }, [
       sample(rig, "power", 5),
       sample(rig, "hr", 61),
@@ -656,8 +851,8 @@ describe("Ride", () => {
     expect(sizes()).toEqual(short);
     expect(short.every((w) => /^\d+ch$/.test(w) || w === "")).toBe(true);
     // The tiles' own slots and the clocks reserve a width; the countdown is sized by the tier token.
-    expect(short.slice(0, 4).every((w) => /^\d+ch$/.test(w))).toBe(true);
-    expect(short[5]).toBe("7ch");
+    expect(short.slice(0, 5).every((w) => /^\d+ch$/.test(w))).toBe(true);
+    expect(short[6]).toBe("7ch");
   });
 });
 
