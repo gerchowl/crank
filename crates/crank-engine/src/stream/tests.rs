@@ -1348,3 +1348,31 @@ fn stream_and_subscription_ids_stay_unique_across_a_counter_wrap() {
     let s4 = hub.subscribe(c, MetricId::Cadence, opts()).unwrap();
     assert_eq!(s4, SubId(3), "subscriptions 1 and 2 are live");
 }
+
+/// The wire contract the UI's test backend (`app/src/stream/testBackend.ts`) mirrors: `rateHz` is a required
+/// number (specta types it `number | null`, serde refuses `null`), and a rate outside 0.1–10 Hz is `InvalidRate`.
+/// If this changes, change the mock with it.
+#[test]
+fn subscribe_opts_wire_contract_for_the_ui_mock() {
+    assert!(serde_json::from_str::<SubscribeOpts>(r#"{"rateHz":null,"filters":[]}"#).is_err());
+    assert!(serde_json::from_str::<SubscribeOpts>(r#"{"filters":[]}"#).is_err());
+    assert!(serde_json::from_str::<SubscribeOpts>(r#"{"rateHz":1,"filters":[]}"#).is_ok());
+    let mut hub = Hub::new();
+    let (stream, _rx) = hub.open(None, 0).unwrap();
+    for bad in [0.0, 0.09, 10.01, f64::NAN, f64::INFINITY] {
+        assert!(
+            matches!(
+                hub.subscribe(stream, MetricId::Power, opts(bad, Vec::new())),
+                Err(StreamError::InvalidRate)
+            ),
+            "{bad} Hz"
+        );
+    }
+    for good in [SubscribeOpts::MIN_RATE_HZ, SubscribeOpts::MAX_RATE_HZ] {
+        assert!(
+            hub.subscribe(stream, MetricId::Power, opts(good, Vec::new()))
+                .is_ok(),
+            "{good} Hz"
+        );
+    }
+}
