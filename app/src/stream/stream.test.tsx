@@ -11,7 +11,7 @@ import { clearMocks } from "@tauri-apps/api/mocks";
 import { StrictMode, type ReactNode } from "react";
 import { afterEach, describe, expect, test } from "vitest";
 import { commands } from "../bindings";
-import type { LinkChange, MetricId } from "../bindings";
+import type { Filter, LinkChange, MetricId } from "../bindings";
 import { StreamClient } from "./client";
 import {
   StreamProvider,
@@ -103,6 +103,137 @@ describe("useSubscribe", () => {
       expect(result.current.sub.error?.code).toBe("invalid_input"),
     );
     expect(backend.liveSubs()).toBe(0);
+  });
+
+  // The core's refusals of a subscribe, as the double must model them (testBackend.ts cites each rule). The bounds are
+  // literals on purpose: they are the oracle, the double's constants are what is under test.
+  const sma = (windowS: number): Filter => ({ kind: "sma", windowS });
+  const refused: [string, Filter[], string][] = [
+    [
+      "a chain of 5 filters",
+      Array.from({ length: 5 }, () => ({ kind: "hold" }) as Filter),
+      "invalid filter: chain longer than 4 filters",
+    ],
+    [
+      "an SMA window over 300 s",
+      [sma(300.5)],
+      "invalid filter: window or time constant over 300 s",
+    ],
+    [
+      "an EMA time constant over 300 s",
+      [{ kind: "ema", tauS: 301 }],
+      "invalid filter: window or time constant over 300 s",
+    ],
+    [
+      "a median over 256 samples",
+      [{ kind: "median", n: 257 }],
+      "invalid filter: median over 256 samples",
+    ],
+  ];
+  test.each(refused)(
+    "%s is the core's typed invalid_input, not a live subscription",
+    async (_what, filters, message) => {
+      const { backend, wrapper } = setup();
+      const { result } = renderHook(
+        () => useRide("power", { rateHz: 4, filters }),
+        {
+          wrapper,
+        },
+      );
+      await waitFor(() =>
+        expect(result.current.sub.error).toEqual({
+          code: "invalid_input",
+          message,
+        }),
+      );
+      expect(backend.liveSubs()).toBe(0);
+    },
+  );
+
+  test("the limits themselves are accepted: 4 filters, 300 s, 256 samples", async () => {
+    const { backend, wrapper } = setup();
+    const filters: Filter[] = [
+      sma(300),
+      { kind: "ema", tauS: 300 },
+      { kind: "median", n: 256 },
+      { kind: "hold" },
+    ];
+    const { result } = renderHook(
+      () => useRide("power", { rateHz: 4, filters }),
+      {
+        wrapper,
+      },
+    );
+    await ready(backend);
+    expect(result.current.sub.error).toBeNull();
+  });
+
+  test("the cap is checked before the rate, the rate before the filters", async () => {
+    const { backend, wrapper } = setup();
+    const bad = { rateHz: 11, filters: [sma(301)] };
+    const first = renderHook(() => useRide("power", bad), { wrapper });
+    await waitFor(() =>
+      expect(first.result.current.sub.error?.message).toBe(
+        "rate must be within 0.1..=10 Hz",
+      ),
+    );
+    for (let n = 0; n < SUB_CAP; n++)
+      renderHook(() => useRide("power", { rateHz: 4 }), { wrapper });
+    await waitFor(() => expect(backend.liveSubs()).toBe(SUB_CAP));
+    const over = renderHook(() => useRide("power", bad), { wrapper });
+    await waitFor(() =>
+      expect(over.result.current.sub.error?.code).toBe("conflict"),
+    );
+  });
+
+  test("an unknown metric id is refused by serde as a plain string, shown as internal", async () => {
+    const { backend, wrapper } = setup();
+    const { result } = renderHook(
+      () => useRide("torque" as MetricId, { rateHz: 4 }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current.sub.error?.code).toBe("internal"),
+    );
+    expect(result.current.sub.error?.message).toContain(
+      "unknown variant `torque`",
+    );
+    expect(backend.liveSubs()).toBe(0);
+  });
+
+  test.each([
+    ["an unknown filter kind", { kind: "kalman" }],
+    ["a filter missing its parameter", { kind: "sma" }],
+    ["a non-finite parameter (a null on the wire)", { kind: "ema", tauS: NaN }],
+  ])(
+    "%s is refused by serde as a plain string, shown as internal",
+    async (_what, filter) => {
+      const { backend, wrapper } = setup();
+      const { result } = renderHook(
+        () => useRide("power", { rateHz: 4, filters: [filter as Filter] }),
+        { wrapper },
+      );
+      await waitFor(() =>
+        expect(result.current.sub.error?.code).toBe("internal"),
+      );
+      expect(result.current.sub.error?.message).toContain(
+        "invalid args `opts` for command `stream_subscribe`",
+      );
+      expect(backend.liveSubs()).toBe(0);
+    },
+  );
+
+  test("the exported client takes a numeric rate only; a null rate that gets through anyway is refused as internal", async () => {
+    const { backend, client, wrapper } = setup();
+    renderHook(() => useRide(), { wrapper });
+    await ready(backend);
+    // The generated `SubscribeOpts.rateHz` is `number | null`; `StreamClient.subscription` must not accept null.
+    // @ts-expect-error rateHz: null does not compile
+    const sub = client.subscription("power", { rateHz: null, filters: [] });
+    client.add(sub);
+    await waitFor(() => expect(sub.view.error?.code).toBe("internal"));
+    expect(sub.view.error?.message).toContain("expected f64");
+    expect(backend.liveSubs()).toBe(1);
   });
 
   test("a wedged engine's open is the stream's typed engine_unresponsive, shown on the subscription too and not retried (#351)", async () => {
@@ -268,6 +399,34 @@ describe("ack", () => {
     );
     act(() => void backend.push({}));
     expect(backend.heldCount()).toBe(0);
+  });
+
+  test("an ack answer from the old stream does not mark the new stream's seq as acked (no stall)", async () => {
+    const { backend, client, wrapper } = setup();
+    const first = renderHook(() => useRide(), { wrapper });
+    await ready(backend);
+    const oldAck = backend.hold("stream_ack");
+    act(() => void backend.push({}));
+    await waitFor(() => expect(backend.count("stream_ack")).toBe(1));
+    first.unmount();
+    await waitFor(() => expect(client.streamId).toBeNull());
+
+    renderHook(() => useRide(), { wrapper });
+    await waitFor(() => expect(client.streamId).toBe(8));
+    await waitFor(() => expect(backend.count("stream_snapshot")).toBe(2));
+    // Nothing of the new stream is in flight when the old answer lands. Were it counted, the client would think seq 0
+    // (the old stream's) is acked and skip the new stream's frame 0, which restarts at 0; the core would wait for
+    // that ack for ever and hold every frame past the window.
+    oldAck();
+    await settle();
+    for (let i = 0; i < ACK_WINDOW + 1; i++) act(() => void backend.push({}));
+    await waitFor(() =>
+      expect(backend.acks).toContainEqual({ stream: 8, seq: 0 }),
+    );
+    await waitFor(() => expect(backend.heldCount()).toBe(0));
+    await waitFor(() =>
+      expect(backend.acks.at(-1)).toEqual({ stream: 8, seq: ACK_WINDOW }),
+    );
   });
 });
 
