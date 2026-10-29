@@ -557,6 +557,45 @@ describe("Ride", () => {
     ).toBe("");
   });
 
+  test("a rider pause outranks a release: paused and released says Paused, never Released (#330)", async () => {
+    const rig = await open({ phase: "active", blockIdx: 1 });
+    await act(async () => {
+      Object.assign(rig.world, { ergReleased: true, userPause: true });
+      rig.publish();
+    });
+    expect(rig.base.truth.status.ergReleased).toBe(true);
+    expect(rig.base.truth.status.userPaused).toBe(true);
+    expect(slot("target")?.textContent).toBe("Paused");
+  });
+
+  test("a free block is judged before a release: the mock sends Free, as the engine does", async () => {
+    const rig = await open({
+      phase: "active",
+      blocks: [block(0, 600, 0, 0, "free")],
+      blockIdx: 0,
+      ergReleased: true,
+    });
+    await act(async () => rig.publish());
+    expect(rig.base.truth.status.commanded).toEqual({ kind: "free" });
+    expect(slot("target")?.textContent).toBe("Free");
+  });
+
+  test('"Off" is never shown: right after Resume the last command is still the pause\'s, and the tile says —', async () => {
+    const rig = await open({ phase: "active", blockIdx: 1, userPause: true });
+    await act(async () => rig.publish());
+    expect(slot("target")?.textContent).toBe("Paused");
+    // the status published by Resume, before the next tick re-sends ERG: resistance, no reason
+    await push(rig, {
+      state: { kind: "riding" },
+      blockIndex: 1,
+      userPaused: false,
+      ergReleased: false,
+      commanded: { kind: "resistance", pct: 0 },
+    });
+    expect(slot("target")?.textContent).toBe("—");
+    expect(document.body.textContent).not.toMatch(/\bOff\b/);
+  });
+
   test("a lost trainer commands nothing, and the tile does not keep showing the old target", async () => {
     const rig = await open({ phase: "active" });
     await act(async () => {
