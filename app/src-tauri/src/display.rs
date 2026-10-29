@@ -8,7 +8,7 @@
 //! The mapping from a window's monitor to a display is pure ([`width_mm`]) over a
 //! [`Displays`] source, so it is tested without a screen; only the source is platform code.
 //!
-//! * **macOS:** CoreGraphics. [`CoreGraphicsDisplays`] lists the active displays
+//! * **macOS:** CoreGraphics. `CoreGraphicsDisplays` lists the active displays
 //!   (`CGGetActiveDisplayList`) with their bounds and `CGDisplayScreenSize` (mm, from the
 //!   EDID). Tauri's [`tauri::Monitor`] does not expose its `CGDirectDisplayID`, so the display
 //!   is found by position: tao reports a monitor's position as the display's
