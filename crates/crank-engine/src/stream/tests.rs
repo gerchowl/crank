@@ -1428,7 +1428,10 @@ fn stream_and_subscription_ids_stay_unique_across_a_counter_wrap() {
 }
 
 /// The wire contract the UI's test backend (`app/src/stream/testBackend.ts`) mirrors: `rateHz` is a required
-/// number (specta types it `number | null`, serde refuses `null`), and a rate outside 0.1–10 Hz is `InvalidRate`.
+/// number (specta types it `number | null`, serde refuses `null`), and a rate outside 0.1–10 Hz is `InvalidRate`;
+/// an unknown metric id, an unknown filter kind and a missing or `null` filter parameter are serde errors (Tauri
+/// rejects the call with a plain string, the UI shows `internal`); a chain over 4 filters, an SMA window or EMA time
+/// constant over 300 s and a median over 256 samples are `InvalidFilter`, checked after the rate (#311).
 /// If this changes, change the mock with it.
 #[test]
 fn subscribe_opts_wire_contract_for_the_ui_mock() {
@@ -1451,6 +1454,57 @@ fn subscribe_opts_wire_contract_for_the_ui_mock() {
             hub.subscribe(stream, MetricId::Power, opts(good, Vec::new()))
                 .is_ok(),
             "{good} Hz"
+        );
+    }
+
+    // What serde refuses (the mock throws Tauri's plain string for each).
+    assert!(serde_json::from_str::<MetricId>(r#""torque""#).is_err());
+    assert!(serde_json::from_str::<MetricId>(r#""workout_s""#).is_ok());
+    for bad in [
+        r#"{"kind":"kalman"}"#,
+        r#"{"kind":"sma"}"#,
+        r#"{"kind":"sma","windowS":null}"#,
+        r#"{"kind":"ema","tauS":null}"#,
+        r#"{"kind":"median"}"#,
+        r#"{"kind":"one_euro","minCutoff":1}"#,
+    ] {
+        let wire = format!(r#"{{"rateHz":1,"filters":[{bad}]}}"#);
+        assert!(
+            serde_json::from_str::<SubscribeOpts>(&wire).is_err(),
+            "{wire}"
+        );
+    }
+
+    // What the hub refuses: the limits are inclusive, and the rate is checked before the filters.
+    let hold = || vec![Filter::Hold; 4];
+    for (what, filters) in [
+        ("5 filters", vec![Filter::Hold; 5]),
+        ("sma 300.5 s", vec![Filter::Sma { window_s: 300.5 }]),
+        ("ema 301 s", vec![Filter::Ema { tau_s: 301.0 }]),
+        ("median 257", vec![Filter::Median { n: 257.0 }]),
+    ] {
+        assert!(
+            matches!(
+                hub.subscribe(stream, MetricId::Power, opts(1.0, filters)),
+                Err(StreamError::InvalidFilter(_))
+            ),
+            "{what}"
+        );
+    }
+    assert!(matches!(
+        hub.subscribe(stream, MetricId::Power, opts(11.0, vec![Filter::Hold; 5])),
+        Err(StreamError::InvalidRate)
+    ));
+    for (what, filters) in [
+        ("4 filters", hold()),
+        ("sma 300 s", vec![Filter::Sma { window_s: 300.0 }]),
+        ("ema 300 s", vec![Filter::Ema { tau_s: 300.0 }]),
+        ("median 256", vec![Filter::Median { n: 256.0 }]),
+    ] {
+        assert!(
+            hub.subscribe(stream, MetricId::Power, opts(1.0, filters))
+                .is_ok(),
+            "{what}"
         );
     }
 }
