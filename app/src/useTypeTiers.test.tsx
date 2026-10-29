@@ -3,6 +3,13 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { RideTiers } from "./useTypeTiers";
 import * as settings from "./rideSettings";
+import * as display from "./displayMm";
+
+// The shell's answer and its monitor-change signal (#286): no Tauri here.
+vi.mock("./displayMm", () => ({
+  readDisplayWidthMm: vi.fn(async () => null),
+  watchMonitorChange: vi.fn(() => () => undefined),
+}));
 
 afterEach(() => {
   cleanup();
@@ -108,4 +115,65 @@ test("a devicePixelRatio change without a resize recomputes the tiers", async ()
   await vi.waitFor(() =>
     expect(root.style.getPropertyValue("--t2")).toBe("51px"),
   );
+});
+
+// ---- #286: the measured width from the shell ----
+
+const rootOf = async () =>
+  (await screen.findByText("x")).closest("[data-slot=content]")!.parentElement!;
+
+test("a width from the shell gives measured tiers and no unknown-size notice", async () => {
+  vi.spyOn(window.screen, "width", "get").mockReturnValue(1440);
+  vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(1);
+  vi.spyOn(settings, "useMonitorWidthMmOverride").mockReturnValue(null);
+  vi.mocked(display.readDisplayWidthMm).mockResolvedValue(288);
+  setViewport(1440, 900);
+  render(<RideTiers>x</RideTiers>);
+  const root = await rootOf();
+  // the same tiers a 288 mm override gives (the dpr test above), not the clamp fallback
+  await vi.waitFor(() =>
+    expect(root.style.getPropertyValue("--t2")).toBe("101px"),
+  );
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("a move to another monitor refreshes the width and recomputes the tiers", async () => {
+  vi.spyOn(window.screen, "width", "get").mockReturnValue(1440);
+  vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(1);
+  vi.spyOn(settings, "useMonitorWidthMmOverride").mockReturnValue(null);
+  const read = vi.mocked(display.readDisplayWidthMm);
+  read.mockClear(); // earlier tests' calls share this module mock
+  read.mockResolvedValue(288);
+  let moved: () => void = () => undefined;
+  vi.mocked(display.watchMonitorChange).mockImplementation((notify) => {
+    moved = notify;
+    return () => undefined;
+  });
+  setViewport(1440, 900);
+  render(<RideTiers>x</RideTiers>);
+  const root = await rootOf();
+  await vi.waitFor(() =>
+    expect(root.style.getPropertyValue("--t2")).toBe("101px"),
+  );
+
+  // The window lands on a physically wider monitor with the same pixel size.
+  read.mockResolvedValue(597);
+  act(() => moved());
+  await vi.waitFor(() =>
+    expect(root.style.getPropertyValue("--t2")).not.toBe("101px"),
+  );
+  expect(read).toHaveBeenCalledTimes(2);
+});
+
+test("the settings override wins over the measured width", async () => {
+  vi.spyOn(window.screen, "width", "get").mockReturnValue(1440);
+  vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(1);
+  vi.spyOn(settings, "useMonitorWidthMmOverride").mockReturnValue(288);
+  vi.mocked(display.readDisplayWidthMm).mockResolvedValue(597);
+  setViewport(1440, 900);
+  render(<RideTiers>x</RideTiers>);
+  const root = await rootOf();
+  await vi.waitFor(() => expect(display.readDisplayWidthMm).toHaveBeenCalled());
+  await act(async () => undefined);
+  expect(root.style.getPropertyValue("--t2")).toBe("101px");
 });
