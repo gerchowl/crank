@@ -599,6 +599,10 @@ describe("Ride", () => {
     await act(async () => rig.tick(null));
     expect(slot("target")?.textContent).toBe("0");
     expect(slot("plan")?.textContent).toBe("Plan 250 W");
+    // a soft start owed by a rider pause is not reported (engine.rs publish: `soft_start_target_w` only after a recovered
+    // loss; tests.rs `a_soft_start_owed_on_resume_is_not_shown_as_a_reconnected_state`), not in the hold and not in the ramp
+    expect(rig.base.truth.status.softStartTargetW).toBeNull();
+    expect(screen.queryByTestId("soft-start")).toBeNull();
     // the first pedalling tick: step 0 is the rider's own 3 s power; then 1 Hz steps of (250 - 150) / 5 to the plan
     const seen: (string | null | undefined)[] = [];
     await act(async () => rig.tick(150));
@@ -608,6 +612,7 @@ describe("Ride", () => {
       seen.push(slot("target")?.textContent);
     }
     expect(seen).toEqual(["150", "170", "190", "210", "230", "250"]);
+    expect(screen.queryByTestId("soft-start")).toBeNull();
     expect(document.body.textContent).not.toMatch(/\bOff\b/);
   });
 
@@ -620,6 +625,26 @@ describe("Ride", () => {
     expect(slot("target")?.textContent).toBe("200");
     await act(async () => rig.tick(200));
     expect(slot("target")?.textContent).toBe("210");
+  });
+
+  test("pedalling stops mid-ramp: the engine sends nothing and the tile holds the last step; the ramp restarts when pedalling returns", async () => {
+    const rig = await open({ phase: "active", blockIdx: 1, userPause: true });
+    await act(async () => rig.publish());
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
+    await act(async () => rig.tick(150));
+    await act(async () => rig.tick(150));
+    expect(slot("target")?.textContent).toBe("170");
+    // samples stop: policy.rs:242-248, `last_sent` is already `Erg`, so nothing is sent (not 0 W)
+    await act(async () => rig.tick(null));
+    expect(slot("target")?.textContent).toBe("170");
+    await act(async () => rig.tick(null));
+    expect(slot("target")?.textContent).toBe("170");
+    // pedalling returns: the ramp restarts from the then-current power
+    await act(async () => rig.tick(100));
+    expect(slot("target")?.textContent).toBe("100");
+    await act(async () => rig.tick(100));
+    expect(slot("target")?.textContent).toBe("130");
   });
 
   test("a ride without blocks commands Free, as the engine does for a free ride", async () => {

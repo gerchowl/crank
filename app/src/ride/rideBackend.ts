@@ -104,7 +104,7 @@ export interface RideWorld {
   reconnectedAtS: number | null;
   /** The ERG watts the engine last sent while it is sending ERG (its soft start, steady target or ramp step); `null`: the current block's first planned watt, which is what a steady ERG block sends. */
   commandedW: number | null;
-  /** Resume has been answered and published, but the tick that sends the resumed mode has not run: `last_sent` is still the pause's `Resistance { 0 }` (engine.rs `Resume` then `publish`, the policy runs on the next tick). `rig.tick()` runs it. */
+  /** Resume has been answered and published, but the tick that sends the resumed mode has not run: `last_sent` is still the pause's `Resistance { 0 }` (engine.rs `Resume` then `publish`, the policy runs on the next tick). `rig.tick()` runs it. (The engine ticks at 4 Hz, ticks.rs:7; the mock's `tick()` is one *soft-start step*, i.e. 1 s of the engine's 20 ticks, `SOFT_START_TICKS`. #357 tracks real engine↔mock parity.) */
   resumePending: boolean;
   /** A soft start is owed (a pause owes one, erg/policy.rs:148-149 `leave_erg`; Resume then ticks through it). */
   softOwed: boolean;
@@ -112,6 +112,8 @@ export interface RideWorld {
   rampOrigin: number | null;
   /** 1 Hz steps taken since the origin. */
   rampStep: number;
+  /** Samples stopped mid-ramp: the engine sends nothing and holds the last step (policy.rs:242-248, `last_sent` is `Erg`); the ramp restarts from the then-current power when pedalling returns. */
+  rampHold: boolean;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";
   cap: "none" | "requires_erg" | "exceeds";
@@ -156,6 +158,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
     softOwed: false,
     rampOrigin: null,
     rampStep: 0,
+    rampHold: false,
     blockIdx: 0,
     trainer: "ready",
     cap: "none",
@@ -317,6 +320,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
         world.softOwed = true;
         world.rampOrigin = null;
         world.rampStep = 0;
+        world.rampHold = false;
         publish();
         return null;
       case "ride_skip":
@@ -415,16 +419,19 @@ export function installRide(over: Partial<RideWorld> = {}) {
       base.truth.unresponsive = true;
     },
     /**
-     * The next engine tick (the policy runs once per tick; the soft start steps once per second, so call this once per
-     * second of ride). `powerW` is the rider's 3 s power at a pedalling tick, `null` for no pedalling sample.
+     * One soft-start step of the engine (the engine ticks at 4 Hz and steps the ramp once per second, 4 ticks; this
+     * collapses those 4 ticks into one call, so call it once per second of ride; #357). `powerW` is the rider's 3 s power at a pedalling tick, `null` for no pedalling sample.
      */
     tick(powerW: number | null = null) {
       world.resumePending = false;
       if (world.softOwed) {
-        if (powerW === null) world.rampOrigin = null;
-        else if (world.rampOrigin === null) {
+        if (powerW === null) {
+          // no pedalling sample: before the ramp the engine holds `Erg { 0 }`; mid-ramp it sends nothing (holds the step)
+          if (world.rampOrigin !== null) world.rampHold = true;
+        } else if (world.rampOrigin === null || world.rampHold) {
           world.rampOrigin = powerW;
           world.rampStep = 0;
+          world.rampHold = false;
         } else world.rampStep += 1;
         if (world.rampStep >= 5) world.softOwed = false;
       }
