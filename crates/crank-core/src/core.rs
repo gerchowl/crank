@@ -48,6 +48,10 @@ use tokio::{
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long a released link may take to close before pairing stops waiting.
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Longest an ending engine may take to drop the ride-active signal after it was told to
+/// stop: the end mode's own deadline is 2 s (ADR-0002 §7.9), so this only fires when the
+/// engine task died with the signal up. The session is then reaped by force.
+const REAP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default scan length of `devices_scan`.
 const SCAN_FOR: Duration = Duration::from_secs(5);
 /// Rider and bike mass until athlete inputs exist (#247).
@@ -90,10 +94,11 @@ pub struct SinkClosed;
 pub enum Shutdown {
     /// No ride was loaded: nothing to end.
     Idle,
-    /// The ride was ended and its devices released (the end mode delivered, the link lost
-    /// or the engine's own deadline passed).
-    Released,
-    /// The devices were not released within the cap; the caller exits anyway.
+    /// The engine ended the ride: the end mode was delivered, the link was lost or its own
+    /// deadline passed. The devices' drivers may still be handing their peripherals back;
+    /// that is not awaited (process exit releases the radio).
+    Ended,
+    /// The engine had not ended the ride within the cap; the caller exits anyway.
     TimedOut,
     /// Ending the ride failed.
     Failed(ApiError),
@@ -107,18 +112,102 @@ struct Session {
     /// The engine task: ending it drops the device links.
     task: JoinHandle<()>,
     ride_id: String,
-    /// Set once the trainer driver has closed its event stream, i.e. handed the
-    /// peripheral back (the same confirmation pairing waits for).
-    trainer_closed: watch::Receiver<bool>,
-    /// Set by `discard`: the relay then keeps listening to the driver after the engine is
-    /// gone, to see it close the stream.
-    await_driver: Arc<AtomicBool>,
+    /// Set once a driver has closed its event stream, i.e. handed the peripheral back
+    /// (the same confirmation pairing waits for).
+    release: LinkRelease,
+}
+/// The release signals of a session's links.
+///
+/// Two different things are awaited when a ride is released, in this order: the **session
+/// reap** (`wait_released`: the engine dropped the ride-active signal and its task ended),
+/// then **the drivers' streams closing** (`LinkRelease::wait`: the trainer and the strap
+/// handed their peripherals back). `discard` and `ride_end` await both, so a pairing
+/// right after either finds the devices free; the second step is bounded by
+/// [`RELEASE_TIMEOUT`].
+#[derive(Clone)]
+struct LinkRelease {
+    trainer: watch::Receiver<bool>,
+    hr: Option<watch::Receiver<bool>>,
+}
+impl LinkRelease {
+    async fn wait(mut self) {
+        let trainer = async {
+            let _ = self.trainer.wait_for(|c| *c).await;
+        };
+        let hr = async {
+            if let Some(hr) = self.hr.as_mut() {
+                let _ = hr.wait_for(|c| *c).await;
+            }
+        };
+        if tokio::time::timeout(RELEASE_TIMEOUT, async { tokio::join!(trainer, hr) })
+            .await
+            .is_err()
+        {
+            tracing::warn!("a device did not confirm release");
+        }
+    }
+}
+/// Pass a driver's events on to the engine and report, on the returned watch, when the
+/// driver has closed its stream (the peripheral is handed back).
+///
+/// The relay outlives the engine, which drops its end when it ends, only to see the driver
+/// close: at most [`RELEASE_TIMEOUT`] after the engine is gone, so a driver that never
+/// closes cannot keep it alive. A strap has no control channel: its driver disconnects when
+/// a send fails, so with `close_on_gone` the channel is closed towards the driver then
+/// (see [`driver_closed`]).
+fn relay_events<E: Send + 'static>(
+    mut driver_events: tokio::sync::mpsc::Receiver<E>,
+    close_on_gone: bool,
+) -> (tokio::sync::mpsc::Receiver<E>, watch::Receiver<bool>) {
+    let (relay, events) = tokio::sync::mpsc::channel(256);
+    let (closed_tx, closed) = watch::channel(false);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                event = driver_events.recv() => match event {
+                    // the driver closed first
+                    None => break,
+                    Some(event) => {
+                        if relay.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+                },
+                () = relay.closed() => break,
+            }
+        }
+        // The engine is gone (or the driver ended): see the driver close.
+        if tokio::time::timeout(
+            RELEASE_TIMEOUT,
+            driver_closed(&mut driver_events, close_on_gone),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!("a driver did not close its stream after the engine");
+        }
+        closed_tx.send_replace(true);
+    });
+    (events, closed)
+}
+/// Resolve once the driver has dropped its sender; with `close` the channel is closed towards
+/// it first so that a strap's driver, which has no control channel, learns that its consumer
+/// is gone (see [`crank_devices::release_events`]).
+async fn driver_closed<E>(events: &mut tokio::sync::mpsc::Receiver<E>, close: bool) {
+    if close {
+        crank_devices::release_events(events).await;
+    } else {
+        while events.recv().await.is_some() {}
+    }
 }
 #[derive(Default)]
 struct State {
     session: Option<Session>,
     /// Id and final status of the last ride that finished, until the next load.
     last: Option<(String, StreamStatus)>,
+    /// The release signals of the session reaped last, kept until the next load so that a
+    /// second `ride_end` awaits the same release as the first.
+    last_release: Option<LinkRelease>,
 }
 /// Clears the loading flag when a `ride_load` ends in any way, including its future
 /// being dropped (a cancelled command) or panicking.
@@ -173,6 +262,10 @@ struct Inner {
     /// Lets a test interleave a command into `discard` (#278).
     #[cfg(test)]
     discard_hook: DiscardHook,
+    /// While set, the engine's callback ignores "inactive": an engine task that died with
+    /// the ride-active signal up (#290).
+    #[cfg(test)]
+    pin_active: Arc<AtomicBool>,
 }
 /// A rendezvous between a test and `Core::discard`: when enabled, `discard` announces that
 /// the lock is released and waits to be resumed.
@@ -273,6 +366,8 @@ impl Core {
             next_stream: AtomicU32::new(1),
             #[cfg(test)]
             discard_hook: DiscardHook::default(),
+            #[cfg(test)]
+            pin_active: Arc::default(),
         })))
     }
 
@@ -560,16 +655,31 @@ impl Core {
     /// Release the session of `ride_id` once the engine has dropped the ride-active gate
     /// (or its task ended): drop the handle, wait for the engine to end and its links to
     /// close, keep the final status of a finished ride.
-    async fn reap(&self, ride_id: &str) {
+    ///
+    /// The engine task is awaited under the state lock, so never unboundedly: with `force`
+    /// (the engine did not release the ride in time) it is aborted first, otherwise it gets
+    /// `RELEASE_TIMEOUT` to end after its handle is gone and is aborted after that.
+    async fn reap(&self, ride_id: &str, force: bool) {
         let mut st = self.0.state.lock().await;
         if st.session.as_ref().is_some_and(|s| s.ride_id == ride_id)
-            && let Some(session) = st.session.take()
+            && let Some(mut session) = st.session.take()
         {
             let status = session.handle.status();
             st.last = (status.state == RideState::Finished)
                 .then(|| (session.ride_id.clone(), StreamStatus::from(&status)));
+            st.last_release = Some(session.release.clone());
             drop(session.handle);
-            let _ = session.task.await;
+            if force {
+                session.task.abort();
+            }
+            if tokio::time::timeout(RELEASE_TIMEOUT, &mut session.task)
+                .await
+                .is_err()
+            {
+                tracing::warn!(ride_id, "the engine task did not end: aborting it");
+                session.task.abort();
+                let _ = session.task.await;
+            }
         }
         drop(st);
         self.0.released.notify_waiters();
@@ -662,12 +772,15 @@ impl Core {
                         }
                         // `Stop` unloads a loaded ride; a finished one is refused, harmlessly.
                         let _ = s.handle.send(EngineCmd::Stop).await;
-                        Some(s.ride_id.clone())
+                        Some((s.ride_id.clone(), s.release.clone()))
                     }
                 }
             };
             match ending {
-                Some(id) => self.wait_released(&id).await,
+                Some((id, release)) => {
+                    self.settle(&id).await;
+                    release.wait().await;
+                }
                 None => break,
             }
         }
@@ -695,6 +808,7 @@ impl Core {
             .take()
             .ok_or_else(|| ApiError::new(ErrorCode::Internal, "built session missing"))?;
         st.last = None;
+        st.last_release = None;
         let ride_id = session.ride_id.clone();
         st.session = Some(session);
         drop(st);
@@ -715,7 +829,7 @@ impl Core {
         tokio::spawn(async move {
             let _ = active.wait_for(|on| !*on).await;
             if let Some(inner) = weak.upgrade() {
-                Core(inner).reap(&id).await;
+                Core(inner).reap(&id, false).await;
             }
         });
     }
@@ -730,8 +844,7 @@ impl Core {
     /// dropping the ride-active gate of a loaded ride, which is what fires the reaper.
     async fn discard(&self, session: Session) {
         let ride_id = session.ride_id.clone();
-        let mut trainer_closed = session.trainer_closed.clone();
-        session.await_driver.store(true, Ordering::SeqCst);
+        let release = session.release.clone();
         {
             let mut st = self.0.state.lock().await;
             let _ = session.handle.send(EngineCmd::Stop).await;
@@ -743,12 +856,22 @@ impl Core {
             self.0.discard_hook.resume.notified().await;
         }
         self.spawn_reaper(&ride_id);
-        self.wait_released(&ride_id).await;
-        if tokio::time::timeout(RELEASE_TIMEOUT, trainer_closed.wait_for(|c| *c))
+        self.settle(&ride_id).await;
+        release.wait().await;
+    }
+    /// Wait until `ride_id` has no session, for at most [`REAP_TIMEOUT`]. If the engine
+    /// never drops the ride-active signal (its task died with it up), the session is reaped
+    /// by force and the signal cleared, so a command or the `loading` flag cannot be left
+    /// waiting for ever.
+    async fn settle(&self, ride_id: &str) {
+        if tokio::time::timeout(REAP_TIMEOUT, self.wait_released(ride_id))
             .await
             .is_err()
         {
-            tracing::warn!(ride_id, "trainer did not confirm release");
+            tracing::warn!(ride_id, "the engine did not release the ride: reaping it");
+            self.reap(ride_id, true).await;
+            self.0.gate.set_active(false);
+            self.0.active.send_replace(false);
         }
     }
 
@@ -759,51 +882,36 @@ impl Core {
         compiled: CompiledWorkout,
     ) -> Result<(Session, bool), ApiError> {
         let (mut trainer, hr, [trainer_device_id, hr_device_id]) = self.connect_links().await?;
-        // The engine owns the link and drops it when it ends, so the core watches the
-        // driver's side of the event stream through a relay. Normally the relay ends with
-        // the engine (dropping the link is what releases a simulated peripheral); a
-        // discarded session asks it to keep listening until the driver has closed the
-        // stream, which is the driver's confirmation that the peripheral is handed back.
-        let (relay, events) = tokio::sync::mpsc::channel(256);
-        let (closed_tx, trainer_closed) = watch::channel(false);
-        let await_driver = Arc::new(AtomicBool::new(false));
-        let mut driver_events = std::mem::replace(&mut trainer.events, events);
-        let hold = await_driver.clone();
-        tokio::spawn(async move {
-            let mut engine_up = true;
-            loop {
-                let event = if engine_up {
-                    tokio::select! {
-                        event = driver_events.recv() => event,
-                        () = relay.closed() => {
-                            if !hold.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            engine_up = false;
-                            continue;
-                        }
-                    }
-                } else {
-                    driver_events.recv().await
-                };
-                match event {
-                    Some(event) => {
-                        if engine_up && relay.send(event).await.is_err() {
-                            engine_up = false;
-                        }
-                    }
-                    None => break,
-                }
-            }
-            closed_tx.send_replace(true);
+        // The engine owns the links and drops them when it ends, so the core watches the
+        // drivers' side of the event streams through relays (see `relay_events`): a
+        // closed stream is the driver's confirmation that the peripheral is handed back.
+        let (events, trainer_closed) = relay_events(
+            std::mem::replace(&mut trainer.events, tokio::sync::mpsc::channel(1).1),
+            false,
+        );
+        trainer.events = events;
+        let mut hr = hr;
+        let hr_closed = hr.as_mut().map(|link| {
+            let (events, closed) = relay_events(
+                std::mem::replace(&mut link.events, tokio::sync::mpsc::channel(1).1),
+                true,
+            );
+            link.events = events;
+            closed
         });
         let hr_linked = hr.is_some();
         let (gate, active) = (self.0.gate.clone(), self.0.active.clone());
+        #[cfg(test)]
+        let pin = self.0.pin_active.clone();
         let (engine, handle) = Engine::new(
             self.0.clock.clone(),
             Some(trainer),
             hr,
             Arc::new(move |on: bool| {
+                #[cfg(test)]
+                if !on && pin.load(Ordering::SeqCst) {
+                    return;
+                }
                 gate.set_active(on);
                 active.send_replace(on);
             }),
@@ -840,8 +948,10 @@ impl Core {
                 streams: BTreeMap::new(),
                 task,
                 ride_id,
-                trainer_closed,
-                await_driver,
+                release: LinkRelease {
+                    trainer: trainer_closed,
+                    hr: hr_closed,
+                },
             },
             hr_linked,
         ))
@@ -891,53 +1001,75 @@ impl Core {
         self.ride_cmd(EngineCmd::SkipBlock).await
     }
     /// Finish the ride (or unload one that never started) and wait until its devices are
-    /// released. Returns the id of the finished ride, `None` for an unloaded one; ending
-    /// a ride that already finished returns its id again.
+    /// released: the session is reaped and the trainer's and the strap's drivers have closed
+    /// their streams (bounded by `RELEASE_TIMEOUT`, 3 s), so a pairing right after finds
+    /// them free. Returns the id of the finished ride, `None` for an unloaded one; ending a
+    /// ride that already finished returns its id again, after the same release.
     ///
     /// # Errors
     /// `Conflict` without a loaded or just-finished ride.
     pub async fn ride_end(&self) -> Result<Option<String>, ApiError> {
-        let (id, finishes) = {
+        self.end_ride(true).await
+    }
+    /// `ride_end`; without `release` it returns once the engine has ended (the end mode
+    /// delivered, the link lost or its deadline passed) and does not wait for the devices'
+    /// drivers to hand their peripherals back. That is for a process that is exiting, which
+    /// releases the radio anyway and must not spend its quit cap on `RELEASE_TIMEOUT`.
+    async fn end_ride(&self, release: bool) -> Result<Option<String>, ApiError> {
+        let (id, finishes, link_release) = {
             let st = self.0.state.lock().await;
-            match &st.session {
-                Some(s) => {
-                    let state = s.handle.status().state;
-                    if state != RideState::Finished {
-                        match s.handle.send(EngineCmd::Stop).await {
-                            // `WrongState`: the ride is already ending (it finished on its
-                            // own, or an overlapping end got in first) while this session is
-                            // still held. That is not an error, and the wait below must still
-                            // run: an end mode may be owed before the devices are released.
-                            Ok(()) | Err(CommandError::WrongState) => {}
-                            Err(e) => return Err(e.into()),
-                        }
-                    }
-                    (s.ride_id.clone(), state != RideState::Idle)
+            let Some(s) = &st.session else {
+                // Already reaped, possibly by an end that is still waiting for the devices:
+                // this call waits for the same release.
+                let ended = st
+                    .last
+                    .as_ref()
+                    .map(|(id, _)| Some(id.clone()))
+                    .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "no ride loaded"));
+                let pending = st.last_release.clone().filter(|_| release);
+                drop(st);
+                if let Some(pending) = pending {
+                    pending.wait().await;
                 }
-                None => {
-                    return st
-                        .last
-                        .as_ref()
-                        .map(|(id, _)| Some(id.clone()))
-                        .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "no ride loaded"));
+                return ended;
+            };
+            let state = s.handle.status().state;
+            if state != RideState::Finished {
+                match s.handle.send(EngineCmd::Stop).await {
+                    // `WrongState`: the ride is already ending (it finished on its own, or
+                    // an overlapping end got in first, also on an unstarted ride). That is
+                    // not an error, and the waits below must still run.
+                    Ok(()) | Err(CommandError::WrongState) => {}
+                    Err(e) => return Err(e.into()),
                 }
             }
+            (
+                s.ride_id.clone(),
+                state != RideState::Idle,
+                s.release.clone(),
+            )
         };
-        self.wait_released(&id).await;
+        self.settle(&id).await;
+        if release {
+            link_release.wait().await;
+        }
         Ok(finishes.then_some(id))
     }
     /// The application is quitting: end the loaded ride like `ride_end` and wait, for at
-    /// most `cap`, until its devices are released.
+    /// most `cap`, until the engine has ended it (not until the devices are released).
     ///
     /// Quitting is a ride end (ADR-0002 §7.9): the engine puts the trainer into its end
     /// mode (`Resistance{0}`) and holds the ride-active gate until that was delivered, the
     /// link was lost or its own 2 s deadline passed. A process that exits without waiting
     /// can leave ERG torque on the trainer (S1), and on macOS exiting does not drop `Core`.
+    /// It does not wait for the drivers to hand the peripherals back (`end_ride(false)`):
+    /// process exit releases the radio, and a silent strap must not eat the cap with
+    /// `RELEASE_TIMEOUT`.
     /// The cap bounds a trainer that never answers; it should exceed the engine's 2 s.
     pub async fn shutdown(&self, cap: Duration) -> Shutdown {
-        match tokio::time::timeout(cap, self.ride_end()).await {
+        match tokio::time::timeout(cap, self.end_ride(false)).await {
             Err(_) => Shutdown::TimedOut,
-            Ok(Ok(_)) => Shutdown::Released,
+            Ok(Ok(_)) => Shutdown::Ended,
             Ok(Err(e)) if e.code == ErrorCode::Conflict => Shutdown::Idle,
             Ok(Err(e)) => Shutdown::Failed(e),
         }
@@ -1166,6 +1298,10 @@ mod tests {
         mode_delay: Duration,
         /// The trainer never takes a `SetMode`: no `Delivered` ever reaches the engine.
         swallow_modes: Arc<std::sync::atomic::AtomicBool>,
+        /// How long releasing the strap takes once the engine's end of its stream is gone.
+        hr_delay: Duration,
+        /// How many straps have been released.
+        hr_released: Arc<std::sync::atomic::AtomicUsize>,
         /// Trainer connects fail while set.
         fail_connect: Arc<std::sync::atomic::AtomicBool>,
         /// Trainer connects panic while set.
@@ -1249,6 +1385,46 @@ mod tests {
             .boxed()
         }
     }
+    /// A strap driver as the real one behaves: when its consumer is gone it
+    /// releases the peripheral, which takes `hr_delay`, and only then closes its stream.
+    struct SlowHeart(FakeRadio);
+    impl HeartRateDriver for SlowHeart {
+        fn connect(
+            &self,
+            dev: &DeviceRef,
+        ) -> BoxFuture<'static, Result<crank_devices::HeartRateLink, crank_devices::DeviceError>>
+        {
+            let (inner, radio, dev) = (self.0.rig.heart(), self.0.clone(), dev.clone());
+            async move {
+                let mut link = inner.connect(&dev).await?;
+                let (tx, rx) = tokio::sync::mpsc::channel(64);
+                let mut real = std::mem::replace(&mut link.events, rx);
+                tokio::spawn(async move {
+                    // (the virtual clock sends no samples, so the loss of the consumer is
+                    // noticed through `closed`, where the real driver notices it on a send)
+                    loop {
+                        tokio::select! {
+                            event = real.recv() => {
+                                let Some(event) = event else { break };
+                                if tx.send(event).await.is_err() {
+                                    break;
+                                }
+                            }
+                            () = tx.closed() => break,
+                        }
+                    }
+                    drop(real);
+                    tokio::time::sleep(radio.hr_delay).await;
+                    radio
+                        .hr_released
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    drop(tx);
+                });
+                Ok(link)
+            }
+            .boxed()
+        }
+    }
     impl Radio for FakeRadio {
         fn scan(&self) -> BoxStream<'static, DiscoveredDevice> {
             let s = stream::iter(self.script.clone());
@@ -1263,7 +1439,7 @@ mod tests {
             Arc::new(Recording(self.clone()))
         }
         fn heart(&self, _: Arc<dyn Clock>, _: RideGate) -> Arc<dyn HeartRateDriver> {
-            Arc::new(self.rig.heart())
+            Arc::new(SlowHeart(self.clone()))
         }
         fn remember(&self, pairing: Pairing) {
             self.remembered.lock().unwrap().push(pairing.platform_id);
@@ -1298,6 +1474,8 @@ mod tests {
             disconnect_delay: Duration::ZERO,
             mode_delay: Duration::ZERO,
             swallow_modes: Arc::default(),
+            hr_delay: Duration::ZERO,
+            hr_released: Arc::default(),
             fail_connect: Arc::default(),
             panic_connect: Arc::default(),
         }
@@ -1776,18 +1954,14 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn quitting_mid_ride_ends_it_with_the_end_mode_and_releases_after_the_gate() {
+    async fn quitting_mid_ride_ends_it_with_the_end_mode_after_the_gate() {
         let dir = tempfile::tempdir().unwrap();
         let mut radio = fake(vec![], false);
         radio.mode_delay = Duration::from_millis(500);
         let core = riding(&radio, dir.path()).await;
-        assert_eq!(
-            core.shutdown(Duration::from_secs(3)).await,
-            Shutdown::Released
-        );
-        // Released before `shutdown` returned, after the gate dropped, and the last thing
-        // the trainer was told is the non-torque end mode.
-        assert_eq!(*radio.disconnects.lock().unwrap(), [false]);
+        assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Ended);
+        // The last thing the trainer was told is the non-torque end mode. (Whether the
+        // driver has disconnected by now is not part of the contract: quit does not wait.)
         let commands = radio.commands.lock().unwrap().clone();
         assert_eq!(
             commands.last(),
@@ -1797,10 +1971,7 @@ mod tests {
             "{commands:?}"
         );
         assert!(!core.ride_status().await.unwrap().loading);
-        assert_eq!(
-            core.shutdown(Duration::from_secs(3)).await,
-            Shutdown::Released
-        );
+        assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Ended);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1814,10 +1985,16 @@ mod tests {
         // Under the cap the engine's own 2 s deadline releases the ride...
         let t = tokio::time::Instant::now();
         let outcome = core.shutdown(Duration::from_secs(3)).await;
-        assert_eq!(outcome, Shutdown::Released);
+        assert_eq!(outcome, Shutdown::Ended);
         assert!(t.elapsed() <= Duration::from_secs(3), "{:?}", t.elapsed());
         // ... and a cap below it ends the wait at the cap.
+        // (quitting does not wait for the devices' release, so the first core still holds
+        // the fake radio: the second ride gets its own.)
         let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        radio
+            .swallow_modes
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let core = riding(&radio, dir.path()).await;
         let t = tokio::time::Instant::now();
         assert_eq!(
@@ -1828,7 +2005,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn overlapping_ends_of_a_loaded_ride_both_wait_for_the_release() {
+    async fn a_quit_overlapping_an_end_is_not_idle_and_the_end_still_awaits_the_release() {
         let dir = tempfile::tempdir().unwrap();
         let mut radio = fake(vec![], false);
         radio.mode_delay = Duration::from_millis(500);
@@ -1839,10 +2016,11 @@ mod tests {
         radio.disconnects.lock().unwrap().clear();
         core.ride_load(None).await.unwrap();
         // A second end of a ride that is already being ended is not a `Conflict` that
-        // `shutdown` would read as "nothing loaded": it waits for the release like the first.
+        // `shutdown` would read as "nothing loaded": it reports `Ended`; the `ride_end` still
+        // returns only after the release, which is what the disconnect below shows.
         let (end, quit) = tokio::join!(core.ride_end(), core.shutdown(Duration::from_secs(3)));
         end.unwrap();
-        assert_eq!(quit, Shutdown::Released);
+        assert_eq!(quit, Shutdown::Ended);
         assert!(!core.ride_status().await.unwrap().status.loaded);
         assert_eq!(*radio.disconnects.lock().unwrap(), [false]);
     }
@@ -1852,5 +2030,270 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let core = open(dir.path(), &fake(vec![], false));
         assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Idle);
+    }
+
+    /// #290: quitting waits for the engine's end only. A strap that is slow to hand its
+    /// peripheral back (here beyond both `RELEASE_TIMEOUT` and the cap) neither makes the
+    /// quit time out nor delays it, and the trainer's last mode is still the end mode.
+    #[tokio::test(start_paused = true)]
+    async fn quitting_mid_ride_does_not_wait_for_a_silent_strap() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio) =
+            slow_release_core(dir.path(), Duration::ZERO, Duration::from_secs(30)).await;
+        radio.commands.lock().unwrap().clear();
+        core.ride_load(Some("builtin-sensor-check".into()))
+            .await
+            .unwrap();
+        core.ride_start().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let t = tokio::time::Instant::now();
+        assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Ended);
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        let commands = radio.commands.lock().unwrap().clone();
+        assert_eq!(
+            commands.last(),
+            Some(&TrainerCommand::SetMode(
+                crank_devices::ControlMode::Resistance { pct: 0.0 }
+            )),
+            "{commands:?}"
+        );
+        let status = core.ride_status().await.unwrap().status;
+        assert_eq!(status.state, crank_engine::StreamRideState::Finished);
+        assert_eq!(
+            radio.hr_released.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the strap is still being released: not reported early"
+        );
+    }
+
+    /// A core with a trainer (releasing in `trainer`) and a strap (in `strap`) paired.
+    async fn slow_release_core(
+        dir: &std::path::Path,
+        trainer: Duration,
+        strap: Duration,
+    ) -> (Core, FakeRadio) {
+        let mut radio = fake(vec![], false);
+        radio.disconnect_delay = trainer;
+        radio.hr_delay = strap;
+        let core = open(dir, &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.device_pair("hrm".into(), DeviceRole::HeartRate)
+            .await
+            .unwrap();
+        // the pairing connects and drops both; let their releases finish
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        radio.disconnects.lock().unwrap().clear();
+        radio
+            .hr_released
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        (core, radio)
+    }
+
+    /// #290: `ride_end` returns only once the trainer has handed its peripheral back, so a
+    /// pairing right after it does not find it held.
+    #[tokio::test(start_paused = true)]
+    async fn ride_end_waits_for_the_trainer_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio) =
+            slow_release_core(dir.path(), Duration::from_secs(2), Duration::ZERO).await;
+        core.ride_load(None).await.unwrap();
+        core.ride_end().await.unwrap();
+        assert_eq!(radio.disconnects.lock().unwrap().len(), 1, "released");
+    }
+    /// #290: the same for the strap, on both paths that release a ride: `ride_end` and a
+    /// cancelled load (`discard`).
+    #[tokio::test(start_paused = true)]
+    async fn ride_end_waits_for_the_strap_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio) =
+            slow_release_core(dir.path(), Duration::ZERO, Duration::from_secs(2)).await;
+        assert!(core.ride_load(None).await.unwrap().hr_linked);
+        core.ride_end().await.unwrap();
+        assert_eq!(
+            radio.hr_released.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the strap is released when ride_end returns"
+        );
+    }
+    #[tokio::test(start_paused = true)]
+    async fn a_discarded_load_waits_for_the_strap_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio) =
+            slow_release_core(dir.path(), Duration::ZERO, Duration::from_secs(2)).await;
+        core.ride_load(None).await.unwrap();
+        let session = core.0.state.lock().await.session.take().unwrap();
+        core.discard(session).await;
+        assert_eq!(
+            radio.hr_released.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the strap is released when discard returns"
+        );
+        assert_eq!(radio.disconnects.lock().unwrap().len(), 1);
+    }
+
+    /// #290: an engine that never drops the ride-active signal (its task died with it up)
+    /// cannot hold a replacing `ride_load` for ever: after `REAP_TIMEOUT` the session is
+    /// reaped by force and the new ride loads.
+    #[tokio::test(start_paused = true)]
+    async fn a_replacing_load_is_not_held_by_an_engine_that_never_releases() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.ride_load(None).await.unwrap();
+        core.0.pin_active.store(true, Ordering::SeqCst);
+        let replaced =
+            tokio::time::timeout(REAP_TIMEOUT + Duration::from_secs(5), core.ride_load(None)).await;
+        core.0.pin_active.store(false, Ordering::SeqCst);
+        replaced.expect("the load is not left waiting").unwrap();
+        assert!(core.ride_status().await.unwrap().status.loaded);
+    }
+    /// #290: a cancelled load whose engine never releases clears `loading` after
+    /// `REAP_TIMEOUT` instead of leaving the core refusing loads for ever.
+    #[tokio::test(start_paused = true)]
+    async fn a_discarded_load_is_not_held_by_an_engine_that_never_releases() {
+        let dir = tempfile::tempdir().unwrap();
+        core_pin_then_cut_off(dir.path()).await;
+    }
+    async fn core_pin_then_cut_off(dir: &std::path::Path) {
+        let mut radio = fake(vec![], false);
+        radio.connect_delay = Duration::from_secs(10);
+        let core = open(dir, &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let load = {
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_load(None).await })
+        };
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let held = core.0.state.lock().await;
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        core.0.pin_active.store(true, Ordering::SeqCst);
+        load.abort();
+        assert!(load.await.unwrap_err().is_cancelled());
+        drop(held);
+        tokio::time::sleep(Duration::from_secs(9)).await;
+        assert!(core.0.loading.load(Ordering::SeqCst), "still waiting");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(!core.0.loading.load(Ordering::SeqCst), "bounded");
+        assert!(core.0.state.lock().await.session.is_none());
+        core.0.pin_active.store(false, Ordering::SeqCst);
+        core.ride_load(None).await.unwrap();
+    }
+
+    /// #290: the relay of a driver that never closes its stream ends `RELEASE_TIMEOUT`
+    /// after the engine is gone, not before and not never.
+    #[tokio::test(start_paused = true)]
+    async fn the_relay_of_a_driver_that_never_closes_ends_at_the_release_timeout() {
+        let (driver_tx, driver_rx) = tokio::sync::mpsc::channel::<u8>(4);
+        let (engine_rx, closed) = relay_events(driver_rx, false);
+        drop(engine_rx);
+        tokio::time::sleep(Duration::from_millis(2900)).await;
+        assert!(!*closed.borrow(), "still listening");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(*closed.borrow(), "bounded");
+        drop(driver_tx);
+    }
+
+    /// #290: a second `ride_end` (or a quit racing the UI's end) does not return before the
+    /// devices of the first are released.
+    #[tokio::test(start_paused = true)]
+    async fn a_second_ride_end_awaits_the_same_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio) =
+            slow_release_core(dir.path(), Duration::from_secs(2), Duration::ZERO).await;
+        core.ride_load(None).await.unwrap();
+        core.ride_start().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let first = {
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_end().await })
+        };
+        // The session is reaped; the trainer still takes 2 s to hand itself back.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(core.0.state.lock().await.session.is_none());
+        assert!(radio.disconnects.lock().unwrap().is_empty(), "releasing");
+        let second = core.ride_end().await.unwrap();
+        assert_eq!(
+            radio.disconnects.lock().unwrap().len(),
+            1,
+            "the second call returned before the release"
+        );
+        assert_eq!(first.await.unwrap().unwrap(), second);
+    }
+
+    /// #290: an engine task that hangs (not dies) with the ride-active signal up cannot wedge
+    /// the core: the forced reap aborts it instead of awaiting it under the state lock.
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_engine_task_is_aborted_not_awaited() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.ride_load(None).await.unwrap();
+        {
+            let mut st = core.0.state.lock().await;
+            let session = st.session.as_mut().unwrap();
+            session.task.abort();
+            session.task = tokio::spawn(std::future::pending());
+        }
+        let replace = {
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_load(None).await })
+        };
+        // The forced reap starts at `REAP_TIMEOUT`. It aborts the hung task, so the state
+        // lock is free again at once; awaiting it instead would hold the lock for a further
+        // `RELEASE_TIMEOUT`.
+        tokio::time::sleep(REAP_TIMEOUT + Duration::from_secs(1)).await;
+        let lock = tokio::time::timeout(Duration::from_millis(500), core.0.state.lock()).await;
+        assert!(
+            lock.is_ok(),
+            "the state lock is held by an await of the hung engine"
+        );
+        drop(lock);
+        tokio::time::timeout(RELEASE_TIMEOUT + Duration::from_secs(5), replace)
+            .await
+            .expect("the load is not wedged")
+            .unwrap()
+            .unwrap();
+        assert!(core.ride_status().await.unwrap().status.loaded);
+    }
+
+    /// #290: two overlapping ends of an unstarted ride: the loser's `Stop` finds the engine
+    /// already ending (`WrongState`), and it must still wait for the same release.
+    #[tokio::test(start_paused = true)]
+    async fn two_concurrent_ends_of_an_unstarted_ride_both_await_the_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio) =
+            slow_release_core(dir.path(), Duration::from_secs(2), Duration::from_secs(2)).await;
+        core.ride_load(None).await.unwrap();
+        let ended = |core: Core, radio: FakeRadio| async move {
+            let outcome = core.ride_end().await;
+            let released = (
+                radio.disconnects.lock().unwrap().len(),
+                radio.hr_released.load(std::sync::atomic::Ordering::SeqCst),
+            );
+            (outcome, released)
+        };
+        let (first, second) = tokio::join!(
+            ended(core.clone(), radio.clone()),
+            ended(core.clone(), radio.clone())
+        );
+        for (outcome, released) in [first, second] {
+            assert_eq!(outcome.unwrap(), None);
+            assert_eq!(
+                released,
+                (1, 1),
+                "returned before the devices were released"
+            );
+        }
     }
 }

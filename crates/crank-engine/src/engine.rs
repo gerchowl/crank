@@ -1136,8 +1136,9 @@ impl Engine {
                     return Err(CommandError::WrongState);
                 }
                 // The previous ride's end mode (`self.ending`) stays owed across a `Load`: its
-                // delivery, a link loss or its deadline settle it (#279). Until then the new
-                // ride sends nothing (see `control`), so no torque can overtake page 48.
+                // delivery or its deadline settle it, and a link loss only while no ride is
+                // running (a link event of an active ride is queued; #279, #288). Until then
+                // the new ride sends nothing (see `control`), so no torque can overtake page 48.
                 self.session = Some(Session {
                     phase: Phase::Loaded,
                     blocks: setup.blocks,
