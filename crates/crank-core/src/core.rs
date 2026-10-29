@@ -2633,7 +2633,15 @@ mod tests {
             let core = core.clone();
             tokio::spawn(async move { core.ride_load(None).await })
         };
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Inside the deadline the stuck ride is gone and the lock is free (the replacement is
+        // building, against an engine that stalls as well); nothing is waiting for the old one.
+        tokio::time::sleep(Duration::from_millis(1600)).await;
+        {
+            let st = tokio::time::timeout(Duration::from_millis(100), core.0.state.lock())
+                .await
+                .expect("the state lock is held by an await of the stuck engine");
+            assert!(st.session.is_none(), "the stuck ride is still there");
+        }
         core.0.stall.release();
         tokio::time::timeout(Duration::from_secs(10), load)
             .await
