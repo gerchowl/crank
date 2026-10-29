@@ -676,6 +676,14 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
     );
   });
 
+  test("no links frame yet: the trainer-lost banner is neutral, not 'reconnecting'", async () => {
+    const rig = await open({ phase: "active" });
+    await push(rig, { state: { kind: "paused", reason: "trainer_lost" } });
+    const banner = screen.getByTestId("loss-trainer").textContent ?? "";
+    expect(banner).toContain("No data from the NEO");
+    expect(banner).not.toContain("reconnecting");
+  });
+
   test("stopped pedalling is not a trainer loss", async () => {
     const rig = await rideWith();
     await publish(rig, { stoppedPedalling: true, blockIdx: 1 });
@@ -687,7 +695,10 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
     const rig = await rideWith();
     await publish(rig, { ergReleased: true, blockIdx: 1 });
     expect(screen.getByTestId("loss-erg")).toBeTruthy();
-    await publish(rig, { userPause: true });
+    // The core keeps the release set across a stop: paused with `ergReleased: true` is a real shape.
+    await publish(rig, { stoppedPedalling: true });
+    expect(rig.base.truth.status.ergReleased).toBe(true);
+    expect(rig.base.truth.status.state.kind).toBe("paused");
     expect(screen.queryByTestId("loss-erg")).toBeNull();
   });
 

@@ -91,8 +91,9 @@ export function lossView(
   return {
     trainer: st?.state.kind === "paused" && st.state.reason === "trainer_lost",
     // `trainer_lost` is also set after 8 ticks without samples on a link that is still ready, and stays set after the
-    // link is back until the engine re-applies: "reconnecting" is only true while the link is not ready.
-    reconnecting: links.trainer !== "ready",
+    // link is back until the engine re-applies: "reconnecting" is only said while the link is lost or connecting (no
+    // links frame yet: unknown, neutral wording).
+    reconnecting: links.trainer === "lost" || links.trainer === "connecting",
     hr: live && links.hr === "lost",
     erg: kind === "riding" && st?.ergReleased === true,
   };

@@ -77,7 +77,7 @@ export interface RideWorld {
   stoppedPedalling: boolean;
   /** The strap link is lost: the ride keeps going (DESIGN §6.5). */
   hrLost: boolean;
-  /** ERG released for low cadence; the engine reports it from the policy and only a riding ride is released (§6.5). */
+  /** ERG released for low cadence; the engine passes `policy.released` through (engine.rs:1279) and it stays set until 60 rpm is held for 2 s (erg/policy.rs:116-124), so it can accompany a pause. */
   ergReleased: boolean;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";
@@ -157,7 +157,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
       workoutS: workoutS ?? base.truth.status.workoutS,
       blockIndex: world.blockIdx < world.blocks.length ? world.blockIdx : null,
       blockElapsedS: 0,
-      ergReleased: world.ergReleased && state().kind === "riding",
+      ergReleased: world.ergReleased,
     });
     base.truth.links = links();
     base.push({ status: base.truth.status, links: links() });
