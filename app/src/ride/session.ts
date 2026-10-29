@@ -63,6 +63,13 @@ export function beginRide(loaded: RideLoaded): RideSession {
   return current;
 }
 
+/** The ride was unloaded before it started: nothing is left of it, so a late command finds no session. */
+export function releaseRide(session: RideSession): void {
+  session.dispose();
+  if (current === session) current = null;
+  notify();
+}
+
 const subscribe = (l: () => void) => {
   listeners.add(l);
   return () => {

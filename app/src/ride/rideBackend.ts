@@ -15,6 +15,9 @@
 //               skipping the last block finishes the ride  engine.rs:1217-1219
 //   ride_end    no ride loaded or just finished  conflict     "no ride loaded"      core.rs:1028
 //               ends a started ride (id), unloads an unstarted one (null), a finished one answers its id again  core.rs:1037-1049
+//   every ride_* command, engine task ended  internal  "engine stopped"  `EngineHandle::send` engine.rs:156,193-194 via core.rs:971,
+//               mapped error.rs:69; checked after "no ride loaded" and before the engine judges the command. `ride_end` passes any
+//               Stop error but WrongState through (core.rs:1035-1043), so a started or unstarted ride ends with it too.
 //   workout_get unknown id                not_found           Library::get (library.rs)
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
 import { mockIPC } from "@tauri-apps/api/mocks";
@@ -69,6 +72,10 @@ export interface RideWorld {
   trainer: "none" | "ready" | "connecting";
   cap: "none" | "requires_erg" | "exceeds";
   recordFails: boolean;
+  /** The engine task has ended: every command that reaches it answers `internal`. */
+  engineStopped: boolean;
+  /** Publish the status frame after a command (the core does; false models the frame still on its way). */
+  publishes: boolean;
   blocks: WorkoutBlock[];
 }
 
@@ -90,10 +97,13 @@ export function installRide(over: Partial<RideWorld> = {}) {
     trainer: "ready",
     cap: "none",
     recordFails: false,
+    engineStopped: false,
+    publishes: true,
     blocks: BLOCKS,
     ...over,
   };
   const calls: { cmd: string; args: Record<string, unknown> }[] = [];
+  const holds = new Map<string, Promise<void>[]>();
 
   const state = (): StreamRideState => {
     if (world.phase === "finished") return { kind: "finished" };
@@ -104,6 +114,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
   };
   /** The engine's `publish`: the status frame after a command. */
   const publish = (workoutS?: number) => {
+    if (!world.publishes) return;
     base.truth.status = makeStatus({
       state: state(),
       loaded: world.phase !== "none",
@@ -113,8 +124,12 @@ export function installRide(over: Partial<RideWorld> = {}) {
     });
     base.push({ status: base.truth.status });
   };
-  const active = () => {
+  const reach = () => {
     if (world.phase === "none") throw err("conflict", "no ride loaded");
+    if (world.engineStopped) throw err("internal", "engine stopped");
+  };
+  const active = () => {
+    reach();
     if (world.phase !== "active")
       throw err("conflict", "not valid in this state");
   };
@@ -122,7 +137,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
   const handle = (cmd: string, args: Record<string, unknown>): unknown => {
     switch (cmd) {
       case "ride_start":
-        if (world.phase === "none") throw err("conflict", "no ride loaded");
+        reach();
         if (world.phase !== "loaded")
           throw err("conflict", "not valid in this state");
         if (world.trainer === "none")
@@ -162,6 +177,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
           if (id === null) throw err("conflict", "no ride loaded");
           return id;
         }
+        if (world.engineStopped) throw err("internal", "engine stopped");
         const started = world.phase === "active";
         if (started) {
           world.phase = "finished";
@@ -207,7 +223,19 @@ export function installRide(over: Partial<RideWorld> = {}) {
     const args = (payload ?? {}) as Record<string, unknown>;
     if (!ours.has(cmd)) return inner(cmd, payload);
     calls.push({ cmd, args });
-    return handle(cmd, args);
+    let result: unknown;
+    let failure: { error: unknown } | null = null;
+    try {
+      result = handle(cmd, args);
+    } catch (error) {
+      failure = { error };
+    }
+    const gate = holds.get(cmd)?.shift();
+    const settle = () => {
+      if (failure) throw failure.error;
+      return result;
+    };
+    return gate ? gate.then(settle) : settle();
   });
   base.truth.status = makeStatus({
     state: state(),
@@ -220,5 +248,12 @@ export function installRide(over: Partial<RideWorld> = {}) {
     calls,
     count: (cmd: string) => calls.filter((c) => c.cmd === cmd).length,
     publish,
+    /** Delay the answer of the next call of `cmd` (its effect on the core is at the call) until the returned function runs. */
+    hold(cmd: string): () => void {
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      holds.set(cmd, [...(holds.get(cmd) ?? []), gate]);
+      return release;
+    },
   };
 }
