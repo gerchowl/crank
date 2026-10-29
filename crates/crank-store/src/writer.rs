@@ -242,6 +242,24 @@ impl Writer {
         self.active = None;
         Ok(())
     }
+    /// Close the live ride `id` as aborted: flush what is buffered, no summary. For a ride whose
+    /// engine can no longer finish it (#331).
+    pub(crate) fn abort(&mut self, id: &str, ended: i64) -> Result<(), StoreError> {
+        let active = self
+            .active
+            .as_ref()
+            .filter(|a| a.id == id)
+            .ok_or_else(|| StoreError::InvalidInput("ride is not live".into()))?;
+        let tx = self.db.transaction()?;
+        flush(&tx, active)?;
+        tx.execute(
+            "UPDATE ride SET ended_at=?1,state='aborted' WHERE id=?2",
+            params![ended.max(active.started_at), id],
+        )?;
+        tx.commit()?;
+        self.active = None;
+        Ok(())
+    }
 }
 fn flush(tx: &Transaction<'_>, active: &Active) -> Result<(), StoreError> {
     let mut stmt = tx.prepare_cached(

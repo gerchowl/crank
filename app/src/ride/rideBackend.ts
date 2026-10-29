@@ -15,9 +15,10 @@
 //               skipping the last block finishes the ride  engine.rs:1217-1219
 //   ride_end    no ride loaded or just finished  conflict     "no ride loaded"      core.rs:1028
 //               ends a started ride (id), unloads an unstarted one (null), a finished one answers its id again  core.rs:1037-1049
-//   every ride_* command, engine task ended  internal  "engine stopped"  `EngineHandle::send` engine.rs:156,193-194 via core.rs:971,
-//               mapped error.rs:69; checked after "no ride loaded" and before the engine judges the command. `ride_end` passes any
-//               Stop error but WrongState through (core.rs:1035-1043), so a started or unstarted ride ends with it too.
+//   ride_end    answers `{ rideId, forced }`: an engine that is gone or stuck is ended by force (`forced: true`, the ride's id,
+//               recorded as aborted) instead of failing  crank-core core.rs `end_ride` / `force_end` (#331)
+//   every other ride_* command, engine task ended  internal  "engine stopped"  `EngineHandle::send` engine.rs:156,193-194 via
+//               core.rs:971, mapped error.rs:69; checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
 import { mockIPC } from "@tauri-apps/api/mocks";
@@ -213,18 +214,23 @@ export function installRide(over: Partial<RideWorld> = {}) {
         if (world.phase === "none" || world.phase === "finished") {
           const id = world.phase === "finished" ? world.rideId : world.lastId;
           if (id === null) throw err("conflict", "no ride loaded");
-          return id;
+          return { rideId: id, forced: false };
         }
-        if (world.engineStopped) throw err("internal", "engine stopped");
+        if (world.engineStopped) {
+          // Forced: the core ended the ride itself; it is recorded, as aborted.
+          world.phase = "finished";
+          publish();
+          return { rideId: world.rideId, forced: true };
+        }
         const started = world.phase === "active";
         if (started) {
           world.phase = "finished";
           publish();
-          return world.rideId;
+          return { rideId: world.rideId, forced: false };
         }
         world.phase = "none";
         publish();
-        return null;
+        return { rideId: null, forced: false };
       }
       case "workout_get": {
         if (typeof args.id !== "string")
