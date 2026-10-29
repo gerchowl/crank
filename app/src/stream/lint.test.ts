@@ -72,9 +72,9 @@ test("the rule is scoped to src/stream", async () => {
 // The inline tests above prove the rule's selectors; this one proves the REAL `eslint.config.js` applies exactly that
 // rule to src/stream: same rule and severity after the whole config is resolved (a later block, a changed severity
 // or an `ignores` entry would all show here), not ignored, and parsed by the project's typescript-eslint parser.
-// It loads the full config and plugin set, the expensive part the other tests avoid (#319): about 0.4 s locally, and
-// the same load took 7.06 s on the macOS runner (#319), over Vitest's 5 s default. So this test, and only this one,
-// gets 30 s.
+// It loads the full config and plugin set, the expensive part the other tests avoid (#319). Measured for this test:
+// 3.9 s on the macOS CI runner, 2.8 s on Linux CI, about 0.9 s locally (cold). That is close to Vitest's 5 s default,
+// so this test, and only this one, gets 30 s: about 8x the slowest measurement, so a hang still fails fast.
 test("the real eslint.config.js applies the same rule to src/stream", async () => {
   const cwd = new URL("../..", import.meta.url).pathname;
   const real = new ESLint({ cwd });
