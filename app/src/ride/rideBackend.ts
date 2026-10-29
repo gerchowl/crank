@@ -106,6 +106,12 @@ export interface RideWorld {
   commandedW: number | null;
   /** Resume has been answered and published, but the tick that sends the resumed mode has not run: `last_sent` is still the pause's `Resistance { 0 }` (engine.rs `Resume` then `publish`, the policy runs on the next tick). `rig.tick()` runs it. */
   resumePending: boolean;
+  /** A soft start is owed (a pause owes one, erg/policy.rs:148-149 `leave_erg`; Resume then ticks through it). */
+  softOwed: boolean;
+  /** The soft start's origin, the rider's 3 s power at its first pedalling tick; `null` until one (the engine holds `Erg { 0 }`). */
+  rampOrigin: number | null;
+  /** 1 Hz steps taken since the origin. */
+  rampStep: number;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";
   cap: "none" | "requires_erg" | "exceeds";
@@ -147,6 +153,9 @@ export function installRide(over: Partial<RideWorld> = {}) {
     reconnectedAtS: null,
     commandedW: null,
     resumePending: false,
+    softOwed: false,
+    rampOrigin: null,
+    rampStep: 0,
     blockIdx: 0,
     trainer: "ready",
     cap: "none",
@@ -198,7 +207,18 @@ export function installRide(over: Partial<RideWorld> = {}) {
     // link ready again but no pedalling sample yet (or 8 silent ticks): the engine holds `Erg { 0 }`
     if (world.trainerSilent || world.pausedAfterLoss)
       return { kind: "erg", watts: 0 };
-    return { kind: "erg", watts: world.commandedW ?? b.powerFrom ?? 0 };
+    const target = world.commandedW ?? b.powerFrom ?? 0;
+    if (world.softOwed) {
+      // erg/policy.rs:240-270: `Erg { 0 }` until a pedalling sample, then `origin + (target - origin) * step / 5`, step 0
+      // being the origin itself; never the plan straight away.
+      if (world.rampOrigin === null) return { kind: "erg", watts: 0 };
+      const f = Math.min(world.rampStep, 5) / 5;
+      return {
+        kind: "erg",
+        watts: Math.round(world.rampOrigin + (target - world.rampOrigin) * f),
+      };
+    }
+    return { kind: "erg", watts: target };
   };
   const links = (): LinkChange[] =>
     world.phase === "active"
@@ -294,6 +314,9 @@ export function installRide(over: Partial<RideWorld> = {}) {
         world.userPause = false;
         // the status goes out at once; the mode is re-sent by the next tick
         world.resumePending = true;
+        world.softOwed = true;
+        world.rampOrigin = null;
+        world.rampStep = 0;
         publish();
         return null;
       case "ride_skip":
@@ -391,9 +414,20 @@ export function installRide(over: Partial<RideWorld> = {}) {
       world.engineUnresponsive = true;
       base.truth.unresponsive = true;
     },
-    /** The next engine tick: the policy's mode for the resumed ride is sent and the status carries it. */
-    tick() {
+    /**
+     * The next engine tick (the policy runs once per tick; the soft start steps once per second, so call this once per
+     * second of ride). `powerW` is the rider's 3 s power at a pedalling tick, `null` for no pedalling sample.
+     */
+    tick(powerW: number | null = null) {
       world.resumePending = false;
+      if (world.softOwed) {
+        if (powerW === null) world.rampOrigin = null;
+        else if (world.rampOrigin === null) {
+          world.rampOrigin = powerW;
+          world.rampStep = 0;
+        } else world.rampStep += 1;
+        if (world.rampStep >= 5) world.softOwed = false;
+      }
       publish();
     },
     /** Delay the answer of the next call of `cmd` (its effect on the core is at the call) until the returned function runs. */

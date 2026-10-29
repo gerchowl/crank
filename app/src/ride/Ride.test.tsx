@@ -580,10 +580,11 @@ describe("Ride", () => {
     expect(slot("target")?.textContent).toBe("Free");
   });
 
-  test('"Off" is never shown: Resume publishes while the pause\'s command is still the last, the next tick sends ERG', async () => {
-    const rig = await open({ phase: "active", blockIdx: 1, userPause: true });
+  test('"Off" is never shown: Resume publishes the pause\'s command, then the soft start runs from 0 W (no pedalling) to the plan', async () => {
+    const rig = await open({ phase: "active", blockIdx: 1 });
     await act(async () => rig.publish());
-    expect(slot("target")?.textContent).toBe("Paused");
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(slot("target")?.textContent).toBe("Paused"));
     await userEvent.click(screen.getByRole("button", { name: "Resume" }));
     await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
     // the status Resume published: riding again, still the pause's resistance command, no reason to name
@@ -592,10 +593,33 @@ describe("Ride", () => {
       pct: 0,
     });
     expect(slot("target")?.textContent).toBe("—");
+    // the next ticks without a pedalling sample: the owed soft start holds 0 W, never the plan's 250
+    await act(async () => rig.tick(null));
+    expect(slot("target")?.textContent).toBe("0");
+    await act(async () => rig.tick(null));
+    expect(slot("target")?.textContent).toBe("0");
+    expect(slot("plan")?.textContent).toBe("Plan 250 W");
+    // the first pedalling tick: step 0 is the rider's own 3 s power; then 1 Hz steps of (250 - 150) / 5 to the plan
+    const seen: (string | null | undefined)[] = [];
+    await act(async () => rig.tick(150));
+    seen.push(slot("target")?.textContent);
+    for (let n = 0; n < 5; n++) {
+      await act(async () => rig.tick(150));
+      seen.push(slot("target")?.textContent);
+    }
+    expect(seen).toEqual(["150", "170", "190", "210", "230", "250"]);
     expect(document.body.textContent).not.toMatch(/\bOff\b/);
-    await act(async () => rig.tick());
-    expect(slot("target")?.textContent).toBe("250");
-    expect(document.body.textContent).not.toMatch(/\bOff\b/);
+  });
+
+  test("Resume to a pedalling rider starts the soft start at the rider's power, not the plan", async () => {
+    const rig = await open({ phase: "active", blockIdx: 1, userPause: true });
+    await act(async () => rig.publish());
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
+    await act(async () => rig.tick(200));
+    expect(slot("target")?.textContent).toBe("200");
+    await act(async () => rig.tick(200));
+    expect(slot("target")?.textContent).toBe("210");
   });
 
   test("a ride without blocks commands Free, as the engine does for a free ride", async () => {
