@@ -280,6 +280,9 @@ pub struct StreamStatus {
     pub compliance: StreamCompliance,
     /// The active health cap; `null` when none applies.
     pub cap: Option<StreamCap>,
+    /// The loss fields below describe the running ride: after it has finished they are
+    /// `false`/`null`.
+    ///
     /// The rider has paused the ride and not resumed, also while `state` says `trainer_lost`
     /// (that reason outranks the rider's in `state`; this field does not).
     pub user_paused: bool,
@@ -287,12 +290,18 @@ pub struct StreamStatus {
     /// lost. A timestamp on the ride's clock, not an elapsed time, so the status does not change
     /// every tick: "lost for" is `session_s - trainer_lost_since_s`, from the session time the
     /// heartbeat refreshes (DESIGN §6.5/§6.6).
+    ///
+    /// **Key "the trainer is lost" on this field, not on `state`.** When the trainer comes back
+    /// while the rider is not pedalling, `state` stays `paused(trainer_lost)` (the ride resumes on
+    /// the first pedalling sample) while this is already `null` and `last_gap_s` is set.
     pub trainer_lost_since_s: Option<f64>,
     /// The driver's reconnect attempt in the current loss (1-based); `null` when not lost or
     /// before the first attempt.
     pub reconnect_attempt: Option<u32>,
     /// While the soft start after a recovered loss runs: the target, W, the trainer is being
-    /// eased back to; `null` otherwise.
+    /// eased back to; `null` otherwise. It follows the block's target line, so on a ramp block it
+    /// can change as often as once per tick (at most 4 per second), but only for the soft start's
+    /// 20 ticks (5 s): bounded per loss.
     pub soft_start_target_w: Option<u16>,
     /// Length of the last trainer loss, s, from the loss until the trainer was back; `null`
     /// until one has ended and again once the next one begins.
