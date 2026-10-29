@@ -2,7 +2,7 @@
 use crank_core::{Core, CoreConfig, DeviceMode, DeviceRole, ErrorCode, RideOutcome, Shutdown};
 use crank_desktop::{
     commands as cmd,
-    lifecycle::{self, Decision, Quit, Runner, Wire},
+    lifecycle::{self, Decision, ExitApi, Quit, Runner, Wire},
     startup_failure,
 };
 use crank_devices::sim::SimConfig;
@@ -13,8 +13,9 @@ use std::sync::{
 };
 use std::{sync::Arc, time::Duration};
 use tauri::{
-    AppHandle, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder,
     ipc::Channel,
+    menu::{Menu, MenuEvent},
     test::{MockRuntime, mock_builder, mock_context, noop_assets},
     webview::PageLoadEvent,
 };
@@ -255,6 +256,46 @@ async fn an_exit_request_during_the_shutdown_is_held_back_without_a_second_shutd
     assert!(prevented.load(Ordering::SeqCst));
 }
 
+/// An `ExitRequested` api that records `prevent_exit` (only the event loop can make Tauri's).
+#[derive(Default)]
+struct FakeApi(AtomicBool);
+impl ExitApi for FakeApi {
+    fn prevent_exit(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The run-event path holds the exit back and ends the ride on the async path, calling the
+/// exit only after (kills `|| api.prevent_exit()` -> `|| {}`, #305: the exit would go
+/// through and `Exit` would then shut down blocking the main thread).
+#[tokio::test(start_paused = true)]
+async fn the_run_event_path_prevents_the_exit_and_shuts_down_asynchronously() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = mid_ride(dir.path()).await;
+    let quit = Arc::new(Quit::default());
+    let api = FakeApi::default();
+    let exited = Arc::new(AtomicI32::new(-1));
+    let e = exited.clone();
+    lifecycle::handle_exit_requested(&quit, &core, Some(3), &api, move |status| {
+        e.store(status, Ordering::SeqCst);
+    });
+    assert!(api.0.load(Ordering::SeqCst), "the exit is held back");
+    assert_eq!(
+        exited.load(Ordering::SeqCst),
+        -1,
+        "not before the ride ends"
+    );
+    for _ in 0..2000 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        if exited.load(Ordering::SeqCst) != -1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(exited.load(Ordering::SeqCst), 3);
+    assert_eq!(outcomes(&core).await, [RideOutcome::Finished]);
+}
+
 // ---- the backstop (`RunEvent::Exit` without a request) ----------------------------
 
 #[tokio::test(start_paused = true)]
@@ -294,46 +335,95 @@ async fn an_exit_after_the_shutdown_is_done_does_nothing() {
 
 // ---- registration (kills "install() is a no-op", N1) ------------------------------
 
-/// A builder that records which handlers were registered.
+type MenuHandler = Box<dyn Fn(&AppHandle<MockRuntime>, MenuEvent) + Send + Sync>;
+
+/// A builder that records which handlers were registered, and keeps the menu-event handler so
+/// a test can call what `install` registered. (The menu builder itself can only run on the
+/// main thread on macOS: `examples/quit_check.rs` calls it there.)
 #[derive(Default)]
-struct Recorder(Vec<&'static str>);
-impl<R: Runtime> Wire<R> for Recorder {
+struct Recorder {
+    names: Vec<&'static str>,
+    menu_event: Option<MenuHandler>,
+}
+impl Wire<MockRuntime> for Recorder {
     fn on_page_load<
-        F: Fn(&tauri::Webview<R>, &tauri::webview::PageLoadPayload<'_>) + Send + Sync + 'static,
+        F: Fn(&tauri::Webview<MockRuntime>, &tauri::webview::PageLoadPayload<'_>)
+            + Send
+            + Sync
+            + 'static,
     >(
         mut self,
         _: F,
     ) -> Self {
-        self.0.push("page_load");
+        self.names.push("page_load");
         self
     }
-    fn on_window_event<F: Fn(&tauri::Window<R>, &tauri::WindowEvent) + Send + Sync + 'static>(
+    fn on_window_event<
+        F: Fn(&tauri::Window<MockRuntime>, &tauri::WindowEvent) + Send + Sync + 'static,
+    >(
         mut self,
         _: F,
     ) -> Self {
-        self.0.push("window_event");
+        self.names.push("window_event");
         self
     }
-    fn menu<F: FnOnce(&AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> + Send + 'static>(
+    fn menu<
+        F: FnOnce(&AppHandle<MockRuntime>) -> tauri::Result<Menu<MockRuntime>> + Send + 'static,
+    >(
         mut self,
         _: F,
     ) -> Self {
-        self.0.push("menu");
+        self.names.push("menu");
         self
     }
-    fn on_menu_event<F: Fn(&AppHandle<R>, tauri::menu::MenuEvent) + Send + Sync + 'static>(
+    fn on_menu_event<F: Fn(&AppHandle<MockRuntime>, MenuEvent) + Send + Sync + 'static>(
         mut self,
-        _: F,
+        f: F,
     ) -> Self {
-        self.0.push("menu_event");
+        self.names.push("menu_event");
+        self.menu_event = Some(Box::new(f));
         self
     }
 }
 
 #[test]
 fn install_registers_the_page_load_window_event_and_menu_handlers() {
-    let r: Recorder = lifecycle::install::<MockRuntime, _>(Recorder::default());
-    assert_eq!(r.0, ["page_load", "window_event", "menu", "menu_event"]);
+    let r = lifecycle::install::<MockRuntime, _>(Recorder::default());
+    assert_eq!(r.names, ["page_load", "window_event", "menu", "menu_event"]);
+}
+
+fn bare_app() -> tauri::App<MockRuntime> {
+    mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app")
+}
+
+/// Cmd+Q is the menu item `install` registers with the Quit id; choosing it, through the
+/// handler `install` registered, starts the exit with status 0 (kills a no-op
+/// `on_menu_event`, #305).
+#[test]
+fn the_menu_event_handler_install_registers_exits_on_the_quit_item_only() {
+    let app = bare_app();
+    let exits = Arc::new(Mutex::new(Vec::new()));
+    let log = exits.clone();
+    let r = lifecycle::install_with::<MockRuntime, _>(Recorder::default(), move |_, code| {
+        log.lock().expect("lock").push(code);
+    });
+    let handler = r.menu_event.expect("a menu event handler");
+    handler(
+        app.handle(),
+        MenuEvent {
+            id: "something-else".into(),
+        },
+    );
+    assert!(exits.lock().unwrap().is_empty(), "other items do not exit");
+    handler(
+        app.handle(),
+        MenuEvent {
+            id: lifecycle::QUIT_ITEM_ID.into(),
+        },
+    );
+    assert_eq!(*exits.lock().unwrap(), [0]);
 }
 
 /// An app that delivers one `Exit` to the callback, as `applicationWillTerminate:` does.
