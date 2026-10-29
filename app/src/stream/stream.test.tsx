@@ -203,6 +203,8 @@ describe("useSubscribe", () => {
 
   test.each([
     ["an unknown filter kind", { kind: "kalman" }],
+    ["an inherited key as the filter kind", { kind: "constructor" }],
+    ["a non-string filter kind (an array)", { kind: ["sma"], windowS: 1 }],
     ["a filter missing its parameter", { kind: "sma" }],
     ["a non-finite parameter (a null on the wire)", { kind: "ema", tauS: NaN }],
   ])(
