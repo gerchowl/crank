@@ -16,7 +16,7 @@ use commands::{
     workouts_list,
 };
 pub use config::RuntimeConfig;
-use crank_core::{ApiError, Core, CoreConfig, DeviceMode, ErrorCode};
+use crank_core::{ApiError, Core, CoreConfig, DeviceMode, EngineHost, ErrorCode};
 use crank_devices::sim::SimConfig;
 use display::display_width_mm;
 use std::path::Path;
@@ -67,6 +67,7 @@ pub fn open_core(config: &RuntimeConfig, data_dir: &Path) -> Result<Core, ApiErr
                 DeviceMode::Ble
             },
             clock: None,
+            engine_host: EngineHost::Thread,
         })
     })
 }

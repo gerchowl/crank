@@ -1,7 +1,7 @@
 //! The command layer (ADR-0001 §4) on the simulator: a whole ride driven through the
 //! Tauri command functions, with the managed `Core` and a window of the mock runtime,
 //! and frames arriving on a real IPC `Channel`.
-use crank_core::{Core, CoreConfig, DeviceMode, DeviceRole, ErrorCode, RideOutcome};
+use crank_core::{Core, CoreConfig, DeviceMode, DeviceRole, EngineHost, ErrorCode, RideOutcome};
 use crank_desktop::commands as cmd;
 use crank_devices::sim::SimConfig;
 use crank_engine::{MetricId, StreamFrame, StreamRideState, SubscribeOpts, VirtualClock};
@@ -24,6 +24,7 @@ fn app(dir: &std::path::Path) -> tauri::App<MockRuntime> {
         data_dir: dir.into(),
         devices: DeviceMode::Sim(SimConfig::default()),
         clock: Some(Arc::new(VirtualClock::new(1))),
+        engine_host: EngineHost::Task,
     })
     .expect("core opens");
     let app = mock_builder()
