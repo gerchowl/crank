@@ -89,7 +89,9 @@ export const BACK_CHIP_S = 10;
  * `trainerLostSinceS` is set (not when `state` says `trainer_lost`, which stays after the trainer is back until the
  * rider pedals, and not when a tile happens to be empty); durations are `sessionS` minus a stamp, so they are unknown
  * (`null`) rather than guessed while `sessionS` is. The strap is lost when its link is `lost` in a live ride, ERG is
- * released when the core says so in a riding ride.
+ * released when the core says so in a riding ride. Guards that the core already guarantees stay as defence, not as
+ * logic: the loss fields are null outside Active (so `live &&` changes nothing today), `sessionS` never goes backwards
+ * (so `now - backAt >= 0` holds), and a stamp with no clock yields no duration.
  */
 export function lossView(
   st: StreamStatus | null,
@@ -452,6 +454,9 @@ function Screen({ session }: { session: RideSession }) {
                   ? "No data from the NEO · HR lost"
                   : "No data from the NEO"}
             </strong>{" "}
+            {loss.lostForS !== null && (
+              <strong data-testid="lost-for">{clock(loss.lostForS)} </strong>
+            )}
             · workout paused at {clock(status?.blockElapsedS ?? null)} of this
             block
             {loss.reconnecting
@@ -470,10 +475,12 @@ function Screen({ session }: { session: RideSession }) {
             Try: power-cycle NEO · close Zwift
           </p>
         )}
+        {/* Only the fact (`lastGapS`). DESIGN §6.6's policy text (re-warm-up, restarting the interval, "no resume" past
+            15 min) is not shown: the engine applies none of it (`recover()` eases to the block's own target and the block
+            resumes where it froze) and the status carries no re-entry plan until #50 lands. */}
         {loss.reEntry && (
           <p role="status" className="ride-loss" data-testid="re-entry">
-            <strong>↻ Back after {clock(loss.gapS)}</strong> · re-warm-up first
-            · then this interval from its start
+            <strong>↻ Back after {clock(loss.gapS)}</strong>
           </p>
         )}
         {loss.softStartW !== null && (

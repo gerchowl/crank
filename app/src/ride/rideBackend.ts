@@ -188,7 +188,14 @@ export function installRide(over: Partial<RideWorld> = {}) {
     };
   };
   /** The engine's `publish`: the status frame after a command. */
+  let clockS = 0;
   const publish = (workoutS?: number) => {
+    // The session clock only runs forward (engine `session_s`): a test that rewinds it models a status the core cannot send.
+    if (world.sessionS < clockS)
+      throw new Error(
+        `session clock went backwards: ${clockS} -> ${world.sessionS}`,
+      );
+    clockS = world.sessionS;
     if (!world.publishes) return;
     base.truth.status = makeStatus({
       ...lossFields(),

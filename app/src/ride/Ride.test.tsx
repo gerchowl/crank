@@ -890,9 +890,28 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
     await publish(rig, { sessionS: 130 });
     expect(text("loss-help")).toContain("power-cycle NEO · close Zwift");
     expect(screen.getByRole("button", { name: "End…" })).toBeTruthy();
-    // The loss began at session 100 whatever the workout clock says.
-    await publish(rig, { sessionS: 130, lostSinceS: 101 });
+  });
+
+  test("lost for 29 s from a later stamp: the duration counts from the stamp, not from the ride", async () => {
+    await lostRide({ sessionS: 130, lostSinceS: 101 });
     expect(screen.queryByTestId("loss-help")).toBeNull();
+    expect(text("lost-for")).toBe("0:29 ");
+  });
+
+  test("the banner shows how long the trainer has been lost, on the session clock (DESIGN §5.2)", async () => {
+    const rig = await lostRide({ sessionS: 112 });
+    expect(text("lost-for")).toBe("0:12 ");
+    expect(text("loss-trainer")).toContain("NEO lost 0:12 ·");
+    await publish(rig, { sessionS: 175 });
+    expect(text("lost-for")).toBe("1:15 ");
+  });
+
+  test("a mock that rewinds the session clock throws: the core cannot send it", async () => {
+    const rig = await lostRide({ sessionS: 120 });
+    expect(() => {
+      Object.assign(rig.world, { sessionS: 110 });
+      rig.publish();
+    }).toThrow("session clock went backwards");
   });
 
   test("End… opens the End dialog with Keep riding focused; the ride ends only on End ride", async () => {
@@ -928,11 +947,37 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
       });
       expect(screen.queryByTestId("loss-trainer")).toBeNull();
       if (shown) {
-        expect(text("re-entry")).toContain(`↻ Back after ${clock(gapS)}`);
-        expect(text("re-entry")).toContain("then this interval from its start");
+        expect(text("re-entry")).toBe(`↻ Back after ${clock(gapS)}`);
       } else expect(screen.queryByTestId("re-entry")).toBeNull();
     },
   );
+
+  test("the re-entry row states the fact only: no policy words until the engine reports a re-entry plan (#50)", async () => {
+    const rig = await open({ phase: "active" });
+    // Over 15 min DESIGN §6.6 says "no resume"; the engine does none of it, so the row says none of it either.
+    await publish(rig, {
+      pausedAfterLoss: true,
+      gapS: 1000,
+      reconnectedAtS: 5,
+    });
+    const row = text("re-entry") ?? "";
+    expect(row).toBe("↻ Back after 16:40");
+    expect(row).not.toMatch(/warm|restart|start|resume|interval|then/i);
+  });
+
+  test("soft start and re-entry both reported: both rows show, each is its own field", async () => {
+    const rig = await open({ phase: "active" });
+    await publish(rig, {
+      pausedAfterLoss: true,
+      gapS: 200,
+      reconnectedAtS: 300,
+      sessionS: 302,
+      softStartW: 253,
+    });
+    expect(text("re-entry")).toBe("↻ Back after 3:20");
+    expect(text("soft-start")).toBe("Reconnected · easing back in to 253 W");
+    expect(text("neo-back")).toBe("NEO back · 3:20 gap");
+  });
 
   test("the re-entry text ends when the ride is riding again", async () => {
     const rig = await open({ phase: "active" });
@@ -961,7 +1006,7 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
     await publish(rig, { sessionS: 210 });
     expect(text("neo-back")).toBe("");
     // The next loss clears the chip (the core clears the gap with it).
-    await publish(rig, { sessionS: 205, trainerLost: true, lostSinceS: 205 });
+    await publish(rig, { sessionS: 212, trainerLost: true, lostSinceS: 212 });
     expect(text("neo-back")).toBe("");
   });
 
