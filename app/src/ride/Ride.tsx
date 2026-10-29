@@ -82,12 +82,18 @@ function stateLine(st: StreamStatus | null): string {
  * shown: reconnect attempt, gap length, soft start (reconnected), time since the loss (the ≥ 30 s row) and the rider
  * pause under a trainer loss (#329).
  */
-export function lossView(st: StreamStatus | null, hr: LinkStatus | undefined) {
+export function lossView(
+  st: StreamStatus | null,
+  links: { trainer?: LinkStatus; hr?: LinkStatus },
+) {
   const kind = st?.state.kind;
   const live = kind === "riding" || kind === "paused";
   return {
     trainer: st?.state.kind === "paused" && st.state.reason === "trainer_lost",
-    hr: live && hr === "lost",
+    // `trainer_lost` is also set after 8 ticks without samples on a link that is still ready, and stays set after the
+    // link is back until the engine re-applies: "reconnecting" is only true while the link is not ready.
+    reconnecting: links.trainer !== "ready",
+    hr: live && links.hr === "lost",
     erg: kind === "riding" && st?.ergReleased === true,
   };
 }
@@ -179,7 +185,7 @@ function Screen({ session }: { session: RideSession }) {
   // Pause and Resume are two buttons in two places, and the one just tapped stays disabled until the status shows
   // its effect, so a double tap cannot become pause-then-resume.
   const [pauseSent, setPauseSent] = useState<"pause" | "resume" | null>(null);
-  const loss = lossView(status, links.hr);
+  const loss = lossView(status, links);
   const [skippedFrom, setSkippedFrom] = useState<number | null>(null);
 
   const workoutS = status?.workoutS ?? null;
@@ -391,9 +397,18 @@ function Screen({ session }: { session: RideSession }) {
         </p>
         {loss.trainer && (
           <p role="status" className="ride-loss" data-testid="loss-trainer">
-            <strong>{loss.hr ? "NEO and HR lost" : "NEO lost"}</strong> ·
-            workout paused at {clock(status?.blockElapsedS ?? null)} of this
-            block · reconnecting · keep pedalling or stop — your ride is saved
+            <strong>
+              {loss.reconnecting
+                ? loss.hr
+                  ? "NEO and HR lost"
+                  : "NEO lost"
+                : loss.hr
+                  ? "No data from the NEO · HR lost"
+                  : "No data from the NEO"}
+            </strong>{" "}
+            · workout paused at {clock(status?.blockElapsedS ?? null)} of this
+            block{loss.reconnecting ? " · reconnecting" : ""} · keep pedalling
+            or stop — your ride is saved
           </p>
         )}
         {loss.hr && !loss.trainer && (

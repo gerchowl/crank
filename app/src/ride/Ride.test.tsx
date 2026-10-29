@@ -660,6 +660,37 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
     ).toContain("⚠");
   });
 
+  test("no data on a link that is still ready: the banner does not say reconnecting", async () => {
+    const rig = await rideWith();
+    await publish(rig, { trainerSilent: true, blockIdx: 1 });
+    const banner = screen.getByTestId("loss-trainer").textContent ?? "";
+    expect(banner).toContain("No data from the NEO");
+    expect(banner).not.toContain("reconnecting");
+    expect(banner).not.toContain("NEO lost");
+    await publish(rig, { trainerSilent: false, trainerLost: true });
+    expect(screen.getByTestId("loss-trainer").textContent).toContain(
+      "NEO lost",
+    );
+    expect(screen.getByTestId("loss-trainer").textContent).toContain(
+      "reconnecting",
+    );
+  });
+
+  test("stopped pedalling is not a trainer loss", async () => {
+    const rig = await rideWith();
+    await publish(rig, { stoppedPedalling: true, blockIdx: 1 });
+    expect(screen.queryByTestId("loss-trainer")).toBeNull();
+    expect(slot("power")?.textContent).toBe("240");
+  });
+
+  test("ERG released is not shown while paused (a deliberate choice)", async () => {
+    const rig = await rideWith();
+    await publish(rig, { ergReleased: true, blockIdx: 1 });
+    expect(screen.getByTestId("loss-erg")).toBeTruthy();
+    await publish(rig, { userPause: true });
+    expect(screen.queryByTestId("loss-erg")).toBeNull();
+  });
+
   test("HR lost: the ride goes on, the HR tile says — and the banner is the HR note", async () => {
     const rig = await rideWith();
     await publish(rig, { hrLost: true, blockIdx: 1 });
@@ -755,6 +786,23 @@ describe("End stays usable (#327)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
     await waitFor(() => expect(enabled("Resume")).toBe(true));
     // Not this screen: the coach resumes the rider pause.
+    await act(async () => {
+      rig.world.userPause = false;
+      rig.publish();
+    });
+    await waitFor(() => expect(enabled("Pause")).toBe(true));
+  });
+
+  test("an external pause after a screen Resume: Pause is enabled again", async () => {
+    const rig = await open({ phase: "active", userPause: true });
+    await push(rig, { state: { kind: "paused", reason: "user" } });
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(enabled("Pause")).toBe(true));
+    await act(async () => {
+      rig.world.userPause = true;
+      rig.publish();
+    });
+    await waitFor(() => expect(enabled("Resume")).toBe(true));
     await act(async () => {
       rig.world.userPause = false;
       rig.publish();

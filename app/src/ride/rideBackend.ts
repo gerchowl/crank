@@ -71,6 +71,10 @@ export interface RideWorld {
   userPause: boolean;
   /** The trainer link is lost in an active ride: the engine pauses with `trainer_lost`, which outranks a rider pause (engine.rs:295). */
   trainerLost: boolean;
+  /** 8 ticks without trainer samples on a link that is still ready: the engine pauses with `trainer_lost` all the same (engine.rs:~33). */
+  trainerSilent: boolean;
+  /** Cadence and power were 0 for 3 s: `stopped_pedalling`, outranked by a rider pause and a trainer loss (engine.rs:295-306). */
+  stoppedPedalling: boolean;
   /** The strap link is lost: the ride keeps going (DESIGN §6.5). */
   hrLost: boolean;
   /** ERG released for low cadence; the engine reports it from the policy and only a riding ride is released (§6.5). */
@@ -101,6 +105,8 @@ export function installRide(over: Partial<RideWorld> = {}) {
     rideId: "ride-1",
     userPause: false,
     trainerLost: false,
+    trainerSilent: false,
+    stoppedPedalling: false,
     hrLost: false,
     ergReleased: false,
     blockIdx: 0,
@@ -118,13 +124,18 @@ export function installRide(over: Partial<RideWorld> = {}) {
   const state = (): StreamRideState => {
     if (world.phase === "finished") return { kind: "finished" };
     if (world.phase !== "active") return { kind: "idle" };
-    if (world.trainerLost)
+    if (world.trainerLost || world.trainerSilent)
       return {
         kind: "paused",
         reason: "trainer_lost" satisfies StreamPauseReason,
       };
-    return world.userPause
-      ? { kind: "paused", reason: "user" satisfies StreamPauseReason }
+    if (world.userPause)
+      return { kind: "paused", reason: "user" satisfies StreamPauseReason };
+    return world.stoppedPedalling
+      ? {
+          kind: "paused",
+          reason: "stopped_pedalling" satisfies StreamPauseReason,
+        }
       : { kind: "riding" };
   };
   const links = (): LinkChange[] =>
