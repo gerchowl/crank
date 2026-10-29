@@ -209,7 +209,9 @@ impl Store {
     }
     /// Open an existing database without migrations, writes or recovery.
     /// A database whose `user_version` exceeds this build's schema is refused:
-    /// a read-only process must never interpret a schema it does not know.
+    /// a read-only process must never interpret a schema it does not know. The check runs at
+    /// open only: a long-lived read-only `Store` keeps its connections after a newer owner
+    /// migrates the database, so a process that outlives upgrades must reopen.
     /// # Errors
     /// Returns SQL errors for an absent/unreadable database, or
     /// `SchemaTooNew` for a newer schema.

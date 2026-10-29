@@ -6,7 +6,7 @@
     reason = "small test counters and indices are exact in f64"
 )]
 use super::flow::{FRAME_BUDGET_BYTES, Flow, HEARTBEAT_US, MAX_UNACKED, MIN_FRAME_INTERVAL_US};
-use super::hub::{Hub, MAX_SUBSCRIPTIONS, fresh_id};
+use super::hub::{Hub, MAX_STREAMS, MAX_SUBSCRIPTIONS, fresh_id};
 use super::types::{
     LinkDevice, LinkStatus, MAX_RECORD_ERROR_BYTES, MetricId, StreamError, StreamFrame, StreamId,
     StreamRideState, StreamStatus, SubId, SubSample, SubscribeOpts,
@@ -109,7 +109,9 @@ struct World {
     bare_frames: u32,
 }
 impl World {
-    fn new(budget: usize) -> Self {
+    /// A world whose first frame carries `seq`: the property must also run across the
+    /// `u32` wrap (#272).
+    fn new(budget: usize, seq: u32) -> Self {
         Self {
             budget,
             now: 0,
@@ -122,7 +124,7 @@ impl World {
             pend_links: BTreeMap::new(),
             owed_resync: false,
             inflight: Vec::new(),
-            expected_seq: 0,
+            expected_seq: seq,
             discard_next: false,
             view: BTreeMap::new(),
             view_status: None,
@@ -169,7 +171,11 @@ impl World {
         flow.offer_link(device, state);
     }
     fn ack(&mut self, flow: &mut Flow, seq: u32) {
-        self.inflight.retain(|&s| s > seq);
+        // Frames are acknowledged in send order, so by position, not by comparing ids
+        // (seq wraps); a seq that is not in flight changes nothing.
+        if let Some(i) = self.inflight.iter().position(|&s| s == seq) {
+            self.inflight.drain(..=i);
+        }
         flow.ack(seq);
     }
     fn anything_pending(&self) -> bool {
@@ -227,7 +233,7 @@ impl World {
             assert_eq!(f.seq, self.expected_seq, "consecutive seq");
             assert!(bare || json(f).len() <= self.budget, "frame over budget");
             assert!(bare || i == 0 || (!f.resync && f.status.is_none() && f.links.is_empty()));
-            self.expected_seq += 1;
+            self.expected_seq = self.expected_seq.wrapping_add(1);
             self.inflight.push(f.seq);
             assert!(self.inflight.len() <= MAX_UNACKED, "more than 3 unacked");
             for s in &f.samples {
@@ -273,16 +279,22 @@ impl World {
 
 // Budgets start at 120 bytes: an empty frame is 62 and a sample at most ~40, so a lone
 // sample always fits; real budgets are 8 000.
+/// Where a stream's seq starts: usually at 0, often a few frames short of the `u32` wrap.
+fn start_seq() -> impl Strategy<Value = u32> {
+    prop_oneof![1 => Just(0), 3 => (0u32..8).prop_map(|k| u32::MAX - k)]
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2048))]
 
     #[test]
     fn flow_control_holds_over_arbitrary_interleavings(
         budget in prop_oneof![1 => Just(FRAME_BUDGET_BYTES), 3 => 120usize..400],
+        start in start_seq(),
         ops in prop::collection::vec(op(), 0..160),
     ) {
-        let mut flow = Flow::new(budget);
-        let mut w = World::new(budget);
+        let mut flow = Flow::starting_at(budget, start);
+        let mut w = World::new(budget, start);
         for op in ops {
             match op {
                 Op::Sample(sub) => w.offer_sample(&mut flow, u32::from(sub)),
@@ -341,11 +353,15 @@ fn the_generator_reaches_the_split_and_bare_paths() {
     use proptest::test_runner::{Config, TestRunner};
     let mut runner = TestRunner::new(Config::with_cases(300));
     let (split, bare) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
-    let strategy = (120usize..400, prop::collection::vec(op(), 0..160));
+    let strategy = (
+        120usize..400,
+        start_seq(),
+        prop::collection::vec(op(), 0..160),
+    );
     runner
-        .run(&strategy, |(budget, ops)| {
-            let mut flow = Flow::new(budget);
-            let mut w = World::new(budget);
+        .run(&strategy, |(budget, start, ops)| {
+            let mut flow = Flow::starting_at(budget, start);
+            let mut w = World::new(budget, start);
             for op in ops {
                 match op {
                     Op::Sample(sub) => w.offer_sample(&mut flow, u32::from(sub)),
@@ -981,8 +997,19 @@ fn filter_chains_are_capped_and_the_caps_themselves_are_accepted() {
 #[test]
 fn the_tick_cost_stays_bounded_at_every_cap() {
     use super::types::{MAX_FILTER_SECONDS, MAX_MEDIAN_SAMPLES};
-    let (mut hub, id, _rx) = hub_with_stream();
-    for _ in 0..MAX_SUBSCRIPTIONS {
+    // Every cap at once: 16 streams of 64 subscriptions, each with the longest chain.
+    let mut hub = Hub::new();
+    let mut rxs = Vec::new();
+    let mut ids = Vec::new();
+    for _ in 0..MAX_STREAMS {
+        let (id, rx) = hub.open(None, 0).expect("open");
+        ids.push(id);
+        rxs.push(rx);
+    }
+    for (id, _) in ids
+        .iter()
+        .flat_map(|id| (0..MAX_SUBSCRIPTIONS).map(move |n| (*id, n)))
+    {
         hub.subscribe(
             id,
             MetricId::Power,
@@ -1007,18 +1034,42 @@ fn the_tick_cost_stays_bounded_at_every_cap() {
         )
         .expect("at the caps");
     }
-    // Past every window length (1 200 samples of the longest SMA), unoptimized build.
-    let steps = 3_000_u64;
-    let started = std::time::Instant::now();
+    // The cost is counted, not timed (#293): every hub work unit is counted (subscriptions visited, chain pushes,
+    // flow offers, polls, acks, frames built), and one tick may cost at most a constant
+    // per subscription and stream. A pass over all subscriptions per subscription, even a
+    // read-only one, is quadratic and breaks the bound; wall time cannot flake it.
+    let subscriptions = MAX_STREAMS * MAX_SUBSCRIPTIONS;
+    let per_tick_bound = 8 * (subscriptions + MAX_STREAMS);
+    // Work per tick does not depend on how long the windows have been filling, so 300 ticks
+    // (75 s) show the steady state and keep the test fast.
+    let steps = 300_u64;
+    let mut frames = 0_usize;
+    let mut worst = 0_usize;
     for k in 1..=steps {
         let t = k as f64 / 4.0;
+        let before = hub.work();
         hub.on_source(t, &[Some((k % 400) as f64), None, None, None, None]);
         hub.poll(k * 250 * MS);
+        // The consumers keep up, as the UI does.
+        for (id, rx) in ids.iter().zip(&mut rxs) {
+            for f in drain(rx) {
+                frames += 1;
+                hub.ack(*id, f.seq).expect("ack");
+            }
+        }
+        worst = worst.max(hub.work() - before);
+        assert!(
+            worst <= per_tick_bound,
+            "{worst} work units in tick {k}, over the linear bound {per_tick_bound} \
+             ({subscriptions} subscriptions, {MAX_STREAMS} streams)"
+        );
     }
-    let per_tick = started.elapsed() / u32::try_from(steps).expect("small");
+    // A sanity check, not a cost measure: ten per second against four ticks a second is at
+    // most one sample frame per subscription per tick, plus a few status frames per stream.
+    let ticks = usize::try_from(steps).expect("small");
     assert!(
-        per_tick < std::time::Duration::from_millis(20),
-        "{per_tick:?} per tick at the caps (a tick is 250 ms)"
+        frames <= subscriptions * ticks + MAX_STREAMS * 8,
+        "{frames} frames over {steps} ticks exceeds one per subscription per tick"
     );
 }
 
@@ -1086,6 +1137,48 @@ fn non_finite_values_are_gaps_and_do_not_poison_the_chain() {
     assert_eq!(out[0], Some(100.0));
     assert_eq!(out[1..4], [None, None, None]);
     assert_eq!(out[4], Some(100.0), "the chain recovered");
+}
+
+#[test]
+fn a_chain_that_overflows_to_infinity_emits_a_gap() {
+    // The finite input can still make a filter overflow (the sum of an SMA): the chain's
+    // output is then non-finite, which is a gap too (ADR-0001 §5), never `inf`/`null`
+    // by accident. Mutant: dropping the output filter in `Hub::on_source`.
+    let (mut hub, id, mut rx) = hub_with_stream();
+    let sma = hub
+        .subscribe(
+            id,
+            MetricId::Speed,
+            opts(10.0, vec![Filter::Sma { window_s: 4.0 }]),
+        )
+        .expect("sub");
+    let mut out = Vec::new();
+    for k in 1..=3_u64 {
+        hub.on_source(k as f64 / 4.0, &[None, None, Some(f64::MAX), None, None]);
+        hub.poll(k * 250 * MS);
+        for f in drain(&mut rx) {
+            hub.ack(id, f.seq).expect("ack");
+            out.extend(f.samples.into_iter().filter(|s| s.sub == sma).map(|s| s.v));
+        }
+    }
+    assert!(out.iter().all(|v| v.is_none_or(f64::is_finite)), "{out:?}");
+    assert!(out.contains(&None), "the overflow is a gap: {out:?}");
+}
+
+#[test]
+fn opening_a_stream_frees_the_closed_ones_before_the_cap_check() {
+    // Unlabelled streams never evict, and nothing has polled since their receivers went:
+    // only `open` itself can free the slots. Mutant: removing `reap()` from `open`.
+    let mut hub = Hub::new();
+    let rxs: Vec<_> = (0..MAX_STREAMS)
+        .map(|_| hub.open(None, 0).expect("open").1)
+        .collect();
+    drop(rxs);
+    assert!(
+        hub.open(None, 0).is_ok(),
+        "slots of dead receivers are free"
+    );
+    assert_eq!(hub.stream_count(), 1);
 }
 
 #[test]
