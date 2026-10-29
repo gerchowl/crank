@@ -11,6 +11,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { commands } from "../bindings";
 import type { MetricId, StreamStatus, SubSample } from "../bindings";
 import { navigate, useRoute } from "../router";
 import { status as makeStatus } from "../stream/testBackend";
@@ -474,6 +475,19 @@ describe("Ride", () => {
     await waitFor(() => expect(routeText()).toBe("history:ride-1"));
     expect(screen.queryByRole("alert")).toBeNull();
     expect(wasForcedEnd("ride-1")).toBe(true);
+  });
+
+  test("a repeat End after a forced end answers forced again, as the core does (core.rs:1661-1663)", async () => {
+    const rig = await open({ phase: "active", engineStopped: true });
+    await push(rig, { state: { kind: "riding" } });
+    await userEvent.click(screen.getByRole("button", { name: "End" }));
+    await userEvent.click(screen.getByRole("button", { name: "End ride" }));
+    await waitFor(() => expect(routeText()).toBe("history:ride-1"));
+    const again = await commands.rideEnd();
+    expect(again).toEqual({
+      status: "ok",
+      data: { rideId: "ride-1", forced: true },
+    });
   });
 
   test("an End the engine answered is not a forced end", async () => {
