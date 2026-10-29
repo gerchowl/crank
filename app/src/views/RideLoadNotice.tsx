@@ -1,13 +1,25 @@
 // The non-modal notice for a ride load that finished while the rider was elsewhere (#320): they are not pulled out of
-// what they are doing, and the result is one click away. On the Workouts view the view itself shows a refusal under
-// its workout; on the ride screen there is nothing left to say.
-import { useEffect } from "react";
+// what they are doing, and the result is one click away. On the Workouts view the view itself takes a refusal (#333),
+// so it is shown once there and cleared; on the ride screen there is nothing left to say.
+import { useEffect, useRef } from "react";
 import { useRoute } from "../router";
-import { dismissRideLoad, goToRide, useRideLoad } from "./rideLoad";
+import {
+  dismissRideLoad,
+  goToRide,
+  seenRideRefusal,
+  useRideLoad,
+} from "./rideLoad";
 
 export function RideLoadNotice() {
   const load = useRideLoad();
   const { view } = useRoute();
+  // Leaving Workouts marks a refusal it showed as seen (#333): once there, never again elsewhere.
+  const previous = useRef(view);
+  useEffect(() => {
+    if (previous.current === "workouts" && view !== "workouts")
+      seenRideRefusal();
+    previous.current = view;
+  }, [view]);
   useEffect(() => {
     if (view === "ride") dismissRideLoad();
   }, [view]);

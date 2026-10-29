@@ -21,7 +21,7 @@ import { navigate, useRoute } from "../router";
 import { currentSession } from "../ride/session";
 import { Workouts } from "./Workouts";
 import { RideLoadNotice } from "./RideLoadNotice";
-import { resetRideLoad } from "./rideLoad";
+import { resetRideLoad, startRideLoad } from "./rideLoad";
 import { status as idleStatus } from "../stream/testBackend";
 
 afterEach(() => {
@@ -682,4 +682,72 @@ test("a refusal that arrives while the rider is elsewhere is shown in the notice
     ).disabled,
   ).toBe(false);
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+// ---- #333: a refusal is never dropped, and shown once ----
+
+const CONNECT_FAILED = apiError(
+  "device_unavailable",
+  "connect failed: out of range",
+);
+
+test("a refusal after leave-and-return is shown on Workouts naming the workout, and not again elsewhere", async () => {
+  const b = install();
+  b.stage.connect = CONNECT_FAILED;
+  const release = await startHeldLoad(b, /Easy spin/);
+  await leave();
+  await comeBack();
+  expect(await screen.findByText("Loading ride…")).toBeTruthy();
+  release();
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toMatch(/Could not load Easy spin/);
+  expect(alert.textContent).toMatch(/connect failed: out of range/);
+  await waitFor(() => expect(screen.queryByText("Loading ride…")).toBeNull());
+  await leave();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("a refusal that arrives elsewhere is shown there, once on return, then cleared", async () => {
+  const b = install();
+  b.stage.connect = CONNECT_FAILED;
+  const release = await startHeldLoad(b, /Easy spin/);
+  await leave();
+  release();
+  expect((await screen.findByRole("alert")).textContent).toMatch(
+    /Could not load Easy spin/,
+  );
+  await comeBack(); // not dismissed
+  const onWorkouts = await screen.findByRole("alert");
+  expect(onWorkouts.textContent).toMatch(/Could not load Easy spin/);
+  expect(onWorkouts.textContent).toMatch(/connect failed: out of range/);
+  await leave();
+  expect(screen.queryByRole("alert")).toBeNull();
+  await comeBack();
+  expect(
+    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+  ).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("a refusal shown on Workouts can be dismissed", async () => {
+  const b = install();
+  b.stage.connect = CONNECT_FAILED;
+  const release = await startHeldLoad(b, /Easy spin/);
+  await leave();
+  await comeBack();
+  release();
+  const alert = await screen.findByRole("alert");
+  await userEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("starting a load while one is in flight is a no-op at the controller", async () => {
+  const b = install();
+  let release = () => {};
+  b.gate = new Promise<void>((resolve) => (release = resolve));
+  const first = startRideLoad("w-easy", "Easy spin");
+  await startRideLoad("w-ss", "Sweet spot 3x12");
+  expect(b.calls.filter((c) => c.cmd === "ride_load")).toHaveLength(1);
+  release();
+  await first;
 });
