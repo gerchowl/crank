@@ -85,7 +85,7 @@ impl<R: Runtime> Wire<R> for tauri::Builder<R> {
 }
 
 /// Register the window and page-load handlers on `builder`, and on macOS the Quit menu
-/// ([`menu`], [`menu_event`]). The run-event handler is registered by [`run`].
+/// (`menu`, which exists on macOS only, and [`menu_event`]). The run-event handler is registered by [`run`].
 ///
 /// Per platform: macOS gets the replaced Quit item, so Cmd+Q goes through `app.exit(0)`.
 /// Windows and Linux get no custom menu (Tauri adds none there, so installing one would add
