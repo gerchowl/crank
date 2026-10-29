@@ -1070,6 +1070,7 @@ mod tests {
                         },
                         control,
                         events,
+                        seq: crank_devices::SeqSource::default(),
                     })
                 });
             }

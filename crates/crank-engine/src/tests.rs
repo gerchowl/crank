@@ -7,8 +7,8 @@ use crate::erg::{ErgPolicy, TrainerFollowing};
 use crate::record::{RecordError, RideRecorder, SecondRow};
 use crate::ticks::{Hold, SessionTicks, TICK_US, TickWindow};
 use crank_devices::{
-    Clock, ControlMode, DeviceInfo, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime,
-    TargetLimit, TrainerCaps, TrainerCommand, TrainerEvent, TrainerLink, TrainerSample,
+    Clock, CommandSeq, ControlMode, DeviceInfo, HeartRateLink, HrEvent, HrSample, LinkState,
+    MonoTime, TargetLimit, TrainerCaps, TrainerCommand, TrainerEvent, TrainerLink, TrainerSample,
     TrainerStatus,
 };
 use crank_domain::workout::{FlatBlock, Phase};
@@ -61,6 +61,8 @@ pub(crate) struct Rig {
     pub(crate) events: mpsc::Sender<TrainerEvent>,
     pub(crate) hr: mpsc::Sender<HrEvent>,
     pub(crate) control: mpsc::Receiver<TrainerCommand>,
+    /// Every `SetMode` the engine sent, in order, as the driver took them.
+    pub(crate) sent: Vec<(ControlMode, CommandSeq)>,
     pub(crate) log: Arc<Mutex<Log>>,
     pub(crate) gate: Arc<Mutex<Vec<bool>>>,
 }
@@ -91,6 +93,7 @@ pub(crate) fn rig() -> Rig {
         },
         control: control_tx,
         events: event_rx,
+        seq: crank_devices::SeqSource::default(),
     };
     let (hr, hr_rx) = mpsc::channel(4096);
     let hr_link = HeartRateLink {
@@ -109,6 +112,7 @@ pub(crate) fn rig() -> Rig {
         events,
         hr,
         control,
+        sent: Vec::new(),
         log: Arc::default(),
         gate,
     }
@@ -188,19 +192,47 @@ impl Rig {
     pub(crate) fn status(&self) -> crate::RideStatus {
         self.engine.status.borrow().clone()
     }
-    /// The driver reports that `mode` reached the trainer.
+    /// The driver reports that the last `SetMode` of `mode` the engine sent reached the
+    /// trainer: a driver can only report a command it was given, with that command's sequence.
     pub(crate) fn delivered(&mut self, mode: ControlMode) {
+        self.take_sent();
+        let seq = self
+            .sent
+            .iter()
+            .rev()
+            .find(|(m, _)| *m == mode)
+            .map(|(_, seq)| *seq)
+            .expect("the driver cannot deliver a mode it was never sent");
+        self.delivered_seq(mode, seq);
+    }
+    /// The driver reports the last `SetMode` it was given delivered, if that set `mode`.
+    pub(crate) fn delivered_last(&mut self, mode: ControlMode) {
+        self.take_sent();
+        if let Some(&(last, seq)) = self.sent.last()
+            && last == mode
+        {
+            self.delivered_seq(mode, seq);
+        }
+    }
+    /// The driver reports the `SetMode` of sequence `seq` delivered.
+    pub(crate) fn delivered_seq(&mut self, mode: ControlMode, seq: CommandSeq) {
         self.events
-            .try_send(TrainerEvent::Delivered { mode })
+            .try_send(TrainerEvent::Delivered { mode, seq })
             .unwrap();
         self.engine.drain();
     }
-    pub(crate) fn modes(&mut self) -> Vec<ControlMode> {
-        let mut out = vec![];
-        while let Ok(TrainerCommand::SetMode(m)) = self.control.try_recv() {
-            out.push(m);
+    fn take_sent(&mut self) {
+        while let Ok(command) = self.control.try_recv() {
+            if let TrainerCommand::SetMode { mode, seq } = command {
+                self.sent.push((mode, seq));
+            }
         }
-        out
+    }
+    /// The modes sent since the last call.
+    pub(crate) fn modes(&mut self) -> Vec<ControlMode> {
+        let from = self.sent.len();
+        self.take_sent();
+        self.sent[from..].iter().map(|(m, _)| *m).collect()
     }
     pub(crate) fn rows(&self) -> Vec<(u32, SecondRow)> {
         self.log.lock().unwrap().rows.clone()
@@ -1973,8 +2005,9 @@ mod soft_start_property {
             if !over {
                 mon.end(&r.modes())?;
             }
-            // the driver confirms the end mode; until it does the next ride sends nothing (#279)
-            r.delivered(ControlMode::Resistance { pct: 0.0 });
+            // the driver confirms the end mode, if it was sent (the link may not have been
+            // ready); until it does the next ride sends nothing (#279)
+            r.delivered_last(ControlMode::Resistance { pct: 0.0 });
         }
         Ok(())
     }

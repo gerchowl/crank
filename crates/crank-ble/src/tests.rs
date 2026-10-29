@@ -372,7 +372,10 @@ async fn faithful_sim_transport_alternates_echoes_and_respects_four_hz() {
         [55, 70]
     );
     link.control
-        .send(TrainerCommand::SetMode(sim(2.0)))
+        .send(TrainerCommand::SetMode {
+            mode: sim(2.0),
+            seq: CommandSeq(1),
+        })
         .await
         .unwrap();
     for _ in 0..40 {
@@ -413,15 +416,16 @@ async fn delivered_waits_for_every_page_of_a_multi_page_mode() {
     let (fake, mut link) = link().await;
     while link.events.try_recv().is_ok() {}
     let mode = sim(2.0);
+    let seq = link.seq.next();
     link.control
-        .send(TrainerCommand::SetMode(mode))
+        .send(TrainerCommand::SetMode { mode, seq })
         .await
         .unwrap();
     let mut delivered_with = None;
     for _ in 0..24 {
         tick().await;
         while let Ok(event) = link.events.try_recv() {
-            if event == (TrainerEvent::Delivered { mode }) && delivered_with.is_none() {
+            if event == (TrainerEvent::Delivered { mode, seq }) && delivered_with.is_none() {
                 let pages: Vec<u8> = fake
                     .writes
                     .lock()
@@ -443,15 +447,16 @@ async fn the_end_mode_is_written_when_the_sender_is_dropped_after_delivered() {
     let (fake, mut link) = link().await;
     while link.events.try_recv().is_ok() {}
     let mode = ControlMode::Resistance { pct: 0.0 };
+    let seq = link.seq.next();
     link.control
-        .send(TrainerCommand::SetMode(mode))
+        .send(TrainerCommand::SetMode { mode, seq })
         .await
         .unwrap();
     let mut delivered = false;
     for _ in 0..8 {
         tick().await;
         while let Ok(event) = link.events.try_recv() {
-            delivered |= event == (TrainerEvent::Delivered { mode });
+            delivered |= event == (TrainerEvent::Delivered { mode, seq });
         }
         if delivered {
             break;
@@ -468,13 +473,62 @@ async fn the_end_mode_is_written_when_the_sender_is_dropped_after_delivered() {
         "page 48 was written"
     );
 }
+/// #345: a `Delivered` reports only what was written. A SIM pair replaced by a resistance
+/// before its second page is never confirmed; the replacing command is, with its own sequence,
+/// and so is a second, equal command, which a late confirmation of the first never stands for.
+#[tokio::test(start_paused = true)]
+async fn delivered_confirms_only_the_command_whose_pages_were_written() {
+    let (_fake, mut link) = link().await;
+    while link.events.try_recv().is_ok() {}
+    let send = |mode| {
+        let seq = link.seq.next();
+        (TrainerCommand::SetMode { mode, seq }, seq)
+    };
+    let (pair, pair_seq) = send(sim(2.0));
+    link.control.send(pair).await.unwrap();
+    // its first page goes out, then a resistance replaces it
+    tick().await;
+    let zero = ControlMode::Resistance { pct: 0.0 };
+    let (first, first_seq) = send(zero);
+    link.control.send(first).await.unwrap();
+    let mut delivered = Vec::new();
+    for _ in 0..8 {
+        tick().await;
+        while let Ok(event) = link.events.try_recv() {
+            if let TrainerEvent::Delivered { seq, .. } = event {
+                delivered.push(seq);
+            }
+        }
+    }
+    assert!(!delivered.contains(&pair_seq), "{delivered:?}");
+    assert!(delivered.contains(&first_seq), "{delivered:?}");
+    // the same mode again: confirmed by its own sequence from then on, never the old one
+    let (second, second_seq) = send(zero);
+    link.control.send(second).await.unwrap();
+    delivered.clear();
+    for _ in 0..12 {
+        tick().await;
+        while let Ok(event) = link.events.try_recv() {
+            if let TrainerEvent::Delivered { seq, .. } = event {
+                delivered.push(seq);
+            }
+        }
+    }
+    assert!(
+        !delivered.is_empty() && delivered.iter().all(|s| *s == second_seq),
+        "{delivered:?}"
+    );
+}
 #[tokio::test(start_paused = true)]
 async fn write_failure_faults_without_delivery_and_link_loss_stops_writer() {
     let (fake, mut link) = link().await;
     while link.events.try_recv().is_ok() {}
     fake.fail.store(true, Ordering::SeqCst);
     link.control
-        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        .send(TrainerCommand::SetMode {
+            mode: ControlMode::Erg { target_w: 200 },
+            seq: CommandSeq(1),
+        })
         .await
         .unwrap();
     tick().await;
@@ -649,9 +703,10 @@ async fn real_writer_coalesces_adversarial_erg_changes_with_two_tick_latency() {
         // Two updates before each tick: only the newest value may be written.
         for watts in [target_w + 1, target_w] {
             link.control
-                .send(TrainerCommand::SetMode(ControlMode::Erg {
-                    target_w: watts,
-                }))
+                .send(TrainerCommand::SetMode {
+                    mode: ControlMode::Erg { target_w: watts },
+                    seq: CommandSeq(1),
+                })
                 .await
                 .unwrap();
         }
@@ -699,7 +754,10 @@ async fn trace_capture_failure_is_reported_without_misreporting_gatt_or_stopping
     // Drain setup diagnostics: the next invalid-epoch append must emit its own fault.
     while link.events.try_recv().is_ok() {}
     link.control
-        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        .send(TrainerCommand::SetMode {
+            mode: ControlMode::Erg { target_w: 200 },
+            seq: CommandSeq(1),
+        })
         .await
         .unwrap();
     tick().await;
@@ -861,7 +919,10 @@ async fn early_wake_cannot_underflow_and_late_wakes_do_not_drift_the_tick_grid()
     let epoch = clock.now().0;
     for i in 0..12u16 {
         link.control
-            .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: i }))
+            .send(TrainerCommand::SetMode {
+                mode: ControlMode::Erg { target_w: i },
+                seq: CommandSeq(1),
+            })
             .await
             .unwrap();
         tokio::time::advance(Duration::from_micros(if i == 0 {
@@ -895,7 +956,10 @@ async fn recovering_from_a_late_wake_cannot_write_less_than_250ms_apart() {
     clock.late_us.store(20_000, Ordering::SeqCst);
     settle().await;
     link.control
-        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 100 }))
+        .send(TrainerCommand::SetMode {
+            mode: ControlMode::Erg { target_w: 100 },
+            seq: CommandSeq(1),
+        })
         .await
         .unwrap();
     // Remove jitter before the writer schedules the next nominal wake.
@@ -904,7 +968,10 @@ async fn recovering_from_a_late_wake_cannot_write_less_than_250ms_apart() {
     settle().await;
     let count = fake.writes.lock().unwrap().len();
     link.control
-        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        .send(TrainerCommand::SetMode {
+            mode: ControlMode::Erg { target_w: 200 },
+            seq: CommandSeq(1),
+        })
         .await
         .unwrap();
     tokio::time::advance(Duration::from_millis(230)).await;
@@ -950,7 +1017,10 @@ async fn writer_sequence(modes: Vec<ControlMode>) -> usize {
                 entry.0 = page;
             }
             link.control
-                .send(TrainerCommand::SetMode(mode))
+                .send(TrainerCommand::SetMode {
+                    mode,
+                    seq: CommandSeq(1),
+                })
                 .await
                 .unwrap();
         }
@@ -1218,7 +1288,10 @@ async fn capture_accepts_rx_arriving_before_tx_but_processed_after_it() {
     fake.sender.send(Ok((arrival, bytes.clone()))).unwrap();
     fake.notification_waiting.notified().await; // RX delivered, processing held.
     link.control
-        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 100 }))
+        .send(TrainerCommand::SetMode {
+            mode: ControlMode::Erg { target_w: 100 },
+            seq: CommandSeq(1),
+        })
         .await
         .unwrap();
     tick().await;
@@ -1304,7 +1377,10 @@ async fn always_early_spacing_sleep_yields_after_a_late_write() {
     clock.late_us.store(20_000, Ordering::SeqCst);
     settle().await; // First nominal wake is armed with 20 ms jitter.
     link.control
-        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 100 }))
+        .send(TrainerCommand::SetMode {
+            mode: ControlMode::Erg { target_w: 100 },
+            seq: CommandSeq(1),
+        })
         .await
         .unwrap();
     clock.late_us.store(0, Ordering::SeqCst);
@@ -1313,7 +1389,10 @@ async fn always_early_spacing_sleep_yields_after_a_late_write() {
     let last_write = fake.writes.lock().unwrap().last().unwrap().0.0;
     assert_eq!(last_write, 520_000);
     link.control
-        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        .send(TrainerCommand::SetMode {
+            mode: ControlMode::Erg { target_w: 200 },
+            seq: CommandSeq(1),
+        })
         .await
         .unwrap();
     clock.enabled.store(true, Ordering::SeqCst);
