@@ -1,4 +1,4 @@
-// Settings (DESIGN §5.9). Devices is the MVP entry for pairing; its content is #92's neighbour work. Appearance
+// Settings (DESIGN §5.9). Devices is the pairing section (#92). Appearance
 // is the theme choice (THEMES.md): the manual choice overrides Auto.
 import { navigate } from "../router";
 import {
@@ -7,7 +7,7 @@ import {
   useThemePref,
   type ThemePref,
 } from "../theme";
-import { Placeholder } from "./Placeholder";
+import { Devices } from "./Devices";
 
 const LABEL: Record<ThemePref, string> = {
   auto: "Auto (follow system)",
@@ -37,7 +37,7 @@ export function Settings({ sub }: { sub?: string }) {
         ))}
       </nav>
       {section === "devices" ? (
-        <Placeholder title="Devices" />
+        <Devices />
       ) : (
         <div className="page">
           <h1>Appearance</h1>
