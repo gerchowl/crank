@@ -47,6 +47,11 @@
   display: inline-block;
   text-align: right;
 }
+.ride-chip {
+  display: inline-block;
+  white-space: nowrap;
+  color: var(--status-good);
+}
 .ride-pill {
   margin-left: auto;
   white-space: nowrap;
