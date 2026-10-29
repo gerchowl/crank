@@ -11,7 +11,8 @@
 //! stop waits for that stop to complete, so a late stop never ends a newer scan.
 use crate::{
     Advertisement, Advertisements, BtleplugAdvertisements, BtleplugHrTransport, BtleplugTransport,
-    FecTrainer, HrsDriver, Pairing, Reconnecting, ReconnectingHr, RideGate, Scanner, classify,
+    ConnectCleanup, FecTrainer, HrsDriver, Pairing, Reconnecting, ReconnectingHr, RideGate,
+    Scanner, classify,
 };
 use btleplug::{
     api::Manager as _,
@@ -344,32 +345,39 @@ impl BleCentral {
     /// FE-C trainer driver with the reconnect loop, retrying while `gate` is active.
     #[must_use]
     pub fn trainer_driver(&self, clock: Arc<dyn Clock>, gate: RideGate) -> impl TrainerDriver {
+        let cleanup = ConnectCleanup::new();
         Reconnecting::new(
             PeripheralTrainer {
                 central: self.clone(),
                 clock: clock.clone(),
+                cleanup: cleanup.clone(),
             },
             clock,
             gate,
         )
+        .with_cleanup(cleanup)
     }
     /// Heart-rate strap driver with the reconnect loop, retrying while `gate` is active.
     #[must_use]
     pub fn hr_driver(&self, clock: Arc<dyn Clock>, gate: RideGate) -> impl HeartRateDriver {
+        let cleanup = ConnectCleanup::new();
         ReconnectingHr::new(
             PeripheralHr {
                 central: self.clone(),
                 clock: clock.clone(),
+                cleanup: cleanup.clone(),
             },
             clock,
             gate,
         )
+        .with_cleanup(cleanup)
     }
 }
 
 struct PeripheralTrainer {
     central: BleCentral,
     clock: Arc<dyn Clock>,
+    cleanup: ConnectCleanup,
 }
 impl TrainerDriver for PeripheralTrainer {
     fn kind(&self) -> DriverKind {
@@ -380,12 +388,18 @@ impl TrainerDriver for PeripheralTrainer {
         dev: &DeviceRef,
         rider: RiderConfig,
     ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
-        let (central, clock, dev) = (self.central.clone(), self.clock.clone(), dev.clone());
+        let (central, clock, dev, cleanup) = (
+            self.central.clone(),
+            self.clock.clone(),
+            dev.clone(),
+            self.cleanup.clone(),
+        );
         Box::pin(async move {
             let pairing = central.pairing(&dev);
             let peripheral = resolve(&central.source, &dev, pairing.as_ref(), RESOLVE_SCAN).await?;
             let transport = BtleplugTransport::new(peripheral, central.adapter.clone());
             let link = FecTrainer::new(Arc::new(transport), clock)
+                .with_cleanup(cleanup)
                 .connect(&dev, rider)
                 .await?;
             if pairing.is_some_and(|p| !p.verify(&link.info)) {
@@ -399,15 +413,22 @@ impl TrainerDriver for PeripheralTrainer {
 struct PeripheralHr {
     central: BleCentral,
     clock: Arc<dyn Clock>,
+    cleanup: ConnectCleanup,
 }
 impl HeartRateDriver for PeripheralHr {
     fn connect(&self, dev: &DeviceRef) -> BoxFuture<'static, Result<HeartRateLink, DeviceError>> {
-        let (central, clock, dev) = (self.central.clone(), self.clock.clone(), dev.clone());
+        let (central, clock, dev, cleanup) = (
+            self.central.clone(),
+            self.clock.clone(),
+            dev.clone(),
+            self.cleanup.clone(),
+        );
         Box::pin(async move {
             let pairing = central.pairing(&dev);
             let peripheral = resolve(&central.source, &dev, pairing.as_ref(), RESOLVE_SCAN).await?;
             let transport = BtleplugHrTransport::new(peripheral, central.adapter.clone());
             let link = HrsDriver::new(Arc::new(transport), clock)
+                .with_cleanup(cleanup)
                 .connect(&dev)
                 .await?;
             if pairing.is_some_and(|p| !p.verify(&link.info)) {

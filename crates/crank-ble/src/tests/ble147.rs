@@ -118,6 +118,10 @@ struct FakeHr {
     /// While set, `disconnect` starts (and counts) but does not finish until a permit is added.
     hold_disconnect: std::sync::atomic::AtomicBool,
     disconnect_gate: tokio::sync::Semaphore,
+    /// The next `connect` is connected to the peripheral but hangs at this setup stage
+    /// (service discovery, subscribe) for ever, as a connect that gets cancelled mid-way.
+    hang_connect: Mutex<Option<&'static str>>,
+    hung_at: Mutex<Vec<&'static str>>,
 }
 impl HrTransport for Arc<FakeHr> {
     fn connect(
@@ -126,6 +130,10 @@ impl HrTransport for Arc<FakeHr> {
         _: Arc<dyn Clock>,
     ) -> BoxFuture<'static, Result<(DeviceInfo, Notifications), DeviceError>> {
         self.connects.lock().unwrap().push(self.clock.now());
+        if let Some(stage) = self.hang_connect.lock().unwrap().take() {
+            self.hung_at.lock().unwrap().push(stage);
+            return Box::pin(std::future::pending());
+        }
         let next = self.streams.lock().unwrap().pop_front();
         Box::pin(async move {
             let rx = next.ok_or(DeviceError::NotFound)??;
@@ -173,6 +181,8 @@ fn fake_hr(clock: &Arc<dyn Clock>, connections: usize) -> (Arc<FakeHr>, Vec<HrSe
         disconnects: Mutex::new(0),
         hold_disconnect: std::sync::atomic::AtomicBool::new(false),
         disconnect_gate: tokio::sync::Semaphore::new(0),
+        hang_connect: Mutex::default(),
+        hung_at: Mutex::default(),
     });
     (fake, senders)
 }
@@ -953,4 +963,92 @@ async fn a_one_hertz_strap_is_released_only_after_its_disconnect() {
 #[tokio::test(start_paused = true)]
 async fn a_silent_strap_is_released_only_after_its_disconnect() {
     strap_release_waits_for_the_disconnect(None).await;
+}
+
+/// #304: a shutdown that cancels a reconnect attempt mid-connect (during service discovery or
+/// subscribe, the peripheral already connected) disconnects the peripheral before the strap
+/// is released (ADR-0002 §7.9: "released" means disconnected), whatever the disconnect takes.
+#[tokio::test(start_paused = true)]
+async fn a_shutdown_mid_connect_disconnects_before_the_strap_is_released() {
+    for stage in ["discover_services", "subscribe"] {
+        let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+        let (fake, senders) = fake_hr(&clock, 1);
+        let cleanup = ConnectCleanup::new();
+        let inner =
+            HrsDriver::new(Arc::new(fake.clone()), clock.clone()).with_cleanup(cleanup.clone());
+        let mut link = ReconnectingHr::new(inner, clock, RideGate::new(true))
+            .with_cleanup(cleanup)
+            .connect(&DeviceRef("strap".into()))
+            .await
+            .unwrap();
+        settle().await;
+        // The strap drops out; the reconnect attempt gets stuck mid-connect.
+        *fake.hang_connect.lock().unwrap() = Some(stage);
+        drop(senders);
+        for _ in 0..60 {
+            advance(ms(20)).await;
+        }
+        assert_eq!(*fake.hung_at.lock().unwrap(), [stage]);
+        assert_eq!(*fake.disconnects.lock().unwrap(), 1, "the lost link");
+        // The disconnect of the half-open peripheral takes a while.
+        fake.hold_disconnect
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let released = released.clone();
+            tokio::spawn(async move {
+                release_events(&mut link.events).await;
+                released.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+        for _ in 0..25 {
+            advance(ms(20)).await;
+        }
+        assert_eq!(
+            *fake.disconnects.lock().unwrap(),
+            2,
+            "{stage}: the half-open peripheral is disconnected"
+        );
+        assert!(
+            !released.load(std::sync::atomic::Ordering::SeqCst),
+            "{stage}: released while the disconnect is still running"
+        );
+        fake.disconnect_gate.add_permits(1);
+        for _ in 0..10 {
+            advance(ms(20)).await;
+        }
+        assert!(
+            released.load(std::sync::atomic::Ordering::SeqCst),
+            "{stage}"
+        );
+    }
+}
+/// #304: a cancelled connect whose disconnect hangs frees the driver's admission after the
+/// disconnect timeout, so a later connect is not refused with `AlreadyConnected` for ever.
+#[tokio::test(start_paused = true)]
+async fn a_hung_disconnect_of_a_cancelled_connect_frees_the_admission() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let (fake, _senders) = fake_hr(&clock, 1);
+    fake.hold_disconnect
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let driver = HrsDriver::new(Arc::new(fake.clone()), clock);
+    let dev = DeviceRef("strap".into());
+    *fake.hang_connect.lock().unwrap() = Some("subscribe");
+    let attempt = tokio::spawn(driver.connect(&dev));
+    settle().await;
+    attempt.abort();
+    advance(ms(100)).await;
+    assert_eq!(*fake.disconnects.lock().unwrap(), 1, "cleanup started");
+    assert_eq!(
+        driver.connect(&dev).await.err(),
+        Some(DeviceError::AlreadyConnected),
+        "held while the cleanup runs"
+    );
+    for _ in 0..110 {
+        advance(ms(20)).await;
+    }
+    driver
+        .connect(&dev)
+        .await
+        .expect("the admission is free after the disconnect timeout");
 }
