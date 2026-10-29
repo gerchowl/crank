@@ -176,6 +176,33 @@ fn two_hour_ride_round_trip() {
 }
 
 #[test]
+fn an_aborted_live_ride_keeps_its_seconds_and_frees_the_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_owner(dir.path()).unwrap();
+    store.start_ride(ride()).unwrap();
+    for second in 0..77 {
+        store
+            .append_second("ride", second, samples(second))
+            .unwrap();
+    }
+    // not live: an unknown id
+    assert!(store.abort_ride("other", 1_700_000_100).is_err());
+    store.abort_ride("ride", 1_700_000_100).unwrap();
+    let record = store.ride("ride").unwrap().unwrap();
+    assert_eq!(record.state, RideState::Aborted);
+    assert_eq!(record.ended_at, Some(1_700_000_100));
+    assert!(record.summary.is_none());
+    // the buffered seconds 75 and 76 were flushed with the rest
+    let chunks = store.chunks("ride", METRICS[0]).unwrap();
+    assert_eq!(chunks.iter().map(|c| c.values.len()).sum::<usize>(), 77);
+    // it is no longer live, and the next ride can start
+    assert!(store.abort_ride("ride", 1_700_000_200).is_err());
+    let mut next = ride();
+    next.id = "next".into();
+    store.start_ride(next).unwrap();
+}
+
+#[test]
 fn crash_child() {
     let Some(path) = std::env::var_os("CRANK_STORE_CRASH_DIR") else {
         return;
