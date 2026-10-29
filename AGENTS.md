@@ -37,7 +37,15 @@ the same shutdown synchronously on `Exit`; macOS may kill a terminating app a fe
 `just quit-test` (macOS, GUI session) terminates a real Wry app mid-ride with `NSApp terminate:` and checks the ride was recorded `Finished`.
 If the core cannot open (a second crank holds `ride.lock`) a native
 dialog says so and the process exits with status 1. Tauri rejects malformed arguments with a plain string, not an `ApiError`:
-`app/src/api.ts` (`api()`, `toApiError`) maps it to `{code: "internal", message}`. Nothing calls it yet: the UI waves (#229) are to call the generated commands through it.
+`app/src/api.ts` (`api()`, `toApiError`) maps it to `{code: "internal", message}`. The UI waves (#229) call the generated commands through it.
+`app/src/stream/` is the window's typed stream client (#89, ADR-0001 §4.3): one `Channel<StreamFrame>` (`StreamClient`),
+`StreamProvider` (mount it where a ride is loaded: `open_stream` needs one and the stream ends with it), and the hooks
+`useSubscribe(metric, opts)`, `useStatus`, `useLinks`, `useStreamError` and `useCommand`. It acks every applied frame
+(`stream_ack`, cumulative, one in flight) and, on `resync` or a `seq` gap (compared by equality, `seq` wraps), re-reads
+`ride_status`, `device_links` and `stream_snapshot` once. A new frame lane or re-query member (the nudges lane and
+`coach_decisions`, #309, gated on #243) is added in two places: `state.ts` (field, `applyFrame` branch, `apply…`) and
+`Requery.run` in `client.ts`. ESLint forbids `structuredClone` in `src/stream/` (stream data is plain JSON). Tests use
+`mockIPC` with `src/stream/testBackend.ts`; `app/e2e/specs/stream.e2e.mjs` is the real-desktop freeze check, run by `just e2e` only.
 `just dev` starts the window on its own data dir (`./.crank-dev`, so it never shares `ride.lock` with the installed app; override with
 `CRANK_DATA_DIR`; `CRANK_SIM=1 just dev` rides without hardware). `just bundle` (sage only, outside the sandbox) builds
 `.#crank-app` (an unsigned, Nix-assembled `crank.app`), signs a copy inside-out with the local `nix-tcc`
