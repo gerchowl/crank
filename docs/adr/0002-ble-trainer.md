@@ -930,6 +930,9 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    connect to it works is unverified until hardware (HIL #44). We accept this: a platform disconnect that
    hangs is not something the app can fix, and the alternative is a ride end or a pairing that hangs with
    it. A best-effort re-disconnect at the next connect and at quit is tracked in #335, not done here.
+   This holds on every path that drops a link, a ride end the engine cannot carry out (#331) included: the
+   end mode that path sends itself comes before the link is dropped, and the disconnect after it is bounded
+   in the same way.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 
