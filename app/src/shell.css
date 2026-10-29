@@ -299,7 +299,7 @@ main.mode {
 }
 .device-notice p {
   margin: 4px 0 12px;
-
+}
 
 /* Workouts library (#110 MVP): list left, the picked workout's compiled summary right. */
 .workouts-body {
