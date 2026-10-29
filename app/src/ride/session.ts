@@ -77,6 +77,9 @@ const subscribe = (l: () => void) => {
   };
 };
 
+/** The current session outside React (tests, event handlers). */
+export const currentSession = (): RideSession | null => current;
+
 /** The current ride's session, `null` until a ride is loaded. */
 export const useSession = (): RideSession | null =>
   useSyncExternalStore(subscribe, () => current);
