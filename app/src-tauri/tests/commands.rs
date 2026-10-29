@@ -147,7 +147,9 @@ async fn a_whole_ride_through_the_commands_streams_frames_and_lands_in_history()
     cmd::stream_unsubscribe(core.clone(), window.clone(), stream, sub)
         .await
         .unwrap();
-    let id = cmd::ride_end(core.clone()).await.unwrap().expect("a ride");
+    let ended = cmd::ride_end(core.clone()).await.unwrap();
+    assert!(!ended.forced);
+    let id = ended.ride_id.expect("a ride");
 
     let rides = cmd::rides_list(core.clone()).await.unwrap();
     assert_eq!(rides.len(), 1);
