@@ -1,7 +1,8 @@
 //! Ride lifecycle, streams and history (#34 B2, ADR-0001 §4) on the simulator and a
 //! virtual clock: paused tokio time, so whole rides take no wall time.
 use crank_core::{
-    ApiError, Core, CoreConfig, DeviceMode, DeviceRole, ErrorCode, RideOutcome, SinkClosed,
+    ApiError, Core, CoreConfig, DeviceMode, DeviceRole, EngineHost, ErrorCode, RideOutcome,
+    SinkClosed,
 };
 use crank_devices::sim::{SimConfig, SimFault};
 use crank_engine::stream::types::StreamPauseReason;
@@ -26,6 +27,7 @@ fn config(dir: &Path, faults: Vec<SimFault>) -> CoreConfig {
             ..SimConfig::default()
         }),
         clock: Some(Arc::new(VirtualClock::new(1))),
+        engine_host: EngineHost::Task,
     }
 }
 type Frames = Arc<Mutex<Vec<StreamFrame>>>;

@@ -17,6 +17,6 @@ mod library;
 mod recorder;
 
 pub use backend::DeviceMode;
-pub use core::{Core, CoreConfig, FrameSink, RideEnd, Shutdown, SinkClosed};
+pub use core::{Core, CoreConfig, EngineHost, FrameSink, RideEnd, Shutdown, SinkClosed};
 pub use dto::*;
 pub use error::{ApiError, ErrorCode};

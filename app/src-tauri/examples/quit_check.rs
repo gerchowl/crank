@@ -25,7 +25,7 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use crank_core::{Core, CoreConfig, DeviceMode, DeviceRole, RideOutcome};
+    use crank_core::{Core, CoreConfig, DeviceMode, DeviceRole, EngineHost, RideOutcome};
     use crank_desktop::lifecycle::{self, Wire};
     use crank_devices::sim::SimConfig;
     use std::{
@@ -52,6 +52,7 @@ mod macos {
                 data_dir: dir.into(),
                 devices: DeviceMode::Sim(SimConfig::default()),
                 clock: None,
+                engine_host: EngineHost::Thread,
             })
         })
         .expect("core opens")
