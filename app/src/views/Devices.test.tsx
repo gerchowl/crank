@@ -399,7 +399,7 @@ describe("Devices", () => {
     );
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Could not save the pairing");
-    expect(alert.textContent).toContain("nothing is paired");
+    expect(alert.textContent).not.toContain("nothing is paired");
     expect(st.paired).toEqual({});
     expect(screen.getAllByText("Not paired").length).toBe(2);
   });
@@ -467,5 +467,46 @@ describe("Devices", () => {
     expect(text[1]).toContain("Could not load the paired devices");
     // The forget did not happen, so the pairing stays on screen.
     expect(screen.getByText("Tacx Neo 55624")).toBeTruthy();
+  });
+
+  test("a pair that fails in the store after writing is re-read: the list shows the truth", async () => {
+    const st = installDevices({ nearby: [trainer] });
+    const user = userEvent.setup();
+    render(<Devices />);
+    await scan(user);
+    st.storeAfterWrite = { code: "storage", message: "disk is full" };
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Pair Tacx Neo 55624 as trainer",
+      }),
+    );
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Could not save the pairing",
+    );
+    // The core wrote the row before it failed: the re-read shows it paired.
+    expect(await screen.findByText(/S\/N 55624/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Forget trainer" })).toBeTruthy();
+    expect(st.calls.filter((c) => c.cmd === "device_links").length).toBe(2);
+  });
+
+  test("the store is checked where the core checks it: pair after the connect, forget before not_found", async () => {
+    const st = installDevices({
+      nearby: [trainer],
+      store: { code: "storage", message: "disk" },
+      connect: { code: "device_unavailable", message: "connect failed" },
+    });
+    const { commands } = await import("../bindings");
+    // Pair connects first (core.rs:621-650), so a connect failure wins over the store.
+    const p = await commands.devicePair("neo-1", "trainer");
+    expect(p.status === "error" && p.error.code).toBe("device_unavailable");
+    st.connect = null;
+    const q = await commands.devicePair("neo-1", "trainer");
+    expect(q.status === "error" && q.error.code).toBe("storage");
+    // Forget reads the store before it can find nothing (core.rs:684-696).
+    const f = await commands.deviceForget("trainer");
+    expect(f.status === "error" && f.error.code).toBe("storage");
+    st.store = null;
+    const g = await commands.deviceForget("trainer");
+    expect(g.status === "error" && g.error.code).toBe("not_found");
   });
 });
