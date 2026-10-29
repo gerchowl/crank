@@ -933,6 +933,16 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    This holds on every path that drops a link, a ride end the engine cannot carry out (#331) included: the
    end mode that path sends itself comes before the link is dropped, and the disconnect after it is bounded
    in the same way.
+   After the 2 s our own admission lock is free (no `AlreadyConnected` from us); the outcome of a subsequent
+   connect is up to btleplug/CoreBluetooth, and a failure surfaces as `ConnectFailed`.
+   **A ride end the engine cannot carry out (#331).** `ride_end` bounds its `Stop` (1 s, below the 3 s
+   quit cap). An engine that does not answer, or whose task is gone, is ended by force: the core aborts the
+   task, closes the ride's record as **aborted** (the seconds persisted so far are kept, there is no
+   summary, as for a ride closed by crash recovery), clears the ride-active signal and releases the devices
+   as above; a new ride can be loaded at once. The end mode (`Resistance{0}`) is then not sent by the engine
+   (it is stuck or gone): the trainer sees its link drop and disconnect, the same residual as FM-FIN-02. The
+   core reports it as `RideEnd::ForcedEnd`; the id is returned either way, so the rider leaves the ride and
+   finds it as Aborted in History. Quitting inherits the bound.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 

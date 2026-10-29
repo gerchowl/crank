@@ -1132,9 +1132,8 @@ impl Core {
         );
         self.reap(ride_id, true).await;
         match self.0.store.abort_ride(ride_id, unix_now()) {
-            Ok(()) => {}
-            // Not live: the ride was never started, or the other end got there first.
-            Err(crank_store::StoreError::InvalidInput(_)) => {}
+            // Closed; or not live: the ride was never started, or the other end got there first.
+            Ok(()) | Err(crank_store::StoreError::InvalidInput(_)) => {}
             Err(error) => tracing::warn!(ride_id, %error, "closing the ride's record failed"),
         }
         {
