@@ -39,7 +39,9 @@ function ErrorLine({
 }) {
   return (
     <p role="alert" className="workouts-error">
-      {error.message}{" "}
+      {error.message}
+      {error.code === "device_unavailable" &&
+        ". Pair or check your trainer in Settings → Devices."}{" "}
       {onRetry && (
         <button type="button" onClick={onRetry}>
           Retry
@@ -95,6 +97,9 @@ export function Workouts() {
   const get = useCommand(commands.workoutGet);
   const load = useCommand(commands.rideLoad);
   const [picked, setPicked] = useState<string | null>(null);
+  // The latest refused load. Kept here, not read from `load.error`, so that picking another workout can
+  // clear it: a refusal belongs to the workout it was for.
+  const [refusal, setRefusal] = useState<ApiError | null>(null);
   const { run: runList } = list;
   const { run: runGet } = get;
   const { run: runLoad } = load;
@@ -105,6 +110,7 @@ export function Workouts() {
   const pick = useCallback(
     (id: string) => {
       setPicked(id);
+      setRefusal(null);
       void runGet(id);
     },
     [runGet],
@@ -117,13 +123,18 @@ export function Workouts() {
    */
   const rideThis = useCallback(
     async (id: string) => {
+      setRefusal(null);
       const outcome = await runLoad(id);
       if (outcome.status === "ok") navigate("ride");
+      else setRefusal(outcome.error);
     },
     [runLoad],
   );
 
   const detail = picked !== null ? get.data : null;
+  // The core refuses a workout with an error-severity issue (`ride_load`: invalid input); say so up front.
+  const blocking =
+    detail?.compiled.issues.find((i) => i.severity === "error") ?? null;
   return (
     <div className="page workouts">
       <div className="page-head">
@@ -162,12 +173,18 @@ export function Workouts() {
               <button
                 type="button"
                 className="primary"
-                disabled={load.pending}
+                disabled={load.pending || blocking !== null}
+                aria-describedby={blocking ? "ride-blocked" : undefined}
                 onClick={() => void rideThis(detail.workout.id)}
               >
                 Ride this
               </button>
-              {load.error && <ErrorLine error={load.error} />}
+              {blocking && (
+                <p id="ride-blocked" className="muted">
+                  Can’t ride this until the error is fixed: {blocking.message}
+                </p>
+              )}
+              {refusal && <ErrorLine error={refusal} />}
             </>
           )}
         </div>
