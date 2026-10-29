@@ -54,6 +54,31 @@ export function targetNow(
   return Math.round(block.powerFrom + (to - block.powerFrom) * f);
 }
 
+/**
+ * The TARGET tile: what the engine commanded the trainer into (#324), as a word or a number. No arithmetic: the
+ * watts are the engine's, and why there is no ERG target comes from its own flags (`ergReleased`, `userPaused`).
+ */
+export function commandedView(st: StreamStatus | null): {
+  value: number | string | null;
+  unit: string;
+} {
+  const c = st?.commanded;
+  if (!c) return { value: null, unit: "W" };
+  switch (c.kind) {
+    case "erg":
+      return { value: c.watts, unit: "W" };
+    case "resistance":
+      return {
+        value: st.ergReleased ? "Released" : st.userPaused ? "Paused" : "Off",
+        unit: "",
+      };
+    case "free":
+      return { value: "Free", unit: "" };
+    case "sim":
+      return { value: "Sim", unit: "" };
+  }
+}
+
 const PHASE_WORD = {
   warmup: "WARM-UP",
   work: "WORK",
@@ -155,12 +180,15 @@ function Tile({
   unit,
   ch,
   value,
+  sub,
 }: {
   id: string;
   label: string;
   unit: string;
   ch: number;
   value: number | string | null;
+  /** A smaller line under the value, in a slot of its own that reserves its widest form. */
+  sub?: { id: string; ch: number; text: string };
 }) {
   return (
     <div className="tile" data-tile={id}>
@@ -175,6 +203,15 @@ function Tile({
         </span>
         <span className="tile-unit">{unit}</span>
       </span>
+      {sub && (
+        <span
+          className="tile-sub num"
+          data-slot={sub.id}
+          style={{ width: `${sub.ch}ch` }}
+        >
+          {sub.text}
+        </span>
+      )}
     </div>
   );
 }
@@ -292,6 +329,7 @@ function Screen({ session }: { session: RideSession }) {
   const blockIdx = status?.blockIndex ?? null;
   const block = blockIdx === null ? undefined : blocks[blockIdx];
   const target = targetNow(block, status?.blockElapsedS ?? null);
+  const targetView = commandedView(status);
   const blockLeft =
     block?.durS != null && status?.blockElapsedS != null
       ? block.durS - status.blockElapsedS
@@ -418,8 +456,18 @@ function Screen({ session }: { session: RideSession }) {
           {clock(blockLeft)}
         </div>
         <div className="hero-band">
-          {/* The core does not expose the commanded target (#324): this is the plan's line, not the trainer's target. */}
-          <Tile id="plan" label="PLAN" unit="W" ch={4} value={target} />
+          <Tile
+            id="target"
+            label="TARGET"
+            unit={targetView.unit}
+            ch={8}
+            value={targetView.value}
+            sub={{
+              id: "plan",
+              ch: 10,
+              text: target === null ? "Plan —" : `Plan ${target} W`,
+            }}
+          />
           <Tile
             id="power"
             label="POWER"

@@ -29,6 +29,7 @@ import type {
   ApiError,
   LinkChange,
   Phase,
+  StreamCommanded,
   StreamPauseReason,
   StreamRideState,
   StreamStatus,
@@ -101,6 +102,8 @@ export interface RideWorld {
   /** Length of the last loss and when it ended; reported only while not lost (the next loss clears them). */
   gapS: number | null;
   reconnectedAtS: number | null;
+  /** The ERG watts the engine last sent while it is sending ERG (its soft start, steady target or ramp step); `null`: the current block's first planned watt, which is what a steady ERG block sends. */
+  commandedW: number | null;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";
   cap: "none" | "requires_erg" | "exceeds";
@@ -140,6 +143,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
     softStartW: null,
     gapS: null,
     reconnectedAtS: null,
+    commandedW: null,
     blockIdx: 0,
     trainer: "ready",
     cap: "none",
@@ -171,6 +175,22 @@ export function installRide(over: Partial<RideWorld> = {}) {
           reason: "stopped_pedalling" satisfies StreamPauseReason,
         }
       : { kind: "riding" };
+  };
+  /**
+   * The engine's `commanded` (`publish`, engine.rs): its `last_sent`, only for the running ride. Rules, from the policy
+   * (erg/policy.rs:170-290): a rider pause and a release both send `Resistance { 0 }` (the pause is judged first); a lost
+   * link forgets the mode (`reset_control`) so nothing is commanded until it is re-issued; 8 silent ticks on a ready link
+   * re-tell `Erg { 0 }`; a free block sends `Free`; otherwise ERG at the watts the engine is sending.
+   */
+  const commanded = (): StreamCommanded | null => {
+    if (world.phase !== "active" || world.trainerLost) return null;
+    if (world.userPause || world.ergReleased)
+      return { kind: "resistance", pct: 0 };
+    if (world.trainerSilent) return { kind: "erg", watts: 0 };
+    const b = world.blocks[world.blockIdx];
+    if (b === undefined) return null;
+    if (b.phase === "free") return { kind: "free" };
+    return { kind: "erg", watts: world.commandedW ?? b.powerFrom ?? 0 };
   };
   const links = (): LinkChange[] =>
     world.phase === "active"
@@ -218,6 +238,9 @@ export function installRide(over: Partial<RideWorld> = {}) {
       blockIndex: world.blockIdx < world.blocks.length ? world.blockIdx : null,
       blockElapsedS: 0,
       ergReleased: world.ergReleased,
+      // the engine's `user_paused` (engine.rs publish): the rider's pause, also under a trainer loss
+      userPaused: world.phase === "active" && world.userPause,
+      commanded: commanded(),
     });
     base.truth.links = links();
     base.push({ status: base.truth.status, links: links() });
