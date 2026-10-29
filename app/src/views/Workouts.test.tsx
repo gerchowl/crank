@@ -109,6 +109,8 @@ type ApiErr = { code: string; message: string };
  * - trainer connect timeout: `device_unavailable` (:637)
  * - `stage.connect`: the inner connect error, e.g. `device_unavailable` "connect failed: .." (:637 `??`)
  * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (:943 `.await?`)
+ * - `stage.build`: the new engine does not take the ride within 1 s, `engine_unresponsive`, its devices released
+ *   (`build_session`, `bounded` and `REQUEST_TIMEOUT` in core.rs, #351)
  * - `stage.installed`: `internal` "built session missing" (:809)
  * Everything from the storage step on happens while the core's `loading` flag is set (:789), so the mock raises
  * those refusals after the load's delay (the gate), with the in-flight conflict active meanwhile.
@@ -553,6 +555,16 @@ const REFUSALS: [string, Partial<Backend["stage"]>, RegExp][] = [
     "build_session",
     { build: apiError("internal", "engine stopped") },
     /engine stopped/,
+  ],
+  [
+    "an engine that does not take the ride",
+    {
+      build: apiError(
+        "engine_unresponsive",
+        "the ride engine did not take the ride in time; its devices were released, try again",
+      ),
+    },
+    /did not take the ride in time/,
   ],
   [
     "the session install",

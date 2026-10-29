@@ -5,6 +5,10 @@
 // mount one `StreamProvider` per loaded ride). The last `release()` forgets the stream; there is no close command,
 // the core drops it when the window opens its next stream, reloads or is destroyed.
 //
+// A wedged ride engine (#351) answers every stream command with `engine_unresponsive` after the core's 1 s bound. That
+// is the stream's error, whichever command met it, so the ride view can say so; nothing is retried: the engine does
+// not recover by being asked again, and End ends the ride by force.
+//
 // To add a re-query member (e.g. `coach_decisions`, #309): add its call to `Requery.run` below and its pure
 // `apply…` function to `state.ts`. To add a frame lane, see the header of `state.ts`.
 import { Channel } from "@tauri-apps/api/core";
@@ -263,6 +267,8 @@ export class StreamClient {
     }
     if (r.status === "error") {
       sub.view = { sample: null, error: r.error };
+      if (r.error.code === "engine_unresponsive")
+        this.snap = { ...this.snap, error: r.error };
     } else {
       sub.id = r.data;
       sub.view = {

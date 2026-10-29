@@ -255,7 +255,13 @@ export type ErrorCode =
 /**  The store failed. */
 "storage" | 
 /**  A bug or an unexpected internal state. */
-"internal";
+"internal" | 
+/**
+ *  The ride engine did not take or answer the request in time (it is wedged, #351): the
+ *  request's outcome is unknown, it may still apply. End always works: it ends a ride
+ *  whose engine does not answer by force.
+ */
+"engine_unresponsive";
 
 /**
  *  A display filter. Parameters use seconds or Hz; median uses a sample count.
