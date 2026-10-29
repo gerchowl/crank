@@ -7,8 +7,10 @@
 // - success: the ride session begins (`beginRide`, core truth: the core now holds this ride), and the rider is routed
 //   into it only if they are still on the Workouts view that asked. Anywhere else they are not pulled away: the
 //   state stays `loaded` and a non-modal notice offers "Go to ride" (`RideLoadNotice`).
-// - refusal: kept as `refused` for the workout it was for; the Workouts view shows it under that workout, and the
-//   notice shows it elsewhere.
+// - refusal: kept as `refused` until it is seen (#333), and seen exactly once: the notice shows it wherever the rider
+//   is except Workouts; the Workouts view shows it (mounted, or on return) under its workout or, for another pick,
+//   naming the workout, and clears it here when the rider leaves (`seenRideRefusal`). So a refusal is never dropped and never
+//   reappears elsewhere.
 import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { commands } from "../bindings";
@@ -66,6 +68,11 @@ export async function startRideLoad(
 /** Forget the result (a pick of another workout, the notice's dismiss). */
 export function dismissRideLoad(): void {
   if (state.phase !== "loading") set({ phase: "idle" });
+}
+
+/** The Workouts view was left: a refusal it showed is seen. Only a refusal; a load in flight or a result stays. */
+export function seenRideRefusal(): void {
+  if (state.phase === "refused") set({ phase: "idle" });
 }
 
 /** The notice's "Go to ride". */
