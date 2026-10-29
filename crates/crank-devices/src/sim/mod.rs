@@ -17,7 +17,12 @@
 //! engine re-issues `SetMode`); commands sent meanwhile are discarded. The strap
 //! follows the same sequence through `HrEvent`. A connect while a loss is still in
 //! progress fails with `ConnectFailed`, as the real stack's first connect does; losses
-//! that overlap in time are one outage (their schedules would otherwise interleave).
+//! that overlap in time are one outage (their schedules would otherwise interleave). The
+//! rig's epoch is its first connect, so nothing is down at it: a loss at `at: 0` never
+//! refuses a connect at that instant, whichever device connects first, and starts with the
+//! first tick (`Lost` right after `Ready`).
+//! A link attached after the stepping task has idled starts at the present: the idle gap is
+//! not replayed to it.
 //! Writer tick allocation and keep-alives (#43) are not modelled.
 //!
 //! **Differs from the real stack:** the sim has no ride gate. `Reconnecting<FecTrainer>`
@@ -669,10 +674,16 @@ impl SimRig {
         let spawn = {
             let mut w = lock(&self.world);
             f(&mut w)?;
-            if w.start.is_none() {
-                w.start = Some(self.clock.now());
+            let now = self.clock.now();
+            let start = *w.start.get_or_insert(now);
+            let spawn = !std::mem::replace(&mut w.running, true);
+            if spawn {
+                // The stepping task idled while no link was attached: that gap is not
+                // live time for the new link, so no stale tick or fault event from it is
+                // replayed (#297).
+                w.ticks = w.ticks.max(now.0.saturating_sub(start.0) / TICK_US);
             }
-            !std::mem::replace(&mut w.running, true)
+            spawn
         };
         if spawn {
             tokio::spawn(run(self.world.clone(), self.clock.clone()));
@@ -772,7 +783,7 @@ impl TrainerDriver for SimTrainer {
                 if w.trainer.tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
                     return Err(DeviceError::AlreadyConnected);
                 }
-                if w.trainer_down(w.rel(now)) {
+                if w.rel(now) > 0 && w.trainer_down(w.rel(now)) {
                     return Err(outage_error());
                 }
                 w.core
@@ -828,7 +839,7 @@ impl HeartRateDriver for SimHeart {
                 if w.heart.tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
                     return Err(DeviceError::AlreadyConnected);
                 }
-                if w.hr_down(w.rel(now)) {
+                if w.rel(now) > 0 && w.hr_down(w.rel(now)) {
                     return Err(outage_error());
                 }
                 w.next_generation += 1;
