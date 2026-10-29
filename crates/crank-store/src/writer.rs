@@ -14,8 +14,15 @@ const MIGRATIONS: [&str; 3] = [
     include_str!("../migrations/0002_device_platform_id_unique.sql"),
     include_str!("../migrations/0003_health_check_result.sql"),
 ];
-/// Newest `user_version` this build reads or writes.
-pub(crate) const SCHEMA_VERSION: u32 = 3;
+/// Newest `user_version` this build reads or writes: derived from [`MIGRATIONS`], so adding a
+/// migration cannot leave the read-only schema check behind (#166).
+pub(crate) const SCHEMA_VERSION: u32 = {
+    assert!(MIGRATIONS.len() <= u32::MAX as usize);
+    #[allow(clippy::cast_possible_truncation)] // checked just above
+    {
+        MIGRATIONS.len() as u32
+    }
+};
 type Job = Box<dyn FnOnce(&mut Writer) + Send>;
 /// Owns the worker thread and the advisory `ride.lock`.
 ///
@@ -307,7 +314,10 @@ mod tests {
     use crate::Store;
     use proptest::prelude::*;
     #[test]
-    fn schema_version_matches_migrations() {
+    fn an_owner_open_leaves_the_database_at_the_newest_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_owner(dir.path()).unwrap();
+        assert_eq!(store.schema_version().unwrap(), SCHEMA_VERSION);
         assert_eq!(usize::try_from(SCHEMA_VERSION), Ok(MIGRATIONS.len()));
     }
     #[test]

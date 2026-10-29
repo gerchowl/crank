@@ -3,9 +3,14 @@
 Implements ADR-0001 §5–6 and ADR-0002 §5. `Store::open_owner(data_dir)`
 acquires the advisory `ride.lock` before starting the sole writer thread. That
 thread applies forward-only migrations, enables WAL, `synchronous=FULL` and
-foreign keys, then closes unfinished rides as aborted. The guard stays with the
-writer until shutdown. `Store::open_read_only` neither migrates nor recovers.
-Both modes use a pool of two read-only connections; callers never issue SQL.
+foreign keys, then closes unfinished rides as aborted. The lock is held by the
+store's `WriterHandle`, not by the worker thread, so a panicking job does not
+release it: later writes fail with `WorkerStopped` and the lock lasts until the
+`Store` drops. `Store::open_read_only` neither migrates nor recovers, and refuses
+a database whose `user_version` is newer than this build (`SchemaTooNew`); that
+check runs at open only, so a read-only `Store` that outlives an owner upgrade
+must be reopened. Both modes use a pool of two read-only connections; callers
+never issue SQL.
 
 Start a ride with a fixed metric set. Supply each sequential **session second**
 with all metrics, explicitly using `None` for missing samples and workout time
