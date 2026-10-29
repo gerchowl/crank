@@ -441,6 +441,29 @@ describe("Ride", () => {
     },
   );
 
+  test("a wedged engine: a command shows the core's refusal, the view says the engine is not answering, and End still leaves the ride (#351)", async () => {
+    const rig = await open({ phase: "active" });
+    await push(rig, { state: { kind: "riding" } });
+    rig.wedge();
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+    const refusal = await waitFor(() => {
+      const el = document.querySelector('[data-code="engine_unresponsive"]');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(refusal.textContent).toContain("The ride engine is not answering:");
+    expect(screen.queryByTestId("engine-unresponsive")).toBeNull();
+    // the next frame's ack meets the wedged engine: the stream's error, shown once, not retried
+    await push(rig, { state: { kind: "riding" } });
+    const banner = await screen.findByTestId("engine-unresponsive");
+    expect(banner.getAttribute("role")).toBe("alert");
+    expect(banner.textContent).toContain("End still ends the ride");
+    expect(rig.base.count("open_stream")).toBe(1);
+    await userEvent.click(screen.getByRole("button", { name: "End" }));
+    await userEvent.click(screen.getByRole("button", { name: "End ride" }));
+    await waitFor(() => expect(routeText()).toBe("history:ride-1"));
+  });
+
   test("End with the engine stopped still leaves the ride: the core ends it by force (#331)", async () => {
     const rig = await open({ phase: "active", engineStopped: true });
     await push(rig, { state: { kind: "riding" } });

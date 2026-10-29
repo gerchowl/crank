@@ -21,7 +21,13 @@ import type {
   WorkoutBlock,
 } from "../bindings";
 import { navigate } from "../router";
-import { StreamProvider, useCommand, useLinks, useStatus } from "../stream";
+import {
+  StreamProvider,
+  useCommand,
+  useLinks,
+  useStatus,
+  useStreamError,
+} from "../stream";
 import { useSubscribe } from "../stream";
 import { RideTiers } from "../useTypeTiers";
 import { RideChart } from "./RideChart";
@@ -139,6 +145,7 @@ const REFUSAL: Record<string, string> = {
   device_unavailable: "Trainer not ready",
   storage: "The ride could not be recorded",
   internal: "The ride engine stopped",
+  engine_unresponsive: "The ride engine is not answering",
 };
 
 /** One value of the grid: its slot reserves the widest form (`ch`), so a longer number moves nothing (P4, §16.1). */
@@ -202,6 +209,8 @@ function useDetail(session: RideSession): CompiledView | null {
 function Screen({ session }: { session: RideSession }) {
   const status = useStatus();
   const links = useLinks();
+  // A wedged engine (#351): the stream's commands are refused after the core's bound, so the values below are stale.
+  const unresponsive = useStreamError()?.code === "engine_unresponsive";
   const power = useSubscribe("power", { rateHz: 4 }).sample;
   const cadence = useSubscribe("cadence", { rateHz: 2 }).sample;
   const hr = useSubscribe("hr", { rateHz: 2 }).sample;
@@ -501,6 +510,16 @@ function Screen({ session }: { session: RideSession }) {
         {loss.erg && (
           <p role="status" className="ride-loss" data-testid="loss-erg">
             <strong>ERG released</strong> — spin up to 60 rpm
+          </p>
+        )}
+        {unresponsive && (
+          <p
+            role="alert"
+            className="ride-loss"
+            data-testid="engine-unresponsive"
+          >
+            <strong>The ride engine is not answering</strong> — the values are
+            not live · End still ends the ride
           </p>
         )}
         {refusal && (
