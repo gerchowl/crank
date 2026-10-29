@@ -1,0 +1,204 @@
+// @vitest-environment jsdom
+import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { afterEach, beforeEach, expect, test } from "vitest";
+import type { RideRecord } from "../bindings";
+import { navigate, useRoute } from "../router";
+import { History, startedText } from "./History";
+
+afterEach(() => {
+  cleanup();
+  clearMocks();
+});
+beforeEach(() => navigate("history", "ride-1"));
+
+const apiError = (code: string, message: string) => ({ code, message });
+
+const RIDES: RideRecord[] = [
+  {
+    id: "ride-1",
+    startedAt: 1_760_000_000,
+    endedAt: 1_760_003_000,
+    outcome: "finished",
+    workoutId: "w-ss",
+    workoutName: "Sweet spot 3x12",
+    summary: {
+      durationS: 3000,
+      avgPowerW: 187.4,
+      npW: 201.6,
+      avgHrBpm: 142.2,
+      kj: 562,
+      blocks: [
+        { index: 0, plannedS: 600, plannedW: 150, actualS: 600, actualW: 148 },
+        { index: 1, plannedS: 720, plannedW: 230, actualS: 700, actualW: null },
+      ],
+    },
+  },
+  {
+    id: "ride-2",
+    startedAt: 1_759_000_000,
+    endedAt: 1_759_000_900,
+    outcome: "aborted",
+    workoutId: null,
+    workoutName: "Free ride",
+    summary: null,
+  },
+];
+
+interface Backend {
+  calls: { cmd: string; args: Record<string, unknown> }[];
+  /** Per-command failures, thrown when the call arrives. */
+  fail: Record<string, unknown>;
+}
+/**
+ * `rides_list` and `ride_summary` behind `mockIPC`, with every refusal the core can give
+ * (crates/crank-core/src/core.rs): `storage` when the store fails (`rides_list`: `store.rides()?`, :1247;
+ * `ride_summary` propagates it, :1257) and `not_found` "no ride \"<id>\"" for an id that is not stored
+ * (`ride_summary`, :1261). `rides_list` has no other refusal. A stored summary the core cannot parse comes back
+ * as `summary: null` (`record`, :1218-1219), like an open or aborted ride; both are in `RIDES`.
+ */
+function install(over: Partial<Backend> = {}): Backend {
+  const b: Backend = { calls: [], fail: {}, ...over };
+  mockIPC((cmd, payload) => {
+    const args = (payload ?? {}) as Record<string, unknown>;
+    b.calls.push({ cmd, args });
+    if (cmd in b.fail) throw b.fail[cmd];
+    switch (cmd) {
+      case "rides_list":
+        return RIDES;
+      case "ride_summary": {
+        if (!("id" in args))
+          throw "missing required key id for command `ride_summary`";
+        const ride = RIDES.find((r) => r.id === args.id);
+        if (!ride) throw apiError("not_found", `no ride "${args.id}"`);
+        return ride;
+      }
+      default:
+        throw `command ${cmd} not found`;
+    }
+  });
+  return b;
+}
+
+function Routed() {
+  const route = useRoute();
+  return (
+    <>
+      <p data-testid="route">{route.view}</p>
+      {route.view === "history" && <History sub={route.sub} />}
+    </>
+  );
+}
+const open = () => render(<Routed />);
+
+test("a summary renders the core's values", async () => {
+  const b = install();
+  open();
+  expect(
+    await screen.findByRole("heading", { name: "Sweet spot 3x12" }),
+  ).toBeTruthy();
+  expect(b.calls.find((c) => c.cmd === "ride_summary")?.args).toEqual({
+    id: "ride-1",
+  });
+  const s = within(screen.getByRole("region", { name: "Ride summary" }));
+  expect(s.getByText("Finished")).toBeTruthy();
+  expect(s.getByText(startedText(1_760_000_000))).toBeTruthy();
+  const value = (term: string) =>
+    s.getByText(term).nextElementSibling?.textContent;
+  expect(value("Duration")).toBe("50:00");
+  expect(value("Average power")).toBe("187 W");
+  expect(value("Normalized power")).toBe("202 W");
+  expect(value("Average heart rate")).toBe("142 bpm");
+  expect(value("Work")).toBe("562 kJ");
+  // planned and ridden per block; a block with no recorded power shows a dash
+  const rows = within(s.getByRole("table", { name: "Blocks" })).getAllByRole(
+    "row",
+  );
+  expect(rows[1]!.textContent).toContain("10:00 · 150 W");
+  expect(rows[1]!.textContent).toContain("10:00 · 148 W");
+  expect(within(rows[2]!).getAllByRole("cell")[1]!.textContent).toBe(
+    "11:40 · —",
+  );
+});
+
+test("an aborted ride has no summary to show", async () => {
+  install();
+  navigate("history", "ride-2");
+  open();
+  const s = within(await screen.findByRole("region", { name: "Ride summary" }));
+  expect(s.getByText("Aborted")).toBeTruthy();
+  expect(s.getByText("No summary was recorded for this ride.")).toBeTruthy();
+});
+
+test("a ride that is not stored says so and offers the way back", async () => {
+  install();
+  navigate("history", "ride-404");
+  open();
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "This ride isn’t in your history.",
+  );
+  expect(screen.queryByRole("region", { name: "Ride summary" })).toBeNull();
+  await userEvent.click(
+    screen.getByRole("button", { name: "Back to Workouts" }),
+  );
+  expect(screen.getByTestId("route").textContent).toBe("workouts");
+});
+
+test("a store failure is an error with Retry, which asks again", async () => {
+  const b = install({
+    fail: { ride_summary: apiError("storage", "database is locked") },
+  });
+  open();
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "database is locked",
+  );
+  delete b.fail.ride_summary;
+  await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(
+    await screen.findByRole("heading", { name: "Sweet spot 3x12" }),
+  ).toBeTruthy();
+  expect(b.calls.filter((c) => c.cmd === "ride_summary")).toHaveLength(2);
+});
+
+test("the way back leads to Workouts, Today or the ride list", async () => {
+  install();
+  open();
+  await screen.findByRole("region", { name: "Ride summary" });
+  await userEvent.click(screen.getByRole("button", { name: "Today" }));
+  expect(screen.getByTestId("route").textContent).toBe("today");
+  navigate("history", "ride-1");
+  await userEvent.click(
+    await screen.findByRole("button", { name: "All rides" }),
+  );
+  expect(screen.getByTestId("route").textContent).toBe("history");
+  expect(await screen.findByRole("list", { name: "Rides" })).toBeTruthy();
+});
+
+test("the list links each ride to its summary", async () => {
+  install();
+  navigate("history");
+  open();
+  const list = within(await screen.findByRole("list", { name: "Rides" }));
+  expect(list.getAllByRole("button")).toHaveLength(2);
+  await userEvent.click(list.getByRole("button", { name: /Free ride/ }));
+  expect(
+    await screen.findByText("No summary was recorded for this ride."),
+  ).toBeTruthy();
+});
+
+test("the list says when there are no rides, and shows a store failure", async () => {
+  mockIPC((cmd) => {
+    if (cmd === "rides_list") return [];
+    throw `command ${cmd} not found`;
+  });
+  navigate("history");
+  open();
+  expect(await screen.findByText("No rides yet.")).toBeTruthy();
+  cleanup();
+  install({ fail: { rides_list: apiError("storage", "disk I/O error") } });
+  open();
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "disk I/O error",
+  );
+});

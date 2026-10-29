@@ -338,3 +338,32 @@ main.mode {
 .workouts-issues li[data-severity="error"] {
   font-weight: 600;
 }
+
+/* History (#106 MVP): the ride list and one ride's summary. */
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.history-list button {
+  width: 100%;
+  text-align: left;
+}
+.history-summary dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+}
+.history-summary dd {
+  margin: 0;
+}
+.history-outcome[data-outcome="aborted"] {
+  font-weight: 600;
+}
+.history-leave {
+  display: flex;
+  gap: 8px;
+  margin-top: 24px;
+}
