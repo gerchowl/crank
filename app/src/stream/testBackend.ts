@@ -46,6 +46,7 @@ export const status = (over: Partial<StreamStatus> = {}): StreamStatus => ({
   softStartTargetW: null,
   lastGapS: null,
   reconnectedAtS: null,
+  commanded: null,
   ...over,
 });
 
