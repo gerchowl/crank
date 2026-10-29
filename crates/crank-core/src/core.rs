@@ -89,6 +89,100 @@ pub struct CoreConfig {
     /// Engine and driver clock; real monotonic time when `None`. Tests pass a
     /// `VirtualClock`.
     pub clock: Option<Arc<dyn Clock>>,
+    /// Where each ride's engine runs: [`EngineHost::Thread`] in the application.
+    pub engine_host: EngineHost,
+}
+
+/// Where a ride's engine runs (#344).
+///
+/// The core's deadlines on a ride end (`STOP_TIMEOUT`, `ABORT_JOIN_TIMEOUT`, `STORE_TIMEOUT`) are
+/// tokio timers. An engine on the core's own runtime that blocks in synchronous code (a store
+/// write) holds one of its worker threads, and with it, when that worker drives the timer, every
+/// timer of the runtime: the deadlines would not fire until the engine returns. On its own thread
+/// the engine cannot starve the core.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EngineHost {
+    /// A dedicated OS thread with its own current-thread tokio runtime, the application's host.
+    #[default]
+    Thread,
+    /// A task on the caller's runtime. For tests on paused time (`start_paused`): a
+    /// `VirtualClock` sleeps on the timer of the runtime that polls it, so an engine on another
+    /// runtime would not see the test's time.
+    Task,
+}
+/// A running engine, as the core holds it: [`EngineTask::abort`] asks it to end, and
+/// [`EngineTask::join`] waits for that, bounded. An engine that does not end (blocked in
+/// synchronous code, which neither a task abort nor a signal can interrupt) is then dropped
+/// from the session and left to finish on its own: detached.
+enum EngineTask {
+    /// A task on the core's runtime ([`EngineHost::Task`]).
+    Tokio(JoinHandle<()>),
+    /// A dedicated thread ([`EngineHost::Thread`]): `abort` makes its runtime drop the engine
+    /// at its next await, and `done` turns true when the thread has ended, panics included.
+    Thread {
+        done: watch::Receiver<bool>,
+        abort: Arc<Notify>,
+    },
+}
+/// Sets the engine thread's `done` when the thread ends, however it ends.
+struct Done(watch::Sender<bool>);
+impl Drop for Done {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+impl EngineTask {
+    /// Run `engine` on `host`.
+    fn spawn(
+        host: EngineHost,
+        engine: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<Self, ApiError> {
+        if host == EngineHost::Task {
+            return Ok(Self::Tokio(tokio::spawn(engine)));
+        }
+        let failed =
+            |e: std::io::Error| ApiError::new(ErrorCode::Internal, format!("engine thread: {e}"));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .map_err(failed)?;
+        let (done, ended) = watch::channel(false);
+        let abort = Arc::new(Notify::new());
+        let aborted = abort.clone();
+        std::thread::Builder::new()
+            .name("crank-engine".into())
+            .spawn(move || {
+                // dropped last, after the runtime and the engine in it
+                let _done = Done(done);
+                runtime.block_on(async {
+                    tokio::select! {
+                        biased;
+                        () = aborted.notified() => {}
+                        () = engine => {}
+                    }
+                });
+            })
+            .map_err(failed)?;
+        Ok(Self::Thread { done: ended, abort })
+    }
+    /// Ask the engine to end now: a task is aborted; a thread drops the engine at its next
+    /// await, which a thread blocked in synchronous code reaches only once that returns.
+    fn abort(&self) {
+        match self {
+            Self::Tokio(task) => task.abort(),
+            Self::Thread { abort, .. } => abort.notify_one(),
+        }
+    }
+    /// Wait at most `wait` for the engine to end; `false` if it has not.
+    async fn join(&mut self, wait: Duration) -> bool {
+        match self {
+            Self::Tokio(task) => tokio::time::timeout(wait, task).await.is_ok(),
+            // (an error is the thread's `done` gone: it has ended)
+            Self::Thread { done, .. } => tokio::time::timeout(wait, done.wait_for(|d| *d))
+                .await
+                .is_ok(),
+        }
+    }
 }
 
 /// Where a window's frames go. Core never awaits it.
@@ -173,8 +267,8 @@ struct Session {
     /// Core stream id → (the engine's id of it, owning window). Core ids are unique for
     /// the process lifetime; the engine's restart with every ride.
     streams: BTreeMap<StreamId, (StreamId, Option<String>)>,
-    /// The engine task: ending it drops the device links.
-    task: JoinHandle<()>,
+    /// The engine task or thread: ending it drops the device links.
+    task: EngineTask,
     ride_id: String,
     /// Set once a driver has closed its event stream, i.e. handed the peripheral back
     /// (the same confirmation pairing waits for).
@@ -182,6 +276,24 @@ struct Session {
     /// The core's own hold on the trainer, independent of the engine task, for the end mode
     /// of a forced end.
     trainer: TrainerHold,
+    /// Raised by a forced end: the engine is cut off from its links and its ride-active
+    /// signal, and then the links are released through the relays (see [`Takeover`]).
+    takeover: Arc<watch::Sender<Takeover>>,
+}
+/// How far a forced end has taken a session over from its engine (#331, #344). Each step
+/// works through what the core owns (the relays, its clone of the trainer's control sender),
+/// so it works with the engine wedged on its thread, its links still held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Takeover {
+    /// The engine has the session.
+    Engine,
+    /// The engine is cut off: the relays observe the drivers' events (the core waits for its
+    /// end mode's `Delivered`) but no longer pass them on, and the engine's ride-active signal
+    /// is ignored, so that an engine waking up later cannot touch the next ride's.
+    CutOff,
+    /// The core releases the devices: the relays stop and close the drivers' event streams,
+    /// and the trainer is told to disconnect, whatever the engine still holds.
+    Release,
 }
 /// What the core keeps of the trainer link so that it can end the ride's control itself
 /// when the engine cannot (#331). The control sender is a clone of the engine's: it keeps the
@@ -190,8 +302,6 @@ struct Session {
 #[derive(Clone)]
 struct TrainerHold {
     control: tokio::sync::mpsc::Sender<TrainerCommand>,
-    /// Set by a forced end: the relay stops passing events to the engine.
-    takeover: Arc<watch::Sender<bool>>,
     /// The last mode the driver reported as delivered, cleared before the core sends its own.
     delivered: Arc<watch::Sender<Option<ControlMode>>>,
 }
@@ -233,45 +343,48 @@ impl LinkRelease {
 /// close: at most [`RELEASE_TIMEOUT`] after the engine is gone, so a driver that never
 /// closes cannot keep it alive. A strap has no control channel: its driver disconnects when
 /// a send fails, so with `close_on_gone` the channel is closed towards the driver then
-/// (see [`driver_closed`]).
+/// (see [`driver_closed`]). On [`Takeover::Release`] the relay does not wait for the engine:
+/// it closes the channel towards the driver at once, for either device.
 fn relay_events<E: Send + 'static>(
     mut driver_events: tokio::sync::mpsc::Receiver<E>,
     close_on_gone: bool,
     tap: impl Fn(&E) + Send + Sync + 'static,
-    takeover: Option<watch::Receiver<bool>>,
+    mut takeover: watch::Receiver<Takeover>,
 ) -> (tokio::sync::mpsc::Receiver<E>, watch::Receiver<bool>) {
     let (relay, events) = tokio::sync::mpsc::channel(256);
     let (closed_tx, closed) = watch::channel(false);
     tokio::spawn(async move {
+        let mut released = false;
         loop {
+            // (`Ok` patterns: once the session is gone, so is its takeover sender, and that
+            // branch is off)
             let event = tokio::select! {
                 event = driver_events.recv() => event,
                 () = relay.closed() => break,
+                Ok(_) = takeover.wait_for(|t| *t == Takeover::Release) => {
+                    released = true;
+                    break;
+                }
             };
             // the driver closed first
             let Some(event) = event else { break };
             tap(&event);
-            let Some(mut takeover) = takeover.clone() else {
-                if relay.send(event).await.is_err() {
-                    break;
-                }
-                continue;
-            };
             // Once the core has taken over (a forced end), the engine is cut off: events are
             // observed but no longer passed on, and a full channel to a stuck engine does
             // not hold the relay.
-            if *takeover.borrow() {
+            if *takeover.borrow() != Takeover::Engine {
                 continue;
             }
             tokio::select! {
                 sent = relay.send(event) => if sent.is_err() { break },
-                _ = takeover.wait_for(|t| *t) => {}
+                Ok(_) = takeover.wait_for(|t| *t != Takeover::Engine) => {}
             }
         }
-        // The engine is gone (or the driver ended): see the driver close.
+        // The engine is gone, the driver ended, or the core releases the device: see the
+        // driver close.
         if tokio::time::timeout(
             RELEASE_TIMEOUT,
-            driver_closed(&mut driver_events, close_on_gone, &tap),
+            driver_closed(&mut driver_events, close_on_gone || released, &tap),
         )
         .await
         .is_err()
@@ -281,6 +394,46 @@ fn relay_events<E: Send + 'static>(
         closed_tx.send_replace(true);
     });
     (events, closed)
+}
+/// Put relays (see [`relay_events`]) between the drivers and the engine, which owns the links
+/// and drops them when it ends: a closed stream is the driver's confirmation that the
+/// peripheral is handed back. Returns the core's hold on the trainer and the release signals.
+fn relay_links(
+    trainer: &mut TrainerLink,
+    hr: Option<&mut HeartRateLink>,
+    takeover: &watch::Sender<Takeover>,
+) -> (TrainerHold, LinkRelease) {
+    let hold = TrainerHold {
+        control: trainer.control.clone(),
+        delivered: Arc::new(watch::channel(None).0),
+    };
+    let delivered = hold.delivered.clone();
+    let (events, trainer_closed) = relay_events(
+        std::mem::replace(&mut trainer.events, tokio::sync::mpsc::channel(1).1),
+        false,
+        move |event: &TrainerEvent| {
+            if let TrainerEvent::Delivered { mode } = event {
+                delivered.send_replace(Some(*mode));
+            }
+        },
+        takeover.subscribe(),
+    );
+    trainer.events = events;
+    let hr_closed = hr.map(|link| {
+        let (events, closed) = relay_events(
+            std::mem::replace(&mut link.events, tokio::sync::mpsc::channel(1).1),
+            true,
+            |_| {},
+            takeover.subscribe(),
+        );
+        link.events = events;
+        closed
+    });
+    let release = LinkRelease {
+        trainer: trainer_closed,
+        hr: hr_closed,
+    };
+    (hold, release)
 }
 /// Resolve once the driver has dropped its sender; with `close` the channel is closed towards
 /// it first so that a strap's driver, which has no control channel, learns that its consumer
@@ -296,6 +449,40 @@ async fn driver_closed<E>(
         while let Some(event) = events.recv().await {
             tap(&event);
         }
+    }
+}
+/// Step 2 of [`Core::force_end`].
+async fn force_end_mode(ride_id: &str, hold: &TrainerHold) {
+    let mode = ControlMode::Resistance { pct: 0.0 };
+    hold.delivered.send_replace(None);
+    let mut delivered = hold.delivered.subscribe();
+    let sent = tokio::time::timeout(END_MODE_TIMEOUT, async {
+        if hold
+            .control
+            .send(TrainerCommand::SetMode(mode))
+            .await
+            .is_ok()
+        {
+            let _ = delivered.wait_for(|m| *m == Some(mode)).await;
+        }
+    })
+    .await;
+    if sent.is_err() {
+        tracing::warn!(
+            ride_id,
+            "the trainer did not confirm the end mode of a forced end"
+        );
+    }
+}
+/// Step 3 of [`Core::force_end`]: the relays stop and close the drivers' event streams (a
+/// closed stream is what makes a trainer's driver return and a strap's disconnect), and the
+/// trainer is told to disconnect through the core's own control sender. The engine, which may
+/// hold its links for as long as it is wedged, is not involved.
+fn release_links(ride_id: &str, hold: &TrainerHold, takeover: &watch::Sender<Takeover>) {
+    takeover.send_replace(Takeover::Release);
+    if hold.control.try_send(TrainerCommand::Disconnect).is_err() {
+        // its closed event stream still releases it
+        tracing::warn!(ride_id, "the trainer's control channel took no disconnect");
     }
 }
 #[derive(Default)]
@@ -349,6 +536,7 @@ struct Inner {
     store: Arc<Store>,
     backend: Backend,
     clock: Arc<dyn Clock>,
+    engine_host: EngineHost,
     gate: RideGate,
     /// Mirrors the gate: the engine's ride-active signal, awaitable.
     active: watch::Sender<bool>,
@@ -373,6 +561,9 @@ struct Inner {
     /// While on, the engine task is not polled: it holds its links and answers nothing (#331).
     #[cfg(test)]
     stall: Arc<Stall>,
+    /// Blocks the engine's thread in a record write (#344).
+    #[cfg(test)]
+    block_write: Arc<BlockWrite>,
 }
 /// A switch that suspends a future without dropping it.
 #[cfg(test)]
@@ -407,6 +598,45 @@ impl<F: std::future::Future> std::future::Future for Stalled<F> {
             return std::task::Poll::Pending;
         }
         self.future.as_mut().poll(cx)
+    }
+}
+/// A record write that blocks the engine's thread, as a slow store would (#344).
+#[cfg(test)]
+#[derive(Default)]
+struct BlockWrite {
+    /// The next `append_second` sleeps (synchronously) this long, then writes.
+    next: std::sync::Mutex<Option<Duration>>,
+    /// Set once that write is blocked.
+    blocked: AtomicBool,
+    /// What the write returned once it woke.
+    late: std::sync::Mutex<Option<Result<(), crank_engine::RecordError>>>,
+}
+#[cfg(test)]
+struct BlockingRecorder {
+    inner: StoreRecorder,
+    block: Arc<BlockWrite>,
+}
+#[cfg(test)]
+impl crank_engine::RideRecorder for BlockingRecorder {
+    fn start(&mut self, metrics: &[&str]) -> Result<(), crank_engine::RecordError> {
+        self.inner.start(metrics)
+    }
+    fn append_second(
+        &mut self,
+        session_s: u32,
+        row: &crank_engine::SecondRow,
+    ) -> Result<(), crank_engine::RecordError> {
+        let Some(blocked) = self.block.next.lock().unwrap().take() else {
+            return self.inner.append_second(session_s, row);
+        };
+        self.block.blocked.store(true, Ordering::SeqCst);
+        std::thread::sleep(blocked);
+        let late = self.inner.append_second(session_s, row);
+        *self.block.late.lock().unwrap() = Some(late.clone());
+        late
+    }
+    fn finish(&mut self) -> Result<(), crank_engine::RecordError> {
+        self.inner.finish()
     }
 }
 /// A rendezvous between a test and `Core::discard`: when enabled, `discard` announces that
@@ -468,13 +698,17 @@ impl Core {
     /// `Conflict` when another process holds `ride.lock`; `Storage` for any store failure.
     pub fn open(config: CoreConfig) -> Result<Self, ApiError> {
         let devices = config.devices;
-        Self::open_with(&config.data_dir, config.clock, move |pairings, clock| {
-            Backend::new(devices, clock, pairings)
-        })
+        Self::open_with(
+            &config.data_dir,
+            config.clock,
+            config.engine_host,
+            move |pairings, clock| Backend::new(devices, clock, pairings),
+        )
     }
     fn open_with(
         data_dir: &std::path::Path,
         clock: Option<Arc<dyn Clock>>,
+        engine_host: EngineHost,
         backend: impl FnOnce(Vec<Pairing>, Arc<dyn Clock>) -> Backend,
     ) -> Result<Self, ApiError> {
         let store = Arc::new(Store::open_owner(data_dir)?);
@@ -482,18 +716,20 @@ impl Core {
         // A restarted process starts with an empty adapter memory: the stored pairings
         // are handed to the radio as soon as it exists (ADR-0002 §5).
         let pairings = store.devices()?.iter().map(pairing).collect();
-        Self::assemble(store, backend(pairings, clock.clone()), clock)
+        Self::assemble(store, backend(pairings, clock.clone()), clock, engine_host)
     }
     fn assemble(
         store: Arc<Store>,
         backend: Backend,
         clock: Arc<dyn Clock>,
+        engine_host: EngineHost,
     ) -> Result<Self, ApiError> {
         let clock_for_idle = clock.clone();
         Ok(Self(Arc::new(Inner {
             store,
             backend,
             clock,
+            engine_host,
             gate: RideGate::new(false),
             active: watch::channel(false).0,
             library: Library::builtin()?,
@@ -512,6 +748,8 @@ impl Core {
             pin_active: Arc::default(),
             #[cfg(test)]
             stall: Arc::default(),
+            #[cfg(test)]
+            block_write: Arc::default(),
         })))
     }
 
@@ -831,18 +1069,15 @@ impl Core {
             } else {
                 RELEASE_TIMEOUT
             };
-            if tokio::time::timeout(wait, &mut task).await.is_err() {
+            if !task.join(wait).await {
                 if force {
                     // aborted above, and still not ended
-                    tracing::warn!(ride_id, "the engine task ignores the abort: detaching it");
+                    tracing::warn!(ride_id, "the engine ignores the abort: detaching it");
                 } else {
-                    tracing::warn!(ride_id, "the engine task did not end: aborting it");
+                    tracing::warn!(ride_id, "the engine did not end: aborting it");
                     task.abort();
-                    if tokio::time::timeout(ABORT_JOIN_TIMEOUT, &mut task)
-                        .await
-                        .is_err()
-                    {
-                        tracing::warn!(ride_id, "the engine task ignores the abort: detaching it");
+                    if !task.join(ABORT_JOIN_TIMEOUT).await {
+                        tracing::warn!(ride_id, "the engine ignores the abort: detaching it");
                     }
                 }
             }
@@ -1065,42 +1300,14 @@ impl Core {
         workout: Workout,
         compiled: CompiledWorkout,
     ) -> Result<(Session, bool), ApiError> {
-        let (mut trainer, hr, [trainer_device_id, hr_device_id]) = self.connect_links().await?;
-        // The engine owns the links and drops them when it ends, so the core watches the
-        // drivers' side of the event streams through relays (see `relay_events`): a
-        // closed stream is the driver's confirmation that the peripheral is handed back.
-        let hold = TrainerHold {
-            control: trainer.control.clone(),
-            takeover: Arc::new(watch::channel(false).0),
-            delivered: Arc::new(watch::channel(None).0),
-        };
-        let delivered = hold.delivered.clone();
-        let (events, trainer_closed) = relay_events(
-            std::mem::replace(&mut trainer.events, tokio::sync::mpsc::channel(1).1),
-            false,
-            move |event: &TrainerEvent| {
-                if let TrainerEvent::Delivered { mode } = event {
-                    delivered.send_replace(Some(*mode));
-                }
-            },
-            Some(hold.takeover.subscribe()),
-        );
-        trainer.events = events;
-        let mut hr = hr;
-        let hr_closed = hr.as_mut().map(|link| {
-            let (events, closed) = relay_events(
-                std::mem::replace(&mut link.events, tokio::sync::mpsc::channel(1).1),
-                true,
-                |_| {},
-                None,
-            );
-            link.events = events;
-            closed
-        });
+        let (mut trainer, mut hr, [trainer_device_id, hr_device_id]) = self.connect_links().await?;
+        let takeover = Arc::new(watch::channel(Takeover::Engine).0);
+        let (hold, release) = relay_links(&mut trainer, hr.as_mut(), &takeover);
         let hr_linked = hr.is_some();
         let (gate, active) = (self.0.gate.clone(), self.0.active.clone());
         #[cfg(test)]
         let pin = self.0.pin_active.clone();
+        let cut_off = takeover.subscribe();
         let (engine, handle) = Engine::new(
             self.0.clock.clone(),
             Some(trainer),
@@ -1110,17 +1317,24 @@ impl Core {
                 if !on && pin.load(Ordering::SeqCst) {
                     return;
                 }
+                // the core has taken the ride over: the signal is its own now
+                if *cut_off.borrow() != Takeover::Engine {
+                    return;
+                }
                 gate.set_active(on);
                 active.send_replace(on);
             }),
         );
         #[cfg(test)]
-        let task = tokio::spawn(Stalled {
-            future: Box::pin(engine.run()),
-            stall: self.0.stall.clone(),
-        });
+        let task = EngineTask::spawn(
+            self.0.engine_host,
+            Stalled {
+                future: Box::pin(engine.run()),
+                stall: self.0.stall.clone(),
+            },
+        )?;
         #[cfg(not(test))]
-        let task = tokio::spawn(engine.run());
+        let task = EngineTask::spawn(self.0.engine_host, engine.run())?;
         let ride_id = format!(
             "ride-{:x}",
             SystemTime::now()
@@ -1138,6 +1352,11 @@ impl Core {
                 telemetry_source: self.0.backend.telemetry_source(),
             },
         );
+        #[cfg(test)]
+        let recorder = BlockingRecorder {
+            inner: recorder,
+            block: self.0.block_write.clone(),
+        };
         handle
             .send(EngineCmd::Load(RideSetup {
                 blocks: compiled.blocks,
@@ -1152,11 +1371,9 @@ impl Core {
                 streams: BTreeMap::new(),
                 task,
                 ride_id,
-                release: LinkRelease {
-                    trainer: trainer_closed,
-                    hr: hr_closed,
-                },
+                release,
                 trainer: hold,
+                takeover,
             },
             hr_linked,
         ))
@@ -1302,23 +1519,38 @@ impl Core {
         Ok(outcome.unwrap_or_else(|| RideEnd::Ended(finishes.then_some(id))))
     }
     /// End a ride whose engine cannot, in this order:
-    /// 1. **the end mode**, if the ride had started: the core sends `Resistance{0}` to the
+    /// 1. the engine is **cut off** ([`Takeover::CutOff`]): the relays stop feeding it and its
+    ///    ride-active signal is ignored from now on;
+    /// 2. **the end mode**, if the ride had started: the core sends `Resistance{0}` to the
     ///    trainer itself, through its own hold on the control channel, and waits for the
     ///    driver to deliver it (`END_MODE_TIMEOUT`), so that the last ERG target is not left
-    ///    on a healthy trainer (ADR-0002 §7.9). The relay stops feeding the engine meanwhile;
-    /// 2. the engine task is aborted (and detached when it ignores that, `reap`);
-    /// 3. the ride's record is closed as aborted, off the async executor (`close_record`);
-    /// 4. the ride-active signal the dead engine can no longer drop is cleared.
+    ///    on a healthy trainer (ADR-0002 §7.9);
+    /// 3. **the devices are released** by the core ([`Takeover::Release`], `release_links`),
+    ///    through what it owns, not by dropping the engine's links, which an engine wedged on
+    ///    its thread still holds; the caller awaits the drivers' confirmation;
+    /// 4. the engine is aborted (and detached when it ignores that, `reap`);
+    /// 5. the ride's record is closed as aborted, off the async executor (`close_record`);
+    /// 6. the ride-active signal the engine can no longer drop is cleared.
     ///
-    /// The devices are then released by dropping the links, which the caller awaits.
     /// Idempotent: an overlapping forced end finds the session gone and the record closed.
     async fn force_end(&self, ride_id: &str, started: bool) -> Closed {
         tracing::warn!(
             ride_id,
             "the engine did not stop the ride: ending it by force"
         );
-        if started {
-            self.force_end_mode(ride_id).await;
+        let taken = {
+            let st = self.0.state.lock().await;
+            st.session
+                .as_ref()
+                .filter(|s| s.ride_id == ride_id)
+                .map(|s| (s.trainer.clone(), s.takeover.clone()))
+        };
+        if let Some((hold, takeover)) = taken {
+            takeover.send_replace(Takeover::CutOff);
+            if started {
+                force_end_mode(ride_id, &hold).await;
+            }
+            release_links(ride_id, &hold, &takeover);
         }
         self.reap(ride_id, true).await;
         let closed = self.close_record(ride_id).await;
@@ -1356,38 +1588,7 @@ impl Core {
             self.0.state.lock().await.forcing = None;
         }
     }
-    /// Step 1 of [`Core::force_end`].
-    async fn force_end_mode(&self, ride_id: &str) {
-        let hold = {
-            let st = self.0.state.lock().await;
-            st.session
-                .as_ref()
-                .filter(|s| s.ride_id == ride_id)
-                .map(|s| s.trainer.clone())
-        };
-        let Some(hold) = hold else { return };
-        let mode = ControlMode::Resistance { pct: 0.0 };
-        hold.takeover.send_replace(true);
-        hold.delivered.send_replace(None);
-        let mut delivered = hold.delivered.subscribe();
-        let sent = tokio::time::timeout(END_MODE_TIMEOUT, async {
-            if hold
-                .control
-                .send(TrainerCommand::SetMode(mode))
-                .await
-                .is_ok()
-            {
-                let _ = delivered.wait_for(|m| *m == Some(mode)).await;
-            }
-        })
-        .await;
-        if sent.is_err() {
-            tracing::warn!(
-                ride_id,
-                "the trainer did not confirm the end mode of a forced end"
-            );
-        }
-    }
+
     /// Close the record of a ride the engine cannot finish: aborted, keeping what was
     /// recorded. The store call blocks (its worker is reached over a channel), so it runs on
     /// the blocking pool and is waited for at most `STORE_TIMEOUT`.
@@ -1861,10 +2062,23 @@ mod tests {
             let radio: Arc<dyn Radio> = Arc::new(radio.clone());
             async move { Ok(radio) }.boxed()
         });
-        Core::open_with(dir, Some(Arc::new(VirtualClock::new(1))), move |p, _| {
-            Backend::with_radio(factory, p)
-        })
+        Core::open_with(
+            dir,
+            Some(Arc::new(VirtualClock::new(1))),
+            EngineHost::Task,
+            move |p, _| Backend::with_radio(factory, p),
+        )
         .unwrap()
+    }
+
+    /// As [`open`], on `host`, real time and the production clock.
+    fn open_on(dir: &std::path::Path, radio: &FakeRadio, host: EngineHost) -> Core {
+        let radio = radio.clone();
+        let factory: crate::backend::RadioFactory = Arc::new(move || {
+            let radio: Arc<dyn Radio> = Arc::new(radio.clone());
+            async move { Ok(radio) }.boxed()
+        });
+        Core::open_with(dir, None, host, move |p, _| Backend::with_radio(factory, p)).unwrap()
     }
 
     #[tokio::test(start_paused = true)]
@@ -1995,6 +2209,7 @@ mod tests {
             data_dir: dir.path().into(),
             devices: DeviceMode::Sim(SimConfig::default()),
             clock: Some(Arc::new(VirtualClock::new(1))),
+            engine_host: EngineHost::Task,
         })
         .unwrap();
         for (id, role) in [
@@ -2482,13 +2697,20 @@ mod tests {
         TrainerCommand::SetMode(ControlMode::Resistance { pct: 0.0 })
     }
     /// The core sent the end mode and the trainer had it delivered (the fake takes
-    /// `mode_delay` for that) before its link was dropped.
+    /// `mode_delay` for that) before its link was dropped, which the core told it to do.
     fn assert_end_mode_before_disconnect(radio: &FakeRadio, delivery: Duration, stuck: bool) {
+        let commands = radio.commands.lock().unwrap().clone();
         assert_eq!(
-            radio.commands.lock().unwrap().last(),
+            commands
+                .iter()
+                .rfind(|c| matches!(c, TrainerCommand::SetMode(_))),
             Some(&end_mode()),
-            "stuck={stuck}: {:?}",
-            radio.order.lock().unwrap()
+            "stuck={stuck}: {commands:?}"
+        );
+        assert_eq!(
+            commands.last(),
+            Some(&TrainerCommand::Disconnect),
+            "stuck={stuck}"
         );
         let order = radio.order.lock().unwrap().clone();
         let at = |what| order.iter().rev().find(|(w, _)| *w == what).unwrap().1;
@@ -2595,12 +2817,12 @@ mod tests {
             let session = st.session.as_mut().unwrap();
             session.task.abort();
             session.handle = handle;
-            session.task = tokio::spawn(async move {
+            session.task = EngineTask::Tokio(tokio::spawn(async move {
                 let _engine = engine;
                 // after one yield, as an engine reaching a blocking store write
                 tokio::task::yield_now().await;
                 std::thread::sleep(Duration::from_secs(4));
-            });
+            }));
         }
         let t = std::time::Instant::now();
         let (a, b) = tokio::time::timeout(
@@ -2615,6 +2837,103 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
         // the state lock is free, and the next ride loads
         core.ride_load(None).await.unwrap();
+    }
+    /// Wait (real time) until `done`, for at most `limit`.
+    async fn until(limit: Duration, done: impl Fn() -> bool) {
+        let t = std::time::Instant::now();
+        while !done() {
+            assert!(t.elapsed() < limit, "not within {limit:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    /// #344: an engine on its own thread, woken by its timer mid-ride, blocks that thread in a
+    /// record write (`std::thread::sleep`, 4 s) while it holds both links. End answers inside a
+    /// fixed 2 s; the core releases both devices itself; the next ride loads at once (no
+    /// `driver already connected`); when the engine wakes, its late write is refused by the
+    /// store's id guard, the ride stays aborted and the next ride's ride-active signal is not
+    /// touched. Real time, on the production host and clock.
+    async fn an_engine_thread_blocked_mid_ride(host: EngineHost) {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open_on(dir.path(), &radio, host);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.device_pair("hrm".into(), DeviceRole::HeartRate)
+            .await
+            .unwrap();
+        // the pairings connect and drop both
+        until(Duration::from_secs(5), || {
+            radio.disconnects.lock().unwrap().len() == 1
+                && radio.hr_released.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        radio.disconnects.lock().unwrap().clear();
+        let loaded = core
+            .ride_load(Some("builtin-sensor-check".into()))
+            .await
+            .unwrap();
+        assert!(loaded.hr_linked);
+        core.ride_start().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let block = core.0.block_write.clone();
+        *block.next.lock().unwrap() = Some(Duration::from_secs(4));
+        until(Duration::from_secs(3), || {
+            block.blocked.load(Ordering::SeqCst)
+        })
+        .await;
+        let t = std::time::Instant::now();
+        let end = tokio::time::timeout(Duration::from_secs(10), core.ride_end_outcome())
+            .await
+            .expect("End answers")
+            .unwrap();
+        let took = t.elapsed();
+        // a fixed number, not derived from the constants under test
+        assert!(took <= Duration::from_secs(2), "{took:?}");
+        assert!(
+            block.late.lock().unwrap().is_none(),
+            "End waited for the blocked engine"
+        );
+        assert_eq!(end, RideEnd::ForcedEnd(loaded.ride_id.clone()));
+        // released by the core, with the engine still holding its links
+        assert_eq!(radio.disconnects.lock().unwrap().len(), 1, "trainer");
+        assert_eq!(radio.hr_released.load(Ordering::SeqCst), 2, "strap");
+        let next = core.ride_load(None).await.unwrap();
+        assert!(*core.0.active.borrow());
+        // the engine wakes
+        until(Duration::from_secs(5), || {
+            block.late.lock().unwrap().is_some()
+        })
+        .await;
+        let late = block.late.lock().unwrap().clone().unwrap();
+        assert!(
+            late.as_ref()
+                .is_err_and(|e| e.0.contains("ride is not live")),
+            "{late:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let rides = core.rides_list().await.unwrap();
+        assert_eq!(rides[0].id, loaded.ride_id);
+        assert_eq!(rides[0].outcome, RideOutcome::Aborted, "{rides:?}");
+        let loaded_now = core
+            .0
+            .state
+            .lock()
+            .await
+            .session
+            .as_ref()
+            .map(|s| s.ride_id.clone());
+        assert_eq!(loaded_now, Some(next.ride_id));
+        assert!(core.ride_status().await.unwrap().status.loaded);
+        assert!(core.0.gate.is_active() && *core.0.active.borrow());
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_engine_thread_blocked_mid_ride_does_not_hold_end_on_a_multi_thread_core() {
+        an_engine_thread_blocked_mid_ride(EngineHost::Thread).await;
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_engine_thread_blocked_mid_ride_does_not_hold_end_on_a_current_thread_core() {
+        an_engine_thread_blocked_mid_ride(EngineHost::Thread).await;
     }
     /// #331: a stuck engine does not wedge the replacing `ride_load` or `discard` either.
     #[tokio::test(start_paused = true)]
@@ -2863,7 +3182,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_relay_of_a_driver_that_never_closes_ends_at_the_release_timeout() {
         let (driver_tx, driver_rx) = tokio::sync::mpsc::channel::<u8>(4);
-        let (engine_rx, closed) = relay_events(driver_rx, false, |_| {}, None);
+        let (_takeover, takeover) = watch::channel(Takeover::Engine);
+        let (engine_rx, closed) = relay_events(driver_rx, false, |_| {}, takeover);
         drop(engine_rx);
         tokio::time::sleep(Duration::from_millis(2900)).await;
         assert!(!*closed.borrow(), "still listening");
@@ -2914,7 +3234,7 @@ mod tests {
             let mut st = core.0.state.lock().await;
             let session = st.session.as_mut().unwrap();
             session.task.abort();
-            session.task = tokio::spawn(std::future::pending());
+            session.task = EngineTask::Tokio(tokio::spawn(std::future::pending()));
         }
         let replace = {
             let core = core.clone();

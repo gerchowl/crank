@@ -1,5 +1,7 @@
 //! Window and quit lifecycle (ADR-0001 §4.3, ADR-0002 §7.9) and the startup failure text.
-use crank_core::{Core, CoreConfig, DeviceMode, DeviceRole, ErrorCode, RideOutcome, Shutdown};
+use crank_core::{
+    Core, CoreConfig, DeviceMode, DeviceRole, EngineHost, ErrorCode, RideOutcome, Shutdown,
+};
 use crank_desktop::{
     commands as cmd,
     lifecycle::{self, Decision, ExitApi, Quit, Runner, Wire},
@@ -25,6 +27,7 @@ fn config(dir: &std::path::Path) -> CoreConfig {
         data_dir: dir.into(),
         devices: DeviceMode::Sim(SimConfig::default()),
         clock: Some(Arc::new(VirtualClock::new(1))),
+        engine_host: EngineHost::Task,
     }
 }
 /// An app with a core and a window `main`. (Not built through [`lifecycle::install`]: its
