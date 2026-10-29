@@ -36,6 +36,7 @@ fn status(state: StreamRideState, marker: u32) -> StreamStatus {
         soft_start_target_w: None,
         last_gap_s: None,
         reconnected_at_s: None,
+        commanded: None,
     }
 }
 /// A frame budget and a sample count at which a default status and the samples split over exactly
@@ -467,6 +468,7 @@ fn worst_status() -> StreamStatus {
         soft_start_target_w: Some(u16::MAX),
         last_gap_s: Some(f64::MIN),
         reconnected_at_s: Some(f64::MIN),
+        commanded: Some(super::types::StreamCommanded::Resistance { pct: f32::MIN }),
     }
 }
 
@@ -509,6 +511,7 @@ fn every_frame_stays_under_the_byte_budget_at_every_cap() {
         soft_start_target_w: Some(u16::MAX),
         last_gap: Some(crate::ticks::SessionTicks(u64::MAX)),
         reconnected_at: Some(crate::ticks::SessionTicks(u64::MAX)),
+        commanded: Some(crank_devices::ControlMode::Resistance { pct: f32::MIN }),
     };
     ride.state = crate::engine::RideState::Paused(crate::engine::PauseReason::StoppedPedalling);
     let from_engine = StreamStatus::from(&ride);
@@ -1212,15 +1215,42 @@ fn opening_a_stream_frees_the_closed_ones_before_the_cap_check() {
 fn the_worst_status_with_the_erg_fields_has_a_measured_size() {
     // The discrete part at every cap with #218's fields (following, component, released,
     // compliance at u32::MAX, cap), #329's trainer-loss fields (three f64 timestamps at their
-    // widest, the attempt, the soft-start target, the rider pause) and the record error cut at
-    // its cap (256 bytes of 4-byte characters): measured (909 bytes), against the 8 000-byte frame
-    // budget.
+    // widest, the attempt, the soft-start target, the rider pause), #324's commanded mode (the
+    // widest variant, `resistance` with the longest `f32`) and the record error cut at its cap
+    // (256 bytes of 4-byte characters): measured (964 bytes), against the 8 000-byte frame budget.
     let mut st = worst_status();
     st.record_error = Some("𝔘".repeat(MAX_RECORD_ERROR_BYTES / 4));
     let n = serde_json::to_vec(&st).expect("status").len();
     eprintln!("worst status: {n} bytes");
     assert!(n < 1_000, "worst status is {n} bytes");
     assert!(n < FRAME_BUDGET_BYTES / 8);
+}
+
+#[test]
+fn the_commanded_mode_is_typed_on_the_wire_and_absent_as_null() {
+    use super::types::StreamCommanded;
+    use crank_devices::ControlMode;
+    for (mode, wire) in [
+        (
+            ControlMode::Erg { target_w: 253 },
+            serde_json::json!({"kind": "erg", "watts": 253}),
+        ),
+        (
+            ControlMode::Resistance { pct: 0.0 },
+            serde_json::json!({"kind": "resistance", "pct": 0.0}),
+        ),
+        (ControlMode::Free, serde_json::json!({"kind": "free"})),
+    ] {
+        let v = serde_json::to_value(StreamCommanded::from(mode)).expect("commanded");
+        assert_eq!(v, wire);
+    }
+    let mut st = status(StreamRideState::Riding, 0);
+    assert!(serde_json::to_value(&st).expect("status")["commanded"].is_null());
+    st.commanded = Some(StreamCommanded::Free);
+    assert!(
+        !st.same_discrete(&status(StreamRideState::Riding, 0)),
+        "a change of mode is a status change"
+    );
 }
 
 #[test]
@@ -1257,6 +1287,7 @@ fn the_wire_status_carries_the_erg_fields_with_their_meaning() {
         soft_start_target_w: Some(253),
         last_gap: Some(SessionTicks(122)),
         reconnected_at: Some(SessionTicks(172)),
+        commanded: Some(crank_devices::ControlMode::Erg { target_w: 253 }),
     };
     let v = serde_json::to_value(StreamStatus::from(&ride)).expect("status");
     assert_eq!(v["trainerFollowing"], "not_following");
@@ -1274,6 +1305,11 @@ fn the_wire_status_carries_the_erg_fields_with_their_meaning() {
     assert_eq!(v["softStartTargetW"], 253);
     assert_eq!(v["lastGapS"], 30.5);
     assert_eq!(v["reconnectedAtS"], 43.0);
+    // the commanded target, typed (#324)
+    assert_eq!(
+        v["commanded"],
+        serde_json::json!({"kind": "erg", "watts": 253})
+    );
     for (c, name) in [
         (Component::Erg, "erg"),
         (Component::Resistance, "resistance"),
@@ -1392,7 +1428,10 @@ fn stream_and_subscription_ids_stay_unique_across_a_counter_wrap() {
 }
 
 /// The wire contract the UI's test backend (`app/src/stream/testBackend.ts`) mirrors: `rateHz` is a required
-/// number (specta types it `number | null`, serde refuses `null`), and a rate outside 0.1–10 Hz is `InvalidRate`.
+/// number (specta types it `number | null`, serde refuses `null`), and a rate outside 0.1–10 Hz is `InvalidRate`;
+/// an unknown metric id, an unknown filter kind and a missing or `null` filter parameter are serde errors (Tauri
+/// rejects the call with a plain string, the UI shows `internal`); a chain over 4 filters, an SMA window or EMA time
+/// constant over 300 s and a median over 256 samples are `InvalidFilter`, checked after the rate (#311).
 /// If this changes, change the mock with it.
 #[test]
 fn subscribe_opts_wire_contract_for_the_ui_mock() {
@@ -1415,6 +1454,57 @@ fn subscribe_opts_wire_contract_for_the_ui_mock() {
             hub.subscribe(stream, MetricId::Power, opts(good, Vec::new()))
                 .is_ok(),
             "{good} Hz"
+        );
+    }
+
+    // What serde refuses (the mock throws Tauri's plain string for each).
+    assert!(serde_json::from_str::<MetricId>(r#""torque""#).is_err());
+    assert!(serde_json::from_str::<MetricId>(r#""workout_s""#).is_ok());
+    for bad in [
+        r#"{"kind":"kalman"}"#,
+        r#"{"kind":"sma"}"#,
+        r#"{"kind":"sma","windowS":null}"#,
+        r#"{"kind":"ema","tauS":null}"#,
+        r#"{"kind":"median"}"#,
+        r#"{"kind":"one_euro","minCutoff":1}"#,
+    ] {
+        let wire = format!(r#"{{"rateHz":1,"filters":[{bad}]}}"#);
+        assert!(
+            serde_json::from_str::<SubscribeOpts>(&wire).is_err(),
+            "{wire}"
+        );
+    }
+
+    // What the hub refuses: the limits are inclusive, and the rate is checked before the filters.
+    let hold = || vec![Filter::Hold; 4];
+    for (what, filters) in [
+        ("5 filters", vec![Filter::Hold; 5]),
+        ("sma 300.5 s", vec![Filter::Sma { window_s: 300.5 }]),
+        ("ema 301 s", vec![Filter::Ema { tau_s: 301.0 }]),
+        ("median 257", vec![Filter::Median { n: 257.0 }]),
+    ] {
+        assert!(
+            matches!(
+                hub.subscribe(stream, MetricId::Power, opts(1.0, filters)),
+                Err(StreamError::InvalidFilter(_))
+            ),
+            "{what}"
+        );
+    }
+    assert!(matches!(
+        hub.subscribe(stream, MetricId::Power, opts(11.0, vec![Filter::Hold; 5])),
+        Err(StreamError::InvalidRate)
+    ));
+    for (what, filters) in [
+        ("4 filters", hold()),
+        ("sma 300 s", vec![Filter::Sma { window_s: 300.0 }]),
+        ("ema 300 s", vec![Filter::Ema { tau_s: 300.0 }]),
+        ("median 256", vec![Filter::Median { n: 256.0 }]),
+    ] {
+        assert!(
+            hub.subscribe(stream, MetricId::Power, opts(1.0, filters))
+                .is_ok(),
+            "{what}"
         );
     }
 }

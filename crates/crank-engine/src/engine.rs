@@ -47,7 +47,7 @@ pub enum RideState {
     Finished,
 }
 /// Engine status: the live cursor of the part that exists so far (stream frames: #219).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RideStatus {
     /// Current state.
     pub state: RideState,
@@ -108,6 +108,15 @@ pub struct RideStatus {
     /// Session time at which the last loss ended (with `last_gap`): a consumer times "back
     /// after m:ss" from it.
     pub reconnected_at: Option<SessionTicks>,
+    /// The mode the engine has handed to the trainer driver in the current link epoch: what the
+    /// trainer is being told, as opposed to the workout's plan (#324). It is the engine's own
+    /// `last_sent`, so it is by construction the policy's output at the last transition (soft
+    /// start step, steady ERG, `Resistance { 0 }` for a release, a rider pause or the end mode)
+    /// and never the plan. `None` while no ride is running, and from a link transition or a
+    /// silence epoch until the mode is re-issued (a lost trainer is told nothing). It is the
+    /// command queued to the driver, not an echo: whether the trainer follows is
+    /// `trainer_following`.
+    pub commanded: Option<ControlMode>,
 }
 /// The ride's health cap as reported in the status (DESIGN §15.4): under a cap only ERG
 /// rides, and every ERG command is clamped to `cap_w`.
@@ -630,6 +639,7 @@ impl Engine {
                 soft_start_target_w: None,
                 last_gap: None,
                 reconnected_at: None,
+                commanded: None,
             })
             .0,
             trainer_log: LinkLog::default(),
@@ -1426,6 +1436,7 @@ impl Engine {
                 .and(policy.soft_start_target_w),
             last_gap: live.and_then(|s| s.last_gap).map(SessionTicks),
             reconnected_at: live.and_then(|s| s.reconnected_at).map(SessionTicks),
+            commanded: live.and_then(|s| s.last_sent),
         };
         let now = self.clock.pacing_now().0;
         self.hub.on_status(StreamStatus::from(&status), now);
