@@ -964,19 +964,21 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    are kept, there is no summary, as for a ride closed by crash recovery), on the blocking pool and waited
    for at most 500 ms; if the engine finished the ride after all (a late `Stop`), that record wins and the
    end is reported as an ordinary one. (6) The ride-active signal is cleared; the drivers' release is
-   awaited as above, and a new ride can be loaded at once. A detached engine that wakes later changes
+   awaited (`RELEASE_TIMEOUT`, 3 s, `core.rs`), and a new ride can be loaded at once. A detached engine that wakes later changes
    nothing: its record writes are refused by the store (`ride is not live`), so the ride stays aborted, and
    its ride-active signal no longer reaches the core, so the next ride's is not touched. **The command gate
    (#345):** the engine's control sender does not reach the driver directly but through a relay the core
    owns; from the cut-off on, every engine command (one sent after it, or one queued before it and not yet
    forwarded, or one waiting on a full driver channel) is dropped and logged with the ride id, never
-   forwarded (`Takeover` and the command relay, `core.rs`), while the core's own sender is never blocked. One task forwards both senders and reads the
+   forwarded (`Takeover` and the command relay `gate_commands`, `core.rs`), while the core's own sender is never blocked. One task forwards both senders and reads the
    cut-off after taking each engine command, and the core raises the cut-off before it sends: nothing of the
    engine's can follow the core's end mode. A stale `Delivered` of an earlier `Resistance{0}` does not confirm
    the core's (sequence correlation, above). The residual is FM-FIN-02's stalled
    write: if the trainer does not take the end mode within the 500 ms the core gives up on it and the link
    is dropped. `ride_end` reports `{rideId, forced}` (`RideEnded`, `crates/crank-core/src/dto.rs`; `forced` is true
-   exactly when the core took the ride over, `core.rs` `end_ride`); the id is returned either way. **The UI keys
+   when the core closed the record without the engine's `Stop` confirming; if a late `Stop` finishes the record
+   first, the core has taken over but reports `forced: false`, `core.rs` `end_ride` / `force_end`; a repeat End
+   after a forced end answers `forced: true` again from `last_forced`); the id is returned either way. **The UI keys
    the forced-end note on `forced`, never on the recorded outcome (#346):** an `aborted` record is also what crash
    recovery writes, and a late `Stop` that finishes the ride after all is reported `forced: false`. The fact is on
    the answer only, not in the stored `RideRecord`, so the ride screen hands it to the summary for the window
