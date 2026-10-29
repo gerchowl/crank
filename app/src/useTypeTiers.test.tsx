@@ -177,3 +177,34 @@ test("the settings override wins over the measured width", async () => {
   await act(async () => undefined);
   expect(root.style.getPropertyValue("--t2")).toBe("101px");
 });
+
+// ---- #313: reads are ordered ----
+
+test("a slow earlier read cannot overwrite a newer one (the review's repro)", async () => {
+  vi.spyOn(window.screen, "width", "get").mockReturnValue(1440);
+  vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(1);
+  vi.spyOn(settings, "useMonitorWidthMmOverride").mockReturnValue(null);
+  const answers: ((v: number | null) => void)[] = [];
+  const read = vi.mocked(display.readDisplayWidthMm);
+  read.mockClear();
+  read.mockImplementation(
+    () => new Promise<number | null>((resolve) => answers.push(resolve)),
+  );
+  let moved: () => void = () => undefined;
+  vi.mocked(display.watchMonitorChange).mockImplementation((notify) => {
+    moved = notify;
+    return () => undefined;
+  });
+  setViewport(1440, 900);
+  render(<RideTiers>x</RideTiers>);
+  const root = await rootOf();
+  await vi.waitFor(() => expect(answers).toHaveLength(1)); // the mount read, held
+  act(() => moved()); // the window moved: the second read
+  await vi.waitFor(() => expect(answers).toHaveLength(2));
+  await act(async () => answers[1]!(597)); // the newer read answers first: 49px
+  await vi.waitFor(() =>
+    expect(root.style.getPropertyValue("--t2")).toBe("49px"),
+  );
+  await act(async () => answers[0]!(288)); // then the slow mount read: must not win (it would give 101px)
+  expect(root.style.getPropertyValue("--t2")).toBe("49px");
+});
