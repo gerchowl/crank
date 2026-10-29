@@ -398,7 +398,7 @@ impl World {
     }
     fn apply(&mut self, cmd: TrainerCommand, rel: u64, out: &mut Out) {
         match cmd {
-            TrainerCommand::SetMode(mode) => match mode.grid_key() {
+            TrainerCommand::SetMode { mode, seq } => match mode.grid_key() {
                 Err(e) => out.trainer.push(TrainerEvent::Fault(e)),
                 Ok(key) => {
                     for control in key {
@@ -412,8 +412,9 @@ impl World {
                             self.trainer.active = Some(c);
                         }
                     }
-                    // like the driver: `Delivered` once every page of the mode is written
-                    out.trainer.push(TrainerEvent::Delivered { mode });
+                    // like the driver: `Delivered` once every page of the mode is written,
+                    // for this command's sequence only
+                    out.trainer.push(TrainerEvent::Delivered { mode, seq });
                     self.trainer
                         .poll_next
                         .get_or_insert(rel / TICK_US + POLL_TICKS);
@@ -817,6 +818,7 @@ impl TrainerDriver for SimTrainer {
                 caps,
                 control: commands,
                 events: receiver,
+                seq: crate::SeqSource::default(),
             })
         })
     }

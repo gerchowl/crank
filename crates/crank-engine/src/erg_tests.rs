@@ -1795,10 +1795,38 @@ fn a_late_delivery_of_an_earlier_mode_does_not_clear_the_gate() {
     pedal(&r, 0, 24, 200, 90);
     r.through(23);
     r.engine.command(EngineCmd::Stop).expect("stop");
+    // (a driver reports only commands it was given: `Free` was never sent)
     r.delivered(erg(200));
-    r.delivered(ControlMode::Free);
     assert_eq!(r.gate.lock().unwrap().last(), Some(&true));
     r.delivered(RESISTANCE_0);
+    assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
+}
+#[test]
+fn a_late_delivery_of_an_earlier_equal_mode_does_not_clear_the_gate() {
+    // #345: the end mode is confirmed by its own sequence, never by an equal mode: the
+    // pause's `Resistance{0}`, delivered late, says nothing about the end mode's
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 24, 200, 90);
+    r.through(23);
+    assert_eq!(r.modes().last(), Some(&erg(200)));
+    r.engine.command(EngineCmd::Pause).expect("pause");
+    pedal(&r, 24, 28, 150, 90);
+    r.through(27);
+    assert_eq!(r.modes(), vec![RESISTANCE_0]);
+    let (_, paused) = *r.sent.last().unwrap();
+    r.engine.command(EngineCmd::Stop).expect("stop");
+    assert_eq!(r.modes(), vec![RESISTANCE_0]);
+    let (_, ended) = *r.sent.last().unwrap();
+    assert_ne!(paused, ended);
+    r.delivered_seq(RESISTANCE_0, paused);
+    assert_eq!(
+        r.gate.lock().unwrap().last(),
+        Some(&true),
+        "a stale delivery confirmed the end mode"
+    );
+    r.delivered_seq(RESISTANCE_0, ended);
     assert_eq!(r.gate.lock().unwrap().last(), Some(&false));
 }
 #[test]
