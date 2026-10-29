@@ -940,7 +940,8 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    connect is up to btleplug/CoreBluetooth, and a failure surfaces as `ConnectFailed`.
    **A ride end the engine cannot carry out (#331).** `ride_end` bounds its `Stop` (1 s, below the 3 s
    quit cap; the replacing `ride_load` and `discard` too). **Threading (#344):** the application runs each
-   ride's engine on its own OS thread with its own current-thread tokio runtime (`EngineHost::Thread`), so
+   ride's engine on its own OS thread with its own current-thread tokio runtime (`EngineHost::Thread`,
+   `crates/crank-core/src/core.rs`), so
    an engine blocked in synchronous code (a store write) holds only that thread: the core's runtime, its
    workers and its timer, on which every deadline below runs, stay free. (On the core's runtime a blocked
    engine held a worker and with it the timer: the deadlines did not fire, End took as long as the stall.)
@@ -969,18 +970,22 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    (#345):** the engine's control sender does not reach the driver directly but through a relay the core
    owns; from the cut-off on, every engine command (one sent after it, or one queued before it and not yet
    forwarded, or one waiting on a full driver channel) is dropped and logged with the ride id, never
-   forwarded, while the core's own sender is never blocked. One task forwards both senders and reads the
+   forwarded (`Takeover` and the command relay, `core.rs`), while the core's own sender is never blocked. One task forwards both senders and reads the
    cut-off after taking each engine command, and the core raises the cut-off before it sends: nothing of the
    engine's can follow the core's end mode. A stale `Delivered` of an earlier `Resistance{0}` does not confirm
    the core's (sequence correlation, above). The residual is FM-FIN-02's stalled
    write: if the trainer does not take the end mode within the 500 ms the core gives up on it and the link
-   is dropped. `ride_end` reports `{rideId, forced}`; the id is returned either way, and the summary of an
-   aborted ride says its data may be incomplete. Quitting inherits the bound. **No request waits on the
+   is dropped. `ride_end` reports `{rideId, forced}` (`RideEnded`, `crates/crank-core/src/dto.rs`; `forced` is true
+   exactly when the core took the ride over, `core.rs` `end_ride`); the id is returned either way. **The UI keys
+   the forced-end note on `forced`, never on the recorded outcome (#346):** an `aborted` record is also what crash
+   recovery writes, and a late `Stop` that finishes the ride after all is reported `forced: false`. The fact is on
+   the answer only, not in the stored `RideRecord`, so the ride screen hands it to the summary for the window
+   (`app/src/ride/forcedEnds.ts`; a reload loses it, the record does not carry it). Quitting inherits the bound. **No request waits on the
    engine under the state lock (#351):** End takes that lock, so a request holding it while a wedged engine
-   does not answer would hold End. The three `Stop`s above are the only engine requests made under it, by
+   does not answer would hold End. The three `Stop`s above (`end_ride`, the replacing `ride_load`, `discard`) are the only engine requests made under it, by
    design (no `ride_start` may reach the engine first), and are bounded by `STOP_TIMEOUT`. Every other
    request (`Load`, start/pause/resume/skip, and the stream requests: open, subscribe, unsubscribe, ack,
-   snapshot, a window's close) is sent without the lock and waited for at most 1 s (`REQUEST_TIMEOUT`); the
+   snapshot, a window's close) is sent without the lock and waited for at most 1 s (`REQUEST_TIMEOUT`, the bounded wait in `core.rs`); the
    caller then gets the typed `engine_unresponsive` (outcome unknown, the request may still apply). The
    ride view says the engine is not answering and offers End; nothing is retried. A `Load` the new engine
    does not take releases the devices it was built with, as a forced end does. FMEA row FM-FIN-05.
