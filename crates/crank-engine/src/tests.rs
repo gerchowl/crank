@@ -5,7 +5,7 @@ use crate::control::{PolicyContext, TargetPolicy};
 use crate::engine::{CommandError, Engine, EngineCmd, PauseReason, RideSetup, RideState};
 use crate::erg::{ErgPolicy, TrainerFollowing};
 use crate::record::{RecordError, RideRecorder, SecondRow};
-use crate::ticks::{Hold, TICK_US, TickWindow};
+use crate::ticks::{Hold, SessionTicks, TICK_US, TickWindow};
 use crank_devices::{
     Clock, ControlMode, DeviceInfo, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime,
     TargetLimit, TrainerCaps, TrainerCommand, TrainerEvent, TrainerLink, TrainerSample,
@@ -164,6 +164,13 @@ impl Rig {
     /// unprocessed tick, in order with the samples queued so far.
     pub(crate) fn link(&mut self, s: LinkState) {
         self.events.try_send(TrainerEvent::Link(s)).unwrap();
+        self.engine.drain();
+    }
+    /// The driver starts reconnect attempt `n`, received now (queued in order with the links).
+    pub(crate) fn reconnecting(&mut self, n: u32) {
+        self.events
+            .try_send(TrainerEvent::Reconnecting { attempt: n })
+            .unwrap();
         self.engine.drain();
     }
     /// Move the manual clock without processing ticks.
@@ -1985,4 +1992,380 @@ mod soft_start_property {
             execute(&rides)?;
         }
     }
+}
+
+// ---- #329: the trainer-loss fields of the status ---------------------------------
+
+/// The five loss fields as one comparable tuple:
+/// (`user_paused`, lost since, attempt, soft-start target, (last gap, reconnected at)).
+type LossFields = (
+    bool,
+    Option<u64>,
+    Option<u32>,
+    Option<u16>,
+    (Option<u64>, Option<u64>),
+);
+fn loss_fields(r: &Rig) -> LossFields {
+    let st = r.status();
+    (
+        st.user_paused,
+        st.trainer_lost_since.map(|t| t.0),
+        st.reconnect_attempt,
+        st.soft_start_target_w,
+        (st.last_gap.map(|t| t.0), st.reconnected_at.map(|t| t.0)),
+    )
+}
+
+/// A rig with one 200 W work block, ridden for 8 ticks at 150 W / 90 rpm (session 8).
+fn riding_rig() -> Rig {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    for k in 0..8 {
+        r.sample(k, 150, 90);
+    }
+    r.through(7);
+    r
+}
+const NONE_YET: LossFields = (false, None, None, None, (None, None));
+
+#[test]
+fn the_loss_fields_follow_lose_attempts_reconnect_soft_start_and_steady() {
+    let mut r = riding_rig();
+    // steady, and the soft start every ride begins with is not a "reconnected" state (#250)
+    assert_eq!(loss_fields(&r), NONE_YET);
+
+    // lost at the tick boundary where the engine applies the link event (session tick 8)
+    r.link(LinkState::Lost);
+    r.through(9);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    assert_eq!(loss_fields(&r), (false, Some(8), None, None, (None, None)));
+
+    // the driver's attempts, in order; `lost_since` does not move while the loss lasts
+    r.reconnecting(1);
+    r.through(11);
+    assert_eq!(
+        loss_fields(&r),
+        (false, Some(8), Some(1), None, (None, None))
+    );
+    r.reconnecting(2);
+    r.link(LinkState::Connecting);
+    r.through(12);
+    assert_eq!(
+        loss_fields(&r),
+        (false, Some(8), Some(2), None, (None, None))
+    );
+
+    // link ready but nothing has flowed yet: still lost, no soft start is shown yet
+    r.link(LinkState::Ready);
+    r.through(13);
+    assert_eq!(
+        loss_fields(&r),
+        (false, Some(8), Some(2), None, (None, None))
+    );
+
+    // the first pedalling sample of the new epoch: back after a gap of 7 ticks (8 -> 15),
+    // the soft start shows the target it is easing back to (the block's 200 W)
+    r.sample(14, 90, 85);
+    r.through(14);
+    assert_eq!(
+        loss_fields(&r),
+        (false, None, None, Some(200), (Some(7), Some(15)))
+    );
+
+    // the soft start runs its 20 ticks, then the target goes; the gap and its end stay
+    for k in 15..40 {
+        r.sample(k, 150, 85);
+    }
+    r.through(34);
+    assert_eq!(r.status().soft_start_target_w, Some(200), "still easing in");
+    r.through(39);
+    assert_eq!(
+        loss_fields(&r),
+        (false, None, None, None, (Some(7), Some(15))),
+        "steady again"
+    );
+
+    // the next loss starts clean: the previous gap is gone
+    r.link(LinkState::Lost);
+    r.through(41);
+    let st = loss_fields(&r);
+    assert_eq!(st.2, None);
+    assert_eq!(st.4, (None, None));
+    assert!(st.1.is_some_and(|t| t >= 40));
+}
+
+#[test]
+fn an_attempt_arriving_right_after_the_lost_it_belongs_to_is_not_wiped_by_it() {
+    // Both are received before the tick that applies them; the attempt must apply after the
+    // loss (which starts the count afresh), or attempt 1 would never show.
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.reconnecting(1);
+    r.through(9);
+    assert_eq!(r.status().reconnect_attempt, Some(1));
+    assert_eq!(r.status().trainer_lost_since, Some(SessionTicks(8)));
+}
+
+#[test]
+fn a_long_loss_keeps_its_first_stamp_through_later_silence_epochs() {
+    // 8 silent ticks start a new epoch on their own, also while already lost: the stamp the
+    // ">= 30 s" rows count from must stay at the first moment of the loss.
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.through(9);
+    assert_eq!(r.status().trainer_lost_since, Some(SessionTicks(8)));
+    r.through(40);
+    assert_eq!(r.status().trainer_lost_since, Some(SessionTicks(8)));
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+}
+
+#[test]
+fn a_silence_loss_is_stamped_and_ends_when_samples_return() {
+    // No link event at all: 8 silent ticks decide the loss; a sample ends it.
+    let mut r = riding_rig();
+    r.through(15);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    let (_, lost_since, attempt, soft, gap) = loss_fields(&r);
+    assert!(lost_since.is_some(), "silence is a loss");
+    assert_eq!((attempt, soft, gap), (None, None, (None, None)));
+    r.sample(16, 90, 85);
+    r.through(16);
+    let st = r.status();
+    assert_eq!(st.trainer_lost_since, None);
+    assert_eq!(
+        st.last_gap.map(|g| g.0),
+        Some(st.reconnected_at.unwrap().0 - lost_since.unwrap())
+    );
+    assert!(st.last_gap.unwrap().0 > 0);
+}
+
+#[test]
+fn a_rider_pause_stays_visible_under_a_trainer_loss_and_after_it() {
+    let mut r = riding_rig();
+    assert!(!r.status().user_paused);
+    r.engine.command(EngineCmd::Pause).unwrap();
+    assert_eq!(r.state(), RideState::Paused(PauseReason::User));
+    assert!(r.status().user_paused);
+    // the loss outranks the pause in `state`, but the rider's pause is still theirs to resume
+    r.link(LinkState::Lost);
+    r.through(9);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    assert!(
+        r.status().user_paused,
+        "masked in `state`, not in `user_paused`"
+    );
+    r.link(LinkState::Ready);
+    r.sample(11, 100, 80);
+    r.through(11);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::User));
+    assert!(r.status().user_paused);
+    // a rider pause is not a soft start owed for a reconnect: nothing to ease back to while paused
+    assert_eq!(r.status().soft_start_target_w, None);
+    r.engine.command(EngineCmd::Resume).unwrap();
+    assert!(!r.status().user_paused);
+    assert_eq!(r.state(), RideState::Riding);
+}
+
+#[test]
+fn a_loss_without_a_rider_pause_is_not_user_paused() {
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.through(9);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    assert!(!r.status().user_paused);
+}
+
+#[test]
+fn no_loss_field_is_set_for_a_ride_that_never_lost_the_trainer() {
+    let mut r = riding_rig();
+    for k in 8..30 {
+        r.sample(k, 150, 90);
+    }
+    r.through(29);
+    // including the soft start owed at the ride's start (#250), which is not a reconnect
+    assert_eq!(loss_fields(&r), NONE_YET);
+}
+
+#[test]
+fn a_soft_start_owed_on_resume_is_not_shown_as_a_reconnected_state() {
+    // Loss, back, and the soft start runs out: the "reconnected" state is over. A later rider
+    // pause owes another soft start on resume, but that is not a reconnect and has no target row.
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.through(9);
+    r.link(LinkState::Ready);
+    r.through(12);
+    for k in 14..60 {
+        r.sample(k, 150, 90);
+    }
+    r.through(45);
+    assert_eq!(
+        r.status().soft_start_target_w,
+        None,
+        "the soft start is over"
+    );
+    r.engine.command(EngineCmd::Pause).unwrap();
+    r.through(46);
+    r.engine.command(EngineCmd::Resume).unwrap();
+    for k in 47..58 {
+        r.through(k);
+        assert_eq!(
+            r.status().soft_start_target_w,
+            None,
+            "tick {k}: a resume's soft start is not a reconnect"
+        );
+    }
+    // and it did ease back in: a ramp ran (the trainer got several different ERG targets)
+    assert!(r.modes().len() > 2);
+}
+
+// ---- #329 review: a ride that ends reports no loss state, and the edge cases of the loss tracking ----
+
+/// Every loss field in its "nothing" value.
+fn assert_no_loss_state(r: &Rig, when: &str) {
+    assert_eq!(loss_fields(r), NONE_YET, "{when}");
+}
+
+#[test]
+fn a_ride_stopped_under_a_rider_pause_and_a_loss_reports_no_loss_state() {
+    let mut r = riding_rig();
+    r.engine.command(EngineCmd::Pause).unwrap();
+    r.link(LinkState::Lost);
+    r.reconnecting(1);
+    r.reconnecting(2);
+    r.through(11);
+    let (user, lost, attempt, ..) = loss_fields(&r);
+    assert!(
+        (user, lost.is_some(), attempt) == (true, true, Some(2)),
+        "setup"
+    );
+    r.engine.command(EngineCmd::Stop).unwrap();
+    assert_eq!(r.state(), RideState::Finished);
+    assert_no_loss_state(&r, "finished under a pause and a loss");
+}
+
+#[test]
+fn a_ride_stopped_during_a_loss_reports_no_loss_state() {
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.reconnecting(1);
+    r.through(10);
+    assert!(r.status().trainer_lost_since.is_some(), "setup");
+    r.engine.command(EngineCmd::Stop).unwrap();
+    assert_eq!(r.state(), RideState::Finished);
+    assert_no_loss_state(&r, "stopped while lost");
+}
+
+#[test]
+fn a_ride_stopped_in_the_soft_start_after_a_loss_reports_no_loss_state() {
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.through(9);
+    r.link(LinkState::Ready);
+    r.sample(11, 90, 85);
+    r.through(11);
+    assert_eq!(r.status().soft_start_target_w, Some(200), "setup");
+    assert!(r.status().last_gap.is_some(), "setup");
+    r.engine.command(EngineCmd::Stop).unwrap();
+    assert_eq!(r.state(), RideState::Finished);
+    assert_no_loss_state(&r, "stopped in the soft start");
+}
+
+#[test]
+fn a_ride_that_finishes_by_itself_in_the_soft_start_reports_no_loss_state() {
+    // A 5 s block is 20 ticks of workout time. Ticks 0-3 are ridden before the loss; the trainer is lost at
+    // tick 4, link Ready is applied at tick 6, the first pedalling sample of the new epoch (tick 7) is the
+    // trainer being back, and riding resumes at tick 8. The block therefore ends at tick 23, inside the soft
+    // start, which runs 20 ticks from that first sample (ticks 7 to 27).
+    let mut r = rig();
+    r.load(vec![block(5.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    for k in 0..4 {
+        r.sample(k, 150, 90);
+    }
+    r.through(3);
+    r.link(LinkState::Lost);
+    r.through(5);
+    r.link(LinkState::Ready);
+    r.through(6);
+    for k in 7..40 {
+        r.sample(k, 150, 90);
+    }
+    // one tick before the end the ride is still riding and the soft start is still running
+    r.through(22);
+    assert_eq!(r.state(), RideState::Riding);
+    assert_eq!(
+        r.status().soft_start_target_w,
+        Some(200),
+        "the soft start is still running when the ride is about to end"
+    );
+    r.through(39);
+    assert_eq!(r.state(), RideState::Finished);
+    assert_no_loss_state(&r, "finished by itself in the soft start");
+}
+
+#[test]
+fn a_sample_while_the_link_is_not_ready_is_not_the_trainer_being_back() {
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.through(9);
+    r.link(LinkState::Connecting);
+    // a pedalling sample of the new epoch, but the link is only connecting
+    r.sample(10, 90, 85);
+    r.sample(11, 90, 85);
+    r.through(11);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    assert_eq!(
+        r.status().trainer_lost_since,
+        Some(SessionTicks(8)),
+        "still lost"
+    );
+    assert_eq!(r.status().last_gap, None);
+    // ready, and the next sample: now it is back
+    r.link(LinkState::Ready);
+    r.sample(12, 90, 85);
+    r.through(12);
+    assert_eq!(r.status().trainer_lost_since, None);
+    assert!(r.status().last_gap.is_some());
+}
+
+#[test]
+fn a_second_loss_in_the_middle_of_a_soft_start_starts_clean() {
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.through(9);
+    r.link(LinkState::Ready);
+    r.sample(11, 90, 85);
+    r.through(11);
+    for k in 12..20 {
+        r.sample(k, 150, 90);
+    }
+    r.through(19);
+    assert_eq!(r.status().soft_start_target_w, Some(200), "mid soft start");
+    assert!(r.status().last_gap.is_some());
+    // the trainer drops again while the ramp is running
+    r.link(LinkState::Lost);
+    r.reconnecting(1);
+    r.through(21);
+    let st = loss_fields(&r);
+    assert_eq!(st.3, None, "no soft start to show while lost again");
+    assert_eq!(
+        st.4,
+        (None, None),
+        "the previous gap belongs to the previous loss"
+    );
+    assert!(st.1.is_some_and(|t| t >= 20), "a new stamp");
+    assert_eq!(st.2, Some(1));
+    // and it recovers into a fresh soft start with its own gap
+    r.link(LinkState::Ready);
+    r.sample(24, 90, 85);
+    r.through(24);
+    let st = loss_fields(&r);
+    assert_eq!((st.1, st.2, st.3), (None, None, Some(200)));
+    assert!(
+        st.4.0.is_some_and(|g| g < 8),
+        "the second, short gap: {:?}",
+        st.4
+    );
 }

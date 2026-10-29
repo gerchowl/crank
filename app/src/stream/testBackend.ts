@@ -38,6 +38,12 @@ export const status = (over: Partial<StreamStatus> = {}): StreamStatus => ({
   ergReleased: false,
   compliance: { countedS: 0, withinS: 0, excludedS: 0 },
   cap: null,
+  userPaused: false,
+  trainerLostSinceS: null,
+  reconnectAttempt: null,
+  softStartTargetW: null,
+  lastGapS: null,
+  reconnectedAtS: null,
   ...over,
 });
 

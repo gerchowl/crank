@@ -57,6 +57,10 @@ pub struct PolicyStatus {
     pub released: bool,
     /// The compliance tally (ADR-0002 §7.8).
     pub compliance: Compliance,
+    /// While a soft start is owed and the ride is in an ERG block (not paused, not released):
+    /// the block's target in watts the ramp is heading for. The engine decides whether to show
+    /// it (only after a recovered trainer loss).
+    pub soft_start_target_w: Option<u16>,
 }
 
 /// The desired control mode for a tick; `None` leaves the trainer untouched.

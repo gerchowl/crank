@@ -40,6 +40,9 @@ pub struct ErgPolicy {
     link_epoch: u64,
     /// A soft start is owed (see the module docs).
     owed: bool,
+    /// The block target the owed soft start is heading for, set on a tick that sends ERG while
+    /// one is owed and cleared at the start of every `desired` (#329).
+    soft_target: Option<u16>,
     ramp: Option<Ramp>,
     released: bool,
     low: u64,
@@ -80,6 +83,7 @@ impl ErgPolicy {
         Self {
             link_epoch: 0,
             owed: true,
+            soft_target: None,
             ramp: None,
             released: false,
             low: 0,
@@ -166,6 +170,7 @@ impl ErgPolicy {
 
 impl TargetPolicy for ErgPolicy {
     fn desired(&mut self, ctx: &PolicyContext<'_>) -> Option<ControlMode> {
+        self.soft_target = None;
         // A link epoch (any applied transition, or 8 silent ticks) forgets what was learned
         // on the old link and owes a soft start (#231: 0 W until a new-epoch sample with
         // cadence > 0, then five steps). It never re-engages by itself: a release is left
@@ -230,6 +235,7 @@ impl TargetPolicy for ErgPolicy {
 
         let mut command = target;
         if self.owed {
+            self.soft_target = Some(watts(target, max));
             if ctx.flow_start.is_none() {
                 // No torque for a rider who is not pedalling (§7.4, #231). A ramp already
                 // running holds its last step.
@@ -276,6 +282,7 @@ impl TargetPolicy for ErgPolicy {
         PolicyStatus {
             released: self.released,
             compliance: self.compliance.tally(),
+            soft_start_target_w: self.soft_target,
         }
     }
 }
