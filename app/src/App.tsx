@@ -8,6 +8,7 @@ import { Rail } from "./shell/Rail";
 import { KeysDialog } from "./shell/KeysDialog";
 import { StartScreen, type Boot } from "./shell/StartScreen";
 import { useApplyTheme } from "./theme";
+import { Ride } from "./ride/Ride";
 import { Placeholder } from "./views/Placeholder";
 import { Settings } from "./views/Settings";
 import { Workouts } from "./views/Workouts";
@@ -23,7 +24,7 @@ const DEFAULT_VIEWS: ViewRegistry = {
   workouts: Workouts,
   history: soon("History"),
   settings: Settings,
-  ride: soon("Ride"),
+  ride: Ride,
   onboarding: soon("Welcome"),
   resume: soon("Resume your ride"),
 };

@@ -1,0 +1,179 @@
+/* Ride screen grid (DESIGN §6.1, §16.1): every region is fixed by the grid and every changing value sits in a
+   slot that reserves its widest form, so no number moves anything (P4). Sizes come from the type tiers (--t1 …). */
+.ride-root {
+  width: 100%;
+  height: 100vh;
+}
+.ride {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 62fr) minmax(0, 38fr);
+  grid-template-rows: auto minmax(0, 1fr) calc(var(--t3) * 2.6) minmax(
+      96px,
+      22%
+    );
+  grid-template-areas:
+    "bar bar"
+    "hero side"
+    "note note"
+    "overview overview";
+}
+.ride-bar {
+  grid-area: bar;
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
+  min-height: 64px;
+  padding: 0 16px;
+  font-size: var(--t3);
+  border-bottom: 1px solid var(--border);
+}
+.ride-controls {
+  display: flex;
+  gap: 8px;
+}
+.ride-btn {
+  width: 8.5ch;
+  min-height: 48px;
+  white-space: nowrap;
+}
+.ride-times {
+  flex: 1;
+  white-space: nowrap;
+}
+.ride-times [data-slot] {
+  display: inline-block;
+  text-align: right;
+}
+.ride-pill {
+  margin-left: auto;
+  white-space: nowrap;
+  min-width: 14ch;
+  text-align: right;
+}
+.pill-half[data-link="ready"] [aria-hidden] {
+  color: var(--status-good);
+}
+.pill-half[data-link="connecting"] [aria-hidden] {
+  color: var(--status-warning);
+}
+.pill-half[data-link="lost"] {
+  color: var(--status-critical);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.ride-hero {
+  grid-area: hero;
+  display: grid;
+  grid-template-rows: calc(var(--t3) + 10px) minmax(0, 1fr) auto;
+  min-height: 0;
+  padding: 0 16px;
+}
+.hero-row1 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--t3);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.hero-t1 {
+  font-size: var(--t1);
+  line-height: 1;
+  align-self: center;
+  white-space: nowrap;
+}
+.hero-band {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.ride-side {
+  grid-area: side;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  padding: 0 16px;
+  border-left: 1px solid var(--border);
+}
+.coach-cell {
+  border-top: 3px solid var(--border);
+}
+.tile {
+  display: grid;
+  min-width: 0;
+}
+.tile-label {
+  font-size: var(--t3);
+  color: var(--ink-secondary);
+  white-space: nowrap;
+}
+.tile-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+.tile-value {
+  display: inline-block;
+  font-size: var(--t2);
+  line-height: 1.1;
+  text-align: right;
+}
+.tile-unit {
+  font-size: var(--t3);
+  color: var(--ink-secondary);
+}
+.ride-notice {
+  grid-area: note;
+  padding: 0 16px;
+  overflow: hidden;
+  font-size: var(--t3);
+}
+.ride-notice p {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ride-refusal {
+  color: var(--status-critical);
+}
+.ride-overview {
+  grid-area: overview;
+  min-height: 0;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+}
+.ride-chart {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.scrim {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--scrim);
+}
+.confirm {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  display: grid;
+  gap: 12px;
+  font-size: var(--t3);
+}
+.confirm button {
+  min-height: 56px;
+  font-size: var(--t3);
+}

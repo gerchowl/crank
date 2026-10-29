@@ -45,20 +45,63 @@ pub trait FecTransport: Send + Sync + 'static {
     /// Release the peripheral.
     fn disconnect(&self) -> BoxFuture<'static, Result<(), DeviceError>>;
 }
+/// Tracks the cleanups of cancelled connects, so that whoever cancelled one (a reconnect
+/// supervisor shutting down) can wait until the peripheral has really been disconnected,
+/// bounded, before it reports the link as released (ADR-0002 §7.9: "released" means
+/// disconnected). Share one between a driver and the supervisor that cancels its connects.
+#[derive(Clone)]
+pub struct ConnectCleanup(Arc<tokio::sync::watch::Sender<usize>>);
+impl Default for ConnectCleanup {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::watch::channel(0).0))
+    }
+}
+impl ConnectCleanup {
+    /// A new, idle tracker.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub(crate) fn begin(&self) -> CleanupToken {
+        self.0.send_modify(|n| *n += 1);
+        CleanupToken(self.0.clone())
+    }
+    /// Resolves once no cancelled connect is still being cleaned up. Bounded: a cleanup
+    /// is itself bounded (2 s), and this gives up shortly after it.
+    pub async fn settled(&self) {
+        let mut rx = self.0.subscribe();
+        let _ = tokio::time::timeout(
+            DISCONNECT_TIMEOUT + Duration::from_secs(1),
+            rx.wait_for(|n| *n == 0),
+        )
+        .await;
+    }
+}
+/// One cleanup in flight; ends when dropped.
+pub(crate) struct CleanupToken(Arc<tokio::sync::watch::Sender<usize>>);
+impl Drop for CleanupToken {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n = n.saturating_sub(1));
+    }
+}
 /// Disconnects a half-open peripheral if setup is cancelled; shared with the HRS driver.
+/// Armed before the transport's `connect`, because a cancellation during its
+/// `discover_services`/`subscribe` leaves the peripheral connected. The disconnect is
+/// bounded, and the admission guard is held until it ends and then freed.
 pub(crate) struct ConnectGuard(
     pub(crate) Option<Cleanup>,
     pub(crate) Option<tokio::sync::OwnedMutexGuard<()>>,
     pub(crate) tokio::runtime::Handle,
+    pub(crate) Option<CleanupToken>,
 );
 pub(crate) type Cleanup = Box<dyn FnOnce() -> BoxFuture<'static, Result<(), DeviceError>> + Send>;
 impl Drop for ConnectGuard {
     fn drop(&mut self) {
         if let Some(cleanup) = self.0.take() {
-            let guard = self.1.take();
+            let (guard, token) = (self.1.take(), self.3.take());
             self.2.spawn(async move {
-                let _guard = guard;
-                if let Err(error) = cleanup().await {
+                let (_guard, _token) = (guard, token);
+                if let Err(error) = disconnect_bounded(cleanup()).await {
                     tracing::warn!(%error, "cancelled connection cleanup failed");
                 }
             });
@@ -73,6 +116,7 @@ pub struct FecTrainer {
     clock: Arc<dyn Clock>,
     capture: Option<Arc<Capture>>,
     connecting: Arc<tokio::sync::Mutex<()>>,
+    cleanup: ConnectCleanup,
 }
 impl FecTrainer {
     /// Build a driver over btleplug, a test fake, or replay.
@@ -82,7 +126,14 @@ impl FecTrainer {
             clock,
             capture: None,
             connecting: Arc::default(),
+            cleanup: ConnectCleanup::default(),
         }
+    }
+    /// Report the cleanups of cancelled connects to `cleanup` (see [`ConnectCleanup`]).
+    #[must_use]
+    pub fn with_cleanup(mut self, cleanup: ConnectCleanup) -> Self {
+        self.cleanup = cleanup;
+        self
     }
     /// Attach a TRACE capture. Diagnostic failures emit Fault and never stop BLE.
     #[must_use]
@@ -100,12 +151,13 @@ impl TrainerDriver for FecTrainer {
         dev: &DeviceRef,
         rider: RiderConfig,
     ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
-        let (transport, clock, capture, guard, dev) = (
+        let (transport, clock, capture, guard, dev, tracker) = (
             self.transport.clone(),
             self.clock.clone(),
             self.capture.clone(),
             self.connecting.clone(),
             dev.clone(),
+            self.cleanup.clone(),
         );
         Box::pin(async move {
             let guard = guard
@@ -117,13 +169,23 @@ impl TrainerDriver for FecTrainer {
                 wheel_m: rider.wheel_m,
             })
             .map_err(|e| crate::protocol(e, ProtocolErrorKind::Encode))?;
-            let (info, mut notifications) = transport.connect(dev, clock.clone()).await?;
+            // Armed before the connect: dropped during its service discovery or subscribe,
+            // the peripheral is still connected and must be disconnected.
             let release = transport.clone();
             let mut cleanup = ConnectGuard(
                 Some(Box::new(move || release.disconnect())),
                 Some(guard),
                 tokio::runtime::Handle::current(),
+                Some(tracker.begin()),
             );
+            let (info, mut notifications) = match transport.connect(dev, clock.clone()).await {
+                Ok(connected) => connected,
+                Err(error) => {
+                    // The transport cleans up after its own failure.
+                    cleanup.0 = None;
+                    return Err(error);
+                }
+            };
             let (events, receiver) = mpsc::channel(256);
             let (commands, control) = mpsc::channel(64);
             let result = async {
@@ -155,7 +217,7 @@ impl TrainerDriver for FecTrainer {
             let caps = match result {
                 Ok(caps) => caps,
                 Err(error) => {
-                    let disconnected = transport.disconnect().await;
+                    let disconnected = disconnect_bounded(transport.disconnect()).await;
                     cleanup.0 = None;
                     return Err(disconnected.err().map_or(error.clone(), |other| {
                         DeviceError::ConnectFailed(format!("{error}; disconnect failed: {other}"))

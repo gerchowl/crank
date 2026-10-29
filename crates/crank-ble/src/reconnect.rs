@@ -7,7 +7,7 @@
 //! never sends a control mode itself: the engine re-issues `SetMode` on
 //! `Ready` (one owner of control state). Rider configuration is re-applied
 //! because every attempt calls the inner driver's `connect` with it.
-use crate::Clock;
+use crate::{Clock, ConnectCleanup};
 use crank_devices::{
     DeviceError, DeviceRef, HeartRateDriver, HeartRateLink, HrEvent, LinkState, MonoTime,
     RiderConfig, TrainerCommand, TrainerDriver, TrainerEvent, TrainerLink,
@@ -75,6 +75,7 @@ pub struct Reconnecting<D> {
     inner: Arc<D>,
     clock: Arc<dyn Clock>,
     gate: RideGate,
+    cleanup: ConnectCleanup,
 }
 impl<D: TrainerDriver> Reconnecting<D> {
     /// Wrap `inner`; `clock` times the backoff and must be the engine's clock.
@@ -83,7 +84,16 @@ impl<D: TrainerDriver> Reconnecting<D> {
             inner: Arc::new(inner),
             clock,
             gate,
+            cleanup: ConnectCleanup::default(),
         }
+    }
+    /// Wait for `cleanup` before a shutdown that cancelled a reconnect attempt reports the
+    /// link as released: pass the tracker the inner driver reports its cancelled connects
+    /// to, so "released" means the peripheral was disconnected (ADR-0002 §7.9).
+    #[must_use]
+    pub fn with_cleanup(mut self, cleanup: ConnectCleanup) -> Self {
+        self.cleanup = cleanup;
+        self
     }
 }
 impl<D: TrainerDriver> TrainerDriver for Reconnecting<D> {
@@ -95,11 +105,12 @@ impl<D: TrainerDriver> TrainerDriver for Reconnecting<D> {
         dev: &DeviceRef,
         rider: RiderConfig,
     ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
-        let (inner, clock, dev, gate) = (
+        let (inner, clock, dev, gate, cleanup) = (
             self.inner.clone(),
             self.clock.clone(),
             dev.clone(),
             self.gate.clone(),
+            self.cleanup.clone(),
         );
         Box::pin(async move {
             let link = inner.connect(&dev, rider).await?;
@@ -107,7 +118,7 @@ impl<D: TrainerDriver> TrainerDriver for Reconnecting<D> {
             let (control, commands) = mpsc::channel(64);
             let (events_tx, events) = mpsc::channel(256);
             tokio::spawn(supervise_trainer(
-                inner, clock, gate, dev, rider, link, commands, events_tx,
+                inner, clock, gate, cleanup, dev, rider, link, commands, events_tx,
             ));
             Ok(TrainerLink {
                 info,
@@ -123,6 +134,7 @@ async fn supervise_trainer<D: TrainerDriver>(
     inner: Arc<D>,
     clock: Arc<dyn Clock>,
     gate: RideGate,
+    cleanup: ConnectCleanup,
     dev: DeviceRef,
     rider: RiderConfig,
     mut link: TrainerLink,
@@ -184,10 +196,16 @@ async fn supervise_trainer<D: TrainerDriver>(
             }
             tracing::info!(attempt, "reconnecting trainer");
             let connected = tokio::select! {
-                result = inner.connect(&dev, rider) => result,
-                () = released(&mut commands) => return,
-                () = gate.inactive() => return,
-                () = events.closed() => return,
+                result = inner.connect(&dev, rider) => Some(result),
+                () = released(&mut commands) => None,
+                () = gate.inactive() => None,
+                () = events.closed() => None,
+            };
+            // Cancelled mid-connect: the dropped attempt disconnects its peripheral in the
+            // background; "released" (this task ending) waits for that.
+            let Some(connected) = connected else {
+                cleanup.settled().await;
+                return;
             };
             match connected {
                 Ok(link) => break link,
@@ -222,6 +240,7 @@ pub struct ReconnectingHr<D> {
     inner: Arc<D>,
     clock: Arc<dyn Clock>,
     gate: RideGate,
+    cleanup: ConnectCleanup,
 }
 impl<D: HeartRateDriver> ReconnectingHr<D> {
     /// Wrap `inner`; `clock` times the backoff and must be the engine's clock.
@@ -230,22 +249,34 @@ impl<D: HeartRateDriver> ReconnectingHr<D> {
             inner: Arc::new(inner),
             clock,
             gate,
+            cleanup: ConnectCleanup::default(),
         }
+    }
+    /// Wait for `cleanup` before a shutdown that cancelled a reconnect attempt reports the
+    /// link as released: pass the tracker the inner driver reports its cancelled connects
+    /// to, so "released" means the peripheral was disconnected (ADR-0002 §7.9).
+    #[must_use]
+    pub fn with_cleanup(mut self, cleanup: ConnectCleanup) -> Self {
+        self.cleanup = cleanup;
+        self
     }
 }
 impl<D: HeartRateDriver> HeartRateDriver for ReconnectingHr<D> {
     fn connect(&self, dev: &DeviceRef) -> BoxFuture<'static, Result<HeartRateLink, DeviceError>> {
-        let (inner, clock, dev, gate) = (
+        let (inner, clock, dev, gate, cleanup) = (
             self.inner.clone(),
             self.clock.clone(),
             dev.clone(),
             self.gate.clone(),
+            self.cleanup.clone(),
         );
         Box::pin(async move {
             let link = inner.connect(&dev).await?;
             let info = link.info.clone();
             let (events_tx, events) = mpsc::channel(64);
-            tokio::spawn(supervise_hr(inner, clock, gate, dev, link, events_tx));
+            tokio::spawn(supervise_hr(
+                inner, clock, gate, cleanup, dev, link, events_tx,
+            ));
             Ok(HeartRateLink { info, events })
         })
     }
@@ -260,6 +291,7 @@ async fn supervise_hr<D: HeartRateDriver>(
     inner: Arc<D>,
     clock: Arc<dyn Clock>,
     gate: RideGate,
+    cleanup: ConnectCleanup,
     dev: DeviceRef,
     mut link: HeartRateLink,
     events: mpsc::Sender<HrEvent>,
@@ -303,9 +335,13 @@ async fn supervise_hr<D: HeartRateDriver>(
             }
             tracing::info!(attempt, "reconnecting heart-rate strap");
             let connected = tokio::select! {
-                result = inner.connect(&dev) => result,
-                () = gate.inactive() => return,
-                () = events.closed() => return,
+                result = inner.connect(&dev) => Some(result),
+                () = gate.inactive() => None,
+                () = events.closed() => None,
+            };
+            let Some(connected) = connected else {
+                cleanup.settled().await;
+                return;
             };
             match connected {
                 Ok(link) => break link,

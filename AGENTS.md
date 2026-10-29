@@ -46,6 +46,10 @@ dialog says so and the process exits with status 1. Tauri rejects malformed argu
 `coach_decisions`, #309, gated on #243) is added in two places: `state.ts` (field, `applyFrame` branch, `apply…`) and
 `Requery.run` in `client.ts`. ESLint forbids `structuredClone` in `src/stream/` (stream data is plain JSON). Tests use
 `mockIPC` with `src/stream/testBackend.ts`; `app/e2e/specs/stream.e2e.mjs` is the real-desktop freeze check, run by `just e2e` only.
+The ride screen (`app/src/ride/`, #96 MVP) takes one `RideSession` per `ride_load`: the loader calls `beginRide(outcome.data)` (the previous session is
+disposed), `useSession()` returns it, and the view mounts `StreamProvider` + `RideTiers` around a fixed CSS grid whose changing values sit in slots that
+reserve their widest form. A finished ride routes once to `history` with the ride id until the summary route exists (#106). Its test backend
+(`rideBackend.ts`) lists every modelled refusal with its core file:line.
 `just dev` starts the window on its own data dir (`./.crank-dev`, so it never shares `ride.lock` with the installed app; override with
 `CRANK_DATA_DIR`; `CRANK_SIM=1 just dev` rides without hardware). `just bundle` (sage only, outside the sandbox) builds
 `.#crank-app` (an unsigned, Nix-assembled `crank.app`), signs a copy inside-out with the local `nix-tcc`
