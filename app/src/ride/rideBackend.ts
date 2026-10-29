@@ -17,6 +17,9 @@
 //               ends a started ride (id), unloads an unstarted one (null), a finished one answers its id again  core.rs:1037-1049
 //   ride_end    answers `{ rideId, forced }`: an engine that is gone or stuck is ended by force (`forced: true`, the ride's id,
 //               recorded as aborted) instead of failing  crank-core core.rs `end_ride` / `force_end` (#331)
+//   every other ride_* command, engine wedged  engine_unresponsive  (the core's text)  after the 1 s bound, core.rs
+//               `bounded` / `REQUEST_TIMEOUT` via `ride_cmd` (#351); checked after "no ride loaded". The stream commands
+//               answer the same (stream/testBackend.ts `truth.unresponsive`). `ride_end` ends such a ride by force.
 //   every other ride_* command, engine task ended  internal  "engine stopped"  `EngineHandle::send` engine.rs:156,193-194 via
 //               core.rs:971, mapped error.rs:69; checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
@@ -32,7 +35,11 @@ import type {
   WorkoutBlock,
   WorkoutDetail,
 } from "../bindings";
-import { installBackend, status as makeStatus } from "../stream/testBackend";
+import {
+  UNRESPONSIVE,
+  installBackend,
+  status as makeStatus,
+} from "../stream/testBackend";
 
 export const block = (
   startS: number,
@@ -100,6 +107,8 @@ export interface RideWorld {
   recordFails: boolean;
   /** The engine task has ended: every command that reaches it answers `internal`. */
   engineStopped: boolean;
+  /** The engine is wedged: every command and stream request answers `engine_unresponsive` (#351). */
+  engineUnresponsive: boolean;
   /** Publish the status frame after a command (the core does; false models the frame still on its way). */
   publishes: boolean;
   blocks: WorkoutBlock[];
@@ -136,10 +145,13 @@ export function installRide(over: Partial<RideWorld> = {}) {
     cap: "none",
     recordFails: false,
     engineStopped: false,
+    engineUnresponsive: false,
     publishes: true,
     blocks: BLOCKS,
     ...over,
   };
+  // one engine: the stream commands are wedged with it
+  base.truth.unresponsive = world.engineUnresponsive;
   const calls: { cmd: string; args: Record<string, unknown> }[] = [];
   const holds = new Map<string, Promise<void>[]>();
 
@@ -212,6 +224,8 @@ export function installRide(over: Partial<RideWorld> = {}) {
   };
   const reach = () => {
     if (world.phase === "none") throw err("conflict", "no ride loaded");
+    if (world.engineUnresponsive)
+      throw err("engine_unresponsive", UNRESPONSIVE);
     if (world.engineStopped) throw err("internal", "engine stopped");
   };
   const active = () => {
@@ -263,7 +277,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
           if (id === null) throw err("conflict", "no ride loaded");
           return { rideId: id, forced: false };
         }
-        if (world.engineStopped) {
+        if (world.engineStopped || world.engineUnresponsive) {
           // Forced: the core ended the ride itself; it is recorded, as aborted.
           world.phase = "finished";
           publish();
@@ -339,6 +353,11 @@ export function installRide(over: Partial<RideWorld> = {}) {
     calls,
     count: (cmd: string) => calls.filter((c) => c.cmd === cmd).length,
     publish,
+    /** The engine wedges (#351): from now on the ride and stream commands answer `engine_unresponsive`. */
+    wedge(): void {
+      world.engineUnresponsive = true;
+      base.truth.unresponsive = true;
+    },
     /** Delay the answer of the next call of `cmd` (its effect on the core is at the call) until the returned function runs. */
     hold(cmd: string): () => void {
       let release = () => {};

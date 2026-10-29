@@ -71,6 +71,14 @@ const END_MODE_TIMEOUT: Duration = Duration::from_millis(500);
 const ABORT_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
 /// Longest a blocking store call on the end path is waited for.
 const STORE_TIMEOUT: Duration = Duration::from_millis(500);
+/// Longest the core waits for the engine to take or answer any other request: `Load`, the
+/// ride commands and the stream requests (#351). A healthy engine answers between two ticks;
+/// one that does not is wedged, and the caller gets [`ErrorCode::EngineUnresponsive`] instead
+/// of a command that never returns. None of these waits holds the state lock, so End is never
+/// behind one of them. The three `Stop`s (`ride_end`, the replacing `ride_load`, `discard`) are
+/// the only engine requests under the lock, by design (no `ride_start` may reach the engine
+/// first) and bounded by `STOP_TIMEOUT`.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 /// Default scan length of `devices_scan`.
 const SCAN_FOR: Duration = Duration::from_secs(5);
 /// Rider and bike mass until athlete inputs exist (#247).
@@ -477,6 +485,18 @@ async fn driver_closed<E>(
         while let Some(event) = events.recv().await {
             tap(&event);
         }
+    }
+}
+/// The engine's answer to a request, waited for at most [`REQUEST_TIMEOUT`].
+async fn bounded<T, E: Into<ApiError>>(
+    request: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, ApiError> {
+    match tokio::time::timeout(REQUEST_TIMEOUT, request).await {
+        Ok(answer) => answer.map_err(Into::into),
+        Err(_) => Err(ApiError::new(
+            ErrorCode::EngineUnresponsive,
+            "the ride engine did not answer in time; End still ends the ride",
+        )),
     }
 }
 /// Step 2 of [`Core::force_end`].
@@ -1184,7 +1204,8 @@ impl Core {
     ///
     /// # Errors
     /// `Conflict` if a ride is in progress; `NotFound` for an unknown workout;
-    /// `DeviceUnavailable` without a paired or reachable trainer.
+    /// `DeviceUnavailable` without a paired or reachable trainer; `EngineUnresponsive` if the
+    /// new engine does not take the ride within 1 s (its devices are then released).
     pub async fn ride_load(&self, workout_id: Option<String>) -> Result<RideLoaded, ApiError> {
         // Nothing is touched until the request is known to be good: a failed load leaves
         // the previous status as it was.
@@ -1386,14 +1407,29 @@ impl Core {
             inner: recorder,
             block: self.0.block_write.clone(),
         };
-        handle
-            .send(EngineCmd::Load(RideSetup {
-                blocks: compiled.blocks,
-                recorder: Box::new(recorder),
-                // The health cap is derived from the athlete profile (#244).
-                cap_w: None,
-            }))
-            .await?;
+        let loaded = bounded(handle.send(EngineCmd::Load(RideSetup {
+            blocks: compiled.blocks,
+            recorder: Box::new(recorder),
+            // The health cap is derived from the athlete profile (#244).
+            cap_w: None,
+        })))
+        .await;
+        if let Err(e) = loaded {
+            if e.code == ErrorCode::EngineUnresponsive {
+                // A wedged engine holds the links it was built with: the core cuts it off
+                // and releases them itself, as a forced end does, so the next load finds the
+                // devices free.
+                release_links(&ride_id, &hold, &takeover);
+                task.abort();
+                release.wait().await;
+                return Err(ApiError::new(
+                    ErrorCode::EngineUnresponsive,
+                    "the ride engine did not take the ride in time; its devices were \
+                     released, try again",
+                ));
+            }
+            return Err(e);
+        }
         Ok((
             Session {
                 handle,
@@ -1419,13 +1455,15 @@ impl Core {
             .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "no ride loaded"))
     }
     async fn ride_cmd(&self, cmd: EngineCmd) -> Result<(), ApiError> {
-        Ok(self.engine().await?.send(cmd).await?)
+        let engine = self.engine().await?;
+        bounded(engine.send(cmd)).await
     }
     /// Start the loaded ride.
     ///
     /// # Errors
     /// `Conflict` without a loaded ride or in the wrong state; `DeviceUnavailable` while
-    /// the trainer link is not ready; `Storage` if the record cannot be opened.
+    /// the trainer link is not ready; `Storage` if the record cannot be opened;
+    /// `EngineUnresponsive` if the engine does not answer within 1 s (`REQUEST_TIMEOUT`).
     pub async fn ride_start(&self) -> Result<(), ApiError> {
         self.ensure_start_allowed()?;
         self.ride_cmd(EngineCmd::Start).await
@@ -1433,21 +1471,21 @@ impl Core {
     /// Pause the ride (the rider's pause).
     ///
     /// # Errors
-    /// `Conflict` without a ride in progress.
+    /// `Conflict` without a ride in progress; `EngineUnresponsive` if the engine does not answer within 1 s (`REQUEST_TIMEOUT`).
     pub async fn ride_pause(&self) -> Result<(), ApiError> {
         self.ride_cmd(EngineCmd::Pause).await
     }
     /// End the rider's pause.
     ///
     /// # Errors
-    /// `Conflict` unless paused by the rider.
+    /// `Conflict` unless paused by the rider; `EngineUnresponsive` if the engine does not answer within 1 s (`REQUEST_TIMEOUT`).
     pub async fn ride_resume(&self) -> Result<(), ApiError> {
         self.ride_cmd(EngineCmd::Resume).await
     }
     /// Jump to the next block now.
     ///
     /// # Errors
-    /// `Conflict` without a ride in progress.
+    /// `Conflict` without a ride in progress; `EngineUnresponsive` if the engine does not answer within 1 s (`REQUEST_TIMEOUT`).
     pub async fn ride_skip(&self) -> Result<(), ApiError> {
         self.ride_cmd(EngineCmd::SkipBlock).await
     }
@@ -1690,26 +1728,40 @@ impl Core {
     /// other stream command names the same window and is refused for any other.
     ///
     /// # Errors
-    /// `Conflict` without a loaded ride, or with 16 streams open.
+    /// `Conflict` without a loaded ride, with 16 streams open, or when the ride was replaced
+    /// while the stream opened; `EngineUnresponsive` if the engine does not answer.
     pub async fn open_stream(
         &self,
         window: Option<String>,
         sink: impl FrameSink,
     ) -> Result<StreamId, ApiError> {
-        let mut st = self.0.state.lock().await;
-        let session = st
-            .session
-            .as_mut()
-            .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "no ride loaded"))?;
-        let (engine_id, mut frames) = session.handle.open_stream(window.clone()).await?;
+        let (engine, ride_id) = {
+            let st = self.0.state.lock().await;
+            let session = st
+                .session
+                .as_ref()
+                .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "no ride loaded"))?;
+            (session.handle.clone(), session.ride_id.clone())
+        };
+        // Not under the state lock (#351): End must never wait behind the engine's answer.
+        let (engine_id, mut frames) = bounded(engine.open_stream(window.clone())).await?;
         let id = loop {
             let n = self.0.next_stream.fetch_add(1, Ordering::Relaxed);
             if n != 0 {
                 break StreamId(n);
             }
         };
-        session.streams.insert(id, (engine_id, window));
-        drop(st);
+        {
+            let mut st = self.0.state.lock().await;
+            // The ride may have ended or been replaced meanwhile; dropping `frames` then makes
+            // its engine reap the stream.
+            let session = st
+                .session
+                .as_mut()
+                .filter(|s| s.ride_id == ride_id)
+                .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "no ride loaded"))?;
+            session.streams.insert(id, (engine_id, window));
+        }
         tokio::spawn(async move {
             while let Some(frame) = frames.recv().await {
                 if sink.send(frame).is_err() {
@@ -1743,7 +1795,8 @@ impl Core {
     ///
     /// # Errors
     /// `NotFound` for a stream `window` does not own, `Conflict` beyond 64
-    /// subscriptions, `InvalidInput` for a rate or filter out of range.
+    /// subscriptions, `InvalidInput` for a rate or filter out of range;
+    /// `EngineUnresponsive` if the engine does not answer within 1 s (`REQUEST_TIMEOUT`).
     pub async fn subscribe(
         &self,
         window: Option<&str>,
@@ -1752,12 +1805,12 @@ impl Core {
         opts: SubscribeOpts,
     ) -> Result<SubId, ApiError> {
         let (engine, id) = self.owned(window, stream).await?;
-        Ok(engine.stream_subscribe(id, metric, opts).await?)
+        bounded(engine.stream_subscribe(id, metric, opts)).await
     }
     /// End a subscription of a stream of `window`.
     ///
     /// # Errors
-    /// `NotFound`.
+    /// `NotFound`; `EngineUnresponsive` if the engine does not answer within 1 s (`REQUEST_TIMEOUT`).
     pub async fn unsubscribe(
         &self,
         window: Option<&str>,
@@ -1765,12 +1818,12 @@ impl Core {
         sub: SubId,
     ) -> Result<(), ApiError> {
         let (engine, id) = self.owned(window, stream).await?;
-        Ok(engine.stream_unsubscribe(id, sub).await?)
+        bounded(engine.stream_unsubscribe(id, sub)).await
     }
     /// The window has applied every frame up to `seq`.
     ///
     /// # Errors
-    /// `NotFound` for a stream `window` does not own.
+    /// `NotFound` for a stream `window` does not own; `EngineUnresponsive` if the engine does not answer within 1 s (`REQUEST_TIMEOUT`).
     pub async fn stream_ack(
         &self,
         window: Option<&str>,
@@ -1778,28 +1831,36 @@ impl Core {
         seq: u32,
     ) -> Result<(), ApiError> {
         let (engine, id) = self.owned(window, stream).await?;
-        Ok(engine.stream_ack(id, seq).await?)
+        bounded(engine.stream_ack(id, seq)).await
     }
     /// Latest sample of every subscription, the status and the links.
     ///
     /// # Errors
-    /// `NotFound` for a stream `window` does not own.
+    /// `NotFound` for a stream `window` does not own; `EngineUnresponsive` if the engine does not answer within 1 s (`REQUEST_TIMEOUT`).
     pub async fn stream_snapshot(
         &self,
         window: Option<&str>,
         stream: StreamId,
     ) -> Result<StreamSnapshot, ApiError> {
         let (engine, id) = self.owned(window, stream).await?;
-        Ok(engine.stream_snapshot(id).await?)
+        bounded(engine.stream_snapshot(id)).await
     }
-    /// A window was destroyed: drop its streams.
+    /// A window was destroyed: drop its streams. The engine is told without the state lock
+    /// and for at most 1 s (`REQUEST_TIMEOUT`; its request channel may be full, #351); if it does
+    /// not take the request, the window's streams still end, as their sink fails.
     pub async fn close_window(&self, window: String) {
-        let mut st = self.0.state.lock().await;
-        if let Some(session) = st.session.as_mut() {
+        let engine = {
+            let mut st = self.0.state.lock().await;
+            let Some(session) = st.session.as_mut() else {
+                return;
+            };
             session
                 .streams
                 .retain(|_, (_, owner)| owner.as_deref() != Some(window.as_str()));
-            let _ = session.handle.close_window(window).await;
+            session.handle.clone()
+        };
+        if let Err(e) = bounded(engine.close_window(window)).await {
+            tracing::warn!(%e, "the engine did not take a window's close");
         }
     }
 
@@ -3009,6 +3070,189 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn an_engine_thread_blocked_mid_ride_does_not_hold_end_on_a_current_thread_core() {
         an_engine_thread_blocked_mid_ride(EngineHost::Thread).await;
+    }
+    /// A started ride on its own engine thread (real time), with a stream of window `main` and a
+    /// power subscription on it, whose engine thread is then blocked for `wedge` in a record
+    /// write, as a slow store would block it.
+    async fn a_wedged_ride(
+        dir: &std::path::Path,
+        radio: &FakeRadio,
+        wedge: Duration,
+    ) -> (Core, RideLoaded, StreamId, SubId) {
+        let core = open_on(dir, radio, EngineHost::Thread);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        until(Duration::from_secs(5), || {
+            radio.disconnects.lock().unwrap().len() == 1
+        })
+        .await;
+        radio.disconnects.lock().unwrap().clear();
+        let loaded = core
+            .ride_load(Some("builtin-sensor-check".into()))
+            .await
+            .unwrap();
+        core.ride_start().await.unwrap();
+        let stream = core
+            .open_stream(Some("main".into()), |_| Ok(()))
+            .await
+            .unwrap();
+        let opts = SubscribeOpts {
+            rate_hz: 1.0,
+            filters: Vec::new(),
+        };
+        let sub = core
+            .subscribe(Some("main"), stream, MetricId::Power, opts)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let block = core.0.block_write.clone();
+        *block.next.lock().unwrap() = Some(wedge);
+        until(Duration::from_secs(3), || {
+            block.blocked.load(Ordering::SeqCst)
+        })
+        .await;
+        (core, loaded, stream, sub)
+    }
+    /// Press End on a wedged ride while `pending` is under way: End answers inside a fixed
+    /// 2 s, by force, and the next ride loads.
+    async fn end_beside(core: &Core, loaded: &RideLoaded) {
+        // the pending request has reached the engine (and, before #351, taken the state lock)
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let t = std::time::Instant::now();
+        let end = tokio::time::timeout(Duration::from_secs(10), core.ride_end_outcome())
+            .await
+            .expect("End answers")
+            .unwrap();
+        let took = t.elapsed();
+        // a fixed number, not derived from the constants under test
+        assert!(took <= Duration::from_secs(2), "End took {took:?}");
+        assert_eq!(end, RideEnd::ForcedEnd(loaded.ride_id.clone()));
+        core.ride_load(None).await.unwrap();
+    }
+    /// The request answered `EngineUnresponsive` inside a fixed 2 s of `t`.
+    fn assert_unresponsive<T: std::fmt::Debug>(
+        what: &str,
+        answer: Result<T, ApiError>,
+        t: std::time::Instant,
+    ) {
+        assert!(
+            t.elapsed() <= Duration::from_secs(2),
+            "{what} took {:?}",
+            t.elapsed()
+        );
+        let e = answer.expect_err(what);
+        assert_eq!(e.code, ErrorCode::EngineUnresponsive, "{what}: {e:?}");
+    }
+    /// #351: a window that (re)opens its stream while the engine thread is wedged (a webview
+    /// reload) is told the engine does not answer, and End is not held behind it: the state
+    /// lock is not held across the engine's answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stream_opened_while_the_engine_is_wedged_does_not_hold_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let (core, loaded, _, _) = a_wedged_ride(dir.path(), &radio, Duration::from_secs(6)).await;
+        let t = std::time::Instant::now();
+        let opening = tokio::spawn({
+            let core = core.clone();
+            async move { core.open_stream(Some("main".into()), |_| Ok(())).await }
+        });
+        end_beside(&core, &loaded).await;
+        let opened = tokio::time::timeout(Duration::from_secs(10), opening)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_unresponsive("open_stream", opened, t);
+    }
+    /// #351: a destroyed window whose close finds the engine's request channel full (the
+    /// engine is wedged) does not hold End either.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_window_closed_on_a_full_channel_of_a_wedged_engine_does_not_hold_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let (core, loaded, stream, _) =
+            a_wedged_ride(dir.path(), &radio, Duration::from_secs(6)).await;
+        // the engine's stream requests queue up to 64; acks are taken without an answer
+        for seq in 0..64 {
+            core.stream_ack(Some("main"), stream, seq).await.unwrap();
+        }
+        let t = std::time::Instant::now();
+        let closing = tokio::spawn({
+            let core = core.clone();
+            async move { core.close_window("main".into()).await }
+        });
+        end_beside(&core, &loaded).await;
+        tokio::time::timeout(Duration::from_secs(10), closing)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(t.elapsed() <= Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+    /// #351: every other request the core sends a wedged engine answers `EngineUnresponsive`
+    /// within its bound instead of waiting for the engine, and End still works beside them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn every_request_to_a_wedged_engine_is_answered_within_its_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let (core, loaded, stream, sub) =
+            a_wedged_ride(dir.path(), &radio, Duration::from_secs(6)).await;
+        for seq in 0..64 {
+            core.stream_ack(Some("main"), stream, seq).await.unwrap();
+        }
+        let main = Some("main");
+        let opts = SubscribeOpts {
+            rate_hz: 1.0,
+            filters: Vec::new(),
+        };
+        let t = std::time::Instant::now();
+        let (pause, resume, skip, start, subscribe, unsubscribe, snapshot, ack) = tokio::join!(
+            core.ride_pause(),
+            core.ride_resume(),
+            core.ride_skip(),
+            core.ride_start(),
+            core.subscribe(main, stream, MetricId::Cadence, opts),
+            core.unsubscribe(main, stream, sub),
+            core.stream_snapshot(main, stream),
+            // the request channel is full
+            core.stream_ack(main, stream, 64),
+        );
+        assert_unresponsive("ride_pause", pause, t);
+        assert_unresponsive("ride_resume", resume, t);
+        assert_unresponsive("ride_skip", skip, t);
+        assert_unresponsive("ride_start", start, t);
+        assert_unresponsive("subscribe", subscribe, t);
+        assert_unresponsive("unsubscribe", unsubscribe, t);
+        assert_unresponsive("stream_snapshot", snapshot, t);
+        assert_unresponsive("stream_ack", ack, t);
+        end_beside(&core, &loaded).await;
+    }
+    /// #351: an engine that does not take its ride (`Load`) fails the load within the bound,
+    /// with the devices it was built with released by the core, so the next load works.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_load_the_engine_does_not_take_fails_within_its_bound_and_releases_the_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open_on(dir.path(), &radio, EngineHost::Thread);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        until(Duration::from_secs(5), || {
+            radio.disconnects.lock().unwrap().len() == 1
+        })
+        .await;
+        radio.disconnects.lock().unwrap().clear();
+        stall_engine(&core);
+        let t = std::time::Instant::now();
+        let loaded = tokio::time::timeout(Duration::from_secs(10), core.ride_load(None))
+            .await
+            .expect("the load answers");
+        assert_unresponsive("ride_load", loaded, t);
+        assert_eq!(radio.disconnects.lock().unwrap().len(), 1, "released");
+        let status = core.ride_status().await.unwrap();
+        assert!(!status.loading && !status.status.loaded);
+        core.0.stall.release();
+        core.ride_load(None).await.unwrap();
+        core.ride_start().await.unwrap();
     }
     /// #331: a stuck engine does not wedge the replacing `ride_load` or `discard` either.
     #[tokio::test(start_paused = true)]

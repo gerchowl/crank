@@ -105,6 +105,35 @@ describe("useSubscribe", () => {
     expect(backend.liveSubs()).toBe(0);
   });
 
+  test("a wedged engine's open is the stream's typed engine_unresponsive, shown on the subscription too and not retried (#351)", async () => {
+    const { backend, wrapper } = setup();
+    backend.truth.unresponsive = true;
+    const { result } = renderHook(() => useRide(), { wrapper });
+    await waitFor(() =>
+      expect(result.current.error?.code).toBe("engine_unresponsive"),
+    );
+    expect(result.current.sub.error?.code).toBe("engine_unresponsive");
+    await settle();
+    expect(backend.count("open_stream")).toBe(1);
+    expect(backend.count("stream_subscribe")).toBe(0);
+  });
+
+  test("an engine that wedges after the open: a subscribe's engine_unresponsive becomes the stream's error (#351)", async () => {
+    const { backend, wrapper } = setup();
+    const first = renderHook(() => useRide(), { wrapper });
+    await ready(backend);
+    expect(first.result.current.error).toBeNull();
+    backend.truth.unresponsive = true;
+    const second = renderHook(() => useRide("cadence"), { wrapper });
+    await waitFor(() =>
+      expect(second.result.current.sub.error?.code).toBe("engine_unresponsive"),
+    );
+    expect(first.result.current.error?.code).toBe("engine_unresponsive");
+    await settle();
+    expect(backend.count("stream_subscribe")).toBe(2);
+    expect(backend.count("open_stream")).toBe(1);
+  });
+
   test("a gap sample is null, not the previous value", async () => {
     const { backend, wrapper } = setup();
     const { result } = renderHook(() => useRide(), { wrapper });

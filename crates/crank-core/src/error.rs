@@ -26,6 +26,10 @@ pub enum ErrorCode {
     Storage,
     /// A bug or an unexpected internal state.
     Internal,
+    /// The ride engine did not take or answer the request in time (it is wedged, #351): the
+    /// request's outcome is unknown, it may still apply. End always works: it ends a ride
+    /// whose engine does not answer by force.
+    EngineUnresponsive,
 }
 
 /// A failed command: a code plus a human-readable message.
@@ -197,6 +201,10 @@ mod tests {
         assert_eq!(
             code(StreamError::InvalidRate.into()),
             ErrorCode::InvalidInput
+        );
+        assert_eq!(
+            serde_json::to_value(ErrorCode::EngineUnresponsive).unwrap(),
+            serde_json::json!("engine_unresponsive")
         );
         assert_eq!(
             code(CompileError::NonFinite.into()),
