@@ -399,6 +399,7 @@ const INSTALLED: [&str; 4] = ["page_load", "window_event", "menu", "menu_event"]
 #[cfg(not(target_os = "macos"))]
 const INSTALLED: [&str; 2] = ["page_load", "window_event"];
 
+#[cfg(target_os = "macos")]
 fn bare_app() -> tauri::App<MockRuntime> {
     mock_builder()
         .build(mock_context(noop_assets()))

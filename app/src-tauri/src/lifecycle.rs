@@ -234,6 +234,10 @@ pub fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     if let Some(MenuItemKind::Submenu(application)) = menu.items()?.into_iter().next() {
         let builtin = PredefinedMenuItem::quit(app, None)?.text()?;
         replace_quit(&Application(app, application), &builtin)?;
+    } else {
+        tracing::warn!(
+            "menu: the first default menu item is not the application submenu; keeping the default menu"
+        );
     }
     Ok(menu)
 }
