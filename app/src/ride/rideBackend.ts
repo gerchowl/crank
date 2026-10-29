@@ -29,6 +29,7 @@ import type {
   ApiError,
   LinkChange,
   Phase,
+  StreamCommanded,
   StreamPauseReason,
   StreamRideState,
   StreamStatus,
@@ -101,6 +102,18 @@ export interface RideWorld {
   /** Length of the last loss and when it ended; reported only while not lost (the next loss clears them). */
   gapS: number | null;
   reconnectedAtS: number | null;
+  /** The ERG watts the engine last sent while it is sending ERG (its soft start, steady target or ramp step); `null`: the current block's first planned watt, which is what a steady ERG block sends. */
+  commandedW: number | null;
+  /** Resume has been answered and published, but the tick that sends the resumed mode has not run: `last_sent` is still the pause's `Resistance { 0 }` (engine.rs `Resume` then `publish`, the policy runs on the next tick). `rig.tick()` runs it. (The engine ticks at 4 Hz, ticks.rs:7; the mock's `tick()` is one *soft-start step*, i.e. 1 s of the engine's 20 ticks, `SOFT_START_TICKS`. #357 tracks real engine↔mock parity.) */
+  resumePending: boolean;
+  /** A soft start is owed (a pause owes one, erg/policy.rs:148-149 `leave_erg`; Resume then ticks through it). */
+  softOwed: boolean;
+  /** The soft start's origin, the rider's 3 s power at its first pedalling tick; `null` until one (the engine holds `Erg { 0 }`). */
+  rampOrigin: number | null;
+  /** 1 Hz steps taken since the origin. */
+  rampStep: number;
+  /** Samples stopped mid-ramp: the engine sends nothing and holds the last step (policy.rs:242-248, `last_sent` is `Erg`); the ramp restarts from the then-current power when pedalling returns. */
+  rampHold: boolean;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";
   cap: "none" | "requires_erg" | "exceeds";
@@ -140,6 +153,12 @@ export function installRide(over: Partial<RideWorld> = {}) {
     softStartW: null,
     gapS: null,
     reconnectedAtS: null,
+    commandedW: null,
+    resumePending: false,
+    softOwed: false,
+    rampOrigin: null,
+    rampStep: 0,
+    rampHold: false,
     blockIdx: 0,
     trainer: "ready",
     cap: "none",
@@ -171,6 +190,38 @@ export function installRide(over: Partial<RideWorld> = {}) {
           reason: "stopped_pedalling" satisfies StreamPauseReason,
         }
       : { kind: "riding" };
+  };
+  /**
+   * The engine's `commanded` (`publish`, engine.rs): its `last_sent`, only for the running ride. Rules, from the policy
+   * (erg/policy.rs:170-290): a rider pause and a release both send `Resistance { 0 }` (the pause is judged first); a lost
+   * link forgets the mode (`reset_control`) so nothing is commanded until it is re-issued; 8 silent ticks on a ready link
+   * re-tell `Erg { 0 }`; a free block sends `Free`; otherwise ERG at the watts the engine is sending.
+   */
+  const commanded = (): StreamCommanded | null => {
+    if (world.phase !== "active" || world.trainerLost) return null;
+    if (world.userPause || world.resumePending)
+      return { kind: "resistance", pct: 0 };
+    // no block: a free ride, `Free` (erg/policy.rs:196)
+    const b = world.blocks[world.blockIdx];
+    if (b === undefined) return { kind: "free" };
+    // a free block is judged before the release (erg/policy.rs: no ERG block, no release): `Free`
+    if (b.phase === "free") return { kind: "free" };
+    if (world.ergReleased) return { kind: "resistance", pct: 0 };
+    // link ready again but no pedalling sample yet (or 8 silent ticks): the engine holds `Erg { 0 }`
+    if (world.trainerSilent || world.pausedAfterLoss)
+      return { kind: "erg", watts: 0 };
+    const target = world.commandedW ?? b.powerFrom ?? 0;
+    if (world.softOwed) {
+      // erg/policy.rs:240-270: `Erg { 0 }` until a pedalling sample, then `origin + (target - origin) * step / 5`, step 0
+      // being the origin itself; never the plan straight away.
+      if (world.rampOrigin === null) return { kind: "erg", watts: 0 };
+      const f = Math.min(world.rampStep, 5) / 5;
+      return {
+        kind: "erg",
+        watts: Math.round(world.rampOrigin + (target - world.rampOrigin) * f),
+      };
+    }
+    return { kind: "erg", watts: target };
   };
   const links = (): LinkChange[] =>
     world.phase === "active"
@@ -218,6 +269,9 @@ export function installRide(over: Partial<RideWorld> = {}) {
       blockIndex: world.blockIdx < world.blocks.length ? world.blockIdx : null,
       blockElapsedS: 0,
       ergReleased: world.ergReleased,
+      // the engine's `user_paused` (engine.rs publish): the rider's pause, also under a trainer loss
+      userPaused: world.phase === "active" && world.userPause,
+      commanded: commanded(),
     });
     base.truth.links = links();
     base.push({ status: base.truth.status, links: links() });
@@ -261,6 +315,12 @@ export function installRide(over: Partial<RideWorld> = {}) {
         active();
         if (!world.userPause) throw err("conflict", "not valid in this state");
         world.userPause = false;
+        // the status goes out at once; the mode is re-sent by the next tick
+        world.resumePending = true;
+        world.softOwed = true;
+        world.rampOrigin = null;
+        world.rampStep = 0;
+        world.rampHold = false;
         publish();
         return null;
       case "ride_skip":
@@ -357,6 +417,25 @@ export function installRide(over: Partial<RideWorld> = {}) {
     wedge(): void {
       world.engineUnresponsive = true;
       base.truth.unresponsive = true;
+    },
+    /**
+     * One soft-start step of the engine (the engine ticks at 4 Hz and steps the ramp once per second, 4 ticks; this
+     * collapses those 4 ticks into one call, so call it once per second of ride; #357). `powerW` is the rider's 3 s power at a pedalling tick, `null` for no pedalling sample.
+     */
+    tick(powerW: number | null = null) {
+      world.resumePending = false;
+      if (world.softOwed) {
+        if (powerW === null) {
+          // no pedalling sample: before the ramp the engine holds `Erg { 0 }`; mid-ramp it sends nothing (holds the step)
+          if (world.rampOrigin !== null) world.rampHold = true;
+        } else if (world.rampOrigin === null || world.rampHold) {
+          world.rampOrigin = powerW;
+          world.rampStep = 0;
+          world.rampHold = false;
+        } else world.rampStep += 1;
+        if (world.rampStep >= 5) world.softOwed = false;
+      }
+      publish();
     },
     /** Delay the answer of the next call of `cmd` (its effect on the core is at the call) until the returned function runs. */
     hold(cmd: string): () => void {
