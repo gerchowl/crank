@@ -10,7 +10,7 @@
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 62fr) minmax(0, 38fr);
-  grid-template-rows: auto minmax(0, 1fr) calc(var(--t3) * 2.6) minmax(
+  grid-template-rows: auto minmax(0, 1fr) calc(var(--t3) * 5.2) minmax(
       96px,
       22%
     );
@@ -142,6 +142,9 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.ride-loss {
+  color: var(--status-warning);
 }
 .ride-refusal {
   color: var(--status-critical);
