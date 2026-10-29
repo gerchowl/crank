@@ -6,6 +6,7 @@
 //! the data directory follow [`RuntimeConfig`]. Window and quit handling is [`lifecycle`].
 pub mod commands;
 mod config;
+pub mod display;
 pub mod lifecycle;
 
 use commands::{
@@ -17,6 +18,7 @@ use commands::{
 pub use config::RuntimeConfig;
 use crank_core::{ApiError, Core, CoreConfig, DeviceMode, ErrorCode};
 use crank_devices::sim::SimConfig;
+use display::display_width_mm;
 use std::path::Path;
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
@@ -46,6 +48,7 @@ pub fn bindings() -> tauri_specta::Builder<tauri::Wry> {
         stream_snapshot::<tauri::Wry>,
         rides_list,
         ride_summary,
+        display_width_mm::<tauri::Wry>,
     ])
 }
 
