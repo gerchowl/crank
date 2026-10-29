@@ -12,16 +12,11 @@ import {
   type ReactNode,
 } from "react";
 import { api, type Result } from "../api";
-import type {
-  ApiError,
-  Filter,
-  MetricId,
-  StreamStatus,
-  SubscribeOpts,
-} from "../bindings";
+import type { ApiError, Filter, MetricId, StreamStatus } from "../bindings";
 import {
   windowStream,
   type StreamClient,
+  type SubscriptionOpts,
   type SubscriptionView,
 } from "./client";
 import type { Links } from "./state";
@@ -72,7 +67,7 @@ export function useSubscribe(
     filters: opts.filters ?? [],
   });
   const sub = useMemo(
-    () => client.subscription(metric, JSON.parse(key) as SubscribeOpts),
+    () => client.subscription(metric, JSON.parse(key) as SubscriptionOpts),
     [client, metric, key],
   );
   useEffect(() => {

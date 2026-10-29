@@ -103,7 +103,7 @@ async fn launch(blocks: Vec<FlatBlock>, faults: Vec<SimFault>) -> Ride {
     let c = clock.clone();
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
-            if let TrainerCommand::SetMode(m) = cmd {
+            if let TrainerCommand::SetMode { mode: m, .. } = cmd {
                 log.lock().expect("test mutex").push((c.now().0 / 1000, m));
             }
             if real.send(cmd).await.is_err() {
