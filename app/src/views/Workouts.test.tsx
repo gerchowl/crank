@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+  act,
   cleanup,
   render,
   screen,
@@ -19,12 +20,18 @@ import type {
 import { navigate, useRoute } from "../router";
 import { currentSession } from "../ride/session";
 import { Workouts } from "./Workouts";
+import { RideLoadNotice } from "./RideLoadNotice";
+import { resetRideLoad } from "./rideLoad";
+import { status as idleStatus } from "../stream/testBackend";
 
 afterEach(() => {
   cleanup();
   clearMocks();
 });
-beforeEach(() => navigate("workouts"));
+beforeEach(() => {
+  resetRideLoad();
+  navigate("workouts");
+});
 
 const apiError = (code: string, message: string) => ({ code, message });
 
@@ -81,10 +88,12 @@ interface Backend {
   loading: number;
   /** Hold the next `ride_load` answer until the gate opens. */
   gate: Promise<void> | null;
-  /** After the gate opens, the held `ride_load` is refused with this instead of loading. */
-  heldFailure: ApiErr | null;
-  /** A refusal injected at one stage of `ride_load` (see the doc below), in the core's order. */
-  stage: Partial<Record<"storage" | "driver" | "connect" | "build", ApiErr>>;
+  /** A load started elsewhere is in flight: `ride_status().loading` is true (core.rs:1089). */
+  coreLoading: boolean;
+  /** A refusal raised at one stage of `ride_load` (see the doc below), while the load is in flight. */
+  stage: Partial<
+    Record<"storage" | "driver" | "connect" | "build" | "installed", ApiErr>
+  >;
 }
 type ApiErr = { code: string; message: string };
 /**
@@ -100,6 +109,9 @@ type ApiErr = { code: string; message: string };
  * - trainer connect timeout: `device_unavailable` (:637)
  * - `stage.connect`: the inner connect error, e.g. `device_unavailable` "connect failed: .." (:637 `??`)
  * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (:943 `.await?`)
+ * - `stage.installed`: `internal` "built session missing" (:809)
+ * Everything from the storage step on happens while the core's `loading` flag is set (:789), so the mock raises
+ * those refusals after the load's delay (the gate), with the in-flight conflict active meanwhile.
  * (the strap driver `heart(..)?` at :641 maps like `stage.driver`). `ensure_start_allowed` (:619) always passes
  * today and is not modelled. A free ride (null id) skips the workout checks only. Tauri itself rejects a call
  * without its `workoutId` argument with a plain string.
@@ -114,7 +126,7 @@ function install(over: Partial<Backend> = {}): Backend {
     connectTimesOut: false,
     loading: 0,
     gate: null,
-    heldFailure: null,
+    coreLoading: false,
     stage: {},
     ...over,
   };
@@ -144,31 +156,40 @@ function install(over: Partial<Backend> = {}): Backend {
         if (b.rideActive) throw apiError("conflict", "a ride is in progress");
         if (b.loading > 0)
           throw apiError("conflict", "another ride is loading or loaded");
-        if (b.stage.storage) throw b.stage.storage;
-        if (!b.trainerPaired)
-          throw apiError("device_unavailable", "no trainer paired");
-        if (b.stage.driver) throw b.stage.driver;
-        if (b.connectTimesOut)
-          throw apiError("device_unavailable", "trainer connect timed out");
-        if (b.stage.connect) throw b.stage.connect;
-        if (b.stage.build) throw b.stage.build;
         const done = () =>
           ({
             rideId: "ride-1",
             workoutId: id,
             hrLinked: false,
           }) satisfies RideLoaded;
-        const gate = b.gate;
-        if (!gate) return done();
-        b.gate = null;
+        // From here the core's `loading` flag is set: the connect, the build and their refusals take time.
         b.loading++;
-        return gate
-          .finally(() => b.loading--)
-          .then(() => {
-            if (b.heldFailure) throw b.heldFailure;
+        const load = async () => {
+          try {
+            const gate = b.gate;
+            b.gate = null;
+            if (gate) await gate;
+            if (b.stage.storage) throw b.stage.storage;
+            if (!b.trainerPaired)
+              throw apiError("device_unavailable", "no trainer paired");
+            if (b.stage.driver) throw b.stage.driver;
+            if (b.connectTimesOut)
+              throw apiError("device_unavailable", "trainer connect timed out");
+            if (b.stage.connect) throw b.stage.connect;
+            if (b.stage.build) throw b.stage.build;
+            if (b.stage.installed) throw b.stage.installed;
             return done();
-          });
+          } finally {
+            b.loading--;
+          }
+        };
+        return load();
       }
+      case "ride_status":
+        return {
+          loading: b.loading > 0 || b.coreLoading,
+          status: idleStatus(),
+        };
       default:
         throw `command ${cmd} not found`;
     }
@@ -182,6 +203,7 @@ function Routed() {
     <>
       <p data-testid="route">{route.view}</p>
       {route.view === "workouts" && <Workouts />}
+      <RideLoadNotice />
     </>
   );
 }
@@ -479,7 +501,10 @@ test("picking another workout while a load is in flight is not possible, and the
 
 test("a refusal that arrives after a pick attempt appears under the workout it was for, and the list unlocks", async () => {
   const b = install();
-  b.heldFailure = apiError("device_unavailable", "no trainer paired");
+  b.stage.connect = apiError(
+    "device_unavailable",
+    "connect failed: out of range",
+  );
   const release = await startHeldLoad(b, /Easy spin/);
   await userEvent.click(
     screen.getByRole("button", { name: /Sweet spot 3x12/ }),
@@ -488,7 +513,7 @@ test("a refusal that arrives after a pick attempt appears under the workout it w
 
   release();
   const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toMatch(/no trainer paired/);
+  expect(alert.textContent).toMatch(/connect failed: out of range/);
   // still the first workout's page: its name is the heading the refusal sits under
   expect(screen.getByRole("heading", { name: "Easy spin" })).toBeTruthy();
   expect(pressed(/Easy spin/)).toBe("true");
@@ -529,6 +554,11 @@ const REFUSALS: [string, Partial<Backend["stage"]>, RegExp][] = [
     { build: apiError("internal", "engine stopped") },
     /engine stopped/,
   ],
+  [
+    "the session install",
+    { installed: apiError("internal", "built session missing") },
+    /built session missing/,
+  ],
 ];
 for (const [where, stage, message] of REFUSALS)
   test(`a refusal from ${where} shows the core's message and stays on the page`, async () => {
@@ -544,3 +574,112 @@ for (const [where, stage, message] of REFUSALS)
     expect((await screen.findByRole("alert")).textContent).toMatch(message);
     expect(screen.getByTestId("route").textContent).toBe("workouts");
   });
+
+// ---- #320 round 2: the load belongs to the app, not to the view ----
+
+const leave = () => act(() => navigate("settings"));
+const comeBack = () => act(() => navigate("workouts"));
+
+test("leaving Workouts mid-load and coming back is still locked, and the load routes into the right ride", async () => {
+  const b = install();
+  const release = await startHeldLoad(b, /Easy spin/);
+  await leave();
+  await comeBack();
+  // the view is new, the lock and its reason are not gone
+  expect(await screen.findByText("Loading ride…")).toBeTruthy();
+  for (const name of [/Easy spin/, /Sweet spot 3x12/])
+    expect(
+      (await screen.findByRole("button", { name })) as HTMLButtonElement,
+    ).toHaveProperty("disabled", true);
+  await userEvent.click(
+    screen.getByRole("button", { name: /Sweet spot 3x12/ }),
+  );
+  expect(b.calls.filter((c) => c.cmd === "workout_get")).toHaveLength(1);
+
+  release();
+  await waitFor(() =>
+    expect(screen.getByTestId("route").textContent).toBe("ride"),
+  );
+  expect(currentSession()?.workoutId).toBe("w-easy");
+  expect(b.calls.filter((c) => c.cmd === "ride_load")).toHaveLength(1);
+});
+
+test("a load the core reports as in flight locks a freshly mounted view, and unlocks when it clears", async () => {
+  const b = install({ coreLoading: true });
+  open();
+  expect(await screen.findByText("Loading ride…")).toBeTruthy();
+  expect(
+    (await screen.findByRole("button", {
+      name: /Easy spin/,
+    })) as HTMLButtonElement,
+  ).toHaveProperty("disabled", true);
+  b.coreLoading = false;
+  await waitFor(() => expect(screen.queryByText("Loading ride…")).toBeNull());
+  expect(
+    (screen.getByRole("button", { name: /Easy spin/ }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(false);
+});
+
+test("a load that completes while the rider is elsewhere does not pull them out; the notice offers the ride", async () => {
+  const b = install();
+  const release = await startHeldLoad(b, /Easy spin/);
+  await leave();
+  release();
+  const notice = await screen.findByText(/Ride loaded: Easy spin/);
+  expect(screen.getByTestId("route").textContent).toBe("settings");
+  expect(currentSession()?.workoutId).toBe("w-easy");
+  await userEvent.click(
+    within(notice.closest("p")!).getByRole("button", { name: "Go to ride" }),
+  );
+  expect(screen.getByTestId("route").textContent).toBe("ride");
+  expect(screen.queryByText(/Ride loaded/)).toBeNull();
+});
+
+test("the loaded-ride notice can be dismissed", async () => {
+  const b = install();
+  const release = await startHeldLoad(b, /Easy spin/);
+  await leave();
+  release();
+  await screen.findByText(/Ride loaded: Easy spin/);
+  await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByText(/Ride loaded/)).toBeNull();
+  expect(screen.getByTestId("route").textContent).toBe("settings");
+});
+
+test("the loaded-ride notice goes away when the rider opens the ride another way", async () => {
+  const b = install();
+  const release = await startHeldLoad(b, /Easy spin/);
+  await leave();
+  release();
+  await screen.findByText(/Ride loaded: Easy spin/);
+  await act(() => navigate("ride"));
+  await waitFor(() => expect(screen.queryByText(/Ride loaded/)).toBeNull());
+});
+
+test("a refusal that arrives while the rider is elsewhere is shown in the notice, not under the wrong workout", async () => {
+  const b = install();
+  b.stage.connect = apiError(
+    "device_unavailable",
+    "connect failed: out of range",
+  );
+  const release = await startHeldLoad(b, /Easy spin/);
+  await leave();
+  release();
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toMatch(/Could not load Easy spin/);
+  expect(alert.textContent).toMatch(/connect failed: out of range/);
+  expect(screen.getByTestId("route").textContent).toBe("settings");
+  await userEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  // back on the list nothing is stale, nothing is locked
+  await comeBack();
+  expect(
+    (
+      (await screen.findByRole("button", {
+        name: /Sweet spot 3x12/,
+      })) as HTMLButtonElement
+    ).disabled,
+  ).toBe(false);
+  expect(screen.queryByRole("alert")).toBeNull();
+});

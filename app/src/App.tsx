@@ -10,6 +10,7 @@ import { StartScreen, type Boot } from "./shell/StartScreen";
 import { useApplyTheme } from "./theme";
 import { Ride } from "./ride/Ride";
 import { Placeholder } from "./views/Placeholder";
+import { RideLoadNotice } from "./views/RideLoadNotice";
 import { Settings } from "./views/Settings";
 import { Workouts } from "./views/Workouts";
 
@@ -125,6 +126,7 @@ export function App({
         Skip to main
       </a>
       {boot.phase === "ready" && <Destination views={views} />}
+      {boot.phase === "ready" && <RideLoadNotice />}
       {!gone && (
         <StartScreen boot={boot} mode={mode} onRetry={retry} onGone={onGone} />
       )}
