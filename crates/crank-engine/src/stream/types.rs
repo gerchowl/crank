@@ -280,6 +280,25 @@ pub struct StreamStatus {
     pub compliance: StreamCompliance,
     /// The active health cap; `null` when none applies.
     pub cap: Option<StreamCap>,
+    /// The rider has paused the ride and not resumed, also while `state` says `trainer_lost`
+    /// (that reason outranks the rider's in `state`; this field does not).
+    pub user_paused: bool,
+    /// Session second at which the current trainer loss began, `null` while the trainer is not
+    /// lost. A timestamp on the ride's clock, not an elapsed time, so the status does not change
+    /// every tick: "lost for" is `session_s - trainer_lost_since_s`, from the session time the
+    /// heartbeat refreshes (DESIGN §6.5/§6.6).
+    pub trainer_lost_since_s: Option<f64>,
+    /// The driver's reconnect attempt in the current loss (1-based); `null` when not lost or
+    /// before the first attempt.
+    pub reconnect_attempt: Option<u32>,
+    /// While the soft start after a recovered loss runs: the target, W, the trainer is being
+    /// eased back to; `null` otherwise.
+    pub soft_start_target_w: Option<u16>,
+    /// Length of the last trainer loss, s, from the loss until the trainer was back; `null`
+    /// until one has ended and again once the next one begins.
+    pub last_gap_s: Option<f64>,
+    /// Session second at which the last loss ended (with `last_gap_s`).
+    pub reconnected_at_s: Option<f64>,
 }
 impl From<&RideStatus> for StreamStatus {
     fn from(s: &RideStatus) -> Self {
@@ -322,6 +341,12 @@ impl From<&RideStatus> for StreamStatus {
                 cap_w: c.cap_w,
                 erg_only: c.erg_only,
             }),
+            user_paused: s.user_paused,
+            trainer_lost_since_s: s.trainer_lost_since.map(|t| ticks_to_seconds(t.0)),
+            reconnect_attempt: s.reconnect_attempt,
+            soft_start_target_w: s.soft_start_target_w,
+            last_gap_s: s.last_gap.map(|t| ticks_to_seconds(t.0)),
+            reconnected_at_s: s.reconnected_at.map(|t| ticks_to_seconds(t.0)),
         }
     }
 }
@@ -336,7 +361,9 @@ impl StreamStatus {
     }
     /// Equal in everything but the clock fields (`session_s`, `workout_s`,
     /// `block_elapsed_s`), which advance every tick and are refreshed by the heartbeat
-    /// instead of counting as a change.
+    /// instead of counting as a change. The loss fields are discrete: each changes only at a
+    /// transition (a loss, an attempt, the trainer back, the soft start ending, a rider pause),
+    /// never per tick, so they are sent on change and add no heartbeat churn (#329).
     #[must_use]
     pub fn same_discrete(&self, other: &Self) -> bool {
         self.state == other.state
@@ -344,6 +371,12 @@ impl StreamStatus {
             && self.block_index == other.block_index
             && self.late_samples == other.late_samples
             && self.record_error == other.record_error
+            && self.user_paused == other.user_paused
+            && self.trainer_lost_since_s == other.trainer_lost_since_s
+            && self.reconnect_attempt == other.reconnect_attempt
+            && self.soft_start_target_w == other.soft_start_target_w
+            && self.last_gap_s == other.last_gap_s
+            && self.reconnected_at_s == other.reconnected_at_s
     }
 }
 
