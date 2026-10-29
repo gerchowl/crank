@@ -11,10 +11,12 @@
 //! * every frame is serialized and measured: over [`FRAME_BUDGET_BYTES`] the samples
 //!   are split over consecutive frames, and discrete state that alone exceeds the
 //!   budget is dropped for a bare resync frame;
-//! * frames are at most [`MIN_FRAME_INTERVAL_US`] apart (≤ 10 Hz).
+//! * frames are at least [`MIN_FRAME_INTERVAL_US`] apart (≤ 10 Hz); a split batch is the
+//!   exception, its frames leave together (ADR-0001 §4.3).
 use super::types::{
     LinkChange, LinkDevice, LinkStatus, StreamFrame, StreamStatus, SubId, SubSample,
 };
+use super::work::{Counted, Work};
 use std::collections::{BTreeMap, VecDeque};
 
 /// Unacknowledged frames a stream may have in flight.
@@ -36,19 +38,26 @@ pub(crate) struct Flow {
     budget: usize,
     next_seq: u32,
     unacked: VecDeque<u32>,
-    samples: BTreeMap<SubId, SubSample>,
+    samples: Counted<SubId, SubSample>,
+    work: Work,
     status: Option<StreamStatus>,
     links: BTreeMap<LinkDevice, LinkStatus>,
     resync: bool,
     last_emit_us: Option<u64>,
 }
 impl Flow {
+    #[cfg(test)]
     pub(crate) fn new(budget: usize) -> Self {
+        Self::with_work(budget, Work::default())
+    }
+    /// A flow that counts its work units into `work` (test-only counting, see [`Work`]).
+    pub(crate) fn with_work(budget: usize, work: Work) -> Self {
         Self {
             budget,
             next_seq: 0,
             unacked: VecDeque::new(),
-            samples: BTreeMap::new(),
+            samples: Counted::new(work.clone()),
+            work,
             status: None,
             links: BTreeMap::new(),
             resync: false,
@@ -113,6 +122,7 @@ impl Flow {
     /// `u32::MAX` → 0 wrap needs no special case. Returns whether anything was
     /// acknowledged.
     pub(crate) fn ack(&mut self, seq: u32) -> bool {
+        self.work.add(1 + self.unacked.len());
         match self.unacked.iter().position(|&s| s == seq) {
             Some(i) => {
                 self.unacked.drain(..=i);
@@ -131,6 +141,7 @@ impl Flow {
     }
     /// The frames to send at `now_us`: none while blocked or inside the 10 Hz interval.
     pub(crate) fn drain(&mut self, now_us: u64) -> Vec<StreamFrame> {
+        self.work.add(1);
         if self.next_emit_at(now_us) != Some(now_us) {
             return Vec::new();
         }
@@ -186,13 +197,16 @@ impl Flow {
             }
             frames.push(cur);
         }
+        self.work.add(frames.len());
         for f in &frames {
             self.unacked.push_back(f.seq);
         }
         // `seq` wraps by design (see `StreamFrame::seq`); a drain emits a handful of frames.
-        self.next_seq = self
-            .next_seq
-            .wrapping_add(u32::try_from(frames.len()).unwrap_or(u32::MAX));
+        let emitted = u32::try_from(frames.len()).unwrap_or_else(|_| {
+            debug_assert!(false, "a drain emits a handful of frames");
+            u32::MAX
+        });
+        self.next_seq = self.next_seq.wrapping_add(emitted);
         self.last_emit_us = Some(now_us);
         frames
     }

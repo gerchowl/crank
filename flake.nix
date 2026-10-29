@@ -17,7 +17,7 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
       cargoFiles = lib.fileset.difference (craneLib.fileset.commonCargoSources ./.) ./crates/crank-fec/fuzz;
-      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./crates/crank-engine/tests/fixtures ./docs/hil/captures/check4.fecap ./clippy.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
+      rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./crates/crank-engine/tests/fixtures ./docs/hil/captures/check4.fecap ./clippy.toml ./.config/nextest.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
         (lib.fileset.difference ./app ./app/src-tauri) ./shared ./assets/brand
@@ -127,6 +127,13 @@
         clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--features crank-ble/replay,crank-ble/hil --all-targets -- -D warnings"; });
         nextest = craneLib.cargoNextest (rustCheck // { cargoNextestExtraArgs = "--features crank-ble/replay,crank-ble/hil"; });
         doctest = craneLib.cargoDocTest rustCheck;
+        # crank-engine's dev-dependency on itself enables its `specta` feature in every test
+        # build (#271), which hides the plain build; this check compiles the library alone (#252).
+        # crank-engine declares no default features, so no feature flag is needed (#293).
+        engine-no-features = craneLib.mkCargoDerivation (rustCheck // {
+          buildPhaseCargoCommand = "cargo check --locked -p crank-engine";
+          doInstallCargoArtifacts = false; installPhase = "touch $out";
+        });
         doc = craneLib.cargoDoc (rustCheck // { RUSTDOCFLAGS = "-D warnings"; });
         deny = denyCheck {
           pname = "crank";

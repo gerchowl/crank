@@ -16,7 +16,7 @@ fn step(wbal: f64, power: f64, dt: f64, cp: f64, w0: f64) -> f64 {
     if power > cp {
         wbal - (power - cp) * dt
     } else {
-        w0 - (w0 - wbal) * (-(cp - power) * dt / w0).exp()
+        w0 - (w0 - wbal) * libm::exp(-(cp - power) * dt / w0)
     }
 }
 /// Balance after each power sample (watts), starting full at `w0` joules.
