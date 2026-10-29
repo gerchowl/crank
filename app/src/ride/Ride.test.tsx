@@ -895,15 +895,15 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
   test("lost for 29 s from a later stamp: the duration counts from the stamp, not from the ride", async () => {
     await lostRide({ sessionS: 130, lostSinceS: 101 });
     expect(screen.queryByTestId("loss-help")).toBeNull();
-    expect(text("lost-for")).toBe("0:29 ");
+    expect(text("lost-for")).toBe("0:29");
   });
 
   test("the banner shows how long the trainer has been lost, on the session clock (DESIGN §5.2)", async () => {
     const rig = await lostRide({ sessionS: 112 });
-    expect(text("lost-for")).toBe("0:12 ");
+    expect(text("lost-for")).toBe("0:12");
     expect(text("loss-trainer")).toContain("NEO lost 0:12 ·");
     await publish(rig, { sessionS: 175 });
-    expect(text("lost-for")).toBe("1:15 ");
+    expect(text("lost-for")).toBe("1:15");
   });
 
   test("a mock that rewinds the session clock throws: the core cannot send it", async () => {
@@ -936,7 +936,7 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
     [119, false],
     [120, true],
   ])(
-    "trainer back after a %i s loss: the §6.6 re-entry text is %s",
+    "trainer back after a %i s loss: the Back-after row shown: %s",
     async (gapS, shown) => {
       const rig = await open({ phase: "active" });
       await publish(rig, {
