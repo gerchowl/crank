@@ -180,7 +180,7 @@ impl TrainerDriver for FecTrainer {
                 if let Err(error) = result {
                     let _ = emit(&events, TrainerEvent::Fault(error)).await;
                 }
-                if let Err(error) = writer_transport.disconnect().await {
+                if let Err(error) = disconnect_bounded(writer_transport.disconnect()).await {
                     let _ = emit(&events, TrainerEvent::Fault(error)).await;
                 }
                 let _ = emit(&events, TrainerEvent::Link(LinkState::Lost)).await;
@@ -193,6 +193,18 @@ impl TrainerDriver for FecTrainer {
             })
         })
     }
+}
+/// Longest a transport may take to disconnect before the driver gives up on it and ends its
+/// stream anyway: a platform disconnect (btleplug) can hang, and the consumer's end of the
+/// stream, which means "released", must not hang with it.
+pub(crate) const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// `disconnect`, bounded by [`DISCONNECT_TIMEOUT`].
+pub(crate) async fn disconnect_bounded(
+    disconnect: BoxFuture<'static, Result<(), DeviceError>>,
+) -> Result<(), DeviceError> {
+    tokio::time::timeout(DISCONNECT_TIMEOUT, disconnect)
+        .await
+        .unwrap_or_else(|_| Err(DeviceError::Gatt("disconnect timed out".into())))
 }
 async fn emit(events: &mpsc::Sender<TrainerEvent>, event: TrainerEvent) -> Result<(), DeviceError> {
     events

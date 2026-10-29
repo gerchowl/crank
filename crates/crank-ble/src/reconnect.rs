@@ -137,11 +137,20 @@ async fn supervise_trainer<D: TrainerDriver>(
                 event = link.events.recv() => {
                     let Some(event) = event else { break };
                     let lost = event == TrainerEvent::Link(LinkState::Lost);
-                    if events.send(event).await.is_err() {
+                    // A consumer that is gone releases the inner link like `Disconnect`;
+                    // the pump then runs on until the inner stream ends, i.e. until the
+                    // inner link has actually disconnected, so that the consumer's end of
+                    // this stream means "released".
+                    if !releasing && events.send(event).await.is_err() {
+                        releasing = true;
                         let _ = link.control.send(TrainerCommand::Disconnect).await;
-                        return;
                     }
                     if lost { break }
+                }
+                // The consumer closed or dropped the event stream without releasing.
+                () = events.closed(), if !releasing => {
+                    releasing = true;
+                    let _ = link.control.send(TrainerCommand::Disconnect).await;
                 }
                 command = commands.recv(), if !releasing => match command {
                     None | Some(TrainerCommand::Disconnect) => {
@@ -241,6 +250,12 @@ impl<D: HeartRateDriver> HeartRateDriver for ReconnectingHr<D> {
         })
     }
 }
+/// The consumer of the strap is gone: the inner driver disconnects when it learns so, and
+/// this supervisor keeps its own stream open until it has (dropping `events` is what the
+/// consumer reads as "the strap is released").
+async fn release_inner(link: &mut HeartRateLink) {
+    crank_devices::release_events(&mut link.events).await;
+}
 async fn supervise_hr<D: HeartRateDriver>(
     inner: Arc<D>,
     clock: Arc<dyn Clock>,
@@ -250,9 +265,18 @@ async fn supervise_hr<D: HeartRateDriver>(
     events: mpsc::Sender<HrEvent>,
 ) {
     loop {
-        while let Some(event) = link.events.recv().await {
+        loop {
+            let event = tokio::select! {
+                event = link.events.recv() => event,
+                () = events.closed() => {
+                    release_inner(&mut link).await;
+                    return;
+                }
+            };
+            let Some(event) = event else { break };
             let lost = event == HrEvent::Link(LinkState::Lost);
             if events.send(event).await.is_err() {
+                release_inner(&mut link).await;
                 return;
             }
             if lost {
