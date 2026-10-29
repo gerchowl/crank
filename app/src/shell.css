@@ -300,3 +300,41 @@ main.mode {
 .device-notice p {
   margin: 4px 0 12px;
 }
+
+/* Workouts library (#110 MVP): list left, the picked workout's compiled summary right. */
+.workouts-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 2fr;
+  gap: 24px;
+  align-items: start;
+}
+.workouts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.workouts-list button {
+  width: 100%;
+  text-align: left;
+}
+.workouts-list button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.workouts-summary dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+}
+.workouts-summary dd {
+  margin: 0;
+}
+.workouts-summary ul {
+  list-style: none;
+  padding: 0;
+}
+.workouts-issues li[data-severity="error"] {
+  font-weight: 600;
+}
