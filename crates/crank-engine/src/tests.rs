@@ -2274,10 +2274,12 @@ fn a_ride_stopped_in_the_soft_start_after_a_loss_reports_no_loss_state() {
 
 #[test]
 fn a_ride_that_finishes_by_itself_in_the_soft_start_reports_no_loss_state() {
-    // A 12 s block: lost at tick 8, back at tick 15, the block ends (tick 48) mid soft start? the ramp is
-    // 20 ticks from the first sample, so a 9 s block (36 ticks) ends inside it.
+    // A 5 s block is 20 ticks of workout time. Ticks 0-3 are ridden before the loss; the trainer is lost at
+    // tick 4, link Ready is applied at tick 6, the first pedalling sample of the new epoch (tick 7) is the
+    // trainer being back, and riding resumes at tick 8. The block therefore ends at tick 23, inside the soft
+    // start, which runs 20 ticks from that first sample (ticks 7 to 27).
     let mut r = rig();
-    r.load(vec![block(9.0, 200.0, 200.0, Phase::Work)]);
+    r.load(vec![block(5.0, 200.0, 200.0, Phase::Work)]);
     r.start();
     for k in 0..4 {
         r.sample(k, 150, 90);
@@ -2290,9 +2292,17 @@ fn a_ride_that_finishes_by_itself_in_the_soft_start_reports_no_loss_state() {
     for k in 7..40 {
         r.sample(k, 150, 90);
     }
+    // one tick before the end the ride is still riding and the soft start is still running
+    r.through(22);
+    assert_eq!(r.state(), RideState::Riding);
+    assert_eq!(
+        r.status().soft_start_target_w,
+        Some(200),
+        "the soft start is still running when the ride is about to end"
+    );
     r.through(39);
     assert_eq!(r.state(), RideState::Finished);
-    assert_no_loss_state(&r, "finished by itself");
+    assert_no_loss_state(&r, "finished by itself in the soft start");
 }
 
 #[test]
