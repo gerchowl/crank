@@ -4,7 +4,7 @@
 use crate::engine::{PauseReason, RideState, RideStatus};
 use crate::erg::{Component, TrainerFollowing};
 use crate::ticks::ticks_to_seconds;
-use crank_devices::LinkState;
+use crank_devices::{ControlMode, LinkState};
 use crank_domain::filters::Filter;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -221,6 +221,39 @@ impl From<Component> for StreamComponent {
         }
     }
 }
+/// The mode the engine has commanded the trainer into, on the wire (#324). The rider-facing
+/// reading of why there is no ERG target comes with it: `resistance` with `ergReleased` is a
+/// release, with `userPaused` a pause, and with neither the end mode.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StreamCommanded {
+    /// ERG: the trainer holds this power (page 49). `watts` is what was sent (after the soft
+    /// start, the health cap and rounding), not the plan.
+    Erg {
+        /// Target watts.
+        watts: u16,
+    },
+    /// Basic resistance (page 48), percent; 0 for a release, a rider pause and the end mode.
+    Resistance {
+        /// Resistance percent, 0..=100.
+        pct: f32,
+    },
+    /// Explicit flat-road simulation for a free block (ADR-0002 §7.9).
+    Free,
+    /// A track simulation. No policy sends it yet; it is here so the mapping is total.
+    Sim,
+}
+impl From<ControlMode> for StreamCommanded {
+    fn from(m: ControlMode) -> Self {
+        match m {
+            ControlMode::Erg { target_w } => Self::Erg { watts: target_w },
+            ControlMode::Resistance { pct } => Self::Resistance { pct },
+            ControlMode::Free => Self::Free,
+            ControlMode::Sim { .. } => Self::Sim,
+        }
+    }
+}
 /// The compliance tally in whole seconds (ADR-0002 §7.8).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -308,6 +341,12 @@ pub struct StreamStatus {
     pub last_gap_s: Option<f64>,
     /// Session second at which the last loss ended (with `last_gap_s`).
     pub reconnected_at_s: Option<f64>,
+    /// What the engine has commanded the trainer into (#324): the ERG setpoint actually sent,
+    /// or the reason there is none (`resistance`, `free`). `null` outside a running ride and
+    /// while the trainer is being re-told after a loss. Not the plan. Changes at most once per
+    /// tick (the engine sends at most one mode per tick), and in practice once per second at
+    /// most: a ramp block and the soft start move in 1 Hz steps.
+    pub commanded: Option<StreamCommanded>,
 }
 impl From<&RideStatus> for StreamStatus {
     fn from(s: &RideStatus) -> Self {
@@ -356,6 +395,7 @@ impl From<&RideStatus> for StreamStatus {
             soft_start_target_w: s.soft_start_target_w,
             last_gap_s: s.last_gap.map(|t| ticks_to_seconds(t.0)),
             reconnected_at_s: s.reconnected_at.map(|t| ticks_to_seconds(t.0)),
+            commanded: s.commanded.map(StreamCommanded::from),
         }
     }
 }
@@ -386,6 +426,7 @@ impl StreamStatus {
             && self.soft_start_target_w == other.soft_start_target_w
             && self.last_gap_s == other.last_gap_s
             && self.reconnected_at_s == other.reconnected_at_s
+            && self.commanded == other.commanded
     }
 }
 
