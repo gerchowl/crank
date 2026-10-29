@@ -52,6 +52,14 @@ const RELEASE_TIMEOUT: Duration = Duration::from_secs(3);
 /// stop: the end mode's own deadline is 2 s (ADR-0002 §7.9), so this only fires when the
 /// engine task died with the signal up. The session is then reaped by force.
 const REAP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest `ride_end` waits for the engine to accept `Stop` (a healthy engine answers within
+/// a tick), held under the state lock. A stuck or dead engine is then ended by force
+/// ([`RideEnd::ForcedEnd`]). It is below `QUIT_CAP` (3 s, `app/src-tauri/src/lifecycle.rs`)
+/// less the work after it (aborting the task, closing the record), so that a quit with a
+/// stuck engine still ends and records the ride inside its cap. The whole path is bounded:
+/// this, then `REAP_TIMEOUT` (10 s) for the engine to drop the ride-active signal, then
+/// `RELEASE_TIMEOUT` (3 s) for the devices (not at all when quitting).
+const STOP_TIMEOUT: Duration = Duration::from_secs(1);
 /// Default scan length of `devices_scan`.
 const SCAN_FOR: Duration = Duration::from_secs(5);
 /// Rider and bike mass until athlete inputs exist (#247).
@@ -102,6 +110,32 @@ pub enum Shutdown {
     TimedOut,
     /// Ending the ride failed.
     Failed(ApiError),
+}
+
+/// How a ride ended, from [`Core::ride_end_outcome`].
+///
+/// The ride is over and its devices are on their way back either way; the difference is
+/// what was recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RideEnd {
+    /// The engine stopped the ride. `Some(id)` is a ride that ran and was recorded as
+    /// finished; `None` an unstarted ride that was only unloaded.
+    Ended(Option<String>),
+    /// The engine did not answer `Stop` within `STOP_TIMEOUT` (stuck) or was gone (its
+    /// task died). The core aborted it and closed the record as **aborted**: the seconds
+    /// persisted so far are kept, there is no summary, and the trainer did not get its end
+    /// mode from the engine (its link is dropped and disconnected, ADR-0002 §7.9).
+    ForcedEnd(String),
+}
+impl RideEnd {
+    /// The ride's id: `None` only for an unstarted ride that was unloaded.
+    #[must_use]
+    pub fn ride_id(&self) -> Option<&str> {
+        match self {
+            Self::Ended(id) => id.as_deref(),
+            Self::ForcedEnd(id) => Some(id),
+        }
+    }
 }
 
 struct Session {
@@ -208,6 +242,9 @@ struct State {
     /// The release signals of the session reaped last, kept until the next load so that a
     /// second `ride_end` awaits the same release as the first.
     last_release: Option<LinkRelease>,
+    /// Id of the last ride that was ended by force, until the next load, so that a second
+    /// `ride_end` reports the same outcome as the first.
+    last_forced: Option<String>,
 }
 /// Clears the loading flag when a `ride_load` ends in any way, including its future
 /// being dropped (a cancelled command) or panicking.
@@ -809,6 +846,7 @@ impl Core {
             .ok_or_else(|| ApiError::new(ErrorCode::Internal, "built session missing"))?;
         st.last = None;
         st.last_release = None;
+        st.last_forced = None;
         let ride_id = session.ride_id.clone();
         st.session = Some(session);
         drop(st);
@@ -1009,23 +1047,36 @@ impl Core {
     /// # Errors
     /// `Conflict` without a loaded or just-finished ride.
     pub async fn ride_end(&self) -> Result<Option<String>, ApiError> {
+        Ok(self.ride_end_outcome().await?.ride_id().map(str::to_owned))
+    }
+    /// [`Core::ride_end`] with the typed outcome: whether the engine ended the ride
+    /// ([`RideEnd::Ended`]) or the core had to end it by force ([`RideEnd::ForcedEnd`]).
+    ///
+    /// Never hangs on the engine: the `Stop` is bounded by `STOP_TIMEOUT` (1 s) and the rest
+    /// by `REAP_TIMEOUT` and `RELEASE_TIMEOUT`. A stuck or dead engine is aborted, the ride
+    /// recorded as aborted and the devices released, and a new `ride_load` works. Ending an
+    /// already forced ride again returns the same outcome, after the same release.
+    ///
+    /// # Errors
+    /// `Conflict` without a loaded or just-ended ride.
+    pub async fn ride_end_outcome(&self) -> Result<RideEnd, ApiError> {
         self.end_ride(true).await
     }
     /// `ride_end`; without `release` it returns once the engine has ended (the end mode
     /// delivered, the link lost or its deadline passed) and does not wait for the devices'
     /// drivers to hand their peripherals back. That is for a process that is exiting, which
     /// releases the radio anyway and must not spend its quit cap on `RELEASE_TIMEOUT`.
-    async fn end_ride(&self, release: bool) -> Result<Option<String>, ApiError> {
-        let (id, finishes, link_release) = {
+    async fn end_ride(&self, release: bool) -> Result<RideEnd, ApiError> {
+        let (id, finishes, link_release, forced) = {
             let st = self.0.state.lock().await;
             let Some(s) = &st.session else {
                 // Already reaped, possibly by an end that is still waiting for the devices:
                 // this call waits for the same release.
-                let ended = st
-                    .last
-                    .as_ref()
-                    .map(|(id, _)| Some(id.clone()))
-                    .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "no ride loaded"));
+                let ended = match (&st.last, &st.last_forced) {
+                    (Some((id, _)), _) => Ok(RideEnd::Ended(Some(id.clone()))),
+                    (None, Some(id)) => Ok(RideEnd::ForcedEnd(id.clone())),
+                    (None, None) => Err(ApiError::new(ErrorCode::Conflict, "no ride loaded")),
+                };
                 let pending = st.last_release.clone().filter(|_| release);
                 drop(st);
                 if let Some(pending) = pending {
@@ -1034,26 +1085,66 @@ impl Core {
                 return ended;
             };
             let state = s.handle.status().state;
+            let mut forced = false;
             if state != RideState::Finished {
-                match s.handle.send(EngineCmd::Stop).await {
+                // Bounded, so that a stuck engine cannot hold the state lock (and with it
+                // every other command, a second End included) for ever.
+                match tokio::time::timeout(STOP_TIMEOUT, s.handle.send(EngineCmd::Stop)).await {
                     // `WrongState`: the ride is already ending (it finished on its own, or
                     // an overlapping end got in first, also on an unstarted ride). That is
                     // not an error, and the waits below must still run.
-                    Ok(()) | Err(CommandError::WrongState) => {}
-                    Err(e) => return Err(e.into()),
+                    Ok(Ok(()) | Err(CommandError::WrongState)) => {}
+                    // The engine task is gone, or it did not answer: end the ride by force.
+                    Ok(Err(CommandError::EngineStopped)) | Err(_) => forced = true,
+                    Ok(Err(e)) => return Err(e.into()),
                 }
             }
             (
                 s.ride_id.clone(),
                 state != RideState::Idle,
                 s.release.clone(),
+                forced,
             )
         };
-        self.settle(&id).await;
+        if forced {
+            self.force_end(&id).await;
+        } else {
+            self.settle(&id).await;
+        }
         if release {
             link_release.wait().await;
         }
-        Ok(finishes.then_some(id))
+        Ok(if forced {
+            RideEnd::ForcedEnd(id)
+        } else {
+            RideEnd::Ended(finishes.then_some(id))
+        })
+    }
+    /// End a ride whose engine cannot: abort the engine task (never awaiting it under the
+    /// lock, see `reap`), close the ride's record as aborted, and clear the ride-active
+    /// signal the dead engine can no longer drop. Dropping the engine drops the device
+    /// links, which the drivers answer by disconnecting; the caller awaits that.
+    /// Idempotent: an overlapping forced end finds the session gone and the record closed.
+    async fn force_end(&self, ride_id: &str) {
+        tracing::warn!(
+            ride_id,
+            "the engine did not stop the ride: ending it by force"
+        );
+        self.reap(ride_id, true).await;
+        match self.0.store.abort_ride(ride_id, unix_now()) {
+            Ok(()) => {}
+            // Not live: the ride was never started, or the other end got there first.
+            Err(crank_store::StoreError::InvalidInput(_)) => {}
+            Err(error) => tracing::warn!(ride_id, %error, "closing the ride's record failed"),
+        }
+        {
+            let mut st = self.0.state.lock().await;
+            if st.last.is_none() {
+                st.last_forced = Some(ride_id.to_owned());
+            }
+        }
+        self.0.gate.set_active(false);
+        self.0.active.send_replace(false);
     }
     /// The application is quitting: end the loaded ride like `ride_end` and wait, for at
     /// most `cap`, until the engine has ended it (not until the devices are released).
@@ -2064,6 +2155,107 @@ mod tests {
             0,
             "the strap is still being released: not reported early"
         );
+    }
+
+    /// Replace the loaded ride's engine by one that cannot end it (#331): `dead` (its task is
+    /// gone, every command answers `EngineStopped`) or stuck (the task lives but never reads
+    /// a command, so `Stop` is never answered). The real engine is aborted, which drops its
+    /// device links as a dying engine does, and the ride-active signal stays up.
+    async fn break_engine(core: &Core, dead: bool) {
+        let (engine, handle) =
+            Engine::new(core.0.clock.clone(), None, None, Arc::new(|_: bool| {}));
+        let mut st = core.0.state.lock().await;
+        let session = st.session.as_mut().unwrap();
+        session.task.abort();
+        session.handle = handle;
+        session.task = if dead {
+            drop(engine);
+            tokio::spawn(async {})
+        } else {
+            tokio::spawn(async move {
+                let _engine = engine;
+                std::future::pending::<()>().await;
+            })
+        };
+    }
+    /// The ride was ended by force: recorded as aborted, devices released, the core free for a
+    /// new ride, and the whole thing inside the deadline.
+    async fn assert_forced_end(core: &Core, radio: &FakeRadio, took: Duration) {
+        assert!(took <= STOP_TIMEOUT + Duration::from_secs(1), "{took:?}");
+        let rides = core.rides_list().await.unwrap();
+        assert_eq!(rides[0].outcome, RideOutcome::Aborted, "{rides:?}");
+        assert!(!core.ride_status().await.unwrap().status.loaded);
+        assert_eq!(radio.disconnects.lock().unwrap().len(), 1, "released");
+        // the next ride loads and starts: the record writer is free, the signal cleared
+        core.ride_load(None).await.unwrap();
+        core.ride_start().await.unwrap();
+    }
+
+    /// #331: an engine that is stuck (never answers `Stop`) does not hold `ride_end` or the
+    /// state lock for ever.
+    #[tokio::test(start_paused = true)]
+    async fn a_stuck_engine_is_ended_by_force_within_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = riding(&radio, dir.path()).await;
+        break_engine(&core, false).await;
+        let t = tokio::time::Instant::now();
+        let end = tokio::time::timeout(Duration::from_secs(30), core.ride_end_outcome())
+            .await
+            .expect("End answers")
+            .unwrap();
+        let took = t.elapsed();
+        assert!(matches!(end, RideEnd::ForcedEnd(_)), "{end:?}");
+        assert_forced_end(&core, &radio, took).await;
+    }
+    /// #331: an engine whose task is gone no longer fails `ride_end` with `EngineStopped`.
+    #[tokio::test(start_paused = true)]
+    async fn a_dead_engine_is_ended_by_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = riding(&radio, dir.path()).await;
+        break_engine(&core, true).await;
+        let t = tokio::time::Instant::now();
+        let end = core.ride_end_outcome().await.unwrap();
+        let took = t.elapsed();
+        assert!(matches!(end, RideEnd::ForcedEnd(_)), "{end:?}");
+        assert_forced_end(&core, &radio, took).await;
+    }
+    /// #331: two Ends at once on a stuck engine neither deadlock nor disagree.
+    #[tokio::test(start_paused = true)]
+    async fn two_concurrent_ends_of_a_stuck_engine_have_one_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = riding(&radio, dir.path()).await;
+        break_engine(&core, false).await;
+        let both = tokio::time::timeout(
+            Duration::from_secs(30),
+            futures_util::future::join(core.ride_end_outcome(), core.ride_end_outcome()),
+        )
+        .await
+        .expect("neither End hangs");
+        let (a, b) = (both.0.unwrap(), both.1.unwrap());
+        assert!(matches!(a, RideEnd::ForcedEnd(_)), "{a:?}");
+        assert_eq!(a, b);
+        // and a later one reports it again
+        assert_eq!(core.ride_end_outcome().await.unwrap(), a);
+        assert_eq!(radio.disconnects.lock().unwrap().len(), 1, "released once");
+        let rides = core.rides_list().await.unwrap();
+        assert_eq!(rides[0].outcome, RideOutcome::Aborted);
+    }
+    /// #331: quitting inherits the bound: a stuck engine is ended and recorded inside the quit
+    /// cap instead of timing the quit out.
+    #[tokio::test(start_paused = true)]
+    async fn quitting_with_a_stuck_engine_ends_and_records_the_ride_inside_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = riding(&radio, dir.path()).await;
+        break_engine(&core, false).await;
+        let t = tokio::time::Instant::now();
+        assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Ended);
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        let rides = core.rides_list().await.unwrap();
+        assert_eq!(rides[0].outcome, RideOutcome::Aborted);
     }
 
     /// A core with a trainer (releasing in `trainer`) and a strap (in `strap`) paired.
