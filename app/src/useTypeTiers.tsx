@@ -1,13 +1,13 @@
 // Hook, CSS tokens and the too-small banner for the ride screen's type tiers (DESIGN §6.2, #91).
 // The ride screen (#96) mounts <RideTiers> around its content; descendants use `var(--t1)` … `var(--t4)`.
 import {
-  useEffect,
   useState,
   useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
 } from "react";
 import { readDisplayWidthMm, watchMonitorChange } from "./displayMm";
+import { createMeasuredWidth } from "./measuredWidth";
 import { useMonitorWidthMmOverride, useRideDistanceM } from "./rideSettings";
 import {
   TOO_SMALL_TEXT,
@@ -64,21 +64,16 @@ const monitorOf = (
   widthMm,
 });
 
-/** The measured physical width of the window's display, refreshed when the window moves (see `watchMonitorChange`). */
+/**
+ * The measured physical width of the window's display, refreshed when the window may have changed display (see
+ * `watchMonitorChange`). One store per mounted tree (`createMeasuredWidth`): reads are ordered by a sequence
+ * number and a read that outlives the last subscriber is dropped.
+ */
 function useMeasuredWidthMm(): number | null {
-  const [mm, setMm] = useState<number | null>(null);
-  useEffect(() => {
-    let live = true;
-    const refresh = () =>
-      void readDisplayWidthMm().then((v) => live && setMm(v));
-    refresh();
-    const stop = watchMonitorChange(refresh);
-    return () => {
-      live = false;
-      stop();
-    };
-  }, []);
-  return mm;
+  const [store] = useState(() =>
+    createMeasuredWidth(readDisplayWidthMm, watchMonitorChange),
+  );
+  return useSyncExternalStore(store.subscribe, store.get);
 }
 
 /** Live tiers for the current window, monitor, distance and override. */

@@ -73,6 +73,11 @@ function SummaryBody({ ride }: { ride: RideRecord }) {
         {OUTCOME[ride.outcome]}
       </p>
       <p className="muted">{startedText(ride.startedAt)}</p>
+      {ride.outcome === "aborted" && (
+        <p role="note" className="history-notice">
+          Ride ended without the engine confirming; data may be incomplete.
+        </p>
+      )}
       {s === null ? (
         <p className="muted">No summary was recorded for this ride.</p>
       ) : (

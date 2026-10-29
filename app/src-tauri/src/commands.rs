@@ -2,8 +2,9 @@
 //! They hold no logic; the window label of the caller is the only thing added, and
 //! [`ApiError`] is the only error that crosses.
 use crank_core::{
-    ApiError, Core, CoreInfo, DeviceLinkInfo, DeviceRole, FrameSink, PairedDevice, RideLoaded,
-    RideRecord, RideStatusView, ScannedDevice, SinkClosed, WorkoutDetail, WorkoutSummary,
+    ApiError, Core, CoreInfo, DeviceLinkInfo, DeviceRole, FrameSink, PairedDevice, RideEnded,
+    RideLoaded, RideRecord, RideStatusView, ScannedDevice, SinkClosed, WorkoutDetail,
+    WorkoutSummary,
 };
 use crank_engine::{MetricId, StreamFrame, StreamId, StreamSnapshot, SubId, SubscribeOpts};
 use tauri::{State, ipc::Channel};
@@ -146,14 +147,15 @@ pub async fn ride_skip(core: State<'_, Core>) -> Result<(), ApiError> {
     core.ride_skip().await
 }
 
-/// End the ride; the id of the finished ride, `null` for an unloaded one.
+/// End the ride: the id of the finished ride (`null` for an unloaded one) and whether the
+/// core had to end it by force because the engine could not.
 ///
 /// # Errors
-/// As [`Core::ride_end`].
+/// As [`Core::ride_end_outcome`].
 #[tauri::command]
 #[specta::specta]
-pub async fn ride_end(core: State<'_, Core>) -> Result<Option<String>, ApiError> {
-    core.ride_end().await
+pub async fn ride_end(core: State<'_, Core>) -> Result<RideEnded, ApiError> {
+    core.ride_end_outcome().await.map(Into::into)
 }
 
 /// The ride's state.

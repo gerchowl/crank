@@ -202,9 +202,9 @@ function Screen({ session }: { session: RideSession }) {
       session.record(sampleT, workoutS, sampleV);
   }, [session, sampleT, sampleV, workoutS]);
 
-  const run = async (
+  const run = async <T,>(
     go: () => Promise<
-      { status: "ok"; data: unknown } | { status: "error"; error: ApiError }
+      { status: "ok"; data: T } | { status: "error"; error: ApiError }
     >,
   ) => {
     setRefusal(null);
@@ -233,7 +233,9 @@ function Screen({ session }: { session: RideSession }) {
     const outcome = await run(end.run);
     if (outcome.status === "ok")
       session.leaveOnce(() => {
-        if (typeof outcome.data === "string") navigate("history", outcome.data);
+        // A forced end (the engine could not end it) is recorded as aborted: the summary says so.
+        if (outcome.data.rideId !== null)
+          navigate("history", outcome.data.rideId);
         else {
           // Never started: unloaded, nothing to review.
           releaseRide(session);
