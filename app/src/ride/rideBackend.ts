@@ -23,6 +23,7 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   ApiError,
+  LinkChange,
   Phase,
   StreamPauseReason,
   StreamRideState,
@@ -68,6 +69,12 @@ export interface RideWorld {
   lastId: string | null;
   rideId: string;
   userPause: boolean;
+  /** The trainer link is lost in an active ride: the engine pauses with `trainer_lost`, which outranks a rider pause (engine.rs:295). */
+  trainerLost: boolean;
+  /** The strap link is lost: the ride keeps going (DESIGN §6.5). */
+  hrLost: boolean;
+  /** ERG released for low cadence; the engine reports it from the policy and only a riding ride is released (§6.5). */
+  ergReleased: boolean;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";
   cap: "none" | "requires_erg" | "exceeds";
@@ -93,6 +100,9 @@ export function installRide(over: Partial<RideWorld> = {}) {
     lastId: null,
     rideId: "ride-1",
     userPause: false,
+    trainerLost: false,
+    hrLost: false,
+    ergReleased: false,
     blockIdx: 0,
     trainer: "ready",
     cap: "none",
@@ -108,10 +118,25 @@ export function installRide(over: Partial<RideWorld> = {}) {
   const state = (): StreamRideState => {
     if (world.phase === "finished") return { kind: "finished" };
     if (world.phase !== "active") return { kind: "idle" };
+    if (world.trainerLost)
+      return {
+        kind: "paused",
+        reason: "trainer_lost" satisfies StreamPauseReason,
+      };
     return world.userPause
       ? { kind: "paused", reason: "user" satisfies StreamPauseReason }
       : { kind: "riding" };
   };
+  const links = (): LinkChange[] =>
+    world.phase === "active"
+      ? [
+          {
+            device: "trainer",
+            state: world.trainerLost ? "lost" : "ready",
+          },
+          { device: "hr", state: world.hrLost ? "lost" : "ready" },
+        ]
+      : [];
   /** The engine's `publish`: the status frame after a command. */
   const publish = (workoutS?: number) => {
     if (!world.publishes) return;
@@ -121,8 +146,10 @@ export function installRide(over: Partial<RideWorld> = {}) {
       workoutS: workoutS ?? base.truth.status.workoutS,
       blockIndex: world.blockIdx < world.blocks.length ? world.blockIdx : null,
       blockElapsedS: 0,
+      ergReleased: world.ergReleased && state().kind === "riding",
     });
-    base.push({ status: base.truth.status });
+    base.truth.links = links();
+    base.push({ status: base.truth.status, links: links() });
   };
   const reach = () => {
     if (world.phase === "none") throw err("conflict", "no ride loaded");
