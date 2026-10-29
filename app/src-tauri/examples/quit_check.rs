@@ -26,7 +26,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 mod macos {
     use crank_core::{Core, CoreConfig, DeviceMode, DeviceRole, RideOutcome};
-    use crank_desktop::lifecycle;
+    use crank_desktop::lifecycle::{self, Wire};
     use crank_devices::sim::SimConfig;
     use std::{
         ffi::{c_char, c_void},
@@ -35,9 +35,10 @@ mod macos {
         time::{Duration, Instant},
     };
     use tauri::{
-        Manager,
-        menu::MenuItemKind,
+        AppHandle, Manager, Webview, Window, WindowEvent, Wry,
+        menu::{Menu, MenuEvent, MenuItemKind},
         test::{mock_context, noop_assets},
+        webview::PageLoadPayload,
     };
 
     /// How long the child rides before it is terminated.
@@ -98,13 +99,49 @@ mod macos {
         }
     }
 
+    type MenuBuilder = Box<dyn FnOnce(&AppHandle<Wry>) -> tauri::Result<Menu<Wry>> + Send>;
+
+    /// A builder that keeps the menu `install` registers and ignores the other handlers.
+    struct MenuOnly(Option<MenuBuilder>);
+    impl Wire<Wry> for MenuOnly {
+        fn on_page_load<F: Fn(&Webview<Wry>, &PageLoadPayload<'_>) + Send + Sync + 'static>(
+            self,
+            _: F,
+        ) -> Self {
+            self
+        }
+        fn on_window_event<F: Fn(&Window<Wry>, &WindowEvent) + Send + Sync + 'static>(
+            self,
+            _: F,
+        ) -> Self {
+            self
+        }
+        fn menu<F: FnOnce(&AppHandle<Wry>) -> tauri::Result<Menu<Wry>> + Send + 'static>(
+            mut self,
+            f: F,
+        ) -> Self {
+            self.0 = Some(Box::new(f));
+            self
+        }
+        fn on_menu_event<F: Fn(&AppHandle<Wry>, MenuEvent) + Send + Sync + 'static>(
+            self,
+            _: F,
+        ) -> Self {
+            self
+        }
+    }
+
     /// Ride, then get terminated by `NSApp terminate:` after [`RIDE_FOR`].
     pub fn child(dir: &Path) {
         let app = lifecycle::install(tauri::Builder::<tauri::Wry>::new())
             .build(mock_context(noop_assets()))
             .expect("app builds");
-        // The Quit item (Cmd+Q) is ours, not the predefined one that sends `terminate:`.
-        let menu = lifecycle::menu(app.handle()).expect("menu");
+        // The Quit item (Cmd+Q) is ours, not the predefined one that sends `terminate:`: check
+        // the menu `install` registered, not `lifecycle::menu` alone.
+        let build = lifecycle::install(MenuOnly(None))
+            .0
+            .expect("install registers a menu");
+        let menu = build(app.handle()).expect("menu");
         let Some(MenuItemKind::Submenu(application)) =
             menu.items().expect("items").into_iter().next()
         else {
