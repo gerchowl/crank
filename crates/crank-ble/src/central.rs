@@ -1037,55 +1037,62 @@ mod tests {
         assert!(took >= Duration::from_secs(3), "{took:?}");
         assert!(took < Duration::from_millis(3500), "{took:?}");
     }
-    /// The trainer supervisor is wired the same way.
-    #[tokio::test(start_paused = true)]
-    async fn the_production_trainer_supervisor_waits_for_the_cleanup_of_a_cancelled_connect() {
-        struct HangingTrainer {
-            cleanup: ConnectCleanup,
-            calls: Arc<AtomicUsize>,
-            first: Arc<Mutex<Option<tokio::sync::mpsc::Sender<crank_devices::TrainerEvent>>>>,
+    /// A trainer driver whose first connect succeeds and whose later connects hang, after
+    /// starting a cleanup (reported to `cleanup`) that takes `hold`, for ever if `None`.
+    struct HangingTrainer {
+        cleanup: ConnectCleanup,
+        hold: Option<Duration>,
+        calls: Arc<AtomicUsize>,
+        first: Arc<Mutex<Option<tokio::sync::mpsc::Sender<crank_devices::TrainerEvent>>>>,
+    }
+    impl TrainerDriver for HangingTrainer {
+        fn kind(&self) -> DriverKind {
+            DriverKind::FeC
         }
-        impl TrainerDriver for HangingTrainer {
-            fn kind(&self) -> DriverKind {
-                DriverKind::FeC
-            }
-            fn connect(
-                &self,
-                _: &DeviceRef,
-                _: RiderConfig,
-            ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
-                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                    let (tx, events) = tokio::sync::mpsc::channel(8);
-                    *self.first.lock().unwrap() = Some(tx);
-                    let (control, _) = tokio::sync::mpsc::channel(8);
-                    return Box::pin(async {
-                        Ok(TrainerLink {
-                            info: crank_devices::DeviceInfo::default(),
-                            caps: crank_devices::TrainerCaps {
-                                erg: true,
-                                sim: false,
-                                resistance: true,
-                                max_resistance_n: None,
-                                max_target_w: 1000,
-                            },
-                            control,
-                            events,
-                        })
-                    });
-                }
-                let token = self.cleanup.begin();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(1500)).await;
-                    drop(token);
+        fn connect(
+            &self,
+            _: &DeviceRef,
+            _: RiderConfig,
+        ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                let (tx, events) = tokio::sync::mpsc::channel(8);
+                *self.first.lock().unwrap() = Some(tx);
+                let (control, _) = tokio::sync::mpsc::channel(8);
+                return Box::pin(async {
+                    Ok(TrainerLink {
+                        info: crank_devices::DeviceInfo::default(),
+                        caps: crank_devices::TrainerCaps {
+                            erg: true,
+                            sim: false,
+                            resistance: true,
+                            max_resistance_n: None,
+                            max_target_w: 1000,
+                        },
+                        control,
+                        events,
+                    })
                 });
-                Box::pin(std::future::pending())
             }
+            let (token, hold) = (self.cleanup.begin(), self.hold);
+            tokio::spawn(async move {
+                match hold {
+                    Some(hold) => tokio::time::sleep(hold).await,
+                    None => std::future::pending::<()>().await,
+                }
+                drop(token);
+            });
+            Box::pin(std::future::pending())
         }
+    }
+    /// The trainer counterpart of `time_to_release`: release a supervised trainer whose
+    /// reconnect attempt is stuck mid-connect and report how long the release took.
+    async fn trainer_time_to_release(hold: Option<Duration>) -> Option<Duration> {
         let clock: Arc<dyn Clock> = Arc::new(crate::MonotonicClock::default());
         let (calls, first) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::default()));
         let driver = supervised_trainer(
             |cleanup| HangingTrainer {
                 cleanup,
+                hold,
                 calls: calls.clone(),
                 first: first.clone(),
             },
@@ -1107,10 +1114,31 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         let start = tokio::time::Instant::now();
         drop(link.control);
-        while link.events.recv().await.is_some() {}
-        let took = start.elapsed();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while link.events.recv().await.is_some() {}
+        })
+        .await
+        .ok()
+        .map(|()| start.elapsed())
+    }
+    /// The trainer supervisor is wired the same way.
+    #[tokio::test(start_paused = true)]
+    async fn the_production_trainer_supervisor_waits_for_the_cleanup_of_a_cancelled_connect() {
+        let took = trainer_time_to_release(Some(Duration::from_millis(1500)))
+            .await
+            .unwrap();
         // the cleanup, started at 0.5 s, ends at 2.0 s; the release started at 0.7 s
         assert!(took >= Duration::from_secs(1), "{took:?}");
         assert!(took < Duration::from_millis(1500), "{took:?}");
+    }
+    /// #325: the trainer counterpart of the strap test: a cleanup that never settles holds
+    /// the release for the supervisor's cap (the 2 s disconnect bound plus 1 s) and no longer.
+    #[tokio::test(start_paused = true)]
+    async fn a_trainer_cleanup_that_never_settles_holds_the_release_only_up_to_the_cap() {
+        let took = trainer_time_to_release(None)
+            .await
+            .expect("released within 10 s");
+        assert!(took >= Duration::from_secs(3), "{took:?}");
+        assert!(took < Duration::from_millis(3500), "{took:?}");
     }
 }
