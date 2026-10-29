@@ -184,12 +184,13 @@ export function installRide(over: Partial<RideWorld> = {}) {
    */
   const commanded = (): StreamCommanded | null => {
     if (world.phase !== "active" || world.trainerLost) return null;
-    if (world.userPause || world.ergReleased)
-      return { kind: "resistance", pct: 0 };
-    if (world.trainerSilent) return { kind: "erg", watts: 0 };
+    if (world.userPause) return { kind: "resistance", pct: 0 };
     const b = world.blocks[world.blockIdx];
     if (b === undefined) return null;
+    // a free block is judged before the release (erg/policy.rs: no ERG block, no release): `Free`
     if (b.phase === "free") return { kind: "free" };
+    if (world.ergReleased) return { kind: "resistance", pct: 0 };
+    if (world.trainerSilent) return { kind: "erg", watts: 0 };
     return { kind: "erg", watts: world.commandedW ?? b.powerFrom ?? 0 };
   };
   const links = (): LinkChange[] =>

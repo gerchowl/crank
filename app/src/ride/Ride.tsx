@@ -68,8 +68,11 @@ export function commandedView(st: StreamStatus | null): {
     case "erg":
       return { value: c.watts, unit: "W" };
     case "resistance":
+      // The rider's pause outranks a release (policy order, erg/policy.rs; #330 hides the release while paused). With
+      // neither flag the engine has not yet re-sent after Resume (it publishes at once, the next tick sends ERG):
+      // there is no target to show, so "—", never a word that is not the engine's reason.
       return {
-        value: st.ergReleased ? "Released" : st.userPaused ? "Paused" : "Off",
+        value: st.userPaused ? "Paused" : st.ergReleased ? "Released" : null,
         unit: "",
       };
     case "free":
