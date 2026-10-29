@@ -414,15 +414,12 @@ describe("Ride", () => {
     ["Start", {}, "idle"],
     ["Pause", { phase: "active" }, "riding"],
     ["Skip block", { phase: "active" }, "riding"],
-    ["End", { phase: "active" }, "riding"],
   ] as [string, Partial<RideWorld>, string][])(
     "%s with the engine stopped shows the core's internal error",
     async (name, over, kind) => {
       const rig = await open({ ...over, engineStopped: true });
       await push(rig, { state: { kind } as StreamStatus["state"] });
       await userEvent.click(screen.getByRole("button", { name }));
-      if (name === "End")
-        await userEvent.click(screen.getByRole("button", { name: "End ride" }));
       const alert = await screen.findByRole("alert");
       expect(alert.getAttribute("data-code")).toBe("internal");
       expect(alert.textContent).toContain("engine stopped");
@@ -430,6 +427,15 @@ describe("Ride", () => {
       expect(routeText()).toBe("ride:");
     },
   );
+
+  test("End with the engine stopped still leaves the ride: the core ends it by force (#331)", async () => {
+    const rig = await open({ phase: "active", engineStopped: true });
+    await push(rig, { state: { kind: "riding" } });
+    await userEvent.click(screen.getByRole("button", { name: "End" }));
+    await userEvent.click(screen.getByRole("button", { name: "End ride" }));
+    await waitFor(() => expect(routeText()).toBe("history:ride-1"));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 
   test("Resume with the engine stopped shows the core's internal error", async () => {
     const rig = await open({

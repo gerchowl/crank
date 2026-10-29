@@ -234,6 +234,17 @@ pub struct RideLoaded {
     pub hr_linked: bool,
 }
 
+/// Answer of `ride_end`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RideEnded {
+    /// The ride's id; `null` for a ride that never started and was only unloaded.
+    pub ride_id: Option<String>,
+    /// The engine could not end the ride (stuck or gone) and the core ended it by force: the
+    /// ride is recorded as aborted, without a summary, and its data may be incomplete.
+    pub forced: bool,
+}
+
 /// The ride's state (`ride_status`): the engine's status, and whether a ride is being
 /// loaded (devices connecting) right now.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]

@@ -415,6 +415,15 @@ impl Store {
         let id = ride_id.to_owned();
         self.write(move |w| w.finish(&id, ended_at, &summary))
     }
+    /// Close the live ride as aborted at `ended_at`, keeping what was recorded (the buffered
+    /// seconds are flushed) and writing no summary. For a ride whose engine can no longer
+    /// finish it; the next ride may start afterwards.
+    /// # Errors
+    /// Returns `InvalidInput` if the ride is not live, or write errors.
+    pub fn abort_ride(&self, ride_id: &str, ended_at: i64) -> Result<(), StoreError> {
+        let id = ride_id.to_owned();
+        self.write(move |w| w.abort(&id, ended_at))
+    }
     /// Read metadata, validating every JSON snapshot.
     /// # Errors
     /// Returns `InvalidJson`, SQL or worker errors.
