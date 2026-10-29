@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import type { RideRecord } from "../bindings";
 import { navigate, useRoute } from "../router";
 import { History, startedText } from "./History";
 
+// The start time renders in the rider's local time: pin it, so a date can be asserted literally.
+beforeAll(() => {
+  process.env.TZ = "UTC";
+});
 afterEach(() => {
   cleanup();
   clearMocks();
@@ -19,7 +23,7 @@ const RIDES: RideRecord[] = [
   {
     id: "ride-1",
     startedAt: 1_760_000_000,
-    endedAt: 1_760_003_000,
+    endedAt: 1_760_003_100,
     outcome: "finished",
     workoutId: "w-ss",
     workoutName: "Sweet spot 3x12",
@@ -28,11 +32,27 @@ const RIDES: RideRecord[] = [
       avgPowerW: 187.4,
       npW: 201.6,
       avgHrBpm: 142.2,
-      kj: 562,
+      kj: 540,
       blocks: [
         { index: 0, plannedS: 600, plannedW: 150, actualS: 600, actualW: 148 },
         { index: 1, plannedS: 720, plannedW: 230, actualS: 700, actualW: null },
       ],
+    },
+  },
+  {
+    id: "ride-3",
+    startedAt: 1_758_000_000,
+    endedAt: 1_758_000_300,
+    outcome: "finished",
+    workoutId: null,
+    workoutName: "Spin",
+    summary: {
+      durationS: 300,
+      avgPowerW: 2,
+      npW: 2,
+      avgHrBpm: null,
+      kj: 0.6,
+      blocks: [],
     },
   },
   {
@@ -50,6 +70,8 @@ interface Backend {
   calls: { cmd: string; args: Record<string, unknown> }[];
   /** Per-command failures, thrown when the call arrives. */
   fail: Record<string, unknown>;
+  /** Answers held until released, keyed by command or \`ride_summary:<id>\`. */
+  hold: Record<string, Promise<void>>;
 }
 /**
  * `rides_list` and `ride_summary` behind `mockIPC`, with every refusal the core can give
@@ -59,11 +81,16 @@ interface Backend {
  * as `summary: null` (`record`, :1218-1219), like an open or aborted ride; both are in `RIDES`.
  */
 function install(over: Partial<Backend> = {}): Backend {
-  const b: Backend = { calls: [], fail: {}, ...over };
+  const b: Backend = { calls: [], fail: {}, hold: {}, ...over };
   mockIPC((cmd, payload) => {
     const args = (payload ?? {}) as Record<string, unknown>;
     b.calls.push({ cmd, args });
     if (cmd in b.fail) throw b.fail[cmd];
+    const held = b.hold[cmd] ?? b.hold[`${cmd}:${String(args.id)}`];
+    if (held) return held.then(() => answer(cmd, args));
+    return answer(cmd, args);
+  });
+  const answer = (cmd: string, args: Record<string, unknown>) => {
     switch (cmd) {
       case "rides_list":
         return RIDES;
@@ -77,7 +104,7 @@ function install(over: Partial<Backend> = {}): Backend {
       default:
         throw `command ${cmd} not found`;
     }
-  });
+  };
   return b;
 }
 
@@ -103,14 +130,17 @@ test("a summary renders the core's values", async () => {
   });
   const s = within(screen.getByRole("region", { name: "Ride summary" }));
   expect(s.getByText("Finished")).toBeTruthy();
-  expect(s.getByText(startedText(1_760_000_000))).toBeTruthy();
+  // 1_760_000_000 s is 2025-10-09 08:53:20 UTC (read as milliseconds it would be 1970)
+  const started = s.getByText(/2025/).textContent ?? "";
+  expect(started).toMatch(/0?8:53/);
+  expect(startedText(1_760_000_000)).toBe(started);
   const value = (term: string) =>
     s.getByText(term).nextElementSibling?.textContent;
   expect(value("Duration")).toBe("50:00");
   expect(value("Average power")).toBe("187 W");
   expect(value("Normalized power")).toBe("202 W");
   expect(value("Average heart rate")).toBe("142 bpm");
-  expect(value("Work")).toBe("562 kJ");
+  expect(value("Work")).toBe("540 kJ");
   // planned and ridden per block; a block with no recorded power shows a dash
   const rows = within(s.getByRole("table", { name: "Blocks" })).getAllByRole(
     "row",
@@ -120,6 +150,14 @@ test("a summary renders the core's values", async () => {
   expect(within(rows[2]!).getAllByRole("cell")[1]!.textContent).toBe(
     "11:40 · —",
   );
+});
+
+test("a short ride's work keeps a decimal", async () => {
+  install();
+  navigate("history", "ride-3");
+  open();
+  const s = within(await screen.findByRole("region", { name: "Ride summary" }));
+  expect(s.getByText("Work").nextElementSibling?.textContent).toBe("0.6 kJ");
 });
 
 test("an aborted ride has no summary to show", async () => {
@@ -180,7 +218,7 @@ test("the list links each ride to its summary", async () => {
   navigate("history");
   open();
   const list = within(await screen.findByRole("list", { name: "Rides" }));
-  expect(list.getAllByRole("button")).toHaveLength(2);
+  expect(list.getAllByRole("button")).toHaveLength(3);
   await userEvent.click(list.getByRole("button", { name: /Free ride/ }));
   expect(
     await screen.findByText("No summary was recorded for this ride."),
@@ -201,4 +239,62 @@ test("the list says when there are no rides, and shows a store failure", async (
   expect((await screen.findByRole("alert")).textContent).toContain(
     "disk I/O error",
   );
+});
+
+test("Loading shows while the summary and the list are being fetched", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  install({ hold: { ride_summary: gate, rides_list: gate } });
+  open();
+  expect(await screen.findByText("Loading…")).toBeTruthy();
+  cleanup();
+  navigate("history");
+  open();
+  expect(await screen.findByText("Loading…")).toBeTruthy();
+  act(() => release());
+  expect(await screen.findByRole("list", { name: "Rides" })).toBeTruthy();
+  expect(screen.queryByText("Loading…")).toBeNull();
+});
+
+test("the list's Retry asks again", async () => {
+  const b = install({
+    fail: { rides_list: apiError("storage", "disk I/O error") },
+  });
+  navigate("history");
+  open();
+  await screen.findByRole("alert");
+  delete b.fail.rides_list;
+  await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("list", { name: "Rides" })).toBeTruthy();
+  expect(b.calls.filter((c) => c.cmd === "rides_list")).toHaveLength(2);
+});
+
+test("changing the ride shows neither the old ride nor the old failure", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  install({ hold: { "ride_summary:ride-2": gate } });
+  navigate("history", "ride-404");
+  open();
+  await screen.findByRole("alert");
+  // another ride is asked for: the not-found alert of the first is gone while it loads
+  act(() => navigate("history", "ride-2"));
+  expect(await screen.findByText("Loading…")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+  act(() => release());
+  expect(await screen.findByText("Aborted")).toBeTruthy();
+});
+
+test("a stale answer for the previous ride is not shown for the next", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  install({ hold: { "ride_summary:ride-2": gate } });
+  open();
+  await screen.findByRole("heading", { name: "Sweet spot 3x12" });
+  act(() => navigate("history", "ride-2"));
+  expect(await screen.findByText("Loading…")).toBeTruthy();
+  // ride-1's summary is still in the hook's state: it must not stand in for ride-2
+  expect(screen.queryByRole("region", { name: "Ride summary" })).toBeNull();
+  expect(screen.queryByText("Sweet spot 3x12")).toBeNull();
+  act(() => release());
+  expect(await screen.findByText("Aborted")).toBeTruthy();
 });
