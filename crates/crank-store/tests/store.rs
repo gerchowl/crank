@@ -200,6 +200,29 @@ fn an_aborted_live_ride_keeps_its_seconds_and_frees_the_writer() {
     let mut next = ride();
     next.id = "next".into();
     store.start_ride(next).unwrap();
+    // #344: a late write of the aborted ride's engine (one that was blocked when the core
+    // ended the ride by force) is refused by the id guard, and the ride stays aborted
+    let not_live =
+        |e: StoreError| matches!(&e, StoreError::InvalidInput(m) if m == "ride is not live");
+    assert!(
+        store
+            .append_second("ride", 77, samples(77))
+            .is_err_and(not_live)
+    );
+    assert!(
+        store
+            .finish_ride(
+                "ride",
+                1_700_000_300,
+                RideSummaryJson::parse(r#"{"v":1}"#).unwrap(),
+            )
+            .is_err_and(not_live)
+    );
+    assert_eq!(
+        store.ride("ride").unwrap().unwrap().state,
+        RideState::Aborted
+    );
+    assert_eq!(store.ride("next").unwrap().unwrap().state, RideState::Open);
 }
 
 #[test]

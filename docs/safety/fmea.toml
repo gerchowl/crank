@@ -1215,7 +1215,7 @@ phase = "finishing"
 severity = "S1"
 failure_mode = "Ride end: the engine cannot carry it out (stuck or gone)"
 cause = "engine task stuck (a blocking store write, a hang) or dead (panic); EngineCmd::Stop is never answered or answers EngineStopped"
-fault_plan = "engine replaced by one that never answers Stop / aborted engine task / engine blocked in synchronous code"
+fault_plan = "engine replaced by one that never answers Stop / aborted engine task / engine blocked in synchronous code / engine on its own thread blocked mid-ride in a record write while holding its links"
 detection = "Core::end_ride: Stop bounded by STOP_TIMEOUT (1 s) or EngineStopped"
 guard = "ADR-0002 §7.9 (a ride end the engine cannot carry out, #331)"
 status = "guarded"
@@ -1226,8 +1226,10 @@ test = [
   "crates/crank-core/src/core.rs::a_dead_engine_is_ended_by_force",
   "crates/crank-core/src/core.rs::an_engine_stuck_in_synchronous_code_does_not_hang_end",
   "crates/crank-core/src/core.rs::quitting_with_a_stuck_engine_ends_and_records_the_ride_inside_the_cap",
+  "crates/crank-core/src/core.rs::an_engine_thread_blocked_mid_ride_does_not_hold_end_on_a_multi_thread_core",
+  "crates/crank-core/src/core.rs::an_engine_thread_blocked_mid_ride_does_not_hold_end_on_a_current_thread_core",
 ]
-wanted.trainer = "the core itself sends Resistance{pct: 0} through its own hold on the control channel and waits for its Delivered (END_MODE_TIMEOUT, 500 ms) before the link is dropped; then the drivers disconnect"
-wanted.engine = "the engine task is aborted (detached if blocked in synchronous code); the ride is closed as aborted, off the async executor; the ride-active gate is cleared; a new ride can be loaded"
+wanted.trainer = "the core itself sends Resistance{pct: 0} through its own hold on the control channel and waits for its Delivered (END_MODE_TIMEOUT, 500 ms) before the link is dropped; then the core releases both devices itself (the relays close the drivers' event streams, Disconnect on its own control sender), even with the engine still holding its links"
+wanted.engine = "the engine runs on its own thread (EngineHost::Thread, #344), so a blocked engine cannot starve the core's deadlines; it is cut off from its links and its ride-active signal, aborted (detached if blocked in synchronous code); the ride is closed as aborted, off the async executor, and stays so when the engine wakes (its writes are refused: ride is not live); the ride-active gate is cleared; a new ride can be loaded at once"
 wanted.ui = "ride_end answers {rideId, forced: true}; the rider leaves the ride; the summary says the data may be incomplete"
 note = "residual: a GATT write stalled for more than END_MODE_TIMEOUT lets the core give up on the end mode and drop the link, as in FM-FIN-02 (the trainer sees the link drop and disconnect)"

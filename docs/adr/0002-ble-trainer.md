@@ -936,21 +936,37 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    After the 2 s our own admission lock is free (no `AlreadyConnected` from us); the outcome of a subsequent
    connect is up to btleplug/CoreBluetooth, and a failure surfaces as `ConnectFailed`.
    **A ride end the engine cannot carry out (#331).** `ride_end` bounds its `Stop` (1 s, below the 3 s
-   quit cap; the replacing `ride_load` and `discard` too). An engine that does not answer, or whose task is
-   gone, is ended by force, in this order. (1) **The end mode is the core's**: it keeps its own hold on the
-   trainer's control channel, independent of the engine task, and sends `Resistance{0}` itself, waiting for
-   its `Delivered` for at most 500 ms (about two writer ticks; with the 1 s `Stop` bound, the task abort and
-   the record close it keeps a forced end at about 2.25 s worst case, inside the quit cap), before the link is
-   dropped; a driver that returns on a closed control channel writes no end mode itself. (2) The engine task
-   is aborted and given 250 ms to end; a task blocked in synchronous code (a store write) ignores the abort
-   and is detached, never awaited. (3) The ride's record is closed as **aborted** (the seconds persisted so
-   far are kept, there is no summary, as for a ride closed by crash recovery), on the blocking pool and
-   waited for at most 500 ms; if the engine finished the ride after all (a late `Stop`), that record wins
-   and the end is reported as an ordinary one. (4) The ride-active signal is cleared and the devices are
-   released as above; a new ride can be loaded at once. The residual is FM-FIN-02's stalled write: if the
-   trainer does not take the end mode within the 500 ms the core gives up on it and the link is dropped.
-   `ride_end` reports `{rideId, forced}`; the id is returned either way, and the summary of an aborted ride
-   says its data may be incomplete. Quitting inherits the bound. FMEA row FM-FIN-05.
+   quit cap; the replacing `ride_load` and `discard` too). **Threading (#344):** the application runs each
+   ride's engine on its own OS thread with its own current-thread tokio runtime (`EngineHost::Thread`), so
+   an engine blocked in synchronous code (a store write) holds only that thread: the core's runtime, its
+   workers and its timer, on which every deadline below runs, stay free. (On the core's runtime a blocked
+   engine held a worker and with it the timer: the deadlines did not fire, End took as long as the stall.)
+   The in-runtime host (`EngineHost::Task`) is for tests on paused time only. Recorder writes stay on the
+   engine's thread; the core's own store call below runs on the blocking pool. An engine that does not
+   answer, or whose task is gone, is ended by force, in this order. (1) The engine is **cut off**: the
+   relays between the drivers and the engine stop passing events to it, and its ride-active signal is
+   ignored from then on. (2) **The end mode is the core's**: it keeps its own hold on the trainer's control
+   channel, independent of the engine, and sends `Resistance{0}` itself, waiting for its `Delivered` for at
+   most 500 ms (about two writer ticks; with the 1 s `Stop` bound, the abort and the record close it keeps a
+   forced end at about 2.25 s worst case, inside the quit cap), before the link is dropped; a driver that
+   returns on a closed control channel writes no end mode itself. (3) **The core releases the devices**
+   through what it owns, not by dropping the engine's links (which an engine wedged on its thread still
+   holds): both relays stop and close the drivers' event streams (a closed stream makes the trainer's
+   driver return and the strap's disconnect), and the trainer is sent `Disconnect` on the core's control
+   sender. (4) The engine is aborted (a task is aborted; a thread is signalled and drops the engine at its
+   next await) and given 250 ms to end; an engine blocked in synchronous code cannot be interrupted and is
+   detached, never awaited. (5) The ride's record is closed as **aborted** (the seconds persisted so far
+   are kept, there is no summary, as for a ride closed by crash recovery), on the blocking pool and waited
+   for at most 500 ms; if the engine finished the ride after all (a late `Stop`), that record wins and the
+   end is reported as an ordinary one. (6) The ride-active signal is cleared; the drivers' release is
+   awaited as above, and a new ride can be loaded at once. A detached engine that wakes later changes
+   nothing: its record writes are refused by the store (`ride is not live`), so the ride stays aborted, and
+   its ride-active signal no longer reaches the core, so the next ride's is not touched. Not yet done
+   (#345): commands it sends the trainer between the cut-off and the disconnect are not gated, and the end
+   mode's `Delivered` is matched by mode, not by a sequence number. The residual is FM-FIN-02's stalled
+   write: if the trainer does not take the end mode within the 500 ms the core gives up on it and the link
+   is dropped. `ride_end` reports `{rideId, forced}`; the id is returned either way, and the summary of an
+   aborted ride says its data may be incomplete. Quitting inherits the bound. FMEA row FM-FIN-05.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 

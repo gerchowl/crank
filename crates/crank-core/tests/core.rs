@@ -1,5 +1,5 @@
 //! Facade acceptance for devices and workouts (#34 B1, ADR-0001 §4) on the simulator.
-use crank_core::{ApiError, Core, CoreConfig, DeviceMode, DeviceRole, ErrorCode};
+use crank_core::{ApiError, Core, CoreConfig, DeviceMode, DeviceRole, EngineHost, ErrorCode};
 use crank_devices::sim::SimConfig;
 use crank_engine::VirtualClock;
 use std::{path::Path, sync::Arc};
@@ -9,6 +9,7 @@ fn config(dir: &Path) -> CoreConfig {
         data_dir: dir.into(),
         devices: DeviceMode::Sim(SimConfig::default()),
         clock: Some(Arc::new(VirtualClock::new(1))),
+        engine_host: EngineHost::Task,
     }
 }
 fn code(e: &ApiError) -> ErrorCode {
