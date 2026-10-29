@@ -753,6 +753,38 @@ test("a refusal shown on Workouts can be dismissed", async () => {
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
+// ---- #338: what `seenRideRefusal` leaves alone, and a refusal that arrives on the ride screen ----
+
+test("leaving Workouts does not clear a loaded result: only a refusal is seen", async () => {
+  const b = install();
+  const release = await startHeldLoad(b, /Easy spin/);
+  await leave();
+  release();
+  await screen.findByText(/Ride loaded: Easy spin/);
+  await comeBack();
+  await leave(); // Workouts left again: `seenRideRefusal` runs, and must keep the loaded result
+  expect(screen.getByText(/Ride loaded: Easy spin/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Go to ride" })).toBeTruthy();
+});
+
+test("a refusal that arrives on the ride screen is hidden there and shown on the first view after it", async () => {
+  const b = install();
+  b.stage.connect = CONNECT_FAILED;
+  const release = await startHeldLoad(b, /Easy spin/);
+  await leave();
+  await act(() => navigate("ride")); // the rider opened the ride another way; the load is still in flight
+  release();
+  await waitFor(() =>
+    expect(b.calls.filter((c) => c.cmd === "ride_load")).toHaveLength(1),
+  );
+  await act(async () => {}); // let the refusal settle
+  expect(screen.queryByRole("alert")).toBeNull();
+  await act(() => navigate("today"));
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toMatch(/Could not load Easy spin/);
+  expect(alert.textContent).toMatch(/connect failed: out of range/);
+});
+
 test("starting a load while one is in flight is a no-op at the controller", async () => {
   const b = install();
   let release = () => {};

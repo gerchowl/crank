@@ -11,6 +11,10 @@
 //   is except Workouts; the Workouts view shows it (mounted, or on return) under its workout or, for another pick,
 //   naming the workout, and clears it here when the rider leaves (`seenRideRefusal`). So a refusal is never dropped and never
 //   reappears elsewhere.
+//   On the ride screen (a mode, DESIGN §3) the notice is not drawn, so a refusal that arrives there is not shown there:
+//   it stays `refused` and the notice shows it on the first view after the ride (Today, History, Settings) until it is
+//   dismissed or Workouts shows and leaves it. The ride screen is not interrupted by a load that did not happen
+//   (#338; showing it there instead is not decided).
 import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { commands } from "../bindings";
