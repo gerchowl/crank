@@ -67,7 +67,7 @@ impl ConnectCleanup {
         CleanupToken(self.0.clone())
     }
     /// Resolves once no cancelled connect is still being cleaned up. Bounded: a cleanup
-    /// is itself bounded by [`DISCONNECT_TIMEOUT`], and this gives up shortly after it.
+    /// is itself bounded (2 s), and this gives up shortly after it.
     pub async fn settled(&self) {
         let mut rx = self.0.subscribe();
         let _ = tokio::time::timeout(
