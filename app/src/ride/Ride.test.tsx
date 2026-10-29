@@ -580,20 +580,32 @@ describe("Ride", () => {
     expect(slot("target")?.textContent).toBe("Free");
   });
 
-  test('"Off" is never shown: right after Resume the last command is still the pause\'s, and the tile says —', async () => {
+  test('"Off" is never shown: Resume publishes while the pause\'s command is still the last, the next tick sends ERG', async () => {
     const rig = await open({ phase: "active", blockIdx: 1, userPause: true });
     await act(async () => rig.publish());
     expect(slot("target")?.textContent).toBe("Paused");
-    // the status published by Resume, before the next tick re-sends ERG: resistance, no reason
-    await push(rig, {
-      state: { kind: "riding" },
-      blockIndex: 1,
-      userPaused: false,
-      ergReleased: false,
-      commanded: { kind: "resistance", pct: 0 },
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
+    // the status Resume published: riding again, still the pause's resistance command, no reason to name
+    expect(rig.base.truth.status.commanded).toEqual({
+      kind: "resistance",
+      pct: 0,
     });
     expect(slot("target")?.textContent).toBe("—");
     expect(document.body.textContent).not.toMatch(/\bOff\b/);
+    await act(async () => rig.tick());
+    expect(slot("target")?.textContent).toBe("250");
+    expect(document.body.textContent).not.toMatch(/\bOff\b/);
+  });
+
+  test("a ride without blocks commands Free, as the engine does for a free ride", async () => {
+    const rig = await open(
+      { phase: "active", blocks: [], blockIdx: 0 },
+      { workoutId: null },
+    );
+    await act(async () => rig.publish());
+    expect(rig.base.truth.status.commanded).toEqual({ kind: "free" });
+    expect(slot("target")?.textContent).toBe("Free");
   });
 
   test("a lost trainer commands nothing, and the tile does not keep showing the old target", async () => {

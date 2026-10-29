@@ -104,6 +104,8 @@ export interface RideWorld {
   reconnectedAtS: number | null;
   /** The ERG watts the engine last sent while it is sending ERG (its soft start, steady target or ramp step); `null`: the current block's first planned watt, which is what a steady ERG block sends. */
   commandedW: number | null;
+  /** Resume has been answered and published, but the tick that sends the resumed mode has not run: `last_sent` is still the pause's `Resistance { 0 }` (engine.rs `Resume` then `publish`, the policy runs on the next tick). `rig.tick()` runs it. */
+  resumePending: boolean;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";
   cap: "none" | "requires_erg" | "exceeds";
@@ -144,6 +146,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
     gapS: null,
     reconnectedAtS: null,
     commandedW: null,
+    resumePending: false,
     blockIdx: 0,
     trainer: "ready",
     cap: "none",
@@ -184,13 +187,17 @@ export function installRide(over: Partial<RideWorld> = {}) {
    */
   const commanded = (): StreamCommanded | null => {
     if (world.phase !== "active" || world.trainerLost) return null;
-    if (world.userPause) return { kind: "resistance", pct: 0 };
+    if (world.userPause || world.resumePending)
+      return { kind: "resistance", pct: 0 };
+    // no block: a free ride, `Free` (erg/policy.rs:196)
     const b = world.blocks[world.blockIdx];
-    if (b === undefined) return null;
+    if (b === undefined) return { kind: "free" };
     // a free block is judged before the release (erg/policy.rs: no ERG block, no release): `Free`
     if (b.phase === "free") return { kind: "free" };
     if (world.ergReleased) return { kind: "resistance", pct: 0 };
-    if (world.trainerSilent) return { kind: "erg", watts: 0 };
+    // link ready again but no pedalling sample yet (or 8 silent ticks): the engine holds `Erg { 0 }`
+    if (world.trainerSilent || world.pausedAfterLoss)
+      return { kind: "erg", watts: 0 };
     return { kind: "erg", watts: world.commandedW ?? b.powerFrom ?? 0 };
   };
   const links = (): LinkChange[] =>
@@ -285,6 +292,8 @@ export function installRide(over: Partial<RideWorld> = {}) {
         active();
         if (!world.userPause) throw err("conflict", "not valid in this state");
         world.userPause = false;
+        // the status goes out at once; the mode is re-sent by the next tick
+        world.resumePending = true;
         publish();
         return null;
       case "ride_skip":
@@ -381,6 +390,11 @@ export function installRide(over: Partial<RideWorld> = {}) {
     wedge(): void {
       world.engineUnresponsive = true;
       base.truth.unresponsive = true;
+    },
+    /** The next engine tick: the policy's mode for the resumed ride is sent and the status carries it. */
+    tick() {
+      world.resumePending = false;
+      publish();
     },
     /** Delay the answer of the next call of `cmd` (its effect on the core is at the call) until the returned function runs. */
     hold(cmd: string): () => void {
