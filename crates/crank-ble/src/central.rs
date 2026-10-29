@@ -11,7 +11,8 @@
 //! stop waits for that stop to complete, so a late stop never ends a newer scan.
 use crate::{
     Advertisement, Advertisements, BtleplugAdvertisements, BtleplugHrTransport, BtleplugTransport,
-    FecTrainer, HrsDriver, Pairing, Reconnecting, ReconnectingHr, RideGate, Scanner, classify,
+    ConnectCleanup, FecTrainer, HrsDriver, Pairing, Reconnecting, ReconnectingHr, RideGate,
+    Scanner, classify,
 };
 use btleplug::{
     api::Manager as _,
@@ -344,10 +345,12 @@ impl BleCentral {
     /// FE-C trainer driver with the reconnect loop, retrying while `gate` is active.
     #[must_use]
     pub fn trainer_driver(&self, clock: Arc<dyn Clock>, gate: RideGate) -> impl TrainerDriver {
-        Reconnecting::new(
-            PeripheralTrainer {
+        let driver_clock = clock.clone();
+        supervised_trainer(
+            |cleanup| PeripheralTrainer {
                 central: self.clone(),
-                clock: clock.clone(),
+                clock: driver_clock,
+                cleanup,
             },
             clock,
             gate,
@@ -356,10 +359,12 @@ impl BleCentral {
     /// Heart-rate strap driver with the reconnect loop, retrying while `gate` is active.
     #[must_use]
     pub fn hr_driver(&self, clock: Arc<dyn Clock>, gate: RideGate) -> impl HeartRateDriver {
-        ReconnectingHr::new(
-            PeripheralHr {
+        let driver_clock = clock.clone();
+        supervised_hr(
+            |cleanup| PeripheralHr {
                 central: self.clone(),
-                clock: clock.clone(),
+                clock: driver_clock,
+                cleanup,
             },
             clock,
             gate,
@@ -367,9 +372,32 @@ impl BleCentral {
     }
 }
 
+/// The production supervisor over the driver `build` makes from the cleanup tracker. The one
+/// tracker is shared with the driver (which reports its cancelled connects to it) and the
+/// supervisor (which waits for them before it reports the link released, #304); this is the
+/// only place that wires the two, and a test builds it with a fake driver.
+fn supervised_trainer<D: TrainerDriver>(
+    build: impl FnOnce(ConnectCleanup) -> D,
+    clock: Arc<dyn Clock>,
+    gate: RideGate,
+) -> Reconnecting<D> {
+    let cleanup = ConnectCleanup::new();
+    Reconnecting::new(build(cleanup.clone()), clock, gate).with_cleanup(cleanup)
+}
+/// [`supervised_trainer`] for a heart-rate strap.
+fn supervised_hr<D: HeartRateDriver>(
+    build: impl FnOnce(ConnectCleanup) -> D,
+    clock: Arc<dyn Clock>,
+    gate: RideGate,
+) -> ReconnectingHr<D> {
+    let cleanup = ConnectCleanup::new();
+    ReconnectingHr::new(build(cleanup.clone()), clock, gate).with_cleanup(cleanup)
+}
+
 struct PeripheralTrainer {
     central: BleCentral,
     clock: Arc<dyn Clock>,
+    cleanup: ConnectCleanup,
 }
 impl TrainerDriver for PeripheralTrainer {
     fn kind(&self) -> DriverKind {
@@ -380,12 +408,18 @@ impl TrainerDriver for PeripheralTrainer {
         dev: &DeviceRef,
         rider: RiderConfig,
     ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
-        let (central, clock, dev) = (self.central.clone(), self.clock.clone(), dev.clone());
+        let (central, clock, dev, cleanup) = (
+            self.central.clone(),
+            self.clock.clone(),
+            dev.clone(),
+            self.cleanup.clone(),
+        );
         Box::pin(async move {
             let pairing = central.pairing(&dev);
             let peripheral = resolve(&central.source, &dev, pairing.as_ref(), RESOLVE_SCAN).await?;
             let transport = BtleplugTransport::new(peripheral, central.adapter.clone());
             let link = FecTrainer::new(Arc::new(transport), clock)
+                .with_cleanup(cleanup)
                 .connect(&dev, rider)
                 .await?;
             if pairing.is_some_and(|p| !p.verify(&link.info)) {
@@ -399,15 +433,22 @@ impl TrainerDriver for PeripheralTrainer {
 struct PeripheralHr {
     central: BleCentral,
     clock: Arc<dyn Clock>,
+    cleanup: ConnectCleanup,
 }
 impl HeartRateDriver for PeripheralHr {
     fn connect(&self, dev: &DeviceRef) -> BoxFuture<'static, Result<HeartRateLink, DeviceError>> {
-        let (central, clock, dev) = (self.central.clone(), self.clock.clone(), dev.clone());
+        let (central, clock, dev, cleanup) = (
+            self.central.clone(),
+            self.clock.clone(),
+            dev.clone(),
+            self.cleanup.clone(),
+        );
         Box::pin(async move {
             let pairing = central.pairing(&dev);
             let peripheral = resolve(&central.source, &dev, pairing.as_ref(), RESOLVE_SCAN).await?;
             let transport = BtleplugHrTransport::new(peripheral, central.adapter.clone());
             let link = HrsDriver::new(Arc::new(transport), clock)
+                .with_cleanup(cleanup)
                 .connect(&dev)
                 .await?;
             if pairing.is_some_and(|p| !p.verify(&link.info)) {
@@ -913,5 +954,163 @@ mod tests {
             !leaked.load(Ordering::SeqCst),
             "a scan was left running after both requesters dropped"
         );
+    }
+
+    /// A strap driver whose first connect succeeds and whose later connects hang, after
+    /// starting a cleanup (reported to `cleanup`) that takes `hold`, for ever if `None`.
+    struct HangingHr {
+        cleanup: ConnectCleanup,
+        hold: Option<Duration>,
+        calls: Arc<AtomicUsize>,
+        first: Arc<Mutex<Option<tokio::sync::mpsc::Sender<crank_devices::HrEvent>>>>,
+    }
+    impl HeartRateDriver for HangingHr {
+        fn connect(&self, _: &DeviceRef) -> BoxFuture<'static, Result<HeartRateLink, DeviceError>> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                let (tx, events) = tokio::sync::mpsc::channel(8);
+                *self.first.lock().unwrap() = Some(tx);
+                return Box::pin(async {
+                    Ok(HeartRateLink {
+                        info: crank_devices::DeviceInfo::default(),
+                        events,
+                    })
+                });
+            }
+            let (token, hold) = (self.cleanup.begin(), self.hold);
+            tokio::spawn(async move {
+                match hold {
+                    Some(hold) => tokio::time::sleep(hold).await,
+                    None => std::future::pending::<()>().await,
+                }
+                drop(token);
+            });
+            Box::pin(std::future::pending())
+        }
+    }
+    /// Release a supervised strap whose reconnect attempt is stuck mid-connect and report
+    /// how long the release took (`None`: not within 10 s).
+    async fn time_to_release(hold: Option<Duration>) -> Option<Duration> {
+        let clock: Arc<dyn Clock> = Arc::new(crate::MonotonicClock::default());
+        let (calls, first) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::default()));
+        let driver = supervised_hr(
+            |cleanup| HangingHr {
+                cleanup,
+                hold,
+                calls: calls.clone(),
+                first: first.clone(),
+            },
+            clock,
+            RideGate::new(true),
+        );
+        let mut link = driver.connect(&DeviceRef("strap".into())).await.unwrap();
+        // The link drops out; the reconnect attempt (after its 0.5 s backoff) hangs.
+        let lost = first.lock().unwrap().take();
+        drop(lost);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let start = tokio::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            crank_devices::release_events(&mut link.events),
+        )
+        .await
+        .ok()
+        .map(|()| start.elapsed())
+    }
+    /// #304: the production wiring: the supervisor built by `supervised_hr` (which
+    /// `hr_driver` uses) waits for the cleanup of the connect it cancelled. Without
+    /// `with_cleanup` it is released at once.
+    #[tokio::test(start_paused = true)]
+    async fn the_production_strap_supervisor_waits_for_the_cleanup_of_a_cancelled_connect() {
+        let took = time_to_release(Some(Duration::from_millis(1500)))
+            .await
+            .unwrap();
+        // the cleanup, started at 0.5 s, ends at 2.0 s; the release started at 0.7 s
+        assert!(took >= Duration::from_secs(1), "{took:?}");
+        assert!(took < Duration::from_millis(1500), "{took:?}");
+    }
+    /// #304: a cleanup that never settles holds the release for the supervisor's cap
+    /// (the 2 s disconnect bound plus 1 s) and no longer.
+    #[tokio::test(start_paused = true)]
+    async fn a_cleanup_that_never_settles_holds_the_release_only_up_to_the_cap() {
+        let took = time_to_release(None).await.expect("released within 10 s");
+        assert!(took >= Duration::from_secs(3), "{took:?}");
+        assert!(took < Duration::from_millis(3500), "{took:?}");
+    }
+    /// The trainer supervisor is wired the same way.
+    #[tokio::test(start_paused = true)]
+    async fn the_production_trainer_supervisor_waits_for_the_cleanup_of_a_cancelled_connect() {
+        struct HangingTrainer {
+            cleanup: ConnectCleanup,
+            calls: Arc<AtomicUsize>,
+            first: Arc<Mutex<Option<tokio::sync::mpsc::Sender<crank_devices::TrainerEvent>>>>,
+        }
+        impl TrainerDriver for HangingTrainer {
+            fn kind(&self) -> DriverKind {
+                DriverKind::FeC
+            }
+            fn connect(
+                &self,
+                _: &DeviceRef,
+                _: RiderConfig,
+            ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let (tx, events) = tokio::sync::mpsc::channel(8);
+                    *self.first.lock().unwrap() = Some(tx);
+                    let (control, _) = tokio::sync::mpsc::channel(8);
+                    return Box::pin(async {
+                        Ok(TrainerLink {
+                            info: crank_devices::DeviceInfo::default(),
+                            caps: crank_devices::TrainerCaps {
+                                erg: true,
+                                sim: false,
+                                resistance: true,
+                                max_resistance_n: None,
+                                max_target_w: 1000,
+                            },
+                            control,
+                            events,
+                        })
+                    });
+                }
+                let token = self.cleanup.begin();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    drop(token);
+                });
+                Box::pin(std::future::pending())
+            }
+        }
+        let clock: Arc<dyn Clock> = Arc::new(crate::MonotonicClock::default());
+        let (calls, first) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::default()));
+        let driver = supervised_trainer(
+            |cleanup| HangingTrainer {
+                cleanup,
+                calls: calls.clone(),
+                first: first.clone(),
+            },
+            clock,
+            RideGate::new(true),
+        );
+        let rider = RiderConfig {
+            rider_kg: 75.0,
+            bike_kg: 10.0,
+            wheel_m: 0.7,
+        };
+        let mut link = driver
+            .connect(&DeviceRef("neo".into()), rider)
+            .await
+            .unwrap();
+        let lost = first.lock().unwrap().take();
+        drop(lost);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let start = tokio::time::Instant::now();
+        drop(link.control);
+        while link.events.recv().await.is_some() {}
+        let took = start.elapsed();
+        // the cleanup, started at 0.5 s, ends at 2.0 s; the release started at 0.7 s
+        assert!(took >= Duration::from_secs(1), "{took:?}");
+        assert!(took < Duration::from_millis(1500), "{took:?}");
     }
 }
