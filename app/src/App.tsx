@@ -10,6 +10,7 @@ import { StartScreen, type Boot } from "./shell/StartScreen";
 import { useApplyTheme } from "./theme";
 import { Placeholder } from "./views/Placeholder";
 import { Settings } from "./views/Settings";
+import { Workouts } from "./views/Workouts";
 
 export type ViewComponent = ComponentType<{ sub?: string }>;
 export type ViewRegistry = Record<View, ViewComponent>;
@@ -19,7 +20,7 @@ const soon =
   () => <Placeholder title={title} />;
 const DEFAULT_VIEWS: ViewRegistry = {
   today: soon("Today"),
-  workouts: soon("Workouts"),
+  workouts: Workouts,
   history: soon("History"),
   settings: Settings,
   ride: soon("Ride"),
