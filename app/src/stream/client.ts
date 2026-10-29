@@ -51,6 +51,14 @@ export interface ClientSnapshot {
 
 const IDLE_VIEW: SubscriptionView = { sample: null, error: null };
 
+/**
+ * The options `StreamClient.subscription` takes: the generated `SubscribeOpts` with `rateHz` a number. The core's
+ * `rate_hz` is an `f64` that serde refuses `null` for, but specta types it `number | null`.
+ */
+export type SubscriptionOpts = Omit<SubscribeOpts, "rateHz"> & {
+  readonly rateHz: number;
+};
+
 /** One subscription of the window. Made by `StreamClient.subscription`, started by `add` and ended by `remove`. */
 export class Subscription {
   /** The current view; a new object whenever it changes. */
@@ -61,7 +69,7 @@ export class Subscription {
   attempt = 0;
   constructor(
     readonly metric: MetricId,
-    readonly opts: SubscribeOpts,
+    readonly opts: SubscriptionOpts,
   ) {}
 }
 
@@ -215,7 +223,7 @@ export class StreamClient {
   }
 
   /** Build a subscription without side effects; `add` starts it. */
-  subscription(metric: MetricId, opts: SubscribeOpts): Subscription {
+  subscription(metric: MetricId, opts: SubscriptionOpts): Subscription {
     return new Subscription(metric, opts);
   }
 

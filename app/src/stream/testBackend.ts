@@ -1,8 +1,11 @@
 // A stand-in for the core's stream commands behind `mockIPC`, for the stream tests only. It enforces the core's
 // contract, not more permissive: an ack window of 3 frames after which the core holds frames back, a cap of 64
 // subscriptions per stream (`conflict`, checked before the rate), `SubscribeOpts.rateHz` a required number in
-// 0.1–10 Hz (`null` is refused by serde, `invalid_input` outside the range; pinned by the Rust test
-// `subscribe_opts_wire_contract_for_the_ui_mock` in crank-engine), `open_stream` replacing the window's earlier
+// 0.1–10 Hz (`invalid_input` outside the range), filter chains of at most 4 filters with SMA windows and EMA time
+// constants up to 300 s and a median up to 256 samples (`invalid_input`), and arguments serde refuses (a `null`
+// or non-finite number, an unknown metric id or filter kind, a missing field) as the plain string Tauri rejects
+// with, which `api()` maps to `internal`. Pinned by the Rust test `subscribe_opts_wire_contract_for_the_ui_mock`
+// in crank-engine (each rule is cited at its constant below). `open_stream` replacing the window's earlier
 // streams, and `not_found` for a stream that is not the open one. Durable state (`truth`) is what `ride_status`,
 // `device_links` and `stream_snapshot` answer from, read when the call arrives; `hold` delays only the answer.
 // With `truth.unresponsive` the engine is wedged: every stream command answers `engine_unresponsive` after its owner
@@ -25,6 +28,29 @@ export const ACK_WINDOW = 3;
 export const SUB_CAP = 64;
 export const MIN_RATE_HZ = 0.1;
 export const MAX_RATE_HZ = 10;
+/** crank-engine `stream/types.rs` `MAX_FILTERS_PER_CHAIN`, enforced by `validate_filters` (`stream/hub.rs`). */
+export const MAX_FILTERS_PER_CHAIN = 4;
+/** `MAX_FILTER_SECONDS`: longest SMA window and EMA time constant. */
+export const MAX_FILTER_SECONDS = 300;
+/** `MAX_MEDIAN_SAMPLES`: largest median `n`. */
+export const MAX_MEDIAN_SAMPLES = 256;
+
+/** `MetricId`'s serde names (`stream/types.rs`, `rename_all = "snake_case"`). */
+const METRICS: readonly MetricId[] = [
+  "power",
+  "cadence",
+  "speed",
+  "hr",
+  "workout_s",
+];
+/** `Filter`'s serde shape (`crank-domain` `filters.rs`: `tag = "kind"`, camelCase fields, `f64` parameters). */
+const FILTER_FIELDS: Record<string, readonly string[]> = {
+  sma: ["windowS"],
+  ema: ["tauS"],
+  median: ["n"],
+  one_euro: ["minCutoff", "beta"],
+  hold: [],
+};
 
 export const status = (over: Partial<StreamStatus> = {}): StreamStatus => ({
   state: { kind: "riding" },
@@ -55,6 +81,72 @@ export interface Call {
 }
 
 const apiError = (code: string, message: string) => ({ code, message });
+/** Tauri's rejection of arguments serde cannot decode: a plain string, before the command runs. */
+const refused = (arg: string, why: string) =>
+  `invalid args \`${arg}\` for command \`stream_subscribe\`: ${why}`;
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+/** serde's `f64` takes a number; `JSON` writes a non-finite one as `null`, which it refuses. */
+const f64 = (v: unknown): string | null =>
+  typeof v === "number" && Number.isFinite(v)
+    ? null
+    : `invalid type: ${typeof v === "number" || v === null ? "null" : typeof v}, expected f64`;
+
+/** What serde makes of the call's `metric` and `opts`; throws the string Tauri would reject with. */
+function decodeSubscribe(
+  metric: unknown,
+  opts: unknown,
+): SubscribeOpts & { rateHz: number } {
+  if (typeof metric !== "string" || !METRICS.includes(metric as MetricId))
+    throw refused(
+      "metric",
+      `unknown variant \`${String(metric)}\`, expected one of ${METRICS.map((m) => `\`${m}\``).join(", ")}`,
+    );
+  if (!isObject(opts)) throw refused("opts", "invalid type, expected struct");
+  const rate = f64(opts.rateHz);
+  if (rate !== null) throw refused("opts", rate);
+  if (!Array.isArray(opts.filters))
+    throw refused("opts", "invalid type, expected a sequence");
+  for (const f of opts.filters as unknown[]) {
+    const fields = isObject(f) ? FILTER_FIELDS[String(f.kind)] : undefined;
+    if (!isObject(f) || fields === undefined)
+      throw refused(
+        "opts",
+        `unknown variant \`${isObject(f) ? String(f.kind) : String(f)}\`, expected one of ${Object.keys(
+          FILTER_FIELDS,
+        )
+          .map((k) => `\`${k}\``)
+          .join(", ")}`,
+      );
+    for (const field of fields) {
+      const bad = f64(f[field]);
+      if (bad !== null) throw refused("opts", bad);
+    }
+  }
+  return opts as unknown as SubscribeOpts & { rateHz: number };
+}
+
+/**
+ * `validate_filters` (crank-engine `stream/hub.rs`), in its order: chain length, then each filter's bound. The
+ * rejection's text is `StreamError::InvalidFilter`'s `invalid filter: {what}` (`stream/types.rs`), code `invalid_input`
+ * (crank-core `error.rs`). `FilterChain::new`'s non-finite check cannot be reached from the wire: the decode above
+ * refuses those first.
+ */
+function validateFilters(filters: readonly Filter[]): void {
+  const bad = (what: string) =>
+    apiError("invalid_input", `invalid filter: ${what}`);
+  if (filters.length > MAX_FILTERS_PER_CHAIN)
+    throw bad("chain longer than 4 filters");
+  for (const f of filters) {
+    if (
+      (f.kind === "sma" && (f.windowS ?? 0) > MAX_FILTER_SECONDS) ||
+      (f.kind === "ema" && (f.tauS ?? 0) > MAX_FILTER_SECONDS)
+    )
+      throw bad("window or time constant over 300 s");
+    if (f.kind === "median" && (f.n ?? 0) > MAX_MEDIAN_SAMPLES)
+      throw bad("median over 256 samples");
+  }
+}
 /** The core's text for a request its 1 s bound gave up on. */
 export const UNRESPONSIVE =
   "the ride engine did not answer in time; End still ends the ride";
@@ -170,20 +262,17 @@ export function installBackend(firstStream = 7) {
         return current;
       }
       case "stream_subscribe": {
+        // Tauri decodes the arguments before the command runs, so serde's refusals precede `not_found`.
+        const opts = decodeSubscribe(args.metric, args.opts);
         owned(args.stream);
-        const opts = args.opts as { rateHz?: unknown; filters?: unknown };
-        // serde: `rate_hz: f64` accepts no `null`; Tauri rejects the call with a plain string.
-        if (typeof opts?.rateHz !== "number" || !Array.isArray(opts.filters))
-          throw "invalid args `opts` for command `stream_subscribe`: invalid type: null, expected f64";
+        // Core order (stream/hub.rs `Hub::subscribe`): the cap, the rate, then the filters.
         if (live.size >= SUB_CAP)
           throw apiError("conflict", "too many subscriptions");
         if (!(opts.rateHz >= MIN_RATE_HZ && opts.rateHz <= MAX_RATE_HZ))
           throw apiError("invalid_input", "rate must be within 0.1..=10 Hz");
+        validateFilters(opts.filters);
         const id = nextSub++;
-        live.set(id, {
-          metric: args.metric as MetricId,
-          opts: { rateHz: opts.rateHz, filters: opts.filters as Filter[] },
-        });
+        live.set(id, { metric: args.metric as MetricId, opts });
         return id;
       }
       case "stream_unsubscribe": {
