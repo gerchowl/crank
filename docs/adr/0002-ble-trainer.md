@@ -921,9 +921,18 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    (2 s), before it drops its event stream; the driver arms that cleanup before the transport connects,
    and every driver disconnect is bounded, so a hung platform disconnect neither hangs the release nor
    keeps the driver's admission held.
-   The bound has a cost: after a disconnect that timed out (`DISCONNECT_TIMEOUT`, 2 s) the peripheral
-   **may still be connected** when "released" is signalled; that wait, and so that uncertainty, ends at
-   `DISCONNECT_TIMEOUT` (plus 1 s for the supervisor's wait on a cancelled connect).
+   The bound has a cost, and it bounds the **wait**, not the uncertainty: after a disconnect that timed out
+   (`DISCONNECT_TIMEOUT`, 2 s; plus 1 s for the supervisor's wait on a cancelled connect) "released" is
+   signalled while the peripheral **may still be connected**, and nothing retries, so it can stay connected
+   indefinitely. The visible consequence: the NEO (or the strap) may still show as connected, and another
+   central (a phone app) may find it busy, until the peripheral drops the link itself or the process exits
+   (process exit releases the radio, which is why the quit path does not wait). Whether our own next
+   connect to it works is unverified until hardware (HIL #44). We accept this: a platform disconnect that
+   hangs is not something the app can fix, and the alternative is a ride end or a pairing that hangs with
+   it. A best-effort re-disconnect at the next connect and at quit is tracked in #335, not done here.
+   This holds on every path that drops a link, a ride end the engine cannot carry out (#331) included: the
+   end mode that path sends itself comes before the link is dropped, and the disconnect after it is bounded
+   in the same way.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 
