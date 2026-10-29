@@ -2,15 +2,25 @@
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  expect,
+  test,
+} from "vitest";
 import type { RideRecord } from "../bindings";
 import { navigate, useRoute } from "../router";
-import { History, startedText } from "./History";
+import { setTimeZone } from "../testTz";
+import { History, startedText, work } from "./History";
 
 // The start time renders in the rider's local time: pin it, so a date can be asserted literally.
+let restoreTimeZone: () => void;
 beforeAll(() => {
-  process.env.TZ = "UTC";
+  restoreTimeZone = setTimeZone("UTC");
 });
+afterAll(() => restoreTimeZone());
 afterEach(() => {
   cleanup();
   clearMocks();
@@ -302,4 +312,49 @@ test("a stale answer for the previous ride is not shown for the next", async () 
   expect(screen.queryByText("Sweet spot 3x12")).toBeNull();
   act(() => release());
   expect(await screen.findByText("Aborted")).toBeTruthy();
+});
+
+test("work has one rule at the 10 kJ boundary: the format follows the rounded value", () => {
+  expect(work(9.94)).toBe("9.9 kJ");
+  expect(work(9.95)).toBe("10 kJ");
+  expect(work(9.99)).toBe("10 kJ");
+  expect(work(10.0)).toBe("10 kJ");
+  expect(work(10.05)).toBe("10 kJ");
+  expect(work(10.4)).toBe("10 kJ");
+  expect(work(-9.95)).toBe("-10 kJ");
+  expect(work(0.6)).toBe("0.6 kJ");
+  expect(work(null)).toBe("—");
+});
+
+test("work never prints a negative zero", () => {
+  expect(work(-0)).toBe("0.0 kJ");
+  expect(work(-0.04)).toBe("0.0 kJ");
+  expect(work(-0.0001)).toBe("0.0 kJ");
+  expect(work(-0.06)).toBe("-0.1 kJ");
+});
+
+test("the list hides its old error while Retry is in flight, then shows the new outcome", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let calls = 0;
+  mockIPC((cmd) => {
+    if (cmd !== "rides_list") throw `command ${cmd} not found`;
+    calls += 1;
+    if (calls === 1) throw apiError("storage", "disk I/O error");
+    return gate.then(() => {
+      throw apiError("storage", "disk is full");
+    });
+  });
+  navigate("history");
+  open();
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "disk I/O error",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByText(/disk I\/O error/)).toBeNull();
+  act(() => release());
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "disk is full",
+  );
 });
