@@ -18,11 +18,23 @@ const OUTCOME: Record<RideOutcome, string> = {
   finished: "Finished",
   aborted: "Aborted",
 };
+/** `toFixed` without a negative zero: a value that rounds to nothing ("-0.0") is shown as plain zero. */
+const fixed = (n: number, digits: number) => {
+  const text = n.toFixed(digits);
+  return Number(text) === 0 ? (0).toFixed(digits) : text;
+};
 const number = (n: number | null, unit: string, digits = 0) =>
-  n === null || !Number.isFinite(n) ? "—" : `${n.toFixed(digits)} ${unit}`;
-/** Work, one decimal below 10 kJ so a short ride is not rounded to 0 or 1. */
-const work = (kj: number | null) =>
-  number(kj, "kJ", kj !== null && Math.abs(kj) < 10 ? 1 : 0);
+  n === null || !Number.isFinite(n) ? "—" : `${fixed(n, digits)} ${unit}`;
+/**
+ * Work, one decimal while the value rounded to one decimal is below 10 kJ so a short ride is not rounded to 0 or 1,
+ * whole kJ from there: the format follows the rounded value, so 9.95 reads "10 kJ", never "10.0 kJ".
+ */
+export const work = (kj: number | null) =>
+  number(
+    kj,
+    "kJ",
+    kj !== null && Math.round(Math.abs(kj) * 10) / 10 < 10 ? 1 : 0,
+  );
 /** The ride's start in the rider's local time; "—" when the core has none. */
 export function startedText(startedAt: number | null): string {
   if (startedAt === null) return "—";
@@ -163,15 +175,15 @@ function RideList() {
   useEffect(() => {
     void run();
   }, [run]);
+  // The hook keeps the last failure until the next call finishes; a Retry in flight does not show it.
+  const error = list.pending ? null : list.error;
   return (
     <div className="page history">
       <div className="page-head">
         <h1>History</h1>
       </div>
       {list.pending && !list.data && <p className="muted">Loading…</p>}
-      {list.error && (
-        <ErrorLine error={list.error} onRetry={() => void run()} />
-      )}
+      {error && <ErrorLine error={error} onRetry={() => void run()} />}
       {list.data?.length === 0 && <p className="muted">No rides yet.</p>}
       <ul className="history-list" aria-label="Rides">
         {list.data?.map((r) => (
