@@ -79,7 +79,7 @@ function stateLine(st: StreamStatus | null): string {
 
 /** DESIGN §5.2: "Trainer lost ≥ 30 s" adds what to try and End…, measured on the session clock. */
 export const LONG_LOSS_S = 30;
-/** DESIGN §5.2/§6.6: a trainer back after this long goes through the re-entry policy. */
+/** The threshold for the factual "Back after m:ss" row (DESIGN §5.2); the §6.6 re-entry policy itself waits on #50. */
 export const RE_ENTRY_S = 120;
 /** DESIGN §6.5: the "NEO back · m:ss gap" chip stays this long after the reconnect. */
 export const BACK_CHIP_S = 10;
@@ -455,7 +455,11 @@ function Screen({ session }: { session: RideSession }) {
                   : "No data from the NEO"}
             </strong>{" "}
             {loss.lostForS !== null && (
-              <strong data-testid="lost-for">{clock(loss.lostForS)} </strong>
+              <>
+                <strong data-testid="lost-for">
+                  {clock(loss.lostForS)}
+                </strong>{" "}
+              </>
             )}
             · workout paused at {clock(status?.blockElapsedS ?? null)} of this
             block
