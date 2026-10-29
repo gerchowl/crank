@@ -60,6 +60,21 @@ function describe(
         title: "A ride is loaded",
         body: "End the ride before changing devices: it holds the Bluetooth connection.",
       };
+    case "storage":
+      // The pairings live in the local database; the core reads it first on scan and forget, and writes it last on pair.
+      return during === "pair"
+        ? {
+            title: `Could not save the pairing of ${what}`,
+            body: `It connected, but crank could not store the pairing, so nothing is paired. ${error.message}`,
+          }
+        : {
+            title:
+              during === "load"
+                ? `Could not load ${what}`
+                : `Could not ${during} ${what}: the pairing store failed`,
+            body: error.message,
+            retry: during === "scan",
+          };
     case "not_found":
       return {
         title: "Nothing to forget",
@@ -95,7 +110,8 @@ function pairedLine(d: NonNullable<DeviceLinkInfo["device"]>): string {
 
 export function Devices() {
   const [found, setFound] = useState<ScannedDevice[] | null>(null);
-  const [notice, setNotice] = useState<Notice | null>(null);
+  // Every failure of the command in flight, in order: a forget that fails and a refresh that fails are both shown.
+  const [notices, setNotices] = useState<Notice[]>([]);
   /** The pairing in flight: device id and role, so a dual-role device shows "Pairing…" on one button only. */
   const [pairing, setPairing] = useState<string | null>(null);
   const getLinks = useCommand(commands.deviceLinks);
@@ -114,7 +130,8 @@ export function Devices() {
       setLoadFailed(false);
     } else {
       setLoadFailed(true);
-      setNotice(describe(r.error, "load", "the paired devices"));
+      const n = describe(r.error, "load", "the paired devices");
+      setNotices((all) => [...all, n]);
     }
   }, []);
   const refresh = useCallback(async () => apply(await load()), [load, apply]);
@@ -137,33 +154,45 @@ export function Devices() {
 
   const runScan = () =>
     exclusive(async () => {
-      setNotice(null);
+      setNotices([]);
       const r = await scan.run(null);
       if (r.status === "ok") setFound(r.data);
       else {
         setFound(null);
-        setNotice(describe(r.error, "scan", "for devices"));
+        setNotices([describe(r.error, "scan", "for devices")]);
       }
     });
   const runPair = (d: ScannedDevice, role: DeviceRole) =>
     exclusive(async () => {
-      setNotice(null);
+      setNotices([]);
       setPairing(`${d.id}:${role}`);
       const r = await pair.run(d.id, role);
       setPairing(null);
       if (r.status === "ok") await refresh();
       else
-        setNotice(
+        setNotices([
           describe(r.error, "pair", d.name ?? ROLE_LABEL[role].toLowerCase()),
-        );
+        ]);
     });
   const runForget = (role: DeviceRole) =>
     exclusive(async () => {
-      setNotice(null);
+      setNotices([]);
       const r = await forget.run(role);
-      // `not_found`: already gone elsewhere; the refresh shows the truth either way.
-      if (r.status === "error" && r.error.code !== "not_found")
-        setNotice(describe(r.error, "forget", ROLE_LABEL[role].toLowerCase()));
+      // `not_found` is success: the role has no pairing, which is what the rider asked for. Both outcomes are settled
+      // facts, so the row is cleared here and the refresh only reconciles: if it fails, the row must not go on
+      // showing a pairing that is gone (a second Forget would answer `not_found` for nothing).
+      const gone = r.status === "ok" || r.error.code === "not_found";
+      if (gone)
+        setLinks(
+          (all) =>
+            all?.map((l) => (l.role === role ? { ...l, device: null } : l)) ??
+            null,
+        );
+      else
+        setNotices([
+          describe(r.error, "forget", ROLE_LABEL[role].toLowerCase()),
+        ]);
+      // The refresh adds its own notice after the forget's: neither replaces the other.
       await refresh();
     });
 
@@ -180,7 +209,9 @@ export function Devices() {
           apps that use them.
         </p>
       </div>
-      {notice && <Banner notice={notice} onRetry={() => void runScan()} />}
+      {notices.map((n) => (
+        <Banner key={n.title} notice={n} onRetry={() => void runScan()} />
+      ))}
 
       <section aria-labelledby="paired-h">
         <h2 id="paired-h">Paired</h2>
