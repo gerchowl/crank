@@ -69,8 +69,12 @@ export function commandedView(st: StreamStatus | null): {
       return { value: c.watts, unit: "W" };
     case "resistance":
       // The rider's pause outranks a release (policy order, erg/policy.rs; #330 hides the release while paused). With
-      // neither flag the engine has not yet re-sent after Resume (it publishes at once, the next tick sends ERG):
-      // there is no target to show, so "—", never a word that is not the engine's reason.
+      // neither flag this is the status Resume publishes at once, while `last_sent` is still the pause's
+      // `Resistance { 0 }`; the next tick sends ERG (≤ 250 ms). Publishing after the resumed command (#324 review
+      // option a) was rejected on purpose: the mode comes from the policy, which runs once per tick with the tick's
+      // cadence, flow and block clock (one SetMode per tick, ADR-0002 §4.4; compliance and release counters advance in
+      // it), so a command-time policy run would double-count a tick and fork the tick-aligned following machine; and
+      // delaying Resume's publish would leave `userPaused` stale for a tick. There is no target to show, so "—".
       return {
         value: st.userPaused ? "Paused" : st.ergReleased ? "Released" : null,
         unit: "",
