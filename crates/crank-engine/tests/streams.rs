@@ -53,6 +53,9 @@ async fn launch(dur_s: f64) -> (EngineHandle, Arc<Mutex<Vec<u32>>>) {
     launch_at(dur_s, 1).await
 }
 /// `speed`× simulated: session time runs `speed`× faster than the timer.
+/// Status changes the ride start's soft start adds on top of the beat: `Erg { 0 }` while the
+/// rider is not pedalling, then one new commanded target per 1 Hz step (#324).
+const SOFT_START_STATUS_CHANGES: usize = 6;
 async fn launch_at(dur_s: f64, speed: u32) -> (EngineHandle, Arc<Mutex<Vec<u32>>>) {
     let clock = Arc::new(VirtualClock::new(speed));
     let rig = SimRig::new(SimConfig::default(), clock.clone());
@@ -141,7 +144,8 @@ async fn frames_stay_within_ten_hertz_and_status_beats_at_two_hertz() {
             "consecutive seq"
         );
     }
-    // Steady riding, nothing but the clock changing: status only on the 500 ms beat.
+    // Steady riding, nothing but the clock changing: status on the 500 ms beat, and once per
+    // soft-start step (the commanded target moves in 1 Hz steps for 5 s, then it is steady, #324).
     let beats: Vec<Duration> = log
         .iter()
         .skip(1)
@@ -149,13 +153,18 @@ async fn frames_stay_within_ten_hertz_and_status_beats_at_two_hertz() {
         .map(|(t, _)| *t)
         .collect();
     assert!(
-        (110..=121).contains(&beats.len()),
+        (110..=121 + SOFT_START_STATUS_CHANGES).contains(&beats.len()),
         "2 Hz over 60 s: {}",
         beats.len()
     );
-    for pair in beats.windows(2) {
+    // Past the soft start (5 s of ride time) only the beat sends a status.
+    let steady: Vec<_> = beats
+        .iter()
+        .filter(|t| **t > Duration::from_secs(7))
+        .collect();
+    for pair in steady.windows(2) {
         assert!(
-            pair[1] - pair[0] >= Duration::from_millis(500),
+            *pair[1] - *pair[0] >= Duration::from_millis(500),
             "beat spacing {pair:?}"
         );
     }
@@ -303,7 +312,7 @@ async fn pacing_at(speed: u32) {
     }
     let beats = log.iter().filter(|(_, f)| f.status.is_some()).count();
     assert!(
-        (18..=23).contains(&beats),
+        (18..=23 + SOFT_START_STATUS_CHANGES).contains(&beats),
         "{speed}x: status 2 Hz in timer time: {beats}"
     );
     let last_t = log

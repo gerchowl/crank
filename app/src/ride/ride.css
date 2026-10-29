@@ -136,6 +136,12 @@
   font-size: var(--t3);
   color: var(--ink-secondary);
 }
+.tile-sub {
+  display: inline-block;
+  font-size: var(--t3);
+  color: var(--ink-secondary);
+  white-space: nowrap;
+}
 .ride-notice {
   grid-area: note;
   padding: 0 16px;

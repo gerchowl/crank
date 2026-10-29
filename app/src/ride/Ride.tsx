@@ -54,6 +54,38 @@ export function targetNow(
   return Math.round(block.powerFrom + (to - block.powerFrom) * f);
 }
 
+/**
+ * The TARGET tile: what the engine commanded the trainer into (#324), as a word or a number. No arithmetic: the
+ * watts are the engine's, and why there is no ERG target comes from its own flags (`ergReleased`, `userPaused`).
+ */
+export function commandedView(st: StreamStatus | null): {
+  value: number | string | null;
+  unit: string;
+} {
+  const c = st?.commanded;
+  if (!c) return { value: null, unit: "W" };
+  switch (c.kind) {
+    case "erg":
+      return { value: c.watts, unit: "W" };
+    case "resistance":
+      // The rider's pause outranks a release (policy order, erg/policy.rs; #330 hides the release while paused). With
+      // neither flag this is the status Resume publishes at once, while `last_sent` is still the pause's
+      // `Resistance { 0 }`; the next tick sends ERG (≤ 250 ms). Publishing after the resumed command (#324 review
+      // option a) was rejected on purpose: the mode comes from the policy, which runs once per tick with the tick's
+      // cadence, flow and block clock (one SetMode per tick, ADR-0002 §4.4; compliance and release counters advance in
+      // it), so a command-time policy run would double-count a tick and fork the tick-aligned following machine; and
+      // delaying Resume's publish would leave `userPaused` stale for a tick. There is no target to show, so "—".
+      return {
+        value: st.userPaused ? "Paused" : st.ergReleased ? "Released" : null,
+        unit: "",
+      };
+    case "free":
+      return { value: "Free", unit: "" };
+    case "sim":
+      return { value: "Sim", unit: "" };
+  }
+}
+
 const PHASE_WORD = {
   warmup: "WARM-UP",
   work: "WORK",
@@ -155,12 +187,15 @@ function Tile({
   unit,
   ch,
   value,
+  sub,
 }: {
   id: string;
   label: string;
   unit: string;
   ch: number;
   value: number | string | null;
+  /** A smaller line under the value, in a slot of its own that reserves its widest form. */
+  sub?: { id: string; ch: number; text: string };
 }) {
   return (
     <div className="tile" data-tile={id}>
@@ -175,6 +210,15 @@ function Tile({
         </span>
         <span className="tile-unit">{unit}</span>
       </span>
+      {sub && (
+        <span
+          className="tile-sub num"
+          data-slot={sub.id}
+          style={{ width: `${sub.ch}ch` }}
+        >
+          {sub.text}
+        </span>
+      )}
     </div>
   );
 }
@@ -292,6 +336,7 @@ function Screen({ session }: { session: RideSession }) {
   const blockIdx = status?.blockIndex ?? null;
   const block = blockIdx === null ? undefined : blocks[blockIdx];
   const target = targetNow(block, status?.blockElapsedS ?? null);
+  const targetView = commandedView(status);
   const blockLeft =
     block?.durS != null && status?.blockElapsedS != null
       ? block.durS - status.blockElapsedS
@@ -418,8 +463,18 @@ function Screen({ session }: { session: RideSession }) {
           {clock(blockLeft)}
         </div>
         <div className="hero-band">
-          {/* The core does not expose the commanded target (#324): this is the plan's line, not the trainer's target. */}
-          <Tile id="plan" label="PLAN" unit="W" ch={4} value={target} />
+          <Tile
+            id="target"
+            label="TARGET"
+            unit={targetView.unit}
+            ch={8}
+            value={targetView.value}
+            sub={{
+              id: "plan",
+              ch: 10,
+              text: target === null ? "Plan —" : `Plan ${target} W`,
+            }}
+          />
           <Tile
             id="power"
             label="POWER"
