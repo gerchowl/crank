@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { ESLint } from "eslint";
 import { beforeAll, expect, test } from "vitest";
 
@@ -49,6 +48,9 @@ const FIXTURE = [
   "export const f = structuredClone;",
 ].join("\n");
 
+// The same six forms with TypeScript annotations, for the real config (its parser is typescript-eslint).
+const TS_FIXTURE = FIXTURE.replaceAll("= (x) =>", "= (x: unknown) =>");
+
 test("structuredClone is an error in src/stream, however it is reached", async () => {
   const messages = await lint(FIXTURE, "src/stream/fixture.ts");
   expect(messages.filter((m) => m.fatal)).toEqual([]); // the fixtures parse
@@ -67,12 +69,34 @@ test("the rule is scoped to src/stream", async () => {
   );
 });
 
-test("the inline rule is the one eslint.config.js enforces", () => {
-  const config = readFileSync(
-    new URL("../../eslint.config.js", import.meta.url),
-    "utf8",
+// The inline tests above prove the rule's selectors; this one proves the REAL `eslint.config.js` applies exactly that
+// rule to src/stream: same rule and severity after the whole config is resolved (a later block, a changed severity
+// or an `ignores` entry would all show here), not ignored, and parsed by the project's typescript-eslint parser.
+// It loads the full config and plugin set, the expensive part the other tests avoid (#319): about 0.4 s locally, and
+// the same load took 7.06 s on the macOS runner (#319), over Vitest's 5 s default. So this test, and only this one,
+// gets 30 s.
+test("the real eslint.config.js applies the same rule to src/stream", async () => {
+  const cwd = new URL("../..", import.meta.url).pathname;
+  const real = new ESLint({ cwd });
+  const file = "src/stream/x.ts";
+
+  expect(await real.isPathIgnored(file)).toBe(false);
+  const config = await real.calculateConfigForFile(file);
+  const expected = (await eslint.calculateConfigForFile(file)) as {
+    rules: Record<string, unknown>;
+  };
+  expect(config.rules["no-restricted-syntax"]).toEqual(
+    expected.rules["no-restricted-syntax"],
   );
-  expect(config).toContain(STREAM_FILES);
-  expect(config).toContain(MESSAGE);
-  for (const selector of SELECTORS) expect(config).toContain(selector);
-});
+  expect(config.languageOptions.parser.meta.name).toBe(
+    "typescript-eslint/parser",
+  );
+
+  // and the six forms, as TypeScript, through the real config
+  const [result] = await real.lintText(TS_FIXTURE, { filePath: file });
+  const hits = result?.messages.filter(
+    (m) => m.ruleId === "no-restricted-syntax",
+  );
+  expect(result?.messages.filter((m) => m.fatal)).toEqual([]);
+  expect(hits?.map((m) => m.line)).toEqual([1, 2, 3, 4, 5, 6]);
+}, 30_000);
