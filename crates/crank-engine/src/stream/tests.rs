@@ -1477,19 +1477,35 @@ fn subscribe_opts_wire_contract_for_the_ui_mock() {
 
     // What the hub refuses: the limits are inclusive, and the rate is checked before the filters.
     let hold = || vec![Filter::Hold; 4];
-    for (what, filters) in [
-        ("5 filters", vec![Filter::Hold; 5]),
-        ("sma 300.5 s", vec![Filter::Sma { window_s: 300.5 }]),
-        ("ema 301 s", vec![Filter::Ema { tau_s: 301.0 }]),
-        ("median 257", vec![Filter::Median { n: 257.0 }]),
+    // The message text is part of the contract: the mock copies it, so a rewording must fail here.
+    for (what, filters, text) in [
+        (
+            "5 filters",
+            vec![Filter::Hold; 5],
+            "invalid filter: chain longer than 4 filters",
+        ),
+        (
+            "sma 300.5 s",
+            vec![Filter::Sma { window_s: 300.5 }],
+            "invalid filter: window or time constant over 300 s",
+        ),
+        (
+            "ema 301 s",
+            vec![Filter::Ema { tau_s: 301.0 }],
+            "invalid filter: window or time constant over 300 s",
+        ),
+        (
+            "median 257",
+            vec![Filter::Median { n: 257.0 }],
+            "invalid filter: median over 256 samples",
+        ),
     ] {
+        let refused = hub.subscribe(stream, MetricId::Power, opts(1.0, filters));
         assert!(
-            matches!(
-                hub.subscribe(stream, MetricId::Power, opts(1.0, filters)),
-                Err(StreamError::InvalidFilter(_))
-            ),
+            matches!(refused, Err(StreamError::InvalidFilter(_))),
             "{what}"
         );
+        assert_eq!(refused.unwrap_err().to_string(), text, "{what}");
     }
     assert!(matches!(
         hub.subscribe(stream, MetricId::Power, opts(11.0, vec![Filter::Hold; 5])),
