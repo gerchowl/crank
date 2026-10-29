@@ -73,23 +73,36 @@ interface Backend {
   compiled: Record<string, CompiledView>;
   /** A ride is already in progress. */
   rideActive: boolean;
-  /** A trainer is paired (`core.rs:534`). */
+  /** A trainer is paired (core.rs:629). */
   trainerPaired: boolean;
-  /** The trainer does not answer within the connect timeout (`core.rs:542`). */
+  /** The trainer does not answer within the connect timeout (core.rs:637). */
   connectTimesOut: boolean;
-  /** `ride_load` calls currently in flight (the core's `loading` flag, `core.rs:677`). */
+  /** `ride_load` calls currently in flight (the core's `loading` flag, core.rs:792). */
   loading: number;
-  /** Hold the next `ride_load` answer until the returned function is called. */
+  /** Hold the next `ride_load` answer until the gate opens. */
   gate: Promise<void> | null;
+  /** After the gate opens, the held `ride_load` is refused with this instead of loading. */
+  heldFailure: ApiErr | null;
+  /** A refusal injected at one stage of `ride_load` (see the doc below), in the core's order. */
+  stage: Partial<Record<"storage" | "driver" | "connect" | "build", ApiErr>>;
 }
+type ApiErr = { code: string; message: string };
 /**
- * The core's workout commands behind `mockIPC`. `ride_load` refuses, in the core's order (crates/crank-core/src/core.rs):
- * `not_found` for an id outside the library (`Library::get`, library.rs:79); `invalid_input` with the issue's
- * message for a workout with an error-severity issue (`resolve_workout`, :618-628); `conflict` "a ride is in
- * progress" (:660); `conflict` "another ride is loading or loaded" while another load is in flight (:677-679);
- * `device_unavailable` "no trainer paired" (:534) and "trainer connect timed out" (:542). `ensure_start_allowed`
- * (:524) always passes today and is not modelled. A free ride (null id) skips the workout checks only. Tauri
- * itself rejects a call without its `workoutId` argument with a plain string.
+ * The core's workout commands behind `mockIPC`. `ride_load` refuses, in the core's order
+ * (crates/crank-core/src/core.rs, line numbers at the time of #320):
+ * - unknown id: `not_found` (`Library::get`, library.rs:79, via `resolve_workout` :728)
+ * - error-severity issue: `invalid_input` with the issue's message (:728-738)
+ * - ride in progress: `conflict` (:770)
+ * - another load in flight: `conflict` (:792)
+ * - `stage.storage`: `store.devices()?` fails, `storage` (:626)
+ * - no trainer paired: `device_unavailable` (:629)
+ * - `stage.driver`: `backend.trainer(..)?` fails, e.g. `permission_denied` or Bluetooth off (:631, error.rs:85-110)
+ * - trainer connect timeout: `device_unavailable` (:637)
+ * - `stage.connect`: the inner connect error, e.g. `device_unavailable` "connect failed: .." (:637 `??`)
+ * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (:943 `.await?`)
+ * (the strap driver `heart(..)?` at :641 maps like `stage.driver`). `ensure_start_allowed` (:619) always passes
+ * today and is not modelled. A free ride (null id) skips the workout checks only. Tauri itself rejects a call
+ * without its `workoutId` argument with a plain string.
  */
 function install(over: Partial<Backend> = {}): Backend {
   const b: Backend = {
@@ -101,6 +114,8 @@ function install(over: Partial<Backend> = {}): Backend {
     connectTimesOut: false,
     loading: 0,
     gate: null,
+    heldFailure: null,
+    stage: {},
     ...over,
   };
   mockIPC((cmd, payload) => {
@@ -129,10 +144,14 @@ function install(over: Partial<Backend> = {}): Backend {
         if (b.rideActive) throw apiError("conflict", "a ride is in progress");
         if (b.loading > 0)
           throw apiError("conflict", "another ride is loading or loaded");
+        if (b.stage.storage) throw b.stage.storage;
         if (!b.trainerPaired)
           throw apiError("device_unavailable", "no trainer paired");
+        if (b.stage.driver) throw b.stage.driver;
         if (b.connectTimesOut)
           throw apiError("device_unavailable", "trainer connect timed out");
+        if (b.stage.connect) throw b.stage.connect;
+        if (b.stage.build) throw b.stage.build;
         const done = () =>
           ({
             rideId: "ride-1",
@@ -143,7 +162,12 @@ function install(over: Partial<Backend> = {}): Backend {
         if (!gate) return done();
         b.gate = null;
         b.loading++;
-        return gate.finally(() => b.loading--).then(done);
+        return gate
+          .finally(() => b.loading--)
+          .then(() => {
+            if (b.heldFailure) throw b.heldFailure;
+            return done();
+          });
       }
       default:
         throw `command ${cmd} not found`;
@@ -410,3 +434,113 @@ test("a double click sends one ride_load while it is in flight", async () => {
   );
   expect(screen.queryByRole("alert")).toBeNull();
 });
+
+// ---- #320: the selection is locked while a load is in flight ----
+
+const pressed = (name: RegExp) =>
+  screen.getByRole("button", { name }).getAttribute("aria-pressed");
+const startHeldLoad = async (b: Backend, first: RegExp) => {
+  let release = () => {};
+  b.gate = new Promise<void>((resolve) => (release = resolve));
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: first }));
+  await summary();
+  await userEvent.click(
+    await screen.findByRole("button", { name: "Ride this" }),
+  );
+  await screen.findByText("Loading ride…");
+  return release;
+};
+
+test("picking another workout while a load is in flight is not possible, and the load still routes for the first", async () => {
+  const b = install();
+  const release = await startHeldLoad(b, /Easy spin/);
+  // the whole list is locked, with a visible reason
+  for (const name of [/Easy spin/, /Sweet spot 3x12/])
+    expect(
+      (screen.getByRole("button", { name }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  await userEvent.click(
+    screen.getByRole("button", { name: /Sweet spot 3x12/ }),
+  );
+  expect(pressed(/Easy spin/)).toBe("true");
+  expect(pressed(/Sweet spot 3x12/)).toBe("false");
+  expect(b.calls.filter((c) => c.cmd === "workout_get")).toHaveLength(1);
+
+  release();
+  await waitFor(() =>
+    expect(screen.getByTestId("route").textContent).toBe("ride"),
+  );
+  // the ride that was loaded is the one that was picked when it was asked for
+  expect(
+    b.calls.filter((c) => c.cmd === "ride_load").map((c) => c.args),
+  ).toEqual([{ workoutId: "w-easy" }]);
+});
+
+test("a refusal that arrives after a pick attempt appears under the workout it was for, and the list unlocks", async () => {
+  const b = install();
+  b.heldFailure = apiError("device_unavailable", "no trainer paired");
+  const release = await startHeldLoad(b, /Easy spin/);
+  await userEvent.click(
+    screen.getByRole("button", { name: /Sweet spot 3x12/ }),
+  );
+  expect(pressed(/Easy spin/)).toBe("true");
+
+  release();
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toMatch(/no trainer paired/);
+  // still the first workout's page: its name is the heading the refusal sits under
+  expect(screen.getByRole("heading", { name: "Easy spin" })).toBeTruthy();
+  expect(pressed(/Easy spin/)).toBe("true");
+  expect(screen.queryByText("Loading ride…")).toBeNull();
+  expect(
+    (
+      screen.getByRole("button", {
+        name: /Sweet spot 3x12/,
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(false);
+  expect(screen.getByTestId("route").textContent).toBe("workouts");
+});
+
+const REFUSALS: [string, Partial<Backend["stage"]>, RegExp][] = [
+  [
+    "storage",
+    { storage: apiError("storage", "database is locked") },
+    /database is locked/,
+  ],
+  [
+    "the trainer driver",
+    {
+      driver: apiError(
+        "permission_denied",
+        "Bluetooth access is denied. Open System Settings",
+      ),
+    },
+    /Bluetooth access is denied/,
+  ],
+  [
+    "the inner connect",
+    { connect: apiError("device_unavailable", "connect failed: out of range") },
+    /connect failed: out of range/,
+  ],
+  [
+    "build_session",
+    { build: apiError("internal", "engine stopped") },
+    /engine stopped/,
+  ],
+];
+for (const [where, stage, message] of REFUSALS)
+  test(`a refusal from ${where} shows the core's message and stays on the page`, async () => {
+    install({ stage });
+    open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Easy spin/ }),
+    );
+    await summary();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Ride this" }),
+    );
+    expect((await screen.findByRole("alert")).textContent).toMatch(message);
+    expect(screen.getByTestId("route").textContent).toBe("workouts");
+  });

@@ -108,13 +108,19 @@ export function Workouts() {
     void runList();
   }, [runList]);
 
+  // The selection is locked while a load is in flight. The core loads the workout it was asked for and has no
+  // unload command, and it refuses a second load meanwhile ("another ride is loading or loaded"), so a pick
+  // during the load could only show a workout other than the one that is being (or was) loaded: success would
+  // route into the old workout's ride, a refusal would appear under the new one (#320).
+  const loading = load.pending;
   const pick = useCallback(
     (id: string) => {
+      if (loading) return;
       setPicked(id);
       setRefusal(null);
       void runGet(id);
     },
-    [runGet],
+    [runGet, loading],
   );
   /**
    * The one seam for the start guard. When the health-stop guard lands (A6 `requestStart`, #81) it replaces
@@ -148,6 +154,11 @@ export function Workouts() {
       )}
       <div className="workouts-body">
         <nav aria-label="Library">
+          {loading && (
+            <p role="status" className="muted">
+              Loading ride…
+            </p>
+          )}
           {list.data?.length === 0 && <p className="muted">No workouts yet.</p>}
           <ul className="workouts-list">
             {list.data?.map((w) => (
@@ -155,6 +166,7 @@ export function Workouts() {
                 <button
                   type="button"
                   aria-pressed={picked === w.id}
+                  disabled={loading}
                   onClick={() => pick(w.id)}
                 >
                   <span className="workouts-name">{w.name}</span>{" "}
