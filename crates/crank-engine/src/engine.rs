@@ -83,18 +83,24 @@ pub struct RideStatus {
     /// shows as `Paused(TrainerLost)` over a rider pause, and Resume is still the rider's to offer
     /// (`Pauses::reason` ranks the reasons for `state`, it does not clear the others).
     pub user_paused: bool,
+    // The six loss fields (this one and the five below) are the running ride's: `publish` reports them
+    // only while the session is active, so a finished ride kept for its summary shows none.
     /// Session time at which the current trainer loss began; `None` while the trainer is not
     /// lost. A timestamp, not an elapsed time: it changes only at a transition, so the status
     /// does not change every tick, and a consumer works out "lost for how long" from the session
     /// time it already has (DESIGN §6.5, §6.6). A loss detected by silence is stamped when the
-    /// engine decides it (8 silent ticks), not when the first sample was missing.
+    /// engine decides it (8 silent ticks), not when the first sample was missing. `None` as soon as
+    /// the trainer is back, which can be before `state` leaves `Paused(TrainerLost)` (it waits for a
+    /// pedalling sample): key "the trainer is lost" on this field, not on `state`.
     pub trainer_lost_since: Option<SessionTicks>,
     /// The reconnect attempt the driver is on during the current loss (1-based, ADR-0002 §6);
     /// `None` while the trainer is not lost or before the first attempt of the loss.
     pub reconnect_attempt: Option<u32>,
     /// While a soft start after a recovered trainer loss is running (and until it is done):
     /// the target in watts the trainer is being eased back to. `None` otherwise, also for the
-    /// soft start every ride begins with (#250) and for one owed on resume from a rider pause.
+    /// soft start every ride begins with (#250) and for one owed on resume from a rider pause. It
+    /// follows the block's target line: on a ramp block it can change up to once per tick, for the
+    /// soft start's 20 ticks at most.
     pub soft_start_target_w: Option<u16>,
     /// How long the last trainer loss lasted, from the loss until the trainer was back (link
     /// ready and samples flowing). Set when it is back, cleared when the next loss begins.
@@ -1365,6 +1371,7 @@ impl Engine {
 
     fn publish(&mut self) {
         let s = self.session.as_ref();
+        let live = s.filter(|s| s.phase == Phase::Active);
         let policy: PolicyStatus = s.map_or_else(PolicyStatus::default, |s| s.policy.status());
         let state = match s {
             Some(s) if s.phase == Phase::Finished => RideState::Finished,
@@ -1393,12 +1400,16 @@ impl Engine {
                 cap_w,
                 erg_only: true,
             }),
-            user_paused: s.is_some_and(|s| s.pauses.user),
-            trainer_lost_since: s.and_then(|s| s.lost_at).map(SessionTicks),
-            reconnect_attempt: s.and_then(|s| s.reconnect_attempt),
-            soft_start_target_w: s.filter(|s| s.after_loss).and(policy.soft_start_target_w),
-            last_gap: s.and_then(|s| s.last_gap).map(SessionTicks),
-            reconnected_at: s.and_then(|s| s.reconnected_at).map(SessionTicks),
+            // The loss state is the running ride's: a finished session is kept for the summary, but
+            // nothing about a loss, a pause or a soft start is still happening on it.
+            user_paused: live.is_some_and(|s| s.pauses.user),
+            trainer_lost_since: live.and_then(|s| s.lost_at).map(SessionTicks),
+            reconnect_attempt: live.and_then(|s| s.reconnect_attempt),
+            soft_start_target_w: live
+                .filter(|s| s.after_loss)
+                .and(policy.soft_start_target_w),
+            last_gap: live.and_then(|s| s.last_gap).map(SessionTicks),
+            reconnected_at: live.and_then(|s| s.reconnected_at).map(SessionTicks),
         };
         let now = self.clock.pacing_now().0;
         self.hub.on_status(StreamStatus::from(&status), now);

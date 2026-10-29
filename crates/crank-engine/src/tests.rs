@@ -2219,3 +2219,143 @@ fn a_soft_start_owed_on_resume_is_not_shown_as_a_reconnected_state() {
     // and it did ease back in: a ramp ran (the trainer got several different ERG targets)
     assert!(r.modes().len() > 2);
 }
+
+// ---- #329 review: a ride that ends reports no loss state, and the edge cases of the loss tracking ----
+
+/// Every loss field in its "nothing" value.
+fn assert_no_loss_state(r: &Rig, when: &str) {
+    assert_eq!(loss_fields(r), NONE_YET, "{when}");
+}
+
+#[test]
+fn a_ride_stopped_under_a_rider_pause_and_a_loss_reports_no_loss_state() {
+    let mut r = riding_rig();
+    r.engine.command(EngineCmd::Pause).unwrap();
+    r.link(LinkState::Lost);
+    r.reconnecting(1);
+    r.reconnecting(2);
+    r.through(11);
+    let (user, lost, attempt, ..) = loss_fields(&r);
+    assert!(
+        (user, lost.is_some(), attempt) == (true, true, Some(2)),
+        "setup"
+    );
+    r.engine.command(EngineCmd::Stop).unwrap();
+    assert_eq!(r.state(), RideState::Finished);
+    assert_no_loss_state(&r, "finished under a pause and a loss");
+}
+
+#[test]
+fn a_ride_stopped_during_a_loss_reports_no_loss_state() {
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.reconnecting(1);
+    r.through(10);
+    assert!(r.status().trainer_lost_since.is_some(), "setup");
+    r.engine.command(EngineCmd::Stop).unwrap();
+    assert_eq!(r.state(), RideState::Finished);
+    assert_no_loss_state(&r, "stopped while lost");
+}
+
+#[test]
+fn a_ride_stopped_in_the_soft_start_after_a_loss_reports_no_loss_state() {
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.through(9);
+    r.link(LinkState::Ready);
+    r.sample(11, 90, 85);
+    r.through(11);
+    assert_eq!(r.status().soft_start_target_w, Some(200), "setup");
+    assert!(r.status().last_gap.is_some(), "setup");
+    r.engine.command(EngineCmd::Stop).unwrap();
+    assert_eq!(r.state(), RideState::Finished);
+    assert_no_loss_state(&r, "stopped in the soft start");
+}
+
+#[test]
+fn a_ride_that_finishes_by_itself_in_the_soft_start_reports_no_loss_state() {
+    // A 12 s block: lost at tick 8, back at tick 15, the block ends (tick 48) mid soft start? the ramp is
+    // 20 ticks from the first sample, so a 9 s block (36 ticks) ends inside it.
+    let mut r = rig();
+    r.load(vec![block(9.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    for k in 0..4 {
+        r.sample(k, 150, 90);
+    }
+    r.through(3);
+    r.link(LinkState::Lost);
+    r.through(5);
+    r.link(LinkState::Ready);
+    r.through(6);
+    for k in 7..40 {
+        r.sample(k, 150, 90);
+    }
+    r.through(39);
+    assert_eq!(r.state(), RideState::Finished);
+    assert_no_loss_state(&r, "finished by itself");
+}
+
+#[test]
+fn a_sample_while_the_link_is_not_ready_is_not_the_trainer_being_back() {
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.through(9);
+    r.link(LinkState::Connecting);
+    // a pedalling sample of the new epoch, but the link is only connecting
+    r.sample(10, 90, 85);
+    r.sample(11, 90, 85);
+    r.through(11);
+    assert_eq!(r.state(), RideState::Paused(PauseReason::TrainerLost));
+    assert_eq!(
+        r.status().trainer_lost_since,
+        Some(SessionTicks(8)),
+        "still lost"
+    );
+    assert_eq!(r.status().last_gap, None);
+    // ready, and the next sample: now it is back
+    r.link(LinkState::Ready);
+    r.sample(12, 90, 85);
+    r.through(12);
+    assert_eq!(r.status().trainer_lost_since, None);
+    assert!(r.status().last_gap.is_some());
+}
+
+#[test]
+fn a_second_loss_in_the_middle_of_a_soft_start_starts_clean() {
+    let mut r = riding_rig();
+    r.link(LinkState::Lost);
+    r.through(9);
+    r.link(LinkState::Ready);
+    r.sample(11, 90, 85);
+    r.through(11);
+    for k in 12..20 {
+        r.sample(k, 150, 90);
+    }
+    r.through(19);
+    assert_eq!(r.status().soft_start_target_w, Some(200), "mid soft start");
+    assert!(r.status().last_gap.is_some());
+    // the trainer drops again while the ramp is running
+    r.link(LinkState::Lost);
+    r.reconnecting(1);
+    r.through(21);
+    let st = loss_fields(&r);
+    assert_eq!(st.3, None, "no soft start to show while lost again");
+    assert_eq!(
+        st.4,
+        (None, None),
+        "the previous gap belongs to the previous loss"
+    );
+    assert!(st.1.is_some_and(|t| t >= 20), "a new stamp");
+    assert_eq!(st.2, Some(1));
+    // and it recovers into a fresh soft start with its own gap
+    r.link(LinkState::Ready);
+    r.sample(24, 90, 85);
+    r.through(24);
+    let st = loss_fields(&r);
+    assert_eq!((st.1, st.2, st.3), (None, None, Some(200)));
+    assert!(
+        st.4.0.is_some_and(|g| g < 8),
+        "the second, short gap: {:?}",
+        st.4
+    );
+}
