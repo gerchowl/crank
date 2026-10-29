@@ -94,10 +94,11 @@ pub struct SinkClosed;
 pub enum Shutdown {
     /// No ride was loaded: nothing to end.
     Idle,
-    /// The ride was ended and its devices released (the end mode delivered, the link lost
-    /// or the engine's own deadline passed).
-    Released,
-    /// The devices were not released within the cap; the caller exits anyway.
+    /// The engine ended the ride: the end mode was delivered, the link was lost or its own
+    /// deadline passed. The devices' drivers may still be handing their peripherals back;
+    /// that is not awaited (process exit releases the radio).
+    Ended,
+    /// The engine had not ended the ride within the cap; the caller exits anyway.
     TimedOut,
     /// Ending the ride failed.
     Failed(ApiError),
@@ -1055,7 +1056,7 @@ impl Core {
         Ok(finishes.then_some(id))
     }
     /// The application is quitting: end the loaded ride like `ride_end` and wait, for at
-    /// most `cap`, until its devices are released.
+    /// most `cap`, until the engine has ended it (not until the devices are released).
     ///
     /// Quitting is a ride end (ADR-0002 §7.9): the engine puts the trainer into its end
     /// mode (`Resistance{0}`) and holds the ride-active gate until that was delivered, the
@@ -1068,7 +1069,7 @@ impl Core {
     pub async fn shutdown(&self, cap: Duration) -> Shutdown {
         match tokio::time::timeout(cap, self.end_ride(false)).await {
             Err(_) => Shutdown::TimedOut,
-            Ok(Ok(_)) => Shutdown::Released,
+            Ok(Ok(_)) => Shutdown::Ended,
             Ok(Err(e)) if e.code == ErrorCode::Conflict => Shutdown::Idle,
             Ok(Err(e)) => Shutdown::Failed(e),
         }
@@ -1953,18 +1954,14 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn quitting_mid_ride_ends_it_with_the_end_mode_and_releases_after_the_gate() {
+    async fn quitting_mid_ride_ends_it_with_the_end_mode_after_the_gate() {
         let dir = tempfile::tempdir().unwrap();
         let mut radio = fake(vec![], false);
         radio.mode_delay = Duration::from_millis(500);
         let core = riding(&radio, dir.path()).await;
-        assert_eq!(
-            core.shutdown(Duration::from_secs(3)).await,
-            Shutdown::Released
-        );
-        // Released before `shutdown` returned, after the gate dropped, and the last thing
-        // the trainer was told is the non-torque end mode.
-        assert_eq!(*radio.disconnects.lock().unwrap(), [false]);
+        assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Ended);
+        // The last thing the trainer was told is the non-torque end mode. (Whether the
+        // driver has disconnected by now is not part of the contract: quit does not wait.)
         let commands = radio.commands.lock().unwrap().clone();
         assert_eq!(
             commands.last(),
@@ -1974,10 +1971,7 @@ mod tests {
             "{commands:?}"
         );
         assert!(!core.ride_status().await.unwrap().loading);
-        assert_eq!(
-            core.shutdown(Duration::from_secs(3)).await,
-            Shutdown::Released
-        );
+        assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Ended);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1991,7 +1985,7 @@ mod tests {
         // Under the cap the engine's own 2 s deadline releases the ride...
         let t = tokio::time::Instant::now();
         let outcome = core.shutdown(Duration::from_secs(3)).await;
-        assert_eq!(outcome, Shutdown::Released);
+        assert_eq!(outcome, Shutdown::Ended);
         assert!(t.elapsed() <= Duration::from_secs(3), "{:?}", t.elapsed());
         // ... and a cap below it ends the wait at the cap.
         // (quitting does not wait for the devices' release, so the first core still holds
@@ -2011,7 +2005,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn overlapping_ends_of_a_loaded_ride_both_wait_for_the_release() {
+    async fn a_quit_overlapping_an_end_is_not_idle_and_the_end_still_awaits_the_release() {
         let dir = tempfile::tempdir().unwrap();
         let mut radio = fake(vec![], false);
         radio.mode_delay = Duration::from_millis(500);
@@ -2022,10 +2016,11 @@ mod tests {
         radio.disconnects.lock().unwrap().clear();
         core.ride_load(None).await.unwrap();
         // A second end of a ride that is already being ended is not a `Conflict` that
-        // `shutdown` would read as "nothing loaded": it waits for the release like the first.
+        // `shutdown` would read as "nothing loaded": it reports `Ended`; the `ride_end` still
+        // returns only after the release, which is what the disconnect below shows.
         let (end, quit) = tokio::join!(core.ride_end(), core.shutdown(Duration::from_secs(3)));
         end.unwrap();
-        assert_eq!(quit, Shutdown::Released);
+        assert_eq!(quit, Shutdown::Ended);
         assert!(!core.ride_status().await.unwrap().status.loaded);
         assert_eq!(*radio.disconnects.lock().unwrap(), [false]);
     }
@@ -2052,10 +2047,7 @@ mod tests {
         core.ride_start().await.unwrap();
         tokio::time::sleep(Duration::from_secs(20)).await;
         let t = tokio::time::Instant::now();
-        assert_eq!(
-            core.shutdown(Duration::from_secs(3)).await,
-            Shutdown::Released
-        );
+        assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Ended);
         assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
         let commands = radio.commands.lock().unwrap().clone();
         assert_eq!(

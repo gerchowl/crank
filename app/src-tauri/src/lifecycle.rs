@@ -28,7 +28,7 @@ use tauri::{
     webview::{PageLoadEvent, PageLoadPayload},
 };
 
-/// Longest a quit waits for the devices to be released. Above the engine's own 2 s end
+/// Longest a quit waits for the engine to end the ride (the end mode delivered). Above the engine's own 2 s end
 /// deadline (ADR-0002 §7.9), so a trainer that never answers is still given up on, and
 /// at most the ~3 s macOS grants a terminating app at logout (see the module docs).
 pub const QUIT_CAP: Duration = Duration::from_secs(3);
@@ -200,12 +200,12 @@ impl Quit {
         self.0.load(Ordering::SeqCst) != Self::DONE
     }
 
-    /// End the ride and release the devices, then allow the exit.
+    /// End the ride (the engine's end mode), then allow the exit.
     pub async fn shut_down(&self, core: &Core) -> Shutdown {
         let outcome = core.shutdown(QUIT_CAP).await;
         match &outcome {
-            Shutdown::Idle | Shutdown::Released => {}
-            Shutdown::TimedOut => tracing::warn!("quit: devices not released within the cap"),
+            Shutdown::Idle | Shutdown::Ended => {}
+            Shutdown::TimedOut => tracing::warn!("quit: the ride was not ended within the cap"),
             Shutdown::Failed(e) => tracing::warn!(%e, "quit: ending the ride failed"),
         }
         self.0.store(Self::DONE, Ordering::SeqCst);
