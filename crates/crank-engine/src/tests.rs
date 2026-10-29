@@ -2369,3 +2369,262 @@ fn a_second_loss_in_the_middle_of_a_soft_start_starts_clean() {
         st.4
     );
 }
+
+// ---- #324: the commanded target is what was sent, not the plan ----
+
+/// Rides tick by tick and checks, after every tick, that the status says exactly what the
+/// engine last handed to the driver: the oracle is the driver's own command channel, not the
+/// policy. `cadence`/`power` give the trainer sample of tick `k`.
+struct Commanded {
+    r: Rig,
+    /// The last mode that left the engine (`None` until one has, and after a loss epoch).
+    sent: Option<ControlMode>,
+    /// `(tick, commanded)` at every tick the commanded target changed.
+    changes: Vec<(u64, Option<ControlMode>)>,
+    k: u64,
+}
+impl Commanded {
+    fn new(blocks: Vec<FlatBlock>) -> Self {
+        let mut r = rig();
+        r.load(blocks);
+        Self {
+            r,
+            sent: None,
+            changes: vec![],
+            k: 0,
+        }
+    }
+    /// One tick with a sample of `power` W at `cadence` rpm; asserts the status against the wire.
+    fn tick(&mut self, power: u16, cadence: u8) -> Option<ControlMode> {
+        let k = self.k;
+        self.r.sample(k, power, cadence);
+        self.settle(k)
+    }
+    /// One tick without a sample.
+    fn silent_tick(&mut self) -> Option<ControlMode> {
+        let k = self.k;
+        self.settle(k)
+    }
+    fn settle(&mut self, k: u64) -> Option<ControlMode> {
+        let before = self.r.status().commanded;
+        self.r.through(k);
+        self.k += 1;
+        if let Some(m) = self.r.modes().last() {
+            self.sent = Some(*m);
+        }
+        let now = self.r.status().commanded;
+        assert_eq!(now, self.sent, "tick {k}: commanded is what was sent");
+        if now != before {
+            self.changes.push((k, now));
+        }
+        now
+    }
+    fn ticks(&mut self, n: u64, power: u16, cadence: u8) {
+        for _ in 0..n {
+            self.tick(power, cadence);
+        }
+    }
+    /// The trainer link goes down: the engine forgets what it sent (the mode is re-issued on
+    /// reconnect), so nothing is commanded.
+    fn link(&mut self, s: LinkState) {
+        self.r.link(s);
+    }
+}
+
+#[test]
+fn nothing_is_commanded_before_the_ride_starts() {
+    let mut c = Commanded::new(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    assert_eq!(c.r.status().commanded, None, "loaded, not started");
+    c.r.start();
+    assert_eq!(c.r.status().commanded, None, "started, no tick yet");
+}
+
+#[test]
+fn the_commanded_target_follows_the_soft_start_steps_then_the_steady_target() {
+    let mut c = Commanded::new(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    c.r.start();
+    // not pedalling: 0 W, never the plan's 200
+    assert_eq!(c.tick(0, 0), Some(erg(0)));
+    // pedalling at 100 W: five 1 Hz steps from the 3 s power up to 200 W
+    c.ticks(40, 100, 90);
+    let ergs: Vec<u16> = c
+        .changes
+        .iter()
+        .filter_map(|(_, m)| match m {
+            Some(ControlMode::Erg { target_w }) => Some(*target_w),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(*ergs.first().unwrap(), 0);
+    assert_eq!(*ergs.last().unwrap(), 200, "ends on the block target");
+    assert!(
+        ergs.len() >= 5 && ergs.windows(2).all(|w| w[0] < w[1]),
+        "rises in steps: {ergs:?}"
+    );
+    assert!(
+        c.changes.iter().all(|(_, m)| m != &Some(erg(250))),
+        "never a value from outside the policy"
+    );
+    // steady: no further change in 20 s
+    let n = c.changes.len();
+    c.ticks(80, 200, 90);
+    assert_eq!(c.changes.len(), n, "steady ERG is one value");
+}
+
+#[test]
+fn the_commanded_target_is_not_the_plan_during_the_soft_start() {
+    // 300 W planned; the rider rides 100 W: the first command after the pedalling sample is
+    // below the plan, and the plan is only reached at the end of the ramp
+    let mut c = Commanded::new(vec![block(600.0, 300.0, 300.0, Phase::Work)]);
+    c.r.start();
+    c.tick(100, 90);
+    let first = c.r.status().commanded.unwrap();
+    assert!(
+        matches!(first, ControlMode::Erg { target_w } if target_w < 300),
+        "{first:?}"
+    );
+}
+
+#[test]
+fn a_release_commands_resistance_zero_and_a_reengage_soft_starts_again() {
+    let mut c = Commanded::new(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    c.r.start();
+    c.ticks(40, 150, 90);
+    assert_eq!(c.r.status().commanded, Some(erg(200)));
+    assert!(!c.r.status().erg_released);
+    // below 40 rpm for 2 s (8 ticks) with torque on: released
+    c.ticks(12, 20, 30);
+    assert!(c.r.status().erg_released, "setup");
+    assert_eq!(
+        c.r.status().commanded,
+        Some(ControlMode::Resistance { pct: 0.0 }),
+        "released: no ERG target, the plan (200) does not show"
+    );
+    // 60 rpm for 2 s re-engages through the soft start
+    c.ticks(12, 100, 70);
+    assert!(!c.r.status().erg_released);
+    c.ticks(30, 150, 90);
+    assert_eq!(c.r.status().commanded, Some(erg(200)));
+    assert!(
+        c.changes
+            .iter()
+            .filter(|(_, m)| matches!(m, Some(ControlMode::Erg { target_w }) if (1..200).contains(target_w)))
+            .count()
+            >= 8,
+        "soft start steps on the way in and again on the way back: {:?}",
+        c.changes
+    );
+}
+
+#[test]
+fn a_rider_pause_commands_resistance_zero_and_resume_eases_back_in() {
+    let mut c = Commanded::new(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    c.r.start();
+    c.ticks(40, 150, 90);
+    c.r.engine.command(EngineCmd::Pause).unwrap();
+    c.ticks(2, 150, 90);
+    assert!(c.r.status().user_paused);
+    assert_eq!(
+        c.r.status().commanded,
+        Some(ControlMode::Resistance { pct: 0.0 })
+    );
+    c.r.engine.command(EngineCmd::Resume).unwrap();
+    let first = c.tick(150, 90);
+    assert!(
+        matches!(first, Some(ControlMode::Erg { target_w }) if target_w < 200),
+        "resume starts below the plan: {first:?}"
+    );
+    c.ticks(30, 150, 90);
+    assert_eq!(c.r.status().commanded, Some(erg(200)));
+}
+
+#[test]
+fn a_trainer_loss_commands_nothing_until_the_mode_is_reissued() {
+    let mut c = Commanded::new(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    c.r.start();
+    c.ticks(40, 150, 90);
+    assert_eq!(c.r.status().commanded, Some(erg(200)));
+    c.link(LinkState::Lost);
+    c.sent = None; // the engine forgets what it sent on a link transition
+    c.silent_tick();
+    assert_eq!(
+        c.r.status().commanded,
+        None,
+        "lost: nobody is told anything"
+    );
+    c.link(LinkState::Connecting);
+    c.link(LinkState::Ready);
+    c.sent = None;
+    // the link is back: 0 W until a pedalling sample (not the plan), then the soft start
+    c.silent_tick();
+    assert_eq!(c.r.status().commanded, Some(erg(0)));
+    c.ticks(30, 150, 90);
+    assert_eq!(c.r.status().commanded, Some(erg(200)));
+}
+
+#[test]
+fn a_silence_loss_retells_zero_watts_not_the_plan() {
+    let mut c = Commanded::new(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    c.r.start();
+    c.ticks(40, 150, 90);
+    // 8 silent ticks lose the trainer; with the link still up the engine re-tells it 0 W
+    for _ in 0..8 {
+        c.silent_tick();
+    }
+    assert_eq!(c.r.status().commanded, Some(erg(0)));
+}
+
+#[test]
+fn a_finished_ride_commands_nothing() {
+    let mut c = Commanded::new(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    c.r.start();
+    c.ticks(40, 150, 90);
+    c.r.engine.command(EngineCmd::Stop).unwrap();
+    assert_eq!(c.r.state(), RideState::Finished);
+    // the end mode (Resistance 0) went to the trainer, but it is the ride's end, not a target
+    assert_eq!(c.r.status().commanded, None);
+}
+
+#[test]
+fn a_free_block_commands_free() {
+    let mut c = Commanded::new(vec![
+        block(600.0, 0.0, 0.0, Phase::Free),
+        block(600.0, 200.0, 200.0, Phase::Work),
+    ]);
+    c.r.start();
+    c.ticks(8, 150, 90);
+    assert_eq!(c.r.status().commanded, Some(ControlMode::Free));
+    c.r.engine.command(EngineCmd::SkipBlock).unwrap();
+    c.ticks(40, 150, 90);
+    assert_eq!(c.r.status().commanded, Some(erg(200)));
+}
+
+#[test]
+fn the_commanded_target_changes_at_most_once_a_second_on_a_ramp_after_the_soft_start() {
+    // 100 -> 400 W over 300 s: the plan moves every second; so may the command, but not faster.
+    // The worst case is documented in ADR-0001 §4.3 (status-on-change churn, #324).
+    let mut c = Commanded::new(vec![block(300.0, 100.0, 400.0, Phase::Work)]);
+    c.r.start();
+    c.ticks(60 * 4, 150, 90);
+    let after_soft_start: Vec<u64> = c
+        .changes
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| *k >= 24)
+        .collect();
+    assert!(after_soft_start.len() >= 30, "the ramp does move it");
+    for w in after_soft_start.windows(2) {
+        assert!(w[1] - w[0] >= 4, "a change per second at most: {w:?}");
+    }
+    let soft: Vec<u64> = c
+        .changes
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| *k < 24)
+        .collect();
+    assert!(
+        soft.len() <= 8,
+        "the soft start on a ramp block: {} changes in its first 6 s (measured 8: ticks 0, 4, 8, 12, 16, 19, 20, 23): {soft:?}",
+        soft.len()
+    );
+}
