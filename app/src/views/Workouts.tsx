@@ -8,9 +8,8 @@ import {
   type CompiledView,
   type WorkoutIssue,
 } from "../bindings";
-import { beginRide } from "../ride/session";
-import { navigate } from "../router";
 import { useCommand } from "../stream";
+import { dismissRideLoad, startRideLoad, useRideLoad } from "./rideLoad";
 
 /** `m:ss`, or `h:mm:ss` from an hour; "—" for an unknown duration. */
 export function formatDuration(s: number | null): string {
@@ -93,25 +92,44 @@ function Summary({ compiled }: { compiled: CompiledView }) {
   );
 }
 
+/** How often the core is asked whether a load is still in flight, while it says one is. */
+const STATUS_POLL_MS = 400;
+
 export function Workouts() {
   const list = useCommand(commands.workoutsList);
   const get = useCommand(commands.workoutGet);
-  const load = useCommand(commands.rideLoad);
+  const status = useCommand(commands.rideStatus);
+  const load = useRideLoad();
   const [picked, setPicked] = useState<string | null>(null);
-  // The latest refused load. Kept here, not read from `load.error`, so that picking another workout can
-  // clear it: a refusal belongs to the workout it was for.
-  const [refusal, setRefusal] = useState<ApiError | null>(null);
   const { run: runList } = list;
   const { run: runGet } = get;
-  const { run: runLoad } = load;
+  const { run: runStatus } = status;
   useEffect(() => {
     void runList();
   }, [runList]);
 
+  // The selection is locked while a ride load is in flight. The core can replace a loaded-but-unstarted ride
+  // (`ride_load` stops and replaces it, core.rs:761-783; `ride_end` ends one, :1011), but it refuses a second
+  // load DURING the first ("another ride is loading or loaded", :789-792), and the page must never show a
+  // workout other than the one being loaded: success would route into the old workout's ride, a refusal would
+  // appear under the new one (#320). "In flight" is not this view's state: the app-scope controller (rideLoad.ts)
+  // knows a load this window started, and `ride_status().loading` (core.rs:1089) is the core's own answer for one
+  // that started anywhere (a window reloaded mid-load), asked when the view mounts and until it clears.
+  const coreLoading = status.data?.loading === true;
+  useEffect(() => {
+    void runStatus();
+  }, [runStatus]);
+  useEffect(() => {
+    if (!coreLoading) return;
+    const t = setTimeout(() => void runStatus(), STATUS_POLL_MS);
+    return () => clearTimeout(t);
+  }, [coreLoading, status.data, runStatus]);
+  const loading = load.phase === "loading" || coreLoading;
+
   const pick = useCallback(
     (id: string) => {
       setPicked(id);
-      setRefusal(null);
+      dismissRideLoad();
       void runGet(id);
     },
     [runGet],
@@ -119,20 +137,16 @@ export function Workouts() {
   /**
    * The one seam for the start guard. When the health-stop guard lands (A6 `requestStart`, #81) it replaces
    * this call: `requestStart(workout, "workouts")` decides, and loads through `ride_load` itself. There is no
-   * guard today and none is faked. The ride screen (#96) takes its session from `beginRide`.
+   * guard today and none is faked. The load itself is owned at app scope (`startRideLoad`): it begins the ride
+   * session (`beginRide`) and routes to the ride only if the rider is still here when it completes.
    */
   const rideThis = useCallback(
-    async (id: string) => {
-      setRefusal(null);
-      const outcome = await runLoad(id);
-      if (outcome.status === "ok") {
-        // One session per load: the ride screen reads its ride id and workout from it.
-        beginRide(outcome.data);
-        navigate("ride");
-      } else setRefusal(outcome.error);
-    },
-    [runLoad],
+    (id: string, name: string) => void startRideLoad(id, name),
+    [],
   );
+  // A refusal belongs to the workout it was for.
+  const refusal =
+    load.phase === "refused" && load.workoutId === picked ? load.error : null;
 
   const detail = picked !== null ? get.data : null;
   // The core refuses a workout with an error-severity issue (`ride_load`: invalid input); say so up front.
@@ -148,6 +162,11 @@ export function Workouts() {
       )}
       <div className="workouts-body">
         <nav aria-label="Library">
+          {loading && (
+            <p role="status" className="muted">
+              Loading ride…
+            </p>
+          )}
           {list.data?.length === 0 && <p className="muted">No workouts yet.</p>}
           <ul className="workouts-list">
             {list.data?.map((w) => (
@@ -155,6 +174,7 @@ export function Workouts() {
                 <button
                   type="button"
                   aria-pressed={picked === w.id}
+                  disabled={loading}
                   onClick={() => pick(w.id)}
                 >
                   <span className="workouts-name">{w.name}</span>{" "}
@@ -176,9 +196,9 @@ export function Workouts() {
               <button
                 type="button"
                 className="primary"
-                disabled={load.pending || blocking !== null}
+                disabled={loading || blocking !== null}
                 aria-describedby={blocking ? "ride-blocked" : undefined}
-                onClick={() => void rideThis(detail.workout.id)}
+                onClick={() => rideThis(detail.workout.id, detail.workout.name)}
               >
                 Ride this
               </button>
