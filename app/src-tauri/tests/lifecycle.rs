@@ -389,8 +389,15 @@ impl Wire<MockRuntime> for Recorder {
 #[test]
 fn install_registers_the_page_load_window_event_and_menu_handlers() {
     let r = lifecycle::install::<MockRuntime, _>(Recorder::default());
-    assert_eq!(r.names, ["page_load", "window_event", "menu", "menu_event"]);
+    assert_eq!(r.names, INSTALLED);
 }
+
+/// What `install` registers: the Quit menu only on macOS, the one platform with a menu to
+/// replace (#306; Windows and Linux would get a menu bar they never had).
+#[cfg(target_os = "macos")]
+const INSTALLED: [&str; 4] = ["page_load", "window_event", "menu", "menu_event"];
+#[cfg(not(target_os = "macos"))]
+const INSTALLED: [&str; 2] = ["page_load", "window_event"];
 
 fn bare_app() -> tauri::App<MockRuntime> {
     mock_builder()
@@ -400,7 +407,8 @@ fn bare_app() -> tauri::App<MockRuntime> {
 
 /// Cmd+Q is the menu item `install` registers with the Quit id; choosing it, through the
 /// handler `install` registered, starts the exit with status 0 (kills a no-op
-/// `on_menu_event`, #305).
+/// `on_menu_event`, #305). macOS only: nothing else registers the handler.
+#[cfg(target_os = "macos")]
 #[test]
 fn the_menu_event_handler_install_registers_exits_on_the_quit_item_only() {
     let app = bare_app();
@@ -460,4 +468,69 @@ fn the_quit_menu_item_exits_with_status_zero_and_others_do_not() {
     lifecycle::menu_event(&"crank-quit".into(), |c| exits.push(c));
     lifecycle::menu_event(&"something-else".into(), |c| exits.push(c));
     assert_eq!(exits, [0]);
+}
+
+// ---- replacing the Quit item only once it is verified (#306) ----
+
+use crank_desktop::lifecycle::{ApplicationMenu, LastItem, replace_quit};
+use std::cell::RefCell;
+
+/// An application menu holding its items' titles; predefined ones are marked.
+struct Fake(RefCell<Vec<LastItem>>);
+impl Fake {
+    fn new(items: &[(bool, &str)]) -> Self {
+        Self(RefCell::new(
+            items
+                .iter()
+                .map(|&(predefined, text)| LastItem {
+                    predefined,
+                    text: text.into(),
+                })
+                .collect(),
+        ))
+    }
+}
+impl ApplicationMenu for Fake {
+    fn last(&self) -> tauri::Result<Option<LastItem>> {
+        Ok(self.0.borrow().last().cloned())
+    }
+    fn replace_last_with_quit(&self, title: &str) -> tauri::Result<()> {
+        let mut items = self.0.borrow_mut();
+        items.pop();
+        items.push(LastItem {
+            predefined: false,
+            text: format!("{}:{title}", lifecycle::QUIT_ITEM_ID),
+        });
+        Ok(())
+    }
+}
+
+#[test]
+fn the_built_in_quit_is_replaced_by_the_quit_item() {
+    let menu = Fake::new(&[(true, "Hide"), (true, "Quit app")]);
+    assert!(replace_quit(&menu, "Quit app").unwrap());
+    let items = menu.0.borrow();
+    assert_eq!(items.len(), 2, "replaced, not appended");
+    assert_eq!(items[1].text, "crank-quit:Quit app");
+}
+
+#[test]
+fn another_last_item_is_kept_not_dropped() {
+    for last in [
+        (true, "Hide"),            // another predefined item
+        (false, "Quit app"),       // a custom item that merely looks like Quit
+        (false, "Something else"), // a custom item
+    ] {
+        let menu = Fake::new(&[(true, "Services"), last]);
+        let before = menu.0.borrow().clone();
+        assert!(!replace_quit(&menu, "Quit app").unwrap(), "{last:?}");
+        assert_eq!(*menu.0.borrow(), before, "{last:?} is left in place");
+    }
+}
+
+#[test]
+fn an_empty_menu_is_left_alone() {
+    let menu = Fake::new(&[]);
+    assert!(!replace_quit(&menu, "Quit app").unwrap());
+    assert!(menu.0.borrow().is_empty());
 }
