@@ -11,3 +11,4 @@ __pycache__/
 /crates/crank-fec/fuzz/target/
 /crates/crank-fec/fuzz/artifacts/
 /app/e2e-out/
+/.crank-dev/

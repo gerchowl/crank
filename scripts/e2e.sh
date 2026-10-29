@@ -14,7 +14,8 @@ if [ "${1:-}" = --launches ]; then
   dir=$2
   for n in 1 2; do
     mkdir -p "$dir/launch-$n"
-    CRANK_E2E_OUT=$dir/launch-$n pnpm -C "$root/app" exec wdio run e2e/wdio.conf.mjs
+    # The simulator and a scratch data dir per launch: no hardware, and no ride.lock shared between launches.
+    CRANK_SIM=1 CRANK_DATA_DIR=$dir/launch-$n/data CRANK_E2E_OUT=$dir/launch-$n pnpm -C "$root/app" exec wdio run e2e/wdio.conf.mjs
   done
   # Cross-launch determinism: same page, separate app launches, byte-identical screenshots.
   for shot in shell-1.png shell-2.png; do
