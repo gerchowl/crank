@@ -2,8 +2,10 @@
 // whole-ride overview and pause / skip / end. It renders what the stream and the core's answers say and branches
 // on `ApiError.code`, never on `message` (ADR-0001 §4.4); the core's text is shown as the reason of a refusal.
 //
+// Loss and reconnect states (#100 MVP, DESIGN §6.5) are read from the status and the links only, never inferred; what
+// the core does not report yet is listed on #329, not guessed here.
 // Out of this subset, each with its issue: density modes, the coach lane, the road (#96), sound and the input
-// dispatcher, the failure overlays (#100: here a fault is the device pill and the state line), the Review/summary
+// dispatcher, the rest of the failure states (#100), the Review/summary
 // (#106: a finished ride routes to History with the ride id until it exists) and the phone layout.
 // A window reload loses the session; the core keeps the ride loaded, and picking it up again is the Resume sheet (#259).
 import { useEffect, useState } from "react";
@@ -71,6 +73,23 @@ function stateLine(st: StreamStatus | null): string {
     case "riding":
       return st.ergReleased ? "ERG released: spin up to re-engage" : "Riding";
   }
+}
+
+/**
+ * The sensor-loss rows of DESIGN §6.5 that `RideStatus` and the links report today. Only flags are read: the trainer is
+ * lost when the core pauses with `trainer_lost` (not when a tile happens to be empty), the strap when its link is
+ * `lost` in a live ride, ERG is released when the core says so in a riding ride. Not reported by the core, so not
+ * shown: reconnect attempt, gap length, soft start (reconnected), time since the loss (the ≥ 30 s row) and the rider
+ * pause under a trainer loss (#329).
+ */
+export function lossView(st: StreamStatus | null, hr: LinkStatus | undefined) {
+  const kind = st?.state.kind;
+  const live = kind === "riding" || kind === "paused";
+  return {
+    trainer: st?.state.kind === "paused" && st.state.reason === "trainer_lost",
+    hr: live && hr === "lost",
+    erg: kind === "riding" && st?.ergReleased === true,
+  };
 }
 
 const REFUSAL: Record<string, string> = {
@@ -160,6 +179,7 @@ function Screen({ session }: { session: RideSession }) {
   // Pause and Resume are two buttons in two places, and the one just tapped stays disabled until the status shows
   // its effect, so a double tap cannot become pause-then-resume.
   const [pauseSent, setPauseSent] = useState<"pause" | "resume" | null>(null);
+  const loss = lossView(status, links.hr);
   const [skippedFrom, setSkippedFrom] = useState<number | null>(null);
 
   const workoutS = status?.workoutS ?? null;
@@ -224,8 +244,18 @@ function Screen({ session }: { session: RideSession }) {
       ? block.durS - status.blockElapsedS
       : (status?.blockElapsedS ?? null);
   const total = compiled?.totalS ?? null;
+  // End is never held by a pending command: the rider always has a way out. The core does not bound the ride commands
+  // it relays to the engine (`EngineHandle::send` waits on the engine's reply, engine.rs:188), and a second `ride_end`
+  // while one is running is not an error but waits for the same end (core.rs:1022-1047, bounded by REAP_TIMEOUT 10 s
+  // and RELEASE_TIMEOUT 3 s, core.rs:50-54), so End may be tapped again, also while an earlier End has not answered.
   const userPaused =
     status?.state.kind === "paused" && status.state.reason === "user";
+  // The tap's guard ends when the status shows its effect, whoever caused it (the coach may resume a rider pause).
+  if (
+    (pauseSent === "pause" && userPaused) ||
+    (pauseSent === "resume" && !userPaused)
+  )
+    setPauseSent(null);
   const busy =
     start.pending ||
     pause.pending ||
@@ -240,8 +270,10 @@ function Screen({ session }: { session: RideSession }) {
   const live = kind === "riding" || kind === "paused";
   const canPause = live && !userPaused && !(pauseSent === "pause");
   const canResume = userPaused && pauseSent !== "resume";
-  const round = (v: number | null | undefined) =>
-    v == null ? null : Math.round(v);
+  // Trainer lost: the core records `null` for power and cadence (DESIGN §6.5), so their tiles say "—" whatever the last
+  // sample was; HR lost blanks the HR tile.
+  const round = (v: number | null | undefined, blank = false) =>
+    v == null || blank ? null : Math.round(v);
 
   return (
     <div className="ride" data-testid="ride">
@@ -279,7 +311,7 @@ function Screen({ session }: { session: RideSession }) {
           </button>
           <button
             className="ride-btn"
-            disabled={busy || finished || status === null}
+            disabled={finished || status === null}
             onClick={() => setConfirming("end")}
           >
             End
@@ -330,7 +362,7 @@ function Screen({ session }: { session: RideSession }) {
             label="POWER"
             unit="W"
             ch={4}
-            value={round(power?.v)}
+            value={round(power?.v, loss.trainer)}
           />
         </div>
       </section>
@@ -341,14 +373,14 @@ function Screen({ session }: { session: RideSession }) {
           label="HEART RATE"
           unit="bpm"
           ch={3}
-          value={round(hr?.v)}
+          value={round(hr?.v, loss.hr)}
         />
         <Tile
           id="cadence"
           label="CADENCE"
           unit="rpm"
           ch={3}
-          value={round(cadence?.v)}
+          value={round(cadence?.v, loss.trainer)}
         />
         <div className="coach-cell" data-cell="coach" aria-hidden />
       </aside>
@@ -357,6 +389,23 @@ function Screen({ session }: { session: RideSession }) {
         <p className="ride-state" data-testid="state">
           {stateLine(status)}
         </p>
+        {loss.trainer && (
+          <p role="status" className="ride-loss" data-testid="loss-trainer">
+            <strong>{loss.hr ? "NEO and HR lost" : "NEO lost"}</strong> ·
+            workout paused at {clock(status?.blockElapsedS ?? null)} of this
+            block · reconnecting · keep pedalling or stop — your ride is saved
+          </p>
+        )}
+        {loss.hr && !loss.trainer && (
+          <p role="status" className="ride-loss" data-testid="loss-hr">
+            <strong>HR lost</strong> · heart rate shows — · the ride goes on
+          </p>
+        )}
+        {loss.erg && (
+          <p role="status" className="ride-loss" data-testid="loss-erg">
+            <strong>ERG released</strong> — spin up to 60 rpm
+          </p>
+        )}
         {refusal && (
           <p role="alert" className="ride-refusal" data-code={refusal.code}>
             <strong>{REFUSAL[refusal.code] ?? "Failed"}:</strong>{" "}
