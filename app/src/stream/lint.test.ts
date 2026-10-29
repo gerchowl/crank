@@ -14,12 +14,15 @@ const FIXTURE = [
   "export const a = (x: unknown) => structuredClone(x);",
   "export const b = (x: unknown) => globalThis.structuredClone(x);",
   "export const c = (x: unknown) => window.structuredClone(x);",
+  'export const d = (x: unknown) => globalThis["structuredClone"](x);',
+  "export const e = (x: unknown) => globalThis[`structuredClone`](x);",
+  "export const f = structuredClone;",
 ].join("\n");
 
 test("structuredClone is an error in src/stream, however it is reached", async () => {
   const messages = await lint(FIXTURE, "src/stream/fixture.ts");
   const hits = messages.filter((m) => m.ruleId === "no-restricted-syntax");
-  expect(hits.map((m) => m.line)).toEqual([1, 2, 3]);
+  expect(hits.map((m) => m.line)).toEqual([1, 2, 3, 4, 5, 6]);
   expect(hits[0]?.message).toMatch(
     /structuredClone is forbidden in src\/stream/,
   );

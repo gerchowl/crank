@@ -11,7 +11,7 @@ import { clearMocks } from "@tauri-apps/api/mocks";
 import { StrictMode, type ReactNode } from "react";
 import { afterEach, describe, expect, test } from "vitest";
 import { commands } from "../bindings";
-import type { MetricId, SubscribeOpts } from "../bindings";
+import type { LinkChange, MetricId } from "../bindings";
 import { StreamClient } from "./client";
 import {
   StreamProvider,
@@ -20,6 +20,7 @@ import {
   useStatus,
   useStreamError,
   useSubscribe,
+  type SubscribeRequest,
 } from "./hooks";
 import { ACK_WINDOW, SUB_CAP, installBackend, status } from "./testBackend";
 
@@ -39,12 +40,21 @@ const setup = (strict = false) => {
 };
 
 /** The three hooks a ride view reads, as one value. */
-const useRide = (metric: MetricId = "power", opts?: SubscribeOpts) => ({
+const useRide = (
+  metric: MetricId = "power",
+  opts: SubscribeRequest = { rateHz: 4 },
+) => ({
   sub: useSubscribe(metric, opts),
   status: useStatus(),
   links: useLinks(),
   error: useStreamError(),
 });
+
+/** Let anything still in flight land: for asserting that something does *not* happen (a late second batch). */
+const settle = () =>
+  act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
 
 /** The stream is open, subscribed and has answered its first re-query. */
 const ready = async (backend: ReturnType<typeof installBackend>) => {
@@ -54,17 +64,22 @@ const ready = async (backend: ReturnType<typeof installBackend>) => {
 
 describe("useSubscribe", () => {
   test.each([0.1, 1, 10])(
-    "delivers the latest sample at %f Hz and unsubscribes on unmount",
+    "passes a %f Hz request on to the core, shows the latest sample and unsubscribes on unmount",
     async (rateHz) => {
+      // The core does the rate limiting (hub.rs `period_s`); the hook forwards the request and shows what arrives.
       const { backend, wrapper } = setup();
-      const opts: SubscribeOpts = { rateHz, filters: [] };
-      const { result, unmount } = renderHook(() => useRide("power", opts), {
-        wrapper,
-      });
+      const { result, unmount } = renderHook(
+        () => useRide("power", { rateHz }),
+        { wrapper },
+      );
       await ready(backend);
       const sub = backend.subOf(0);
       const sent = backend.calls.find((c) => c.cmd === "stream_subscribe");
-      expect(sent?.args).toMatchObject({ stream: 7, metric: "power", opts });
+      expect(sent?.args).toMatchObject({
+        stream: 7,
+        metric: "power",
+        opts: { rateHz, filters: [] },
+      });
       expect(result.current.sub.sample).toBeNull();
 
       act(() => {
@@ -79,6 +94,17 @@ describe("useSubscribe", () => {
     },
   );
 
+  test("a rate the core refuses surfaces its typed invalid_input", async () => {
+    const { backend, wrapper } = setup();
+    const { result } = renderHook(() => useRide("power", { rateHz: 11 }), {
+      wrapper,
+    });
+    await waitFor(() =>
+      expect(result.current.sub.error?.code).toBe("invalid_input"),
+    );
+    expect(backend.liveSubs()).toBe(0);
+  });
+
   test("a gap sample is null, not the previous value", async () => {
     const { backend, wrapper } = setup();
     const { result } = renderHook(() => useRide(), { wrapper });
@@ -91,7 +117,7 @@ describe("useSubscribe", () => {
     expect(result.current.sub.sample).toEqual({ sub, t: 2, v: null });
   });
 
-  test("one stream per window under StrictMode, and an option literal does not resubscribe", async () => {
+  test("one stream under StrictMode, and an option literal does not resubscribe", async () => {
     const { backend, wrapper } = setup(true);
     const { rerender } = renderHook(
       () => useRide("cadence", { rateHz: 1, filters: [] }),
@@ -104,10 +130,53 @@ describe("useSubscribe", () => {
     expect(backend.liveSubs()).toBe(1);
   });
 
+  test("StrictMode mount, unmount, mount around a slow open attaches once", async () => {
+    const { backend, wrapper } = setup(true);
+    const open = backend.hold("open_stream");
+    renderHook(() => useRide(), { wrapper });
+    open();
+    await ready(backend);
+    await settle();
+    expect(backend.count("open_stream")).toBe(1);
+    expect(backend.count("stream_subscribe")).toBe(1);
+    expect(backend.liveSubs()).toBe(1);
+  });
+
+  test("an unmount while the subscribe answer is on its way still ends the subscription", async () => {
+    const { backend, wrapper } = setup();
+    const answer = backend.hold("stream_subscribe");
+    const { unmount } = renderHook(() => useRide(), { wrapper });
+    await waitFor(() => expect(backend.count("stream_subscribe")).toBe(1));
+    unmount();
+    answer();
+    await waitFor(() => expect(backend.liveSubs()).toBe(0));
+  });
+
+  test("changing the request while a subscribe answer is on its way leaves only the new subscription", async () => {
+    const { backend, wrapper } = setup();
+    const answer = backend.hold("stream_subscribe");
+    const { rerender } = renderHook(
+      ({ rateHz }) => useRide("power", { rateHz }),
+      { wrapper, initialProps: { rateHz: 4 } },
+    );
+    await waitFor(() => expect(backend.count("stream_subscribe")).toBe(1));
+    rerender({ rateHz: 5 });
+    answer();
+    await waitFor(() => expect(backend.count("stream_subscribe")).toBe(2));
+    await waitFor(() => expect(backend.liveSubs()).toBe(1));
+    await settle();
+    expect(backend.liveSubs()).toBe(1);
+    expect(
+      backend.calls.filter((c) => c.cmd === "stream_subscribe").at(-1)?.args,
+    ).toMatchObject({
+      opts: { rateHz: 5 },
+    });
+  });
+
   test("a beyond-64th subscription surfaces a typed conflict and the others stay live", async () => {
     const { backend, wrapper } = setup();
     const Probe = ({ n }: { n: number }) => {
-      const { sample, error } = useSubscribe("power");
+      const { sample, error } = useSubscribe("power", { rateHz: 4 });
       return (
         <i data-testid={`p${n}`}>{error ? error.code : sample ? "s" : "-"}</i>
       );
@@ -129,7 +198,7 @@ describe("useSubscribe", () => {
 });
 
 describe("ack", () => {
-  test("keeps consuming past the ack window: the core holds frames until stream_ack", async () => {
+  test("keeps consuming past the ack window, acking exactly the last seq applied", async () => {
     const { backend, wrapper } = setup();
     const { result } = renderHook(() => useRide(), { wrapper });
     await ready(backend);
@@ -142,9 +211,34 @@ describe("ack", () => {
     // Every frame got through although the window holds only 3: the client acked as it applied.
     await waitFor(() => expect(result.current.sub.sample?.v).toBe(N));
     expect(backend.heldCount()).toBe(0);
-    expect(backend.count("stream_ack")).toBeGreaterThan(0);
+    // Frames are seq 0..N-1; the ack names the last one applied, not the one before.
+    await waitFor(() => expect(backend.acks.at(-1)?.seq).toBe(N - 1));
     // No resync was needed for plain flow control.
     expect(backend.count("stream_snapshot")).toBe(1);
+  });
+
+  test("an ack still in flight across close and reopen does not stall the new stream", async () => {
+    const { backend, client, wrapper } = setup();
+    const first = renderHook(() => useRide(), { wrapper });
+    await ready(backend);
+    const oldAck = backend.hold("stream_ack");
+    act(() => void backend.push({}));
+    await waitFor(() => expect(backend.count("stream_ack")).toBe(1));
+    first.unmount();
+    await waitFor(() => expect(client.streamId).toBeNull());
+
+    renderHook(() => useRide(), { wrapper });
+    await waitFor(() => expect(client.streamId).toBe(8));
+    act(() => {
+      for (let i = 0; i < ACK_WINDOW; i++) backend.push({});
+    });
+    oldAck();
+    // The window of the new stream is full: only an ack for it lets the core send more.
+    await waitFor(() =>
+      expect(backend.acks).toContainEqual({ stream: 8, seq: ACK_WINDOW - 1 }),
+    );
+    act(() => void backend.push({}));
+    expect(backend.heldCount()).toBe(0);
   });
 });
 
@@ -170,6 +264,7 @@ describe("resync", () => {
     // The core's durable state is what the whole run produced.
     backend.truth.status = paused;
     backend.truth.links = [{ device: "hr", state: "lost" }];
+    backend.truth.infos = [{ role: "heart_rate", device: null, link: "lost" }];
     backend.setSample(final);
     const before = backend.count("stream_snapshot");
     frames.forEach((f, i) => {
@@ -179,6 +274,7 @@ describe("resync", () => {
       else act(() => void backend.push(f));
     });
     await waitFor(() => expect(result.current.sub.sample).toEqual(final));
+    await settle();
     return {
       backend,
       result,
@@ -194,7 +290,8 @@ describe("resync", () => {
     clearMocks();
 
     const lossy = await run(true);
-    await waitFor(() => expect(lossy.extra()).toBe(1));
+    // `run` settled: a late second batch would show here.
+    expect(lossy.extra()).toBe(1);
     expect(lossy.result.current.status).toEqual(expected.status);
     expect(lossy.result.current.links).toEqual(expected.links);
     // One batch: each member once (plus the one at open).
@@ -213,6 +310,7 @@ describe("resync", () => {
     backend.setSample({ sub, t: 5, v: 9 });
     act(() => void backend.push({ samples: [] }));
     await waitFor(() => expect(result.current.sub.sample?.v).toBe(9));
+    await settle();
     expect(backend.count("stream_snapshot")).toBe(2);
     expect(backend.count("ride_status")).toBe(2);
     expect(backend.count("device_links")).toBe(2);
@@ -222,31 +320,110 @@ describe("resync", () => {
     const { backend, wrapper } = setup();
     renderHook(() => useRide(), { wrapper });
     await ready(backend);
-    // The first frame is expected to carry 0 on a fresh stream; start the wrap run by resyncing explicitly.
     act(() => void backend.push({ seq: 0 }));
-    const max = 0xffff_ffff;
     act(() => void backend.push({ seq: 1 }));
+    await settle();
     expect(backend.count("stream_snapshot")).toBe(1);
-    act(() => void backend.push({ seq: max }));
+    // A jump to u32::MAX is a gap; 0 after it is not.
+    act(() => void backend.push({ seq: 0xffff_ffff }));
     await waitFor(() => expect(backend.count("stream_snapshot")).toBe(2));
     act(() => void backend.push({ seq: 0 }));
-    // 0 follows u32::MAX: no second re-query.
-    await Promise.resolve();
+    await settle();
     expect(backend.count("stream_snapshot")).toBe(2);
   });
 
-  test("a frame that arrives while the re-query is in flight wins over its answer", async () => {
+  test("a resync that arrives during a batch causes exactly one follow-up batch", async () => {
+    const { backend, wrapper } = setup();
+    renderHook(() => useRide(), { wrapper });
+    await ready(backend);
+    const answer = backend.hold("stream_snapshot");
+    act(() => void backend.push({ resync: true }));
+    await waitFor(() => expect(backend.count("stream_snapshot")).toBe(2));
+    act(() => void backend.push({ resync: true }));
+    act(() => void backend.push({ resync: true }));
+    await settle();
+    // Not started while the first is in flight ...
+    expect(backend.count("stream_snapshot")).toBe(2);
+    answer();
+    // ... and then one, not one per trigger.
+    await waitFor(() => expect(backend.count("stream_snapshot")).toBe(3));
+    await settle();
+    expect(backend.count("stream_snapshot")).toBe(3);
+    expect(backend.count("ride_status")).toBe(3);
+    expect(backend.count("device_links")).toBe(3);
+  });
+
+  test("a frame that arrives during a batch wins over the batch's older answer", async () => {
     const { backend, wrapper } = setup();
     const { result } = renderHook(() => useRide(), { wrapper });
     await ready(backend);
     const sub = backend.subOf(0);
+    // The answers are read now and delivered late.
+    backend.truth.status = status({
+      state: { kind: "paused", reason: "user" },
+    });
+    backend.truth.links = [{ device: "hr", state: "lost" }];
+    backend.truth.infos = [{ role: "heart_rate", device: null, link: "lost" }];
     backend.setSample({ sub, t: 1, v: 1 });
-    act(() => void backend.push({ resync: true }));
-    act(() => void backend.push({ samples: [{ sub, t: 2, v: 2 }] }));
-    await waitFor(() => expect(backend.count("stream_snapshot")).toBe(2));
-    await waitFor(() =>
-      expect(result.current.sub.sample).toEqual({ sub, t: 2, v: 2 }),
+    const answers = ["ride_status", "device_links", "stream_snapshot"].map(
+      (c) => backend.hold(c),
     );
+    act(() => void backend.push({ resync: true }));
+    await waitFor(() => expect(backend.count("stream_snapshot")).toBe(2));
+    const riding = status();
+    act(
+      () =>
+        void backend.push({
+          samples: [{ sub, t: 2, v: 2 }],
+          status: riding,
+          links: [{ device: "hr", state: "ready" }],
+        }),
+    );
+    answers.forEach((release) => release());
+    await settle();
+    expect(result.current.sub.sample).toEqual({ sub, t: 2, v: 2 });
+    expect(result.current.status).toEqual(riding);
+    expect(result.current.links).toEqual({ hr: "ready" });
+  });
+
+  test("ride_status and device_links answers are applied, with roles mapped to devices", async () => {
+    const { backend, wrapper } = setup();
+    const { result } = renderHook(() => useRide(), { wrapper });
+    await ready(backend);
+    const links: LinkChange[] = [{ device: "trainer", state: "ready" }];
+    act(() => void backend.push({ links }));
+    expect(result.current.links).toEqual({ trainer: "ready" });
+
+    // The snapshot says nothing about status and links, so only the other two members can supply them.
+    backend.truth.snapshotBare = true;
+    backend.truth.status = status({ state: { kind: "finished" } });
+    backend.truth.infos = [
+      { role: "trainer", device: null, link: null },
+      { role: "heart_rate", device: null, link: "connecting" },
+    ];
+    act(() => void backend.push({ resync: true }));
+    await waitFor(() =>
+      expect(result.current.status?.state).toEqual({ kind: "finished" }),
+    );
+    // A role without a live link has no entry; `heart_rate` is the stream's `hr`.
+    expect(result.current.links).toEqual({ hr: "connecting" });
+  });
+
+  test("a re-query answer that arrives after the stream closed is dropped", async () => {
+    const { backend, client, wrapper } = setup();
+    const { unmount } = renderHook(() => useRide(), { wrapper });
+    await ready(backend);
+    backend.truth.status = status({
+      state: { kind: "paused", reason: "user" },
+    });
+    const answer = backend.hold("stream_snapshot");
+    act(() => void backend.push({ resync: true }));
+    await waitFor(() => expect(backend.count("stream_snapshot")).toBe(2));
+    unmount();
+    await waitFor(() => expect(client.streamId).toBeNull());
+    answer();
+    await settle();
+    expect(client.snapshot.state.status).toBeNull();
   });
 });
 
