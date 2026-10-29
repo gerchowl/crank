@@ -125,6 +125,8 @@ impl<D: TrainerDriver> TrainerDriver for Reconnecting<D> {
                 caps,
                 control,
                 events,
+                // its own: the inner links change with every reconnect, the sequence must not
+                seq: crank_devices::SeqSource::default(),
             })
         })
     }

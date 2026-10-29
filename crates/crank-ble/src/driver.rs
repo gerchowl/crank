@@ -252,6 +252,7 @@ impl TrainerDriver for FecTrainer {
                 caps,
                 control: commands,
                 events: receiver,
+                seq: crank_devices::SeqSource::default(),
             })
         })
     }
@@ -333,6 +334,9 @@ async fn run(
     capture: Option<Arc<Capture>>,
 ) -> Result<(), DeviceError> {
     let mut pacer = Pacer::default();
+    // The sequence of the `SetMode` that set `pacer.mode`: a `Delivered` reports only what
+    // was written, so a mode replaced before its last page is never confirmed (#345).
+    let mut seq = None;
     let mut tick = 0;
     let start = clock.now().0;
     let mut last_write = start;
@@ -365,11 +369,10 @@ async fn run(
                 break;
             };
             match command {
-                TrainerCommand::SetMode(mode) => {
-                    if let Err(error) = pacer.set(mode, tick) {
-                        emit(&events, TrainerEvent::Fault(error)).await?;
-                    }
-                }
+                TrainerCommand::SetMode { mode, seq: next } => match pacer.set(mode, tick) {
+                    Ok(()) => seq = Some(next),
+                    Err(error) => emit(&events, TrainerEvent::Fault(error)).await?,
+                },
                 TrainerCommand::SetRider(_) => {
                     emit(
                         &events,
@@ -389,14 +392,14 @@ async fn run(
         if let Some(frame) = pacer.tick(tick)? {
             last_write = clock.now().0;
             write(&transport, &clock, capture.as_ref(), frame, &events).await?;
-            // `Delivered { mode }` means every page of the mode is on the trainer: a SIM
+            // `Delivered { mode, seq }` means every page of the mode is on the trainer: a SIM
             // pair is delivered by its second page, not its first (#250 round 2). Page 70
             // is the data-page request, not a control page.
             if frame[4] != 70
                 && pacer.delivered()
-                && let Some(mode) = pacer.mode
+                && let (Some(mode), Some(seq)) = (pacer.mode, seq)
             {
-                emit(&events, TrainerEvent::Delivered { mode }).await?;
+                emit(&events, TrainerEvent::Delivered { mode, seq }).await?;
             }
         }
         tick += 1;

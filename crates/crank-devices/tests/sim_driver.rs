@@ -57,11 +57,13 @@ async fn run(link: &mut TrainerLink, secs: u64) -> Vec<TrainerEvent> {
     }
     out
 }
-async fn set(link: &TrainerLink, mode: ControlMode) {
+async fn set(link: &TrainerLink, mode: ControlMode) -> CommandSeq {
+    let seq = link.seq.next();
     link.control
-        .send(TrainerCommand::SetMode(mode))
+        .send(TrainerCommand::SetMode { mode, seq })
         .await
         .expect("sim");
+    seq
 }
 fn samples(ev: &[TrainerEvent]) -> Vec<&TrainerSample> {
     ev.iter()
@@ -130,6 +132,26 @@ async fn second_connection_is_refused_while_the_first_lives() {
         .err()
         .expect("sim");
     assert_eq!(err, DeviceError::AlreadyConnected);
+}
+/// #345: each `Delivered` carries the sequence of the very `SetMode` it confirms, also for
+/// two equal modes in a row.
+#[tokio::test(start_paused = true)]
+async fn delivered_names_the_command_it_confirms() {
+    let r = rig(vec![]);
+    let mut link = connect(&r).await;
+    let zero = ControlMode::Resistance { pct: 0.0 };
+    let first = set(&link, zero).await;
+    let second = set(&link, zero).await;
+    assert_ne!(first, second);
+    let ev = run(&mut link, 2).await;
+    let delivered: Vec<_> = ev
+        .iter()
+        .filter_map(|e| match e {
+            TrainerEvent::Delivered { mode, seq } => Some((*mode, *seq)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(delivered, [(zero, first), (zero, second)]);
 }
 #[tokio::test(start_paused = true)]
 async fn erg_tracks_target_and_echoes_page_49_each_second() {

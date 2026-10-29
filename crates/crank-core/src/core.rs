@@ -20,8 +20,8 @@ use crate::library::Library;
 use crate::recorder::{RideMeta, StoreRecorder};
 use crank_ble::{Pairing, RideGate};
 use crank_devices::{
-    Clock, ControlMode, DeviceInfo, DeviceRef, HeartRateLink, RiderConfig, TrainerCommand,
-    TrainerEvent, TrainerLink,
+    Clock, CommandSeq, ControlMode, DeviceInfo, DeviceRef, HeartRateLink, RiderConfig, SeqSource,
+    TrainerCommand, TrainerEvent, TrainerLink,
 };
 use crank_domain::workout::{CompiledWorkout, Severity, Workout};
 use crank_engine::{
@@ -287,31 +287,42 @@ struct Session {
     /// Raised by a forced end: the engine is cut off from its links and its ride-active
     /// signal, and then the links are released through the relays (see [`Takeover`]).
     takeover: Arc<watch::Sender<Takeover>>,
+    /// The engine's own sender through the trainer's command gate, for a test to send what a
+    /// waking engine would.
+    #[cfg(test)]
+    engine_control: tokio::sync::mpsc::Sender<TrainerCommand>,
 }
 /// How far a forced end has taken a session over from its engine (#331, #344). Each step
-/// works through what the core owns (the relays, its clone of the trainer's control sender),
-/// so it works with the engine wedged on its thread, its links still held.
+/// works through what the core owns (the relays, its own sender through the trainer's command
+/// gate), so it works with the engine wedged on its thread, its links still held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Takeover {
     /// The engine has the session.
     Engine,
     /// The engine is cut off: the relays observe the drivers' events (the core waits for its
-    /// end mode's `Delivered`) but no longer pass them on, and the engine's ride-active signal
-    /// is ignored, so that an engine waking up later cannot touch the next ride's.
+    /// end mode's `Delivered`) but no longer pass them on, the trainer's command gate drops
+    /// the engine's commands ([`gate_commands`]), and the engine's ride-active signal is
+    /// ignored, so that an engine waking up later cannot touch the trainer or the next ride's
+    /// signal.
     CutOff,
     /// The core releases the devices: the relays stop and close the drivers' event streams,
     /// and the trainer is told to disconnect, whatever the engine still holds.
     Release,
 }
 /// What the core keeps of the trainer link so that it can end the ride's control itself
-/// when the engine cannot (#331). The control sender is a clone of the engine's: it keeps the
-/// driver's control channel open until the session is reaped, which follows the engine's
-/// end at once in every normal case.
+/// when the engine cannot (#331). Its sender is the core's own way through the command gate
+/// ([`gate_commands`]), which never blocks it: it keeps the driver's control channel open
+/// until the session is reaped, which follows the engine's end at once in every normal case.
 #[derive(Clone)]
 struct TrainerHold {
     control: tokio::sync::mpsc::Sender<TrainerCommand>,
-    /// The last mode the driver reported as delivered, cleared before the core sends its own.
-    delivered: Arc<watch::Sender<Option<ControlMode>>>,
+    /// The link's sequences, shared with the engine: the core's end mode has one of its own.
+    seq: SeqSource,
+    /// The sequence of the last `SetMode` the driver reported as delivered.
+    delivered: Arc<watch::Sender<Option<CommandSeq>>>,
+    /// The engine commands the gate dropped after the takeover.
+    #[cfg(test)]
+    dropped: Arc<std::sync::Mutex<Vec<TrainerCommand>>>,
 }
 /// The release signals of a session's links.
 ///
@@ -403,25 +414,124 @@ fn relay_events<E: Send + 'static>(
     });
     (events, closed)
 }
+/// The trainer's command gate (#345): the only way to the driver's control channel, with two
+/// senders into it, the engine's (handed to the engine in its link) and the core's own.
+///
+/// While the engine has the session, its commands are forwarded in order. From the takeover
+/// ([`Takeover::CutOff`]) on, every engine command, whether sent after it or queued before
+/// it and not yet forwarded, is **dropped and logged** with the ride id: an engine waking from
+/// a wedge cannot put an ERG target back on a trainer the core has ended. The core's commands
+/// (the forced end's `Resistance{0}`, its `Disconnect`) are never blocked.
+///
+/// Takeover is atomic with respect to the gate: one task forwards both senders, it looks at
+/// the takeover after taking each engine command off its channel, and the core raises the
+/// takeover before it sends anything. So once the core's end mode is forwarded, the takeover
+/// was already seen, and nothing of the engine's follows it. An engine command that waits on
+/// a full driver channel when the takeover comes is dropped too, which also keeps a stuck
+/// engine's backlog from holding the core's end mode.
+///
+/// Failure modes: a driver that has closed its channel ends the gate, and the engine's sends
+/// then fail as they would on the driver's own channel (its capacity is the driver's, so a
+/// full channel still means a driver that is not running). The gate ends when both senders
+/// are gone, which closes the driver's channel: the engine's end and the session's reap, as
+/// before there was a gate.
+fn gate_commands(
+    ride_id: String,
+    driver: tokio::sync::mpsc::Sender<TrainerCommand>,
+    mut takeover: watch::Receiver<Takeover>,
+    #[cfg(test)] dropped_log: Arc<std::sync::Mutex<Vec<TrainerCommand>>>,
+) -> (
+    tokio::sync::mpsc::Sender<TrainerCommand>,
+    tokio::sync::mpsc::Sender<TrainerCommand>,
+) {
+    let (engine_tx, mut engine) = tokio::sync::mpsc::channel(driver.max_capacity());
+    // the core sends its end mode and a disconnect, once per ride
+    let (core_tx, mut core) = tokio::sync::mpsc::channel(4);
+    let dropped = move |command: TrainerCommand| {
+        tracing::warn!(
+            ride_id,
+            ?command,
+            "the core has taken the ride over: an engine command is dropped"
+        );
+        #[cfg(test)]
+        dropped_log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(command);
+    };
+    tokio::spawn(async move {
+        let (mut engine_open, mut core_open) = (true, true);
+        while engine_open || core_open {
+            let command = tokio::select! {
+                biased;
+                command = core.recv(), if core_open => {
+                    let Some(command) = command else {
+                        core_open = false;
+                        continue;
+                    };
+                    command
+                }
+                command = engine.recv(), if engine_open => {
+                    let Some(command) = command else {
+                        engine_open = false;
+                        continue;
+                    };
+                    if *takeover.borrow() != Takeover::Engine {
+                        dropped(command);
+                        continue;
+                    }
+                    // (`Ok` pattern: once the session is gone, so is its takeover sender, and
+                    // that branch is off)
+                    tokio::select! {
+                        biased;
+                        sent = driver.send(command) => if sent.is_err() { break },
+                        Ok(_) = takeover.wait_for(|t| *t != Takeover::Engine) => dropped(command),
+                    }
+                    continue;
+                }
+                () = driver.closed() => break,
+            };
+            if driver.send(command).await.is_err() {
+                break;
+            }
+        }
+    });
+    (engine_tx, core_tx)
+}
 /// Put relays (see [`relay_events`]) between the drivers and the engine, which owns the links
 /// and drops them when it ends: a closed stream is the driver's confirmation that the
-/// peripheral is handed back. Returns the core's hold on the trainer and the release signals.
+/// peripheral is handed back. The trainer's commands go through the gate ([`gate_commands`]).
+/// Returns the core's hold on the trainer and the release signals.
 fn relay_links(
+    ride_id: &str,
     trainer: &mut TrainerLink,
     hr: Option<&mut HeartRateLink>,
     takeover: &watch::Sender<Takeover>,
 ) -> (TrainerHold, LinkRelease) {
+    #[cfg(test)]
+    let dropped = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (engine_control, core_control) = gate_commands(
+        ride_id.to_owned(),
+        trainer.control.clone(),
+        takeover.subscribe(),
+        #[cfg(test)]
+        dropped.clone(),
+    );
     let hold = TrainerHold {
-        control: trainer.control.clone(),
+        control: core_control,
+        seq: trainer.seq.clone(),
         delivered: Arc::new(watch::channel(None).0),
+        #[cfg(test)]
+        dropped,
     };
+    trainer.control = engine_control;
     let delivered = hold.delivered.clone();
     let (events, trainer_closed) = relay_events(
         std::mem::replace(&mut trainer.events, tokio::sync::mpsc::channel(1).1),
         false,
         move |event: &TrainerEvent| {
-            if let TrainerEvent::Delivered { mode } = event {
-                delivered.send_replace(Some(*mode));
+            if let TrainerEvent::Delivered { seq, .. } = event {
+                delivered.send_replace(Some(*seq));
             }
         },
         takeover.subscribe(),
@@ -499,28 +609,32 @@ async fn bounded<T, E: Into<ApiError>>(
         )),
     }
 }
-/// Step 2 of [`Core::force_end`].
-async fn force_end_mode(ride_id: &str, hold: &TrainerHold) {
+/// Step 2 of [`Core::force_end`]: `true` once the driver has confirmed this very command.
+///
+/// The end mode has a sequence of its own, and only a `Delivered` that carries it confirms
+/// it: a late `Delivered` of an earlier `Resistance{0}` (the engine's, from a pause or its
+/// own end) says nothing about this one (#345). Unconfirmed after `END_MODE_TIMEOUT`, the
+/// end goes on and logs it.
+async fn force_end_mode(ride_id: &str, hold: &TrainerHold) -> bool {
     let mode = ControlMode::Resistance { pct: 0.0 };
-    hold.delivered.send_replace(None);
+    let seq = hold.seq.next();
     let mut delivered = hold.delivered.subscribe();
-    let sent = tokio::time::timeout(END_MODE_TIMEOUT, async {
-        if hold
-            .control
-            .send(TrainerCommand::SetMode(mode))
+    let confirmed = tokio::time::timeout(END_MODE_TIMEOUT, async {
+        hold.control
+            .send(TrainerCommand::SetMode { mode, seq })
             .await
             .is_ok()
-        {
-            let _ = delivered.wait_for(|m| *m == Some(mode)).await;
-        }
+            && delivered.wait_for(|d| *d == Some(seq)).await.is_ok()
     })
-    .await;
-    if sent.is_err() {
+    .await
+    .unwrap_or(false);
+    if !confirmed {
         tracing::warn!(
             ride_id,
             "the trainer did not confirm the end mode of a forced end"
         );
     }
+    confirmed
 }
 /// Step 3 of [`Core::force_end`]: the relays stop and close the drivers' event streams (a
 /// closed stream is what makes a trainer's driver return and a strap's disconnect), and the
@@ -612,6 +726,9 @@ struct Inner {
     /// Blocks the engine's thread in a record write (#344).
     #[cfg(test)]
     block_write: Arc<BlockWrite>,
+    /// Up while `reap` waits for the engine task to end (#345).
+    #[cfg(test)]
+    joining: AtomicBool,
 }
 /// A switch that suspends a future without dropping it.
 #[cfg(test)]
@@ -798,6 +915,8 @@ impl Core {
             stall: Arc::default(),
             #[cfg(test)]
             block_write: Arc::default(),
+            #[cfg(test)]
+            joining: AtomicBool::new(false),
         })))
     }
 
@@ -1123,7 +1242,12 @@ impl Core {
             } else {
                 RELEASE_TIMEOUT
             };
-            if !task.join(wait).await {
+            #[cfg(test)]
+            self.0.joining.store(true, Ordering::SeqCst);
+            let joined = task.join(wait).await;
+            #[cfg(test)]
+            self.0.joining.store(false, Ordering::SeqCst);
+            if !joined {
                 if force {
                     // aborted above, and still not ended
                     tracing::warn!(ride_id, "the engine ignores the abort: detaching it");
@@ -1356,13 +1480,21 @@ impl Core {
         compiled: CompiledWorkout,
     ) -> Result<(Session, bool), ApiError> {
         let (mut trainer, mut hr, [trainer_device_id, hr_device_id]) = self.connect_links().await?;
+        let ride_id = format!(
+            "ride-{:x}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
         let takeover = Arc::new(watch::channel(Takeover::Engine).0);
-        let (hold, release) = relay_links(&mut trainer, hr.as_mut(), &takeover);
+        let (hold, release) = relay_links(&ride_id, &mut trainer, hr.as_mut(), &takeover);
         let hr_linked = hr.is_some();
         let (gate, active) = (self.0.gate.clone(), self.0.active.clone());
         #[cfg(test)]
         let pin = self.0.pin_active.clone();
         let activity = ride_activity(takeover.subscribe(), gate, active);
+        #[cfg(test)]
+        let engine_control = trainer.control.clone();
         let (engine, handle) = Engine::new(
             self.0.clock.clone(),
             Some(trainer),
@@ -1385,12 +1517,6 @@ impl Core {
         )?;
         #[cfg(not(test))]
         let task = EngineTask::spawn(self.0.engine_host, engine.run())?;
-        let ride_id = format!(
-            "ride-{:x}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        );
         let recorder = StoreRecorder::new(
             self.0.store.clone(),
             RideMeta {
@@ -1439,6 +1565,8 @@ impl Core {
                 release,
                 trainer: hold,
                 takeover,
+                #[cfg(test)]
+                engine_control,
             },
             hr_linked,
         ))
@@ -2016,7 +2144,7 @@ mod tests {
                             tokio::time::sleep(slow).await;
                             release(&radio);
                         }
-                        if matches!(cmd, TrainerCommand::SetMode(_)) {
+                        if matches!(cmd, TrainerCommand::SetMode { .. }) {
                             let active = radio
                                 .gate
                                 .lock()
@@ -2026,7 +2154,7 @@ mod tests {
                             radio.mode_gate.lock().unwrap().push(active);
                         }
                         log.lock().unwrap().push(cmd);
-                        if matches!(cmd, TrainerCommand::SetMode(_)) {
+                        if matches!(cmd, TrainerCommand::SetMode { .. }) {
                             radio
                                 .order
                                 .lock()
@@ -2411,7 +2539,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|c| matches!(c, TrainerCommand::SetMode(_)))
+                .any(|c| matches!(c, TrainerCommand::SetMode { .. }))
         );
         // The ride-active gate is up for every mode the engine sends (it is what the
         // reconnect supervisors read) and down when the trainer is released.
@@ -2424,10 +2552,8 @@ mod tests {
         // above saw with the gate down), so the release cannot drop it (S1).
         let commands = radio.commands.lock().unwrap().clone();
         assert_eq!(
-            commands.last(),
-            Some(&TrainerCommand::SetMode(
-                crank_devices::ControlMode::Resistance { pct: 0.0 }
-            )),
+            commands.last().and_then(mode_of),
+            Some(ControlMode::Resistance { pct: 0.0 }),
             "{commands:?}"
         );
     }
@@ -2689,10 +2815,8 @@ mod tests {
         // driver has disconnected by now is not part of the contract: quit does not wait.)
         let commands = radio.commands.lock().unwrap().clone();
         assert_eq!(
-            commands.last(),
-            Some(&TrainerCommand::SetMode(
-                crank_devices::ControlMode::Resistance { pct: 0.0 }
-            )),
+            commands.last().and_then(mode_of),
+            Some(ControlMode::Resistance { pct: 0.0 }),
             "{commands:?}"
         );
         assert!(!core.ride_status().await.unwrap().loading);
@@ -2776,10 +2900,8 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
         let commands = radio.commands.lock().unwrap().clone();
         assert_eq!(
-            commands.last(),
-            Some(&TrainerCommand::SetMode(
-                crank_devices::ControlMode::Resistance { pct: 0.0 }
-            )),
+            commands.last().and_then(mode_of),
+            Some(ControlMode::Resistance { pct: 0.0 }),
             "{commands:?}"
         );
         let status = core.ride_status().await.unwrap().status;
@@ -2829,18 +2951,21 @@ mod tests {
     fn stall_engine(core: &Core) {
         core.0.stall.on.store(true, Ordering::SeqCst);
     }
-    fn end_mode() -> TrainerCommand {
-        TrainerCommand::SetMode(ControlMode::Resistance { pct: 0.0 })
+    const END_MODE: ControlMode = ControlMode::Resistance { pct: 0.0 };
+    /// The mode a command sets, if it is a `SetMode`.
+    fn mode_of(command: &TrainerCommand) -> Option<ControlMode> {
+        match command {
+            TrainerCommand::SetMode { mode, .. } => Some(*mode),
+            _ => None,
+        }
     }
     /// The core sent the end mode and the trainer had it delivered (the fake takes
     /// `mode_delay` for that) before its link was dropped, which the core told it to do.
     fn assert_end_mode_before_disconnect(radio: &FakeRadio, delivery: Duration, stuck: bool) {
         let commands = radio.commands.lock().unwrap().clone();
         assert_eq!(
-            commands
-                .iter()
-                .rfind(|c| matches!(c, TrainerCommand::SetMode(_))),
-            Some(&end_mode()),
+            commands.iter().rev().find_map(mode_of),
+            Some(END_MODE),
             "stuck={stuck}: {commands:?}"
         );
         assert_eq!(
@@ -2865,7 +2990,10 @@ mod tests {
             let mut radio = fake(vec![], false);
             radio.mode_delay = Duration::from_millis(300);
             let core = riding(&radio, dir.path()).await;
-            assert_ne!(radio.commands.lock().unwrap().last(), Some(&end_mode()));
+            assert_ne!(
+                radio.commands.lock().unwrap().last().and_then(mode_of),
+                Some(END_MODE)
+            );
             if stuck {
                 stall_engine(&core);
             } else {
@@ -3605,5 +3733,252 @@ mod tests {
                 "returned before the devices were released"
             );
         }
+    }
+
+    /// A trainer link whose driver side the test plays, put behind the core's relays and the
+    /// command gate as `build_session` does. Returns the engine's link, the core's hold, the
+    /// takeover, the driver's command receiver and its event sender.
+    fn gated_link() -> (
+        TrainerLink,
+        TrainerHold,
+        Arc<watch::Sender<Takeover>>,
+        tokio::sync::mpsc::Receiver<TrainerCommand>,
+        tokio::sync::mpsc::Sender<TrainerEvent>,
+    ) {
+        let (control, driver) = tokio::sync::mpsc::channel(64);
+        let (events, driver_events) = tokio::sync::mpsc::channel(256);
+        let mut link = TrainerLink {
+            info: DeviceInfo::default(),
+            caps: crank_devices::TrainerCaps {
+                erg: true,
+                sim: true,
+                resistance: true,
+                max_resistance_n: None,
+                max_target_w: 2000,
+            },
+            control,
+            events: driver_events,
+            seq: SeqSource::default(),
+        };
+        let takeover = Arc::new(watch::channel(Takeover::Engine).0);
+        let (hold, _release) = relay_links("ride-gate", &mut link, None, &takeover);
+        (link, hold, takeover, driver, events)
+    }
+    fn erg_command(link: &TrainerLink, target_w: u16) -> TrainerCommand {
+        TrainerCommand::SetMode {
+            mode: ControlMode::Erg { target_w },
+            seq: link.seq.next(),
+        }
+    }
+    /// Let the gate and the relays run.
+    async fn settle() {
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+    }
+    /// #345: from the takeover on, no engine command reaches the driver, neither one queued
+    /// before it (the engine woke and sent it, the gate had not forwarded it yet) nor one sent
+    /// after it; each is dropped and logged. The core's end mode goes through, and it is the
+    /// trainer's last mode. Before, the engine shared the driver's channel: `Erg{92}`,
+    /// `Erg{109}` and `Erg{0}` followed the core's `Resistance{0}` (#334 re-review).
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn after_the_takeover_no_engine_command_reaches_the_trainer() {
+        let (link, hold, takeover, mut driver, events) = gated_link();
+        // the engine has the session: forwarded
+        let before = erg_command(&link, 200);
+        link.control.try_send(before).unwrap();
+        settle().await;
+        assert_eq!(driver.try_recv(), Ok(before));
+        // the engine wakes from a wedge and queues two targets; the gate has not run yet
+        let woken = [erg_command(&link, 92), erg_command(&link, 109)];
+        for command in woken {
+            link.control.try_send(command).unwrap();
+        }
+        takeover.send_replace(Takeover::CutOff);
+        // the trainer confirms what it is given
+        let trainer = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while let Some(command) = driver.recv().await {
+                if let TrainerCommand::SetMode { mode, seq } = command {
+                    let _ = events.send(TrainerEvent::Delivered { mode, seq }).await;
+                }
+                seen.push(command);
+            }
+            seen
+        });
+        assert!(force_end_mode("ride-gate", &hold).await, "confirmed");
+        // and one more after the end mode
+        let late = erg_command(&link, 0);
+        link.control.try_send(late).unwrap();
+        settle().await;
+        let dropped = hold.dropped.lock().unwrap().clone();
+        assert_eq!(dropped, [woken[0], woken[1], late]);
+        release_links("ride-gate", &hold, &takeover);
+        drop((link, hold));
+        let seen = trainer.await.unwrap();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(mode_of(&seen[0]), Some(END_MODE), "{seen:?}");
+        assert_eq!(seen[1], TrainerCommand::Disconnect);
+    }
+    /// #345: an engine command that waits on a full driver channel when the core takes over
+    /// is dropped, not forwarded after the core's end mode, and does not hold it.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn an_engine_command_waiting_on_a_full_driver_channel_is_dropped_at_the_takeover() {
+        let (link, hold, takeover, mut driver, _events) = gated_link();
+        // the driver takes nothing: its channel fills, and the gate waits with the next one
+        let mut sent = Vec::new();
+        for target_w in 100..165 {
+            let command = erg_command(&link, target_w);
+            link.control.try_send(command).unwrap();
+            sent.push(command);
+            settle().await;
+        }
+        takeover.send_replace(Takeover::CutOff);
+        settle().await;
+        assert_eq!(*hold.dropped.lock().unwrap(), [sent[64]]);
+        // the driver drains its backlog, and the core's end mode follows it
+        let ending = tokio::spawn({
+            let hold = hold.clone();
+            async move { force_end_mode("ride-gate", &hold).await }
+        });
+        let mut seen = Vec::new();
+        for _ in 0..65 {
+            seen.push(driver.recv().await.unwrap());
+        }
+        assert_eq!(seen[..64], sent[..64]);
+        assert_eq!(mode_of(&seen[64]), Some(END_MODE));
+        assert!(!ending.await.unwrap(), "nothing confirmed it");
+    }
+    /// #345: the core's end mode is confirmed only by a `Delivered` of its own sequence. A
+    /// late `Delivered` of an earlier `Resistance{0}` (the engine's, from a pause), the same
+    /// mode, does not confirm it: the forced end waits `END_MODE_TIMEOUT` and says so. Before,
+    /// a `Delivered` was matched by its mode alone.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_stale_delivered_of_an_equal_mode_does_not_confirm_the_end_mode() {
+        let (link, hold, takeover, mut driver, events) = gated_link();
+        let paused_seq = link.seq.next();
+        let paused = TrainerCommand::SetMode {
+            mode: END_MODE,
+            seq: paused_seq,
+        };
+        link.control.try_send(paused).unwrap();
+        settle().await;
+        assert_eq!(driver.try_recv(), Ok(paused));
+        takeover.send_replace(Takeover::CutOff);
+        // the trainer reports the pause's delivery only once the core's end mode is in
+        tokio::spawn(async move {
+            while let Some(command) = driver.recv().await {
+                if let TrainerCommand::SetMode { mode, .. } = command {
+                    let stale = TrainerEvent::Delivered {
+                        mode,
+                        seq: paused_seq,
+                    };
+                    let _ = events.send(stale).await;
+                }
+            }
+        });
+        let t = tokio::time::Instant::now();
+        assert!(
+            !force_end_mode("ride-gate", &hold).await,
+            "a stale delivery confirmed the end mode"
+        );
+        assert_eq!(t.elapsed(), END_MODE_TIMEOUT);
+        assert_eq!(*hold.delivered.borrow(), Some(paused_seq));
+    }
+    /// #345 through the core: a forced end of a stalled engine, which then wakes and sends ERG
+    /// targets (here through its own sender, as it would) and goes on to its own end. None of
+    /// it reaches the trainer: each is dropped, and the core's end mode, then its disconnect,
+    /// are the trainer's last commands.
+    #[tokio::test(start_paused = true)]
+    async fn an_engine_waking_after_a_forced_end_does_not_reach_the_trainer() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut radio = fake(vec![], false);
+        radio.mode_delay = Duration::from_millis(300);
+        let core = riding(&radio, dir.path()).await;
+        let (engine_control, takeover, hold) = {
+            let st = core.0.state.lock().await;
+            let s = st.session.as_ref().unwrap();
+            (
+                s.engine_control.clone(),
+                s.takeover.subscribe(),
+                s.trainer.clone(),
+            )
+        };
+        stall_engine(&core);
+        let end = {
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_end_outcome().await })
+        };
+        let mut cut_off = takeover.clone();
+        cut_off.wait_for(|t| *t != Takeover::Engine).await.unwrap();
+        // the end mode is on its way (the fake takes 300 ms): the engine wakes
+        let woken: Vec<_> = [92, 109, 0]
+            .into_iter()
+            .map(|target_w| TrainerCommand::SetMode {
+                mode: ControlMode::Erg { target_w },
+                seq: hold.seq.next(),
+            })
+            .collect();
+        for command in &woken {
+            engine_control.try_send(*command).unwrap();
+        }
+        core.0.stall.release();
+        // (the woken engine may still take its `Stop` and finish the ride: that record wins,
+        // as in `a_stop_the_engine_takes_after_the_timeout_decides_the_outcome`; the trainer's
+        // commands are the same either way)
+        end.await.unwrap().unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let commands = radio.commands.lock().unwrap().clone();
+        for command in &woken {
+            assert!(
+                !commands.contains(command),
+                "{command:?} reached the trainer"
+            );
+        }
+        let dropped = hold.dropped.lock().unwrap().clone();
+        assert!(
+            woken.iter().all(|c| dropped.contains(c)),
+            "dropped: {dropped:?}"
+        );
+        assert_end_mode_before_disconnect(&radio, Duration::from_millis(300), true);
+    }
+    /// #345, the surviving mutant of #344: `reap` does not hold the state lock across its
+    /// bounded join of the engine. Real time, the engine on its own thread, blocked in a record
+    /// write so that the forced end's join waits its whole `ABORT_JOIN_TIMEOUT`: all that time
+    /// the lock is free (a status read, a second End, get through).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_state_lock_is_free_while_a_forced_end_joins_the_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let (core, loaded, _, _) = a_wedged_ride(dir.path(), &radio, Duration::from_secs(4)).await;
+        let end = tokio::spawn({
+            let core = core.clone();
+            async move { core.ride_end_outcome().await }
+        });
+        until(Duration::from_secs(3), || {
+            core.0.joining.load(Ordering::SeqCst)
+        })
+        .await;
+        let mut probes = 0;
+        while core.0.joining.load(Ordering::SeqCst) {
+            let t = std::time::Instant::now();
+            let lock = tokio::time::timeout(Duration::from_millis(50), core.0.state.lock()).await;
+            // the join may have ended meanwhile, and the lock with it been taken by the end
+            assert!(
+                lock.is_ok() || !core.0.joining.load(Ordering::SeqCst),
+                "the state lock is held across the join ({:?})",
+                t.elapsed()
+            );
+            drop(lock);
+            probes += 1;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(probes > 0);
+        let end = tokio::time::timeout(Duration::from_secs(10), end)
+            .await
+            .expect("End answers")
+            .unwrap()
+            .unwrap();
+        assert_eq!(end, RideEnd::ForcedEnd(loaded.ride_id));
     }
 }
