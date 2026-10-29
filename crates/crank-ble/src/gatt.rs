@@ -134,8 +134,14 @@ fn open(
             Ok((identity(&p).await?, notifications))
         }
         .await;
-        if result.is_err() {
-            p.disconnect().await.map_err(gatt)?;
+        if result.is_err()
+            && let Err(error) = crate::driver::disconnect_bounded(Box::pin({
+                let p = p.clone();
+                async move { p.disconnect().await.map_err(gatt) }
+            }))
+            .await
+        {
+            tracing::warn!(%error, "disconnect after a failed setup failed");
         }
         result
     })
