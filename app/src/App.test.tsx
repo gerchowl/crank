@@ -8,6 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import {
   afterEach,
   beforeEach,
@@ -91,8 +92,11 @@ describe("rail", () => {
       act(() => navigate(view));
       expect(screen.queryByRole("navigation", { name: "Places" })).toBeNull();
     }
+    // History is a real view now: it asks the core for the ride list.
+    mockIPC((cmd) => (cmd === "rides_list" ? [] : undefined));
     act(() => navigate("history"));
     expect(screen.getByRole("navigation", { name: "Places" })).toBeTruthy();
+    clearMocks();
   });
 
   test("Devices is reachable under Settings", async () => {
