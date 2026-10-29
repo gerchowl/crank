@@ -2186,6 +2186,10 @@ mod tests {
         assert_eq!(rides[0].outcome, RideOutcome::Aborted, "{rides:?}");
         assert!(!core.ride_status().await.unwrap().status.loaded);
         assert_eq!(radio.disconnects.lock().unwrap().len(), 1, "released");
+        // the dead engine's ride-active signal is cleared for it: no reconnect loop is told
+        // a ride is still on
+        assert!(!core.0.gate.is_active());
+        assert!(!*core.0.active.borrow());
         // the next ride loads and starts: the record writer is free, the signal cleared
         core.ride_load(None).await.unwrap();
         core.ride_start().await.unwrap();
