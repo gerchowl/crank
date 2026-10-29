@@ -18,8 +18,11 @@ const OUTCOME: Record<RideOutcome, string> = {
   finished: "Finished",
   aborted: "Aborted",
 };
-const number = (n: number | null, unit: string) =>
-  n === null || !Number.isFinite(n) ? "—" : `${Math.round(n)} ${unit}`;
+const number = (n: number | null, unit: string, digits = 0) =>
+  n === null || !Number.isFinite(n) ? "—" : `${n.toFixed(digits)} ${unit}`;
+/** Work, one decimal below 10 kJ so a short ride is not rounded to 0 or 1. */
+const work = (kj: number | null) =>
+  number(kj, "kJ", kj !== null && Math.abs(kj) < 10 ? 1 : 0);
 /** The ride's start in the rider's local time; "—" when the core has none. */
 export function startedText(startedAt: number | null): string {
   if (startedAt === null) return "—";
@@ -84,7 +87,7 @@ function SummaryBody({ ride }: { ride: RideRecord }) {
             <dt>Average heart rate</dt>
             <dd>{number(s.avgHrBpm, "bpm")}</dd>
             <dt>Work</dt>
-            <dd>{number(s.kj, "kJ")}</dd>
+            <dd>{work(s.kj)}</dd>
           </dl>
           {s.blocks.length > 0 && (
             <>
@@ -126,19 +129,22 @@ export function RideSummaryView({ id }: { id: string }) {
     void run(id);
   }, [run, id]);
   const ride = get.data?.id === id ? get.data : null;
+  // The hook keeps the previous call's failure until the next call finishes; one for another ride, or a
+  // retry in flight, is not shown next to "Loading…".
+  const error = get.pending ? null : get.error;
   return (
     <div className="page history">
       <div className="page-head">
         <h1>{ride ? ride.workoutName : "Ride summary"}</h1>
       </div>
       {get.pending && !ride && <p className="muted">Loading…</p>}
-      {get.error &&
-        (get.error.code === "not_found" ? (
+      {error &&
+        (error.code === "not_found" ? (
           <p role="alert" className="history-error">
             This ride isn’t in your history.
           </p>
         ) : (
-          <ErrorLine error={get.error} onRetry={() => void run(id)} />
+          <ErrorLine error={error} onRetry={() => void run(id)} />
         ))}
       {ride && <SummaryBody ride={ride} />}
       <Leave />
