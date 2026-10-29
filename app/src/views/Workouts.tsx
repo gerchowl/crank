@@ -125,6 +125,11 @@ export function Workouts() {
     return () => clearTimeout(t);
   }, [coreLoading, status.data, runStatus]);
   const loading = load.phase === "loading" || coreLoading;
+  // A refusal is shown where the rider is looking (#333), whether it arrived while this view was mounted or while
+  // they were elsewhere (then on return). The notice hides on this view, and leaving it marks the refusal seen
+  // (`RideLoadNotice`, app scope, so StrictMode's mount/unmount probe cannot clear it), so it is shown once here and never reappears elsewhere. It stays until the rider picks
+  // another workout, dismisses it or leaves; under its workout when that one is picked, else at the top by name.
+  const refusal = load.phase === "refused" ? load : null;
 
   const pick = useCallback(
     (id: string) => {
@@ -144,9 +149,8 @@ export function Workouts() {
     (id: string, name: string) => void startRideLoad(id, name),
     [],
   );
-  // A refusal belongs to the workout it was for.
-  const refusal =
-    load.phase === "refused" && load.workoutId === picked ? load.error : null;
+  // A refusal belongs to the workout it was for; for any other it names the workout.
+  const here = refusal !== null && refusal.workoutId === picked;
 
   const detail = picked !== null ? get.data : null;
   // The core refuses a workout with an error-severity issue (`ride_load`: invalid input); say so up front.
@@ -159,6 +163,14 @@ export function Workouts() {
       </div>
       {list.error && (
         <ErrorLine error={list.error} onRetry={() => void runList()} />
+      )}
+      {refusal && !here && (
+        <p role="alert" className="workouts-error">
+          Could not load {refusal.name}: {refusal.error.message}{" "}
+          <button type="button" onClick={dismissRideLoad}>
+            Dismiss
+          </button>
+        </p>
       )}
       <div className="workouts-body">
         <nav aria-label="Library">
@@ -207,7 +219,7 @@ export function Workouts() {
                   Can’t ride this until the error is fixed: {blocking.message}
                 </p>
               )}
-              {refusal && <ErrorLine error={refusal} />}
+              {refusal && here && <ErrorLine error={refusal.error} />}
             </>
           )}
         </div>
