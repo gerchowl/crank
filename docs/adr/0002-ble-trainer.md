@@ -966,7 +966,15 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    mode's `Delivered` is matched by mode, not by a sequence number. The residual is FM-FIN-02's stalled
    write: if the trainer does not take the end mode within the 500 ms the core gives up on it and the link
    is dropped. `ride_end` reports `{rideId, forced}`; the id is returned either way, and the summary of an
-   aborted ride says its data may be incomplete. Quitting inherits the bound. FMEA row FM-FIN-05.
+   aborted ride says its data may be incomplete. Quitting inherits the bound. **No request waits on the
+   engine under the state lock (#351):** End takes that lock, so a request holding it while a wedged engine
+   does not answer would hold End. The three `Stop`s above are the only engine requests made under it, by
+   design (no `ride_start` may reach the engine first), and are bounded by `STOP_TIMEOUT`. Every other
+   request (`Load`, start/pause/resume/skip, and the stream requests: open, subscribe, unsubscribe, ack,
+   snapshot, a window's close) is sent without the lock and waited for at most 1 s (`REQUEST_TIMEOUT`); the
+   caller then gets the typed `engine_unresponsive` (outcome unknown, the request may still apply). The
+   ride view says the engine is not answering and offers End; nothing is retried. A `Load` the new engine
+   does not take releases the devices it was built with, as a forced end does. FMEA row FM-FIN-05.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 

@@ -5,6 +5,8 @@
 // `subscribe_opts_wire_contract_for_the_ui_mock` in crank-engine), `open_stream` replacing the window's earlier
 // streams, and `not_found` for a stream that is not the open one. Durable state (`truth`) is what `ride_status`,
 // `device_links` and `stream_snapshot` answer from, read when the call arrives; `hold` delays only the answer.
+// With `truth.unresponsive` the engine is wedged: every stream command answers `engine_unresponsive` after its owner
+// check, as the core's `bounded` (crank-core core.rs, `REQUEST_TIMEOUT`, #351) does.
 import type { Channel } from "@tauri-apps/api/core";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
@@ -53,6 +55,9 @@ export interface Call {
 }
 
 const apiError = (code: string, message: string) => ({ code, message });
+/** The core's text for a request its 1 s bound gave up on. */
+export const UNRESPONSIVE =
+  "the ride engine did not answer in time; End still ends the ride";
 
 /** Install the mock. `firstStream` is the id the first `open_stream` answers with; each later one is the next. */
 export function installBackend(firstStream = 7) {
@@ -75,6 +80,8 @@ export function installBackend(firstStream = 7) {
     infos: [] as DeviceLinkInfo[],
     /** `stream_snapshot` carries no status and no links (to tell the members of a re-query apart). */
     snapshotBare: false,
+    /** The engine is wedged: stream commands answer `engine_unresponsive` (#351). */
+    unresponsive: false,
   };
 
   const send = (frame: StreamFrame) => {
@@ -89,6 +96,10 @@ export function installBackend(firstStream = 7) {
   };
   const owned = (stream: unknown) => {
     if (stream !== current) throw apiError("not_found", "unknown stream");
+    wedged();
+  };
+  const wedged = () => {
+    if (truth.unresponsive) throw apiError("engine_unresponsive", UNRESPONSIVE);
   };
 
   const backend = {
@@ -147,6 +158,7 @@ export function installBackend(firstStream = 7) {
   const handle = (cmd: string, args: Record<string, unknown>): unknown => {
     switch (cmd) {
       case "open_stream": {
+        wedged();
         // The window's earlier streams, and their subscriptions, are dropped.
         live.clear();
         truth.samples.clear();
