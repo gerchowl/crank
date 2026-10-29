@@ -24,6 +24,10 @@ tauri-plugin-wdio-webdriver = { workspace = true, optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 # CGDisplayScreenSize for the window's display (#286); already in the lockfile through tao.
 core-graphics = "0.25"
+# The window's own display id (`NSWindow.screen` -> `NSScreenNumber`, #313); in the lockfile through tao and wry.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSScreen", "NSWindow", "NSResponder"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSDictionary", "NSString", "NSValue"] }
 
 [dev-dependencies]
 # The mock runtime builds a window and managed state for the command-layer tests.

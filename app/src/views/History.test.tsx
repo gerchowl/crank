@@ -130,6 +130,7 @@ test("a summary renders the core's values", async () => {
   });
   const s = within(screen.getByRole("region", { name: "Ride summary" }));
   expect(s.getByText("Finished")).toBeTruthy();
+  expect(s.queryByRole("note")).toBeNull();
   // 1_760_000_000 s is 2025-10-09 08:53:20 UTC (read as milliseconds it would be 1970)
   const started = s.getByText(/2025/).textContent ?? "";
   expect(started).toMatch(/0?8:53/);
@@ -167,6 +168,10 @@ test("an aborted ride has no summary to show", async () => {
   const s = within(await screen.findByRole("region", { name: "Ride summary" }));
   expect(s.getByText("Aborted")).toBeTruthy();
   expect(s.getByText("No summary was recorded for this ride.")).toBeTruthy();
+  // an aborted ride (a forced end, #331) says its data may be incomplete; a finished one does not
+  expect(s.getByRole("note").textContent).toBe(
+    "Ride ended without the engine confirming; data may be incomplete.",
+  );
 });
 
 test("a ride that is not stored says so and offers the way back", async () => {
