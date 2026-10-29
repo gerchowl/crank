@@ -23,6 +23,7 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   ApiError,
+  LinkChange,
   Phase,
   StreamPauseReason,
   StreamRideState,
@@ -68,6 +69,16 @@ export interface RideWorld {
   lastId: string | null;
   rideId: string;
   userPause: boolean;
+  /** The trainer link is lost in an active ride: the engine pauses with `trainer_lost`, which outranks a rider pause (engine.rs:295). */
+  trainerLost: boolean;
+  /** 8 ticks without trainer samples on a link that is still ready: the engine pauses with `trainer_lost` all the same (engine.rs:~33). */
+  trainerSilent: boolean;
+  /** Cadence and power were 0 for 3 s: `stopped_pedalling`, outranked by a rider pause and a trainer loss (engine.rs:295-306). */
+  stoppedPedalling: boolean;
+  /** The strap link is lost: the ride keeps going (DESIGN §6.5). */
+  hrLost: boolean;
+  /** ERG released for low cadence; the engine passes `policy.released` through (engine.rs:1279) and it stays set until 60 rpm is held for 2 s (erg/policy.rs:116-124), so it can accompany a pause. */
+  ergReleased: boolean;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";
   cap: "none" | "requires_erg" | "exceeds";
@@ -93,6 +104,11 @@ export function installRide(over: Partial<RideWorld> = {}) {
     lastId: null,
     rideId: "ride-1",
     userPause: false,
+    trainerLost: false,
+    trainerSilent: false,
+    stoppedPedalling: false,
+    hrLost: false,
+    ergReleased: false,
     blockIdx: 0,
     trainer: "ready",
     cap: "none",
@@ -108,10 +124,30 @@ export function installRide(over: Partial<RideWorld> = {}) {
   const state = (): StreamRideState => {
     if (world.phase === "finished") return { kind: "finished" };
     if (world.phase !== "active") return { kind: "idle" };
-    return world.userPause
-      ? { kind: "paused", reason: "user" satisfies StreamPauseReason }
+    if (world.trainerLost || world.trainerSilent)
+      return {
+        kind: "paused",
+        reason: "trainer_lost" satisfies StreamPauseReason,
+      };
+    if (world.userPause)
+      return { kind: "paused", reason: "user" satisfies StreamPauseReason };
+    return world.stoppedPedalling
+      ? {
+          kind: "paused",
+          reason: "stopped_pedalling" satisfies StreamPauseReason,
+        }
       : { kind: "riding" };
   };
+  const links = (): LinkChange[] =>
+    world.phase === "active"
+      ? [
+          {
+            device: "trainer",
+            state: world.trainerLost ? "lost" : "ready",
+          },
+          { device: "hr", state: world.hrLost ? "lost" : "ready" },
+        ]
+      : [];
   /** The engine's `publish`: the status frame after a command. */
   const publish = (workoutS?: number) => {
     if (!world.publishes) return;
@@ -121,8 +157,10 @@ export function installRide(over: Partial<RideWorld> = {}) {
       workoutS: workoutS ?? base.truth.status.workoutS,
       blockIndex: world.blockIdx < world.blocks.length ? world.blockIdx : null,
       blockElapsedS: 0,
+      ergReleased: world.ergReleased,
     });
-    base.push({ status: base.truth.status });
+    base.truth.links = links();
+    base.push({ status: base.truth.status, links: links() });
   };
   const reach = () => {
     if (world.phase === "none") throw err("conflict", "no ride loaded");
