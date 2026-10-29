@@ -493,6 +493,7 @@ fn device_link() -> Device {
     let (events, receiver) = mpsc::channel(64);
     Device {
         link: TrainerLink {
+            seq: SeqSource::default(),
             info: DeviceInfo::default(),
             caps: TrainerCaps {
                 erg: true,
@@ -545,6 +546,13 @@ fn rider() -> RiderConfig {
         wheel_m: 0.68,
     }
 }
+/// The engine's ERG 200 W command (sequence 1).
+fn erg_200() -> TrainerCommand {
+    TrainerCommand::SetMode {
+        mode: ControlMode::Erg { target_w: 200 },
+        seq: CommandSeq(1),
+    }
+}
 fn script(clock: &Arc<dyn Clock>, outcomes: Vec<Result<TrainerLink, DeviceError>>) -> Arc<Script> {
     Arc::new(Script {
         clock: clock.clone(),
@@ -580,15 +588,15 @@ async fn trainer_reconnects_on_the_exact_schedule_reapplies_rider_and_never_rest
         .await
         .unwrap();
     // A running ride: the engine had issued ERG before the loss.
-    link.control
-        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
-        .await
-        .unwrap();
+    link.control.send(erg_200()).await.unwrap();
     settle().await;
     let mut first_commands = first.commands;
     assert_eq!(
         first_commands.try_recv(),
-        Ok(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        Ok(TrainerCommand::SetMode {
+            mode: ControlMode::Erg { target_w: 200 },
+            seq: CommandSeq(1)
+        })
     );
 
     let lost_at = clock.now();
@@ -652,14 +660,14 @@ async fn trainer_reconnects_on_the_exact_schedule_reapplies_rider_and_never_rest
     // The driver restored nothing: the new device saw no command at all.
     assert!(second.commands.try_recv().is_err());
     // Only the engine's explicit SetMode after Ready reaches it.
-    link.control
-        .send(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
-        .await
-        .unwrap();
+    link.control.send(erg_200()).await.unwrap();
     settle().await;
     assert_eq!(
         second.commands.try_recv(),
-        Ok(TrainerCommand::SetMode(ControlMode::Erg { target_w: 200 }))
+        Ok(TrainerCommand::SetMode {
+            mode: ControlMode::Erg { target_w: 200 },
+            seq: CommandSeq(1)
+        })
     );
 }
 
@@ -681,7 +689,10 @@ async fn commands_sent_while_disconnected_are_discarded_not_replayed() {
         .unwrap();
     settle().await;
     link.control
-        .send(TrainerCommand::SetMode(ControlMode::Free))
+        .send(TrainerCommand::SetMode {
+            mode: ControlMode::Free,
+            seq: CommandSeq(1),
+        })
         .await
         .unwrap();
     advance(ms(500)).await;

@@ -135,7 +135,7 @@ async fn launch_with(
     let c = clock.clone();
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
-            if let TrainerCommand::SetMode(m) = cmd {
+            if let TrainerCommand::SetMode { mode: m, .. } = cmd {
                 let now = crank_devices::Clock::now(&*c).0 / 1000;
                 log.lock().expect("test mutex").push((now, m));
             }

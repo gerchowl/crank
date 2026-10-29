@@ -669,7 +669,10 @@ impl Run {
         let issued = self.clock.now().0;
         self.link
             .control
-            .send(TrainerCommand::SetMode(mode))
+            .send(TrainerCommand::SetMode {
+                mode,
+                seq: self.link.seq.next(),
+            })
             .await?;
         self.drain(wait).await;
         Ok(issued)

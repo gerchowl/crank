@@ -91,11 +91,12 @@ pub enum ControlMode {
 pub struct Wind { pub cw_kg_per_m: f32, pub speed_kmh: f32, pub drafting: f32 }
 pub struct RiderConfig { pub rider_kg: f32, pub bike_kg: f32, pub wheel_m: f32 }
 
-pub enum TrainerCommand { SetMode(ControlMode), SetRider(RiderConfig), Disconnect }
+pub enum TrainerCommand { SetMode { mode: ControlMode, seq: CommandSeq }, SetRider(RiderConfig), Disconnect }
+// `seq` comes from the link's shared `SeqSource` (`TrainerLink::seq`), so every sender's commands are distinct (#345)
 
 pub enum TrainerEvent {
     Sample(TrainerSample),
-    Delivered { mode: ControlMode },            // GATT write-with-response succeeded: bytes reached the peripheral, nothing more
+    Delivered { mode: ControlMode, seq: CommandSeq }, // GATT write-with-response succeeded: bytes reached the peripheral, nothing more; confirms only the SetMode of `seq` (#345)
     Observed(TrainerObservation),               // what the trainer reports it is doing (§4.4); never "ack of command N"
     Link(LinkState),                            // Connecting | Ready | Lost (Ready = transport, rider config, caps done)
     Fault(DeviceError),
@@ -353,7 +354,8 @@ one tick of single-page delay remains inside the control latency budget.
   may arrive. Tags in the data bytes wrap and cannot identify a delayed reply either. crank therefore keeps
   two separate, honest signals:
   - **Delivery (transport):** every write uses GATT write-with-response. Success →
-    `TrainerEvent::Delivered { mode }`, meaning the bytes reached the peripheral and nothing more; a GATT
+    `TrainerEvent::Delivered { mode, seq }`, meaning the bytes of the `SetMode` of sequence `seq` reached the
+    peripheral and nothing more (a mode replaced before its last page is never confirmed); a GATT
     error → `Fault(DeviceError::Gatt)`.
   - **Observation (trainer state):** while a controlled mode (ERG, SIM, resistance, `Free`) is active the
     writer requests page 71 every `T_poll` = 1 s through the `requests` slot (fixed cadence, aligned in SIM
@@ -887,9 +889,10 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    release, an unambiguous non-torque state that one page-71 echo verifies, independent of HIL check 12.
    (`Free` is the two SIM pages 50 and 51; the trainer is not out of ERG before both are written.) It does so
    before it clears the ride-active signal (`RideGate`). **What the gate waits for:** the signal stays up until
-   the driver reports `Delivered { Resistance { 0 } }` (the mode's only page written), the link leaves `Ready`
-   (seen while no ride is running), or 2 s (eight writer ticks) pass, whichever is first; a `Delivered` of
-   any other mode does not release it.
+   the driver reports `Delivered { Resistance { 0 }, seq }` for the end mode's own sequence (the mode's only
+   page written), the link leaves `Ready` (seen while no ride is running), or 2 s (eight writer ticks) pass,
+   whichever is first; a `Delivered` of any other command does not release it, not even one of an earlier,
+   equal `Resistance { 0 }` (a pause's, #345): correlation is by sequence, never by value.
    `Delivered { mode }` means every control page of `mode` has been written, for every multi-page mode.
    The end mode is always sent, also when the last command is already `Resistance { pct: 0 }`: that command
    (a pause, a release) may still be queued and unwritten. **A `Load` does not cancel it (amendment, #279,
@@ -945,8 +948,9 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    engine's thread; the core's own store call below runs on the blocking pool. An engine that does not
    answer, or whose task is gone, is ended by force, in this order. (1) The engine is **cut off**: the
    relays between the drivers and the engine stop passing events to it, and its ride-active signal is
-   ignored from then on. (2) **The end mode is the core's**: it keeps its own hold on the trainer's control
-   channel, independent of the engine, and sends `Resistance{0}` itself, waiting for its `Delivered` for at
+   ignored from then on, and the trainer's **command gate** drops its commands (below). (2) **The end mode is
+   the core's**: it has its own sender through that gate, independent of the engine, and sends `Resistance{0}`
+   itself, with a sequence of its own, waiting for the `Delivered` of that sequence for at
    most 500 ms (about two writer ticks; with the 1 s `Stop` bound, the abort and the record close it keeps a
    forced end at about 2.25 s worst case, inside the quit cap), before the link is dropped; a driver that
    returns on a closed control channel writes no end mode itself. (3) **The core releases the devices**
@@ -961,9 +965,14 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    end is reported as an ordinary one. (6) The ride-active signal is cleared; the drivers' release is
    awaited as above, and a new ride can be loaded at once. A detached engine that wakes later changes
    nothing: its record writes are refused by the store (`ride is not live`), so the ride stays aborted, and
-   its ride-active signal no longer reaches the core, so the next ride's is not touched. Not yet done
-   (#345): commands it sends the trainer between the cut-off and the disconnect are not gated, and the end
-   mode's `Delivered` is matched by mode, not by a sequence number. The residual is FM-FIN-02's stalled
+   its ride-active signal no longer reaches the core, so the next ride's is not touched. **The command gate
+   (#345):** the engine's control sender does not reach the driver directly but through a relay the core
+   owns; from the cut-off on, every engine command (one sent after it, or one queued before it and not yet
+   forwarded, or one waiting on a full driver channel) is dropped and logged with the ride id, never
+   forwarded, while the core's own sender is never blocked. One task forwards both senders and reads the
+   cut-off after taking each engine command, and the core raises the cut-off before it sends: nothing of the
+   engine's can follow the core's end mode. A stale `Delivered` of an earlier `Resistance{0}` does not confirm
+   the core's (sequence correlation, above). The residual is FM-FIN-02's stalled
    write: if the trainer does not take the end mode within the 500 ms the core gives up on it and the link
    is dropped. `ride_end` reports `{rideId, forced}`; the id is returned either way, and the summary of an
    aborted ride says its data may be incomplete. Quitting inherits the bound. **No request waits on the
