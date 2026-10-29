@@ -7,7 +7,9 @@
 // rely on the sim's early refusal. Pair replaces the role's earlier pairing, and answers the adapter's failures;
 // forget of an empty role is `not_found` (core.rs:679-696); a scan lists a peripheral once and marks `paired` for any
 // role. `storage` (`store`): scan and forget read the store first (core.rs:559-566, 684-690), so they fail before
-// anything else happens; pair writes it after the connect succeeded (core.rs:659), so a failure leaves nothing paired.
+// anything else happens; pair writes it after the connect succeeded (core.rs:659): `store` then leaves nothing paired,
+// `storeAfterWrite` models the later reads and forgets of the replaced pairing failing (core.rs:666-669), after the
+// new row was written.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   ApiError,
@@ -69,6 +71,8 @@ export interface DevicesState {
   linksError: ApiError | null;
   /** A failure of the store behind `devices_scan`, `device_pair` and `device_forget`; `null` is healthy. */
   store: ApiError | null;
+  /** A failure of `device_pair` after its row was written (the replaced-pairing cleanup); `null` is healthy. */
+  storeAfterWrite: ApiError | null;
   /** When set, `devices_scan`, `device_pair` and `device_forget` wait for it before answering (a command in flight). */
   gate: Promise<void> | null;
   /** Which core answers: the seeded simulator or the Bluetooth radio (default). */
@@ -85,6 +89,7 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
     rideLoaded: false,
     linksError: null,
     store: null,
+    storeAfterWrite: null,
     gate: null,
     core: "radio",
     paired: {},
@@ -136,6 +141,7 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
           model: role === "trainer" ? "Neo" : null,
         };
         st.paired[role] = p;
+        if (st.storeAfterWrite) throw st.storeAfterWrite;
         return p;
       }
       case "device_forget": {

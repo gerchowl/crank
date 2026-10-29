@@ -20,6 +20,8 @@ const ROLES: readonly DeviceRole[] = ["trainer", "heart_rate"];
 
 /** What the view tells the rider about a failed command. */
 interface Notice {
+  /** Stable across renders, for the list key: two notices may share a title. */
+  id: number;
   title: string;
   body: string;
   /** The notice offers "Try again" (it re-runs the scan). */
@@ -30,11 +32,22 @@ interface Notice {
 const PERMISSION_STEPS =
   "Open System Settings → Privacy & Security → Bluetooth → crank, allow it, then try again.";
 
+let noticeSeq = 0;
+
+/** `not_found` has no case: the only command that can answer it is forget, and the view treats that as success. */
 function describe(
   error: ApiError,
   during: "load" | "scan" | "pair" | "forget",
   what: string,
 ): Notice {
+  return { id: ++noticeSeq, ...describeError(error, during, what) };
+}
+
+function describeError(
+  error: ApiError,
+  during: "load" | "scan" | "pair" | "forget",
+  what: string,
+): Omit<Notice, "id"> {
   switch (error.code) {
     case "permission_denied":
       return {
@@ -62,10 +75,12 @@ function describe(
       };
     case "storage":
       // The pairings live in the local database; the core reads it first on scan and forget, and writes it last on pair.
+      // A pair can fail after the row was written (core.rs:666-669), so the wording does not say what was stored:
+      // the view re-reads the pairings, and the list shows the truth.
       return during === "pair"
         ? {
             title: `Could not save the pairing of ${what}`,
-            body: `It connected, but crank could not store the pairing, so nothing is paired. ${error.message}`,
+            body: `It connected, but crank had a problem with the pairing store. Check the list below for what is paired. ${error.message}`,
           }
         : {
             title:
@@ -75,11 +90,6 @@ function describe(
             body: error.message,
             retry: during === "scan",
           };
-    case "not_found":
-      return {
-        title: "Nothing to forget",
-        body: `No ${what} is paired.`,
-      };
     default:
       return {
         title: `Could not ${during} ${what}`,
@@ -169,10 +179,13 @@ export function Devices() {
       const r = await pair.run(d.id, role);
       setPairing(null);
       if (r.status === "ok") await refresh();
-      else
+      else {
         setNotices([
           describe(r.error, "pair", d.name ?? ROLE_LABEL[role].toLowerCase()),
         ]);
+        // `storage` after the connect may have written the pairing already: re-read, so the list is the truth.
+        if (r.error.code === "storage") await refresh();
+      }
     });
   const runForget = (role: DeviceRole) =>
     exclusive(async () => {
@@ -210,7 +223,7 @@ export function Devices() {
         </p>
       </div>
       {notices.map((n) => (
-        <Banner key={n.title} notice={n} onRetry={() => void runScan()} />
+        <Banner key={n.id} notice={n} onRetry={() => void runScan()} />
       ))}
 
       <section aria-labelledby="paired-h">
