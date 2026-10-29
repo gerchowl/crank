@@ -25,6 +25,8 @@ specta-typescript = "=0.0.12"
 specta-serde = "=0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tauri = "2.12.3"
+# Native error dialog when the app cannot start (a second instance, an unopenable store).
+tauri-plugin-dialog = "2"
 # Embedded WebDriver server for the macOS e2e harness (ADR-0001 §8.3, #35). Only `crank-desktop`'s `e2e` feature enables it.
 tauri-plugin-wdio-webdriver = "=1.5.0"
 crank-domain = { path = "crates/crank-domain" }
