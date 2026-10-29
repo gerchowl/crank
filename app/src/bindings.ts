@@ -89,12 +89,13 @@ export const commands = {
 	 */
 	rideSkip: () => typedError<null, ApiError>(__TAURI_INVOKE("ride_skip")),
 	/**
-	 *  End the ride; the id of the finished ride, `null` for an unloaded one.
+	 *  End the ride: the id of the finished ride (`null` for an unloaded one) and whether the
+	 *  core had to end it by force because the engine could not.
 	 * 
 	 *  # Errors
-	 *  As [`Core::ride_end`].
+	 *  As [`Core::ride_end_outcome`].
 	 */
-	rideEnd: () => typedError<string | null, ApiError>(__TAURI_INVOKE("ride_end")),
+	rideEnd: () => typedError<RideEnded, ApiError>(__TAURI_INVOKE("ride_end")),
 	/**
 	 *  The ride's state.
 	 * 
@@ -415,6 +416,17 @@ export type RepeatNode = {
 	progression: Progression | null,
 	/**  Skip the last child on the final iteration. */
 	skipLastRest: boolean | null,
+};
+
+/**  Answer of `ride_end`. */
+export type RideEnded = {
+	/**  The ride's id; `null` for a ride that never started and was only unloaded. */
+	rideId: string | null,
+	/**
+	 *  The engine could not end the ride (stuck or gone) and the core ended it by force: the
+	 *  ride is recorded as aborted, without a summary, and its data may be incomplete.
+	 */
+	forced: boolean,
 };
 
 /**  Answer of `ride_load`. */
