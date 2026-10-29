@@ -34,5 +34,7 @@ const subscribe = (l: () => void) => {
     listeners.delete(l);
   };
 };
+/** The route right now, outside React (an app-scope controller applying a result). */
+export const getRoute = (): Route => current;
 export const useRoute = (): Route =>
   useSyncExternalStore(subscribe, () => current);
