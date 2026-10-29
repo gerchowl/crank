@@ -102,7 +102,7 @@ impl ControlMode {
                 quarter_w: target_w.checked_mul(4).ok_or_else(|| invalid("target_w"))?,
             }],
             Self::Resistance { pct } => vec![Resistance {
-                half_pct: unit(pct, 0.0, 100.0, 2.0, 0.0)?.to_le_bytes()[0],
+                half_pct: unit("pct", pct, 0.0, 100.0, 2.0, 0.0)?.to_le_bytes()[0],
             }],
             Self::Free => {
                 return Self::Sim {
@@ -118,16 +118,26 @@ impl ControlMode {
                 wind,
             } => vec![
                 ObservedControl::Wind {
-                    cw_centi: unit(wind.cw_kg_per_m, 0.0, 1.86, 100.0, 0.0)?.to_le_bytes()[0],
-                    speed_kmh: i16::try_from(unit(wind.speed_kmh, -127.0, 127.0, 1.0, 127.0)?)
-                        .map_err(|_| invalid("wind"))?
-                        - 127,
-                    drafting_centi: unit(wind.drafting, 0.0, 1.0, 100.0, 0.0)?.to_le_bytes()[0],
+                    cw_centi: unit("wind.cw_kg_per_m", wind.cw_kg_per_m, 0.0, 1.86, 100.0, 0.0)?
+                        .to_le_bytes()[0],
+                    // 0..=254 after the +127 wire offset, so it always fits a byte
+                    speed_kmh: i16::from(
+                        unit("wind.speed_kmh", wind.speed_kmh, -127.0, 127.0, 1.0, 127.0)?
+                            .to_le_bytes()[0],
+                    ) - 127,
+                    drafting_centi: unit("wind.drafting", wind.drafting, 0.0, 1.0, 100.0, 0.0)?
+                        .to_le_bytes()[0],
                 },
                 Track {
-                    grade_centi_pct: i32::from(unit(grade_pct, -200.0, 200.0, 100.0, 20000.0)?)
-                        - 20000,
-                    crr_units: unit(crr, 0.0, 0.01275, 20000.0, 0.0)?.to_le_bytes()[0],
+                    grade_centi_pct: i32::from(unit(
+                        "grade_pct",
+                        grade_pct,
+                        -200.0,
+                        200.0,
+                        100.0,
+                        20000.0,
+                    )?) - 20000,
+                    crr_units: unit("crr", crr, 0.0, 0.01275, 20000.0, 0.0)?.to_le_bytes()[0],
                 },
             ],
         })
@@ -136,22 +146,27 @@ impl ControlMode {
 fn invalid(field: &str) -> DeviceError {
     DeviceError::Protocol {
         kind: ProtocolErrorKind::Encode,
-        detail: format!("invalid control: {field}"),
+        detail: format!("invalid control: {field} is not finite or outside its range"),
     }
 }
-fn unit(value: f32, min: f32, max: f32, scale: f64, offset: f64) -> Result<u16, DeviceError> {
+/// Wire value of `value` on a grid: `round(value * scale + offset)`, with ties rounded away
+/// from zero (`f64::round`; every wire value here is non-negative, so that is upward).
+/// `value` must be finite and inside `min..=max`; anything else is rejected, never clamped
+/// (ADR-0002 §4.3), with an error that names `field`. Each call site's range keeps the
+/// result inside `0..=40_000`, so the conversion below never actually saturates; the clamp
+/// states the rule should a range ever be widened past `u16`.
+fn unit(
+    field: &str,
+    value: f32,
+    min: f32,
+    max: f32,
+    scale: f64,
+    offset: f64,
+) -> Result<u16, DeviceError> {
     if !value.is_finite() || !(min..=max).contains(&value) {
-        return Err(invalid("range"));
+        return Err(invalid(field));
     }
     let rounded = (f64::from(value) * scale + offset).round();
-    let (mut lo, mut hi) = (0, u16::MAX);
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if f64::from(mid) < rounded {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    Ok(lo)
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to u16 just above
+    Ok(rounded.clamp(0.0, f64::from(u16::MAX)) as u16)
 }

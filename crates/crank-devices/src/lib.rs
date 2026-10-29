@@ -62,7 +62,7 @@ pub struct DeviceInfo {
     pub firmware: Option<String>,
 }
 /// Classified discovery result. See ADR-0002 §3.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveredDevice {
     /// Host-local identity.
     pub device: DeviceRef,
@@ -192,9 +192,19 @@ pub struct TrainerSample {
     /// Reported target-power limitation.
     pub target_limit: TargetLimit,
 }
-/// Raw page-25 status nibble; bits 0/1/2 request power/resistance/user setup. See ADR-0002 §3.
+/// Raw page-25 status nibble (byte 6, high nibble), `0..=15`: bits 0/1/2 report power
+/// calibration, resistance calibration and user configuration required; bit 3 is reserved
+/// and kept as reported. ADR-0002 §3 (page table). Build one from an untrusted byte with
+/// [`TrainerStatus::from_raw`], which keeps only the nibble.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TrainerStatus(pub u8);
+impl TrainerStatus {
+    /// The status nibble of `raw`: the high four bits are discarded.
+    #[must_use]
+    pub const fn from_raw(raw: u8) -> Self {
+        Self(raw & 0x0F)
+    }
+}
 /// Reported power limitation, independent of trainer following. See ADR-0002 §3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetLimit {
@@ -335,7 +345,7 @@ pub enum DeviceError {
     #[error("GATT: {0}")]
     Gatt(String),
     /// Invalid framing, page or control input; no codec dependency.
-    #[error("protocol {kind:?}: {detail}")]
+    #[error("protocol {kind}: {detail}")]
     Protocol {
         /// Stable, transport-neutral category.
         kind: ProtocolErrorKind,
@@ -366,4 +376,14 @@ pub enum ProtocolErrorKind {
     UnexpectedPage,
     /// Control input cannot be encoded.
     Encode,
+}
+impl std::fmt::Display for ProtocolErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Framing => "framing",
+            Self::Checksum => "checksum",
+            Self::UnexpectedPage => "unexpected page",
+            Self::Encode => "encode",
+        })
+    }
 }
