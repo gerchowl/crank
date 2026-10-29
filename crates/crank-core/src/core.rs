@@ -138,6 +138,14 @@ pub enum RideEnd {
     /// mode from the engine (its link is dropped and disconnected, ADR-0002 §7.9).
     ForcedEnd(String),
 }
+impl From<RideEnd> for crate::dto::RideEnded {
+    fn from(end: RideEnd) -> Self {
+        Self {
+            forced: matches!(end, RideEnd::ForcedEnd(_)),
+            ride_id: end.ride_id().map(str::to_owned),
+        }
+    }
+}
 impl RideEnd {
     /// The ride's id: `None` only for an unstarted ride that was unloaded.
     #[must_use]
@@ -301,6 +309,9 @@ struct State {
     /// Id of the last ride that was ended by force, until the next load, so that a second
     /// `ride_end` reports the same outcome as the first.
     last_forced: Option<String>,
+    /// Id of the ride a forced end is in progress for: an overlapping `ride_end` waits for
+    /// it instead of spending `STOP_TIMEOUT` on the same stuck engine again.
+    forcing: Option<String>,
 }
 /// Clears the loading flag when a `ride_load` ends in any way, including its future
 /// being dropped (a cancelled command) or panicking.
@@ -821,13 +832,18 @@ impl Core {
                 RELEASE_TIMEOUT
             };
             if tokio::time::timeout(wait, &mut task).await.is_err() {
-                tracing::warn!(ride_id, "the engine task did not end: aborting it");
-                task.abort();
-                if tokio::time::timeout(ABORT_JOIN_TIMEOUT, &mut task)
-                    .await
-                    .is_err()
-                {
+                if force {
+                    // aborted above, and still not ended
                     tracing::warn!(ride_id, "the engine task ignores the abort: detaching it");
+                } else {
+                    tracing::warn!(ride_id, "the engine task did not end: aborting it");
+                    task.abort();
+                    if tokio::time::timeout(ABORT_JOIN_TIMEOUT, &mut task)
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!(ride_id, "the engine task ignores the abort: detaching it");
+                    }
                 }
             }
         }
@@ -969,6 +985,7 @@ impl Core {
         st.last = None;
         st.last_release = None;
         st.last_forced = None;
+        st.forcing = None;
         let ride_id = session.ride_id.clone();
         st.session = Some(session);
         drop(st);
@@ -1217,8 +1234,15 @@ impl Core {
     /// drivers to hand their peripherals back. That is for a process that is exiting, which
     /// releases the radio anyway and must not spend its quit cap on `RELEASE_TIMEOUT`.
     async fn end_ride(&self, release: bool) -> Result<RideEnd, ApiError> {
-        let (id, finishes, link_release, forced) = {
-            let st = self.0.state.lock().await;
+        let (id, finishes, link_release, forced) = loop {
+            let mut st = self.0.state.lock().await;
+            if st.forcing.is_some() {
+                // Another end is forcing the ride: wait for it (bounded) instead of spending
+                // the `Stop` bound on the same stuck engine again, then report its outcome.
+                drop(st);
+                self.wait_forcing_done().await;
+                continue;
+            }
             let Some(s) = &st.session else {
                 // Already reaped, possibly by an end that is still waiting for the devices:
                 // this call waits for the same release.
@@ -1250,12 +1274,16 @@ impl Core {
                     Ok(Err(e)) => return Err(e.into()),
                 }
             }
-            (
+            let found = (
                 s.ride_id.clone(),
                 state != RideState::Idle,
                 s.release.clone(),
                 forced,
-            )
+            );
+            if forced {
+                st.forcing = Some(found.0.clone());
+            }
+            break found;
         };
         let mut outcome = None;
         if forced {
@@ -1306,7 +1334,27 @@ impl Core {
         }
         self.0.gate.set_active(false);
         self.0.active.send_replace(false);
+        self.0.state.lock().await.forcing = None;
+        self.0.released.notify_waiters();
         closed
+    }
+    /// Wait until no forced end is in progress, for at most `REAP_TIMEOUT` (a forced end that
+    /// was cancelled halfway must not leave the flag up for ever).
+    async fn wait_forcing_done(&self) {
+        let wait = async {
+            loop {
+                let woken = self.0.released.notified();
+                tokio::pin!(woken);
+                woken.as_mut().enable();
+                if self.0.state.lock().await.forcing.is_none() {
+                    return;
+                }
+                woken.await;
+            }
+        };
+        if tokio::time::timeout(REAP_TIMEOUT, wait).await.is_err() {
+            self.0.state.lock().await.forcing = None;
+        }
     }
     /// Step 1 of [`Core::force_end`].
     async fn force_end_mode(&self, ride_id: &str) {
@@ -2528,6 +2576,46 @@ mod tests {
             core.ride_end_outcome().await.unwrap().ride_id(),
             rides[0].id.as_str().into()
         );
+    }
+    /// #331: an engine blocked in synchronous code (a store write) cannot be aborted: End
+    /// still answers inside the deadline, the task is detached, and a second End does not
+    /// block. Real time, on threads: the stuck task occupies one of them for 4 s.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_engine_stuck_in_synchronous_code_does_not_hang_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.ride_load(None).await.unwrap();
+        {
+            let (engine, handle) =
+                Engine::new(core.0.clock.clone(), None, None, Arc::new(|_: bool| {}));
+            let mut st = core.0.state.lock().await;
+            let session = st.session.as_mut().unwrap();
+            session.task.abort();
+            session.handle = handle;
+            session.task = tokio::spawn(async move {
+                let _engine = engine;
+                // after one yield, as an engine reaching a blocking store write
+                tokio::task::yield_now().await;
+                std::thread::sleep(Duration::from_secs(4));
+            });
+        }
+        let t = std::time::Instant::now();
+        let (a, b) = tokio::time::timeout(
+            Duration::from_secs(3),
+            futures_util::future::join(core.ride_end_outcome(), core.ride_end_outcome()),
+        )
+        .await
+        .expect("End answers, and so does a second one");
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert!(matches!(a, RideEnd::ForcedEnd(_)), "{a:?}");
+        assert_eq!(a, b);
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        // the state lock is free, and the next ride loads
+        core.ride_load(None).await.unwrap();
     }
     /// #331: a stuck engine does not wedge the replacing `ride_load` or `discard` either.
     #[tokio::test(start_paused = true)]

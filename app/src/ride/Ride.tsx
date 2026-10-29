@@ -233,7 +233,9 @@ function Screen({ session }: { session: RideSession }) {
     const outcome = await run(end.run);
     if (outcome.status === "ok")
       session.leaveOnce(() => {
-        if (typeof outcome.data === "string") navigate("history", outcome.data);
+        // A forced end (the engine could not end it) is recorded as aborted: the summary says so.
+        if (outcome.data.rideId !== null)
+          navigate("history", outcome.data.rideId);
         else {
           // Never started: unloaded, nothing to review.
           releaseRide(session);
