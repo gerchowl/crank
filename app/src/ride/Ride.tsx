@@ -2,8 +2,10 @@
 // whole-ride overview and pause / skip / end. It renders what the stream and the core's answers say and branches
 // on `ApiError.code`, never on `message` (ADR-0001 §4.4); the core's text is shown as the reason of a refusal.
 //
-// Loss and reconnect states (#100 MVP, DESIGN §6.5) are read from the status and the links only, never inferred; what
-// the core does not report yet is listed on #329, not guessed here.
+// Loss and reconnect states (#100, DESIGN §6.5/§6.6) are read from the status and the links only, never inferred: the
+// loss fields #329 added (`trainerLostSinceS`, `reconnectAttempt`, `softStartTargetW`, `lastGapS`, `reconnectedAtS`,
+// `userPaused`) are reported only while the ride is Active, and every duration is a difference on the session clock
+// (`sessionS`, which the heartbeat refreshes), never a timer of this screen.
 // Out of this subset, each with its issue: density modes, the coach lane, the road (#96), sound and the input
 // dispatcher, the rest of the failure states (#100), the Review/summary
 // (#106: a finished ride routes to History with the ride id until it exists) and the phone layout.
@@ -67,20 +69,29 @@ function stateLine(st: StreamStatus | null): string {
     case "paused":
       return s.reason === "user"
         ? "Paused"
-        : s.reason === "trainer_lost"
-          ? "Paused: trainer lost, reconnecting"
+        : s.reason === "trainer_lost" && st.trainerLostSinceS !== null
+          ? "Paused: trainer lost"
           : "Paused: waiting for you to pedal";
     case "riding":
       return st.ergReleased ? "ERG released: spin up to re-engage" : "Riding";
   }
 }
 
+/** DESIGN §5.2: "Trainer lost ≥ 30 s" adds what to try and End…, measured on the session clock. */
+export const LONG_LOSS_S = 30;
+/** The threshold for the factual "Back after m:ss" row (DESIGN §5.2); the §6.6 re-entry policy itself waits on #50. */
+export const RE_ENTRY_S = 120;
+/** DESIGN §6.5: the "NEO back · m:ss gap" chip stays this long after the reconnect. */
+export const BACK_CHIP_S = 10;
+
 /**
- * The sensor-loss rows of DESIGN §6.5 that `RideStatus` and the links report today. Only flags are read: the trainer is
- * lost when the core pauses with `trainer_lost` (not when a tile happens to be empty), the strap when its link is
- * `lost` in a live ride, ERG is released when the core says so in a riding ride. Not reported by the core, so not
- * shown: reconnect attempt, gap length, soft start (reconnected), time since the loss (the ≥ 30 s row) and the rider
- * pause under a trainer loss (#329).
+ * The sensor-loss rows of DESIGN §6.5/§6.6, from the status and the links only. The trainer is lost when
+ * `trainerLostSinceS` is set (not when `state` says `trainer_lost`, which stays after the trainer is back until the
+ * rider pedals, and not when a tile happens to be empty); durations are `sessionS` minus a stamp, so they are unknown
+ * (`null`) rather than guessed while `sessionS` is. The strap is lost when its link is `lost` in a live ride, ERG is
+ * released when the core says so in a riding ride. Guards that the core already guarantees stay as defence, not as
+ * logic: the loss fields are null outside Active (so `live &&` changes nothing today), `sessionS` never goes backwards
+ * (so `now - backAt >= 0` holds), and a stamp with no clock yields no duration.
  */
 export function lossView(
   st: StreamStatus | null,
@@ -88,12 +99,36 @@ export function lossView(
 ) {
   const kind = st?.state.kind;
   const live = kind === "riding" || kind === "paused";
+  const since = live ? (st?.trainerLostSinceS ?? null) : null;
+  const now = st?.sessionS ?? null;
+  const gap = live ? (st?.lastGapS ?? null) : null;
+  const backAt = live ? (st?.reconnectedAtS ?? null) : null;
+  const trainer = since !== null;
+  const lostForS = since !== null && now !== null ? now - since : null;
   return {
-    trainer: st?.state.kind === "paused" && st.state.reason === "trainer_lost",
-    // `trainer_lost` is also set after 8 ticks without samples on a link that is still ready, and stays set after the
-    // link is back until the engine re-applies: "reconnecting" is only said while the link is lost or connecting (no
-    // links frame yet: unknown, neutral wording).
+    trainer,
+    // `trainerLostSinceS` is also set after 8 ticks without samples on a link that is still ready: "reconnecting" is
+    // only said while the link is lost or connecting (no links frame yet: unknown, neutral wording).
     reconnecting: links.trainer === "lost" || links.trainer === "connecting",
+    attempt: trainer ? (st?.reconnectAttempt ?? null) : null,
+    lostForS,
+    long: lostForS !== null && lostForS >= LONG_LOSS_S,
+    // The trainer is back, the rider is not pedalling yet: `state` is still `paused(trainer_lost)`.
+    reEntry:
+      !trainer &&
+      gap !== null &&
+      gap >= RE_ENTRY_S &&
+      st?.state.kind === "paused" &&
+      st.state.reason === "trainer_lost",
+    gapS: gap,
+    softStartW: live && !trainer ? (st?.softStartTargetW ?? null) : null,
+    backChip:
+      !trainer &&
+      gap !== null &&
+      backAt !== null &&
+      now !== null &&
+      now - backAt >= 0 &&
+      now - backAt < BACK_CHIP_S,
     hr: live && links.hr === "lost",
     erg: kind === "riding" && st?.ergReleased === true,
   };
@@ -257,8 +292,9 @@ function Screen({ session }: { session: RideSession }) {
   // it relays to the engine (`EngineHandle::send` waits on the engine's reply, engine.rs:188), and a second `ride_end`
   // while one is running is not an error but waits for the same end (core.rs:1022-1047, bounded by REAP_TIMEOUT 10 s
   // and RELEASE_TIMEOUT 3 s, core.rs:50-54), so End may be tapped again, also while an earlier End has not answered.
-  const userPaused =
-    status?.state.kind === "paused" && status.state.reason === "user";
+  // The rider's pause is the core's `userPaused`, not the pause reason: under a trainer loss `state` says
+  // `trainer_lost` while the core still holds the rider pause (#327 item 3).
+  const userPaused = status?.userPaused === true;
   // The tap's guard ends when the status shows its effect, whoever caused it (the coach may resume a rider pause).
   if (
     (pauseSent === "pause" && userPaused) ||
@@ -298,6 +334,7 @@ function Screen({ session }: { session: RideSession }) {
           <button
             className="ride-btn"
             disabled={busy || !canPause}
+            title={userPaused ? "Already paused" : undefined}
             onClick={() => void pauseOrResume("pause")}
           >
             Pause
@@ -338,6 +375,14 @@ function Screen({ session }: { session: RideSession }) {
           </span>
           <span className="muted"> left</span>
         </div>
+        <span
+          className="ride-chip"
+          data-slot="neo-back"
+          data-testid="neo-back"
+          style={{ width: "20ch" }}
+        >
+          {loss.backChip ? `NEO back · ${clock(loss.gapS)} gap` : ""}
+        </span>
         <div className="ride-pill" aria-label="Devices">
           <Pill name="NEO" link={links.trainer} />
           <span aria-hidden> │ </span>
@@ -409,9 +454,43 @@ function Screen({ session }: { session: RideSession }) {
                   ? "No data from the NEO · HR lost"
                   : "No data from the NEO"}
             </strong>{" "}
+            {loss.lostForS !== null && (
+              <>
+                <strong data-testid="lost-for">
+                  {clock(loss.lostForS)}
+                </strong>{" "}
+              </>
+            )}
             · workout paused at {clock(status?.blockElapsedS ?? null)} of this
-            block{loss.reconnecting ? " · reconnecting" : ""} · keep pedalling
-            or stop — your ride is saved
+            block
+            {loss.reconnecting
+              ? loss.attempt === null
+                ? " · reconnecting"
+                : ` · reconnecting (attempt ${loss.attempt})`
+              : ""}{" "}
+            · keep pedalling or stop — your ride is saved
+          </p>
+        )}
+        {loss.trainer && loss.long && (
+          <p role="status" className="ride-loss" data-testid="loss-help">
+            <button className="ride-end" onClick={() => setConfirming("end")}>
+              End…
+            </button>{" "}
+            Try: power-cycle NEO · close Zwift
+          </p>
+        )}
+        {/* Only the fact (`lastGapS`). DESIGN §6.6's policy text (re-warm-up, restarting the interval, "no resume" past
+            15 min) is not shown: the engine applies none of it (`recover()` eases to the block's own target and the block
+            resumes where it froze) and the status carries no re-entry plan until #50 lands. */}
+        {loss.reEntry && (
+          <p role="status" className="ride-loss" data-testid="re-entry">
+            <strong>↻ Back after {clock(loss.gapS)}</strong>
+          </p>
+        )}
+        {loss.softStartW !== null && (
+          <p role="status" className="ride-loss" data-testid="soft-start">
+            <strong>Reconnected</strong> · easing back in to{" "}
+            {Math.round(loss.softStartW)} W
           </p>
         )}
         {loss.hr && !loss.trainer && (

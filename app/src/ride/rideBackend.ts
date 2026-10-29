@@ -28,6 +28,7 @@ import type {
   Phase,
   StreamPauseReason,
   StreamRideState,
+  StreamStatus,
   WorkoutBlock,
   WorkoutDetail,
 } from "../bindings";
@@ -74,12 +75,25 @@ export interface RideWorld {
   trainerLost: boolean;
   /** 8 ticks without trainer samples on a link that is still ready: the engine pauses with `trainer_lost` all the same (engine.rs:~33). */
   trainerSilent: boolean;
+  /** The trainer is back and the rider is not pedalling yet: `state` stays `paused(trainer_lost)` until the first pedalling sample (#336). */
+  pausedAfterLoss: boolean;
   /** Cadence and power were 0 for 3 s: `stopped_pedalling`, outranked by a rider pause and a trainer loss (engine.rs:295-306). */
   stoppedPedalling: boolean;
   /** The strap link is lost: the ride keeps going (DESIGN §6.5). */
   hrLost: boolean;
   /** ERG released for low cadence; the engine passes `policy.released` through (engine.rs:1279) and it stays set until 60 rpm is held for 2 s (erg/policy.rs:116-124), so it can accompany a pause. */
   ergReleased: boolean;
+  /** The session clock the published status carries (the heartbeat refreshes it in the core). */
+  sessionS: number;
+  /** Session second the current loss began; defaults to `sessionS` when a loss is published without one. */
+  lostSinceS: number | null;
+  /** The driver's reconnect attempt in the current loss; reported only while lost (engine `RideStatus`, #329). */
+  attempt: number | null;
+  /** The soft start's target after a recovered loss; reported only while not lost. */
+  softStartW: number | null;
+  /** Length of the last loss and when it ended; reported only while not lost (the next loss clears them). */
+  gapS: number | null;
+  reconnectedAtS: number | null;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";
   cap: "none" | "requires_erg" | "exceeds";
@@ -107,9 +121,16 @@ export function installRide(over: Partial<RideWorld> = {}) {
     userPause: false,
     trainerLost: false,
     trainerSilent: false,
+    pausedAfterLoss: false,
     stoppedPedalling: false,
     hrLost: false,
     ergReleased: false,
+    sessionS: 0,
+    lostSinceS: null,
+    attempt: null,
+    softStartW: null,
+    gapS: null,
+    reconnectedAtS: null,
     blockIdx: 0,
     trainer: "ready",
     cap: "none",
@@ -125,7 +146,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
   const state = (): StreamRideState => {
     if (world.phase === "finished") return { kind: "finished" };
     if (world.phase !== "active") return { kind: "idle" };
-    if (world.trainerLost || world.trainerSilent)
+    if (world.trainerLost || world.trainerSilent || world.pausedAfterLoss)
       return {
         kind: "paused",
         reason: "trainer_lost" satisfies StreamPauseReason,
@@ -149,10 +170,36 @@ export function installRide(over: Partial<RideWorld> = {}) {
           { device: "hr", state: world.hrLost ? "lost" : "ready" },
         ]
       : [];
+  /**
+   * The loss fields as the engine reports them: only while the session is Active, `trainerLostSinceS` and the attempt
+   * only while lost, the soft start, the last gap and its end only while not (a new loss clears them), and `userPaused`
+   * apart from `state` (crank-engine `publish`, #329/#336).
+   */
+  const lossFields = (): Partial<StreamStatus> => {
+    if (world.phase !== "active") return {};
+    const lost = world.trainerLost || world.trainerSilent;
+    return {
+      userPaused: world.userPause,
+      trainerLostSinceS: lost ? (world.lostSinceS ?? world.sessionS) : null,
+      reconnectAttempt: lost ? world.attempt : null,
+      softStartTargetW: lost ? null : world.softStartW,
+      lastGapS: lost ? null : world.gapS,
+      reconnectedAtS: lost ? null : world.reconnectedAtS,
+    };
+  };
   /** The engine's `publish`: the status frame after a command. */
+  let clockS = 0;
   const publish = (workoutS?: number) => {
+    // The session clock only runs forward (engine `session_s`): a test that rewinds it models a status the core cannot send.
+    if (world.sessionS < clockS)
+      throw new Error(
+        `session clock went backwards: ${clockS} -> ${world.sessionS}`,
+      );
+    clockS = world.sessionS;
     if (!world.publishes) return;
     base.truth.status = makeStatus({
+      ...lossFields(),
+      sessionS: world.sessionS,
       state: state(),
       loaded: world.phase !== "none",
       workoutS: workoutS ?? base.truth.status.workoutS,

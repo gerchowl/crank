@@ -320,7 +320,10 @@ describe("Ride", () => {
 
   test("a double tap on Resume sends one resume, even when the status arrives between the taps", async () => {
     const rig = await open({ phase: "active", userPause: true });
-    await push(rig, { state: { kind: "paused", reason: "user" } });
+    await push(rig, {
+      state: { kind: "paused", reason: "user" },
+      userPaused: true,
+    });
     const resumeBtn = screen.getByRole("button", { name: "Resume" });
     await userEvent.click(resumeBtn);
     await waitFor(() => expect(enabled("Pause")).toBe(true));
@@ -337,7 +340,10 @@ describe("Ride", () => {
     await waitFor(() => expect(enabled("Pause")).toBe(false));
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
     expect(rig.count("ride_pause")).toBe(1);
-    await push(rig, { state: { kind: "paused", reason: "user" } });
+    await push(rig, {
+      state: { kind: "paused", reason: "user" },
+      userPaused: true,
+    });
     expect(enabled("Resume")).toBe(true);
     // Resume refused: the control is free again.
     rig.world.phase = "loaded";
@@ -352,7 +358,10 @@ describe("Ride", () => {
       userPause: true,
       publishes: false,
     });
-    await push(rig, { state: { kind: "paused", reason: "user" } });
+    await push(rig, {
+      state: { kind: "paused", reason: "user" },
+      userPaused: true,
+    });
     await userEvent.click(screen.getByRole("button", { name: "Resume" }));
     await waitFor(() => expect(rig.count("ride_resume")).toBe(1));
     await waitFor(() => expect(enabled("Resume")).toBe(false));
@@ -403,7 +412,11 @@ describe("Ride", () => {
     "a %s pause enables %s only: Resume is for the rider's own pause",
     async (reason, label) => {
       const rig = await open({ phase: "active" });
-      await push(rig, { state: { kind: "paused", reason } });
+      await push(rig, {
+        state: { kind: "paused", reason },
+        userPaused: reason === "user",
+        trainerLostSinceS: reason === "trainer_lost" ? 5 : null,
+      });
       expect(enabled(label)).toBe(true);
       expect(enabled("Resume")).toBe(label === "Resume");
       expect(enabled("Pause")).toBe(label === "Pause");
@@ -443,7 +456,10 @@ describe("Ride", () => {
       userPause: true,
       engineStopped: true,
     });
-    await push(rig, { state: { kind: "paused", reason: "user" } });
+    await push(rig, {
+      state: { kind: "paused", reason: "user" },
+      userPaused: true,
+    });
     await userEvent.click(screen.getByRole("button", { name: "Resume" }));
     expect((await screen.findByRole("alert")).textContent).toContain(
       "engine stopped",
@@ -684,7 +700,10 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
 
   test("no links frame yet: the trainer-lost banner is neutral, not 'reconnecting'", async () => {
     const rig = await open({ phase: "active" });
-    await push(rig, { state: { kind: "paused", reason: "trainer_lost" } });
+    await push(rig, {
+      state: { kind: "paused", reason: "trainer_lost" },
+      trainerLostSinceS: 5,
+    });
     const banner = screen.getByTestId("loss-trainer").textContent ?? "";
     expect(banner).toContain("No data from the NEO");
     expect(banner).not.toContain("reconnecting");
@@ -812,7 +831,10 @@ describe("End stays usable (#327)", () => {
 
   test("an external pause after a screen Resume: Pause is enabled again", async () => {
     const rig = await open({ phase: "active", userPause: true });
-    await push(rig, { state: { kind: "paused", reason: "user" } });
+    await push(rig, {
+      state: { kind: "paused", reason: "user" },
+      userPaused: true,
+    });
     await userEvent.click(screen.getByRole("button", { name: "Resume" }));
     await waitFor(() => expect(enabled("Pause")).toBe(true));
     await act(async () => {
@@ -825,5 +847,243 @@ describe("End stays usable (#327)", () => {
       rig.publish();
     });
     await waitFor(() => expect(enabled("Pause")).toBe(true));
+  });
+});
+
+describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DESIGN §6.5, §6.6)", () => {
+  const publish = (rig: Rig, change: Partial<RideWorld>) =>
+    act(async () => {
+      Object.assign(rig.world, change);
+      rig.publish();
+    });
+  const text = (id: string) => screen.queryByTestId(id)?.textContent ?? null;
+  const lostRide = async (over: Partial<RideWorld> = {}) => {
+    const rig = await open({ phase: "active" });
+    await publish(rig, {
+      trainerLost: true,
+      sessionS: 100,
+      lostSinceS: 100,
+      blockIdx: 1,
+      ...over,
+    });
+    return rig;
+  };
+
+  test("trainer lost: the attempt is the driver's, and 'reconnecting' needs a link that is not ready", async () => {
+    const rig = await lostRide();
+    expect(text("loss-trainer")).toContain("reconnecting");
+    expect(text("loss-trainer")).not.toContain("attempt");
+    await publish(rig, { attempt: 3 });
+    expect(text("loss-trainer")).toContain("reconnecting (attempt 3)");
+    // 8 silent ticks on a link that is still ready: lost, but not reconnecting, so no attempt either.
+    await publish(rig, { trainerLost: false, trainerSilent: true });
+    expect(text("loss-trainer")).toContain("No data from the NEO");
+    expect(text("loss-trainer")).not.toContain("reconnecting");
+    expect(text("loss-trainer")).not.toContain("attempt");
+  });
+
+  test("lost for 29 s: no what-to-try row; at 30 s on the session clock it adds the text and End…", async () => {
+    const rig = await lostRide();
+    await publish(rig, { sessionS: 129 });
+    expect(screen.queryByTestId("loss-help")).toBeNull();
+    expect(screen.queryByRole("button", { name: "End…" })).toBeNull();
+    await publish(rig, { sessionS: 130 });
+    expect(text("loss-help")).toContain("power-cycle NEO · close Zwift");
+    expect(screen.getByRole("button", { name: "End…" })).toBeTruthy();
+  });
+
+  test("lost for 29 s from a later stamp: the duration counts from the stamp, not from the ride", async () => {
+    await lostRide({ sessionS: 130, lostSinceS: 101 });
+    expect(screen.queryByTestId("loss-help")).toBeNull();
+    expect(text("lost-for")).toBe("0:29");
+  });
+
+  test("the banner shows how long the trainer has been lost, on the session clock (DESIGN §5.2)", async () => {
+    const rig = await lostRide({ sessionS: 112 });
+    expect(text("lost-for")).toBe("0:12");
+    expect(text("loss-trainer")).toContain("NEO lost 0:12 ·");
+    await publish(rig, { sessionS: 175 });
+    expect(text("lost-for")).toBe("1:15");
+  });
+
+  test("a mock that rewinds the session clock throws: the core cannot send it", async () => {
+    const rig = await lostRide({ sessionS: 120 });
+    expect(() => {
+      Object.assign(rig.world, { sessionS: 110 });
+      rig.publish();
+    }).toThrow("session clock went backwards");
+  });
+
+  test("End… opens the End dialog with Keep riding focused; the ride ends only on End ride", async () => {
+    const rig = await lostRide({ sessionS: 140 });
+    await userEvent.click(screen.getByRole("button", { name: "End…" }));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(document.activeElement?.textContent).toBe("Keep riding");
+    expect(rig.count("ride_end")).toBe(0);
+    await userEvent.click(screen.getByRole("button", { name: "End ride" }));
+    await waitFor(() => expect(routeText()).toBe("history:ride-1"));
+    expect(rig.count("ride_end")).toBe(1);
+  });
+
+  test("the loss rows are gone for a finished ride (fields are null outside Active)", async () => {
+    const rig = await lostRide({ sessionS: 140 });
+    await publish(rig, { phase: "finished" });
+    expect(screen.queryByTestId("loss-help")).toBeNull();
+    expect(screen.queryByTestId("loss-trainer")).toBeNull();
+  });
+
+  test.each([
+    [119, false],
+    [120, true],
+  ])(
+    "trainer back after a %i s loss: the Back-after row shown: %s",
+    async (gapS, shown) => {
+      const rig = await open({ phase: "active" });
+      await publish(rig, {
+        pausedAfterLoss: true,
+        gapS,
+        reconnectedAtS: 500,
+        sessionS: 520,
+      });
+      expect(screen.queryByTestId("loss-trainer")).toBeNull();
+      if (shown) {
+        expect(text("re-entry")).toBe(`↻ Back after ${clock(gapS)}`);
+      } else expect(screen.queryByTestId("re-entry")).toBeNull();
+    },
+  );
+
+  test("the re-entry row states the fact only: no policy words until the engine reports a re-entry plan (#50)", async () => {
+    const rig = await open({ phase: "active" });
+    // Over 15 min DESIGN §6.6 says "no resume"; the engine does none of it, so the row says none of it either.
+    await publish(rig, {
+      pausedAfterLoss: true,
+      gapS: 1000,
+      reconnectedAtS: 5,
+    });
+    const row = text("re-entry") ?? "";
+    expect(row).toBe("↻ Back after 16:40");
+    expect(row).not.toMatch(/warm|restart|start|resume|interval|then/i);
+  });
+
+  test("soft start and re-entry both reported: both rows show, each is its own field", async () => {
+    const rig = await open({ phase: "active" });
+    await publish(rig, {
+      pausedAfterLoss: true,
+      gapS: 200,
+      reconnectedAtS: 300,
+      sessionS: 302,
+      softStartW: 253,
+    });
+    expect(text("re-entry")).toBe("↻ Back after 3:20");
+    expect(text("soft-start")).toBe("Reconnected · easing back in to 253 W");
+    expect(text("neo-back")).toBe("NEO back · 3:20 gap");
+  });
+
+  test("the re-entry text ends when the ride is riding again", async () => {
+    const rig = await open({ phase: "active" });
+    await publish(rig, { pausedAfterLoss: true, gapS: 190, reconnectedAtS: 5 });
+    expect(text("re-entry")).toContain("↻ Back after 3:10");
+    await publish(rig, { pausedAfterLoss: false });
+    expect(screen.queryByTestId("re-entry")).toBeNull();
+  });
+
+  test("reconnected soft start: 'easing back in to <W> W' while the core reports a target", async () => {
+    const rig = await open({ phase: "active" });
+    await publish(rig, { gapS: 14, reconnectedAtS: 200, sessionS: 202 });
+    expect(screen.queryByTestId("soft-start")).toBeNull();
+    await publish(rig, { softStartW: 253 });
+    expect(text("soft-start")).toBe("Reconnected · easing back in to 253 W");
+    await publish(rig, { softStartW: null, sessionS: 203 });
+    expect(screen.queryByTestId("soft-start")).toBeNull();
+  });
+
+  test("the 'NEO back · m:ss gap' chip lives 10 s on the session clock", async () => {
+    const rig = await open({ phase: "active" });
+    await publish(rig, { gapS: 14, reconnectedAtS: 200, sessionS: 200 });
+    expect(text("neo-back")).toBe("NEO back · 0:14 gap");
+    await publish(rig, { sessionS: 209 });
+    expect(text("neo-back")).toBe("NEO back · 0:14 gap");
+    await publish(rig, { sessionS: 210 });
+    expect(text("neo-back")).toBe("");
+    // The next loss clears the chip (the core clears the gap with it).
+    await publish(rig, { sessionS: 212, trainerLost: true, lostSinceS: 212 });
+    expect(text("neo-back")).toBe("");
+  });
+
+  test("the chip's slot is always there, so it moves nothing", async () => {
+    await open({ phase: "active" });
+    expect(screen.getByTestId("neo-back")).toBeTruthy();
+    expect(screen.getByTestId("neo-back").style.width).toBe("20ch");
+  });
+
+  test("#327.3: under a loss the core still holds the rider pause: Resume follows it and Pause is off with a reason", async () => {
+    const rig = await lostRide({ userPause: true, sessionS: 105 });
+    expect(rig.base.truth.status.state).toEqual({
+      kind: "paused",
+      reason: "trainer_lost",
+    });
+    expect(rig.base.truth.status.userPaused).toBe(true);
+    expect(enabled("Resume")).toBe(true);
+    expect(enabled("Pause")).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "Pause" }).getAttribute("title"),
+    ).toBe("Already paused");
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(rig.count("ride_resume")).toBe(1));
+    // The rider pause is lifted; the loss goes on.
+    await waitFor(() => expect(enabled("Pause")).toBe(true));
+    expect(enabled("Resume")).toBe(false);
+    expect(screen.getByTestId("loss-trainer")).toBeTruthy();
+    expect(rig.count("ride_pause")).toBe(0);
+  });
+
+  test("#327.3: under a loss with no rider pause, Pause is the only one and the core takes it", async () => {
+    const rig = await lostRide();
+    expect(enabled("Pause")).toBe(true);
+    expect(enabled("Resume")).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(enabled("Resume")).toBe(true));
+    expect(enabled("Pause")).toBe(false);
+    expect(rig.count("ride_pause")).toBe(1);
+  });
+
+  test("#327.3: Pause under a held rider pause is never sent, so the core is never asked for it twice", async () => {
+    const rig = await lostRide({ userPause: true });
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect(rig.count("ride_pause")).toBe(0);
+  });
+
+  test("never inferred: the pause reason, the links and the clock alone show no loss rows", async () => {
+    const rig = await open({ phase: "active" });
+    // `trainer_lost` with every loss field null (a shape the core makes only when no loss is reported): nothing to show.
+    await act(async () => {
+      rig.base.truth.status = makeStatus({
+        state: { kind: "paused", reason: "trainer_lost" },
+        sessionS: 900,
+      });
+      rig.base.push({
+        status: rig.base.truth.status,
+        links: [{ device: "trainer", state: "lost" }],
+      });
+    });
+    for (const id of ["loss-trainer", "loss-help", "re-entry", "soft-start"])
+      expect(screen.queryByTestId(id)).toBeNull();
+    expect(text("neo-back")).toBe("");
+    expect(text("state")).toBe("Paused: waiting for you to pedal");
+    // Riding, long after a reconnect that the core reports no gap for: no chip, no rows.
+    await push(rig, { state: { kind: "riding" }, sessionS: 901 });
+    expect(text("neo-back")).toBe("");
+    expect(screen.queryByTestId("re-entry")).toBeNull();
+  });
+
+  test("never inferred: a lost stamp with no session clock gives no duration, so no ≥ 30 s row", async () => {
+    const rig = await open({ phase: "active" });
+    await push(rig, {
+      state: { kind: "paused", reason: "trainer_lost" },
+      trainerLostSinceS: 1,
+      sessionS: null,
+    });
+    expect(screen.getByTestId("loss-trainer")).toBeTruthy();
+    expect(screen.queryByTestId("loss-help")).toBeNull();
   });
 });
