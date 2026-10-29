@@ -37,9 +37,18 @@ afterEach(() => {
 });
 
 type Rig = ReturnType<typeof installRide>;
-async function open(over: Partial<RideWorld> = {}) {
+const enabled = (name: string) =>
+  !(screen.getByRole("button", { name }) as HTMLButtonElement).disabled;
+async function open(
+  over: Partial<RideWorld> = {},
+  opts: { workoutId?: string | null; before?: (rig: Rig) => void } = {},
+) {
   const rig = installRide(over);
-  beginRide(loaded);
+  opts.before?.(rig);
+  beginRide({
+    ...loaded,
+    workoutId: opts.workoutId === undefined ? "w1" : opts.workoutId,
+  });
   render(
     <>
       <Probe />
@@ -286,14 +295,102 @@ describe("Ride", () => {
     );
   });
 
-  test("the Pause button follows the core: a refused pause leaves it Pause", async () => {
+  test("the Pause button follows the core: a refused pause leaves Pause enabled and Resume off", async () => {
     const rig = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     rig.world.phase = "loaded";
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
     await screen.findByRole("alert");
-    expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+    expect(enabled("Pause")).toBe(true);
+    expect(enabled("Resume")).toBe(false);
+  });
+
+  test("a double tap on Pause sends one pause, even when the status arrives between the taps", async () => {
+    const rig = await open({ phase: "active" });
+    await push(rig, { state: { kind: "riding" } });
+    const pauseBtn = screen.getByRole("button", { name: "Pause" });
+    await userEvent.click(pauseBtn);
+    await waitFor(() => expect(enabled("Resume")).toBe(true));
+    await userEvent.click(pauseBtn);
+    expect(rig.count("ride_pause")).toBe(1);
+    expect(rig.count("ride_resume")).toBe(0);
+  });
+
+  test("a double tap on Resume sends one resume, even when the status arrives between the taps", async () => {
+    const rig = await open({ phase: "active", userPause: true });
+    await push(rig, { state: { kind: "paused", reason: "user" } });
+    const resumeBtn = screen.getByRole("button", { name: "Resume" });
+    await userEvent.click(resumeBtn);
+    await waitFor(() => expect(enabled("Pause")).toBe(true));
+    await userEvent.click(resumeBtn);
+    expect(rig.count("ride_resume")).toBe(1);
+    expect(rig.count("ride_pause")).toBe(0);
+  });
+
+  test("with the status frame still on its way, a second tap on Pause waits; a refusal re-enables it", async () => {
+    const rig = await open({ phase: "active", publishes: false });
+    await push(rig, { state: { kind: "riding" } });
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(rig.count("ride_pause")).toBe(1));
+    await waitFor(() => expect(enabled("Pause")).toBe(false));
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect(rig.count("ride_pause")).toBe(1);
+    await push(rig, { state: { kind: "paused", reason: "user" } });
+    expect(enabled("Resume")).toBe(true);
+    // Resume refused: the control is free again.
+    rig.world.phase = "loaded";
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await screen.findByRole("alert");
+    expect(enabled("Resume")).toBe(true);
+  });
+
+  test("with the status frame still on its way, a second tap on Resume waits", async () => {
+    const rig = await open({
+      phase: "active",
+      userPause: true,
+      publishes: false,
+    });
+    await push(rig, { state: { kind: "paused", reason: "user" } });
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(rig.count("ride_resume")).toBe(1));
+    await waitFor(() => expect(enabled("Resume")).toBe(false));
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(rig.count("ride_resume")).toBe(1);
+  });
+
+  test("with the status frame still on its way, a second tap on Start waits", async () => {
+    const rig = await open({ publishes: false });
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(rig.count("ride_start")).toBe(1));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(enabled("Start")).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(rig.count("ride_start")).toBe(1);
+  });
+
+  test("Skip waits for the plan: with it unanswered the ride cannot skip", async () => {
+    let release = () => {};
+    const rig = await open(
+      { phase: "active" },
+      { before: (r) => (release = r.hold("workout_get")) },
+    );
+    await push(rig, { state: { kind: "riding" }, blockIndex: 0 });
+    expect(enabled("Skip block")).toBe(false);
+    await act(async () => release());
+    await waitFor(() => expect(enabled("Skip block")).toBe(true));
+  });
+
+  test("a free ride has no block to skip", async () => {
+    const rig = await open(
+      { phase: "active", blocks: [] },
+      { workoutId: null },
+    );
+    await push(rig, { state: { kind: "riding" }, blockIndex: null });
+    expect(enabled("Skip block")).toBe(false);
+    await userEvent.dblClick(
+      screen.getByRole("button", { name: "Skip block" }),
+    );
+    expect(rig.count("ride_skip")).toBe(0);
   });
 
   test.each([
@@ -301,14 +398,13 @@ describe("Ride", () => {
     ["stopped_pedalling", "Pause"],
     ["user", "Resume"],
   ] as const)(
-    "a %s pause shows %s: Resume is for the rider's own pause",
+    "a %s pause enables %s only: Resume is for the rider's own pause",
     async (reason, label) => {
       const rig = await open({ phase: "active" });
       await push(rig, { state: { kind: "paused", reason } });
-      expect(screen.getByRole("button", { name: label })).toBeTruthy();
-      expect(screen.queryByRole("button", { name: "Resume" }) !== null).toBe(
-        label === "Resume",
-      );
+      expect(enabled(label)).toBe(true);
+      expect(enabled("Resume")).toBe(label === "Resume");
+      expect(enabled("Pause")).toBe(label === "Pause");
     },
   );
 
@@ -328,6 +424,7 @@ describe("Ride", () => {
       const alert = await screen.findByRole("alert");
       expect(alert.getAttribute("data-code")).toBe("internal");
       expect(alert.textContent).toContain("engine stopped");
+      expect(alert.textContent).toContain("The ride engine stopped:");
       expect(routeText()).toBe("ride:");
     },
   );
