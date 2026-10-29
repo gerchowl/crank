@@ -12,8 +12,8 @@ use crate::ticks::{
     TRAINER_HOLD_TICKS, TickWindow, WorkoutTicks, ticks_to_seconds,
 };
 use crank_devices::{
-    Clock, ControlMode, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime, TrainerCommand,
-    TrainerEvent, TrainerLink, TrainerObservation, TrainerSample,
+    Clock, CommandSeq, ControlMode, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime,
+    SeqSource, TrainerCommand, TrainerEvent, TrainerLink, TrainerObservation, TrainerSample,
 };
 use crank_domain::workout::{FlatBlock, Phase as BlockPhase};
 use std::{
@@ -564,6 +564,8 @@ pub struct Engine {
     policy_factory: Box<dyn Fn() -> Box<dyn TargetPolicy> + Send>,
     trainer_events: Option<mpsc::Receiver<TrainerEvent>>,
     trainer_control: Option<mpsc::Sender<TrainerCommand>>,
+    /// The trainer link's command sequences: a `Delivered` confirms only its own `SetMode`.
+    trainer_seq: SeqSource,
     max_target_w: u16,
     hr_events: Option<mpsc::Receiver<HrEvent>>,
     trainer_link: Option<LinkState>,
@@ -575,9 +577,10 @@ pub struct Engine {
     trainer_log: LinkLog,
     hr_log: LinkLog,
     session: Option<Session>,
-    /// The end mode was sent and the ride-active signal is held until the driver reports it
-    /// delivered, the link is lost, or the deadline passes (#266).
-    ending: Option<(ControlMode, MonoTime)>,
+    /// The end mode was sent (as the `SetMode` of this sequence) and the ride-active signal is
+    /// held until the driver reports that very command delivered, the link is lost, or the
+    /// deadline passes (#266, #345).
+    ending: Option<(CommandSeq, MonoTime)>,
 }
 impl Engine {
     /// Build an engine over connected links. `activity` receives the ride-active
@@ -596,9 +599,9 @@ impl Engine {
             trainer.as_ref().map(|_| LinkState::Ready),
             hr.as_ref().map(|_| LinkState::Ready),
         );
-        let (max_target_w, trainer_control, trainer_events) = match trainer {
-            Some(t) => (t.caps.max_target_w, Some(t.control), Some(t.events)),
-            None => (0, None, None),
+        let (max_target_w, trainer_control, trainer_seq, trainer_events) = match trainer {
+            Some(t) => (t.caps.max_target_w, Some(t.control), t.seq, Some(t.events)),
+            None => (0, None, SeqSource::default(), None),
         };
         let engine = Self {
             clock,
@@ -606,6 +609,7 @@ impl Engine {
             policy_factory: Box::new(|| Box::new(ErgPolicy::new())),
             trainer_events,
             trainer_control,
+            trainer_seq,
             max_target_w,
             hr_events: hr.map(|h| h.events),
             trainer_link,
@@ -871,8 +875,8 @@ impl Engine {
                     }
                 }
             }
-            TrainerEvent::Delivered { mode } => {
-                if self.ending.is_some_and(|(m, _)| m == mode) {
+            TrainerEvent::Delivered { seq, .. } => {
+                if self.ending.is_some_and(|(sent, _)| sent == seq) {
                     self.release_gate();
                 }
             }
@@ -1173,7 +1177,12 @@ impl Engine {
         };
         if let Some(mode) = s.policy.desired(&ctx)
             && s.last_sent != Some(mode)
-            && control.try_send(TrainerCommand::SetMode(mode)).is_ok()
+            && control
+                .try_send(TrainerCommand::SetMode {
+                    mode,
+                    seq: self.trainer_seq.next(),
+                })
+                .is_ok()
         {
             s.last_sent = Some(mode);
             self.follow(s, k);
@@ -1205,12 +1214,19 @@ impl Engine {
         // a §7.4 release) may still be queued, and only its delivery is waited for.
         // The control channel holds 64 commands and the engine sends at most one per tick,
         // so a full channel means a driver that is not running: nothing to wait for.
-        if control.try_send(TrainerCommand::SetMode(END_MODE)).is_err() {
+        let seq = self.trainer_seq.next();
+        if control
+            .try_send(TrainerCommand::SetMode {
+                mode: END_MODE,
+                seq,
+            })
+            .is_err()
+        {
             return false;
         }
         s.last_sent = Some(END_MODE);
         let now = self.clock.now().0;
-        self.ending = Some((END_MODE, MonoTime(now.saturating_add(END_DELIVERY_US))));
+        self.ending = Some((seq, MonoTime(now.saturating_add(END_DELIVERY_US))));
         true
     }
     fn finish(&mut self) {

@@ -9,6 +9,10 @@ pub mod sim;
 pub use control::*;
 use futures_util::{future::BoxFuture, stream::BoxStream};
 use smallvec::SmallVec;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use tokio::sync::mpsc;
 
 /// Monotonic microseconds from the runtime epoch; never UTC. See ADR-0002 §3.
@@ -94,6 +98,24 @@ pub struct TrainerLink {
     pub control: mpsc::Sender<TrainerCommand>,
     /// Ordered, lossless connection events.
     pub events: mpsc::Receiver<TrainerEvent>,
+    /// Where every sender of a `SetMode` on this link takes its [`CommandSeq`] from, so that
+    /// a `Delivered` names exactly one command even when several senders share the link (the
+    /// engine and, at a forced end, the core; #345).
+    pub seq: SeqSource,
+}
+/// Identifies one [`TrainerCommand::SetMode`] on a link; its [`TrainerEvent::Delivered`]
+/// carries it back. Unique per [`SeqSource`], increasing in the order they are taken.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CommandSeq(pub u64);
+/// A link's shared source of [`CommandSeq`]s: clones draw from the same counter.
+#[derive(Clone, Debug, Default)]
+pub struct SeqSource(Arc<AtomicU64>);
+impl SeqSource {
+    /// A sequence no earlier call on this source (or a clone of it) returned.
+    #[must_use]
+    pub fn next(&self) -> CommandSeq {
+        CommandSeq(self.0.fetch_add(1, Ordering::Relaxed) + 1)
+    }
 }
 /// Capabilities from FE-C page 54 (ADR-0002 §3).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,7 +147,12 @@ pub struct RiderConfig {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TrainerCommand {
     /// Replace the desired control mode.
-    SetMode(ControlMode),
+    SetMode {
+        /// The desired mode.
+        mode: ControlMode,
+        /// This command's sequence, from the link's [`SeqSource`]; echoed by its `Delivered`.
+        seq: CommandSeq,
+    },
     /// Supply rider configuration (driver-specific connection lifecycle).
     SetRider(RiderConfig),
     /// Release the peripheral.
@@ -142,9 +169,15 @@ pub enum TrainerEvent {
     /// Emitted once every control page of `mode` has been written (a SIM pair after its
     /// second page, not its first); the first page alone never confirms the mode.
     /// Diagnostic only; delivery is not an engine following input (ADR-0002 §4.4).
+    ///
+    /// It confirms only the `SetMode` whose `seq` it carries, never an equal mode sent
+    /// another time: a `SetMode` that a later one replaced before all its pages were written
+    /// gets no `Delivered` (#345).
     Delivered {
         /// Desired mode whose control page reached the peripheral.
         mode: ControlMode,
+        /// The sequence of the `SetMode` that set `mode`.
+        seq: CommandSeq,
     },
     /// Exactly one event per received page 71, and page-25 flags.
     Observed(TrainerObservation),
