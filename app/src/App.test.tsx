@@ -19,6 +19,7 @@ import {
 } from "vitest";
 import { App, type ViewRegistry } from "./App";
 import { navigate } from "./router";
+import { installDevices } from "./views/devicesBackend";
 import { HANDOFF_MS, STATUS_AFTER_MS } from "./shell/StartScreen";
 import { reloadTheme } from "./theme";
 
@@ -95,12 +96,16 @@ describe("rail", () => {
   });
 
   test("Devices is reachable under Settings", async () => {
+    installDevices();
     const user = userEvent.setup();
     render(<App />);
     await ready();
     await user.click(screen.getByRole("button", { name: /Settings/ }));
     await user.click(screen.getByRole("button", { name: "Devices" }));
     expect(screen.getByRole("heading", { name: "Devices" })).toBeTruthy();
+    // Only the real view has these: a bare heading must not pass.
+    expect(screen.getByRole("heading", { name: "Paired" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Scan" })).toBeTruthy();
   });
 });
 
