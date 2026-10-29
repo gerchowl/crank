@@ -345,26 +345,28 @@ impl BleCentral {
     /// FE-C trainer driver with the reconnect loop, retrying while `gate` is active.
     #[must_use]
     pub fn trainer_driver(&self, clock: Arc<dyn Clock>, gate: RideGate) -> impl TrainerDriver {
+        let driver_clock = clock.clone();
         supervised_trainer(
             |cleanup| PeripheralTrainer {
                 central: self.clone(),
-                clock: clock.clone(),
+                clock: driver_clock,
                 cleanup,
             },
-            clock.clone(),
+            clock,
             gate,
         )
     }
     /// Heart-rate strap driver with the reconnect loop, retrying while `gate` is active.
     #[must_use]
     pub fn hr_driver(&self, clock: Arc<dyn Clock>, gate: RideGate) -> impl HeartRateDriver {
+        let driver_clock = clock.clone();
         supervised_hr(
             |cleanup| PeripheralHr {
                 central: self.clone(),
-                clock: clock.clone(),
+                clock: driver_clock,
                 cleanup,
             },
-            clock.clone(),
+            clock,
             gate,
         )
     }
