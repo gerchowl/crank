@@ -667,7 +667,7 @@ describe("Ride", () => {
     await act(async () => rig.tick(150));
     await act(async () => rig.tick(150));
     expect(slot("target")?.textContent).toBe("170");
-    // samples stop: policy.rs:242-248, `last_sent` is already `Erg`, so nothing is sent (not 0 W)
+    // samples stop: policy.rs:239-248, `last_sent` is already `Erg`, so nothing is sent (not 0 W)
     await act(async () => rig.tick(null));
     expect(slot("target")?.textContent).toBe("170");
     await act(async () => rig.tick(null));
