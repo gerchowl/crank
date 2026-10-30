@@ -75,7 +75,7 @@ function describeError(
       };
     case "storage":
       // The pairings live in the local database; the core reads it first on scan and forget, and writes it last on pair.
-      // A pair can fail after the row was written (core.rs:1064-1077), so the wording does not say what was stored:
+      // A pair can fail after the row was written (core.rs `device_pair` (~1074)), so the wording does not say what was stored:
       // the view re-reads the pairings, and the list shows the truth.
       return during === "pair"
         ? {

@@ -23,7 +23,7 @@ const SETTLE_MS = 200;
  * - `onScaleChanged` (`tauri://scale-change`): the window's backing scale factor changed (a move between displays of
  *   different scale, or a switch to or from a non-HiDPI mode in System
  *   Settings). A "Looks like" resolution change on a Retina display keeps
- *   the backing scale at 2.0, so tao emits nothing (tao 0.37.1, window_delegate.rs:102-106); that is not covered by
+ *   the backing scale at 2.0, so tao emits nothing (tao 0.37.1, macos/window_delegate.rs, the backing-properties handler); that is not covered by
  *   this event. The physical width in mm is independent of the resolution, so the measurement needs no refresh,
  *   but `screen.width` (and so the type size) does change: `useTypeTiers` re-reads it on this same signal,
  *   expected to be the focus gain below (#390). Not verified on hardware: that the focus event fires on return from
