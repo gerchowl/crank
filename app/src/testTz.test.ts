@@ -33,10 +33,21 @@ test("withTimeZone restores the zone when its body fails", async () => {
 });
 
 test("restoring a zone that was never set removes it", () => {
+  const had = Object.prototype.hasOwnProperty.call(process.env, "TZ");
   const prior = process.env.TZ;
   delete process.env.TZ;
-  const undo = setTimeZone("Asia/Tokyo");
-  undo();
-  expect(Object.prototype.hasOwnProperty.call(process.env, "TZ")).toBe(false);
-  process.env.TZ = prior;
+  try {
+    const undo = setTimeZone("Asia/Tokyo");
+    undo();
+    expect(Object.prototype.hasOwnProperty.call(process.env, "TZ")).toBe(false);
+  } finally {
+    // a failed expectation must not leak the deleted zone; an absent prior is deleted, never set to "undefined"
+    if (had) process.env.TZ = prior;
+    else delete process.env.TZ;
+  }
+});
+
+// runs after the test above: a failure there must not leave the pinned zone changed for the rest of the file
+test("the pinned zone survives the previous test", () => {
+  expect(process.env.TZ).toBe("UTC");
 });
