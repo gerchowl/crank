@@ -57,7 +57,7 @@ pub(crate) fn receive(at: MonoTime, bytes: &[u8]) -> Vec<TrainerEvent> {
             sample.cadence_rpm = p.cadence_rpm;
             sample.accumulated_power_w = Some(u32::from(p.accumulated_power_w));
             sample.event_count = Some(p.event_count);
-            sample.status = TrainerStatus(p.status);
+            sample.status = TrainerStatus::from_raw(p.status);
             sample.target_limit = p.target_limit.into();
             vec![
                 TrainerEvent::Sample(sample),
