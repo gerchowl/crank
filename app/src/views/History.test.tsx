@@ -199,6 +199,10 @@ test("a forced end the core answers after the summary is showing adds the note (
   navigate("history", "ride-1");
   open();
   const s = within(await screen.findByRole("region", { name: "Ride summary" }));
+  // `findBy` resolves on the DOM change, before React has run the passive effects of that commit, and the summary's
+  // `useForcedEnd` subscribes in one of them: let them run, so the mark below reaches a live subscriber and its
+  // re-render is flushed by the `act` that marks (without this, 7 of 10 runs of 300 repeats failed)
+  await act(async () => {});
   expect(s.queryByRole("note")).toBeNull();
   // the `finished` frame routed here before the `ride_end` answer; the answer marks the ride forced
   act(() => markForcedEnd("ride-1"));
