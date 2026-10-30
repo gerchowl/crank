@@ -26,24 +26,30 @@ test:
 
 # Inner loop (#371): nextest + doctests for the crates changed since `base` and their reverse
 # dependencies (scripts/test-changed.py). Workspace-level files (Cargo.toml/lock, flake.*,
-# rust-toolchain.toml, clippy.toml, .cargo/, .config/) run the whole workspace; a diff with no Rust
-# crate in it runs nothing. Not a gate: run `just check` once before pushing.
+# rust-toolchain.toml, clippy.toml, .cargo/, .config/, any path nobody classified as non-Rust) run the
+# whole workspace; a diff of non-Rust paths only runs nothing. Not a gate: run `just check` once before pushing.
 test-changed base="origin/dev":
     #!/usr/bin/env bash
     set -euo pipefail
-    plan=$(python3 scripts/test-changed.py {{base}})
-    echo "test-changed: $plan"
+    out=$(python3 scripts/test-changed.py {{base}})
+    plan=$(printf '%s\n' "$out" | sed -n 1p)
+    docline=$(printf '%s\n' "$out" | sed -n 2p)
+    echo "test-changed: $out"
     # Same feature set as `test` and the flake's `nextest`; `crank-ble/…` needs crank-ble selected.
     features=(--features crank-ble/replay,crank-ble/hil)
+    doc=(--workspace)
     case "$plan" in
-      none) echo "test-changed: no Rust crate or workspace-level file changed; nothing to run"; exit 0 ;;
+      none) echo "test-changed: nothing to run (only non-Rust paths changed)"; exit 0 ;;
       all) sel=(--workspace) ;;
       crates\ *) sel=(); for c in ${plan#crates }; do sel+=(-p "$c"); done
-        case " $plan " in *" crank-ble "*) ;; *) features=() ;; esac ;;
+        case " $plan " in *" crank-ble "*) ;; *) features=() ;; esac
+        # Doctests need a lib target: a bin-only crate (crank-cli) makes `cargo test --doc -p` exit 101.
+        doc=(); for c in ${docline#doc}; do doc+=(-p "$c"); done ;;
       *) echo "test-changed: unexpected plan '$plan'" >&2; exit 1 ;;
     esac
-    cargo nextest run "${sel[@]}" ${features[@]+"${features[@]}"}
-    cargo test "${sel[@]}" --doc
+    # --no-tests=pass: a selected set with no tests at all (crank-cli today) is not a failure.
+    cargo nextest run --no-tests=pass "${sel[@]}" ${features[@]+"${features[@]}"}
+    if [ ${#doc[@]} -gt 0 ]; then cargo test "${doc[@]}" --doc; else echo "test-changed: no selected crate has a lib target; skipping doctests"; fi
 
 # Executable model of ADR-0002 §4.4.1 (also the `following-model` flake check).
 model:
