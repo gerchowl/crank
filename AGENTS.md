@@ -19,7 +19,7 @@ non-Rust list (`docs/` except `docs/hil/captures/`, which maps to crank-ble; `ap
 `shared/`, `assets/`, `issues/`, `scripts/`, `.github/`, any `*.md`, and the root files justfile, LICENSE, NOTICE,
 .gitignore, .editorconfig, package.json, pnpm-*.yaml, deny*.toml) runs the whole workspace (Cargo.toml, Cargo.lock,
 flake.*, rust-toolchain.toml, clippy.toml, `.cargo/`, `.config/` and anything new); a diff of non-Rust paths only runs
-nothing. Renames count as their old and new path; doctests run only for selected crates with a lib target. It is not the gate: run `just check` once before pushing.
+nothing. Renames count as their old and new path; doctests run only for selected crates with a lib target. CI's `crank-ble/replay,crank-ble/hil` flags are passed when crank-ble is selected or a selected crate depends on it directly (cargo rejects them otherwise); a selection without such an edge (e.g. crank-desktop alone) runs without them. It is not the gate: run `just check` once before pushing.
 `just check` runs the hermetic `nix flake check` gate. `just test` runs nextest,
 doctests, app Vitest, and the frozen shared tests. `just model` runs the executable trainer-following model of ADR-0002 §4.4.1 and checks
 that the committed fixture `crates/crank-engine/tests/fixtures/following.json` is its output (the `following-model` flake

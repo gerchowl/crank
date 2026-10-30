@@ -4,6 +4,7 @@
 Uses a synthetic `cargo metadata` document (domain <- store <- core <- desktop,
 fec <- ble <- core), so it needs no cargo.
 `changed_files` is tested against a temporary git repository (renames, deletion, untracked).
+`feature_flags` (CI feature flags per selection) uses the same synthetic metadata.
 Usage: test-test-changed.py
 """
 import importlib.util
@@ -86,6 +87,22 @@ expect("lib crates are listed", ["crates/crank-fec/a.rs"],
        doc=["crank-ble", "crank-core", "crank-desktop", "crank-fec"])
 
 
+def expect_features(name, selected, want):
+    got = tc.feature_flags(selected, META)
+    if got != want:
+        failed.append(f"{name}: {selected} -> {got!r}, want {want!r}")
+    else:
+        print(f"test-changed: {name}: ok")
+
+
+BLE = ["crank-ble/replay", "crank-ble/hil"]
+expect_features("features: crank-ble selected", ["crank-ble"], BLE)
+expect_features("features: a direct dependent of crank-ble keeps them (CI parity)", ["crank-core"], BLE)
+expect_features("features: a transitive dependent has no direct edge, cargo would reject them",
+                ["crank-desktop"], [])
+expect_features("features: crates unrelated to crank-ble get none", ["crank-store", "crank-cli"], [])
+
+
 def git(*args):
     subprocess.run(["git", *args], check=True, capture_output=True, text=True)
 
@@ -125,6 +142,35 @@ def test_changed_files():
 
 
 test_changed_files()
+
+
+def test_changed_files_staged_rename():
+    """A staged, uncommitted `git mv` reports the old path too (the `git diff HEAD` call needs --no-renames)."""
+    cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        try:
+            git("init", "-q", "-b", "dev")
+            git("config", "user.email", "t@example.invalid")
+            git("config", "user.name", "t")
+            os.makedirs("crates/a/src")
+            os.makedirs("crates/b/src")
+            with open("crates/a/src/one.rs", "w") as fh:
+                fh.write("// one\n" * 20)
+            git("add", "-A")
+            git("commit", "-q", "-m", "base")
+            git("mv", "crates/a/src/one.rs", "crates/b/src/one.rs")  # staged, not committed
+            got = tc.changed_files("dev")
+        finally:
+            os.chdir(cwd)
+    want = ["crates/a/src/one.rs", "crates/b/src/one.rs"]
+    if got != want:
+        failed.append(f"changed_files (staged rename): {got!r}, want {want!r}")
+    else:
+        print("test-changed: changed_files (staged uncommitted rename): ok")
+
+
+test_changed_files_staged_rename()
 
 if failed:
     sys.exit("test-changed: " + "\n".join(failed))

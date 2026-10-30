@@ -19,7 +19,14 @@ Usage: test-changed.py [base]   (default origin/dev; compares base...HEAD plus
 the working tree and untracked files; a rename counts as its old and new path).
 Prints one line, `all` (whole workspace) or `none` (nothing to test) or
 `crates a b c` (the affected crates, sorted); after a `crates` line, a second line
-`doc x y` lists those of them with a library target (doctests need one; may be `doc`).
+`doc x y` lists those of them with a library target (doctests need one; may be `doc`) and a
+third line `features f1 f2` the CI feature flags (`FEATURES` below, as `crate/feature`) that
+cargo accepts for the selection (may be bare `features`). A flag is emitted when its crate is
+selected or a selected crate depends on it directly: cargo rejects `--features dep/feat`
+otherwise (verified: `-p crank-desktop --features crank-ble/hil` is an error), and dropping it would run a
+dependent crate's tests without the features CI uses (#376). Limit: a selected crate with no direct
+edge to a feature crate (e.g. crank-desktop alone) runs without those flags, although CI's workspace-wide
+feature unification builds its dependencies with them; run `just test` or `just check` before pushing.
 """
 import json
 import subprocess
@@ -33,6 +40,8 @@ NON_RUST_ROOT = {
 }
 # Files outside a crate directory that a crate's tests read (include_str!).
 EXTRA_OWNERS = {"docs/hil/captures/": "crank-ble"}
+# Feature flags CI turns on for the whole workspace (justfile `test`, flake `nextest`).
+FEATURES = {"crank-ble": ("replay", "hil")}
 
 
 def crates_and_rdeps(metadata):
@@ -50,6 +59,15 @@ def crates_and_rdeps(metadata):
     libs = {p["name"] for p in by_id.values()
             if any(k in ("lib", "rlib", "proc-macro") for t in p["targets"] for k in t["kind"])}
     return dirs, rdeps, libs
+
+
+def feature_flags(selected, metadata):
+    """CI feature flags (`crate/feature`) that cargo accepts when only `selected` crates are tested."""
+    members = set(metadata["workspace_members"])
+    deps = {p["name"]: {d["name"] for d in p["dependencies"]}
+            for p in metadata["packages"] if p["id"] in members}
+    return [f"{crate}/{feat}" for crate, feats in FEATURES.items()
+            if any(c == crate or crate in deps.get(c, ()) for c in selected) for feat in feats]
 
 
 def non_rust(f):
@@ -111,6 +129,7 @@ def main():
     else:
         print("crates " + " ".join(result))
         print("doc " + " ".join(doc))
+        print("features " + " ".join(feature_flags(result, meta)))
 
 
 if __name__ == "__main__":
