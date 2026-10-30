@@ -97,9 +97,13 @@ with tempfile.TemporaryDirectory() as tmp:
         "ghost.rs nested_attr_fn (an attribute with a nested `]`)",
         "ghost.rs LocalStruct and ghost.rs LOCAL_CONST (items after `{` and `;`)",
         "core.rs `Core::end_ride` (~9): `Erg { 0 }` until a sample",
-        "ghost.rs qualified 2 retries, 3 or 4 of them",
     ]
-    for i, g in enumerate(good[-18:]):
+    good += [f"ghost.rs `qualified` {u}" for u in (
+        "10 ms", "10 us", "3 min", "1 h", "2 kW", "5 J", "12 V", "5 mA", "3 dB", "16 B", "4 KiB", "2 MiB", "20 bytes", "8 bits",
+        "4 frames", "2 packets", "9 ticks", "3 retries", "2 attempts", "5 calls", "2 tests", "4 cases", "3 files", "6 variants",
+        "2 fields", "7 entries", "5 items", "3 call-sites",
+    )]
+    for i, g in enumerate(good[-46:]):
         expect(f"good {g!r}", tree_with(base, f"okx{i}", g), True)
     bad = [
         "core.rs:1667",
@@ -185,6 +189,14 @@ with tempfile.TemporaryDirectory() as tmp:
     bad += [f"ghost.rs `qualified` {sp}" for sp in spellings]
     bad += [f"ghost.rs {sp}" for sp in spellings]
     bad += ["ghost.rs inner_zz (a struct-variant field that does not exist)", "ghost.rs inline_gone", "ghost.rs `qualified` at 50"]
+    # #402 round 2: anything but a listed unit or count noun after the number is a line hint
+    bad += [f"ghost.rs `qualified` {sp}" for sp in (
+        "1742 is wrong", "1742 in", "1742 ff", "1742 x", "1742 L", "1742 etc", "1742 und", "1742 bis 1750", "1742 thru 1750",
+        "1742 y 1750", "1742 ish", "1742f", "0x6D6", "(1742 lines)", "1742 lines", "1742 or 1743", "1742 and", "1742 to 1750",
+        "1742 sorry", "1742 sx",
+        # false positives the rule implies; they are rejected on purpose: rephrase
+        "in 2024", "x 3", "× 3", '"1742"', "*1742*", "since v1.2", "50-60 Hz", "at 50", "(50)",
+    )]
     for i, b in enumerate(bad):
         expect(f"bad {b!r}", tree_with(base, f"bad{i}", b), False)
     r = run(tree_with(base, "kw", "see core.rs for x"))
