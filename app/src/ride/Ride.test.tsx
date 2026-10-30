@@ -649,8 +649,14 @@ describe("Ride", () => {
     await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
     await act(async () => rig.tick(200));
     expect(slot("target")?.textContent).toBe("200");
+    // a rider pause is not a recovered loss: the engine's `RideStatus` `soft_start_target_w` is `live.filter(|s| s.after_loss)`,
+    // so the ramp runs without a reported soft start, in the hold and in the ramp
+    expect(rig.base.truth.status.softStartTargetW).toBeNull();
+    expect(screen.queryByTestId("soft-start")).toBeNull();
     await act(async () => rig.tick(200));
     expect(slot("target")?.textContent).toBe("210");
+    expect(rig.base.truth.status.softStartTargetW).toBeNull();
+    expect(screen.queryByTestId("soft-start")).toBeNull();
   });
 
   test("pedalling stops mid-ramp: the engine sends nothing and the tile holds the last step; the ramp restarts when pedalling returns", async () => {
