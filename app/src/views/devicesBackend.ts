@@ -1,8 +1,8 @@
 // A stand-in for the core's device commands behind `mockIPC`, for the Devices tests only. It enforces what the core
 // does (crank-core `Core::devices_scan` / `device_pair` / `device_forget` / `device_links`), not more permissive:
-// every one of them is `conflict` while a ride is loaded (`require_no_ride`, core.rs (~1008)); pair refuses an empty
+// every one of them is `conflict` while a ride is loaded (core.rs `require_no_ride` (~1008)); pair refuses an empty
 // id (`invalid_input`, core.rs `device_pair` (~1074)), and, on the SIM core only (`core: "sim"`), any id but the sim's fixed one for the
-// role, `trainer` / `strap` (`invalid_input`; `Backend::accepts`, backend.rs (~151), `SIM_TRAINER` / `SIM_STRAP`). The
+// role, `trainer` / `strap` (`invalid_input`; backend.rs `Backend::accepts` (~151), `SIM_TRAINER` / `SIM_STRAP`). The
 // RADIO core (the default) accepts any id and role and fails at connect (`device_unavailable`), so the UI must not
 // rely on the sim's early refusal. Pair replaces the role's earlier pairing, and answers the adapter's failures;
 // forget of an empty role is `not_found` (core.rs `device_forget` (~1152)); a scan lists a peripheral once and marks `paired` for any
@@ -43,7 +43,7 @@ export const both: ScannedDevice = {
   paired: false,
 };
 
-/** The sim core's only devices (`SIM_TRAINER`, `SIM_STRAP`, backend.rs (~74)). */
+/** The sim core's only devices (`SIM_TRAINER`, `SIM_STRAP`, backend.rs `SIM_TRAINER` (~74)). */
 export const simTrainer: ScannedDevice = {
   id: "trainer",
   name: "Simulated trainer",

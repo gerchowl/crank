@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Fail on a Rust `file.rs:<line>` citation without a symbol under app/ (#391).
+"""Fail on a Rust citation under app/ that is not `file.rs symbol (~line)` (#391).
 
-The convention (AGENTS.md "Citing Rust from app/"): `file.rs` + the symbol, with an optional `~line` hint,
-e.g. `core.rs end_ride (~1742)`. A bare line number goes stale when the Rust file moves. Flagged, per line:
-- `.rs:123` / `.rs`:123` / `.rs 123` / `.rs ~123`: a line number straight after the file name, no symbol;
-- in a file that names a `.rs` file anywhere, a continuation ` :123` / `(:123` (as in `core.rs `x`, :1288`); formatted
-  code never has a space before a colon, so this only matches citations.
+The convention (AGENTS.md "Citing Rust from app/"): after `<file>.rs` comes the symbol (an identifier, optionally in
+backticks, `::` paths allowed), then an optional `(~line)` hint; `file.rs` alone is fine. A bare line number goes stale
+when the Rust file moves. Flagged:
+- a line hint straight after the file name, with no symbol: `.rs:123`, `.rs 123`, `.rs (~123)`, `.rs (123)`,
+  `.rs#L123`, `.rs L123`, `.rs, line 123`;
+- a line hint straight after the symbol that is not `(~N)`: `.rs sym:123`, `.rs sym 123`, `.rs see 123`;
+- in a file that names a `.rs` file anywhere, a continuation ` :123` / `(:123` (as in `core.rs `x`, :1288`);
+  formatted code never has a space before a colon, so this only matches citations.
 Usage: check-rust-citations.py [root]
 """
 import re
@@ -15,8 +18,26 @@ from pathlib import Path
 root = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
 SKIP_DIRS = {"node_modules", "target", "dist", "e2e-out", ".vite"}
 EXTS = {".ts", ".tsx", ".rs", ".md", ".css", ".html"}
-DIRECT = re.compile(r"\.rs`?(?::|\s+~?)\d")
+FILE = re.compile(r"\.rs`?")
+SYMBOL = re.compile(r"\s+`?(?!L\d)[A-Za-z_][\w:]*(?:\(\))?`?")
+CANONICAL_HINT = re.compile(r"\s*\(~\d+\)")
+HINT = re.compile(r"[\s,;:]*(?:line\s*)?(?:#?L|~|:|\()*\d{2,}")
 CONTINUATION = re.compile(r"(?<![\w.`/])(?:\s|\(|,):\d{2,}")
+
+
+def bad_citation(line: str) -> bool:
+    for m in FILE.finditer(line):
+        tail = line[m.end():]
+        sym = SYMBOL.match(tail)
+        if not sym:
+            if HINT.match(tail):
+                return True
+            continue
+        rest = tail[sym.end():]
+        if not CANONICAL_HINT.match(rest) and HINT.match(rest):
+            return True
+    return False
+
 
 errors = []
 for path in sorted((root / "app").rglob("*")):
@@ -25,7 +46,7 @@ for path in sorted((root / "app").rglob("*")):
     text = path.read_text(encoding="utf-8", errors="replace")
     cites_rust = ".rs" in text
     for n, line in enumerate(text.splitlines(), 1):
-        if DIRECT.search(line) or (cites_rust and CONTINUATION.search(line)):
+        if bad_citation(line) or (cites_rust and CONTINUATION.search(line)):
             errors.append(f"{path.relative_to(root)}:{n}: {line.strip()[:100]}")
 if errors:
     sys.exit("rust-citations: cite `file.rs symbol (~line)`, not a bare line number (AGENTS.md):\n" + "\n".join(errors))

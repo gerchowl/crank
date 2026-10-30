@@ -28,7 +28,7 @@ export const ACK_WINDOW = 3;
 export const SUB_CAP = 64;
 export const MIN_RATE_HZ = 0.1;
 export const MAX_RATE_HZ = 10;
-/** crank-engine `stream/types.rs` `MAX_FILTERS_PER_CHAIN` (~73), enforced by `validate_filters` (`stream/hub.rs` (~306)). */
+/** crank-engine stream/types.rs `MAX_FILTERS_PER_CHAIN` (~73), enforced by stream/hub.rs `validate_filters` (~306). */
 export const MAX_FILTERS_PER_CHAIN = 4;
 /** `stream/types.rs` `MAX_FILTER_SECONDS` (~77): longest SMA window and EMA time constant. */
 export const MAX_FILTER_SECONDS = 300;
@@ -136,7 +136,7 @@ function decodeSubscribe(
 }
 
 /**
- * `validate_filters` (crank-engine `stream/hub.rs` (~306)), in its order: chain length, then each filter's bound. The
+ * `validate_filters` (crank-engine stream/hub.rs `validate_filters` (~306)), in its order: chain length, then each filter's bound. The
  * rejection's text is `StreamError::InvalidFilter`'s `invalid filter: {what}` (`stream/types.rs` `StreamError::InvalidFilter` (~487)), code `invalid_input`
  * (crank-core `error.rs` `From<StreamError>` (~79)). `FilterChain::new`'s non-finite check cannot be reached from the wire: the decode above
  * refuses those first.
