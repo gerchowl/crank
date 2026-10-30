@@ -1596,6 +1596,21 @@ impl Core {
         own
     }
 
+    /// The ride-active callback of the engine of `ride_id`: [`ride_activity`] on this core's
+    /// signal and its owner.
+    fn activity_of(
+        &self,
+        ride_id: &str,
+        takeover: &watch::Sender<Takeover>,
+    ) -> Arc<impl Fn(bool) + Send + Sync + 'static> {
+        Arc::new(ride_activity(
+            ride_id.to_owned(),
+            self.0.signal_of.clone(),
+            takeover.subscribe(),
+            self.0.gate.clone(),
+            self.0.active.clone(),
+        ))
+    }
     /// Connect the devices, build the engine and load the workout into it.
     async fn build_session(
         &self,
@@ -1612,16 +1627,9 @@ impl Core {
         let takeover = Arc::new(watch::channel(Takeover::Engine).0);
         let (hold, release) = relay_links(&ride_id, &mut trainer, hr.as_mut(), &takeover);
         let hr_linked = hr.is_some();
-        let (gate, active) = (self.0.gate.clone(), self.0.active.clone());
         #[cfg(test)]
         let pin = self.0.pin_active.clone();
-        let activity = Arc::new(ride_activity(
-            ride_id.clone(),
-            self.0.signal_of.clone(),
-            takeover.subscribe(),
-            gate,
-            active,
-        ));
+        let activity = self.activity_of(&ride_id, &takeover);
         #[cfg(test)]
         let engine_activity: Arc<dyn Fn(bool) + Send + Sync> = activity.clone();
         #[cfg(test)]
