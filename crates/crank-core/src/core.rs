@@ -702,6 +702,11 @@ struct Inner {
     gate: RideGate,
     /// Mirrors the gate: the engine's ride-active signal, awaitable.
     active: watch::Sender<bool>,
+    /// Id of the ride whose engine the ride-active signal (`gate`, `active`) belongs to: the
+    /// one built last, set before it is sent `Load`, which raises the signal. Only that
+    /// ride's end may clear the signal for it (#370, [`Core::clear_signal`]). Not in
+    /// [`State`]: taking it never waits, so a load is not held before `Load` by the state lock.
+    signal_of: std::sync::Mutex<Option<String>>,
     library: Library,
     /// The status of an engine that has nothing loaded.
     idle: StreamStatus,
@@ -715,7 +720,10 @@ struct Inner {
     next_stream: AtomicU32,
     /// Lets a test interleave a command into `discard` (#278).
     #[cfg(test)]
-    discard_hook: DiscardHook,
+    discard_hook: Rendezvous,
+    /// Lets a test hold an End between deciding to force the ride and forcing it (#370).
+    #[cfg(test)]
+    force_hook: Rendezvous,
     /// While set, the engine's callback ignores "inactive": an engine task that died with
     /// the ride-active signal up (#290).
     #[cfg(test)]
@@ -804,11 +812,11 @@ impl crank_engine::RideRecorder for BlockingRecorder {
         self.inner.finish()
     }
 }
-/// A rendezvous between a test and `Core::discard`: when enabled, `discard` announces that
-/// the lock is released and waits to be resumed.
+/// A rendezvous between a test and the core: when enabled, the core announces that it has
+/// reached the hook's point and waits to be resumed.
 #[cfg(test)]
 #[derive(Default)]
-struct DiscardHook {
+struct Rendezvous {
     enabled: AtomicBool,
     reached: Notify,
     resume: Notify,
@@ -897,6 +905,7 @@ impl Core {
             engine_host,
             gate: RideGate::new(false),
             active: watch::channel(false).0,
+            signal_of: std::sync::Mutex::default(),
             library: Library::builtin()?,
             idle: {
                 let (_engine, handle) =
@@ -908,7 +917,9 @@ impl Core {
             loading: AtomicBool::new(false),
             next_stream: AtomicU32::new(1),
             #[cfg(test)]
-            discard_hook: DiscardHook::default(),
+            discard_hook: Rendezvous::default(),
+            #[cfg(test)]
+            force_hook: Rendezvous::default(),
             #[cfg(test)]
             pin_active: Arc::default(),
             #[cfg(test)]
@@ -1469,9 +1480,33 @@ impl Core {
         {
             tracing::warn!(ride_id, "the engine did not release the ride: reaping it");
             self.reap(ride_id, true).await;
+            self.clear_signal(ride_id);
+        }
+    }
+    /// Clear the ride-active signal that the engine of `ride_id` can no longer drop, if it is
+    /// still that ride's (`signal_of`); `true` if it was.
+    ///
+    /// The gate and `active` are the core's, one pair for every ride. An end that clears them
+    /// runs outside the state lock and can run late: an End and a replacing `ride_load` both
+    /// force the same stuck ride, the load's forced end finishes first and the load builds the
+    /// newer ride, whose `Load` raises the signal. Cleared then, the newer trainer's command
+    /// gate would be off and the newer ride's reaper would unload it (#370). The newer engine
+    /// takes the signal over (`signal_of`, set before its `Load`), and the check and the clear
+    /// run under that same lock: a clear either runs before the newer engine can raise the
+    /// signal, or not at all.
+    fn clear_signal(&self, ride_id: &str) -> bool {
+        let owner = self
+            .0
+            .signal_of
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let own = owner.as_deref() == Some(ride_id);
+        if own {
             self.0.gate.set_active(false);
             self.0.active.send_replace(false);
         }
+        drop(owner);
+        own
     }
 
     /// Connect the devices, build the engine and load the workout into it.
@@ -1534,6 +1569,12 @@ impl Core {
             inner: recorder,
             block: self.0.block_write.clone(),
         };
+        // From here the signal is this ride's: a late forced end of an older ride leaves it.
+        *self
+            .0
+            .signal_of
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ride_id.clone());
         let loaded = bounded(handle.send(EngineCmd::Load(RideSetup {
             blocks: compiled.blocks,
             recorder: Box::new(recorder),
@@ -1702,6 +1743,11 @@ impl Core {
             break found;
         };
         let mut outcome = None;
+        #[cfg(test)]
+        if forced && self.0.force_hook.enabled.swap(false, Ordering::SeqCst) {
+            self.0.force_hook.reached.notify_one();
+            self.0.force_hook.resume.notified().await;
+        }
         if forced {
             // Whichever record wins decides the outcome: a `Stop` that the engine took just
             // after the timeout may have finished the ride, which is then not a forced end.
@@ -1729,7 +1775,8 @@ impl Core {
     ///    its thread still holds; the caller awaits the drivers' confirmation;
     /// 4. the engine is aborted (and detached when it ignores that, `reap`);
     /// 5. the ride's record is closed as aborted, off the async executor (`close_record`);
-    /// 6. the ride-active signal the engine can no longer drop is cleared.
+    /// 6. the ride-active signal the engine can no longer drop is cleared, unless a newer
+    ///    ride's engine has taken it over meanwhile ([`Core::clear_signal`], #370).
     ///
     /// Idempotent: an overlapping forced end finds the session gone and the record closed.
     async fn force_end(&self, ride_id: &str, started: bool) -> Closed {
@@ -1755,17 +1802,19 @@ impl Core {
         let closed = self.close_record(ride_id).await;
         {
             let mut st = self.0.state.lock().await;
-            if closed == Closed::Finished {
-                if st.last.is_none() {
-                    st.last = Some((ride_id.to_owned(), self.0.idle.clone()));
+            // A late end of a replaced ride (#370) clears nothing of the newer ride's: neither
+            // its signal nor the last-end record that its End reports.
+            if self.clear_signal(ride_id) {
+                if closed == Closed::Finished {
+                    if st.last.is_none() {
+                        st.last = Some((ride_id.to_owned(), self.0.idle.clone()));
+                    }
+                } else if st.last.is_none() {
+                    st.last_forced = Some(ride_id.to_owned());
                 }
-            } else if st.last.is_none() {
-                st.last_forced = Some(ride_id.to_owned());
             }
+            st.forcing = None;
         }
-        self.0.gate.set_active(false);
-        self.0.active.send_replace(false);
-        self.0.state.lock().await.forcing = None;
         self.0.released.notify_waiters();
         closed
     }
@@ -3542,10 +3591,10 @@ mod tests {
     /// #355: a forced end names the ride it ends. If a newer ride was installed meanwhile, the
     /// old ride's forced end must not cut off or end-mode the newer one: the session is looked
     /// up by id, not taken as "the" session. The test proves the takeover stays `Engine` and
-    /// the newer trainer gets no command. It does not cover the ride-active gate, which
-    /// `force_end` clears whatever the id (#370). A simulation: the late forced end is a
-    /// direct `force_end(&old_id)` call after the old ride ended and the newer one loaded, not
-    /// a real End that lost a race.
+    /// the newer trainer gets no command, and its ride-active signal and gate stay up (#370).
+    /// A simulation: the late forced end is a direct `force_end(&old_id)` call after the old
+    /// ride ended and the newer one loaded; the race through the API is
+    /// `a_late_forced_end_of_a_replaced_ride_leaves_the_newer_rides_signal_up`.
     #[tokio::test(start_paused = true)]
     async fn a_forced_end_of_an_old_ride_leaves_the_ride_that_replaced_it_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -3576,11 +3625,62 @@ mod tests {
             assert_eq!(session.ride_id, newer.ride_id);
             assert_eq!(*session.takeover.borrow(), Takeover::Engine);
         }
+        // nor clear its ride-active signal and gate (#370)
+        assert!(core.0.gate.is_active() && *core.0.active.borrow());
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert!(
             radio.commands.lock().unwrap().is_empty(),
             "the newer ride's trainer was sent {:?}",
             radio.commands.lock().unwrap()
+        );
+    }
+    /// #370: an End and a replacing load overlap on a dead, loaded (unstarted) ride, through the
+    /// public API. Both find the engine gone and decide to end the ride by force; the End is
+    /// held between that decision and its forced end (a task that is not scheduled for a
+    /// while, `force_hook`), so the load's forced end runs first and the load installs the
+    /// newer ride. The End's forced end then runs late, for the old id: it must not clear the
+    /// newer ride's ride-active signal and gate (which would turn the newer trainer's command
+    /// gate off and fire the newer ride's reaper) nor record itself as the core's last end.
+    #[tokio::test(start_paused = true)]
+    async fn a_late_forced_end_of_a_replaced_ride_leaves_the_newer_rides_signal_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        let old = core.ride_load(None).await.unwrap();
+        break_engine(&core).await;
+        core.0.force_hook.enabled.store(true, Ordering::SeqCst);
+        let end = tokio::spawn({
+            let core = core.clone();
+            async move { core.ride_end_outcome().await }
+        });
+        core.0.force_hook.reached.notified().await;
+        let newer = core.ride_load(None).await.unwrap();
+        assert_ne!(newer.ride_id, old.ride_id);
+        assert!(core.0.gate.is_active() && *core.0.active.borrow());
+        core.0.force_hook.resume.notify_one();
+        let ended = end.await.unwrap().unwrap();
+        assert_eq!(ended, RideEnd::ForcedEnd(old.ride_id.clone()));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let loaded = core
+            .0
+            .state
+            .lock()
+            .await
+            .session
+            .as_ref()
+            .map(|s| s.ride_id.clone());
+        assert_eq!(loaded, Some(newer.ride_id), "the newer ride was reaped");
+        assert!(core.0.gate.is_active(), "the newer ride's gate was cleared");
+        assert!(
+            *core.0.active.borrow(),
+            "the newer ride's signal was cleared"
+        );
+        assert!(
+            core.0.state.lock().await.last_forced.is_none(),
+            "the old ride's forced end was recorded as the newer ride's last end"
         );
     }
     /// #355: `open_stream` asks the engine without the state lock, so the ride may be replaced
