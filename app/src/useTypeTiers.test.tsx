@@ -144,9 +144,11 @@ test("a move to another monitor refreshes the width and recomputes the tiers", a
   const read = vi.mocked(display.readDisplayWidthMm);
   read.mockClear(); // earlier tests' calls share this module mock
   read.mockResolvedValue(288);
-  let moved: () => void = () => undefined;
+  // Both the measured-width store and the screen snapshot subscribe (#390): a monitor change reaches them all.
+  const watchers: (() => void)[] = [];
+  const moved = () => watchers.slice().forEach((w) => w());
   vi.mocked(display.watchMonitorChange).mockImplementation((notify) => {
-    moved = notify;
+    watchers.push(notify);
     return () => undefined;
   });
   setViewport(1440, 900);
@@ -190,9 +192,11 @@ test("a slow earlier read cannot overwrite a newer one (the review's repro)", as
   read.mockImplementation(
     () => new Promise<number | null>((resolve) => answers.push(resolve)),
   );
-  let moved: () => void = () => undefined;
+  // Both the measured-width store and the screen snapshot subscribe (#390): a monitor change reaches them all.
+  const watchers: (() => void)[] = [];
+  const moved = () => watchers.slice().forEach((w) => w());
   vi.mocked(display.watchMonitorChange).mockImplementation((notify) => {
-    moved = notify;
+    watchers.push(notify);
     return () => undefined;
   });
   setViewport(1440, 900);
@@ -207,4 +211,29 @@ test("a slow earlier read cannot overwrite a newer one (the review's repro)", as
   );
   await act(async () => answers[0]!(288)); // then the slow mount read: must not win (it would give 101px)
   expect(root.style.getPropertyValue("--t2")).toBe("49px");
+});
+
+// ---- #390: a same-scale "Looks like" change ----
+
+test("a screen.width change at the same scale recomputes the tiers on the monitor-change signal", async () => {
+  const watchers: (() => void)[] = [];
+  vi.mocked(display.watchMonitorChange).mockImplementation((notify) => {
+    watchers.push(notify);
+    return () => undefined;
+  });
+  const screenW = vi.spyOn(window.screen, "width", "get");
+  screenW.mockReturnValue(1440);
+  vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(2);
+  vi.spyOn(settings, "useMonitorWidthMmOverride").mockReturnValue(288);
+  setViewport(1440, 900);
+  render(<RideTiers>x</RideTiers>);
+  const root = await rootOf();
+  const before = root.style.getPropertyValue("--t2");
+
+  // "Looks like" 1440 -> 1920: same dpr, no resize, no dpr media-query change.
+  screenW.mockReturnValue(1920);
+  act(() => watchers.slice().forEach((w) => w()));
+  await vi.waitFor(() =>
+    expect(root.style.getPropertyValue("--t2")).not.toBe(before),
+  );
 });

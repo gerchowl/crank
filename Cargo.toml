@@ -39,3 +39,7 @@ crank-coach = { path = "crates/crank-coach" }
 crank-intervals = { path = "crates/crank-intervals" }
 crank-core = { path = "crates/crank-core" }
 crank-mcp = { path = "crates/crank-mcp" }
+
+# Backtraces and debuggers keep file:line; variable-level debuginfo is not worth the target-dir size (#371).
+[profile.dev]
+debug = "line-tables-only"
