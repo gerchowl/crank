@@ -1942,7 +1942,8 @@ impl Core {
     /// End a subscription of a stream of `window`.
     ///
     /// # Errors
-    /// `NotFound`; `EngineUnresponsive` if the engine does not answer within 1 s (`REQUEST_TIMEOUT`).
+    /// `NotFound`; `EngineUnresponsive` if the engine does not answer within 1 s
+    /// (`REQUEST_TIMEOUT`).
     pub async fn unsubscribe(
         &self,
         window: Option<&str>,
@@ -3250,19 +3251,24 @@ mod tests {
     /// Real-time slack on top of a derived bound: each bounded wait is a timer that fires at
     /// or after its deadline, and a loaded runner (macOS CI) delays every one of them.
     const SCHEDULING_SLACK: Duration = Duration::from_millis(500);
-    /// The longest a forced End may take in real time, derived from the waits it passes
-    /// through, in order (`ride_end_outcome`, `force_end`):
-    /// 1. `STOP_TIMEOUT`: the wedged engine never takes `Stop`;
+    /// The longest a forced End may take in real time **given drivers that release at once**,
+    /// derived from every wait `ride_end_outcome` passes through, in order:
+    /// 1. `STOP_TIMEOUT`: the wedged engine never takes `Stop` (under the state lock);
     /// 2. `END_MODE_TIMEOUT`: the trainer's confirmation of `Resistance{0}` (a started ride);
     /// 3. `ABORT_JOIN_TIMEOUT`: the aborted engine thread is blocked in a store write, so it
     ///    ends within the wait or is detached (`reap`);
-    /// 4. `STORE_TIMEOUT`: closing the record on the blocking pool.
+    /// 4. `STORE_TIMEOUT`: closing the record on the blocking pool;
+    /// 5. `RELEASE_TIMEOUT`: `end_ride` then awaits the devices' release
+    ///    (`LinkRelease::wait`). The fake drivers of these tests close their streams as soon
+    ///    as `Takeover::Release` arrives, so this wait is ~0 here, not 3 s: [`end_beside`]
+    ///    asserts that the release had completed when End returned, and an unbounded or
+    ///    slow release would exceed this bound. It is therefore not summed in.
     ///
-    /// That is 2.25 s, the "about 2.25 s at worst" of `END_MODE_TIMEOUT`. Releasing the links
-    /// (`release_links`) is not awaited by the forced end itself, and `REQUEST_TIMEOUT` waits
-    /// of other callers run beside End, never in front of it (no state lock, #351). A fixed
-    /// 2 s was below this worst case, so a runner that spends the full `END_MODE_TIMEOUT`
-    /// failed it by 28 ms (#358). `SCHEDULING_SLACK` covers the timers' overshoot.
+    /// Steps 1-4 are 2.25 s (the "about 2.25 s at worst" of `END_MODE_TIMEOUT`); the true
+    /// worst case with a driver that never releases is 5.25 s. `REQUEST_TIMEOUT` waits of
+    /// other callers run beside End, never in front of it (no state lock, #351). A fixed
+    /// 2 s was below the 2.25 s, so a runner that spends the full `END_MODE_TIMEOUT` failed
+    /// it by 28 ms (#358). `SCHEDULING_SLACK` covers the timers' overshoot.
     fn end_bound() -> Duration {
         STOP_TIMEOUT + END_MODE_TIMEOUT + ABORT_JOIN_TIMEOUT + STORE_TIMEOUT + SCHEDULING_SLACK
     }
@@ -3271,12 +3277,28 @@ mod tests {
     async fn end_beside(core: &Core, loaded: &RideLoaded) -> Duration {
         // the pending request has reached the engine (and, before #351, taken the state lock)
         tokio::time::sleep(Duration::from_millis(100)).await;
+        let release = core
+            .0
+            .state
+            .lock()
+            .await
+            .session
+            .as_ref()
+            .unwrap()
+            .release
+            .clone();
         let t = std::time::Instant::now();
         let end = tokio::time::timeout(Duration::from_secs(10), core.ride_end_outcome())
             .await
             .expect("End answers")
             .unwrap();
         let took = t.elapsed();
+        // the immediate-release assumption of `end_bound`
+        assert!(*release.trainer.borrow(), "the trainer was not released");
+        assert!(
+            release.hr.as_ref().is_none_or(|hr| *hr.borrow()),
+            "the strap was not released"
+        );
         assert!(
             took <= end_bound(),
             "End took {took:?}, bound {:?}",
@@ -3518,8 +3540,12 @@ mod tests {
         assert_forced_end(&core, &radio, took).await;
     }
     /// #355: a forced end names the ride it ends. If a newer ride was installed meanwhile, the
-    /// old ride's forced end must not cut off, end-mode or release the newer one (its devices,
-    /// its ride-active signal): the session is looked up by id, not taken as "the" session.
+    /// old ride's forced end must not cut off or end-mode the newer one: the session is looked
+    /// up by id, not taken as "the" session. The test proves the takeover stays `Engine` and
+    /// the newer trainer gets no command. It does not cover the ride-active gate, which
+    /// `force_end` clears whatever the id (#370). A simulation: the late forced end is a
+    /// direct `force_end(&old_id)` call after the old ride ended and the newer one loaded, not
+    /// a real End that lost a race.
     #[tokio::test(start_paused = true)]
     async fn a_forced_end_of_an_old_ride_leaves_the_ride_that_replaced_it_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -3559,7 +3585,9 @@ mod tests {
     }
     /// #355: `open_stream` asks the engine without the state lock, so the ride may be replaced
     /// before the old engine answers. The stream then belongs to no ride: it is refused, and
-    /// the newer ride does not get a stream that its own engine never opened.
+    /// the newer ride does not get a stream that its own engine never opened. A simulation:
+    /// the old engine is stalled, then the session's `ride_id` is renamed in place to stand
+    /// for the newer ride before the engine is released; no real engine answers late.
     #[tokio::test(start_paused = true)]
     async fn a_stream_the_old_engine_opens_after_the_ride_was_replaced_is_refused() {
         let dir = tempfile::tempdir().unwrap();
