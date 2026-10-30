@@ -30,6 +30,7 @@ import {
 } from "../stream";
 import { useSubscribe } from "../stream";
 import { RideTiers } from "../useTypeTiers";
+import { markForcedEnd } from "./forcedEnds";
 import { RideChart } from "./RideChart";
 import { releaseRide, usePower, useSession, type RideSession } from "./session";
 
@@ -319,12 +320,15 @@ function Screen({ session }: { session: RideSession }) {
   const endRide = async () => {
     setConfirming(null);
     const outcome = await run(end.run);
+    // The summary says so when the core ended the ride by force (`forced`, not the recorded outcome). Marked
+    // before leaving, and also when the `finished` frame already routed: the summary follows the mark.
+    if (outcome.status === "ok" && outcome.data.forced && outcome.data.rideId)
+      markForcedEnd(outcome.data.rideId);
     if (outcome.status === "ok")
       session.leaveOnce(() => {
-        // A forced end (the engine could not end it) is recorded as aborted: the summary says so.
-        if (outcome.data.rideId !== null)
+        if (outcome.data.rideId !== null) {
           navigate("history", outcome.data.rideId);
-        else {
+        } else {
           // Never started: unloaded, nothing to review.
           releaseRide(session);
           navigate("workouts");
