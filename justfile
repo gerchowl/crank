@@ -10,6 +10,7 @@ hygiene:
 # `package-licenses` flake checks (#123, #125, #165, #170).
 config-checks:
     python3 -I scripts/test-test-changed.py
+    python3 -I scripts/test-relocate-tauri-permissions.py
     scripts/check-window-config.py
     scripts/check-licenses.py
     scripts/test-window-config.py

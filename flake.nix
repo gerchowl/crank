@@ -78,6 +78,24 @@
         nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.python3 ];
         postConfigure = "python3 scripts/relocate-tauri-permissions.py";
       };
+      # One workspace build for the checks that only run something (#371): release profile, every target
+      # (libs, bins, tests, examples), on top of the deps-only cargoArtifacts. The checks below take it as
+      # their cargoArtifacts, so each workspace crate compiles once for them instead of once per check.
+      # Release, not dev: the checks already test release (no debug_assertions, no overflow checks),
+      # the dep artifacts are release, and a dev build would need a second deps-only build on a cold
+      # cache; the profile is part of the checks' meaning, so it is not changed here. crank-ble's
+      # `replay`/`hil` features change it and everything that depends on it, so the build runs once
+      # without them (doctest, bindings-drift, scales-parity) and once with CI's set (nextest): each
+      # unit is built once, and every check keeps its exact command and flags.
+      workspaceBuild = craneLib.mkCargoDerivation (rustCheck // {
+        pnameSuffix = "-workspace-build";
+        buildPhaseCargoCommand = ''
+          cargoWithProfile build --workspace --locked --all-targets
+          cargoWithProfile build --workspace --locked --all-targets --features crank-ble/replay,crank-ble/hil
+        '';
+        doCheck = false;
+      });
+      chained = rustCheck // { cargoArtifacts = workspaceBuild; };
       desktop = features: craneLib.buildPackage (rustCheck // {
         cargoVendorDir = if lib.hasInfix "e2e" features then cargoVendorDirE2e else cargoVendorDir;
         pname = "crank-desktop"; cargoExtraArgs = "--locked -p crank-desktop --bin crank-desktop --features custom-protocol${features}";
@@ -125,8 +143,8 @@
         build-e2e = desktop ",e2e";
         fmt = craneLib.cargoFmt { pname = "crank"; version = "0.1.0"; src = source cargoFiles; };
         clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--features crank-ble/replay,crank-ble/hil --all-targets -- -D warnings"; });
-        nextest = craneLib.cargoNextest (rustCheck // { cargoNextestExtraArgs = "--features crank-ble/replay,crank-ble/hil"; });
-        doctest = craneLib.cargoDocTest rustCheck;
+        nextest = craneLib.cargoNextest (chained // { cargoNextestExtraArgs = "--features crank-ble/replay,crank-ble/hil"; });
+        doctest = craneLib.cargoDocTest chained;
         # crank-engine's dev-dependency on itself enables its `specta` feature in every test
         # build (#271), which hides the plain build; this check compiles the library alone (#252).
         # crank-engine declares no default features, so no feature flag is needed (#293).
@@ -154,7 +172,7 @@
           policy = ./deny-fuzz.toml;
           manifest = "crates/crank-fec/fuzz/Cargo.toml";
         };
-        bindings-drift = craneLib.mkCargoDerivation (rustCheck // {
+        bindings-drift = craneLib.mkCargoDerivation (chained // {
           src = source (lib.fileset.unions [ rustFiles ./app/src/bindings.ts ]);
           buildPhaseCargoCommand = ''
             bindingsDir=$(mktemp -d)
@@ -163,7 +181,7 @@
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
-        deps-edges = craneLib.mkCargoDerivation (rustCheck // {
+        deps-edges = craneLib.mkCargoDerivation (chained // {
           src = source (lib.fileset.unions [ rustFiles ./scripts/deps-edges.py ]);
           nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.python3 ];
           buildPhaseCargoCommand = ''
@@ -173,12 +191,12 @@
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
-        scales-parity = craneLib.mkCargoDerivation (rustCheck // {
+        scales-parity = craneLib.mkCargoDerivation (chained // {
           src = source (lib.fileset.unions [ rustFiles
             (lib.fileset.difference ./app ./app/src-tauri) ./shared
             ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ]);
           inherit pnpmDeps;
-          nativeBuildInputs = rustCheck.nativeBuildInputs ++ [ pkgs.nodejs pkgs.pnpm_12 pkgs.pnpmConfigHook ];
+          nativeBuildInputs = chained.nativeBuildInputs ++ [ pkgs.nodejs pkgs.pnpm_12 pkgs.pnpmConfigHook ];
           buildPhaseCargoCommand = ''
             cargo run --release --locked -p crank-domain --example export_scale_edges > "$TMPDIR/rust-edges.json"
             CRANK_SCALE_EDGES="$TMPDIR/rust-edges.json" pnpm -C app exec vitest run tests/scales-parity.test.ts
@@ -235,6 +253,11 @@
           cd src && python3 -I scripts/test-test-changed.py
           touch $out
         '';
+        # The Tauri ACL relocation must survive a chain of artifact restores (#371).
+        relocate-tauri-test = pkgs.runCommand "relocate-tauri-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          python3 -I ${./scripts/test-relocate-tauri-permissions.py} ${./scripts/relocate-tauri-permissions.py}
+          touch $out
+        ''';
         npm-licenses-test = pkgs.runCommand "npm-licenses-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           cp -r ${source (lib.fileset.unions [ ./scripts/check-npm-prod-licenses.py ./scripts/test-check-npm-prod-licenses.py ])} src
           cd src && python3 scripts/test-check-npm-prod-licenses.py
