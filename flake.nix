@@ -257,7 +257,7 @@
         relocate-tauri-test = pkgs.runCommand "relocate-tauri-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           python3 -I ${./scripts/test-relocate-tauri-permissions.py} ${./scripts/relocate-tauri-permissions.py}
           touch $out
-        ''';
+        '';
         npm-licenses-test = pkgs.runCommand "npm-licenses-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           cp -r ${source (lib.fileset.unions [ ./scripts/check-npm-prod-licenses.py ./scripts/test-check-npm-prod-licenses.py ])} src
           cd src && python3 scripts/test-check-npm-prod-licenses.py
