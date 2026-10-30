@@ -321,7 +321,8 @@ export type LinkStatus =
 
 /**
  *  A source metric the engine publishes every tick: the record's catalogue names
- *  ([`crate::METRICS`]).
+ *  ([`crate::METRICS`]) and the live lap power, all from the store's metric catalogue.
+ *  Every source is `null` while the ride is paused.
  */
 export type MetricId = 
 /**  Trainer power, W. */
@@ -333,7 +334,12 @@ export type MetricId =
 /**  Heart rate, bpm. */
 "hr" | 
 /**  Workout position, s (null while paused). */
-"workout_s";
+"workout_s" | 
+/**
+ *  Mean power of the current lap's record seconds so far, W (#243 Q5): the lap's
+ *  `avgPowerW` when it closes. `null` until the lap has a second with power. Not recorded.
+ */
+"power_lap";
 
 /**  Policy when recovery heart rate is unreachable. */
 export type OnUnreachable = 
@@ -702,6 +708,21 @@ export type StreamStatus = {
 	blockIndex: number | null,
 	/**  Workout seconds in the current block. */
 	blockElapsedS: number | null,
+	/**
+	 *  Session second at which the current block actually began (the live cursor, ADR-0001
+	 *  §5, #14); it stays put across pauses. `null` exactly when `block_index` is.
+	 */
+	blockStartSessionS: number | null,
+	/**
+	 *  Workout second at which the current block actually began: `workout_s -
+	 *  block_elapsed_s`. `null` exactly when `block_index` is.
+	 */
+	blockStartWorkoutS: number | null,
+	/**
+	 *  Laps closed so far; re-query `laps` when it changes (#243 Q5). Kept after the ride
+	 *  finished.
+	 */
+	lapsClosed: number,
 	/**
 	 *  Samples that arrived after their tick (dropped), saturating at `u32::MAX` (the
 	 *  engine counts in `u64`; TypeScript cannot carry it, #271).

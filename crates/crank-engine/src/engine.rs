@@ -1,6 +1,7 @@
 //! The ride actor: state machine, tick assignment, loss rules, record (ADR-0001 §5).
 use crate::control::{PolicyContext, PolicyStatus, RideActivity, TargetPolicy};
 use crate::erg::{Compliance, Component, ErgPolicy, Machine, TrainerFollowing};
+use crate::lap::{Lap, LapEnd, Laps};
 use crate::record::{METRICS, Mean, RecordError, RideRecorder, SecondRow};
 use crate::stream::hub::Hub;
 use crate::stream::types::StreamError;
@@ -46,7 +47,7 @@ pub enum RideState {
     /// Ended; the record is closed.
     Finished,
 }
-/// Engine status: the live cursor of the part that exists so far (stream frames: #219).
+/// Engine status: the live cursor (ADR-0001 §5, #14) and the ride's discrete state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RideStatus {
     /// Current state.
@@ -61,6 +62,16 @@ pub struct RideStatus {
     pub block_index: Option<usize>,
     /// Workout ticks spent in the current block.
     pub block_elapsed: WorkoutTicks,
+    /// Session time at which the current block actually began (ADR-0001 §5 live cursor, #14):
+    /// the ride's start, the tick its predecessor ended or the skip. Pauses after it do not move
+    /// it. `None` exactly when `block_index` is.
+    pub block_start_session: Option<SessionTicks>,
+    /// Workout time at which the current block actually began; always
+    /// `workout - block_elapsed`. `None` exactly when `block_index` is.
+    pub block_start_workout: Option<WorkoutTicks>,
+    /// Laps closed so far (#243 Q5): the `laps` query serves them, and a consumer re-queries
+    /// when this changes. Kept after the ride finished, for its summary.
+    pub laps_closed: u32,
     /// Last reported trainer link state.
     pub trainer_link: Option<LinkState>,
     /// Last reported heart-rate link state.
@@ -197,7 +208,8 @@ pub enum CommandError {
 type Request = (EngineCmd, oneshot::Sender<Result<(), CommandError>>);
 type Reply<T> = oneshot::Sender<Result<T, StreamError>>;
 
-/// A stream request; the engine answers it between ticks and never waits on a consumer.
+/// A stream request or a query; the engine answers it between ticks and never waits on a
+/// consumer.
 enum StreamReq {
     Open(
         Option<String>,
@@ -209,6 +221,7 @@ enum StreamReq {
     Unsubscribe(StreamId, SubId, Reply<()>),
     Ack(StreamId, u32),
     Snapshot(StreamId, Reply<StreamSnapshot>),
+    Laps(oneshot::Sender<Vec<Lap>>),
 }
 
 /// Send commands to a running engine and observe its status.
@@ -314,6 +327,19 @@ impl EngineHandle {
     pub async fn stream_snapshot(&self, stream: StreamId) -> Result<StreamSnapshot, StreamError> {
         self.stream(|r| StreamReq::Snapshot(stream, r)).await
     }
+    /// The closed laps of the loaded (or just finished) ride, in order; empty without one
+    /// (#243 Q5: laps are served only by this query; `RideStatus::laps_closed` says when to ask).
+    ///
+    /// # Errors
+    /// `EngineStopped` if the engine has ended.
+    pub async fn laps(&self) -> Result<Vec<Lap>, CommandError> {
+        let (tx, rx) = oneshot::channel();
+        self.streams
+            .send(StreamReq::Laps(tx))
+            .await
+            .map_err(|_| CommandError::EngineStopped)?;
+        rx.await.map_err(|_| CommandError::EngineStopped)
+    }
     /// Latest status.
     #[must_use]
     pub fn status(&self) -> RideStatus {
@@ -404,6 +430,9 @@ struct Session {
     ride_ticks: u64,
     block_idx: usize,
     block_elapsed: u64,
+    /// Session and workout tick at which the current block (or free-ride lap) began.
+    block_start: (u64, u64),
+    laps: Laps,
     last_sent: Option<ControlMode>,
     flow_start: Option<u64>,
     /// Counts every applied link transition and silence.
@@ -500,6 +529,7 @@ impl Session {
                 .then(|| u32::try_from(self.block_idx).ok())
                 .flatten(),
         };
+        self.laps.on_second(&row);
         let second = u32::try_from(self.clock_ticks / TICKS_PER_SECOND - 1).unwrap_or(u32::MAX);
         if self.record_error.is_none()
             && let Err(e) = self.recorder.append_second(second, &row)
@@ -516,6 +546,22 @@ impl Session {
         self.recent_power.clear();
         self.flow_start = None;
     }
+    /// Stopped pedalling (ADR-0001 §5): cadence and power 0 for 3 s on riding ticks pauses the
+    /// ride; cadence > 0 on any tick ends it.
+    fn track_stopped(&mut self, riding: bool, trainer: Option<TrainerValues>) {
+        if trainer.is_some_and(|t| t.power == Some(0) && t.cadence == Some(0)) {
+            self.zero_run = self.zero_run.saturating_add(1);
+        } else {
+            self.zero_run = 0;
+        }
+        if riding && self.zero_run >= STOPPED_TICKS {
+            self.pauses.stopped = true;
+        }
+        if self.pauses.stopped && trainer.and_then(|t| t.cadence).is_some_and(|c| c > 0) {
+            self.pauses.stopped = false;
+            self.zero_run = 0;
+        }
+    }
     /// Samples flow while a pedalling trainer value is present.
     fn track_flow(&mut self, k: u64, pedalling: bool) {
         if !pedalling {
@@ -523,6 +569,28 @@ impl Session {
         } else if self.flow_start.is_none() {
             self.flow_start = Some(k);
         }
+    }
+    /// The current block (or free-ride lap) ends now, at the session and workout time reached.
+    fn close_lap(&mut self, end: LapEnd) {
+        self.laps.close(end, self.clock_ticks, self.ride_ticks);
+    }
+    /// The end of a tick, after the policy: it has now classified the second this tick closed
+    /// (in `control`), which belongs to the lap that received the second's row; only then does a
+    /// block that ended on this tick (`next`) close its lap and open the next.
+    fn laps_after_policy(&mut self, second_closed: bool, next: bool) {
+        if second_closed {
+            self.laps.on_compliance(self.policy.status().compliance);
+        }
+        if next {
+            self.close_lap(LapEnd::Completed);
+            self.open_lap();
+        }
+    }
+    /// The block at `block_idx` (or, in a free ride, the next lap) begins now.
+    fn open_lap(&mut self) {
+        self.block_start = (self.clock_ticks, self.ride_ticks);
+        let block = self.blocks.get(self.block_idx).map(|b| (self.block_idx, b));
+        self.laps.open(block, self.clock_ticks, self.ride_ticks);
     }
     fn power_3s(&self) -> Option<f64> {
         let n = u32::try_from(self.recent_power.len())
@@ -624,6 +692,9 @@ impl Engine {
                 workout: WorkoutTicks(0),
                 block_index: None,
                 block_elapsed: WorkoutTicks(0),
+                block_start_session: None,
+                block_start_workout: None,
+                laps_closed: 0,
                 trainer_link,
                 hr_link,
                 late_samples: 0,
@@ -1040,11 +1111,14 @@ impl Engine {
                 .add(trainer.and_then(|t| t.speed).map(f64::from));
             s.acc.hr.add(hr);
         }
-        self.publish_source(&s, riding, trainer, hr);
-        if s.clock_ticks % TICKS_PER_SECOND == 0 {
+        let second_closed = s.clock_ticks % TICKS_PER_SECOND == 0;
+        if second_closed {
             s.append_second();
         }
+        // After the second: `power_lap` includes the second this tick closed.
+        self.publish_source(&s, riding, trainer, hr);
         let mut finished = false;
+        let mut advanced = false;
         if riding
             && s.blocks
                 .get(s.block_idx)
@@ -1052,6 +1126,7 @@ impl Engine {
         {
             s.block_idx += 1;
             s.block_elapsed = 0;
+            advanced = true;
             finished = s.block_idx >= s.blocks.len();
         }
         // Every silence of LOSS_TICKS ticks is a new epoch, also one that starts while
@@ -1064,18 +1139,7 @@ impl Engine {
         }
         s.recover_if_back(self.trainer_link == Some(LinkState::Ready));
         let cadence = trainer.and_then(|t| t.cadence);
-        if trainer.is_some_and(|t| t.power == Some(0) && t.cadence == Some(0)) {
-            s.zero_run = s.zero_run.saturating_add(1);
-        } else {
-            s.zero_run = 0;
-        }
-        if riding && s.zero_run >= STOPPED_TICKS {
-            s.pauses.stopped = true;
-        }
-        if s.pauses.stopped && cadence.is_some_and(|c| c > 0) {
-            s.pauses.stopped = false;
-            s.zero_run = 0;
-        }
+        s.track_stopped(riding, trainer);
         if finished {
             // The finishing tick is a ride tick: account it (no command is sent).
             self.control(&mut s, k, false);
@@ -1088,9 +1152,10 @@ impl Engine {
             }
             s.end_after_loss();
         }
+        s.laps_after_policy(second_closed, advanced && !finished);
         self.session = Some(s);
         if finished {
-            self.finish();
+            self.finish(LapEnd::Completed);
         }
     }
     /// Feed the tick's values to the streams: the record's values, `null` while paused.
@@ -1108,9 +1173,10 @@ impl Engine {
                 trainer.and_then(|t| t.speed).map(f64::from),
                 hr,
                 Some(ticks_to_seconds(s.ride_ticks)),
+                s.laps.live_power(),
             ]
         } else {
-            [None; 5]
+            [None; 6]
         };
         self.hub.on_source(ticks_to_seconds(s.clock_ticks), &values);
     }
@@ -1191,7 +1257,7 @@ impl Engine {
     /// End whatever is loaded: finish a started ride, unload one that never started.
     fn end(&mut self) {
         match self.session.as_ref().map(|s| &s.phase) {
-            Some(Phase::Active) => self.finish(),
+            Some(Phase::Active) => self.finish(LapEnd::Stopped),
             Some(Phase::Loaded) => self.unload(),
             _ => {}
         }
@@ -1229,11 +1295,14 @@ impl Engine {
         self.ending = Some((seq, MonoTime(now.saturating_add(END_DELIVERY_US))));
         true
     }
-    fn finish(&mut self) {
+    /// Finish the running ride; `end` is how its last lap ended.
+    fn finish(&mut self, end: LapEnd) {
         let mut ended = false;
         if let Some(s) = self.session.as_mut().filter(|s| s.phase == Phase::Active) {
-            // Only complete seconds are recorded; a partial last second is dropped.
+            // Only complete seconds are recorded; a partial last second is dropped (and so is
+            // its share of the open lap).
             s.phase = Phase::Finished;
+            s.close_lap(end);
             for (log, link) in [
                 (&mut self.trainer_log, &mut self.trainer_link),
                 (&mut self.hr_log, &mut self.hr_link),
@@ -1295,6 +1364,8 @@ impl Engine {
                     ride_ticks: 0,
                     block_idx: 0,
                     block_elapsed: 0,
+                    block_start: (0, 0),
+                    laps: Laps::default(),
                     last_sent: None,
                     flow_start: None,
                     link_epoch: 0,
@@ -1332,6 +1403,7 @@ impl Engine {
                 s.recorder.start(&METRICS)?;
                 s.window = TickWindow::new(now);
                 s.phase = Phase::Active;
+                s.open_lap();
             }
             EngineCmd::Pause | EngineCmd::Resume | EngineCmd::SkipBlock if !active => {
                 return Err(if self.session.is_some() {
@@ -1349,24 +1421,37 @@ impl Engine {
                 let s = self.session.as_mut().filter(|s| s.pauses.user);
                 s.ok_or(CommandError::WrongState)?.pauses.user = false;
             }
-            EngineCmd::SkipBlock => {
-                let s = self.session.as_mut().ok_or(CommandError::NotLoaded)?;
-                if s.block_idx >= s.blocks.len() {
-                    return Err(CommandError::WrongState);
-                }
-                s.block_idx += 1;
-                s.block_elapsed = 0;
-                if s.block_idx >= s.blocks.len() {
-                    self.finish();
-                }
-            }
+            EngineCmd::SkipBlock => self.skip_block()?,
             EngineCmd::Stop => match self.session.as_ref().map(|s| &s.phase) {
-                Some(Phase::Active) => self.finish(),
+                Some(Phase::Active) => self.finish(LapEnd::Stopped),
                 Some(Phase::Loaded) => self.unload(),
                 _ => return Err(CommandError::WrongState),
             },
         }
         self.publish();
+        Ok(())
+    }
+
+    /// Jump to the next block now. The skip ends the lap at this tick (#243 Q1); in a free ride
+    /// the lap/skip action opens the next lap and the ride goes on.
+    fn skip_block(&mut self) -> Result<(), CommandError> {
+        let s = self.session.as_mut().ok_or(CommandError::NotLoaded)?;
+        if s.blocks.is_empty() {
+            s.close_lap(LapEnd::Skipped);
+            s.open_lap();
+            return Ok(());
+        }
+        if s.block_idx >= s.blocks.len() {
+            return Err(CommandError::WrongState);
+        }
+        s.block_idx += 1;
+        s.block_elapsed = 0;
+        if s.block_idx >= s.blocks.len() {
+            self.finish(LapEnd::Skipped);
+        } else {
+            s.close_lap(LapEnd::Skipped);
+            s.open_lap();
+        }
         Ok(())
     }
 
@@ -1392,12 +1477,22 @@ impl Engine {
             StreamReq::Snapshot(id, reply) => {
                 let _ = reply.send(self.hub.snapshot(id));
             }
+            StreamReq::Laps(reply) => {
+                let _ = reply.send(self.closed_laps());
+            }
         }
+    }
+    /// The closed laps of the loaded ride (empty without one).
+    pub(crate) fn closed_laps(&self) -> Vec<Lap> {
+        self.session
+            .as_ref()
+            .map_or_else(Vec::new, |s| s.laps.closed().to_vec())
     }
 
     fn publish(&mut self) {
         let s = self.session.as_ref();
         let live = s.filter(|s| s.phase == Phase::Active);
+        let in_block = s.filter(|s| s.block_idx < s.blocks.len());
         let policy: PolicyStatus = s.map_or_else(PolicyStatus::default, |s| s.policy.status());
         let state = match s {
             Some(s) if s.phase == Phase::Finished => RideState::Finished,
@@ -1412,8 +1507,13 @@ impl Engine {
             loaded: s.is_some(),
             session: SessionTicks(s.map_or(0, |s| s.clock_ticks)),
             workout: WorkoutTicks(s.map_or(0, |s| s.ride_ticks)),
-            block_index: s.and_then(|s| (s.block_idx < s.blocks.len()).then_some(s.block_idx)),
+            block_index: in_block.map(|s| s.block_idx),
             block_elapsed: WorkoutTicks(s.map_or(0, |s| s.block_elapsed)),
+            block_start_session: in_block.map(|s| SessionTicks(s.block_start.0)),
+            block_start_workout: in_block.map(|s| WorkoutTicks(s.block_start.1)),
+            laps_closed: s.map_or(0, |s| {
+                u32::try_from(s.laps.closed().len()).unwrap_or(u32::MAX)
+            }),
             trainer_link: self.trainer_link,
             hr_link: self.hr_link,
             late_samples: s.map_or(0, |s| s.late),
