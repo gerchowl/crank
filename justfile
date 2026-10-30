@@ -9,7 +9,7 @@ hygiene:
 # Same gates as the `window-config`, `window-config-test`, `install-app` (Darwin only) and
 # `package-licenses` flake checks (#123, #125, #165, #170).
 config-checks:
-    python3 scripts/test-test-changed.py
+    python3 -I scripts/test-test-changed.py
     scripts/check-window-config.py
     scripts/check-licenses.py
     scripts/test-window-config.py
@@ -34,15 +34,17 @@ test-changed base="origin/dev":
     out=$(python3 scripts/test-changed.py {{base}})
     plan=$(printf '%s\n' "$out" | sed -n 1p)
     docline=$(printf '%s\n' "$out" | sed -n 2p)
+    featline=$(printf '%s\n' "$out" | sed -n 3p)
     echo "test-changed: $out"
-    # Same feature set as `test` and the flake's `nextest`; `crank-ble/…` needs crank-ble selected.
+    # Same feature set as `test` and the flake's `nextest`; the script emits the `crate/feature` flags cargo
+    # accepts for the selection (crank-ble selected or a direct dependency of a selected crate, #376).
     features=(--features crank-ble/replay,crank-ble/hil)
     doc=(--workspace)
     case "$plan" in
       none) echo "test-changed: nothing to run (only non-Rust paths changed)"; exit 0 ;;
       all) sel=(--workspace) ;;
       crates\ *) sel=(); for c in ${plan#crates }; do sel+=(-p "$c"); done
-        case " $plan " in *" crank-ble "*) ;; *) features=() ;; esac
+        features=(); for f in ${featline#features}; do features+=(--features "$f"); done
         # Doctests need a lib target: a bin-only crate (crank-cli) makes `cargo test --doc -p` exit 101.
         doc=(); for c in ${docline#doc}; do doc+=(-p "$c"); done ;;
       *) echo "test-changed: unexpected plan '$plan'" >&2; exit 1 ;;
