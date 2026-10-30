@@ -2,17 +2,17 @@
 // tests. It models every refusal the core returns, in the core's order, and accepts nothing the core refuses:
 //
 //   ride_start  no ride loaded            conflict            "no ride loaded"      crank-core core.rs:1584 (`engine`)
-//               not in the loaded phase   conflict            "not valid in this state"  crank-engine engine.rs:1180
-//               engine has no trainer     device_unavailable  "no trainer"          engine.rs:1183
-//               trainer link not ready    device_unavailable  "trainer not ready"   engine.rs:1186
-//               health cap vs the blocks  conflict            "cap_requires_erg" / "cap_exceeded_target"  engine.rs:1187, 379-392
-//               record cannot be opened   storage             (the recorder's text) engine.rs:1188
+//               not in the loaded phase   conflict            "not valid in this state"  crank-engine engine.rs:1322-1324
+//               engine has no trainer     device_unavailable  "no trainer"          engine.rs:1325-1327
+//               trainer link not ready    device_unavailable  "trainer not ready"   engine.rs:1328-1330
+//               health cap vs the blocks  conflict            "cap_requires_erg" / "cap_exceeded_target"  engine.rs:1331, 466-479
+//               record cannot be opened   storage             (the recorder's text) engine.rs:1332
 //               (`ensure_start_allowed`, core.rs:1175, always passes today and is not modelled)
 //   ride_pause  no ride loaded            conflict            "no ride loaded"      core.rs:1584
-//               not started / finished    conflict            "not valid in this state"  engine.rs:1191-1198
-//   ride_resume as pause, and not paused by the rider   conflict  "not valid in this state"  engine.rs:1207
-//   ride_skip   as pause, and no block left (a free ride has none)  conflict  "not valid in this state"  engine.rs:1212;
-//               skipping the last block finishes the ride  engine.rs:1217-1219
+//               not started / finished    conflict            "not valid in this state"  engine.rs:1336-1342
+//   ride_resume as pause, and not paused by the rider   conflict  "not valid in this state"  engine.rs:1348-1351
+//   ride_skip   as pause, and no block left (a free ride has none)  conflict  "not valid in this state"  engine.rs:1354-1356;
+//               skipping the last block finishes the ride  engine.rs:1359-1361
 //   ride_end    no ride loaded or just finished  conflict     "no ride loaded"      core.rs:1668 (`end_ride`)
 //               ends a started ride (id), unloads an unstarted one (null), a finished one answers its id again  core.rs:1666 (reaped: `last`), 1677-1718 (`end_ride`: `Stop` unless Finished, `Ended(finishes.then_some(id))`)
 //               (`forced` again for a ride ended by force: `last_forced`, core.rs:1667, set in `force_end`, core.rs:1763)
@@ -21,7 +21,7 @@
 //   every other ride_* command, engine wedged  engine_unresponsive  (the core's text)  after the 1 s bound, core.rs
 //               `bounded` / `REQUEST_TIMEOUT` via `ride_cmd` (#351); checked after "no ride loaded". The stream commands
 //               answer the same (stream/testBackend.ts `truth.unresponsive`). `ride_end` ends such a ride by force.
-//   every other ride_* command, engine task ended  internal  "engine stopped"  `EngineHandle::send` engine.rs:156,193-194 via
+//   every other ride_* command, engine task ended  internal  "engine stopped"  `EngineHandle::send` engine.rs:226-232 via
 //               core.rs:1588 (`ride_cmd`), mapped error.rs:73; checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
@@ -82,17 +82,17 @@ export interface RideWorld {
   lastForced: string | null;
   rideId: string;
   userPause: boolean;
-  /** The trainer link is lost in an active ride: the engine pauses with `trainer_lost`, which outranks a rider pause (engine.rs:295). */
+  /** The trainer link is lost in an active ride: the engine pauses with `trainer_lost`, which outranks a rider pause (engine.rs:336-343). */
   trainerLost: boolean;
   /** 8 ticks without trainer samples on a link that is still ready: the engine pauses with `trainer_lost` all the same (engine.rs:~33). */
   trainerSilent: boolean;
   /** The trainer is back and the rider is not pedalling yet: `state` stays `paused(trainer_lost)` until the first pedalling sample (#336). */
   pausedAfterLoss: boolean;
-  /** Cadence and power were 0 for 3 s: `stopped_pedalling`, outranked by a rider pause and a trainer loss (engine.rs:295-306). */
+  /** Cadence and power were 0 for 3 s: `stopped_pedalling`, outranked by a rider pause and a trainer loss (engine.rs:336-345). */
   stoppedPedalling: boolean;
   /** The strap link is lost: the ride keeps going (DESIGN §6.5). */
   hrLost: boolean;
-  /** ERG released for low cadence; the engine passes `policy.released` through (engine.rs:1279) and it stays set until 60 rpm is held for 2 s (erg/policy.rs:116-124), so it can accompany a pause. */
+  /** ERG released for low cadence; the engine passes `policy.released` through (engine.rs:1423) and it stays set until 60 rpm is held for 2 s (erg/policy.rs:120-132), so it can accompany a pause. */
   ergReleased: boolean;
   /** The session clock the published status carries (the heartbeat refreshes it in the core). */
   sessionS: number;
@@ -109,13 +109,13 @@ export interface RideWorld {
   commandedW: number | null;
   /** Resume has been answered and published, but the tick that sends the resumed mode has not run: `last_sent` is still the pause's `Resistance { 0 }` (engine.rs `Resume` then `publish`, the policy runs on the next tick). `rig.tick()` runs it. (The engine ticks at 4 Hz, ticks.rs:7; the mock's `tick()` is one *soft-start step*, i.e. 1 s of the engine's 20 ticks, `SOFT_START_TICKS`. #357 tracks real engine↔mock parity.) */
   resumePending: boolean;
-  /** A soft start is owed (a pause owes one, erg/policy.rs:148-149 `leave_erg`; Resume then ticks through it). */
+  /** A soft start is owed (a pause owes one, erg/policy.rs:148-151 `leave_erg`; Resume then ticks through it). */
   softOwed: boolean;
   /** The soft start's origin, the rider's 3 s power at its first pedalling tick; `null` until one (the engine holds `Erg { 0 }`). */
   rampOrigin: number | null;
   /** 1 Hz steps taken since the origin. */
   rampStep: number;
-  /** Samples stopped mid-ramp: the engine sends nothing and holds the last step (policy.rs:242-248, `last_sent` is `Erg`); the ramp restarts from the then-current power when pedalling returns. */
+  /** Samples stopped mid-ramp: the engine sends nothing and holds the last step (policy.rs:239-248, `last_sent` is `Erg`); the ramp restarts from the then-current power when pedalling returns. */
   rampHold: boolean;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";
@@ -197,7 +197,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
   };
   /**
    * The engine's `commanded` (`publish`, engine.rs): its `last_sent`, only for the running ride. Rules, from the policy
-   * (erg/policy.rs:170-290): a rider pause and a release both send `Resistance { 0 }` (the pause is judged first); a lost
+   * (erg/policy.rs:172-276): a rider pause and a release both send `Resistance { 0 }` (the pause is judged first); a lost
    * link forgets the mode (`reset_control`) so nothing is commanded until it is re-issued; 8 silent ticks on a ready link
    * re-tell `Erg { 0 }`; a free block sends `Free`; otherwise ERG at the watts the engine is sending.
    */
@@ -205,7 +205,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
     if (world.phase !== "active" || world.trainerLost) return null;
     if (world.userPause || world.resumePending)
       return { kind: "resistance", pct: 0 };
-    // no block: a free ride, `Free` (erg/policy.rs:196)
+    // no block: a free ride, `Free` (erg/policy.rs:196-200)
     const b = world.blocks[world.blockIdx];
     if (b === undefined) return { kind: "free" };
     // a free block is judged before the release (erg/policy.rs: no ERG block, no release): `Free`
@@ -216,7 +216,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
       return { kind: "erg", watts: 0 };
     const target = world.commandedW ?? b.powerFrom ?? 0;
     if (world.softOwed) {
-      // erg/policy.rs:240-270: `Erg { 0 }` until a pedalling sample, then `origin + (target - origin) * step / 5`, step 0
+      // erg/policy.rs:237-273: `Erg { 0 }` until a pedalling sample, then `origin + (target - origin) * step / 5`, step 0
       // being the origin itself; never the plan straight away.
       if (world.rampOrigin === null) return { kind: "erg", watts: 0 };
       const f = Math.min(world.rampStep, 5) / 5;
