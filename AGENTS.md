@@ -108,10 +108,13 @@ On shared sage use `CARGO_BUILD_JOBS=8` and a task-specific `CARGO_TARGET_DIR`. 
 sets neither (a job count is a host property, not a project one): export them in your own environment
 before `nix develop`; `nix develop` inherits them.
 `[profile.dev] debug = "line-tables-only"` keeps file:line in backtraces and debuggers and cuts a cold dev
-target dir by about a quarter (#371). sccache is deliberately not wired into the devShell: sccache 0.18 hashes every
-`CARGO_*` environment variable (so `CARGO_TARGET_DIR`, which every agent sets, gives each target dir its own cache keys)
-and the compile's working directory (so two worktrees never share), which defeats sharing across per-agent target dirs;
-the measured numbers are in the part 3 PR description (#371).
+target dir by about a quarter (#371). sccache is deliberately not wired into the devShell. Measured: with
+`CARGO_TARGET_DIR` set (every agent does) a second cold build in a fresh target dir got 0 Rust cache hits, because
+sccache 0.18 hashes all `CARGO_*` environment variables except a few (`CARGO_TARGET_DIR` is the one that matters here),
+so each target dir gets its own keys. Passing `--target-dir` instead gave hits (+182 of about 300 in a second build, same
+worktree) but only 112 s to 102 s of wall time, which is not worth changing every agent's setup. From the sccache source,
+not measured: it also hashes the compile's working directory, so separate worktrees would not share either.
+Numbers: PR #386.
 Wrap long commands in watcher-s1 (`watcher-s1 guide`). Hardware BLE runs require
 an Alacritty IPC wrapper: flock processes are denied Bluetooth because their
 responsible process is sshd-keygen-wrapper. Never modify TCC. See
