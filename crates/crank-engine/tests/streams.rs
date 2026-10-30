@@ -367,3 +367,29 @@ async fn paused_ticks_publish_null() {
     );
     while rx.try_recv().is_ok() {}
 }
+
+#[tokio::test(start_paused = true)]
+async fn power_lap_streams_the_open_laps_mean_and_ends_on_the_laps_average() {
+    let (h, _) = launch(20.0).await;
+    let (id, _rx) = h.open_stream(None).await.expect("open");
+    let sub = h
+        .stream_subscribe(
+            id,
+            MetricId::PowerLap,
+            SubscribeOpts {
+                rate_hz: 10.0,
+                filters: vec![],
+            },
+        )
+        .await
+        .expect("subscribe");
+    sleep(Duration::from_secs(30)).await;
+    assert_eq!(h.status().laps_closed, 1);
+    let laps = h.laps().await.expect("laps");
+    assert_eq!(laps.len(), 1);
+    let avg = laps[0].stats.avg_power_w.expect("the sim pedals");
+    // the last value the subscription saw is the closed lap's own average (#243 Q5)
+    let snap = h.stream_snapshot(id).await.expect("snapshot");
+    let last = snap.samples.iter().find(|s| s.sub == sub).expect("sample");
+    assert_eq!(last.v, Some(avg));
+}
