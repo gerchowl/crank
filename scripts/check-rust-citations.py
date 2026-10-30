@@ -9,7 +9,7 @@ symbol, is fine. A bare line number goes stale when the Rust file moves, so the 
   and char literals (a deleted item still named in a comment or string does not count), then a definition is: an item
   at the start of a line (`[pub(..)] [default|const|async|unsafe|extern "x"]* fn|struct|enum|trait|type|const|static
   [mut]|mod|union NAME`, `macro_rules! NAME`), the TYPE or TRAIT an `impl` header names (`impl Tr for Ty`: `Tr` and
-  `Ty`; generic arguments such as the `X` of `From<X>` do not count), or an enum variant or named struct field,
+  `Ty`; neither generic arguments such as the `X` of `From<X>` nor the impl's own type parameters count), or an enum variant or named struct field,
   parsed from the braces of its item. Words in a header, call or argument do not count. English words and stale
   symbols fail here, and a keyword such as `for` is reported as not a symbol. A base name shared by several files (`core.rs`) resolves, outside tests/, when exactly one of
   them defines the symbol; give the path (`crank-core/tests/core.rs`) if that is not enough;
@@ -20,6 +20,9 @@ symbol, is fine. A bare line number goes stale when the Rust file moves, so the 
   `:N`, `#LN` (a GitHub `#L12` URL fragment is not allowed either), `@N`, `LN`, `line N`, a number right after the
   file name;
 - a `(~N)` anywhere that does not directly follow a resolved symbol fails, so a citation split across lines fails.
+Known limits (#401): an item must start its line (after optional same-line attributes without a nested `]`), so items
+inside a macro body, one-line `mod m { fn f() {} }` and tuple-struct fields cannot be cited.
+A bare number right after a symbol is rejected even when it is prose (`core.rs `host`, 3 call sites`): rephrase it.
 Usage: check-rust-citations.py [root]
 """
 import re
@@ -39,6 +42,11 @@ BARE_AFTER = re.compile(r"(?:\s*[,;:]?\s*[(~-]*\s*[~-]?\d|[:@]\d)")
 HINT_AFTER_FILE = re.compile(r"[\s,;:#@-]*(?:line\s*)?L?~?\(?\d", re.I)
 HINT_ANY = re.compile(r"\(~\d+\)|~\d+|(?<!\w)(?:[:@]L?|#L)\d+|\bline\s*\d+|\bL\d+\b", re.I)
 STRAY_TILDE = re.compile(r"\(\s*~")
+
+RAW_STRING = re.compile(r'b?r(#*)"')
+CHAR_LITERAL = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|.)|[^\\'])'")
+WHERE = re.compile(r"\bwhere\b")
+IMPL_SIDE = re.compile(rf"\s*(?:[&!*]\s*(?:'\w+\s+)?(?:mut\s+|const\s+)?)*(?:dyn\s+)?((?:{IDENT}::)*{IDENT})")
 
 _rust: list[Path] | None = None
 _defs: dict[Path, set[str]] = {}
@@ -90,7 +98,7 @@ def strip_rust(src: str) -> str:
                     if src[i] == "\n":
                         out.append("\n")
                     i += 1
-        elif (m := re.compile(r'b?r(#*)"').match(src, i)) and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
+        elif (m := RAW_STRING.match(src, i)) and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
             end = src.find('"' + m.group(1), m.end())
             end = n if end < 0 else end + 1 + len(m.group(1))
             out.append('""' + "\n" * src.count("\n", i, end))
@@ -103,7 +111,7 @@ def strip_rust(src: str) -> str:
             out.append('""' + "\n" * src.count("\n", start, i))
             i += 1
         elif c == "'":
-            m = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|.)|[^\\'])'").match(src, i)
+            m = CHAR_LITERAL.match(src, i)
             if m:  # a char literal; otherwise a lifetime or label
                 out.append("''")
                 i = m.end()
@@ -131,6 +139,20 @@ def matching(text: str, open_at: int) -> int:
     return i
 
 
+def angle_delta(text: str, i: int) -> int:
+    """+1 for a `<` that opens generics, -1 for a `>` that closes them, else 0.
+
+    A `<` opens generics only right after an identifier or `::` (`Vec<u8>`), so `1 << 2` and `a < b` do not; a `>` that
+    is part of `->`, `=>`, `>=` or `>>=` closes nothing.
+    """
+    ch = text[i]
+    if ch == "<":
+        return 1 if i > 0 and (text[i - 1].isalpha() or text[i - 1] in "_:") else 0
+    if ch == ">":
+        return 0 if i > 0 and text[i - 1] in "-=" else -1
+    return 0
+
+
 def top_level_split(body: str) -> list[str]:
     parts, depth, angle, cur, i = [], 0, 0, [], 0
     while i < len(body):
@@ -141,8 +163,7 @@ def top_level_split(body: str) -> list[str]:
             continue
         depth += ch in "({["
         depth -= ch in ")}]"
-        angle += ch == "<"
-        angle -= ch == ">" and angle > 0
+        angle = max(0, angle + angle_delta(body, i))
         if ch == "," and depth == 0 and angle == 0:
             parts.append("".join(cur))
             cur = []
@@ -154,20 +175,31 @@ def top_level_split(body: str) -> list[str]:
 
 
 def impl_names(header: str) -> set[str]:
-    """The type and trait names of an `impl` header (text between `impl` and its `{`)."""
-    header = re.split(r"\bwhere\b", header)[0].strip()
+    """The type and trait names of an `impl` header (text between `impl` and its `{`), minus its own generic parameters."""
+    header = WHERE.split(header)[0].strip()
+    params: set[str] = set()
     if header.startswith("<"):
-        header = header[matching(header.replace("<", "(").replace(">", ")"), 0) :]
+        depth, end = 0, 0
+        for i, ch in enumerate(header):
+            depth += angle_delta(header, i) if i else 1
+            if depth == 0:
+                end = i + 1
+                break
+        for entry in top_level_split(header[1 : end - 1]):
+            pm = re.match(rf"\s*(?:const\s+)?({IDENT})", entry)
+            if pm:
+                params.add(pm.group(1))
+        header = header[end:]
     names = set()
     for side in re.split(r"\bfor\b", header):
-        m = re.match(rf"\s*[&!]*(?:dyn\s+)?((?:{IDENT}::)*{IDENT})", side)
+        m = IMPL_SIDE.match(side)
         if m:
             names.add(m.group(1).split("::")[-1])
-    return names
+    return names - params
 
 
 ITEM = re.compile(
-    r"^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?(?:(?:default|const|async|unsafe|extern(?:[ \t]+\"\")?)[ \t]+)*"
+    r"^[ \t]*(?:#\[[^\]]*\][ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:(?:default|const|async|unsafe|extern(?:[ \t]+\"\")?)[ \t]+)*"
     rf"(?:(?P<kw>fn|struct|enum|trait|type|const|mod|union|static(?:[ \t]+mut)?)[ \t]+(?P<name>{IDENT})"
     rf"|macro_rules[ \t]*![ \t]*(?P<mac>{IDENT})"
     r"|impl\b(?P<impl>))",
@@ -183,11 +215,10 @@ def body_brace(text: str, start: int) -> int:
         if text.startswith("->", i):
             i += 2
             continue
-        angle += ch == "<"
-        angle -= ch == ">" and angle > 0
+        angle = max(0, angle + angle_delta(text, i))
         if angle == 0 and ch in "{;":
             return i if ch == "{" else -1
-        if angle == 0 and ch == "(" and not re.search(r"\bwhere\b", text[start:i]):
+        if angle == 0 and ch == "(" and not WHERE.search(text[start:i]):
             return -1
         i += 1
     return -1
