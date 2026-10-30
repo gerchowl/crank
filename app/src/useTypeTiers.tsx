@@ -37,8 +37,10 @@ const subscribe = (notify: () => void) => {
   };
   arm();
   // A "Looks like" change at the same backing scale changes `screen.width` and fires neither of the above (tao
-  // emits nothing when the scale is unchanged, #390). The rider makes it in System Settings, so the window
-  // regains focus afterwards: the shell's display-may-have-changed signal (focus gain, move, scale) re-reads it.
+  // emits nothing when the scale is unchanged, #390). The rider makes it in System Settings, so the window should
+  // regain focus afterwards, and the shell's display-may-have-changed signal (focus gain, move, scale) re-reads it.
+  // That is reasoning, not verified: that Tauri's focus event fires on return from System Settings, and that
+  // WKWebView's `screen.width` has updated 200 ms later, are on the #44 HIL list.
   const stopWatching = watchMonitorChange(notify);
   return () => {
     window.removeEventListener("resize", notify);
