@@ -58,7 +58,7 @@ dialog says so and the process exits with status 1. Tauri rejects malformed argu
 The ride screen (`app/src/ride/`, #96 MVP) takes one `RideSession` per `ride_load`: the loader calls `beginRide(outcome.data)` (the previous session is
 disposed), `useSession()` returns it, and the view mounts `StreamProvider` + `RideTiers` around a fixed CSS grid whose changing values sit in slots that
 reserve their widest form. A finished ride routes once to `history` with the ride id until the summary route exists (#106). The forced-end note of the summary keys on `RideEnded.forced` from the `ride_end` answer (`ride/forcedEnds.ts`), never on `outcome === 'aborted'` (#346). Its test backend
-(`rideBackend.ts`) lists every modelled refusal with its core file:line. Loss states (#100) are read from the status loss fields (#329: `trainerLostSinceS` keys "the trainer is lost", not `state`; `reconnectAttempt`, `softStartTargetW`, `lastGapS`, `reconnectedAtS`, `userPaused`; null outside Active), the links and `ergReleased` only (`lossView`); durations are `sessionS` minus a stamp, never a timer. The rider's pause is `userPaused`, so Resume follows the core's pause under a trainer loss (#327). End is never held by a pending command (#327), nor by an engine that does not answer: every other engine request is bounded (1 s) and answers `engine_unresponsive`, which the ride view shows (#351).
+(`rideBackend.ts`) lists every modelled refusal with its core `file.rs` and symbol (convention below). Loss states (#100) are read from the status loss fields (#329: `trainerLostSinceS` keys "the trainer is lost", not `state`; `reconnectAttempt`, `softStartTargetW`, `lastGapS`, `reconnectedAtS`, `userPaused`; null outside Active), the links and `ergReleased` only (`lossView`); durations are `sessionS` minus a stamp, never a timer. The rider's pause is `userPaused`, so Resume follows the core's pause under a trainer loss (#327). End is never held by a pending command (#327), nor by an engine that does not answer: every other engine request is bounded (1 s) and answers `engine_unresponsive`, which the ride view shows (#351).
 `just dev` starts the window on its own data dir (`./.crank-dev`, so it never shares `ride.lock` with the installed app; override with
 `CRANK_DATA_DIR`; `CRANK_SIM=1 just dev` rides without hardware). `just bundle` (sage only, outside the sandbox) builds
 `.#crank-app` (an unsigned, Nix-assembled `crank.app`), signs a copy inside-out with the local `nix-tcc`
@@ -74,6 +74,17 @@ distribution signing is #47). `just e2e` (`scripts/e2e.sh`, ADR-0001 §8.3.1) bu
 gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and compares screenshots across them; on Linux it skips with a message.
 `just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
 provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
+
+Citing Rust from app/ (comments, docs, test backends): always `<name>.rs <symbol>` with an optional ` (~N)` line hint directly after
+the symbol, e.g. ``core.rs `Core::end_ride` (~1742)``; the symbol is an identifier path (`A::b`), in backticks or not. Never a bare
+`core.rs:1742` (a line number goes stale when the Rust file moves, #380, #391). A bare file mention with no symbol is fine
+(`crates/crank-core/src/core.rs`). Repeat the file name for each symbol (`core.rs A (~1) / core.rs B (~2)`), and never split a
+citation across lines: `scripts/check-rust-citations.py` (unit-tested by `scripts/test-check-rust-citations.py`; `just config-checks`,
+the `rust-citations` and `rust-citations-test` flake checks) resolves each symbol in the cited file under `crates/` or
+`app/src-tauri/` (the last `::` segment must be defined there, so prose such as `core.rs for the details` fails too; a base name shared
+by several files must pick one by defining the symbol in exactly one non-test file, else give the path) and fails on any other line
+hint on a line that mentions `.rs` (`:N`, `#LN` including GitHub URL fragments, `@N`, `LN`, `line N`, `~N`) and on any `(~N)` that does
+not directly follow a resolved symbol.
 
 npm licences: `scripts/check-licenses.py` gates only our own `package.json` files. There is no licence gate for transitive
 **dev**Dependencies (about 446 came in with WebdriverIO, #233) by decision: they belong to the e2e harness and the shared
@@ -107,6 +118,14 @@ on BLE (including transitively). UI consumes generated Rust bindings.
 On shared sage use `CARGO_BUILD_JOBS=8` and a task-specific `CARGO_TARGET_DIR`. The devShell
 sets neither (a job count is a host property, not a project one): export them in your own environment
 before `nix develop`; `nix develop` inherits them.
+`[profile.dev] debug = "line-tables-only"` keeps file:line in backtraces and debuggers and cuts a cold dev
+target dir by about a quarter (#371). sccache is deliberately not wired into the devShell. Measured: with
+`CARGO_TARGET_DIR` set (every agent does) a second cold build in a fresh target dir got 0 Rust cache hits, because
+sccache 0.18 hashes all `CARGO_*` environment variables except a few (`CARGO_TARGET_DIR` is the one that matters here),
+so each target dir gets its own keys. Passing `--target-dir` instead gave hits (+182 of about 300 in a second build, same
+worktree) but only 112 s to 102 s of wall time, which is not worth changing every agent's setup. From the sccache source,
+not measured: it also hashes the compile's working directory, so separate worktrees would not share either.
+Numbers: PR #386.
 Wrap long commands in watcher-s1 (`watcher-s1 guide`). Hardware BLE runs require
 an Alacritty IPC wrapper: flock processes are denied Bluetooth because their
 responsible process is sshd-keygen-wrapper. Never modify TCC. See

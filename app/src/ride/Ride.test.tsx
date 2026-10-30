@@ -477,7 +477,7 @@ describe("Ride", () => {
     expect(wasForcedEnd("ride-1")).toBe(true);
   });
 
-  test("a repeat End after a forced end answers forced again, as the core does (core.rs:1667)", async () => {
+  test("a repeat End after a forced end answers forced again, as the core does (core.rs `end_ride`, `last_forced`)", async () => {
     const rig = await open({ phase: "active", engineStopped: true });
     await push(rig, { state: { kind: "riding" } });
     await userEvent.click(screen.getByRole("button", { name: "End" }));
@@ -625,7 +625,7 @@ describe("Ride", () => {
     await act(async () => rig.tick(null));
     expect(slot("target")?.textContent).toBe("0");
     expect(slot("plan")?.textContent).toBe("Plan 250 W");
-    // a soft start owed by a rider pause is not reported (engine.rs publish: `soft_start_target_w` only after a recovered
+    // a soft start owed by a rider pause is not reported (engine.rs `Engine::publish` (~1398): `soft_start_target_w` only after a recovered
     // loss; tests.rs `a_soft_start_owed_on_resume_is_not_shown_as_a_reconnected_state`), not in the hold and not in the ramp
     expect(rig.base.truth.status.softStartTargetW).toBeNull();
     expect(screen.queryByTestId("soft-start")).toBeNull();
@@ -667,7 +667,7 @@ describe("Ride", () => {
     await act(async () => rig.tick(150));
     await act(async () => rig.tick(150));
     expect(slot("target")?.textContent).toBe("170");
-    // samples stop: policy.rs:239-248, `last_sent` is already `Erg`, so nothing is sent (not 0 W)
+    // samples stop: erg/policy.rs `ErgPolicy::desired` (~237), `last_sent` is already `Erg`, so nothing is sent (not 0 W)
     await act(async () => rig.tick(null));
     expect(slot("target")?.textContent).toBe("170");
     await act(async () => rig.tick(null));
