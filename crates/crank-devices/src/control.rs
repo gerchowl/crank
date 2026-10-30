@@ -1,6 +1,14 @@
 //! Desired and observed controls at the ADR-0002 §4.4.1 wire resolution.
 use crate::{DeviceError, ProtocolErrorKind};
 
+/// Largest Crr [`ControlMode::Sim`] accepts: 0.0127, wire unit 254 of page 51's byte (5×10⁻⁵ per unit).
+///
+/// Unit 255 (0.01275) is the NEO's "invalid" marker, which it ignores (HIL #44 Part A, ADR-0002
+/// §4.3), and `crank_fec::encode` rejects any Crr that rounds to it. This crate must not depend
+/// on `crank-fec` (`scripts/deps-edges.py`), so the limit is stated here and `crank-ble`'s
+/// `crr_cap_is_the_codec_limit` test pins it to the codec's.
+pub const CRR_MAX: f32 = 0.0127;
+
 /// Wind parameters for page 50 (ADR-0002 §3); defaults follow §7.9.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Wind {
@@ -32,7 +40,8 @@ pub enum ControlMode {
     Sim {
         /// Grade in percent.
         grade_pct: f32,
-        /// Rolling resistance coefficient.
+        /// Rolling resistance coefficient, `0.0..=`[`CRR_MAX`]; anything above is rejected by
+        /// [`ControlMode::grid_key`] with the typed encode error, never clamped.
         crr: f32,
         /// Wind parameters.
         wind: Wind,
@@ -94,7 +103,8 @@ impl ControlMode {
     /// ```
     ///
     /// # Errors
-    /// Rejects non-finite/out-of-range inputs without clamping (ADR-0002 §4.3).
+    /// Rejects non-finite/out-of-range inputs without clamping (ADR-0002 §4.3). SIM's Crr must
+    /// lie in `0.0..=`[`CRR_MAX`] (0.0127): wire unit 255 is the trainer's invalid marker.
     pub fn grid_key(self) -> Result<Vec<ObservedControl>, DeviceError> {
         use ObservedControl::{Erg, Resistance, Track};
         Ok(match self {
@@ -158,7 +168,7 @@ impl ControlMode {
                         100.0,
                         20000.0,
                     )?) - 20000,
-                    crr_units: unit_byte("crr", crr, 0.0, 0.01275, 20000.0, 0.0)?,
+                    crr_units: unit_byte("crr", crr, 0.0, CRR_MAX, 20000.0, 0.0)?,
                 },
             ],
         })

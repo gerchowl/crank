@@ -43,6 +43,42 @@ fn sim(grade_pct: f32) -> ControlMode {
         wind: Wind::default(),
     }
 }
+/// `crank-devices` cannot depend on `crank-fec`, so its `CRR_MAX` is pinned to the codec here
+/// (#237): the cap encodes, and the next representable Crr up is rejected by `grid_key` itself.
+#[test]
+fn crr_cap_is_the_codec_limit() {
+    let sim_crr = |crr| ControlMode::Sim {
+        grade_pct: 0.0,
+        crr,
+        wind: Wind::default(),
+    };
+    let track = pages(sim_crr(CRR_MAX)).unwrap()[1];
+    assert_eq!(track[11], 254);
+    assert!(
+        crank_fec::encode(&crank_fec::ControlPage::Track {
+            grade_pct: 0.0,
+            crr: CRR_MAX
+        })
+        .is_ok()
+    );
+    for crr in [CRR_MAX.next_up(), 0.012_725, 0.01275] {
+        assert!(
+            matches!(
+                pages(sim_crr(crr)),
+                Err(DeviceError::Protocol { kind: ProtocolErrorKind::Encode, ref detail }) if detail.contains("crr") && detail.contains("outside its range")
+            ),
+            "{crr}"
+        );
+    }
+    // the codec's own unit 255 rejection is what makes 254 the cap
+    assert!(
+        crank_fec::encode(&crank_fec::ControlPage::Track {
+            grade_pct: 0.0,
+            crr: 0.01275
+        })
+        .is_err()
+    );
+}
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
