@@ -88,7 +88,8 @@ pub struct LapStats {
     /// Mean power over the seconds with power, W; `null` without any.
     pub avg_power_w: Option<f64>,
     /// Normalized power over the seconds with power (30 s rolling fourth-power mean; under
-    /// 30 s, their mean), W; `null` without any.
+    /// 30 s, their mean), W; `null` without any. Paused and missing-power seconds are dropped
+    /// and the rest joined end to end, so a 30 s window can span a pause or a gap.
     pub np_w: Option<f64>,
     /// Mean heart rate over the seconds with one, bpm.
     pub avg_hr_bpm: Option<f64>,
