@@ -247,7 +247,8 @@ mod tests {
     #[test]
     fn mirrored_displays_are_told_apart_by_the_windows_own_display_id() {
         // Two displays mirror each other: same origin, different panels. By position the first would
-        // always win; the window's id picks its own.
+        // always win; the window's id picks its own. Defensive: with hardware mirroring macOS reports the
+        // set's main display, so this pair does not occur in practice (#343).
         let displays = Fake(vec![
             with_id(10, display(0.0, 0.0, 344.0)),
             with_id(11, display(0.0, 0.0, 597.0)),
