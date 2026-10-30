@@ -20,9 +20,11 @@ const SETTLE_MS = 200;
  * Calls `notify` once the window may be on another display, after a short settle. Three window events, each for a
  * different way the display under it changes:
  * - `onMoved` (`tauri://move`): every move, including the one onto another monitor (drag, keyboard, maximise).
- * - `onScaleChanged` (`tauri://scale-change`): the window's display changed its scale factor (a resolution or
- *   scaling change, a move between displays of different scale).
- * - `onFocusChanged`, on gaining focus: an arrangement, resolution or mirroring change made in System Settings
+ * - `onScaleChanged` (`tauri://scale-change`): the window's backing scale factor changed (a move between displays of
+ *   different scale, a scale change in System Settings). A "Looks like" resolution change on a Retina display keeps
+ *   the backing scale at 2.0, so tao emits nothing (tao 0.37.1, window_delegate.rs:102-106); that is not covered here
+ *   and does not need to be, because the physical width in mm is independent of the resolution.
+ * - `onFocusChanged`, on gaining focus: an arrangement or mirroring change made in System Settings
  *   (or by plugging a display in) while the window did not have focus, with no move and no scale change. The
  *   rider comes back to the app by focusing it, which re-reads.
  *
