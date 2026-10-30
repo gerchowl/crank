@@ -7,7 +7,7 @@ hygiene:
     scripts/check-public-hygiene.sh
 
 # Same gates as the `window-config`, `window-config-test`, `install-app` (Darwin only) and
-# `package-licenses` flake checks (#123, #125, #165, #170).
+# `package-licenses` flake checks (#123, #125, #165, #170), plus `rust-citations` (#391).
 config-checks:
     python3 -I scripts/test-test-changed.py
     scripts/check-window-config.py
@@ -16,6 +16,8 @@ config-checks:
     scripts/test-install-app.sh
     scripts/test-e2e-prune.sh
     scripts/test-check-npm-prod-licenses.py
+    python3 -I scripts/check-rust-citations.py
+    python3 -I scripts/test-check-rust-citations.py
 
 test:
     # CI's feature set (flake.nix `nextest`), so the `hil_fec` example tests run locally too.

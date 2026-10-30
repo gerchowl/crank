@@ -58,7 +58,7 @@ dialog says so and the process exits with status 1. Tauri rejects malformed argu
 The ride screen (`app/src/ride/`, #96 MVP) takes one `RideSession` per `ride_load`: the loader calls `beginRide(outcome.data)` (the previous session is
 disposed), `useSession()` returns it, and the view mounts `StreamProvider` + `RideTiers` around a fixed CSS grid whose changing values sit in slots that
 reserve their widest form. A finished ride routes once to `history` with the ride id until the summary route exists (#106). The forced-end note of the summary keys on `RideEnded.forced` from the `ride_end` answer (`ride/forcedEnds.ts`), never on `outcome === 'aborted'` (#346). Its test backend
-(`rideBackend.ts`) lists every modelled refusal with its core file:line. Loss states (#100) are read from the status loss fields (#329: `trainerLostSinceS` keys "the trainer is lost", not `state`; `reconnectAttempt`, `softStartTargetW`, `lastGapS`, `reconnectedAtS`, `userPaused`; null outside Active), the links and `ergReleased` only (`lossView`); durations are `sessionS` minus a stamp, never a timer. The rider's pause is `userPaused`, so Resume follows the core's pause under a trainer loss (#327). End is never held by a pending command (#327), nor by an engine that does not answer: every other engine request is bounded (1 s) and answers `engine_unresponsive`, which the ride view shows (#351).
+(`rideBackend.ts`) lists every modelled refusal with its core `file.rs` and symbol (convention below). Loss states (#100) are read from the status loss fields (#329: `trainerLostSinceS` keys "the trainer is lost", not `state`; `reconnectAttempt`, `softStartTargetW`, `lastGapS`, `reconnectedAtS`, `userPaused`; null outside Active), the links and `ergReleased` only (`lossView`); durations are `sessionS` minus a stamp, never a timer. The rider's pause is `userPaused`, so Resume follows the core's pause under a trainer loss (#327). End is never held by a pending command (#327), nor by an engine that does not answer: every other engine request is bounded (1 s) and answers `engine_unresponsive`, which the ride view shows (#351).
 `just dev` starts the window on its own data dir (`./.crank-dev`, so it never shares `ride.lock` with the installed app; override with
 `CRANK_DATA_DIR`; `CRANK_SIM=1 just dev` rides without hardware). `just bundle` (sage only, outside the sandbox) builds
 `.#crank-app` (an unsigned, Nix-assembled `crank.app`), signs a copy inside-out with the local `nix-tcc`
@@ -74,6 +74,12 @@ distribution signing is #47). `just e2e` (`scripts/e2e.sh`, ADR-0001 §8.3.1) bu
 gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and compares screenshots across them; on Linux it skips with a message.
 `just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
 provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
+
+Citing Rust from app/ (comments, docs, test backends): always `file.rs` plus the symbol, with an optional `~line` hint, e.g.
+`core.rs end_ride (~1742)`, never a bare `core.rs:1742` (a line number goes stale when the Rust file moves, #380, #391).
+`scripts/check-rust-citations.py` (unit-tested by `scripts/test-check-rust-citations.py`; `just config-checks`, the
+`rust-citations` and `rust-citations-test` flake checks) fails on a `.rs:<line>` or `.rs <line>` citation and on a
+` :<line>` continuation in a file that cites Rust.
 
 npm licences: `scripts/check-licenses.py` gates only our own `package.json` files. There is no licence gate for transitive
 **dev**Dependencies (about 446 came in with WebdriverIO, #233) by decision: they belong to the e2e harness and the shared

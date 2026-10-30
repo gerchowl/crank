@@ -347,9 +347,9 @@ function Screen({ session }: { session: RideSession }) {
       : (status?.blockElapsedS ?? null);
   const total = compiled?.totalS ?? null;
   // End is never held by a pending command: the rider always has a way out. The core does not bound the ride commands
-  // it relays to the engine (`EngineHandle::send` waits on the engine's reply, engine.rs:226), and a second `ride_end`
-  // while one is running is not an error but waits for the same end (core.rs:1652-1718, bounded by REAP_TIMEOUT 10 s
-  // and RELEASE_TIMEOUT 3 s, core.rs:51-55), so End may be tapped again, also while an earlier End has not answered.
+  // it relays to the engine (`EngineHandle::send` waits on the engine's reply, engine.rs `EngineHandle::send` (~226)), and a second `ride_end`
+  // while one is running is not an error but waits for the same end (core.rs `end_ride` (~1742), bounded by REAP_TIMEOUT 10 s
+  // and RELEASE_TIMEOUT 3 s, core.rs `REAP_TIMEOUT` (~55)), so End may be tapped again, also while an earlier End has not answered.
   // The rider's pause is the core's `userPaused`, not the pause reason: under a trainer loss `state` says
   // `trainer_lost` while the core still holds the rider pause (#327 item 3).
   const userPaused = status?.userPaused === true;
@@ -365,7 +365,7 @@ function Screen({ session }: { session: RideSession }) {
     resume.pending ||
     skip.pending ||
     end.pending;
-  // Skip needs a next block to skip: none for a free ride (the core refuses, engine.rs:1354-1356) and none known until the
+  // Skip needs a next block to skip: none for a free ride (the core refuses, engine.rs `command` `EngineCmd::SkipBlock` (~1347)) and none known until the
   // plan has arrived. A skip in the last block ends the ride (the engine finishes it): it asks like End.
   const canSkip = blocks.length > 0 && blockIdx !== null;
   const skipEnds = blocks.length > 0 && blockIdx === blocks.length - 1;

@@ -235,6 +235,16 @@
           cd src && python3 -I scripts/test-test-changed.py
           touch $out
         '';
+        # App comments cite Rust as `file.rs symbol (~line)`, never a bare line number (#391).
+        rust-citations = pkgs.runCommand "rust-citations" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          python3 -I ${./scripts/check-rust-citations.py} ${source (lib.fileset.unions [ (lib.fileset.fileFilter (f: lib.any f.hasExt [ "ts" "tsx" "rs" "md" "css" "html" ]) ./app) ])}
+          touch $out
+        '';
+        rust-citations-test = pkgs.runCommand "rust-citations-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          cp -r ${source (lib.fileset.unions [ ./scripts/check-rust-citations.py ./scripts/test-check-rust-citations.py ])} src
+          cd src && python3 -I scripts/test-check-rust-citations.py
+          touch $out
+        '';
         npm-licenses-test = pkgs.runCommand "npm-licenses-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           cp -r ${source (lib.fileset.unions [ ./scripts/check-npm-prod-licenses.py ./scripts/test-check-npm-prod-licenses.py ])} src
           cd src && python3 scripts/test-check-npm-prod-licenses.py

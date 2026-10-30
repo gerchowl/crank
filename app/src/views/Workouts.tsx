@@ -109,11 +109,11 @@ export function Workouts() {
   }, [runList]);
 
   // The selection is locked while a ride load is in flight. The core can replace a loaded-but-unstarted ride
-  // (`ride_load` stops and replaces it, core.rs:1340-1376; `ride_end` ends one, :1632), but it refuses a second
-  // load DURING the first ("another ride is loading or loaded", :1379-1384), and the page must never show a
+  // (`ride_load` stops and replaces it, core.rs `ride_load` (~1395); `ride_end` ends one), but it refuses a second
+  // load DURING the first ("another ride is loading or loaded", core.rs `ride_load` (~1443)), and the page must never show a
   // workout other than the one being loaded: success would route into the old workout's ride, a refusal would
   // appear under the new one (#320). "In flight" is not this view's state: the app-scope controller (rideLoad.ts)
-  // knows a load this window started, and `ride_status().loading` (core.rs:1850) is the core's own answer for one
+  // knows a load this window started, and `ride_status().loading` (core.rs `ride_status` (~1940)) is the core's own answer for one
   // that started anywhere (a window reloaded mid-load), asked when the view mounts and until it clears.
   const coreLoading = status.data?.loading === true;
   useEffect(() => {

@@ -9,7 +9,7 @@
 // streams, and `not_found` for a stream that is not the open one. Durable state (`truth`) is what `ride_status`,
 // `device_links` and `stream_snapshot` answer from, read when the call arrives; `hold` delays only the answer.
 // With `truth.unresponsive` the engine is wedged: every stream command answers `engine_unresponsive` after its owner
-// check, as the core's `bounded` (crank-core `core.rs:81` `REQUEST_TIMEOUT`, `bounded` at `core.rs:601-609`, #351) does.
+// check, as the core's `bounded` (crank-core `core.rs` `REQUEST_TIMEOUT` (~81), `bounded` (~601), #351) does.
 import type { Channel } from "@tauri-apps/api/core";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
@@ -28,14 +28,14 @@ export const ACK_WINDOW = 3;
 export const SUB_CAP = 64;
 export const MIN_RATE_HZ = 0.1;
 export const MAX_RATE_HZ = 10;
-/** crank-engine `stream/types.rs:73` `MAX_FILTERS_PER_CHAIN`, enforced by `validate_filters` (`stream/hub.rs:306-322`). */
+/** crank-engine `stream/types.rs` `MAX_FILTERS_PER_CHAIN` (~73), enforced by `validate_filters` (`stream/hub.rs` (~306)). */
 export const MAX_FILTERS_PER_CHAIN = 4;
-/** `stream/types.rs:77` `MAX_FILTER_SECONDS`: longest SMA window and EMA time constant. */
+/** `stream/types.rs` `MAX_FILTER_SECONDS` (~77): longest SMA window and EMA time constant. */
 export const MAX_FILTER_SECONDS = 300;
-/** `stream/types.rs:79` `MAX_MEDIAN_SAMPLES`: largest median `n`. */
+/** `stream/types.rs` `MAX_MEDIAN_SAMPLES` (~79): largest median `n`. */
 export const MAX_MEDIAN_SAMPLES = 256;
 
-/** `MetricId`'s serde names (`stream/types.rs:30-33`, `rename_all = "snake_case"`). */
+/** `MetricId`'s serde names (`stream/types.rs` `MetricId` (~33), `rename_all = "snake_case"`). */
 const METRICS: readonly MetricId[] = [
   "power",
   "cadence",
@@ -43,7 +43,7 @@ const METRICS: readonly MetricId[] = [
   "hr",
   "workout_s",
 ];
-/** `Filter`'s serde shape (`crank-domain` `filters.rs:9-12`: `tag = "kind"`, camelCase fields, `f64` parameters). */
+/** `Filter`'s serde shape (`crank-domain` `filters.rs` `Filter` (~12): `tag = "kind"`, camelCase fields, `f64` parameters). */
 const FILTER_FIELDS: Record<string, readonly string[]> = {
   sma: ["windowS"],
   ema: ["tauS"],
@@ -136,9 +136,9 @@ function decodeSubscribe(
 }
 
 /**
- * `validate_filters` (crank-engine `stream/hub.rs:306-322`), in its order: chain length, then each filter's bound. The
- * rejection's text is `StreamError::InvalidFilter`'s `invalid filter: {what}` (`stream/types.rs:486-487`), code `invalid_input`
- * (crank-core `error.rs:83`). `FilterChain::new`'s non-finite check cannot be reached from the wire: the decode above
+ * `validate_filters` (crank-engine `stream/hub.rs` (~306)), in its order: chain length, then each filter's bound. The
+ * rejection's text is `StreamError::InvalidFilter`'s `invalid filter: {what}` (`stream/types.rs` `StreamError::InvalidFilter` (~487)), code `invalid_input`
+ * (crank-core `error.rs` `From<StreamError>` (~79)). `FilterChain::new`'s non-finite check cannot be reached from the wire: the decode above
  * refuses those first.
  */
 function validateFilters(filters: readonly Filter[]): void {
@@ -274,7 +274,7 @@ export function installBackend(firstStream = 7) {
         // Tauri decodes the arguments before the command runs, so serde's refusals precede `not_found`.
         const opts = decodeSubscribe(args.metric, args.opts);
         owned(args.stream);
-        // Core order (stream/hub.rs:137-155 `Hub::subscribe`): the cap, the rate, then the filters.
+        // Core order (stream/hub.rs `Hub::subscribe` (~137)): the cap, the rate, then the filters.
         if (live.size >= SUB_CAP)
           throw apiError("conflict", "too many subscriptions");
         if (!(opts.rateHz >= MIN_RATE_HZ && opts.rateHz <= MAX_RATE_HZ))
