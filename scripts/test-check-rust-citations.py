@@ -40,6 +40,7 @@ STUBS = {
         "impl<F: Fn() -> u8> Wrap<F> for Holder {}\n"
         "impl Display for &'a RefTarget {}\n"
         "#[derive(Debug)] pub struct Attr;\n"
+        "pub enum Ev {\n    Started {\n        inner_v: u8,\n        pub(crate) other_v: Vec<(u8, u8)>,\n    },\n    Stopped,\n    Tuple(u8),\n}\n"
         "pub enum Flags {\n    A = 1 << 2,\n    B,\n    C = 1 >> 1,\n}\n"
     ),
     "crates/crank-engine/src/erg/policy.rs": "pub enum Mode {\n    Erg,\n}\nimpl TargetPolicy for ErgPolicy {\n    fn desired(&mut self) {}\n}\n",
@@ -83,8 +84,10 @@ with tempfile.TemporaryDirectory() as tmp:
         "ghost.rs FrameSink and ghost.rs Wrap and ghost.rs Holder and ghost.rs RefTarget and ghost.rs Display",
         "ghost.rs Attr (an attribute on the same line as the item)",
         "ghost.rs `Flags::B` and ghost.rs C (a variant after `A = 1 << 2,`)",
+        "ghost.rs `Ev::Started` and ghost.rs inner_v and ghost.rs other_v and ghost.rs Stopped (struct-variant fields)",
+        "ghost.rs `qualified` (see #330) and ghost.rs qualified, then 5 s",
     ]
-    for i, g in enumerate(good[-8:]):
+    for i, g in enumerate(good[-10:]):
         expect(f"good {g!r}", tree_with(base, f"okx{i}", g), True)
     bad = [
         "core.rs:1667",
@@ -156,6 +159,15 @@ with tempfile.TemporaryDirectory() as tmp:
         # #398 item 4: prose after a file name is not a symbol; the message says so
         "see core.rs for x",
     ]
+    # #398 round 3: the class "separators and labels, then a number" after a file name or a symbol, in every spelling
+    spellings = [
+        "[1742]", "[1742-1750]", "[ 1742 ]", ", ln 1742", "ln 1742", "ln.1742", "(l. 1742)", "l.1742", "L1742", ":1742",
+        "#L1742", "line 1742", "lines 1742-1750", "( line 1742 )", "at 1742", "around 1742", "@1742", "~1742", "(1742)",
+        "- 1742", "(~ 1742)", "1742",
+    ]
+    bad += [f"ghost.rs `qualified` {sp}" for sp in spellings]
+    bad += [f"ghost.rs {sp}" for sp in spellings]
+    bad += ["ghost.rs inner_zz (a struct-variant field that does not exist)"]
     for i, b in enumerate(bad):
         expect(f"bad {b!r}", tree_with(base, f"bad{i}", b), False)
     r = run(tree_with(base, "kw", "see core.rs for x"))
