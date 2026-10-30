@@ -963,7 +963,11 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    detached, never awaited. (5) The ride's record is closed as **aborted** (the seconds persisted so far
    are kept, there is no summary, as for a ride closed by crash recovery), on the blocking pool and waited
    for at most 500 ms; if the engine finished the ride after all (a late `Stop`), that record wins and the
-   end is reported as an ordinary one. (6) The ride-active signal is cleared; the drivers' release is
+   end is reported as an ordinary one. (6) The ride-active signal is cleared, **if it is still this ride's**:
+   the signal (the command gate and `active`) is one per core and belongs to the engine built last, which takes
+   it over before its `Load` raises it (the check and the clear hold the same lock); a forced end that runs late (an End and a replacing
+   load both force the same stuck ride, and the load's finishes first and builds the newer ride) clears neither
+   the newer ride's signal nor its last-end record (`Core::clear_signal`, `signal_of`, #370). The drivers' release is
    awaited (`RELEASE_TIMEOUT`, 3 s, `core.rs`), and a new ride can be loaded at once. A detached engine that wakes later changes
    nothing: its record writes are refused by the store (`ride is not live`), so the ride stays aborted, and
    its ride-active signal no longer reaches the core, so the next ride's is not touched. **The command gate
