@@ -10,6 +10,7 @@ import {
   type RideRecord,
 } from "../bindings";
 import { navigate } from "../router";
+import { useForcedEnd } from "../ride/forcedEnds";
 import { useCommand } from "../stream";
 import { formatDuration } from "./Workouts";
 
@@ -79,13 +80,14 @@ function Leave() {
 
 function SummaryBody({ ride }: { ride: RideRecord }) {
   const s = ride.summary;
+  const forced = useForcedEnd(ride.id);
   return (
     <section aria-label="Ride summary" className="history-summary">
       <p className="history-outcome" data-outcome={ride.outcome}>
         {OUTCOME[ride.outcome]}
       </p>
       <p className="muted">{startedText(ride.startedAt)}</p>
-      {ride.outcome === "aborted" && (
+      {forced && (
         <p role="note" className="history-notice">
           Ride ended without the engine confirming; data may be incomplete.
         </p>

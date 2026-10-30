@@ -11,6 +11,7 @@ import {
   test,
 } from "vitest";
 import type { RideRecord } from "../bindings";
+import { markForcedEnd, resetForcedEnds } from "../ride/forcedEnds";
 import { navigate, useRoute } from "../router";
 import { setTimeZone } from "../testTz";
 import { History, startedText, work } from "./History";
@@ -22,6 +23,7 @@ beforeAll(() => {
 });
 afterAll(() => restoreTimeZone());
 afterEach(() => {
+  resetForcedEnds();
   cleanup();
   clearMocks();
 });
@@ -171,6 +173,27 @@ test("a short ride's work keeps a decimal", async () => {
   expect(s.getByText("Work").nextElementSibling?.textContent).toBe("0.6 kJ");
 });
 
+test("an aborted ride that was not ended by force shows no forced note", async () => {
+  install();
+  navigate("history", "ride-2");
+  open();
+  const s = within(await screen.findByRole("region", { name: "Ride summary" }));
+  expect(s.getByText("Aborted")).toBeTruthy();
+  expect(s.queryByRole("note")).toBeNull();
+});
+
+test("a ride the core ended by force shows the note, whatever its recorded outcome", async () => {
+  install();
+  markForcedEnd("ride-1");
+  navigate("history", "ride-1");
+  open();
+  const s = within(await screen.findByRole("region", { name: "Ride summary" }));
+  expect(s.getByText("Finished")).toBeTruthy();
+  expect(s.getByRole("note").textContent).toBe(
+    "Ride ended without the engine confirming; data may be incomplete.",
+  );
+});
+
 test("an aborted ride has no summary to show", async () => {
   install();
   navigate("history", "ride-2");
@@ -178,10 +201,6 @@ test("an aborted ride has no summary to show", async () => {
   const s = within(await screen.findByRole("region", { name: "Ride summary" }));
   expect(s.getByText("Aborted")).toBeTruthy();
   expect(s.getByText("No summary was recorded for this ride.")).toBeTruthy();
-  // an aborted ride (a forced end, #331) says its data may be incomplete; a finished one does not
-  expect(s.getByRole("note").textContent).toBe(
-    "Ride ended without the engine confirming; data may be incomplete.",
-  );
 });
 
 test("a ride that is not stored says so and offers the way back", async () => {

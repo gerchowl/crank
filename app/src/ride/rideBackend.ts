@@ -15,6 +15,7 @@
 //               skipping the last block finishes the ride  engine.rs:1217-1219
 //   ride_end    no ride loaded or just finished  conflict     "no ride loaded"      core.rs:1028
 //               ends a started ride (id), unloads an unstarted one (null), a finished one answers its id again  core.rs:1037-1049
+//               (`forced` again for a ride ended by force: `last_forced`, core.rs:1661-1663)
 //   ride_end    answers `{ rideId, forced }`: an engine that is gone or stuck is ended by force (`forced: true`, the ride's id,
 //               recorded as aborted) instead of failing  crank-core core.rs `end_ride` / `force_end` (#331)
 //   every other ride_* command, engine wedged  engine_unresponsive  (the core's text)  after the 1 s bound, core.rs
@@ -77,6 +78,8 @@ export interface RideWorld {
   phase: "none" | "loaded" | "active" | "finished";
   /** Reaped ride whose end is still answerable: `ride_end` returns its id. */
   lastId: string | null;
+  /** The ride the core ended by force; a repeat End answers it as forced again (core.rs `end_ride`, `last_forced`). */
+  lastForced: string | null;
   rideId: string;
   userPause: boolean;
   /** The trainer link is lost in an active ride: the engine pauses with `trainer_lost`, which outranks a rider pause (engine.rs:295). */
@@ -139,6 +142,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
   const world: RideWorld = {
     phase: "loaded",
     lastId: null,
+    lastForced: null,
     rideId: "ride-1",
     userPause: false,
     trainerLost: false,
@@ -335,11 +339,12 @@ export function installRide(over: Partial<RideWorld> = {}) {
         if (world.phase === "none" || world.phase === "finished") {
           const id = world.phase === "finished" ? world.rideId : world.lastId;
           if (id === null) throw err("conflict", "no ride loaded");
-          return { rideId: id, forced: false };
+          return { rideId: id, forced: id !== null && id === world.lastForced };
         }
         if (world.engineStopped || world.engineUnresponsive) {
           // Forced: the core ended the ride itself; it is recorded, as aborted.
           world.phase = "finished";
+          world.lastForced = world.rideId;
           publish();
           return { rideId: world.rideId, forced: true };
         }
