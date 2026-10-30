@@ -146,7 +146,10 @@ fn manifest_dir() -> String {
 
 #[test]
 fn raw_streams_match_simulator_vectors() {
-    let path = format!("{}/../crank-domain/tests/vectors/simulator.json", manifest_dir());
+    let path = format!(
+        "{}/../crank-domain/tests/vectors/simulator.json",
+        manifest_dir()
+    );
     let doc: Value =
         serde_json::from_str(&std::fs::read_to_string(path).expect("vector")).expect("vector");
     let cases = doc["cases"].as_array().expect("vector");
