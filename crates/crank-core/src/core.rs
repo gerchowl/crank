@@ -1758,7 +1758,7 @@ impl Core {
     pub async fn ride_resume(&self) -> Result<(), ApiError> {
         self.ride_cmd(EngineCmd::Resume).await
     }
-    /// Jump to the next block now.
+    /// Jump to the next block now, ending its lap; in a free ride, close the lap and open the next (#243).
     ///
     /// # Errors
     /// `Conflict` without a ride in progress; `EngineUnresponsive` if the engine does not answer

@@ -273,3 +273,82 @@ fn skip_outside_a_running_ride_is_still_refused() {
     );
     assert!(laps(&r).is_empty());
 }
+
+/// Normalized power written out from its definition, window by window (no running sums): the
+/// fourth-power mean of every 30 s mean, to the fourth root.
+fn np_by_windows(power: &[f64]) -> f64 {
+    let windows: Vec<f64> = power
+        .windows(30)
+        .map(|w| (w.iter().sum::<f64>() / 30.0).powi(4))
+        .collect();
+    let n = f64::from(u32::try_from(windows.len()).unwrap());
+    (windows.iter().sum::<f64>() / n).powf(0.25)
+}
+fn close(a: Option<f64>, b: f64) -> bool {
+    a.is_some_and(|a| (a - b).abs() < 1e-9)
+}
+/// One long block; ride whole seconds `from..to` at `power(s)` W (`None`: no power), 90 rpm.
+fn seconds(r: &mut Rig, from: u64, to: u64, power: impl Fn(u64) -> Option<u16>) {
+    for s in from..to {
+        for k in 4 * s..4 * s + 4 {
+            r.sample_opt(k, power(s), Some(90));
+            r.through(k);
+        }
+    }
+}
+
+#[test]
+fn np_of_a_long_lap_is_the_rolling_fourth_power_mean_not_the_mean() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    // 30 s at 100 W then 30 s at 300 W: the window ending j seconds into the 300 W half holds
+    // j seconds of 300 W, so its mean is 100 + 200·j/30 for j = 0..=30.
+    seconds(&mut r, 0, 60, |s| Some(if s < 30 { 100 } else { 300 }));
+    r.engine.command(EngineCmd::Stop).unwrap();
+    let st = &laps(&r)[0].stats;
+    let fourth: f64 = (0..=30)
+        .map(|j| (100.0 + 200.0 * f64::from(j) / 30.0).powi(4))
+        .sum();
+    let np = (fourth / 31.0).powf(0.25);
+    assert_eq!(st.avg_power_w, Some(200.0));
+    assert!(np > 220.0, "the hard half weighs more: {np}");
+    assert!(close(st.np_w, np), "NP {:?}, expected {np}", st.np_w);
+}
+
+#[test]
+fn np_of_a_lap_under_thirty_seconds_is_its_mean() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    seconds(&mut r, 0, 20, |s| Some(if s < 10 { 100 } else { 300 }));
+    r.engine.command(EngineCmd::Stop).unwrap();
+    let st = &laps(&r)[0].stats;
+    assert_eq!(st.avg_power_w, Some(200.0));
+    assert!(close(st.np_w, 200.0), "{:?}", st.np_w);
+}
+
+#[test]
+fn np_joins_the_seconds_with_power_end_to_end_across_pauses_and_gaps() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    r.start();
+    // 20 s at 100 W, an 8 s rider pause, 5 s without power, 20 s at 300 W
+    seconds(&mut r, 0, 20, |_| Some(100));
+    r.engine.command(EngineCmd::Pause).unwrap();
+    seconds(&mut r, 20, 28, |_| Some(100));
+    r.engine.command(EngineCmd::Resume).unwrap();
+    seconds(&mut r, 28, 33, |_| None);
+    seconds(&mut r, 33, 53, |_| Some(300));
+    r.engine.command(EngineCmd::Stop).unwrap();
+    let st = &laps(&r)[0].stats;
+    assert_eq!(st.paused_s, 8);
+    assert_eq!(st.gap_s.power_s, 5);
+    let joined: Vec<f64> = (0..40)
+        .map(|s| if s < 20 { 100.0 } else { 300.0 })
+        .collect();
+    assert_eq!(st.avg_power_w, Some(200.0));
+    let np = np_by_windows(&joined);
+    assert!(np > 203.0, "not the plain mean: {np}");
+    assert!(close(st.np_w, np), "NP {:?}, expected {np}", st.np_w);
+}

@@ -826,6 +826,32 @@ fn status_is_sent_on_change_and_otherwise_at_two_hertz() {
 }
 
 #[test]
+fn the_block_start_and_the_lap_count_are_sent_on_change() {
+    // Each changes only at a block boundary, a skip or a free-ride lap (#243): a change goes
+    // out in the same poll, not at the next beat. Mutant: dropping it from `same_discrete`.
+    for field in ["blockStartSessionS", "blockStartWorkoutS", "lapsClosed"] {
+        let (mut hub, id, mut rx) = hub_with_stream();
+        hub.on_status(riding(0), 0);
+        hub.poll(0);
+        assert_eq!(status_times(&mut hub, id, &mut rx, 0), [0]);
+        let t = 100 * MS;
+        let mut s = riding(0);
+        match field {
+            "blockStartSessionS" => s.block_start_session_s = Some(22.5),
+            "blockStartWorkoutS" => s.block_start_workout_s = Some(17.5),
+            _ => s.laps_closed = 1,
+        }
+        hub.on_status(s, t);
+        hub.poll(t);
+        assert_eq!(
+            status_times(&mut hub, id, &mut rx, t),
+            [t],
+            "a change of {field} is sent at once"
+        );
+    }
+}
+
+#[test]
 fn no_heartbeat_while_idle_or_finished() {
     for state in [StreamRideState::Idle, StreamRideState::Finished] {
         let (mut hub, id, mut rx) = hub_with_stream();
@@ -1240,9 +1266,36 @@ fn the_worst_status_with_the_erg_fields_has_a_measured_size() {
     let n = serde_json::to_vec(&st).expect("status").len();
     eprintln!("worst status: {n} bytes");
     assert!(n < 1_100, "worst status is {n} bytes");
-    // An eighth of the budget until #243 part a; a quarter leaves the flags of part b room while
-    // the rest of the frame keeps three quarters for samples.
+    // The guard is a quarter of the budget because that is what keeps the worst status from
+    // splitting the worst samples: with the discrete state under it, one frame still holds the
+    // widest sample of every subscription the hub allows and both links (the bound `every_frame_stays_under_the_
+    // byte_budget_at_every_cap` measures). The eighth used before was a margin with no such
+    // reason behind it.
     assert!(n < FRAME_BUDGET_BYTES / 4);
+    let widest = SubSample {
+        sub: SubId(u32::MAX),
+        t: f64::MIN,
+        v: Some(f64::MIN),
+    };
+    let samples = vec![widest; MAX_SUBSCRIPTIONS];
+    let frame = StreamFrame {
+        seq: u32::MAX,
+        resync: true,
+        samples,
+        status: None,
+        links: [LinkDevice::Trainer, LinkDevice::Hr]
+            .map(|device| super::types::LinkChange {
+                device,
+                state: LinkStatus::Connecting,
+            })
+            .to_vec(),
+    };
+    let rest = json(&frame).len();
+    assert!(
+        FRAME_BUDGET_BYTES / 4 + rest <= FRAME_BUDGET_BYTES,
+        "status guard {} + every widest sample {rest}",
+        FRAME_BUDGET_BYTES / 4
+    );
 }
 
 #[test]

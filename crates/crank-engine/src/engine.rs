@@ -168,7 +168,8 @@ pub enum EngineCmd {
     Pause,
     /// End the rider's pause.
     Resume,
-    /// Jump to the next block now.
+    /// Jump to the next block now, ending its lap; in a free ride, close the lap and open the
+    /// next.
     SkipBlock,
     /// Finish the ride, or unload it if it never started.
     Stop,
