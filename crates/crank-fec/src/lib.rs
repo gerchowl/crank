@@ -16,7 +16,9 @@ pub use types::*;
 /// invalid: page 49 `0xFFFF` (16383.75 W) and page 51 Crr `0xFF` (0.01275) are
 /// rejected, since the NEO replaces the target with 0 W or ignores the Crr
 /// (confirmed by HIL #44 Part A, `docs/hil/2026-10-14-fec.md` check 3; ADR-0002 §4.2).
-/// The largest valid values are 16383.5 W (`0xFFFE`) and Crr 0.0127 (`0xFE`).
+/// Part A sent only those two sentinels. The largest valid values, 16383.5 W
+/// (`0xFFFE`) and Crr 0.0127 (`0xFE`), follow from the codec and the sentinels and are
+/// inferred, not measured on the NEO.
 /// Page 70 requests acknowledged replies; its count must fit seven bits.
 /// A count of 0 is encoded as received (byte 0x80). On the NEO a count of 0
 /// was answered five times in the one HIL trial (#44 Part A, ADR-0002 §4.2),
