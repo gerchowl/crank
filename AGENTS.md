@@ -81,10 +81,14 @@ the symbol, e.g. ``core.rs `Core::end_ride` (~1742)``; the symbol is an identifi
 (`crates/crank-core/src/core.rs`). Repeat the file name for each symbol (`core.rs A (~1) / core.rs B (~2)`), and never split a
 citation across lines: `scripts/check-rust-citations.py` (unit-tested by `scripts/test-check-rust-citations.py`; `just config-checks`,
 the `rust-citations` and `rust-citations-test` flake checks) resolves each symbol in the cited file under `crates/` or
-`app/src-tauri/` (the last `::` segment must be defined there, so prose such as `core.rs for the details` fails too; a base name shared
+`app/src-tauri/` (the last `::` segment must be DEFINED there: comments and strings are stripped first, then it must be an item
+(`fn`/`struct`/`enum`/`trait`/`type`/`const`/`static`/`mod`/`union`/`macro_rules!`), the type or trait an `impl` header names (not its generic
+arguments: cite `ApiError`, not the `X` of `From<X>`), or an enum variant or named field; so prose such as `core.rs for the details` fails too; a base name shared
 by several files must pick one by defining the symbol in exactly one non-test file, else give the path) and fails on any other line
 hint on a line that mentions `.rs` (`:N`, `#LN` including GitHub URL fragments, `@N`, `LN`, `line N`, `~N`) and on any `(~N)` that does
-not directly follow a resolved symbol.
+not directly follow a resolved symbol. Only ` (~N)` with N >= 1 may follow the symbol: `sym 12`, `sym (12)`, `sym, 12`, `(~ 12)`, `(~0)`
+fail; an issue reference `#123` beside a citation is fine. The scanner is a small Python lexer + regexes (stdlib only, no `syn`/ctags: neither is
+in the devShell and a cargo build would make a doc check heavy).
 
 npm licences: `scripts/check-licenses.py` gates only our own `package.json` files. There is no licence gate for transitive
 **dev**Dependencies (about 446 came in with WebdriverIO, #233) by decision: they belong to the e2e harness and the shared

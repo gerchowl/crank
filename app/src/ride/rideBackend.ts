@@ -22,7 +22,7 @@
 //               `bounded` / `REQUEST_TIMEOUT` via `ride_cmd` (#351); checked after "no ride loaded". The stream commands
 //               answer the same (stream/testBackend.ts `truth.unresponsive`). `ride_end` ends such a ride by force.
 //   every other ride_* command, engine task ended  internal  "engine stopped"  engine.rs `EngineHandle::send` (~226) via
-//               core.rs `ride_cmd` (~1676), mapped error.rs `CommandError` (~65); checked after "no ride loaded" and before the engine judges the command.
+//               core.rs `ride_cmd` (~1676), mapped error.rs `ApiError` (~65), its `From<CommandError>`; checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
 import { mockIPC } from "@tauri-apps/api/mocks";

@@ -105,7 +105,7 @@ type ApiErr = { code: string; message: string };
  * - another load in flight: `conflict` (core.rs `Core::ride_load` (~1395), "another ride is loading or loaded")
  * - `stage.storage`: `store.devices()?` fails, `storage` (`connect_links`)
  * - no trainer paired: `device_unavailable` (`connect_links`, "no trainer paired")
- * - `stage.driver`: `backend.trainer(..)?` fails, e.g. `permission_denied` or Bluetooth off (`connect_links`, error.rs `DeviceError` (~90))
+ * - `stage.driver`: `backend.trainer(..)?` fails, e.g. `permission_denied` or Bluetooth off (`connect_links`, error.rs `ApiError` (~90), its `From<DeviceError>`)
  * - trainer connect timeout: `device_unavailable` (`connect_links`, "trainer connect timed out")
  * - `stage.connect`: the inner connect error, e.g. `device_unavailable` "connect failed: .." (`connect_links`, the `??`)
  * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (core.rs `build_session` (~1563), `bounded(handle.send(EngineCmd::Load(..)))`)
