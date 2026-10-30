@@ -3968,7 +3968,8 @@ mod tests {
             let core = core.clone();
             async move { core.ride_load(None).await }
         });
-        let claimed = || core.0.signal_of.lock().unwrap().ride.as_deref() != Some(old.ride_id.as_str());
+        let claimed =
+            || core.0.signal_of.lock().unwrap().ride.as_deref() != Some(old.ride_id.as_str());
         for _ in 0..900 {
             if claimed() {
                 break;
