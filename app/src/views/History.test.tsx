@@ -87,10 +87,10 @@ interface Backend {
 }
 /**
  * `rides_list` and `ride_summary` behind `mockIPC`, with every refusal the core can give
- * (crates/crank-core/src/core.rs): `storage` when the store fails (`rides_list`: `store.rides()?`, :2030-2038;
- * `ride_summary` propagates it, :2043-2044) and `not_found` "no ride \"<id>\"" for an id that is not stored
- * (`ride_summary`, :2048). `rides_list` has no other refusal. A stored summary the core cannot parse comes back
- * as `summary: null` (`record`, :2004-2007), like an open or aborted ride; both are in `RIDES`.
+ * (crates/crank-core/src/core.rs): `storage` when the store fails (`rides_list`: `store.rides()?`, core.rs `rides_list` (~2128));
+ * core.rs `Core::ride_summary` (~2141) propagates it) and `not_found` "no ride \"<id>\"" for an id that is not stored
+ * (`ride_summary`). `rides_list` has no other refusal. A stored summary the core cannot parse comes back
+ * as `summary: null` (core.rs `record` (~2102)), like an open or aborted ride; both are in `RIDES`.
  */
 function install(over: Partial<Backend> = {}): Backend {
   const b: Backend = { calls: [], fail: {}, hold: {}, ...over };

@@ -496,13 +496,13 @@ describe("Devices", () => {
       connect: { code: "device_unavailable", message: "connect failed" },
     });
     const { commands } = await import("../bindings");
-    // Pair connects first (core.rs:1029-1054), so a connect failure wins over the store.
+    // Pair connects first (core.rs `device_pair` (~1074)), so a connect failure wins over the store.
     const p = await commands.devicePair("neo-1", "trainer");
     expect(p.status === "error" && p.error.code).toBe("device_unavailable");
     st.connect = null;
     const q = await commands.devicePair("neo-1", "trainer");
     expect(q.status === "error" && q.error.code).toBe("storage");
-    // Forget reads the store before it can find nothing (core.rs:1091-1106).
+    // Forget reads the store before it can find nothing (core.rs `device_forget` (~1152)).
     const f = await commands.deviceForget("trainer");
     expect(f.status === "error" && f.error.code).toBe("storage");
     st.store = null;
