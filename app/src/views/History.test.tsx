@@ -194,6 +194,19 @@ test("a ride the core ended by force shows the note, whatever its recorded outco
   );
 });
 
+test("a forced end the core answers after the summary is showing adds the note (#372)", async () => {
+  install();
+  navigate("history", "ride-1");
+  open();
+  const s = within(await screen.findByRole("region", { name: "Ride summary" }));
+  expect(s.queryByRole("note")).toBeNull();
+  // the `finished` frame routed here before the `ride_end` answer; the answer marks the ride forced
+  act(() => markForcedEnd("ride-1"));
+  expect(s.getByRole("note").textContent).toBe(
+    "Ride ended without the engine confirming; data may be incomplete.",
+  );
+});
+
 test("an aborted ride has no summary to show", async () => {
   install();
   navigate("history", "ride-2");
