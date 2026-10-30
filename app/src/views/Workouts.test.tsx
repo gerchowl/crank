@@ -80,15 +80,15 @@ interface Backend {
   compiled: Record<string, CompiledView>;
   /** A ride is already in progress. */
   rideActive: boolean;
-  /** A trainer is paired (core.rs:629). */
+  /** A trainer is paired (core.rs:1184-1185, `connect_links`). */
   trainerPaired: boolean;
-  /** The trainer does not answer within the connect timeout (core.rs:637). */
+  /** The trainer does not answer within the connect timeout (core.rs:1188-1193). */
   connectTimesOut: boolean;
-  /** `ride_load` calls currently in flight (the core's `loading` flag, core.rs:792). */
+  /** `ride_load` calls currently in flight (the core's `loading` flag, core.rs:1379). */
   loading: number;
   /** Hold the next `ride_load` answer until the gate opens. */
   gate: Promise<void> | null;
-  /** A load started elsewhere is in flight: `ride_status().loading` is true (core.rs:1089). */
+  /** A load started elsewhere is in flight: `ride_status().loading` is true (core.rs:1850). */
   coreLoading: boolean;
   /** A refusal raised at one stage of `ride_load` (see the doc below), while the load is in flight. */
   stage: Partial<
@@ -98,23 +98,23 @@ interface Backend {
 type ApiErr = { code: string; message: string };
 /**
  * The core's workout commands behind `mockIPC`. `ride_load` refuses, in the core's order
- * (crates/crank-core/src/core.rs, line numbers at the time of #320):
- * - unknown id: `not_found` (`Library::get`, library.rs:79, via `resolve_workout` :728)
- * - error-severity issue: `invalid_input` with the issue's message (:728-738)
- * - ride in progress: `conflict` (:770)
- * - another load in flight: `conflict` (:792)
- * - `stage.storage`: `store.devices()?` fails, `storage` (:626)
- * - no trainer paired: `device_unavailable` (:629)
- * - `stage.driver`: `backend.trainer(..)?` fails, e.g. `permission_denied` or Bluetooth off (:631, error.rs:85-110)
- * - trainer connect timeout: `device_unavailable` (:637)
- * - `stage.connect`: the inner connect error, e.g. `device_unavailable` "connect failed: .." (:637 `??`)
- * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (:943 `.await?`)
+ * (crates/crank-core/src/core.rs, line numbers at #380):
+ * - unknown id: `not_found` (`Library::get`, library.rs:75-79, via `resolve_workout` :1288, :1307)
+ * - error-severity issue: `invalid_input` with the issue's message (:1309-1318)
+ * - ride in progress: `conflict` (:1347-1352)
+ * - another load in flight: `conflict` (:1379-1384)
+ * - `stage.storage`: `store.devices()?` fails, `storage` (:1182, `connect_links`)
+ * - no trainer paired: `device_unavailable` (:1184-1185)
+ * - `stage.driver`: `backend.trainer(..)?` fails, e.g. `permission_denied` or Bluetooth off (:1187, error.rs:90-117)
+ * - trainer connect timeout: `device_unavailable` (:1188-1193)
+ * - `stage.connect`: the inner connect error, e.g. `device_unavailable` "connect failed: .." (:1193 `??`)
+ * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (:1537, `bounded(handle.send(EngineCmd::Load(..)))`)
  * - `stage.build`: the new engine does not take the ride within 1 s, `engine_unresponsive`, its devices released
  *   (`build_session`, `bounded` and `REQUEST_TIMEOUT` in core.rs, #351)
- * - `stage.installed`: `internal` "built session missing" (:809)
- * Everything from the storage step on happens while the core's `loading` flag is set (:789), so the mock raises
+ * - `stage.installed`: `internal` "built session missing" (:1399)
+ * Everything from the storage step on happens while the core's `loading` flag is set (:1379), so the mock raises
  * those refusals after the load's delay (the gate), with the in-flight conflict active meanwhile.
- * (the strap driver `heart(..)?` at :641 maps like `stage.driver`). `ensure_start_allowed` (:619) always passes
+ * (the strap driver `heart(..)?` at :1197 maps like `stage.driver`). `ensure_start_allowed` (:1175) always passes
  * today and is not modelled. A free ride (null id) skips the workout checks only. Tauri itself rejects a call
  * without its `workoutId` argument with a plain string.
  */
@@ -335,7 +335,7 @@ test("a refused ride-load shows the core's reason and stays on the page", async 
 });
 
 test("a load the core refuses for an error-severity issue shows its message and stays", async () => {
-  // The library changed between the pick and the click: the core re-checks at load (core.rs:618-628).
+  // The library changed between the pick and the click: the core re-checks at load (core.rs:1288-1319, `resolve_workout`).
   const b = install();
   open();
   await userEvent.click(

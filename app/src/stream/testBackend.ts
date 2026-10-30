@@ -9,7 +9,7 @@
 // streams, and `not_found` for a stream that is not the open one. Durable state (`truth`) is what `ride_status`,
 // `device_links` and `stream_snapshot` answer from, read when the call arrives; `hold` delays only the answer.
 // With `truth.unresponsive` the engine is wedged: every stream command answers `engine_unresponsive` after its owner
-// check, as the core's `bounded` (crank-core `core.rs:81` `REQUEST_TIMEOUT`, `bounded` at `core.rs:490-494`, #351) does.
+// check, as the core's `bounded` (crank-core `core.rs:81` `REQUEST_TIMEOUT`, `bounded` at `core.rs:601-609`, #351) does.
 import type { Channel } from "@tauri-apps/api/core";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
