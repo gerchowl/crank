@@ -969,11 +969,16 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    load both force the same stuck ride, and the load's finishes first and builds the newer ride) clears neither
    the newer ride's signal nor its last-end record (`Core::clear_signal`, `signal_of`, #370). A load that
    builds no session (its `Load` unanswered or refused, or the load cancelled meanwhile) cuts its engine off and
-   gives the claim back, clearing the signal (`SignalClaim`). So no load, failed or not, leaves it up. One
-   way remains for it to stay up with no ride loaded: a forced end whose future is dropped between its `reap`
-   and its clear. In the app only `shutdown` drops it (its cap is a `timeout` on the end), and the process exits
-   right after; the Tauri commands run to completion. The next load's claim takes the signal over from it. The
-   engine's own signal is not owner-checked, and `settle`'s forced reap does not cut the engine off: #392. The drivers' release is
+   gives the claim back, clearing the signal (`SignalClaim`). So no load, failed or not, leaves it up. The
+   engine sets the signal only while it is not cut off **and** its ride owns the signal (`ride_activity`, under
+   both locks), so an engine that was reaped without a forced end (it dropped the signal itself) and is still
+   ending, or detached, cannot drop or raise a newer ride's signal (#392). `settle`'s forced reap (an engine that
+   answered `Stop` but never dropped the signal within `REAP_TIMEOUT`) clears the signal the same way, and cuts
+   the engine off before it reaps, as a forced end does, so an engine it detaches cannot raise the signal after the
+   clear (#392). One way remains for it to stay up with no ride loaded: a forced end or `settle`'s forced reap
+   whose future is dropped between its `reap` and its clear. In the app only `shutdown` drops it (its cap is a
+   `timeout` on the end), and the process exits right after; the Tauri commands run to completion. The next
+   load's claim takes the signal over from it. The drivers' release is
    awaited (`RELEASE_TIMEOUT`, 3 s, `core.rs`), and a new ride can be loaded at once. A detached engine that wakes later changes
    nothing: its record writes are refused by the store (`ride is not live`), so the ride stays aborted, and
    its ride-active signal no longer reaches the core, so the next ride's is not touched. **The command gate
