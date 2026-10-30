@@ -30,11 +30,17 @@ struct FindCase {
     output: Option<WorkoutNode>,
 }
 
+/// The crate directory at run time. `env!` would bake in the path of the build that compiled this
+/// binary, which no longer exists when the Nix checks reuse it (#371); cargo and nextest set the variable.
+fn manifest_dir() -> String {
+    std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR for tests")
+}
+
 fn fixture() -> Fixture {
     serde_json::from_str(
         &std::fs::read_to_string(format!(
             "{}/tests/fixtures/tree_helpers.json",
-            env!("CARGO_MANIFEST_DIR")
+            manifest_dir()
         ))
         .expect("fixture is readable"),
     )
