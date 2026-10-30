@@ -111,7 +111,7 @@ before `nix develop`; `nix develop` inherits them.
 target dir by about a quarter (#371). sccache is deliberately not wired into the devShell: sccache 0.18 hashes every
 `CARGO_*` environment variable (so `CARGO_TARGET_DIR`, which every agent sets, gives each target dir its own cache keys)
 and the compile's working directory (so two worktrees never share), which defeats sharing across per-agent target dirs;
-measured numbers are on PR #371's part 3.
+the measured numbers are in the part 3 PR description (#371).
 Wrap long commands in watcher-s1 (`watcher-s1 guide`). Hardware BLE runs require
 an Alacritty IPC wrapper: flock processes are denied Bluetooth because their
 responsible process is sshd-keygen-wrapper. Never modify TCC. See
