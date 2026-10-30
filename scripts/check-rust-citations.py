@@ -50,17 +50,18 @@ HINT_TOKEN = re.compile(
     r"\s*(?:(?P<strong>[:@~\[]|#L|L(?=\d)|(?:lines?|ln|l)\b\.?)|(?P<word>[^\W\d]\w*)|(?P<sep>[^\w\s#`]))", re.I
 )
 HINT_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
-# The allow-list (#401): the only things that may follow a number for it to read as a quantity. Each is a unit or count noun
-# a cited line number can never be: time (`s`, `ms`, `us`, `ns`, `min`, `h`), frequency (`Hz`, `kHz`, `MHz`, `rpm`, `bpm`),
-# power and energy (`W`, `kW`, `J`, `kJ`), electrical (`V`, `mA`), `%`, `dB`, data (`B`, `KiB`, `MiB`, `bytes`, `bits`) and
-# counts of things in the code (`samples`, `frames`, `packets`, `ticks`, `retries`, `attempts`, `calls`, `callers`,
-# `call sites`, `tests`, `cases`, `files`, `variants`, `fields`, `entries`, `items`). `lines` is NOT allowed: it is what a
-# line number counts. Anything else after the number, or no unit, is a line hint.
+# The allow-list (#401), case-sensitive: the only things that may follow a number for it to read as a quantity. Each is a
+# unit or count noun a cited line number can never be: time (`s`, `ms`, `us`, `µs`, `ns`, `min`, `h`), frequency (`Hz`,
+# `kHz`, `MHz`, `rpm`, `bpm`), power and energy (`W`, `kW`, `J`, `kJ`), electrical (`V`, `mA`), `%`, `dB`, data (`B`,
+# `KiB`, `MiB`, `byte(s)`, `bit(s)`) and counts of things in the code (`sample`, `frame`, `packet`, `tick`, `attempt`, `call`,
+# `caller`, `call site`/`call-site`, `test`, `case`, `file`, `variant`, `field`, `item`, each also plural; `retry`/`retries`,
+# `entry`/`entries`). `lines` is NOT allowed: it is what a line number counts. The unit may be glued to the number (`50Hz`,
+# `5s`) and must end there: not before a letter, digit, `.` or `-` (`1742 h.`, `B-tree`, `1742f` are line hints). Anything
+# else after the number, or no unit, is a line hint.
 HINT_UNIT = re.compile(
-    r"\s*(?:%|(?:Hz|kHz|MHz|ms|[uµn]s|s|secs?|seconds?|min|mins|minutes?|h|W|kW|J|kJ|V|mA|rpm|bpm|dB|B|KiB|MiB|bytes?|bits?"
+    r"\s*(?:%|(?:Hz|kHz|MHz|ms|[uµn]s|s|min|h|W|kW|J|kJ|V|mA|rpm|bpm|dB|B|KiB|MiB|bytes?|bits?"
     r"|samples?|frames?|packets?|ticks?|retry|retries|attempts?|calls?|callers?|call[ -]sites?|tests?|cases?|files?|variants?"
-    r"|fields?|entries|entry|items?)\b)",
-    re.I,
+    r"|fields?|entries|entry|items?))(?![\w.-])"
 )
 MAX_LABEL_WORDS = 2  # a third word before the number is not scanned (#403)
 # A hint anywhere on a line that mentions a `.rs` file (after the canonical ones are removed).
@@ -321,27 +322,33 @@ def resolve(name: str, sym: str) -> str | None:
 
 
 def number_hint(tail: str, pos: int = 0) -> bool:
-    """True when `tail` at `pos` reads as a bare line number: separators and at most two words, then a number that a
-    unit or noun does not follow (`at 50 Hz`, `3 call sites`); a strong label (`:`, `@`, `~`, `[`, `#L`, `L`, `line`) always."""
-    strong, words = False, 0
+    """True when a number in `tail` from `pos` on reads as a bare line number.
+
+    Every number up to the next `.rs` mention is checked, a unit-bearing one (`at 50 Hz`, `3 call sites`) included, so
+    `50 Hz | 1742` fails. Before each number: separators and at most two words; a strong label (`:`, `@`, `~`, `[`, `#L`,
+    `L`, `line`) makes the number a hint even before a unit. The number is a hint unless HINT_UNIT follows it.
+    """
+    nxt = MENTION.search(tail, pos)
+    if nxt:
+        tail = tail[: nxt.start()]
     while True:
-        t = HINT_TOKEN.match(tail, pos)
-        if t is None:
-            break
-        if t.group("strong"):
-            strong = True
-        elif t.group("word"):
-            words += 1
-            if words > MAX_LABEL_WORDS:
-                return False
-        pos = t.end()
-    pos = len(tail) - len(tail[pos:].lstrip())
-    num = HINT_NUMBER.match(tail, pos)
-    if num is None:
-        return False
-    if strong:
-        return True
-    return not HINT_UNIT.match(tail, num.end())
+        strong, words = False, 0
+        while (t := HINT_TOKEN.match(tail, pos)) is not None:
+            if t.group("strong"):
+                strong = True
+            elif t.group("word"):
+                words += 1
+                if words > MAX_LABEL_WORDS:
+                    return False
+            pos = t.end()
+        pos = len(tail) - len(tail[pos:].lstrip())
+        num = HINT_NUMBER.match(tail, pos)
+        if num is None:
+            return False
+        unit = HINT_UNIT.match(tail, num.end())
+        if strong or not unit:
+            return True
+        pos = unit.end()
 
 
 def check_line(line: str) -> list[str]:

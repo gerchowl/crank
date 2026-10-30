@@ -89,6 +89,7 @@ with tempfile.TemporaryDirectory() as tmp:
         "ghost.rs `Ev::Started` and ghost.rs inner_v and ghost.rs other_v and ghost.rs Stopped (struct-variant fields)",
         "ghost.rs `qualified` (see #330) and ghost.rs qualified, then 5 s",
     ]
+    first_extra = len(good) - 10
     good += [
         "ghost.rs `qualified` at 50 Hz and ghost.rs qualified, 3 call sites",
         "ghost.rs `qualified` takes 12 ms; ghost.rs qualified (~12) is 100% sure",
@@ -98,12 +99,16 @@ with tempfile.TemporaryDirectory() as tmp:
         "ghost.rs LocalStruct and ghost.rs LOCAL_CONST (items after `{` and `;`)",
         "core.rs `Core::end_ride` (~9): `Erg { 0 }` until a sample",
     ]
+    good += [f"ghost.rs `qualified` {u}" for u in ("1 %", "9 Hz", "9 kHz", "9 MHz", "9 rpm", "9 bpm", "9 s", "50Hz", "5s",
+        "1 µs", "1 ns", "2 W", "2 kJ", "3 samples", "1 sample", "3 callers", "1 caller", "2 call sites", "1 call site", "1 retry",
+        "1 entry", "1 byte", "1 bit", "1 tick", "1 attempt", "1 call", "1 test", "1 case", "1 file", "1 variant", "1 field",
+        "1 item", "1 frame", "1 packet", "50 Hz, 3 call sites", "50 Hz (2 calls) and 5 s")]
     good += [f"ghost.rs `qualified` {u}" for u in (
         "10 ms", "10 us", "3 min", "1 h", "2 kW", "5 J", "12 V", "5 mA", "3 dB", "16 B", "4 KiB", "2 MiB", "20 bytes", "8 bits",
         "4 frames", "2 packets", "9 ticks", "3 retries", "2 attempts", "5 calls", "2 tests", "4 cases", "3 files", "6 variants",
         "2 fields", "7 entries", "5 items", "3 call-sites",
     )]
-    for i, g in enumerate(good[-46:]):
+    for i, g in enumerate(good[first_extra:]):
         expect(f"good {g!r}", tree_with(base, f"okx{i}", g), True)
     bad = [
         "core.rs:1667",
@@ -193,7 +198,9 @@ with tempfile.TemporaryDirectory() as tmp:
     bad += [f"ghost.rs `qualified` {sp}" for sp in (
         "1742 is wrong", "1742 in", "1742 ff", "1742 x", "1742 L", "1742 etc", "1742 und", "1742 bis 1750", "1742 thru 1750",
         "1742 y 1750", "1742 ish", "1742f", "0x6D6", "(1742 lines)", "1742 lines", "1742 or 1743", "1742 and", "1742 to 1750",
-        "1742 sorry", "1742 sx",
+        "1742 sorry", "1742 sx", "1742 S", "1742 b", "1742 v", "1742 w", "1742 h.", "1742 B-tree", "1742 hz", "1742 KB",
+        # #402 round 3: a unit-bearing number does not end the scan; a later bare number is still checked
+        "50 Hz | 1742", "50 Hz (Zeile 1742)", "50 Hz, 1742", "at 50 Hz; also 1742", "3 call sites, 1742", "5 s - 1742", "5 s :1742",
         # false positives the rule implies; they are rejected on purpose: rephrase
         "in 2024", "x 3", "× 3", '"1742"', "*1742*", "since v1.2", "50-60 Hz", "at 50", "(50)",
     )]
