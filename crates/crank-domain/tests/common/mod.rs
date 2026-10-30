@@ -9,11 +9,8 @@ fn manifest_dir() -> String {
 
 pub fn load(area: &str) -> Value {
     serde_json::from_str(
-        &std::fs::read_to_string(format!(
-            "{}/tests/vectors/{area}.json",
-            manifest_dir()
-        ))
-        .expect("valid vector schema and fixture"),
+        &std::fs::read_to_string(format!("{}/tests/vectors/{area}.json", manifest_dir()))
+            .expect("valid vector schema and fixture"),
     )
     .expect("valid vector schema and fixture")
 }
