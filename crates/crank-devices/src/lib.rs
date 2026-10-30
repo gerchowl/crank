@@ -228,14 +228,24 @@ pub struct TrainerSample {
 /// Raw page-25 status nibble (byte 6, high nibble), `0..=15`: bits 0/1/2 report power
 /// calibration, resistance calibration and user configuration required; bit 3 is reserved
 /// and kept as reported. ADR-0002 §3 (page table). Build one from an untrusted byte with
-/// [`TrainerStatus::from_raw`], which keeps only the nibble.
+/// [`TrainerStatus::from_raw`], which keeps only the nibble; the field is private so no
+/// other value exists.
+///
+/// ```compile_fail
+/// let _ = crank_devices::TrainerStatus(0xFF);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct TrainerStatus(pub u8);
+pub struct TrainerStatus(u8);
 impl TrainerStatus {
     /// The status nibble of `raw`: the high four bits are discarded.
     #[must_use]
     pub const fn from_raw(raw: u8) -> Self {
         Self(raw & 0x0F)
+    }
+    /// The nibble, `0..=15`.
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        self.0
     }
 }
 /// Reported power limitation, independent of trainer following. See ADR-0002 §3.
