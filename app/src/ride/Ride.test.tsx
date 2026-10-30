@@ -477,7 +477,7 @@ describe("Ride", () => {
     expect(wasForcedEnd("ride-1")).toBe(true);
   });
 
-  test("a repeat End after a forced end answers forced again, as the core does (core.rs:1661-1663)", async () => {
+  test("a repeat End after a forced end answers forced again, as the core does (core.rs:1667)", async () => {
     const rig = await open({ phase: "active", engineStopped: true });
     await push(rig, { state: { kind: "riding" } });
     await userEvent.click(screen.getByRole("button", { name: "End" }));

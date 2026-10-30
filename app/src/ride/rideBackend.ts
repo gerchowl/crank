@@ -1,28 +1,28 @@
 // The core's ride commands behind `mockIPC`, on top of the stream backend (`stream/testBackend.ts`), for the ride
 // tests. It models every refusal the core returns, in the core's order, and accepts nothing the core refuses:
 //
-//   ride_start  no ride loaded            conflict            "no ride loaded"      crank-core core.rs:968 (`engine`)
+//   ride_start  no ride loaded            conflict            "no ride loaded"      crank-core core.rs:1584 (`engine`)
 //               not in the loaded phase   conflict            "not valid in this state"  crank-engine engine.rs:1180
 //               engine has no trainer     device_unavailable  "no trainer"          engine.rs:1183
 //               trainer link not ready    device_unavailable  "trainer not ready"   engine.rs:1186
 //               health cap vs the blocks  conflict            "cap_requires_erg" / "cap_exceeded_target"  engine.rs:1187, 379-392
 //               record cannot be opened   storage             (the recorder's text) engine.rs:1188
-//               (`ensure_start_allowed`, core.rs:619, always passes today and is not modelled)
-//   ride_pause  no ride loaded            conflict            "no ride loaded"      core.rs:968
+//               (`ensure_start_allowed`, core.rs:1175, always passes today and is not modelled)
+//   ride_pause  no ride loaded            conflict            "no ride loaded"      core.rs:1584
 //               not started / finished    conflict            "not valid in this state"  engine.rs:1191-1198
 //   ride_resume as pause, and not paused by the rider   conflict  "not valid in this state"  engine.rs:1207
 //   ride_skip   as pause, and no block left (a free ride has none)  conflict  "not valid in this state"  engine.rs:1212;
 //               skipping the last block finishes the ride  engine.rs:1217-1219
-//   ride_end    no ride loaded or just finished  conflict     "no ride loaded"      core.rs:1028
-//               ends a started ride (id), unloads an unstarted one (null), a finished one answers its id again  core.rs:1037-1049
-//               (`forced` again for a ride ended by force: `last_forced`, core.rs:1661-1663)
+//   ride_end    no ride loaded or just finished  conflict     "no ride loaded"      core.rs:1668 (`end_ride`)
+//               ends a started ride (id), unloads an unstarted one (null), a finished one answers its id again  core.rs:1666 (reaped: `last`), 1677-1718 (`end_ride`: `Stop` unless Finished, `Ended(finishes.then_some(id))`)
+//               (`forced` again for a ride ended by force: `last_forced`, core.rs:1667, set in `force_end`, core.rs:1763)
 //   ride_end    answers `{ rideId, forced }`: an engine that is gone or stuck is ended by force (`forced: true`, the ride's id,
 //               recorded as aborted) instead of failing  crank-core core.rs `end_ride` / `force_end` (#331)
 //   every other ride_* command, engine wedged  engine_unresponsive  (the core's text)  after the 1 s bound, core.rs
 //               `bounded` / `REQUEST_TIMEOUT` via `ride_cmd` (#351); checked after "no ride loaded". The stream commands
 //               answer the same (stream/testBackend.ts `truth.unresponsive`). `ride_end` ends such a ride by force.
 //   every other ride_* command, engine task ended  internal  "engine stopped"  `EngineHandle::send` engine.rs:156,193-194 via
-//               core.rs:971, mapped error.rs:69; checked after "no ride loaded" and before the engine judges the command.
+//               core.rs:1588 (`ride_cmd`), mapped error.rs:73; checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
 import { mockIPC } from "@tauri-apps/api/mocks";
