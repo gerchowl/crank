@@ -291,6 +291,10 @@ struct Session {
     /// waking engine would.
     #[cfg(test)]
     engine_control: tokio::sync::mpsc::Sender<TrainerCommand>,
+    /// The engine's own ride-active callback, for a test to call it as a detached engine that
+    /// runs on would.
+    #[cfg(test)]
+    engine_activity: Arc<dyn Fn(bool) + Send + Sync>,
 }
 /// How far a forced end has taken a session over from its engine (#331, #344). Each step
 /// works through what the core owns (the relays, its own sender through the trainer's command
@@ -553,14 +557,21 @@ fn relay_links(
     };
     (hold, release)
 }
-/// The engine's ride-active signal, as the core takes it: into the gate and `active`, until the
-/// core has taken the ride over ([`Takeover::CutOff`]); then the signal is the core's own.
+/// The engine's ride-active signal, as the core takes it: into the gate and `active`, while
+/// the engine has the ride ([`Takeover::Engine`]) and its ride owns the signal (`signal_of`);
+/// otherwise the signal is not the engine's to set.
 ///
 /// The engine calls this on its own thread. The check and the set happen under the takeover's
 /// read lock, which the core's `send_replace(CutOff)` waits for: once that returns, no call of
 /// the cut-off engine is between its check and its set, so none can land after the core has
-/// cleared the signal or a next ride has raised it.
+/// cleared the signal or a next ride has raised it. They also hold the owner's lock, under
+/// which a newer ride claims the signal before its `Load` (`SignalClaim`): an engine that is
+/// not cut off, reaped after it dropped the signal itself and still running, or detached, sets
+/// nothing once a newer ride has claimed it (#392). Lock order: the takeover, then the owner;
+/// nothing takes them the other way round.
 fn ride_activity(
+    ride_id: String,
+    owner: Arc<std::sync::Mutex<Option<String>>>,
     cut_off: watch::Receiver<Takeover>,
     gate: RideGate,
     active: watch::Sender<bool>,
@@ -568,6 +579,12 @@ fn ride_activity(
     move |on: bool| {
         let takeover = cut_off.borrow();
         if *takeover != Takeover::Engine {
+            return;
+        }
+        let owner = owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owner.as_deref() != Some(ride_id.as_str()) {
             return;
         }
         #[cfg(test)]
@@ -578,8 +595,20 @@ fn ride_activity(
         });
         gate.set_active(on);
         active.send_replace(on);
+        drop(owner);
         drop(takeover);
     }
+}
+/// Cut the engine off ([`Takeover::CutOff`]) unless the core has already taken the ride over;
+/// waits, like any write of the takeover, for an engine call between its check and its set.
+fn cut_off(takeover: &watch::Sender<Takeover>) {
+    takeover.send_if_modified(|t| {
+        let engine = *t == Takeover::Engine;
+        if engine {
+            *t = Takeover::CutOff;
+        }
+        engine
+    });
 }
 /// Resolve once the driver has dropped its sender; with `close` the channel is closed towards
 /// it first so that a strap's driver, which has no control channel, learns that its consumer
@@ -701,14 +730,7 @@ impl Drop for SignalClaim<'_> {
         if self.built {
             return;
         }
-        // waits, like the forced end's cut-off, for an engine call between its check and set
-        self.takeover.send_if_modified(|t| {
-            let engine = *t == Takeover::Engine;
-            if engine {
-                *t = Takeover::CutOff;
-            }
-            engine
-        });
+        cut_off(self.takeover);
         self.core.clear_signal(self.ride_id);
     }
 }
@@ -754,9 +776,10 @@ struct Inner {
     active: watch::Sender<bool>,
     /// Id of the ride whose engine the ride-active signal (`gate`, `active`) belongs to: the
     /// one built last, set before it is sent `Load`, which raises the signal. Only that
-    /// ride's end may clear the signal for it (#370, [`Core::clear_signal`]). Not in
-    /// [`State`]: taking it never waits, so a load is not held before `Load` by the state lock.
-    signal_of: std::sync::Mutex<Option<String>>,
+    /// ride's end may clear the signal for it (#370, [`Core::clear_signal`]), and only that
+    /// ride's engine may set it (#392, [`ride_activity`]). Not in [`State`]: taking it never
+    /// waits, so a load is not held before `Load` by the state lock.
+    signal_of: Arc<std::sync::Mutex<Option<String>>>,
     library: Library,
     /// The status of an engine that has nothing loaded.
     idle: StreamStatus,
@@ -955,7 +978,7 @@ impl Core {
             engine_host,
             gate: RideGate::new(false),
             active: watch::channel(false).0,
-            signal_of: std::sync::Mutex::default(),
+            signal_of: Arc::default(),
             library: Library::builtin()?,
             idle: {
                 let (_engine, handle) =
@@ -1520,15 +1543,29 @@ impl Core {
         release.wait().await;
     }
     /// Wait until `ride_id` has no session, for at most [`REAP_TIMEOUT`]. If the engine
-    /// never drops the ride-active signal (its task died with it up), the session is reaped
-    /// by force and the signal cleared, so a command or the `loading` flag cannot be left
-    /// waiting for ever.
+    /// never drops the ride-active signal (its task died with it up, or it is blocked in
+    /// synchronous code), the session is reaped by force and the signal cleared, so a command
+    /// or the `loading` flag cannot be left waiting for ever.
+    ///
+    /// As in a forced end, the engine is cut off first: one that ignores the abort is detached
+    /// (`reap`) and, when it wakes, must neither raise the signal after the clear nor drop a
+    /// newer ride's (#392).
     async fn settle(&self, ride_id: &str) {
         if tokio::time::timeout(REAP_TIMEOUT, self.wait_released(ride_id))
             .await
             .is_err()
         {
             tracing::warn!(ride_id, "the engine did not release the ride: reaping it");
+            let takeover = {
+                let st = self.0.state.lock().await;
+                st.session
+                    .as_ref()
+                    .filter(|s| s.ride_id == ride_id)
+                    .map(|s| s.takeover.clone())
+            };
+            if let Some(takeover) = takeover {
+                cut_off(&takeover);
+            }
             self.reap(ride_id, true).await;
             self.clear_signal(ride_id);
         }
@@ -1559,6 +1596,21 @@ impl Core {
         own
     }
 
+    /// The ride-active callback of the engine of `ride_id`: [`ride_activity`] on this core's
+    /// signal and its owner.
+    fn activity_of(
+        &self,
+        ride_id: &str,
+        takeover: &watch::Sender<Takeover>,
+    ) -> Arc<impl Fn(bool) + Send + Sync + 'static> {
+        Arc::new(ride_activity(
+            ride_id.to_owned(),
+            self.0.signal_of.clone(),
+            takeover.subscribe(),
+            self.0.gate.clone(),
+            self.0.active.clone(),
+        ))
+    }
     /// Connect the devices, build the engine and load the workout into it.
     async fn build_session(
         &self,
@@ -1575,10 +1627,11 @@ impl Core {
         let takeover = Arc::new(watch::channel(Takeover::Engine).0);
         let (hold, release) = relay_links(&ride_id, &mut trainer, hr.as_mut(), &takeover);
         let hr_linked = hr.is_some();
-        let (gate, active) = (self.0.gate.clone(), self.0.active.clone());
         #[cfg(test)]
         let pin = self.0.pin_active.clone();
-        let activity = ride_activity(takeover.subscribe(), gate, active);
+        let activity = self.activity_of(&ride_id, &takeover);
+        #[cfg(test)]
+        let engine_activity: Arc<dyn Fn(bool) + Send + Sync> = activity.clone();
         #[cfg(test)]
         let engine_control = trainer.control.clone();
         let (engine, handle) = Engine::new(
@@ -1658,6 +1711,8 @@ impl Core {
                 takeover,
                 #[cfg(test)]
                 engine_control,
+                #[cfg(test)]
+                engine_activity,
             },
             hr_linked,
         ))
@@ -2406,7 +2461,14 @@ mod tests {
     fn a_cut_off_engine_cannot_set_the_ride_active_signal_after_the_cut_off() {
         let takeover = Arc::new(watch::channel(Takeover::Engine).0);
         let (gate, active) = (RideGate::new(true), watch::channel(true).0);
-        let activity = ride_activity(takeover.subscribe(), gate.clone(), active.clone());
+        let owner = Arc::new(std::sync::Mutex::new(Some("ride".to_owned())));
+        let activity = ride_activity(
+            "ride".into(),
+            owner,
+            takeover.subscribe(),
+            gate.clone(),
+            active.clone(),
+        );
         let (reached_tx, reached) = std::sync::mpsc::channel();
         let (go, go_rx) = std::sync::mpsc::channel::<()>();
         let go_rx = std::sync::Mutex::new(go_rx);
@@ -4086,6 +4148,120 @@ mod tests {
         core.0.pin_active.store(false, Ordering::SeqCst);
         replaced.expect("the load is not left waiting").unwrap();
         assert!(core.ride_status().await.unwrap().status.loaded);
+    }
+    /// The ride-active callback of the loaded ride's engine.
+    async fn engine_activity(core: &Core) -> Arc<dyn Fn(bool) + Send + Sync> {
+        core.0
+            .state
+            .lock()
+            .await
+            .session
+            .as_ref()
+            .unwrap()
+            .engine_activity
+            .clone()
+    }
+    /// The loaded ride's id, if any.
+    async fn loaded_id(core: &Core) -> Option<String> {
+        core.0
+            .state
+            .lock()
+            .await
+            .session
+            .as_ref()
+            .map(|s| s.ride_id.clone())
+    }
+    /// #392: `settle`'s forced reap cuts the engine off before it reaps, as a forced end does.
+    /// The engine never drops the ride-active signal (`pin_active`, as in #290), so End's
+    /// `settle` reaps it by force after `REAP_TIMEOUT` and clears the signal. An engine that
+    /// ignores the abort is detached (`reap`) and runs on: on its own thread
+    /// ([`EngineHost::Thread`]), blocked in a synchronous write past the timeout (the #344
+    /// shape), it finishes the poll it was in when the write returns, and whatever that poll
+    /// does to the signal must land nowhere: neither raise it with no ride loaded nor drop the
+    /// newer ride's. A simulation: on the `Task` host the abort does end the task, so what the
+    /// detached engine would do after it is played by calling its own ride-active callback
+    /// (`engine_activity`) by hand, once with no ride loaded and once after a newer load.
+    #[tokio::test(start_paused = true)]
+    async fn an_engine_detached_by_settles_forced_reap_cannot_touch_the_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.ride_load(None).await.unwrap();
+        let detached = engine_activity(&core).await;
+        core.0.pin_active.store(true, Ordering::SeqCst);
+        let end = tokio::time::timeout(
+            REAP_TIMEOUT + Duration::from_secs(5),
+            core.ride_end_outcome(),
+        )
+        .await;
+        core.0.pin_active.store(false, Ordering::SeqCst);
+        end.expect("End is not held by the engine").unwrap();
+        assert_eq!(loaded_id(&core).await, None);
+        assert!(!core.0.gate.is_active() && !*core.0.active.borrow());
+        detached(true);
+        assert!(
+            !core.0.gate.is_active(),
+            "the detached engine raised the gate with no ride loaded"
+        );
+        assert!(
+            !*core.0.active.borrow(),
+            "the detached engine raised active with no ride loaded"
+        );
+        let newer = core.ride_load(None).await.unwrap();
+        detached(false);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            loaded_id(&core).await,
+            Some(newer.ride_id),
+            "the newer ride was reaped"
+        );
+        assert!(
+            core.0.gate.is_active() && *core.0.active.borrow(),
+            "the detached engine dropped the newer ride's signal"
+        );
+    }
+    /// #392: only the signal's owner (`signal_of`) sets it from its engine. An engine whose
+    /// ride was reaped after it dropped the signal itself is not cut off (the reaper's reap is
+    /// not forced). While that reap still waits for it to end (`RELEASE_TIMEOUT`, then the
+    /// abort), or after it detached it, a newer ride can load; a late call of the old engine's
+    /// callback must leave the newer ride's signal alone, and must not raise the signal after
+    /// the newer ride's own end. No engine path calls it again after it dropped the signal
+    /// today (`release_gate`, `unload`); this pins the core's side of that, as #384 pinned the
+    /// claim's give-back. A simulation: the late calls are made by hand on the old engine's
+    /// callback (`engine_activity`).
+    #[tokio::test(start_paused = true)]
+    async fn a_reaped_engine_that_was_not_cut_off_cannot_touch_a_newer_rides_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.ride_load(None).await.unwrap();
+        let old = engine_activity(&core).await;
+        core.ride_end_outcome().await.unwrap();
+        let newer = core.ride_load(None).await.unwrap();
+        old(false);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            loaded_id(&core).await,
+            Some(newer.ride_id),
+            "the newer ride was reaped"
+        );
+        assert!(
+            core.0.gate.is_active() && *core.0.active.borrow(),
+            "the old engine dropped the newer ride's signal"
+        );
+        core.ride_end_outcome().await.unwrap();
+        assert!(!core.0.gate.is_active() && !*core.0.active.borrow());
+        old(true);
+        assert!(
+            !core.0.gate.is_active() && !*core.0.active.borrow(),
+            "the old engine raised the signal after the newer ride's end"
+        );
     }
     /// #290: a cancelled load whose engine never releases clears `loading` after
     /// `REAP_TIMEOUT` instead of leaving the core refusing loads for ever.
