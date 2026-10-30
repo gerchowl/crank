@@ -23,6 +23,9 @@ fn status(state: StreamRideState, marker: u32) -> StreamStatus {
         workout_s: 0.0,
         block_index: Some(0),
         block_elapsed_s: 0.0,
+        block_start_session_s: Some(0.0),
+        block_start_workout_s: Some(0.0),
+        laps_closed: 0,
         late_samples: marker,
         record_error: None,
         trainer_following: super::types::StreamFollowing::Unknown,
@@ -40,9 +43,10 @@ fn status(state: StreamRideState, marker: u32) -> StreamStatus {
     }
 }
 /// A frame budget and a sample count at which a default status and the samples split over exactly
-/// three frames. The status alone is 472 bytes (since #329's trainer-loss fields; it was ~340), so
-/// the budget leaves room for about one sample next to it and about thirteen in a bare frame.
-const SPLIT_BUDGET: usize = 520;
+/// three frames. The status alone is 537 bytes (since #243's block start and lap count; 472 after
+/// #329's trainer-loss fields, ~340 before), so the budget leaves room for about one sample next to
+/// it and about fourteen in a bare frame.
+const SPLIT_BUDGET: usize = 585;
 const SPLIT_SAMPLES: u32 = 24;
 fn riding(marker: u32) -> StreamStatus {
     status(StreamRideState::Riding, marker)
@@ -448,6 +452,9 @@ fn worst_status() -> StreamStatus {
         workout_s: f64::MIN,
         block_index: Some(u32::MAX),
         block_elapsed_s: f64::MIN,
+        block_start_session_s: Some(f64::MIN),
+        block_start_workout_s: Some(f64::MIN),
+        laps_closed: u32::MAX,
         late_samples: u32::MAX,
         record_error: Some("𝔘".repeat(1_000)),
         trainer_following: super::types::StreamFollowing::NotFollowing,
@@ -489,6 +496,9 @@ fn every_frame_stays_under_the_byte_budget_at_every_cap() {
         workout: crate::ticks::WorkoutTicks(u64::MAX),
         block_index: Some(usize::MAX),
         block_elapsed: crate::ticks::WorkoutTicks(u64::MAX),
+        block_start_session: Some(crate::ticks::SessionTicks(u64::MAX)),
+        block_start_workout: Some(crate::ticks::WorkoutTicks(u64::MAX)),
+        laps_closed: u32::MAX,
         trainer_link: None,
         hr_link: None,
         late_samples: u64::MAX,
@@ -542,7 +552,7 @@ fn every_frame_stays_under_the_byte_budget_at_every_cap() {
 
 #[test]
 fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
-    // A small budget forces splitting: ~38 bytes per sample. The status alone is 472 bytes, so
+    // A small budget forces splitting: ~38 bytes per sample. The status alone is 537 bytes, so
     // the budget (see `SPLIT_BUDGET`) is sized so that the samples split over exactly three
     // frames.
     const BUDGET: usize = SPLIT_BUDGET;
@@ -552,7 +562,7 @@ fn oversized_samples_split_over_consecutive_frames_and_all_arrive() {
     }
     flow.offer_status(riding(1));
     let frames = flow.drain(0);
-    // the status (472 bytes) rides the first frame with a sample or so: three frames, the
+    // the status (537 bytes) rides the first frame with a sample or so: three frames, the
     // whole window (MAX_UNACKED), carry all the samples
     assert_eq!(frames.len(), 3);
     let mut got = Vec::new();
@@ -636,7 +646,7 @@ fn subscription_chain_sees_every_source_sample_and_delivery_follows_the_rate() {
         let t = k as f64 / 4.0;
         // 100 W for the first three of every four samples, 200 W on the fourth
         let p = if k % 4 == 0 { 200.0 } else { 100.0 };
-        hub.on_source(t, &[Some(p), None, None, None, None]);
+        hub.on_source(t, &[Some(p), None, None, None, None, None]);
         hub.poll(k * 250 * MS);
         for f in drain(&mut rx) {
             hub.ack(id, f.seq).expect("ack");
@@ -663,8 +673,8 @@ fn each_subscription_has_its_own_chain() {
             opts(10.0, vec![Filter::Ema { tau_s: 10.0 }]),
         )
         .expect("ema");
-    hub.on_source(0.25, &[None, None, None, Some(100.0), None]);
-    hub.on_source(0.5, &[None, None, None, Some(200.0), None]);
+    hub.on_source(0.25, &[None, None, None, Some(100.0), None, None]);
+    hub.on_source(0.5, &[None, None, None, Some(200.0), None, None]);
     hub.poll(500 * MS);
     let samples: Vec<_> = drain(&mut rx).into_iter().flat_map(|f| f.samples).collect();
     let last = |sub| {
@@ -722,7 +732,7 @@ fn unsubscribe_drops_the_pending_sample() {
     let sub = hub
         .subscribe(id, MetricId::Power, opts(10.0, vec![]))
         .expect("sub");
-    hub.on_source(0.25, &[Some(1.0), None, None, None, None]);
+    hub.on_source(0.25, &[Some(1.0), None, None, None, None, None]);
     hub.unsubscribe(id, sub).expect("unsub");
     hub.poll(0);
     assert!(drain(&mut rx).iter().all(|f| f.samples.is_empty()));
@@ -740,7 +750,7 @@ fn frames_never_exceed_ten_per_second_however_fast_state_changes() {
         let now = step * 10 * MS;
         hub.on_source(
             step as f64 * 0.1,
-            &[Some(step as f64), None, None, None, None],
+            &[Some(step as f64), None, None, None, None, None],
         );
         hub.on_status(riding(u32::try_from(step).unwrap()), now);
         hub.poll(now);
@@ -813,6 +823,32 @@ fn status_is_sent_on_change_and_otherwise_at_two_hertz() {
     status_at.extend(status_times(&mut hub, id, &mut rx, t));
     assert_eq!(status_at.len(), before + 1);
     assert_eq!(*status_at.last().expect("sent"), t);
+}
+
+#[test]
+fn the_block_start_and_the_lap_count_are_sent_on_change() {
+    // Each changes only at a block boundary, a skip or a free-ride lap (#243): a change goes
+    // out in the same poll, not at the next beat. Mutant: dropping it from `same_discrete`.
+    for field in ["blockStartSessionS", "blockStartWorkoutS", "lapsClosed"] {
+        let (mut hub, id, mut rx) = hub_with_stream();
+        hub.on_status(riding(0), 0);
+        hub.poll(0);
+        assert_eq!(status_times(&mut hub, id, &mut rx, 0), [0]);
+        let t = 100 * MS;
+        let mut s = riding(0);
+        match field {
+            "blockStartSessionS" => s.block_start_session_s = Some(22.5),
+            "blockStartWorkoutS" => s.block_start_workout_s = Some(17.5),
+            _ => s.laps_closed = 1,
+        }
+        hub.on_status(s, t);
+        hub.poll(t);
+        assert_eq!(
+            status_times(&mut hub, id, &mut rx, t),
+            [t],
+            "a change of {field} is sent at once"
+        );
+    }
 }
 
 #[test]
@@ -901,7 +937,10 @@ fn a_consumer_that_never_reads_or_acks_is_bounded() {
             .expect("sub");
     }
     for step in 1..=20_000_u64 {
-        hub.on_source(step as f64, &[Some(step as f64), None, None, None, None]);
+        hub.on_source(
+            step as f64,
+            &[Some(step as f64), None, None, None, None, None],
+        );
         hub.on_status(riding(u32::try_from(step).unwrap()), step * 10 * MS);
         hub.poll(step * 10 * MS);
     }
@@ -1078,7 +1117,7 @@ fn the_tick_cost_stays_bounded_at_every_cap() {
     for k in 1..=steps {
         let t = k as f64 / 4.0;
         let before = hub.work();
-        hub.on_source(t, &[Some((k % 400) as f64), None, None, None, None]);
+        hub.on_source(t, &[Some((k % 400) as f64), None, None, None, None, None]);
         hub.poll(k * 250 * MS);
         // The consumers keep up, as the UI does.
         for (id, rx) in ids.iter().zip(&mut rxs) {
@@ -1156,7 +1195,7 @@ fn non_finite_values_are_gaps_and_do_not_poison_the_chain() {
         .enumerate()
     {
         let t = (k + 1) as f64 / 4.0;
-        hub.on_source(t, &[None, None, Some(v), None, None]);
+        hub.on_source(t, &[None, None, Some(v), None, None, None]);
         hub.poll((k as u64 + 1) * 250 * MS);
         for f in drain(&mut rx) {
             hub.ack(id, f.seq).expect("ack");
@@ -1184,7 +1223,10 @@ fn a_chain_that_overflows_to_infinity_emits_a_gap() {
         .expect("sub");
     let mut out = Vec::new();
     for k in 1..=3_u64 {
-        hub.on_source(k as f64 / 4.0, &[None, None, Some(f64::MAX), None, None]);
+        hub.on_source(
+            k as f64 / 4.0,
+            &[None, None, Some(f64::MAX), None, None, None],
+        );
         hub.poll(k * 250 * MS);
         for f in drain(&mut rx) {
             hub.ack(id, f.seq).expect("ack");
@@ -1216,14 +1258,44 @@ fn the_worst_status_with_the_erg_fields_has_a_measured_size() {
     // The discrete part at every cap with #218's fields (following, component, released,
     // compliance at u32::MAX, cap), #329's trainer-loss fields (three f64 timestamps at their
     // widest, the attempt, the soft-start target, the rider pause), #324's commanded mode (the
-    // widest variant, `resistance` with the longest `f32`) and the record error cut at its cap
-    // (256 bytes of 4-byte characters): measured (964 bytes), against the 8 000-byte frame budget.
+    // widest variant, `resistance` with the longest `f32`), #243's block start (two f64 at their
+    // widest) and lap count (u32::MAX), and the record error cut at its cap (256 bytes of 4-byte
+    // characters): measured (1080 bytes), against the 8 000-byte frame budget.
     let mut st = worst_status();
     st.record_error = Some("𝔘".repeat(MAX_RECORD_ERROR_BYTES / 4));
     let n = serde_json::to_vec(&st).expect("status").len();
     eprintln!("worst status: {n} bytes");
-    assert!(n < 1_000, "worst status is {n} bytes");
-    assert!(n < FRAME_BUDGET_BYTES / 8);
+    assert!(n < 1_100, "worst status is {n} bytes");
+    // The guard is a quarter of the budget because that is what keeps the worst status from
+    // splitting the worst samples: with the discrete state under it, one frame still holds the
+    // widest sample of every subscription the hub allows and both links (the bound `every_frame_stays_under_the_
+    // byte_budget_at_every_cap` measures). The eighth used before was a margin with no such
+    // reason behind it.
+    assert!(n < FRAME_BUDGET_BYTES / 4);
+    let widest = SubSample {
+        sub: SubId(u32::MAX),
+        t: f64::MIN,
+        v: Some(f64::MIN),
+    };
+    let samples = vec![widest; MAX_SUBSCRIPTIONS];
+    let frame = StreamFrame {
+        seq: u32::MAX,
+        resync: true,
+        samples,
+        status: None,
+        links: [LinkDevice::Trainer, LinkDevice::Hr]
+            .map(|device| super::types::LinkChange {
+                device,
+                state: LinkStatus::Connecting,
+            })
+            .to_vec(),
+    };
+    let rest = json(&frame).len();
+    assert!(
+        FRAME_BUDGET_BYTES / 4 + rest <= FRAME_BUDGET_BYTES,
+        "status guard {} + every widest sample {rest}",
+        FRAME_BUDGET_BYTES / 4
+    );
 }
 
 #[test]
@@ -1263,8 +1335,11 @@ fn the_wire_status_carries_the_erg_fields_with_their_meaning() {
         loaded: true,
         session: SessionTicks(0),
         workout: WorkoutTicks(0),
-        block_index: None,
-        block_elapsed: WorkoutTicks(0),
+        block_index: Some(2),
+        block_elapsed: WorkoutTicks(6),
+        block_start_session: Some(SessionTicks(90)),
+        block_start_workout: Some(WorkoutTicks(70)),
+        laps_closed: 2,
         trainer_link: None,
         hr_link: None,
         late_samples: 0,
@@ -1305,6 +1380,10 @@ fn the_wire_status_carries_the_erg_fields_with_their_meaning() {
     assert_eq!(v["softStartTargetW"], 253);
     assert_eq!(v["lastGapS"], 30.5);
     assert_eq!(v["reconnectedAtS"], 43.0);
+    // the cursor's actual block start and the lap count (#14, #243)
+    assert_eq!(v["blockStartSessionS"], 22.5);
+    assert_eq!(v["blockStartWorkoutS"], 17.5);
+    assert_eq!(v["lapsClosed"], 2);
     // the commanded target, typed (#324)
     assert_eq!(
         v["commanded"],
