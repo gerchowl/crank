@@ -11,6 +11,12 @@ an actual `Refs: #N` trailer. Never push main/dev, bypass hooks, stash, touch
 spike worktrees, or terminate processes you did not start.
 
 Run everything in `nix develop`; first run `pnpm install --frozen-lockfile`.
+Inner loop (#371): `just test-changed [base=origin/dev]` runs nextest and doctests only for the workspace crates that
+`git diff base...HEAD` (plus the working tree and untracked files) touches and their reverse dependencies
+(`scripts/test-changed.py`, from `cargo metadata`; its mapping is tested by `scripts/test-test-changed.py`, the
+`test-changed-test` flake check). Workspace-level files (Cargo.toml, Cargo.lock, flake.nix, flake.lock,
+rust-toolchain.toml, clippy.toml, `.cargo/`, `.config/`) run the whole workspace; a diff that touches no crate runs
+nothing. It is not the gate: run `just check` once before pushing.
 `just check` runs the hermetic `nix flake check` gate. `just test` runs nextest,
 doctests, app Vitest, and the frozen shared tests. `just model` runs the executable trainer-following model of ADR-0002 §4.4.1 and checks
 that the committed fixture `crates/crank-engine/tests/fixtures/following.json` is its output (the `following-model` flake
