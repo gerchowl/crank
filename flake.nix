@@ -230,7 +230,7 @@
           touch $out
         '';
         # `just test-changed`: file -> crate -> reverse-dependency mapping (#371).
-        test-changed-test = pkgs.runCommand "test-changed-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+        test-changed-test = pkgs.runCommand "test-changed-test" { nativeBuildInputs = [ pkgs.python3 pkgs.git ]; } ''
           cp -r ${source (lib.fileset.unions [ ./scripts/test-changed.py ./scripts/test-test-changed.py ])} src
           cd src && python3 -I scripts/test-test-changed.py
           touch $out
