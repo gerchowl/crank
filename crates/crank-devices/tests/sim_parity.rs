@@ -138,12 +138,15 @@ fn run(input: &Value) -> Streams {
     s
 }
 
+/// The crate directory at run time. `env!` would bake in the path of the build that compiled this
+/// binary, which no longer exists when the Nix checks reuse it (#371); cargo and nextest set the variable.
+fn manifest_dir() -> String {
+    std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR for tests")
+}
+
 #[test]
 fn raw_streams_match_simulator_vectors() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../crank-domain/tests/vectors/simulator.json"
-    );
+    let path = format!("{}/../crank-domain/tests/vectors/simulator.json", manifest_dir());
     let doc: Value =
         serde_json::from_str(&std::fs::read_to_string(path).expect("vector")).expect("vector");
     let cases = doc["cases"].as_array().expect("vector");

@@ -1,11 +1,17 @@
 //! Reusable schema-based golden-vector comparison (ADR-0001 §3).
 use serde_json::Value;
 
+/// The crate directory at run time. `env!` would bake in the path of the build that compiled this
+/// binary, which no longer exists when the Nix checks reuse it (#371); cargo and nextest set the variable.
+fn manifest_dir() -> String {
+    std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR for tests")
+}
+
 pub fn load(area: &str) -> Value {
     serde_json::from_str(
         &std::fs::read_to_string(format!(
             "{}/tests/vectors/{area}.json",
-            env!("CARGO_MANIFEST_DIR")
+            manifest_dir()
         ))
         .expect("valid vector schema and fixture"),
     )

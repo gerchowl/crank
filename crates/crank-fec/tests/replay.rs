@@ -6,9 +6,15 @@ use crank_fec::{AntFrame, FrameError, MsgType, Page};
 mod support;
 use support::replay;
 
+/// The crate directory at run time. `env!` would bake in the path of the build that compiled this
+/// binary, which no longer exists when the Nix checks reuse it (#371); cargo and nextest set the variable.
+fn manifest_dir() -> String {
+    std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR for tests")
+}
+
 #[test]
 fn replay_all_fixtures() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let dir = std::path::PathBuf::from(manifest_dir()).join("tests/fixtures");
     let mut files = 0;
     for entry in std::fs::read_dir(dir).expect("fixtures") {
         let path = entry.expect("entry").path();
