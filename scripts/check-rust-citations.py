@@ -18,12 +18,16 @@ symbol, is fine. A bare line number goes stale when the Rust file moves, so the 
   allowed (`#` + digits is not a line hint; only `#L12` is);
 - any other line hint on a line that mentions a `.rs` file fails: `(~N)` not directly after a resolved symbol, `~N`,
   `:N`, `#LN` (a GitHub `#L12` URL fragment is not allowed either), `@N`, `LN`, `line N`, `ln N`, `l. N`, `[N]`, `(N)`.
-  After a file name or a symbol the whole class is closed, not a list of spellings: separators/brackets and label words
-  (`line`, `ln`, `l.`, `at`, `around`, ...), optionally `L`/`#L`, then a digit;
+  After a file name or a symbol the whole class is closed by one rule (#401), not a list of spellings: a number is a line
+  hint unless a listed unit or count noun follows it directly (`at 50 Hz`, `3 call sites`; the list is HINT_UNIT below
+  and AGENTS.md; `lines` is not on it). Any separators (`| / - , ( '`, ...) and up to two words may sit before the
+  number; `:`, `@`, `~`, `[`, `#L`, `L` and `line`/`ln`/`l.` make it one even before a unit. Prose numbers with no listed
+  unit (`in 2024`, `x 3`, `"1742"`, `50-60 Hz`) are rejected: rephrase;
 - a `(~N)` anywhere that does not directly follow a resolved symbol fails, so a citation split across lines fails.
-Known limits (#401): an item must start its line (after optional same-line attributes without a nested `]`), so items
-inside a macro body, one-line `mod m { fn f() {} }` and tuple-struct fields cannot be cited. Fields of struct-like enum variants (`Started { inner_v: u8 }`) can.
-A bare number right after a symbol is rejected even when it is prose (`core.rs `host`, 3 call sites`): rephrase it.
+Known limits (#403, after #401): an item must start its line or follow a `{`, `}` or `;` (after optional same-line
+attributes, one level of nested `[..]` allowed). Tuple-struct fields and macro-generated items (`fn $name()`) cannot be
+cited; fields of struct-like enum variants can. Only two label words are scanned before a number, a backtick ends the
+scan, and superscript or fraction digits are not numbers. #403 tracks these.
 Usage: check-rust-citations.py [root]
 """
 import re
@@ -38,13 +42,28 @@ MENTION = re.compile(r"(?P<name>\w[\w./-]*?)\.rs\b`?", re.I)
 IDENT = r"[A-Za-z_]\w*"
 SYMBOL = re.compile(rf"[ ]+(?P<tick>`?)(?P<sym>{IDENT}(?:::{IDENT})*)(?P=tick)(?![\w:@#~(<`])")
 LINE_HINT = re.compile(r"[ ]\(~[1-9]\d*\)")
-# What may sit between a file name or symbol and a number for the number to read as a line hint: punctuation and
-# brackets, label words (`line`, `ln`, `l.`, `at`, ...), then `L`/`#L`. The class is "separators and labels, then a digit",
-# so `:12`, `[12]`, `(12)`, `, 12`, `ln 12`, `(l. 12)`, `#L12`, `L12`, `@12`, `~12`, `- 12` are all caught; `#12` is an
-# issue reference and is not (`#` only counts before `L`).
-NUMBER_AFTER = re.compile(
-    r"(?:[\s,;:.\[\](){}<>@~=+\-]|(?:lines?|ln|l|at|on|near|around|about|pos|offset|row)\b\.?)*(?:#?L\s*)?\d", re.I
+# The bare-number rule (#401), one sentence: after a cited file or symbol, a number is a line hint unless a unit or
+# noun follows it (`at 50 Hz`, `3 call sites`); `:`, `@`, `~`, `[`, `#L`, `L` and `line`/`ln`/`l.` make it one regardless.
+# Between the file or symbol and the number may sit any separators (`| / - , ( ' ...`) and at most two words (`at`,
+# `(Zeile`, `around`), so no spelling needs listing; a backtick starts a code span and ends the scan. `#12` is an issue reference and is not a number here.
+HINT_TOKEN = re.compile(
+    r"\s*(?:(?P<strong>[:@~\[]|#L|L(?=\d)|(?:lines?|ln|l)\b\.?)|(?P<word>[^\W\d]\w*)|(?P<sep>[^\w\s#`]))", re.I
 )
+HINT_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+# The allow-list (#401), case-sensitive: the only things that may follow a number for it to read as a quantity. Each is a
+# unit or count noun a cited line number can never be: time (`s`, `ms`, `us`, `µs`, `ns`, `min`, `h`), frequency (`Hz`,
+# `kHz`, `MHz`, `rpm`, `bpm`), power and energy (`W`, `kW`, `J`, `kJ`), electrical (`V`, `mA`), `%`, `dB`, data (`B`,
+# `KiB`, `MiB`, `byte(s)`, `bit(s)`) and counts of things in the code (`sample`, `frame`, `packet`, `tick`, `attempt`, `call`,
+# `caller`, `call site`/`call-site`, `test`, `case`, `file`, `variant`, `field`, `item`, each also plural; `retry`/`retries`,
+# `entry`/`entries`). `lines` is NOT allowed: it is what a line number counts. The unit may be glued to the number (`50Hz`,
+# `5s`) and must end there: not before a letter, digit, `.` or `-` (`1742 h.`, `B-tree`, `1742f` are line hints). Anything
+# else after the number, or no unit, is a line hint.
+HINT_UNIT = re.compile(
+    r"\s*(?:%|(?:Hz|kHz|MHz|ms|[uµn]s|s|min|h|W|kW|J|kJ|V|mA|rpm|bpm|dB|B|KiB|MiB|bytes?|bits?"
+    r"|samples?|frames?|packets?|ticks?|retry|retries|attempts?|calls?|callers?|call[ -]sites?|tests?|cases?|files?|variants?"
+    r"|fields?|entries|entry|items?))(?![\w.-])"
+)
+MAX_LABEL_WORDS = 2  # a third word before the number is not scanned (#403)
 # A hint anywhere on a line that mentions a `.rs` file (after the canonical ones are removed).
 HINT_ANY = re.compile(
     r"~\s*\d|(?<!\w)(?:[:@]L?|#L)\d+|\b(?:lines?|ln|l)\.?\s*\d|\bL\d+\b|[\[(]\s*\d{2,}(?:\s*[-,]\s*\d+)*\s*[\])]", re.I
@@ -53,7 +72,8 @@ STRAY_TILDE = re.compile(r"\(\s*~")
 SYMBOL_WORD = re.compile(rf"[ ]+`?{IDENT}")
 GENERIC_PARAM = re.compile(rf"\s*(?:const\s+)?({IDENT})")
 FOR = re.compile(r"\bfor\b")
-ATTRIBUTE = re.compile(r"#\[[^\]]*\]")
+ATTR = r"#\[(?:[^\[\]]|\[[^\]]*\])*\]"
+ATTRIBUTE = re.compile(ATTR)
 PUB = re.compile(r"^pub(?:\([^)]*\))?\s+")
 FIELD = re.compile(rf"({IDENT})\s*(:(?!:))?")
 
@@ -213,7 +233,7 @@ def impl_names(header: str) -> set[str]:
 
 
 ITEM = re.compile(
-    r"^[ \t]*(?:#\[[^\]]*\][ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:(?:default|const|async|unsafe|extern(?:[ \t]+\"\")?)[ \t]+)*"
+    rf"(?:^|(?<=[{{}};]))[ \t]*(?:{ATTR}[ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:(?:default|const|async|unsafe|extern(?:[ \t]+\"\")?)[ \t]+)*"
     rf"(?:(?P<kw>fn|struct|enum|trait|type|const|mod|union|static(?:[ \t]+mut)?)[ \t]+(?P<name>{IDENT})"
     rf"|macro_rules[ \t]*![ \t]*(?P<mac>{IDENT})"
     r"|impl\b(?P<impl>))",
@@ -301,6 +321,36 @@ def resolve(name: str, sym: str) -> str | None:
     return f"`{last}` is defined in several files named {want} ({len(hits)}); cite the path"
 
 
+def number_hint(tail: str, pos: int = 0) -> bool:
+    """True when a number in `tail` from `pos` on reads as a bare line number.
+
+    Every number up to the next `.rs` mention is checked, a unit-bearing one (`at 50 Hz`, `3 call sites`) included, so
+    `50 Hz | 1742` fails. Before each number: separators and at most two words; a strong label (`:`, `@`, `~`, `[`, `#L`,
+    `L`, `line`) makes the number a hint even before a unit. The number is a hint unless HINT_UNIT follows it.
+    """
+    nxt = MENTION.search(tail, pos)
+    if nxt:
+        tail = tail[: nxt.start()]
+    while True:
+        strong, words = False, 0
+        while (t := HINT_TOKEN.match(tail, pos)) is not None:
+            if t.group("strong"):
+                strong = True
+            elif t.group("word"):
+                words += 1
+                if words > MAX_LABEL_WORDS:
+                    return False
+            pos = t.end()
+        pos = len(tail) - len(tail[pos:].lstrip())
+        num = HINT_NUMBER.match(tail, pos)
+        if num is None:
+            return False
+        unit = HINT_UNIT.match(tail, num.end())
+        if strong or not unit:
+            return True
+        pos = unit.end()
+
+
 def check_line(line: str) -> list[str]:
     problems: list[str] = []
     consumed: list[tuple[int, int]] = []
@@ -310,7 +360,7 @@ def check_line(line: str) -> list[str]:
         if sym is None:
             if SYMBOL_WORD.match(tail):
                 problems.append(f"{m.group(0).strip('`')}: the symbol must be an identifier path with no suffix")
-            elif NUMBER_AFTER.match(tail):
+            elif number_hint(tail):
                 problems.append(f"{m.group(0).strip('`')}: a line number without a symbol")
             continue
         why = resolve(m.group("name"), sym.group("sym"))
@@ -320,7 +370,7 @@ def check_line(line: str) -> list[str]:
         hint = LINE_HINT.match(tail, sym.end())
         if hint:
             consumed.append((m.end() + hint.start(), m.end() + hint.end()))
-        if NUMBER_AFTER.match(tail, hint.end() if hint else sym.end()):
+        if number_hint(tail, hint.end() if hint else sym.end()):
             problems.append("a bare number after the symbol; only ` (~N)` with N >= 1 directly after it is a line hint")
     rest = line
     for a, b in reversed(consumed):
