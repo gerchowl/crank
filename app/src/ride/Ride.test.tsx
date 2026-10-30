@@ -625,7 +625,7 @@ describe("Ride", () => {
     await act(async () => rig.tick(null));
     expect(slot("target")?.textContent).toBe("0");
     expect(slot("plan")?.textContent).toBe("Plan 250 W");
-    // a soft start owed by a rider pause is not reported (engine.rs publish: `soft_start_target_w` only after a recovered
+    // a soft start owed by a rider pause is not reported (engine.rs `Engine::publish` (~1398): `soft_start_target_w` only after a recovered
     // loss; tests.rs `a_soft_start_owed_on_resume_is_not_shown_as_a_reconnected_state`), not in the hold and not in the ramp
     expect(rig.base.truth.status.softStartTargetW).toBeNull();
     expect(screen.queryByTestId("soft-start")).toBeNull();

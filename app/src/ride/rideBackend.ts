@@ -2,27 +2,27 @@
 // tests. It models every refusal the core returns, in the core's order, and accepts nothing the core refuses:
 //
 //   ride_start  no ride loaded            conflict            "no ride loaded"      crank-core core.rs `Core::engine` (~1666)
-//               not in the loaded phase   conflict            "not valid in this state"  crank-engine engine.rs `command` `EngineCmd::Start` (~1317)
+//               not in the loaded phase   conflict            "not valid in this state"  crank-engine engine.rs `Engine::command` (~1266), `Start` arm
 //               engine has no trainer     device_unavailable  "no trainer"          engine.rs `command` `Start`
 //               trainer link not ready    device_unavailable  "trainer not ready"   engine.rs `command` `Start`
-//               health cap vs the blocks  conflict            "cap_requires_erg" / "cap_exceeded_target"  engine.rs `command` `Start`, `Session::check_cap` (~466)
+//               health cap vs the blocks  conflict            "cap_requires_erg" / "cap_exceeded_target"  engine.rs `Engine::command` (~1266) `Start` arm, engine.rs `Session::check_cap` (~466)
 //               record cannot be opened   storage             (the recorder's text) engine.rs `command` `Start`
 //               (core.rs `Core::ensure_start_allowed` (~1236) always passes today and is not modelled)
 //   ride_pause  no ride loaded            conflict            "no ride loaded"      core.rs `Core::engine`
-//               not started / finished    conflict            "not valid in this state"  engine.rs `command` `Pause | Resume | SkipBlock` (~1337)
-//   ride_resume as pause, and not paused by the rider   conflict  "not valid in this state"  engine.rs `command` `Resume` (~1349)
-//   ride_skip   as pause, and no block left (a free ride has none)  conflict  "not valid in this state"  engine.rs `command` `SkipBlock` (~1355);
+//               not started / finished    conflict            "not valid in this state"  engine.rs `Engine::command` (~1266), the `Pause | Resume | SkipBlock` arm
+//   ride_resume as pause, and not paused by the rider   conflict  "not valid in this state"  engine.rs `Engine::command` (~1266), `Resume` arm
+//   ride_skip   as pause, and no block left (a free ride has none)  conflict  "not valid in this state"  engine.rs `Engine::command` (~1266), `SkipBlock` arm;
 //               skipping the last block finishes the ride  engine.rs `command` `SkipBlock`
 //   ride_end    no ride loaded or just finished  conflict     "no ride loaded"      core.rs `end_ride` (~1742)
 //               ends a started ride (id), unloads an unstarted one (null), a finished one answers its id again  core.rs `end_ride` (reaped: `last`; `Stop` unless Finished, `Ended(finishes.then_some(id))`)
-//               (`forced` again for a ride ended by force: `last_forced`, core.rs `end_ride`, set in `force_end` (~1831))
+//               (`forced` again for a ride ended by force: `last_forced`, core.rs `end_ride`, set in core.rs `Core::force_end` (~1831))
 //   ride_end    answers `{ rideId, forced }`: an engine that is gone or stuck is ended by force (`forced: true`, the ride's id,
-//               recorded as aborted) instead of failing  crank-core core.rs `end_ride` / `force_end` (#331)
+//               recorded as aborted) instead of failing  crank-core core.rs `Core::end_ride` (~1742) / core.rs `Core::force_end` (~1831) (#331)
 //   every other ride_* command, engine wedged  engine_unresponsive  (the core's text)  after the 1 s bound, core.rs
 //               `bounded` / `REQUEST_TIMEOUT` via `ride_cmd` (#351); checked after "no ride loaded". The stream commands
 //               answer the same (stream/testBackend.ts `truth.unresponsive`). `ride_end` ends such a ride by force.
 //   every other ride_* command, engine task ended  internal  "engine stopped"  engine.rs `EngineHandle::send` (~226) via
-//               core.rs `ride_cmd` (~1676), mapped error.rs `From<CommandError>` (~65); checked after "no ride loaded" and before the engine judges the command.
+//               core.rs `ride_cmd` (~1676), mapped error.rs `CommandError` (~65); checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
 import { mockIPC } from "@tauri-apps/api/mocks";

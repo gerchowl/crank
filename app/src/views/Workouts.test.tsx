@@ -102,17 +102,17 @@ type ApiErr = { code: string; message: string };
  * - unknown id: `not_found` (`Library::get`, library.rs `get` (~75), via core.rs `resolve_workout` (~1349))
  * - error-severity issue: `invalid_input` with the issue's message (`resolve_workout`)
  * - ride in progress: `conflict` (`ride_load`, "a ride is in progress")
- * - another load in flight: `conflict` (`ride_load`, "another ride is loading or loaded" (~1443))
+ * - another load in flight: `conflict` (core.rs `Core::ride_load` (~1395), "another ride is loading or loaded")
  * - `stage.storage`: `store.devices()?` fails, `storage` (`connect_links`)
  * - no trainer paired: `device_unavailable` (`connect_links`, "no trainer paired")
- * - `stage.driver`: `backend.trainer(..)?` fails, e.g. `permission_denied` or Bluetooth off (`connect_links`, error.rs `From<DeviceError>` (~90))
+ * - `stage.driver`: `backend.trainer(..)?` fails, e.g. `permission_denied` or Bluetooth off (`connect_links`, error.rs `DeviceError` (~90))
  * - trainer connect timeout: `device_unavailable` (`connect_links`, "trainer connect timed out")
  * - `stage.connect`: the inner connect error, e.g. `device_unavailable` "connect failed: .." (`connect_links`, the `??`)
- * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (`build_session` (~1563), `bounded(handle.send(EngineCmd::Load(..)))`)
+ * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (core.rs `build_session` (~1563), `bounded(handle.send(EngineCmd::Load(..)))`)
  * - `stage.build`: the new engine does not take the ride within 1 s, `engine_unresponsive`, its devices released
- *   (core.rs `build_session` (~1563), `bounded` and `REQUEST_TIMEOUT`, #351)
- * - `stage.installed`: `internal` "built session missing" (`ride_load` (~1460))
- * Everything from the storage step on happens while the core's `loading` flag is set (`ride_load` (~1395)), so the mock raises
+ *   (core.rs `build_session` (~1563), core.rs `bounded` (~601) and core.rs `REQUEST_TIMEOUT` (~81), #351)
+ * - `stage.installed`: `internal` "built session missing" (core.rs `ride_load` (~1395))
+ * Everything from the storage step on happens while the core's `loading` flag is set (core.rs `ride_load` (~1395)), so the mock raises
  * those refusals after the load's delay (the gate), with the in-flight conflict active meanwhile.
  * (the strap driver `heart(..)?` in `connect_links` maps like `stage.driver`). core.rs `ensure_start_allowed` (~1236) always passes
  * today and is not modelled. A free ride (null id) skips the workout checks only. Tauri itself rejects a call

@@ -69,7 +69,7 @@ export function commandedView(st: StreamStatus | null): {
     case "erg":
       return { value: c.watts, unit: "W" };
     case "resistance":
-      // The rider's pause outranks a release (policy order, erg/policy.rs; #330 hides the release while paused). With
+      // The rider's pause outranks a release (policy order, erg/policy.rs `ErgPolicy::desired` (~172); #330 hides the release while paused). With
       // neither flag this is the status Resume publishes at once, while `last_sent` is still the pause's
       // `Resistance { 0 }`; the next tick sends ERG (≤ 250 ms). Publishing after the resumed command (#324 review
       // option a) was rejected on purpose: the mode comes from the policy, which runs once per tick with the tick's
@@ -365,7 +365,7 @@ function Screen({ session }: { session: RideSession }) {
     resume.pending ||
     skip.pending ||
     end.pending;
-  // Skip needs a next block to skip: none for a free ride (the core refuses, engine.rs `command` `EngineCmd::SkipBlock` (~1347)) and none known until the
+  // Skip needs a next block to skip: none for a free ride (the core refuses, engine.rs `Engine::command` (~1266), the `SkipBlock` arm) and none known until the
   // plan has arrived. A skip in the last block ends the ride (the engine finishes it): it asks like End.
   const canSkip = blocks.length > 0 && blockIdx !== null;
   const skipEnds = blocks.length > 0 && blockIdx === blocks.length - 1;
