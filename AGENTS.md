@@ -85,10 +85,10 @@ the `rust-citations` and `rust-citations-test` flake checks) resolves each symbo
 (`fn`/`struct`/`enum`/`trait`/`type`/`const`/`static`/`mod`/`union`/`macro_rules!`), the type or trait an `impl` header names (not its generic
 arguments: cite `ApiError`, not the `X` of `From<X>`), or an enum variant or named field; so prose such as `core.rs for the details` fails too; a base name shared
 by several files must pick one by defining the symbol in exactly one non-test file, else give the path) and fails on any other line
-hint on a line that mentions `.rs` (`:N`, `#LN` including GitHub URL fragments, `@N`, `LN`, `line N`, `ln N`, `l. N`, `[N]`, `(N)`, `~N`; after a file name or symbol the whole class "separators, brackets, label words, then a digit" is closed) and on any `(~N)` that does
+hint on a line that mentions `.rs` (`:N`, `#LN` including GitHub URL fragments, `@N`, `LN`, `line N`, `ln N`, `l. N`, `[N]`, `(N)`, `~N`; after a file name or symbol one rule closes the whole class: a number is a line hint unless a unit or noun follows it, so `at 50 Hz` and `3 call sites` pass and `| 1742`, `— 1742`, `(Zeile 1742)` fail) and on any `(~N)` that does
 not directly follow a resolved symbol. Only ` (~N)` with N >= 1 may follow the symbol: `sym 12`, `sym (12)`, `sym, 12`, `(~ 12)`, `(~0)`
-fail; an issue reference `#123` beside a citation is fine. A number right after a symbol is rejected even when it is prose (``core.rs `host`, 3 call sites``): rephrase. Known limits (#401):
-an item must start its line (macro bodies, one-line `mod m { fn f() {} }`, tuple-struct fields cannot be cited; fields of struct-like enum variants can). The scanner is a small Python lexer + regexes (stdlib only, no `syn`/ctags: neither is
+fail; an issue reference `#123` beside a citation is fine. A number right after a symbol with no unit or noun after it is rejected even when it is prose (``core.rs `host`, 3`` then a full stop): rephrase. Known limits (#401):
+an item must start its line or follow `{`, `}` or `;`; macro-generated items (`fn $name()`) and tuple-struct fields cannot be cited (fields of struct-like enum variants can). The scanner is a small Python lexer + regexes (stdlib only, no `syn`/ctags: neither is
 in the devShell and a cargo build would make a doc check heavy).
 
 npm licences: `scripts/check-licenses.py` gates only our own `package.json` files. There is no licence gate for transitive

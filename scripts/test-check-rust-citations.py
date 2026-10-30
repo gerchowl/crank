@@ -42,6 +42,8 @@ STUBS = {
         "#[derive(Debug)] pub struct Attr;\n"
         "pub enum Ev {\n    Started {\n        inner_v: u8,\n        pub(crate) other_v: Vec<(u8, u8)>,\n    },\n    Stopped,\n    Tuple(u8),\n}\n"
         "pub enum Flags {\n    A = 1 << 2,\n    B,\n    C = 1 >> 1,\n}\n"
+        "mod inline_mod { fn inline_fn() {} }\npub fn first_fn() {} pub fn same_line_fn() {}\n#[a(b[0])] fn nested_attr_fn() {}\n"
+        "fn outer() { struct LocalStruct; let _ = 1; const LOCAL_CONST: u8 = 1; }\n"
     ),
     "crates/crank-engine/src/erg/policy.rs": "pub enum Mode {\n    Erg,\n}\nimpl TargetPolicy for ErgPolicy {\n    fn desired(&mut self) {}\n}\n",
 }
@@ -87,7 +89,17 @@ with tempfile.TemporaryDirectory() as tmp:
         "ghost.rs `Ev::Started` and ghost.rs inner_v and ghost.rs other_v and ghost.rs Stopped (struct-variant fields)",
         "ghost.rs `qualified` (see #330) and ghost.rs qualified, then 5 s",
     ]
-    for i, g in enumerate(good[-10:]):
+    good += [
+        "ghost.rs `qualified` at 50 Hz and ghost.rs qualified, 3 call sites",
+        "ghost.rs `qualified` takes 12 ms; ghost.rs qualified (~12) is 100% sure",
+        "ghost.rs inline_mod and ghost.rs inline_fn (an item after `{`)",
+        "ghost.rs first_fn and ghost.rs same_line_fn (an item after `}`)",
+        "ghost.rs nested_attr_fn (an attribute with a nested `]`)",
+        "ghost.rs LocalStruct and ghost.rs LOCAL_CONST (items after `{` and `;`)",
+        "core.rs `Core::end_ride` (~9): `Erg { 0 }` until a sample",
+        "ghost.rs qualified 2 retries, 3 or 4 of them",
+    ]
+    for i, g in enumerate(good[-18:]):
         expect(f"good {g!r}", tree_with(base, f"okx{i}", g), True)
     bad = [
         "core.rs:1667",
@@ -165,9 +177,14 @@ with tempfile.TemporaryDirectory() as tmp:
         "#L1742", "line 1742", "lines 1742-1750", "( line 1742 )", "at 1742", "around 1742", "@1742", "~1742", "(1742)",
         "- 1742", "(~ 1742)", "1742",
     ]
+    # #401: the bare-number class closed by rule: separators and up to two label words, then a number with no unit
+    spellings += [
+        "| 1742", "/ 1742", "— 1742", "– 1742", "→ 1742", "'line' 1742", "(Zeile 1742)", "at 1742", "at 1742.", "on 1742 and",
+        "// 1742", "· 1742", "(see 1742)", "ab cd 1742", "1742 to 1750", "1742 or so", "& 1742", "= 1742",
+    ]
     bad += [f"ghost.rs `qualified` {sp}" for sp in spellings]
     bad += [f"ghost.rs {sp}" for sp in spellings]
-    bad += ["ghost.rs inner_zz (a struct-variant field that does not exist)"]
+    bad += ["ghost.rs inner_zz (a struct-variant field that does not exist)", "ghost.rs inline_gone", "ghost.rs `qualified` at 50"]
     for i, b in enumerate(bad):
         expect(f"bad {b!r}", tree_with(base, f"bad{i}", b), False)
     r = run(tree_with(base, "kw", "see core.rs for x"))
