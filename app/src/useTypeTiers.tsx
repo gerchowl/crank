@@ -36,9 +36,14 @@ const subscribe = (notify: () => void) => {
     mq?.addEventListener("change", onDpr);
   };
   arm();
+  // A "Looks like" change at the same backing scale changes `screen.width` and fires neither of the above (tao
+  // emits nothing when the scale is unchanged, #390). The rider makes it in System Settings, so the window
+  // regains focus afterwards: the shell's display-may-have-changed signal (focus gain, move, scale) re-reads it.
+  const stopWatching = watchMonitorChange(notify);
   return () => {
     window.removeEventListener("resize", notify);
     mq?.removeEventListener("change", onDpr);
+    stopWatching();
   };
 };
 // A string snapshot keeps useSyncExternalStore referentially stable.
