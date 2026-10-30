@@ -1,14 +1,14 @@
 // The core's ride commands behind `mockIPC`, on top of the stream backend (`stream/testBackend.ts`), for the ride
 // tests. It models every refusal the core returns, in the core's order, and accepts nothing the core refuses:
 //
-//   ride_start  no ride loaded            conflict            "no ride loaded"      crank-core core.rs `engine` (~1666)
+//   ride_start  no ride loaded            conflict            "no ride loaded"      crank-core core.rs `Core::engine` (~1666)
 //               not in the loaded phase   conflict            "not valid in this state"  crank-engine engine.rs `command` `EngineCmd::Start` (~1317)
 //               engine has no trainer     device_unavailable  "no trainer"          engine.rs `command` `Start`
 //               trainer link not ready    device_unavailable  "trainer not ready"   engine.rs `command` `Start`
 //               health cap vs the blocks  conflict            "cap_requires_erg" / "cap_exceeded_target"  engine.rs `command` `Start`, `Session::check_cap` (~466)
 //               record cannot be opened   storage             (the recorder's text) engine.rs `command` `Start`
-//               (`ensure_start_allowed`, core.rs (~1236), always passes today and is not modelled)
-//   ride_pause  no ride loaded            conflict            "no ride loaded"      core.rs `engine`
+//               (core.rs `Core::ensure_start_allowed` (~1236) always passes today and is not modelled)
+//   ride_pause  no ride loaded            conflict            "no ride loaded"      core.rs `Core::engine`
 //               not started / finished    conflict            "not valid in this state"  engine.rs `command` `Pause | Resume | SkipBlock` (~1337)
 //   ride_resume as pause, and not paused by the rider   conflict  "not valid in this state"  engine.rs `command` `Resume` (~1349)
 //   ride_skip   as pause, and no block left (a free ride has none)  conflict  "not valid in this state"  engine.rs `command` `SkipBlock` (~1355);
@@ -21,7 +21,7 @@
 //   every other ride_* command, engine wedged  engine_unresponsive  (the core's text)  after the 1 s bound, core.rs
 //               `bounded` / `REQUEST_TIMEOUT` via `ride_cmd` (#351); checked after "no ride loaded". The stream commands
 //               answer the same (stream/testBackend.ts `truth.unresponsive`). `ride_end` ends such a ride by force.
-//   every other ride_* command, engine task ended  internal  "engine stopped"  `EngineHandle::send` engine.rs (~226) via
+//   every other ride_* command, engine task ended  internal  "engine stopped"  engine.rs `EngineHandle::send` (~226) via
 //               core.rs `ride_cmd` (~1676), mapped error.rs `From<CommandError>` (~65); checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
@@ -84,7 +84,7 @@ export interface RideWorld {
   userPause: boolean;
   /** The trainer link is lost in an active ride: the engine pauses with `trainer_lost`, which outranks a rider pause (engine.rs `Pauses::reason` (~336)). */
   trainerLost: boolean;
-  /** 8 ticks without trainer samples on a link that is still ready: the engine pauses with `trainer_lost` all the same (engine.rs `PauseReason::TrainerLost`, ~33). */
+  /** 8 ticks without trainer samples on a link that is still ready: the engine pauses with `trainer_lost` all the same (engine.rs `PauseReason::TrainerLost` (~33)). */
   trainerSilent: boolean;
   /** The trainer is back and the rider is not pedalling yet: `state` stays `paused(trainer_lost)` until the first pedalling sample (#336). */
   pausedAfterLoss: boolean;
@@ -92,7 +92,10 @@ export interface RideWorld {
   stoppedPedalling: boolean;
   /** The strap link is lost: the ride keeps going (DESIGN §6.5). */
   hrLost: boolean;
-  /** ERG released for low cadence; the engine passes `policy.released` through (engine.rs `publish` (~1398)) and it stays set until 60 rpm is held for 2 s (erg/policy.rs `ErgPolicy::update_release` (~118)), so it can accompany a pause. */
+  /**
+   * ERG released for low cadence; the engine passes `policy.released` through (engine.rs `publish` (~1398)) and it
+   * stays set until 60 rpm is held for 2 s (erg/policy.rs `ErgPolicy::update_release` (~118)), so it can accompany a pause.
+   */
   ergReleased: boolean;
   /** The session clock the published status carries (the heartbeat refreshes it in the core). */
   sessionS: number;
@@ -107,7 +110,12 @@ export interface RideWorld {
   reconnectedAtS: number | null;
   /** The ERG watts the engine last sent while it is sending ERG (its soft start, steady target or ramp step); `null`: the current block's first planned watt, which is what a steady ERG block sends. */
   commandedW: number | null;
-  /** Resume has been answered and published, but the tick that sends the resumed mode has not run: `last_sent` is still the pause's `Resistance { 0 }` (engine.rs `Resume` then `publish`, the policy runs on the next tick). `rig.tick()` runs it. (The engine ticks at 4 Hz, ticks.rs `TICKS_PER_SECOND`; the mock's `tick()` is one *soft-start step*, i.e. 1 s of the engine's 20 ticks, `SOFT_START_TICKS`. #357 tracks real engine↔mock parity.) */
+  /**
+   * Resume has been answered and published, but the tick that sends the resumed mode has not run: `last_sent` is still
+   * the pause's `Resistance { 0 }` (engine.rs `Resume` then `publish`, the policy runs on the next tick). `rig.tick()`
+   * runs it. (The engine ticks at 4 Hz, ticks.rs `TICKS_PER_SECOND`; the mock's `tick()` is one *soft-start step*, i.e.
+   * 1 s of the engine's 20 ticks, `SOFT_START_TICKS`. #357 tracks real engine↔mock parity.)
+   */
   resumePending: boolean;
   /** A soft start is owed (a pause owes one, erg/policy.rs `leave_erg` (~148); Resume then ticks through it). */
   softOwed: boolean;
@@ -115,7 +123,10 @@ export interface RideWorld {
   rampOrigin: number | null;
   /** 1 Hz steps taken since the origin. */
   rampStep: number;
-  /** Samples stopped mid-ramp: the engine sends nothing and holds the last step (erg/policy.rs `ErgPolicy::desired` (~237), `last_sent` is `Erg`); the ramp restarts from the then-current power when pedalling returns. */
+  /**
+   * Samples stopped mid-ramp: the engine sends nothing and holds the last step (erg/policy.rs `ErgPolicy::desired` (~237),
+   * `last_sent` is `Erg`); the ramp restarts from the then-current power when pedalling returns.
+   */
   rampHold: boolean;
   blockIdx: number;
   trainer: "none" | "ready" | "connecting";

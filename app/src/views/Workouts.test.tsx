@@ -110,11 +110,11 @@ type ApiErr = { code: string; message: string };
  * - `stage.connect`: the inner connect error, e.g. `device_unavailable` "connect failed: .." (`connect_links`, the `??`)
  * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (`build_session` (~1563), `bounded(handle.send(EngineCmd::Load(..)))`)
  * - `stage.build`: the new engine does not take the ride within 1 s, `engine_unresponsive`, its devices released
- *   (`build_session`, `bounded` and `REQUEST_TIMEOUT` in core.rs, #351)
+ *   (core.rs `build_session` (~1563), `bounded` and `REQUEST_TIMEOUT`, #351)
  * - `stage.installed`: `internal` "built session missing" (`ride_load` (~1460))
  * Everything from the storage step on happens while the core's `loading` flag is set (`ride_load` (~1395)), so the mock raises
  * those refusals after the load's delay (the gate), with the in-flight conflict active meanwhile.
- * (the strap driver `heart(..)?` in `connect_links` maps like `stage.driver`). `ensure_start_allowed` (core.rs (~1236)) always passes
+ * (the strap driver `heart(..)?` in `connect_links` maps like `stage.driver`). core.rs `ensure_start_allowed` (~1236) always passes
  * today and is not modelled. A free ride (null id) skips the workout checks only. Tauri itself rejects a call
  * without its `workoutId` argument with a plain string.
  */

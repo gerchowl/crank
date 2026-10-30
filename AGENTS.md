@@ -78,7 +78,7 @@ provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 
 Citing Rust from app/ (comments, docs, test backends): always `file.rs` plus the symbol, with an optional `~line` hint, e.g.
 `core.rs end_ride (~1742)`, never a bare `core.rs:1742` (a line number goes stale when the Rust file moves, #380, #391).
 `scripts/check-rust-citations.py` (unit-tested by `scripts/test-check-rust-citations.py`; `just config-checks`, the
-`rust-citations` and `rust-citations-test` flake checks) fails on a `.rs:<line>` or `.rs <line>` citation and on a
+`rust-citations` and `rust-citations-test` flake checks) fails on any other line hint near a `.rs` mention (`.rs:N`, `.rs (~N)`, `.rs#LN`, `.rs line N`, a hint after the symbol that is not `(~N)`) and on a
 ` :<line>` continuation in a file that cites Rust.
 
 npm licences: `scripts/check-licenses.py` gates only our own `package.json` files. There is no licence gate for transitive

@@ -33,8 +33,36 @@ def tree_with(base: Path, name: str, line: str) -> Path:
 with tempfile.TemporaryDirectory() as tmp:
     base = Path(tmp)
     expect("real tree passes", root, True)
-    for i, ok_line in enumerate(["core.rs `end_ride` (~1742)", "core.rs end_ride", "see engine.rs `Pauses::reason` (~336) and :", "no citation"]):
+    good = [
+        "core.rs `end_ride` (~1742)",
+        "core.rs end_ride",
+        "core.rs `Core::end_ride` (~1742)",
+        "crank-engine stream/hub.rs `validate_filters` (~306), in its order",
+        "erg/policy.rs; #330 hides the release",
+        "see core.rs for the details (#351)",
+        "`core.rs` `REQUEST_TIMEOUT` (~81)",
+        "core.rs `reap`, bounded by 250 ms",
+        "no citation, 10:30 and a :colon",
+    ]
+    for i, ok_line in enumerate(good):
         expect(f"symbol form {ok_line!r}", tree_with(base, f"ok{i}", ok_line), True)
-    for i, bad in enumerate(["core.rs:1667", "`core.rs`:81", "core.rs 1667", "core.rs ~1667", "core.rs `x` (library.rs:75-79, via `y` :1288)", "(a.rs `f`, :1632)"]):
-        expect(f"bare line {bad!r}", tree_with(base, f"bad{i}", bad), False)
+    bad = [
+        "core.rs:1667",
+        "`core.rs`:81",
+        "core.rs 1667",
+        "core.rs ~1667",
+        "core.rs (~1742)",
+        "core.rs (1742)",
+        "core.rs#L1742",
+        "core.rs L1742",
+        "core.rs, line 1742",
+        "core.rs see 1742",
+        "core.rs `x`:1742",
+        "core.rs `x` 1742",
+        "core.rs `x`, ~1742",
+        "core.rs `x` (library.rs:75-79, via `y` :1288)",
+        "(a.rs `f`, :1632)",
+    ]
+    for i, b in enumerate(bad):
+        expect(f"bare line {b!r}", tree_with(base, f"bad{i}", b), False)
 print("test-check-rust-citations: ok")
