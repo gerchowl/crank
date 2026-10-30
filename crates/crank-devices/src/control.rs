@@ -99,10 +99,15 @@ impl ControlMode {
         use ObservedControl::{Erg, Resistance, Track};
         Ok(match self {
             Self::Erg { target_w } => vec![Erg {
-                quarter_w: target_w.checked_mul(4).ok_or_else(|| invalid("target_w"))?,
+                quarter_w: target_w.checked_mul(4).ok_or_else(|| {
+                    reject(
+                        "target_w",
+                        &format!("{target_w} overflows the quarter-watt wire field (max 16383 W)"),
+                    )
+                })?,
             }],
             Self::Resistance { pct } => vec![Resistance {
-                half_pct: unit("pct", pct, 0.0, 100.0, 2.0, 0.0)?.to_le_bytes()[0],
+                half_pct: unit_byte("pct", pct, 0.0, 100.0, 2.0, 0.0)?,
             }],
             Self::Free => {
                 return Self::Sim {
@@ -118,15 +123,31 @@ impl ControlMode {
                 wind,
             } => vec![
                 ObservedControl::Wind {
-                    cw_centi: unit("wind.cw_kg_per_m", wind.cw_kg_per_m, 0.0, 1.86, 100.0, 0.0)?
-                        .to_le_bytes()[0],
-                    // 0..=254 after the +127 wire offset, so it always fits a byte
-                    speed_kmh: i16::from(
-                        unit("wind.speed_kmh", wind.speed_kmh, -127.0, 127.0, 1.0, 127.0)?
-                            .to_le_bytes()[0],
-                    ) - 127,
-                    drafting_centi: unit("wind.drafting", wind.drafting, 0.0, 1.0, 100.0, 0.0)?
-                        .to_le_bytes()[0],
+                    cw_centi: unit_byte(
+                        "wind.cw_kg_per_m",
+                        wind.cw_kg_per_m,
+                        0.0,
+                        1.86,
+                        100.0,
+                        0.0,
+                    )?,
+                    // 0..=254 after the +127 wire offset; `unit_byte` rejects anything wider
+                    speed_kmh: i16::from(unit_byte(
+                        "wind.speed_kmh",
+                        wind.speed_kmh,
+                        -127.0,
+                        127.0,
+                        1.0,
+                        127.0,
+                    )?) - 127,
+                    drafting_centi: unit_byte(
+                        "wind.drafting",
+                        wind.drafting,
+                        0.0,
+                        1.0,
+                        100.0,
+                        0.0,
+                    )?,
                 },
                 Track {
                     grade_centi_pct: i32::from(unit(
@@ -137,16 +158,17 @@ impl ControlMode {
                         100.0,
                         20000.0,
                     )?) - 20000,
-                    crr_units: unit("crr", crr, 0.0, 0.01275, 20000.0, 0.0)?.to_le_bytes()[0],
+                    crr_units: unit_byte("crr", crr, 0.0, 0.01275, 20000.0, 0.0)?,
                 },
             ],
         })
     }
 }
-fn invalid(field: &str) -> DeviceError {
+/// The encode error for `field`; `why` states the actual cause.
+fn reject(field: &str, why: &str) -> DeviceError {
     DeviceError::Protocol {
         kind: ProtocolErrorKind::Encode,
-        detail: format!("invalid control: {field} is not finite or outside its range"),
+        detail: format!("invalid control: {field} {why}"),
     }
 }
 /// Wire value of `value` on a grid: `round(value * scale + offset)`, with ties rounded away
@@ -163,10 +185,49 @@ fn unit(
     scale: f64,
     offset: f64,
 ) -> Result<u16, DeviceError> {
-    if !value.is_finite() || !(min..=max).contains(&value) {
-        return Err(invalid(field));
+    if !value.is_finite() {
+        return Err(reject(field, &format!("is not finite ({value})")));
+    }
+    if !(min..=max).contains(&value) {
+        return Err(reject(
+            field,
+            &format!("is outside its range {min}..={max} ({value})"),
+        ));
     }
     let rounded = (f64::from(value) * scale + offset).round();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to u16 just above
     Ok(rounded.clamp(0.0, f64::from(u16::MAX)) as u16)
+}
+/// [`unit`] for a one-byte wire field. The grid must keep the wire value in `0..=255`: a
+/// wider range is rejected with its own error, never truncated to the low byte.
+fn unit_byte(
+    field: &str,
+    value: f32,
+    min: f32,
+    max: f32,
+    scale: f64,
+    offset: f64,
+) -> Result<u8, DeviceError> {
+    let wire = unit(field, value, min, max, scale, offset)?;
+    u8::try_from(wire).map_err(|_| {
+        reject(
+            field,
+            &format!("maps to wire value {wire}, wider than one byte"),
+        )
+    })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_byte_field_never_truncates_a_wider_wire_value() {
+        // 300 > u8::MAX: the low byte would be 44.
+        let err = unit_byte("f", 300.0, 0.0, 300.0, 1.0, 0.0).unwrap_err();
+        assert!(
+            matches!(&err, DeviceError::Protocol { detail, .. } if detail.contains("wider than one byte")),
+            "{err:?}"
+        );
+        assert_eq!(unit_byte("f", 255.0, 0.0, 300.0, 1.0, 0.0).unwrap(), 255);
+    }
 }
