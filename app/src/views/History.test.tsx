@@ -87,10 +87,10 @@ interface Backend {
 }
 /**
  * `rides_list` and `ride_summary` behind `mockIPC`, with every refusal the core can give
- * (crates/crank-core/src/core.rs): `storage` when the store fails (`rides_list`: `store.rides()?`, :1247;
- * `ride_summary` propagates it, :1257) and `not_found` "no ride \"<id>\"" for an id that is not stored
- * (`ride_summary`, :1261). `rides_list` has no other refusal. A stored summary the core cannot parse comes back
- * as `summary: null` (`record`, :1218-1219), like an open or aborted ride; both are in `RIDES`.
+ * (crates/crank-core/src/core.rs): `storage` when the store fails (`rides_list`: `store.rides()?`, :2030-2038;
+ * `ride_summary` propagates it, :2043-2044) and `not_found` "no ride \"<id>\"" for an id that is not stored
+ * (`ride_summary`, :2048). `rides_list` has no other refusal. A stored summary the core cannot parse comes back
+ * as `summary: null` (`record`, :2004-2007), like an open or aborted ride; both are in `RIDES`.
  */
 function install(over: Partial<Backend> = {}): Backend {
   const b: Backend = { calls: [], fail: {}, hold: {}, ...over };
@@ -199,6 +199,10 @@ test("a forced end the core answers after the summary is showing adds the note (
   navigate("history", "ride-1");
   open();
   const s = within(await screen.findByRole("region", { name: "Ride summary" }));
+  // `findBy` resolves on the DOM change, before React has run the passive effects of that commit, and the summary's
+  // `useForcedEnd` subscribes in one of them: let them run, so the mark below reaches a live subscriber and its
+  // re-render is flushed by the `act` that marks (without this, 7 of 10 runs of 300 repeats failed)
+  await act(async () => {});
   expect(s.queryByRole("note")).toBeNull();
   // the `finished` frame routed here before the `ride_end` answer; the answer marks the ride forced
   act(() => markForcedEnd("ride-1"));
