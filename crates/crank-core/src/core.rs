@@ -669,6 +669,56 @@ struct State {
 /// being installed in the state: if the load is cut off in that window, the guard hands
 /// the session to a task that installs it and stops it, so the engine is released and
 /// reaped like any unloaded ride, and the flag stays up until that is done (#278).
+/// A ride's claim on the ride-active signal (`signal_of`), from just before its `Load` until
+/// `build_session` hands the session on.
+///
+/// The signal is claimed before `Load` because `Load` raises it: claimed after, a late forced
+/// end of the ride before could clear it in between (#370). A build that hands on no session
+/// gives the claim back, or the signal of the ride before, which that ride's late forced end
+/// leaves to its new owner, would stay up with no ride loaded (a link loss would then be taken
+/// for one mid-ride). The ways out between the claim and the hand-over: `Load` unanswered
+/// (`EngineUnresponsive`, the links released, `Takeover::Release`), `Load` refused (any other
+/// error), and the build's future dropped or panicking while it waits for the answer. On each
+/// the engine is cut off first (unless it already is), so that it cannot raise the signal after
+/// the clear, then the signal is cleared if the claim still stands. A handed-on session keeps
+/// it: its own end clears it (`force_end`, `settle`), a cancelled install through `discard`.
+struct SignalClaim<'a> {
+    core: &'a Core,
+    ride_id: &'a str,
+    takeover: &'a watch::Sender<Takeover>,
+    built: bool,
+}
+impl<'a> SignalClaim<'a> {
+    fn new(core: &'a Core, ride_id: &'a str, takeover: &'a watch::Sender<Takeover>) -> Self {
+        *core
+            .0
+            .signal_of
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ride_id.to_owned());
+        Self {
+            core,
+            ride_id,
+            takeover,
+            built: false,
+        }
+    }
+}
+impl Drop for SignalClaim<'_> {
+    fn drop(&mut self) {
+        if self.built {
+            return;
+        }
+        // waits, like the forced end's cut-off, for an engine call between its check and set
+        self.takeover.send_if_modified(|t| {
+            let engine = *t == Takeover::Engine;
+            if engine {
+                *t = Takeover::CutOff;
+            }
+            engine
+        });
+        self.core.clear_signal(self.ride_id);
+    }
+}
 struct LoadGuard {
     core: Arc<Inner>,
     built: Option<Session>,
@@ -1570,11 +1620,8 @@ impl Core {
             block: self.0.block_write.clone(),
         };
         // From here the signal is this ride's: a late forced end of an older ride leaves it.
-        *self
-            .0
-            .signal_of
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ride_id.clone());
+        // Every way out below that builds no session gives it back (`SignalClaim`).
+        let mut claim = SignalClaim::new(self, &ride_id, &takeover);
         let loaded = bounded(handle.send(EngineCmd::Load(RideSetup {
             blocks: compiled.blocks,
             recorder: Box::new(recorder),
@@ -1598,6 +1645,8 @@ impl Core {
             }
             return Err(e);
         }
+        claim.built = true;
+        drop(claim);
         Ok((
             Session {
                 handle,
@@ -3169,8 +3218,8 @@ mod tests {
     /// #344: an engine on its own thread, woken by its timer mid-ride, blocks that thread in a
     /// record write (`std::thread::sleep`, 4 s) while it holds both links. End answers inside
     /// [`end_bound`]; the core releases both devices itself, and the release had completed when
-    /// End returned (the immediate-release assumption of `end_bound`, as in [`end_beside`]); the next ride loads at once (no
-    /// `driver already connected`); when the engine wakes, its late write is refused by the
+    /// End returned (the immediate-release assumption of `end_bound`, as in [`end_beside`]); the
+    /// next ride loads at once (no `driver already connected`); when the engine wakes, its late write is refused by the
     /// store's id guard, the ride stays aborted and the next ride's ride-active signal is not
     /// touched. Real time, on the production host and clock.
     async fn an_engine_thread_blocked_mid_ride(host: EngineHost) {
@@ -3700,6 +3749,50 @@ mod tests {
         assert!(
             core.0.state.lock().await.last_forced.is_none(),
             "the old ride's forced end was recorded as the newer ride's last end"
+        );
+    }
+    /// #370, review of #384: an End's forced end of the old ride is past `reap` (no session) and
+    /// still closing the record when a load builds the newer ride, which claims the ride-active
+    /// signal, and whose engine never takes `Load`. The failed load gives the claim back: when
+    /// the old ride's forced end then finishes, no ride is loaded and the gate and signal are
+    /// down (the drivers would otherwise treat a link loss as mid-ride and keep reconnecting).
+    /// Steps 1-4 of `force_end` are run by hand to stop it in that window.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_newer_load_does_not_leave_the_signal_up_after_a_late_forced_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        let old = core.ride_load(None).await.unwrap();
+        break_engine(&core).await;
+        assert!(core.0.gate.is_active() && *core.0.active.borrow());
+        // steps 1-4 of the End's force_end(old), as force_end runs them
+        let (hold, takeover, release) = {
+            let st = core.0.state.lock().await;
+            let s = st.session.as_ref().unwrap();
+            (s.trainer.clone(), s.takeover.clone(), s.release.clone())
+        };
+        takeover.send_replace(Takeover::CutOff);
+        release_links(&old.ride_id, &hold, &takeover);
+        core.reap(&old.ride_id, true).await;
+        release.wait().await;
+        // while it closes the record, a load arrives whose engine never takes `Load`
+        stall_engine(&core);
+        let e = core
+            .ride_load(None)
+            .await
+            .expect_err("the newer load fails");
+        assert_eq!(e.code, ErrorCode::EngineUnresponsive, "{e:?}");
+        core.0.stall.release();
+        // the End's forced end resumes: reap finds nothing, the record is closed
+        core.force_end(&old.ride_id, false).await;
+        assert!(core.0.state.lock().await.session.is_none());
+        assert!(!core.0.gate.is_active(), "gate left up with no ride loaded");
+        assert!(
+            !*core.0.active.borrow(),
+            "ride-active left up with no ride loaded"
         );
     }
     /// #355: `open_stream` asks the engine without the state lock, so the ride may be replaced
