@@ -301,6 +301,34 @@ fn rejected_detail(mode: ControlMode) -> String {
         other => panic!("{mode:?} was not rejected: {other:?}"),
     }
 }
+/// Whether `detail` names `field` as a whole identifier (not as a suffix of a longer one).
+fn mentions(detail: &str, field: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
+    detail.match_indices(field).any(|(at, _)| {
+        !detail[..at].chars().next_back().is_some_and(ident)
+            && !detail[at + field.len()..].chars().next().is_some_and(ident)
+    })
+}
+#[test]
+fn each_cause_gets_its_own_message() {
+    let non_finite = rejected_detail(ControlMode::Resistance { pct: f32::NAN });
+    let range = rejected_detail(ControlMode::Resistance { pct: 100.5 });
+    let overflow = rejected_detail(ControlMode::Erg { target_w: 16384 });
+    assert!(
+        non_finite.contains("not finite") && !non_finite.contains("outside"),
+        "{non_finite}"
+    );
+    assert!(
+        range.contains("outside its range") && !range.contains("not finite"),
+        "{range}"
+    );
+    assert!(
+        overflow.contains("overflows")
+            && !overflow.contains("not finite")
+            && !overflow.contains("range"),
+        "{overflow}"
+    );
+}
 #[test]
 fn each_rejected_field_is_named_in_its_error() {
     let wind = |f: fn(&mut Wind)| {
@@ -331,8 +359,13 @@ fn each_rejected_field_is_named_in_its_error() {
         assert!(detail.contains(field), "{field}: {detail}");
         // and only that field: the other names must not appear
         for (other, _) in &cases {
-            if *other != field && !field.ends_with(other) && !other.ends_with(field) {
-                assert!(!detail.contains(other), "{field} blamed {other}: {detail}");
+            // `wind.speed_kmh` etc. legitimately contain no other listed name, but `pct` is a
+            // substring of `grade_pct`, so compare whole tokens of the message, not substrings.
+            if *other != field {
+                assert!(
+                    !mentions(&detail, other),
+                    "{field} blamed {other}: {detail}"
+                );
             }
         }
     }
@@ -368,7 +401,7 @@ fn discovered_devices_compare_by_value() {
 }
 #[test]
 fn trainer_status_keeps_only_the_four_bit_nibble() {
-    assert_eq!(TrainerStatus::from_raw(0xFF), TrainerStatus(0x0F));
-    assert_eq!(TrainerStatus::from_raw(0xA5), TrainerStatus(0x05));
-    assert_eq!(TrainerStatus::from_raw(0x07), TrainerStatus(0x07));
+    for raw in 0..=u8::MAX {
+        assert_eq!(TrainerStatus::from_raw(raw).raw(), raw & 0x0F);
+    }
 }
