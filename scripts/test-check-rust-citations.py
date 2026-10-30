@@ -28,6 +28,21 @@ STUBS = {
     "crates/crank-core/tests/core.rs": "fn only_in_tests() {}\nfn end_ride() {}\n",
     "crates/crank-devices/src/sim/core.rs": "fn sim_only() {}\nfn shared_name() {}\n",
     "crates/crank-core/src/other.rs": "fn x() {}\n",
+    "crates/x/src/ghost.rs": (
+        "// fn ghost_fn is gone\n/// struct Phantom was removed\nconst S: &str = \"type Bogus = 1\";\n/* const OLDCONST: u8 = 1; /* nested fn inner_gone */ still comment fn after_nested */\n"
+        "let raw = r#\"fn in_raw\"#;\nlet c = '\"'; // fn after_char\n"
+        "pub(crate) async unsafe fn qualified() {}\npub const fn const_fn() {}\nextern \"C\" fn ffi() {}\nstatic mut COUNTER: u8 = 0;\nmacro_rules! mac { () => {} }\n"
+        "pub enum Kind {\n    #[allow(dead_code)]\n    First,\n    Second(u8),\n    Third { inner: u8 },\n}\n"
+        "pub struct Cfg<T: Fn(u8, u8) -> u8> {\n    pub(crate) field_a: Vec<(u8, u8)>,\n    /// doc\n    field_b: u8,\n}\n"
+        "impl<T> Trait<Arg> for Target<T> where T: Bound {\n    fn m(&self) { Ok(self.release(crate::Result)) }\n}\n"
+        "pub fn caller() {\n    release(\n        arg_word,\n    );\n    let s = S {\n        lit_field: 1 };\n}\n"
+        "impl<F: Fn(Frame) -> Result<(), Closed> + Send + 'static> FrameSink for F {}\n"
+        "impl<F: Fn() -> u8> Wrap<F> for Holder {}\n"
+        "impl Display for &'a RefTarget {}\n"
+        "#[derive(Debug)] pub struct Attr;\n"
+        "pub enum Ev {\n    Started {\n        inner_v: u8,\n        pub(crate) other_v: Vec<(u8, u8)>,\n    },\n    Stopped,\n    Tuple(u8),\n}\n"
+        "pub enum Flags {\n    A = 1 << 2,\n    B,\n    C = 1 >> 1,\n}\n"
+    ),
     "crates/crank-engine/src/erg/policy.rs": "pub enum Mode {\n    Erg,\n}\nimpl TargetPolicy for ErgPolicy {\n    fn desired(&mut self) {}\n}\n",
 }
 
@@ -60,6 +75,20 @@ with tempfile.TemporaryDirectory() as tmp:
     ]
     for i, g in enumerate(good):
         expect(f"good {g!r}", tree_with(base, f"ok{i}", g), True)
+    good += [
+        "ghost.rs `qualified` (~3), ghost.rs const_fn, ghost.rs ffi, ghost.rs COUNTER, ghost.rs mac",
+        "ghost.rs `Kind::First` and ghost.rs Second and ghost.rs Third and ghost.rs `Cfg::field_a` and ghost.rs field_b",
+        "ghost.rs `Target::m` (~7) and ghost.rs Trait (an impl target is a definition)",
+        "ghost.rs qualified #330 (an issue reference next to a citation is fine)",
+        "ghost.rs `qualified` (~12) and 5 s",
+        "ghost.rs FrameSink and ghost.rs Wrap and ghost.rs Holder and ghost.rs RefTarget and ghost.rs Display",
+        "ghost.rs Attr (an attribute on the same line as the item)",
+        "ghost.rs `Flags::B` and ghost.rs C (a variant after `A = 1 << 2,`)",
+        "ghost.rs `Ev::Started` and ghost.rs inner_v and ghost.rs other_v and ghost.rs Stopped (struct-variant fields)",
+        "ghost.rs `qualified` (see #330) and ghost.rs qualified, then 5 s",
+    ]
+    for i, g in enumerate(good[-10:]):
+        expect(f"good {g!r}", tree_with(base, f"okx{i}", g), True)
     bad = [
         "core.rs:1667",
         "core.rs:7",
@@ -92,8 +121,57 @@ with tempfile.TemporaryDirectory() as tmp:
         "https://github.com/o/r/blob/abc/crates/crank-core/src/core.rs#L1742",
         "core.rs `x` (library.rs:75-79, via `y` :1288)",
         "(a.rs `f`, :1632)",
+        # #398 item 1: a mention in a comment, doc comment, string, nested block comment, raw string or char literal is no definition
+        "ghost.rs ghost_fn",
+        "ghost.rs Phantom",
+        "ghost.rs Bogus",
+        "ghost.rs OLDCONST",
+        "ghost.rs inner_gone",
+        "ghost.rs after_nested",
+        "ghost.rs in_raw",
+        "ghost.rs after_char",
+        # #398 item 2: words in an impl header, a call, an argument or a struct literal are no definition
+        "ghost.rs self",
+        "ghost.rs Result",
+        "ghost.rs release",
+        "ghost.rs Ok",
+        "ghost.rs crate",
+        "ghost.rs Bound",
+        "ghost.rs Arg",
+        "ghost.rs `Cfg::u8`",
+        "ghost.rs inner_field",
+        # multi-line call arguments and struct literals, and the type parameters / generic arguments of the real
+        # `impl<F: Fn(StreamFrame) -> Result<(), SinkClosed> + ..> FrameSink for F` header (core.rs `FrameSink`)
+        "ghost.rs arg_word",
+        "ghost.rs lit_field",
+        "ghost.rs F",
+        "ghost.rs Closed",
+        "ghost.rs Frame",
+        # #398 item 3: only ` (~N)`, N >= 1, directly after the symbol is a line hint
+        "ghost.rs qualified 1742",
+        "ghost.rs qualified (1742)",
+        "ghost.rs qualified, 1742",
+        "ghost.rs qualified (~ 1742)",
+        "ghost.rs qualified (~-1)",
+        "ghost.rs qualified (~0)",
+        "ghost.rs qualified (~1742):3",
+        "ghost.rs qualified L1742",
+        # #398 item 4: prose after a file name is not a symbol; the message says so
+        "see core.rs for x",
     ]
+    # #398 round 3: the class "separators and labels, then a number" after a file name or a symbol, in every spelling
+    spellings = [
+        "[1742]", "[1742-1750]", "[ 1742 ]", ", ln 1742", "ln 1742", "ln.1742", "(l. 1742)", "l.1742", "L1742", ":1742",
+        "#L1742", "line 1742", "lines 1742-1750", "( line 1742 )", "at 1742", "around 1742", "@1742", "~1742", "(1742)",
+        "- 1742", "(~ 1742)", "1742",
+    ]
+    bad += [f"ghost.rs `qualified` {sp}" for sp in spellings]
+    bad += [f"ghost.rs {sp}" for sp in spellings]
+    bad += ["ghost.rs inner_zz (a struct-variant field that does not exist)"]
     for i, b in enumerate(bad):
         expect(f"bad {b!r}", tree_with(base, f"bad{i}", b), False)
+    r = run(tree_with(base, "kw", "see core.rs for x"))
+    if "keyword, not a symbol" not in r.stderr + r.stdout:
+        sys.exit(f"test-check-rust-citations: a keyword after a file name must be reported as not a symbol:\n{r.stdout}{r.stderr}")
     expect("a citation split across lines", tree_with(base, "split", "core.rs", "// `Core::end_ride` (~1742)\n"), False)
 print("test-check-rust-citations: ok")
