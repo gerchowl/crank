@@ -87,7 +87,7 @@ fn sim_projection_has_two_independent_signed_components() {
     for (grade_pct, grade_centi_pct) in [(-200.0, -20000), (0.0, 0), (200.0, 20000)] {
         let key = sim(
             grade_pct,
-            0.01275,
+            0.0127,
             Wind {
                 cw_kg_per_m: 1.86,
                 speed_kmh: -127.0,
@@ -106,7 +106,7 @@ fn sim_projection_has_two_independent_signed_components() {
                 },
                 ObservedControl::Track {
                     grade_centi_pct,
-                    crr_units: 255
+                    crr_units: 254
                 }
             ]
         );
@@ -308,6 +308,26 @@ fn mentions(detail: &str, field: &str) -> bool {
         !detail[..at].chars().next_back().is_some_and(ident)
             && !detail[at + field.len()..].chars().next().is_some_and(ident)
     })
+}
+#[test]
+fn crr_is_capped_at_the_largest_encodable_value() {
+    // 0.0127 is wire unit 254, the largest the NEO accepts (ADR-0002 §4.3, HIL #44 Part A).
+    assert_eq!(
+        sim(0.0, 0.0127, Wind::default()).grid_key().unwrap()[1],
+        ObservedControl::Track {
+            grade_centi_pct: 0,
+            crr_units: 254
+        }
+    );
+    // 0.012725 and 0.01275 round to unit 255 (the NEO ignores it); anything wider is out of range
+    // too. All fail at the mode boundary naming `crr`, not later as the BLE writer's encode error.
+    for crr in [0.012_725, 0.012_74, 0.01275, 0.0128, 0.02] {
+        let detail = rejected_detail(sim(0.0, crr, Wind::default()));
+        assert!(
+            detail.contains("crr") && detail.contains("outside its range"),
+            "{crr}: {detail}"
+        );
+    }
 }
 #[test]
 fn each_cause_gets_its_own_message() {
