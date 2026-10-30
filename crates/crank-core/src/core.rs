@@ -3167,8 +3167,9 @@ mod tests {
         }
     }
     /// #344: an engine on its own thread, woken by its timer mid-ride, blocks that thread in a
-    /// record write (`std::thread::sleep`, 4 s) while it holds both links. End answers inside a
-    /// fixed 2 s; the core releases both devices itself; the next ride loads at once (no
+    /// record write (`std::thread::sleep`, 4 s) while it holds both links. End answers inside
+    /// [`end_bound`]; the core releases both devices itself, and the release had completed when
+    /// End returned (the immediate-release assumption of `end_bound`, as in [`end_beside`]); the next ride loads at once (no
     /// `driver already connected`); when the engine wakes, its late write is refused by the
     /// store's id guard, the ride stays aborted and the next ride's ride-active signal is not
     /// touched. Real time, on the production host and clock.
@@ -3195,6 +3196,16 @@ mod tests {
             .unwrap();
         assert!(loaded.hr_linked);
         core.ride_start().await.unwrap();
+        let release = core
+            .0
+            .state
+            .lock()
+            .await
+            .session
+            .as_ref()
+            .unwrap()
+            .release
+            .clone();
         tokio::time::sleep(Duration::from_millis(1500)).await;
         let block = core.0.block_write.clone();
         *block.next.lock().unwrap() = Some(Duration::from_secs(4));
@@ -3214,7 +3225,14 @@ mod tests {
             "End waited for the blocked engine"
         );
         assert_eq!(end, RideEnd::ForcedEnd(loaded.ride_id.clone()));
-        // released by the core, with the engine still holding its links
+        // released by the core, with the engine still holding its links: both relays saw their
+        // driver close its stream (the release finished, not just started), and the fake
+        // counted the trainer's disconnect and the strap's release
+        assert!(*release.trainer.borrow(), "the trainer was not released");
+        assert!(
+            release.hr.as_ref().is_some_and(|hr| *hr.borrow()),
+            "the strap was not released"
+        );
         assert_eq!(radio.disconnects.lock().unwrap().len(), 1, "trainer");
         assert_eq!(radio.hr_released.load(Ordering::SeqCst), 2, "strap");
         let next = core.ride_load(None).await.unwrap();
@@ -3309,8 +3327,9 @@ mod tests {
     /// 4. `STORE_TIMEOUT`: closing the record on the blocking pool;
     /// 5. `RELEASE_TIMEOUT`: `end_ride` then awaits the devices' release
     ///    (`LinkRelease::wait`). The fake drivers of these tests close their streams as soon
-    ///    as `Takeover::Release` arrives, so this wait is ~0 here, not 3 s: [`end_beside`]
-    ///    asserts that the release had completed when End returned, and an unbounded or
+    ///    as `Takeover::Release` arrives, so this wait is ~0 here, not 3 s: [`end_beside`] and
+    ///    `an_engine_thread_blocked_mid_ride` assert that the release had completed when End
+    ///    returned, and an unbounded or
     ///    slow release would exceed this bound. It is therefore not summed in.
     ///
     /// Steps 1-4 are 2.25 s (the "about 2.25 s at worst" of `END_MODE_TIMEOUT`); the true
