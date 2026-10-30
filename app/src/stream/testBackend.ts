@@ -138,7 +138,7 @@ function decodeSubscribe(
 /**
  * `validate_filters` (crank-engine stream/hub.rs `validate_filters` (~306)), in its order: chain length, then each filter's bound. The
  * rejection's text is `StreamError::InvalidFilter`'s `invalid filter: {what}` (`stream/types.rs` `StreamError::InvalidFilter` (~487)), code `invalid_input`
- * (crank-core `error.rs` `StreamError` (~79)). `FilterChain::new`'s non-finite check cannot be reached from the wire: the decode above
+ * (crank-core error.rs `ApiError` (~79), its `From<StreamError>`). `FilterChain::new`'s non-finite check cannot be reached from the wire: the decode above
  * refuses those first.
  */
 function validateFilters(filters: readonly Filter[]): void {
