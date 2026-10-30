@@ -389,3 +389,55 @@ fn rejects_the_wire_sentinels_the_neo_treats_as_invalid() {
         Field::Crr
     );
 }
+
+/// #375: every valid value of each one-byte field encodes to exactly its wire
+/// unit, so replacing the truncating `to_le_bytes()[0]` with a checked
+/// conversion changed no byte on the wire.
+#[test]
+fn one_byte_fields_encode_their_wire_unit_over_the_whole_valid_range() {
+    for i in 0..=200u8 {
+        let pct = payload(C::BasicResistance {
+            pct: f32::from(i) / 2.0,
+        });
+        assert_eq!(pct[7], i, "pct unit {i}");
+    }
+    for i in 0..=186u8 {
+        let wind = payload(C::Wind {
+            cw_kg_per_m: f32::from(i) / 100.0,
+            speed_kmh: 0.0,
+            drafting: 0.0,
+        });
+        assert_eq!(wind[5], i, "cw unit {i}");
+    }
+    for i in 0..=254u8 {
+        let wind = payload(C::Wind {
+            cw_kg_per_m: 0.0,
+            speed_kmh: f32::from(i) - 127.0,
+            drafting: 0.0,
+        });
+        assert_eq!(wind[6], i, "speed unit {i}");
+    }
+    for i in 0..=100u8 {
+        let wind = payload(C::Wind {
+            cw_kg_per_m: 0.0,
+            speed_kmh: 0.0,
+            drafting: f32::from(i) / 100.0,
+        });
+        assert_eq!(wind[7], i, "drafting unit {i}");
+    }
+    for i in 0..=254u8 {
+        let track = payload(C::Track {
+            grade_pct: 0.0,
+            crr: f32::from(i) / 20_000.0,
+        });
+        assert_eq!(track[7], i, "crr unit {i}");
+    }
+    for mm in 0..=2540u16 {
+        let cfg = payload(C::UserConfig {
+            rider_kg: 0.0,
+            bike_kg: 0.0,
+            wheel_m: f32::from(mm) / 1000.0,
+        });
+        assert_eq!(u16::from(cfg[6]), mm / 10, "wheel {mm} mm");
+    }
+}

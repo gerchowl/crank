@@ -29,7 +29,7 @@ pub fn encode(page: &ControlPage) -> Result<[u8; 13], EncodeError> {
     match *page {
         ControlPage::BasicResistance { pct } => {
             p[0] = 48;
-            p[7] = quantize(pct, 0.0, 100.0, 2.0, 0.0, Field::Pct)?.to_le_bytes()[0];
+            p[7] = byte(quantize(pct, 0.0, 100.0, 2.0, 0.0, Field::Pct)?, Field::Pct)?;
         }
         ControlPage::TargetPower { watts } => {
             p[0] = 49;
@@ -42,10 +42,12 @@ pub fn encode(page: &ControlPage) -> Result<[u8; 13], EncodeError> {
             drafting,
         } => {
             p[0] = 50;
-            p[5] = quantize(cw_kg_per_m, 0.0, 1.86, 100.0, 0.0, Field::CwKgPerM)?.to_le_bytes()[0];
-            p[6] =
-                quantize(speed_kmh, -127.0, 127.0, 1.0, 127.0, Field::SpeedKmh)?.to_le_bytes()[0];
-            p[7] = quantize(drafting, 0.0, 1.0, 100.0, 0.0, Field::Drafting)?.to_le_bytes()[0];
+            let cw = quantize(cw_kg_per_m, 0.0, 1.86, 100.0, 0.0, Field::CwKgPerM)?;
+            p[5] = byte(cw, Field::CwKgPerM)?;
+            let speed = quantize(speed_kmh, -127.0, 127.0, 1.0, 127.0, Field::SpeedKmh)?;
+            p[6] = byte(speed, Field::SpeedKmh)?;
+            let draft = quantize(drafting, 0.0, 1.0, 100.0, 0.0, Field::Drafting)?;
+            p[7] = byte(draft, Field::Drafting)?;
         }
         ControlPage::Track { grade_pct, crr } => {
             p[0] = 51;
@@ -54,7 +56,7 @@ pub fn encode(page: &ControlPage) -> Result<[u8; 13], EncodeError> {
                     .to_le_bytes(),
             );
             let units = quantize(crr, 0.0, 0.01275, 20_000.0, 0.0, Field::Crr)?;
-            p[7] = not_invalid(units, 0xff, Field::Crr)?.to_le_bytes()[0];
+            p[7] = byte(not_invalid(units, 0xff, Field::Crr)?, Field::Crr)?;
         }
         ControlPage::UserConfig {
             rider_kg,
@@ -69,7 +71,7 @@ pub fn encode(page: &ControlPage) -> Result<[u8; 13], EncodeError> {
             let mm = quantize(wheel_m, 0.0, 2.54, 1000.0, 0.0, Field::WheelM)?;
             let packed = (bike << 4) | (mm % 10);
             p[4..6].copy_from_slice(&packed.to_le_bytes());
-            p[6] = (mm / 10).to_le_bytes()[0];
+            p[6] = byte(mm / 10, Field::WheelM)?;
             p[7] = 0; // Gear ratio unspecified by the API; profile's invalid value.
         }
         ControlPage::Request { page, times } => {
@@ -114,6 +116,13 @@ fn quantize(
         }
     }
     Ok(lo)
+}
+
+// A one-byte wire field. The ranges above keep every value in range; this makes
+// a future range or scale edit fail loudly instead of silently sending the low
+// byte of a wider value (#375, as #308 did for crank-devices `control.rs`).
+fn byte(units: u16, field: Field) -> Result<u8, EncodeError> {
+    u8::try_from(units).map_err(|_| EncodeError { field })
 }
 
 // The NEO does not apply this wire value (HIL #44 Part A); it must never be sent.
@@ -250,5 +259,25 @@ fn decode_page(p: [u8; 8]) -> Page {
             page: other,
             raw: p,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_rejects_values_that_would_truncate() {
+        assert_eq!(byte(255, Field::Pct), Ok(255));
+        assert_eq!(
+            byte(256, Field::Pct),
+            Err(EncodeError { field: Field::Pct })
+        );
+        assert_eq!(
+            byte(0x1_00 | 7, Field::Drafting),
+            Err(EncodeError {
+                field: Field::Drafting
+            })
+        );
     }
 }
