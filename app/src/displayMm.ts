@@ -21,9 +21,13 @@ const SETTLE_MS = 200;
  * different way the display under it changes:
  * - `onMoved` (`tauri://move`): every move, including the one onto another monitor (drag, keyboard, maximise).
  * - `onScaleChanged` (`tauri://scale-change`): the window's backing scale factor changed (a move between displays of
- *   different scale, a scale change in System Settings). A "Looks like" resolution change on a Retina display keeps
- *   the backing scale at 2.0, so tao emits nothing (tao 0.37.1, window_delegate.rs:102-106); that is not covered here
- *   and does not need to be, because the physical width in mm is independent of the resolution.
+ *   different scale, or a switch to or from a non-HiDPI mode in System
+ *   Settings). A "Looks like" resolution change on a Retina display keeps
+ *   the backing scale at 2.0, so tao emits nothing (tao 0.37.1, window_delegate.rs:102-106); that is not covered by
+ *   this event. The physical width in mm is independent of the resolution, so the measurement needs no refresh,
+ *   but `screen.width` (and so the type size) does change: `useTypeTiers` re-reads it on this same signal,
+ *   expected to be the focus gain below (#390). Not verified on hardware: that the focus event fires on return from
+ *   System Settings, and that WKWebView's `screen.width` has updated by the end of the settle, are on the #44 HIL list.
  * - `onFocusChanged`, on gaining focus: an arrangement or mirroring change made in System Settings
  *   (or by plugging a display in) while the window did not have focus, with no move and no scale change. The
  *   rider comes back to the app by focusing it, which re-reads.
