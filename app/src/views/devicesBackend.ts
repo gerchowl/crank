@@ -1,14 +1,14 @@
 // A stand-in for the core's device commands behind `mockIPC`, for the Devices tests only. It enforces what the core
 // does (crank-core `Core::devices_scan` / `device_pair` / `device_forget` / `device_links`), not more permissive:
-// every one of them is `conflict` while a ride is loaded (`require_no_ride`, core.rs:535-545); pair refuses an empty
-// id (`invalid_input`, core.rs:608), and, on the SIM core only (`core: "sim"`), any id but the sim's fixed one for the
+// every one of them is `conflict` while a ride is loaded (`require_no_ride`, core.rs:947-956); pair refuses an empty
+// id (`invalid_input`, core.rs:1019-1021), and, on the SIM core only (`core: "sim"`), any id but the sim's fixed one for the
 // role, `trainer` / `strap` (`invalid_input`; `Backend::accepts`, backend.rs:151, `SIM_TRAINER` / `SIM_STRAP`). The
 // RADIO core (the default) accepts any id and role and fails at connect (`device_unavailable`), so the UI must not
 // rely on the sim's early refusal. Pair replaces the role's earlier pairing, and answers the adapter's failures;
-// forget of an empty role is `not_found` (core.rs:679-696); a scan lists a peripheral once and marks `paired` for any
-// role. `storage` (`store`): scan and forget read the store first (core.rs:559-566, 684-690), so they fail before
-// anything else happens; pair writes it after the connect succeeded (core.rs:659): `store` then leaves nothing paired,
-// `storeAfterWrite` models the later reads and forgets of the replaced pairing failing (core.rs:666-669), after the
+// forget of an empty role is `not_found` (core.rs:1091-1106); a scan lists a peripheral once and marks `paired` for any
+// role. `storage` (`store`): scan and forget read the store first (core.rs:972-977, 1094-1099), so they fail before
+// anything else happens; pair writes it after the connect succeeded (core.rs:1064): `store` then leaves nothing paired,
+// `storeAfterWrite` models the later reads and forgets of the replaced pairing failing (core.rs:1074-1077), after the
 // new row was written.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
