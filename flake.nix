@@ -237,7 +237,7 @@
         '';
         # App comments cite Rust as `file.rs symbol (~line)`, never a bare line number (#391).
         rust-citations = pkgs.runCommand "rust-citations" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          python3 -I ${./scripts/check-rust-citations.py} ${source (lib.fileset.unions [ (lib.fileset.fileFilter (f: lib.any f.hasExt [ "ts" "tsx" "rs" "md" "css" "html" ]) ./app) ])}
+          python3 -I ${./scripts/check-rust-citations.py} ${source (lib.fileset.unions [ (lib.fileset.fileFilter (f: lib.any f.hasExt [ "ts" "tsx" "md" "css" "html" ]) ./app) (lib.fileset.fileFilter (f: f.hasExt "rs") ./crates) (lib.fileset.fileFilter (f: f.hasExt "rs") ./app/src-tauri) ])}
           touch $out
         '';
         rust-citations-test = pkgs.runCommand "rust-citations-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''

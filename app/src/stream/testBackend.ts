@@ -9,7 +9,7 @@
 // streams, and `not_found` for a stream that is not the open one. Durable state (`truth`) is what `ride_status`,
 // `device_links` and `stream_snapshot` answer from, read when the call arrives; `hold` delays only the answer.
 // With `truth.unresponsive` the engine is wedged: every stream command answers `engine_unresponsive` after its owner
-// check, as the core's `bounded` (crank-core `core.rs` `REQUEST_TIMEOUT` (~81), `bounded` (~601), #351) does.
+// check, as the core's `bounded` (crank-core core.rs `REQUEST_TIMEOUT` (~81), core.rs `bounded` (~601), #351) does.
 import type { Channel } from "@tauri-apps/api/core";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
@@ -138,7 +138,7 @@ function decodeSubscribe(
 /**
  * `validate_filters` (crank-engine stream/hub.rs `validate_filters` (~306)), in its order: chain length, then each filter's bound. The
  * rejection's text is `StreamError::InvalidFilter`'s `invalid filter: {what}` (`stream/types.rs` `StreamError::InvalidFilter` (~487)), code `invalid_input`
- * (crank-core `error.rs` `From<StreamError>` (~79)). `FilterChain::new`'s non-finite check cannot be reached from the wire: the decode above
+ * (crank-core `error.rs` `StreamError` (~79)). `FilterChain::new`'s non-finite check cannot be reached from the wire: the decode above
  * refuses those first.
  */
 function validateFilters(filters: readonly Filter[]): void {

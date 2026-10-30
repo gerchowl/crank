@@ -75,11 +75,16 @@ gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and com
 `just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
 provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
 
-Citing Rust from app/ (comments, docs, test backends): always `file.rs` plus the symbol, with an optional `~line` hint, e.g.
-`core.rs end_ride (~1742)`, never a bare `core.rs:1742` (a line number goes stale when the Rust file moves, #380, #391).
-`scripts/check-rust-citations.py` (unit-tested by `scripts/test-check-rust-citations.py`; `just config-checks`, the
-`rust-citations` and `rust-citations-test` flake checks) fails on any other line hint near a `.rs` mention (`.rs:N`, `.rs (~N)`, `.rs#LN`, `.rs line N`, a hint after the symbol that is not `(~N)`) and on a
-` :<line>` continuation in a file that cites Rust.
+Citing Rust from app/ (comments, docs, test backends): always `<name>.rs <symbol>` with an optional ` (~N)` line hint directly after
+the symbol, e.g. ``core.rs `Core::end_ride` (~1742)``; the symbol is an identifier path (`A::b`), in backticks or not. Never a bare
+`core.rs:1742` (a line number goes stale when the Rust file moves, #380, #391). A bare file mention with no symbol is fine
+(`crates/crank-core/src/core.rs`). Repeat the file name for each symbol (`core.rs A (~1) / core.rs B (~2)`), and never split a
+citation across lines: `scripts/check-rust-citations.py` (unit-tested by `scripts/test-check-rust-citations.py`; `just config-checks`,
+the `rust-citations` and `rust-citations-test` flake checks) resolves each symbol in the cited file under `crates/` or
+`app/src-tauri/` (the last `::` segment must be defined there, so prose such as `core.rs for the details` fails too; a base name shared
+by several files must pick one by defining the symbol in exactly one non-test file, else give the path) and fails on any other line
+hint on a line that mentions `.rs` (`:N`, `#LN` including GitHub URL fragments, `@N`, `LN`, `line N`, `~N`) and on any `(~N)` that does
+not directly follow a resolved symbol.
 
 npm licences: `scripts/check-licenses.py` gates only our own `package.json` files. There is no licence gate for transitive
 **dev**Dependencies (about 446 came in with WebdriverIO, #233) by decision: they belong to the e2e harness and the shared
