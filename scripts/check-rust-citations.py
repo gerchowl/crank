@@ -17,11 +17,12 @@ symbol, is fine. A bare line number goes stale when the Rust file moves, so the 
   `sym, 12`, `sym (~ 12)`, `sym (~0)`, `sym (~-1)` and `sym (~12):3` fail. An issue reference `#123` next to a citation is
   allowed (`#` + digits is not a line hint; only `#L12` is);
 - any other line hint on a line that mentions a `.rs` file fails: `(~N)` not directly after a resolved symbol, `~N`,
-  `:N`, `#LN` (a GitHub `#L12` URL fragment is not allowed either), `@N`, `LN`, `line N`, a number right after the
-  file name;
+  `:N`, `#LN` (a GitHub `#L12` URL fragment is not allowed either), `@N`, `LN`, `line N`, `ln N`, `l. N`, `[N]`, `(N)`.
+  After a file name or a symbol the whole class is closed, not a list of spellings: separators/brackets and label words
+  (`line`, `ln`, `l.`, `at`, `around`, ...), optionally `L`/`#L`, then a digit;
 - a `(~N)` anywhere that does not directly follow a resolved symbol fails, so a citation split across lines fails.
 Known limits (#401): an item must start its line (after optional same-line attributes without a nested `]`), so items
-inside a macro body, one-line `mod m { fn f() {} }` and tuple-struct fields cannot be cited.
+inside a macro body, one-line `mod m { fn f() {} }` and tuple-struct fields cannot be cited. Fields of struct-like enum variants (`Started { inner_v: u8 }`) can.
 A bare number right after a symbol is rejected even when it is prose (`core.rs `host`, 3 call sites`): rephrase it.
 Usage: check-rust-citations.py [root]
 """
@@ -36,12 +37,25 @@ EXTS = {".ts", ".tsx", ".md", ".css", ".html"}
 MENTION = re.compile(r"(?P<name>\w[\w./-]*?)\.rs\b`?", re.I)
 IDENT = r"[A-Za-z_]\w*"
 SYMBOL = re.compile(rf"[ ]+(?P<tick>`?)(?P<sym>{IDENT}(?:::{IDENT})*)(?P=tick)(?![\w:@#~(<`])")
-SYMBOL_TICKED_END = re.compile(rf"[ ]+`(?P<sym>{IDENT}(?:::{IDENT})*)`")
 LINE_HINT = re.compile(r"[ ]\(~[1-9]\d*\)")
-BARE_AFTER = re.compile(r"(?:\s*[,;:]?\s*[(~-]*\s*[~-]?\d|[:@]\d)")
-HINT_AFTER_FILE = re.compile(r"[\s,;:#@-]*(?:line\s*)?L?~?\(?\d", re.I)
-HINT_ANY = re.compile(r"\(~\d+\)|~\d+|(?<!\w)(?:[:@]L?|#L)\d+|\bline\s*\d+|\bL\d+\b", re.I)
+# What may sit between a file name or symbol and a number for the number to read as a line hint: punctuation and
+# brackets, label words (`line`, `ln`, `l.`, `at`, ...), then `L`/`#L`. The class is "separators and labels, then a digit",
+# so `:12`, `[12]`, `(12)`, `, 12`, `ln 12`, `(l. 12)`, `#L12`, `L12`, `@12`, `~12`, `- 12` are all caught; `#12` is an
+# issue reference and is not (`#` only counts before `L`).
+NUMBER_AFTER = re.compile(
+    r"(?:[\s,;:.\[\](){}<>@~=+\-]|(?:lines?|ln|l|at|on|near|around|about|pos|offset|row)\b\.?)*(?:#?L\s*)?\d", re.I
+)
+# A hint anywhere on a line that mentions a `.rs` file (after the canonical ones are removed).
+HINT_ANY = re.compile(
+    r"~\s*\d|(?<!\w)(?:[:@]L?|#L)\d+|\b(?:lines?|ln|l)\.?\s*\d|\bL\d+\b|[\[(]\s*\d{2,}(?:\s*[-,]\s*\d+)*\s*[\])]", re.I
+)
 STRAY_TILDE = re.compile(r"\(\s*~")
+SYMBOL_WORD = re.compile(rf"[ ]+`?{IDENT}")
+GENERIC_PARAM = re.compile(rf"\s*(?:const\s+)?({IDENT})")
+FOR = re.compile(r"\bfor\b")
+ATTRIBUTE = re.compile(r"#\[[^\]]*\]")
+PUB = re.compile(r"^pub(?:\([^)]*\))?\s+")
+FIELD = re.compile(rf"({IDENT})\s*(:(?!:))?")
 
 RAW_STRING = re.compile(r'b?r(#*)"')
 CHAR_LITERAL = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|.)|[^\\'])'")
@@ -186,12 +200,12 @@ def impl_names(header: str) -> set[str]:
                 end = i + 1
                 break
         for entry in top_level_split(header[1 : end - 1]):
-            pm = re.match(rf"\s*(?:const\s+)?({IDENT})", entry)
+            pm = GENERIC_PARAM.match(entry)
             if pm:
                 params.add(pm.group(1))
         header = header[end:]
     names = set()
-    for side in re.split(r"\bfor\b", header):
+    for side in FOR.split(header):
         m = IMPL_SIDE.match(side)
         if m:
             names.add(m.group(1).split("::")[-1])
@@ -224,6 +238,21 @@ def body_brace(text: str, start: int) -> int:
     return -1
 
 
+def member_names(body: str, is_enum: bool) -> set[str]:
+    """Variants (enum) and named fields of a braced body; the fields of a struct-like variant are members too."""
+    names: set[str] = set()
+    for entry in top_level_split(body):
+        entry = PUB.sub("", ATTRIBUTE.sub("", entry).strip())
+        em = FIELD.match(entry)
+        if not em or not (is_enum or em.group(2)):
+            continue
+        names.add(em.group(1))
+        rest = entry[em.end() :].lstrip()
+        if is_enum and rest.startswith("{"):
+            names |= member_names(rest[1 : matching(rest, 0) - 1], False)
+    return names
+
+
 def definitions(path: Path) -> set[str]:
     if path not in _defs:
         text = strip_rust(path.read_text(encoding="utf-8", errors="replace"))
@@ -244,13 +273,7 @@ def definitions(path: Path) -> set[str]:
                 brace = body_brace(text, m.end())
                 if brace < 0:
                     continue
-                body = text[brace + 1 : matching(text, brace) - 1]
-                for entry in top_level_split(body):
-                    entry = re.sub(r"#\[[^\]]*\]", "", entry).strip()
-                    entry = re.sub(r"^pub(?:\([^)]*\))?\s+", "", entry)
-                    em = re.match(rf"({IDENT})\s*(:(?!:))?", entry)
-                    if em and (kw == "enum" or em.group(2)):
-                        names.add(em.group(1))
+                names |= member_names(text[brace + 1 : matching(text, brace) - 1], kw == "enum")
         _defs[path] = names
     return _defs[path]
 
@@ -285,9 +308,9 @@ def check_line(line: str) -> list[str]:
         tail = line[m.end():]
         sym = SYMBOL.match(tail)
         if sym is None:
-            if re.match(r"[ ]+`?" + IDENT, tail):
+            if SYMBOL_WORD.match(tail):
                 problems.append(f"{m.group(0).strip('`')}: the symbol must be an identifier path with no suffix")
-            elif HINT_AFTER_FILE.match(tail):
+            elif NUMBER_AFTER.match(tail):
                 problems.append(f"{m.group(0).strip('`')}: a line number without a symbol")
             continue
         why = resolve(m.group("name"), sym.group("sym"))
@@ -297,7 +320,7 @@ def check_line(line: str) -> list[str]:
         hint = LINE_HINT.match(tail, sym.end())
         if hint:
             consumed.append((m.end() + hint.start(), m.end() + hint.end()))
-        if BARE_AFTER.match(tail, hint.end() if hint else sym.end()):
+        if NUMBER_AFTER.match(tail, hint.end() if hint else sym.end()):
             problems.append("a bare number after the symbol; only ` (~N)` with N >= 1 directly after it is a line hint")
     rest = line
     for a, b in reversed(consumed):
