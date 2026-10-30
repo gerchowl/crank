@@ -87,7 +87,8 @@ arguments: cite `ApiError`, not the `X` of `From<X>`), or an enum variant or nam
 by several files must pick one by defining the symbol in exactly one non-test file, else give the path) and fails on any other line
 hint on a line that mentions `.rs` (`:N`, `#LN` including GitHub URL fragments, `@N`, `LN`, `line N`, `~N`) and on any `(~N)` that does
 not directly follow a resolved symbol. Only ` (~N)` with N >= 1 may follow the symbol: `sym 12`, `sym (12)`, `sym, 12`, `(~ 12)`, `(~0)`
-fail; an issue reference `#123` beside a citation is fine. The scanner is a small Python lexer + regexes (stdlib only, no `syn`/ctags: neither is
+fail; an issue reference `#123` beside a citation is fine. A number right after a symbol is rejected even when it is prose (``core.rs `host`, 3 call sites``): rephrase. Known limits (#401):
+an item must start its line (macro bodies, one-line `mod m { fn f() {} }`, tuple-struct fields cannot be cited). The scanner is a small Python lexer + regexes (stdlib only, no `syn`/ctags: neither is
 in the devShell and a cargo build would make a doc check heavy).
 
 npm licences: `scripts/check-licenses.py` gates only our own `package.json` files. There is no licence gate for transitive

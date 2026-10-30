@@ -35,6 +35,12 @@ STUBS = {
         "pub enum Kind {\n    #[allow(dead_code)]\n    First,\n    Second(u8),\n    Third { inner: u8 },\n}\n"
         "pub struct Cfg<T: Fn(u8, u8) -> u8> {\n    pub(crate) field_a: Vec<(u8, u8)>,\n    /// doc\n    field_b: u8,\n}\n"
         "impl<T> Trait<Arg> for Target<T> where T: Bound {\n    fn m(&self) { Ok(self.release(crate::Result)) }\n}\n"
+        "pub fn caller() {\n    release(\n        arg_word,\n    );\n    let s = S {\n        lit_field: 1 };\n}\n"
+        "impl<F: Fn(Frame) -> Result<(), Closed> + Send + 'static> FrameSink for F {}\n"
+        "impl<F: Fn() -> u8> Wrap<F> for Holder {}\n"
+        "impl Display for &'a RefTarget {}\n"
+        "#[derive(Debug)] pub struct Attr;\n"
+        "pub enum Flags {\n    A = 1 << 2,\n    B,\n    C = 1 >> 1,\n}\n"
     ),
     "crates/crank-engine/src/erg/policy.rs": "pub enum Mode {\n    Erg,\n}\nimpl TargetPolicy for ErgPolicy {\n    fn desired(&mut self) {}\n}\n",
 }
@@ -74,8 +80,11 @@ with tempfile.TemporaryDirectory() as tmp:
         "ghost.rs `Target::m` (~7) and ghost.rs Trait (an impl target is a definition)",
         "ghost.rs qualified #330 (an issue reference next to a citation is fine)",
         "ghost.rs `qualified` (~12) and 5 s",
+        "ghost.rs FrameSink and ghost.rs Wrap and ghost.rs Holder and ghost.rs RefTarget and ghost.rs Display",
+        "ghost.rs Attr (an attribute on the same line as the item)",
+        "ghost.rs `Flags::B` and ghost.rs C (a variant after `A = 1 << 2,`)",
     ]
-    for i, g in enumerate(good[-5:]):
+    for i, g in enumerate(good[-8:]):
         expect(f"good {g!r}", tree_with(base, f"okx{i}", g), True)
     bad = [
         "core.rs:1667",
@@ -128,6 +137,13 @@ with tempfile.TemporaryDirectory() as tmp:
         "ghost.rs Arg",
         "ghost.rs `Cfg::u8`",
         "ghost.rs inner_field",
+        # multi-line call arguments and struct literals, and the type parameters / generic arguments of the real
+        # `impl<F: Fn(StreamFrame) -> Result<(), SinkClosed> + ..> FrameSink for F` header (core.rs `FrameSink`)
+        "ghost.rs arg_word",
+        "ghost.rs lit_field",
+        "ghost.rs F",
+        "ghost.rs Closed",
+        "ghost.rs Frame",
         # #398 item 3: only ` (~N)`, N >= 1, directly after the symbol is a line hint
         "ghost.rs qualified 1742",
         "ghost.rs qualified (1742)",
