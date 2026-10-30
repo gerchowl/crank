@@ -270,7 +270,8 @@ results (2026-10-14, NEO fw 0.7.4) are marked; the rest stays tentative:
   previous target is replaced by 0 W); the echo of Crr `0xFF` keeps the previous Crr. **Confirmed by HIL
   Part A** (`docs/hil/2026-10-14-fec.md`, check 3, "Endpoints"): `encode` rejects both with
   `EncodeError` (`Field::Watts`, `Field::Crr`), judged on the wire value after rounding, so the largest valid
-  values are 16383.5 W (`0xFFFE`) and Crr 0.0127 (`0xFE`) (#215).
+  values are 16383.5 W (`0xFFFE`) and Crr 0.0127 (`0xFE`) (#215; these two are inferred from the sentinels,
+  not measured: Part A sent only `0xFFFF` and `0xFF`).
 - Page 49 resolution. **Part A:** the NEO quantises the target to whole watts: 200.25 W is echoed as 200 W
   and 200.5 W as 201 W, so §7.1's 1 W grid is the real resolution and 0.25 W is wire format only.
 - Pages 54/80/81 layout. **Part A (settled):** page 80 reads hardware revision 1, manufacturer 89
@@ -309,8 +310,10 @@ pub fn encode(p: &ControlPage) -> Result<[u8; 13], EncodeError>;   // range-chec
 pub fn decode(b: &[u8]) -> Result<AntFrame, FrameError>;           // Sync | Length | Checksum | Truncated
 ```
 
-Values that do not fit a page field (target above 16 383.75 W, grade outside ±200 %, Crr above 0.01275,
+Values that do not fit a page field (target at or above 16 383.625 W (rounds to `0xFFFF`), grade outside ±200 %, Crr at or above 0.012725 (rounds to `0xFF`),
 negative masses) are `EncodeError`s; clamping to trainer capabilities is the engine's explicit job (§7).
+`crank-devices` rejects SIM's Crr above `CRR_MAX` = 0.0127 (unit `0xFE`) at the mode boundary (`ControlMode::grid_key`),
+so the same typed error surfaces there and not late from the BLE writer (#237).
 
 ### 4.4 Command pacing and acknowledgement
 
