@@ -967,7 +967,10 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    the signal (the command gate and `active`) is one per core and belongs to the engine built last, which takes
    it over before its `Load` raises it (the check and the clear hold the same lock); a forced end that runs late (an End and a replacing
    load both force the same stuck ride, and the load's finishes first and builds the newer ride) clears neither
-   the newer ride's signal nor its last-end record (`Core::clear_signal`, `signal_of`, #370). The drivers' release is
+   the newer ride's signal nor its last-end record (`Core::clear_signal`, `signal_of`, #370). A load that
+   builds no session (its `Load` unanswered or refused, or the load cancelled meanwhile) cuts its engine off and
+   gives the claim back, clearing the signal, so it is never left up with no ride loaded (`SignalClaim`). The
+   engine's own signal is not owner-checked, and `settle`'s forced reap does not cut the engine off: #392. The drivers' release is
    awaited (`RELEASE_TIMEOUT`, 3 s, `core.rs`), and a new ride can be loaded at once. A detached engine that wakes later changes
    nothing: its record writes are refused by the store (`ride is not live`), so the ride stays aborted, and
    its ride-active signal no longer reaches the core, so the next ride's is not touched. **The command gate
