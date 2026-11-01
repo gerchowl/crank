@@ -323,6 +323,50 @@ async fn ride_ending_during_strap_backoff_stops_the_loop() {
     );
 }
 
+/// #237: a ride that ends while a strap reconnect is in flight (the `gate.inactive()` arm of
+/// the connect select, not the backoff one) abandons the attempt: the hung connect is
+/// dropped and cleaned up, no further attempt follows, and the event stream ends.
+#[tokio::test(start_paused = true)]
+async fn ride_ending_during_a_strap_reconnect_attempt_abandons_it() {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let (fake, senders) = fake_hr(&clock, 2);
+    let gate = RideGate::new(true);
+    let inner = HrsDriver::new(Arc::new(fake.clone()), clock.clone());
+    let driver = ReconnectingHr::new(inner, clock, gate.clone());
+    let mut link = driver.connect(&DeviceRef("strap".into())).await.unwrap();
+    settle().await;
+    *fake.hang_connect.lock().unwrap() = Some("mid-setup");
+    senders[0].send(Err(DeviceError::Disconnected)).unwrap();
+    settle().await;
+    advance(ms(500)).await; // attempt 1 starts and hangs mid-setup
+    assert_eq!(fake.connects.lock().unwrap().len(), 2);
+    assert_eq!(*fake.hung_at.lock().unwrap(), ["mid-setup"]);
+    let disconnects = *fake.disconnects.lock().unwrap();
+    gate.set_active(false);
+    settle().await;
+    advance(Duration::from_mins(1)).await;
+    assert_eq!(
+        fake.connects.lock().unwrap().len(),
+        2,
+        "no attempts after the ride ended"
+    );
+    assert_eq!(
+        *fake.disconnects.lock().unwrap(),
+        disconnects + 1,
+        "the abandoned attempt was disconnected"
+    );
+    let events = drain(&mut link.events);
+    assert_eq!(
+        events.last(),
+        Some(&HrEvent::Reconnecting { attempt: 1 }),
+        "nothing follows the abandoned attempt"
+    );
+    assert!(
+        link.events.recv().await.is_none(),
+        "the stream ends with the supervisor"
+    );
+}
+
 // ---- discovery ---------------------------------------------------------------------------
 
 fn short(n: u16) -> Uuid {
