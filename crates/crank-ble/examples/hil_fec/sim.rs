@@ -4,7 +4,7 @@
 //! a page-71 reply 100 ms after a page-70 request echoing the last control page. Power
 //! follows the applied control with a 0.8 s lag: ERG holds the target down to 35 rpm and
 //! collapses below it, page 48 and SIM follow cadence (SIM through the road model). The
-//! rider moves cadence towards the last cue at 30 rpm/s; `Descend` lowers it 5 rpm per 10 s.
+//! rider moves cadence towards the last cue at 30 rpm/s; after `Descend` towards [`Pattern`].
 use crate::{
     frames::{Record, page_of},
     rider::{Cue, Operator, Wire},
@@ -32,8 +32,8 @@ pub struct Plan {
     pub silent_from_us: Option<u64>,
     /// The harness panics (once) when it reads telemetry at or after this capture time.
     pub panic_at_us: Option<u64>,
-    /// Follows the check-9 cue to lower cadence (otherwise holds 90 rpm).
-    pub descends: bool,
+    /// How the rider lowers cadence after the check-9 cue.
+    pub descent: Pattern,
     /// ERG holds the target down to this cadence and collapses in proportion below it
     /// (0: never collapses).
     pub erg_floor_rpm: f64,
@@ -51,9 +51,56 @@ impl Default for Plan {
             hang_from_us: None,
             silent_from_us: None,
             panic_at_us: None,
-            descends: true,
+            descent: Pattern::Steps {
+                rpm: 5.0,
+                every_us: 10_000_000,
+                hold_rpm: 0.0,
+            },
             erg_floor_rpm: 35.0,
             cadence_unavailable_from_us: None,
+        }
+    }
+}
+
+/// The rider's cadence goal after the check-9 cue, from 90 rpm.
+#[derive(Clone, Copy, Debug)]
+pub enum Pattern {
+    /// Ignores the cue and holds 90 rpm.
+    Hold,
+    /// `rpm` lower every `every_us`, not below `hold_rpm`.
+    Steps {
+        /// Step size.
+        rpm: f64,
+        /// Step period.
+        every_us: u64,
+        /// Lowest goal.
+        hold_rpm: f64,
+    },
+    /// Straight lines through `(µs after the cue, rpm)` points, then the last point held.
+    Path(&'static [(u64, f64)]),
+}
+
+impl Pattern {
+    #[allow(clippy::cast_precision_loss)]
+    fn goal(self, after_us: u64) -> Option<f64> {
+        match self {
+            Self::Hold => None,
+            Self::Steps {
+                rpm,
+                every_us,
+                hold_rpm,
+            } => Some((90.0 - rpm * (after_us / every_us) as f64).max(hold_rpm)),
+            Self::Path(points) => {
+                let next = points.iter().position(|p| p.0 > after_us);
+                Some(match next {
+                    Some(0) => points[0].1,
+                    None => points.last().map_or(90.0, |p| p.1),
+                    Some(i) => {
+                        let ((t0, g0), (t1, g1)) = (points[i - 1], points[i]);
+                        g0 + (g1 - g0) * (after_us - t0) as f64 / (t1 - t0) as f64
+                    }
+                })
+            }
         }
     }
 }
@@ -178,8 +225,11 @@ impl Sim {
         let silent = self.plan.silent_from_us.is_some_and(|x| now >= x);
         if self.plan.stop_at_us.is_some_and(|x| now >= x) {
             st.goal = 0.0;
-        } else if let Some(from) = st.descend_from {
-            st.goal = (90.0 - 5.0 * ((now - from) / 10_000_000) as f64).max(0.0);
+        } else if let Some(goal) = st
+            .descend_from
+            .and_then(|from| self.plan.descent.goal(now - from))
+        {
+            st.goal = goal.max(0.0);
         }
         let delta = (st.goal - st.cadence).clamp(-30.0 * dt, 30.0 * dt);
         st.cadence += delta;
@@ -342,7 +392,9 @@ impl Operator for Sim {
         match cue {
             Cue::Start | Cue::Steady => s.goal = s.goal.max(90.0),
             Cue::Cadence(rpm) => (s.goal, s.descend_from) = (f64::from(rpm), None),
-            Cue::Descend if self.plan.descends => s.descend_from = Some(at_us),
+            Cue::Descend if !matches!(self.plan.descent, Pattern::Hold) => {
+                s.descend_from = Some(at_us);
+            }
             Cue::Descend => {}
             Cue::Stop => (s.goal, s.descend_from) = (0.0, None),
         }

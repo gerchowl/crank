@@ -669,7 +669,7 @@ mod tests {
     use crate::{
         frames::{hex, parse_capture},
         partb::{Control, OUTCOME, analyse, controls, outcome_in},
-        sim::{Plan, Sim},
+        sim::{Pattern, Plan, Sim},
     };
     use std::fmt::Write as _;
 
@@ -953,9 +953,9 @@ mod tests {
         );
         let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
         assert_eq!(v["descent"], json!("stalled"), "{v}");
-        // The cue steps 35 -> 30 rpm; with the 0.8 s lag power crosses 225 W about 1 s later,
-        // so the second before the drop is all at 30 rpm.
-        assert_eq!(v["descent_detail"]["stall_rpm"], json!([30, 30]), "{v}");
+        // Held 250 W settled at 35 rpm; the cue steps to 30 rpm and power falls below 225 W.
+        assert_eq!(v["descent_detail"]["dropped_at_rpm"], json!(30), "{v}");
+        assert_eq!(v["held_settled_to_rpm"], json!(35), "{v}");
         assert_eq!(v["lowest_followed_rpm"], json!(35));
         assert_eq!(
             v["verdict"],
@@ -994,16 +994,13 @@ mod tests {
         );
         let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
         assert_eq!(v["descent"], json!("floor"), "{v}");
-        assert_eq!(
-            v["verdict"],
-            json!("no stall down to 25 rpm: the release comes first")
-        );
+        assert_eq!(v["verdict"], json!(FIRST), "{v}");
     }
 
     #[tokio::test(start_paused = true)]
     async fn check9_aborts_a_rider_who_does_not_descend() {
         let plan = Plan {
-            descends: false,
+            descent: Pattern::Hold,
             ..Plan::default()
         };
         let (sim, report) = run(Procedure::Check9, plan, None).await;
@@ -1067,25 +1064,140 @@ mod tests {
         assert_eq!(v["verdict"], Value::Null, "{v}");
     }
 
-    #[test]
-    fn check9_verdict_at_the_release_cadence() {
-        let stall = |lo_rpm, hi_rpm| crate::partb::Descent::Stalled {
-            onset_us: 0,
-            at_us: 0,
-            lo_rpm,
-            hi_rpm,
+    const FIRST: &str = "stall below the release cadence: the release comes first";
+    const TOO_LATE: &str = "stall at or above the release cadence: the release comes too late";
+
+    /// Ramps, step patterns and step-then-hold riders that follow the cue.
+    fn riders() -> Vec<(String, Pattern)> {
+        let mut out = vec![("steps 5 rpm / 10 s".to_string(), Plan::default().descent)];
+        for (rpm, every_us) in [(9.0, 3_050_000), (9.0, 6_000_000), (3.0, 3_000_000)] {
+            out.push((
+                format!("steps {rpm} rpm / {every_us} us"),
+                Pattern::Steps {
+                    rpm,
+                    every_us,
+                    hold_rpm: 0.0,
+                },
+            ));
+        }
+        for rate in [0.5, 1.0, 2.0, 2.9, 3.1] {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let end = (90.0 / rate * 1e6) as u64;
+            let path: &'static [(u64, f64)] = Box::leak(Box::new([(0, 90.0), (end, 0.0)]));
+            out.push((format!("ramp {rate} rpm/s"), Pattern::Path(path)));
+        }
+        for hold in 36_u32..=44 {
+            // With the cue down to 6 rpm above, then a 6 rpm step, then hold.
+            let above = f64::from(hold + 6);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let at = ((90.0 - above) / 0.5 * 1e6) as u64;
+            let path: &'static [(u64, f64)] = Box::leak(Box::new([
+                (0, 90.0),
+                (at, above),
+                (at + 500_000, f64::from(hold)),
+            ]));
+            out.push((
+                format!("cue to {above}, step to {hold} and hold"),
+                Pattern::Path(path),
+            ));
+        }
+        out
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check9_an_unsafe_trainer_is_never_reported_safe() {
+        // ERG lets go below `floor` (power 250 W x cadence / floor): below 225 W at 40 rpm and
+        // above is an unsafe trainer (the release comes too late), above 225 W a safe one.
+        // Floors 40-50 rpm in 0.5 rpm steps, and 30 and 35 rpm, where a safe trainer resolves.
+        let mut wrong = Vec::new();
+        let mut verdicts = std::collections::BTreeMap::<String, usize>::new();
+        for half in [60_u32, 70].into_iter().chain(80..=100) {
+            let floor = f64::from(half) / 2.0;
+            let unsafe_trainer = 250.0 * 40.0 / floor < 225.0;
+            for (name, descent) in riders() {
+                let plan = Plan {
+                    erg_floor_rpm: floor,
+                    descent,
+                    ..Plan::default()
+                };
+                let (sim, report) = run(Procedure::Check9, plan, None).await;
+                let v =
+                    summary(Procedure::Check9, "check9", &report, &sim.records())["result"].clone();
+                let verdict = v["verdict"].as_str().unwrap_or("no verdict").to_string();
+                *verdicts
+                    .entry(verdict.split(':').next().unwrap_or("").to_string())
+                    .or_default() += 1;
+                if (unsafe_trainer && verdict == FIRST) || (!unsafe_trainer && verdict == TOO_LATE)
+                {
+                    wrong.push(format!(
+                        "floor {floor}, {name}: {verdict} ({})",
+                        v["descent_detail"]
+                    ));
+                }
+            }
+        }
+        // Not vacuous: the sweep resolves both ways somewhere.
+        assert!(
+            verdicts.contains_key("stall below the release cadence")
+                && verdicts.contains_key("stall at or above the release cadence"),
+            "{verdicts:?}"
+        );
+        assert!(
+            wrong.is_empty(),
+            "{} wrong of the sweep ({verdicts:?}):\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check9_a_rider_who_stops_at_any_time_is_no_stall() {
+        // Every 0.5 s from the cue to the power drop of an undisturbed run, ERG letting go
+        // below 35 and below 50 rpm: a stop is never a stall.
+        let descend = descend_cue_us().await;
+        for floor in [35.0, 50.0] {
+            let plan = Plan {
+                erg_floor_rpm: floor,
+                ..Plan::default()
+            };
+            let (sim, report) = run(Procedure::Check9, plan, None).await;
+            let v = summary(Procedure::Check9, "check9", &report, &sim.records())["result"].clone();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let end = (v["descent_detail"]["onset_s"].as_f64().expect("onset") * 1e6) as u64;
+            let mut offset = 0;
+            while descend + offset < end {
+                let plan = Plan {
+                    erg_floor_rpm: floor,
+                    stop_at_us: Some(descend + offset),
+                    ..Plan::default()
+                };
+                let (sim, report) = run(Procedure::Check9, plan, None).await;
+                let v =
+                    summary(Procedure::Check9, "check9", &report, &sim.records())["result"].clone();
+                assert!(
+                    matches!(&report.procedure, Err(Stop::Aborted(_))) && v["verdict"].is_null(),
+                    "floor {floor}, stop at cue + {offset} us: {report:?} {}",
+                    v["verdict"]
+                );
+                offset += 500_000;
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unavailable_cadence_under_erg_counts_as_low() {
+        // §7.4: a cadence the trainer cannot report is no proof of pedalling.
+        let plan = Plan {
+            cadence_unavailable_from_us: Some(30 * SEC),
+            ..Plan::default()
         };
-        let verdict = |d| crate::partb::stall_verdict(&d).expect("verdict");
-        // §7.4 releases below 40 rpm: a stall at exactly 40 comes before the release.
-        assert_eq!(
-            verdict(stall(40, 40)),
-            "stall at or above the release cadence: the release comes too late"
+        let (sim, report) = run(Procedure::Check6, plan, None).await;
+        assert!(
+            matches!(&report.procedure, Err(Stop::Aborted(why)) if why.contains("40 rpm")),
+            "{report:?}"
         );
-        assert_eq!(
-            verdict(stall(39, 39)),
-            "stall below the release cadence: the release comes first"
-        );
-        assert!(verdict(stall(38, 42)).starts_with("ambiguous"));
+        assert_released(&sim, &report);
+        assert!(release_at(&sim) <= 32_500_000, "{}", release_at(&sim));
     }
 
     /// The Descend cue time of an undisturbed check 9 run (the same in every run until the
@@ -1123,25 +1235,30 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn check9_slow_descent_verdicts() {
-        for (floor, verdict) in [
-            (
-                35.0,
-                "stall below the release cadence: the release comes first",
-            ),
-            (
-                50.0,
-                "stall at or above the release cadence: the release comes too late",
-            ),
+        // Collapse below 35 rpm, 5 rpm steps: held at 35, fell at 30. Collapse below 50 rpm on
+        // a smooth 0.5 rpm/s ramp: power below 225 W at 44 rpm. With 5 rpm steps instead the
+        // trainer is seen holding at 45 and failing at 40 only: ambiguous, not guessed.
+        static RAMP: [(u64, f64); 2] = [(0, 90.0), (180_000_000, 0.0)];
+        for (floor, descent, verdict) in [
+            (35.0, Plan::default().descent, FIRST),
+            (50.0, Pattern::Path(&RAMP), TOO_LATE),
+            (50.0, Plan::default().descent, "ambiguous"),
         ] {
             let plan = Plan {
                 erg_floor_rpm: floor,
+                descent,
                 ..Plan::default()
             };
             let (sim, report) = run(Procedure::Check9, plan, None).await;
             assert_eq!(report.procedure, Ok(()), "{floor}");
             assert_released(&sim, &report);
             let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
-            assert_eq!(v["verdict"], json!(verdict), "{floor}: {v}");
+            assert!(
+                v["verdict"]
+                    .as_str()
+                    .is_some_and(|x| x.starts_with(verdict)),
+                "{floor}: {v}"
+            );
         }
     }
 
