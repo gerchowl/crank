@@ -575,6 +575,12 @@ pub async fn drive<W: Wire, O: Operator>(
             release_error: Some(e),
         };
     }
+    // Ask for the trainer's page-81 serial (a read-only request, bounded like the release): a
+    // capture is tied to its trainer by it, which check 9 needs of check 6. An unanswered
+    // request leaves the capture without a serial, so that tie fails closed (`PowerLag`).
+    if let Ok(f) = frame(&ControlPage::Request { page: 81, times: 1 }) {
+        let _ = tokio::time::timeout(RELEASE_WAIT, w.send(f)).await;
+    }
     let run = async {
         if !op.confirm(&format!("hil_fec {p:?}: {}", p.what())).await {
             return Err(Stop::Aborted("not confirmed by the operator".into()));
@@ -670,7 +676,7 @@ mod tests {
     use super::*;
     use crate::{
         frames::{hex, parse_capture},
-        partb::{Control, MAX_T90_US, OUTCOME, PowerLag, analyse, controls, outcome_in},
+        partb::{Control, FINISHED, MAX_T90_US, OUTCOME, PowerLag, analyse, controls, outcome_in},
         sim::{Pattern, Plan, Sim},
     };
     use std::fmt::Write as _;
@@ -791,8 +797,12 @@ mod tests {
             t
         });
         let _ = writeln!(text, "{OUTCOME}{}", outcome(&report.procedure));
+        let _ = writeln!(text, "{FINISHED}{SESSION_START_S}");
         text
     }
+
+    /// When the simulated runs ended, Unix seconds (every run of a test is of one session).
+    const SESSION_START_S: u64 = 1_700_000_000;
 
     /// A check 6 that met the power-lag bound.
     const MEASURED: PowerLag = PowerLag::Within(MAX_T90_US);
@@ -1151,8 +1161,10 @@ mod tests {
     async fn check9_reads_check_6_from_its_capture_set() {
         let dir = tempfile::tempdir().expect("tmp");
         let check9 = dir.path().join("check9.fecap");
+        let (sim9, report9) = run(Procedure::Check9, Plan::default(), None).await;
+        let text9 = fecap(&sim9, &report9);
         assert!(matches!(
-            PowerLag::beside(&check9),
+            PowerLag::beside(&check9, &text9),
             PowerLag::NotMeasured(_)
         ));
         let (sim, report) = run(Procedure::Check6, Plan::default(), None).await;
@@ -1166,18 +1178,21 @@ mod tests {
                 });
         std::fs::write(dir.path().join("check6.fecap"), &without_outcome).expect("write");
         assert!(matches!(
-            PowerLag::beside(&check9),
+            PowerLag::beside(&check9, &text9),
             PowerLag::NotMeasured(_)
         ));
         // The same steps, but the procedure did not complete.
         let aborted = format!("{without_outcome}{OUTCOME}aborted: the rider stopped\n");
         std::fs::write(dir.path().join("check6.fecap"), aborted).expect("write");
         assert!(matches!(
-            PowerLag::beside(&check9),
+            PowerLag::beside(&check9, &text9),
             PowerLag::NotMeasured(_)
         ));
         std::fs::write(dir.path().join("check6.fecap"), &text).expect("write");
-        assert!(matches!(PowerLag::beside(&check9), PowerLag::Within(_)));
+        assert!(matches!(
+            PowerLag::beside(&check9, &text9),
+            PowerLag::Within(_)
+        ));
     }
 
     #[tokio::test(start_paused = true)]
