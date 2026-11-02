@@ -53,6 +53,19 @@ pub fn bindings() -> tauri_specta::Builder<tauri::Wry> {
     ])
 }
 
+/// The devices `config` asks for: the simulator, or Bluetooth with the capture directory
+/// of `CRANK_CAPTURE_DIR`.
+#[must_use]
+pub fn device_mode(config: &RuntimeConfig) -> DeviceMode {
+    if config.sim {
+        DeviceMode::Sim(SimConfig::default())
+    } else {
+        DeviceMode::Ble {
+            capture_dir: config.capture_dir.clone(),
+        }
+    }
+}
+
 /// Open the core in `data_dir` for `config`. Runs inside the async runtime, which the
 /// device layer spawns its tasks on.
 ///
@@ -62,13 +75,7 @@ pub fn open_core(config: &RuntimeConfig, data_dir: &Path) -> Result<Core, ApiErr
     tauri::async_runtime::block_on(async {
         Core::open(CoreConfig {
             data_dir: data_dir.into(),
-            devices: if config.sim {
-                DeviceMode::Sim(SimConfig::default())
-            } else {
-                DeviceMode::Ble {
-                    capture_dir: config.capture_dir.clone(),
-                }
-            },
+            devices: device_mode(config),
             clock: None,
             engine_host: EngineHost::Thread,
         })

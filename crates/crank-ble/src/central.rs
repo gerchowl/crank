@@ -427,42 +427,55 @@ impl TrainerDriver for PeripheralTrainer {
             let pairing = central.pairing(&dev);
             let peripheral = resolve(&central.source, &dev, pairing.as_ref(), RESOLVE_SCAN).await?;
             let transport = BtleplugTransport::new(peripheral, central.adapter.clone());
-            let link = fec_trainer(
+            let (trainer, capture) = fec_trainer(
                 Arc::new(transport),
                 clock,
                 cleanup,
                 central.capture.as_ref(),
-            )
-            .connect(&dev, rider)
-            .await?;
+            );
+            let link = match trainer.connect(&dev, rider).await {
+                Ok(link) => link,
+                Err(error) => {
+                    discard_unused(capture.as_deref());
+                    return Err(error);
+                }
+            };
             if pairing.is_some_and(|p| !p.verify(&link.info)) {
                 let _ = link.control.send(TrainerCommand::Disconnect).await;
+                discard_unused(capture.as_deref());
                 return Err(DeviceError::NotFound);
             }
             Ok(link)
         })
     }
 }
-/// The FE-C driver of one connection, with a fresh capture file when `capture` is set. A
-/// capture that cannot be created is a diagnostic failure: it is logged and the
-/// connection goes ahead without it.
+fn discard_unused(capture: Option<&std::path::Path>) {
+    if let Some(path) = capture {
+        CaptureDir::discard_if_empty(path);
+    }
+}
+/// The FE-C driver of one connection, with a fresh capture file when `capture` is set,
+/// and that file's path. A capture that cannot be created is a diagnostic failure: it is
+/// logged and the connection goes ahead without it.
 pub(crate) fn fec_trainer(
     transport: Arc<dyn FecTransport>,
     clock: Arc<dyn Clock>,
     cleanup: ConnectCleanup,
     capture: Option<&CaptureDir>,
-) -> FecTrainer {
+) -> (FecTrainer, Option<std::path::PathBuf>) {
     let start = clock.now();
     let trainer = FecTrainer::new(transport, clock).with_cleanup(cleanup);
-    let Some(dir) = capture else { return trainer };
+    let Some(dir) = capture else {
+        return (trainer, None);
+    };
     match dir.create(start) {
         Ok((path, capture)) => {
             tracing::info!(path = %path.display(), "capturing trainer frames");
-            trainer.with_capture(Arc::new(capture))
+            (trainer.with_capture(Arc::new(capture)), Some(path))
         }
         Err(error) => {
             tracing::warn!(dir = %dir.path().display(), %error, "trainer capture not created");
-            trainer
+            (trainer, None)
         }
     }
 }

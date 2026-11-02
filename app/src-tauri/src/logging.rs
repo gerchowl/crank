@@ -50,11 +50,6 @@ impl LogPlan {
             },
         }
     }
-    /// The directory trainer captures go into, if any.
-    #[must_use]
-    pub fn capture_dir(&self) -> Option<&Path> {
-        self.capture.then_some(self.log_dir.as_path())
-    }
     fn filter(&self) -> Targets {
         let targets = Targets::new().with_default(LevelFilter::INFO);
         if self.capture {
@@ -143,7 +138,7 @@ mod tests {
     fn the_capture_dir_holds_log_and_captures_and_turns_trace_on() {
         let plan = LogPlan::new(Some(Path::new("/cap")), "/logs".into());
         assert_eq!(plan.log_dir, Path::new("/cap"));
-        assert_eq!(plan.capture_dir(), Some(Path::new("/cap")));
+        assert!(plan.capture);
         assert!(
             plan.filter()
                 .would_enable("crank_ble::driver", &tracing::Level::TRACE)
@@ -159,7 +154,7 @@ mod tests {
     fn without_it_the_platform_log_dir_at_info_and_no_capture() {
         let plan = LogPlan::new(None, "/logs".into());
         assert_eq!(plan.log_dir, Path::new("/logs"));
-        assert_eq!(plan.capture_dir(), None);
+        assert!(!plan.capture);
         assert!(
             plan.filter()
                 .would_enable("crank_ble::reconnect", &tracing::Level::INFO)

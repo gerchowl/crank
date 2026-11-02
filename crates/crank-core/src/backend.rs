@@ -59,8 +59,13 @@ impl Radio for BleCentral {
     }
 }
 /// Acquires the radio on first use.
-pub(crate) type RadioFactory =
-    Arc<dyn Fn() -> BoxFuture<'static, Result<Arc<dyn Radio>, DeviceError>> + Send + Sync>;
+/// It is given the directory for trainer captures ([`DeviceMode::Ble`]), so a test can see
+/// that the configured one arrives.
+pub(crate) type RadioFactory = Arc<
+    dyn Fn(Option<PathBuf>) -> BoxFuture<'static, Result<Arc<dyn Radio>, DeviceError>>
+        + Send
+        + Sync,
+>;
 
 enum Kind {
     Radio {
@@ -75,6 +80,8 @@ pub(crate) struct Backend {
     /// is created (a restarted process starts with an empty adapter memory) and kept
     /// current afterwards.
     pairings: Mutex<Vec<Pairing>>,
+    /// Where the radio writes a capture of each trainer connection, if anywhere.
+    capture_dir: Option<PathBuf>,
 }
 
 /// The ids the simulator's scan offers, and the role each can act in.
@@ -83,27 +90,31 @@ const SIM_STRAP: &str = "strap";
 
 impl Backend {
     pub(crate) fn new(mode: DeviceMode, clock: Arc<dyn Clock>, pairings: Vec<Pairing>) -> Self {
+        let mut capture_dir = None;
         let kind = match mode {
-            DeviceMode::Ble { capture_dir } => Kind::Radio {
-                cell: OnceCell::new(),
-                factory: Arc::new(move || {
-                    let capture_dir = capture_dir.clone();
-                    async move {
-                        let mut central = BleCentral::new().await?;
-                        if let Some(dir) = capture_dir {
-                            central = central.with_capture_dir(CaptureDir::new(dir));
+            DeviceMode::Ble { capture_dir: dir } => {
+                capture_dir = dir;
+                Kind::Radio {
+                    cell: OnceCell::new(),
+                    factory: Arc::new(|capture_dir: Option<PathBuf>| {
+                        async move {
+                            let mut central = BleCentral::new().await?;
+                            if let Some(dir) = capture_dir {
+                                central = central.with_capture_dir(CaptureDir::new(dir));
+                            }
+                            let central: Arc<dyn Radio> = Arc::new(central);
+                            Ok(central)
                         }
-                        let central: Arc<dyn Radio> = Arc::new(central);
-                        Ok(central)
-                    }
-                    .boxed()
-                }),
-            },
+                        .boxed()
+                    }),
+                }
+            }
             DeviceMode::Sim(cfg) => Kind::Sim(SimRig::new(cfg, clock)),
         };
         Self {
             kind,
             pairings: Mutex::new(pairings),
+            capture_dir,
         }
     }
     #[cfg(test)]
@@ -114,6 +125,7 @@ impl Backend {
                 factory,
             },
             pairings: Mutex::new(pairings),
+            capture_dir: None,
         }
     }
     pub(crate) fn is_sim(&self) -> bool {
@@ -125,9 +137,10 @@ impl Backend {
         cell: &'a OnceCell<Arc<dyn Radio>>,
         factory: &RadioFactory,
         pairings: &Mutex<Vec<Pairing>>,
+        capture_dir: Option<&PathBuf>,
     ) -> Result<&'a Arc<dyn Radio>, DeviceError> {
         cell.get_or_try_init(|| async {
-            let radio = factory().await?;
+            let radio = factory(capture_dir.cloned()).await?;
             for p in pairings.lock().map(|p| p.clone()).unwrap_or_default() {
                 radio.remember(p);
             }
@@ -173,7 +186,11 @@ impl Backend {
     pub(crate) async fn scan(&self) -> Result<BoxStream<'static, DiscoveredDevice>, DeviceError> {
         match &self.kind {
             Kind::Radio { cell, factory } => {
-                Ok(Self::radio(cell, factory, &self.pairings).await?.scan())
+                Ok(
+                    Self::radio(cell, factory, &self.pairings, self.capture_dir.as_ref())
+                        .await?
+                        .scan(),
+                )
             }
             Kind::Sim(_) => {
                 let device = |id: &str, trainer, heart_rate| DiscoveredDevice {
@@ -199,9 +216,13 @@ impl Backend {
         gate: RideGate,
     ) -> Result<Arc<dyn TrainerDriver>, DeviceError> {
         match &self.kind {
-            Kind::Radio { cell, factory } => Ok(Self::radio(cell, factory, &self.pairings)
-                .await?
-                .trainer(clock, gate)),
+            Kind::Radio { cell, factory } => {
+                Ok(
+                    Self::radio(cell, factory, &self.pairings, self.capture_dir.as_ref())
+                        .await?
+                        .trainer(clock, gate),
+                )
+            }
             Kind::Sim(rig) => Ok(Arc::new(rig.trainer())),
         }
     }
@@ -211,10 +232,56 @@ impl Backend {
         gate: RideGate,
     ) -> Result<Arc<dyn HeartRateDriver>, DeviceError> {
         match &self.kind {
-            Kind::Radio { cell, factory } => Ok(Self::radio(cell, factory, &self.pairings)
-                .await?
-                .heart(clock, gate)),
+            Kind::Radio { cell, factory } => {
+                Ok(
+                    Self::radio(cell, factory, &self.pairings, self.capture_dir.as_ref())
+                        .await?
+                        .heart(clock, gate),
+                )
+            }
             Kind::Sim(rig) => Ok(Arc::new(rig.heart())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crank_engine::VirtualClock;
+
+    fn ble(capture_dir: Option<&str>) -> DeviceMode {
+        DeviceMode::Ble {
+            capture_dir: capture_dir.map(PathBuf::from),
+        }
+    }
+
+    #[test]
+    fn the_configured_capture_dir_is_the_backends() {
+        let clock = || -> Arc<dyn Clock> { Arc::new(VirtualClock::new(1)) };
+        let with = Backend::new(ble(Some("/cap")), clock(), Vec::new());
+        assert_eq!(
+            with.capture_dir.as_deref(),
+            Some(std::path::Path::new("/cap"))
+        );
+        assert_eq!(
+            Backend::new(ble(None), clock(), Vec::new()).capture_dir,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_radio_is_acquired_with_the_backends_capture_dir() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let factory: RadioFactory = {
+            let seen = seen.clone();
+            Arc::new(move |dir| {
+                seen.lock().unwrap().push(dir);
+                async { Err(DeviceError::AdapterUnavailable) }.boxed()
+            })
+        };
+        let mut backend = Backend::with_radio(factory, Vec::new());
+        backend.capture_dir = Some("/cap".into());
+        assert!(backend.scan().await.is_err());
+        assert_eq!(*seen.lock().unwrap(), [Some(PathBuf::from("/cap"))]);
     }
 }
