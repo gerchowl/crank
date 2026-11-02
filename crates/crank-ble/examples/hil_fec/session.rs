@@ -108,6 +108,7 @@ pub struct Session {
     pub capture_path: std::path::PathBuf,
     pub device: DeviceRef,
     pub info: DeviceInfo,
+    adv: BtleplugAdvertisements,
     started: MonoTime,
     peripheral: Peripheral,
     cps_pump: Option<tokio::task::JoinHandle<Option<String>>>,
@@ -170,6 +171,7 @@ impl Session {
             capture_path: capture_path.to_path_buf(),
             device,
             info,
+            adv: adv.clone(),
             started,
             peripheral,
             cps_pump: None,
@@ -203,6 +205,16 @@ impl Session {
             None
         }));
         Ok(())
+    }
+
+    /// A scan beside the connection (check 10): `true` for each advertisement of this trainer,
+    /// `false` for any other peripheral's. It ends when the scan stops by itself.
+    pub fn adverts(&self) -> futures_util::stream::BoxStream<'static, bool> {
+        let device = self.device.clone();
+        self.adv
+            .advertisements()
+            .map(move |ad| ad.device == device)
+            .boxed()
     }
 
     /// Number of frames received so far (use as a `since` mark).

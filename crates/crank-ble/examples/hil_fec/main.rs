@@ -3,10 +3,12 @@
 //! Run from an Alacritty window (flock panes are denied Bluetooth by TCC; AGENTS.md):
 //! `cargo run -p crank-ble --features hil --example hil_fec -- check1 --out DIR`.
 //! The Part B control checks (`check5`, `check6`, `check7`, `check8`, `check9`, `check12`) drive the
-//! trainer under a rider and always release it (`rider.rs`); `docs/hil/part-b.md` is the runbook.
+//! trainer under a rider and always release it (`rider.rs`); `check10` holds the link while the
+//! operator tries a second central (`check10.rs`); `docs/hil/part-b.md` is the runbook.
 //! Each subcommand writes `<check>.fecap` (raw frames, both directions, the
 //! `crank-ble` capture format) and `<check>.json` into `--out`. Raw captures carry
 //! the device serial; commit only the output of `redact`.
+mod check10;
 mod checks;
 mod cli;
 mod cps;
