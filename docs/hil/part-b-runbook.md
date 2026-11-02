@@ -14,10 +14,12 @@ only what to do. Plan about 15 min for the app part and about 15 min of pedallin
   reports free space. Free space on the host first (`nix-collect-garbage -d`, old VM images).
 - **Checkout:** current `dev` in your crank checkout (`git pull --ff-only`); it must include #423 (check 9 trusts
   check 6 only from the same trainer and session). No checkout: `git clone https://github.com/gerchowl/crank`
-  and check out `dev`.
+  and `cd` into it and check out `dev`.
 - Close the Tacx and Movesense apps on your phone: the NEO accepts one central at a time.
 - Put the HR strap on and wet it. It must advertise Heart Rate (service `0x180D`).
-- Every run releases the trainer by itself when you stop pedalling, close the window or press Ctrl-C.
+- Every run releases the trainer by itself on completion, on any of its stop rules, on Ctrl-C and when you close
+  the window. The 40 rpm rule (cadence below 40 rpm for 2 s) applies only while ERG is on: check 8 runs in SIM
+  mode and check 9's descent has its own end rules (part-b.md, "Safety").
 
 ## 1. Build and install the app
 
@@ -43,9 +45,10 @@ Write down for each step whether it worked as expected.
    **Ride this** → **Start**, then pedal.
 4. During the ride: **Pause** and **Resume**, **Skip block** once, then **End**, then **End ride**.
 5. **History:** is the ride there? Do power, cadence and heart rate look plausible?
-6. **Grant check (#44):** quit crank, run `nix develop -c just bundle` again, relaunch. Expect **no** Bluetooth
-   prompt. Use the bundle for this, not `hil_fec` or any CLI.
-7. Revoke Bluetooth once (System Settings → Privacy & Security → Bluetooth → crank off) and relaunch. Devices
+6. **Grant check (#44):** quit crank fully, run `nix develop -c just bundle` again, relaunch the same way as
+   in step 1 (when recording, with the same `CRANK_CAPTURE_DIR=$CAP open …` line: a Finder launch drops the
+   variable, and `open` ignores it on an app that is still running). Expect **no** Bluetooth prompt. Use the bundle for this, not `hil_fec` or any CLI.
+7. Revoke Bluetooth once (System Settings → Privacy & Security → Bluetooth → crank off) and relaunch the same way (quit fully first). Devices
    should say **Bluetooth access is denied** and how to fix it; then switch it back on (#43).
 8. Ride a few minutes more and look for: the **HR lost** banner (strap off for about 10 s, then back on);
    whether the numbers are readable from the saddle; anything that looks wrong.
@@ -88,11 +91,12 @@ Run the checks **in this order, with the same `--out`**, from an Alacritty windo
 - Follow the on-screen cues. A run that stops early prints `STOPPED: … (trainer released)` and exits with
   status 4: that is safe, but it gives no result.
 - Each run refuses to overwrite its own `.fecap` (`File::create_new`): re-run a stopped check into a **new**
-  `--out` directory.
+  `--out` directory. For a stopped check 9 that directory has no `check6.fecap`, so first re-run check 6 into
+  it, or copy `check6.fecap` over from the old one (valid for the same trainer within 2 h, `SESSION_BOUND_S`).
 - **Check 9 depends on check 6.** It reads `check6.fecap` from the same `--out`, so run check 6 first, into
   that directory, on the **same trainer** and in the same session (page-81 serial match, check 6 ended at most
-  2 h before check 9; #423). Otherwise check 9's "release comes first" verdict reads "not measured". If you
-  re-run check 6 into a new directory, re-run check 9 there too.
+  2 h before check 9; #423). Otherwise check 9's "release comes first" verdict reads "not measured". If
+  check 9 runs in a different directory, check 6 must be there too.
 - Check 9: lower your cadence smoothly as the cue says. Stopping abruptly is safe but gives no result. At
   250 W and a falling cadence it gets hard: keep turning until the run ends.
 - Each run prints one results row. Send them all, or just the `$OUT` folder name.
