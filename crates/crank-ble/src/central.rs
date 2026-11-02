@@ -357,7 +357,7 @@ impl BleCentral {
         let driver_clock = clock.clone();
         supervised_trainer(
             |cleanup| PeripheralTrainer {
-                central: self.clone(),
+                peripherals: self.clone(),
                 clock: driver_clock,
                 cleanup,
             },
@@ -403,12 +403,39 @@ fn supervised_hr<D: HeartRateDriver>(
     ReconnectingHr::new(build(cleanup.clone()), clock, gate).with_cleanup(cleanup)
 }
 
-struct PeripheralTrainer {
-    central: BleCentral,
-    clock: Arc<dyn Clock>,
-    cleanup: ConnectCleanup,
+/// A transport to a device and what is remembered of its pairing.
+pub(crate) type Opened =
+    BoxFuture<'static, Result<(Arc<dyn FecTransport>, Option<Pairing>), DeviceError>>;
+/// What a [`PeripheralTrainer`] needs of its central: the transport to a device (and what
+/// is remembered of it), and where this connection's capture goes. The seam lets a test
+/// run the production connect path without a BLE adapter.
+pub(crate) trait Peripherals: Clone + Send + Sync + 'static {
+    /// The transport to `dev` and its stored pairing.
+    fn open(&self, dev: &DeviceRef) -> Opened;
+    /// Where trainer captures go, if anywhere.
+    fn capture_dir(&self) -> Option<CaptureDir>;
 }
-impl TrainerDriver for PeripheralTrainer {
+impl Peripherals for BleCentral {
+    fn open(&self, dev: &DeviceRef) -> Opened {
+        let (central, dev) = (self.clone(), dev.clone());
+        Box::pin(async move {
+            let pairing = central.pairing(&dev);
+            let peripheral = resolve(&central.source, &dev, pairing.as_ref(), RESOLVE_SCAN).await?;
+            let transport: Arc<dyn FecTransport> =
+                Arc::new(BtleplugTransport::new(peripheral, central.adapter.clone()));
+            Ok((transport, pairing))
+        })
+    }
+    fn capture_dir(&self) -> Option<CaptureDir> {
+        self.capture.clone()
+    }
+}
+pub(crate) struct PeripheralTrainer<P: Peripherals> {
+    pub(crate) peripherals: P,
+    pub(crate) clock: Arc<dyn Clock>,
+    pub(crate) cleanup: ConnectCleanup,
+}
+impl<P: Peripherals> TrainerDriver for PeripheralTrainer<P> {
     fn kind(&self) -> DriverKind {
         DriverKind::FeC
     }
@@ -417,21 +444,19 @@ impl TrainerDriver for PeripheralTrainer {
         dev: &DeviceRef,
         rider: RiderConfig,
     ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
-        let (central, clock, dev, cleanup) = (
-            self.central.clone(),
+        let (peripherals, clock, dev, cleanup) = (
+            self.peripherals.clone(),
             self.clock.clone(),
             dev.clone(),
             self.cleanup.clone(),
         );
         Box::pin(async move {
-            let pairing = central.pairing(&dev);
-            let peripheral = resolve(&central.source, &dev, pairing.as_ref(), RESOLVE_SCAN).await?;
-            let transport = BtleplugTransport::new(peripheral, central.adapter.clone());
+            let (transport, pairing) = peripherals.open(&dev).await?;
             let (trainer, capture) = fec_trainer(
-                Arc::new(transport),
+                transport,
                 clock,
                 cleanup,
-                central.capture.as_ref(),
+                peripherals.capture_dir().as_ref(),
             );
             let link = match trainer.connect(&dev, rider).await {
                 Ok(link) => link,
@@ -441,8 +466,8 @@ impl TrainerDriver for PeripheralTrainer {
                 }
             };
             if pairing.is_some_and(|p| !p.verify(&link.info)) {
+                // The connect wrote frames: that capture is the evidence, keep it.
                 let _ = link.control.send(TrainerCommand::Disconnect).await;
-                discard_unused(capture.as_deref());
                 return Err(DeviceError::NotFound);
             }
             Ok(link)

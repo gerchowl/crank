@@ -58,6 +58,28 @@ impl Radio for BleCentral {
         BleCentral::forget(self, platform_id);
     }
 }
+/// A radio that can be told where to write trainer captures.
+pub(crate) trait Capturing: Radio + Sized {
+    /// The same radio, writing a capture of each trainer connection into `dir`.
+    fn capturing(self, dir: PathBuf) -> Self;
+}
+impl Capturing for BleCentral {
+    fn capturing(self, dir: PathBuf) -> Self {
+        self.with_capture_dir(CaptureDir::new(dir))
+    }
+}
+/// The production radio factory's body: wait for `radio`, then point it at `capture_dir`
+/// when one is configured. Generic so a test can run it with a radio that needs no adapter.
+pub(crate) async fn acquire<R: Capturing>(
+    radio: impl Future<Output = Result<R, DeviceError>>,
+    capture_dir: Option<PathBuf>,
+) -> Result<R, DeviceError> {
+    let radio = radio.await?;
+    Ok(match capture_dir {
+        Some(dir) => radio.capturing(dir),
+        None => radio,
+    })
+}
 /// Acquires the radio on first use.
 /// It is given the directory for trainer captures ([`DeviceMode::Ble`]), so a test can see
 /// that the configured one arrives.
@@ -98,12 +120,9 @@ impl Backend {
                     cell: OnceCell::new(),
                     factory: Arc::new(|capture_dir: Option<PathBuf>| {
                         async move {
-                            let mut central = BleCentral::new().await?;
-                            if let Some(dir) = capture_dir {
-                                central = central.with_capture_dir(CaptureDir::new(dir));
-                            }
-                            let central: Arc<dyn Radio> = Arc::new(central);
-                            Ok(central)
+                            let central = acquire(BleCentral::new(), capture_dir).await?;
+                            let radio: Arc<dyn Radio> = Arc::new(central);
+                            Ok(radio)
                         }
                         .boxed()
                     }),
@@ -267,6 +286,38 @@ mod tests {
             Backend::new(ble(None), clock(), Vec::new()).capture_dir,
             None
         );
+    }
+
+    /// A radio that remembers the capture directory it was given.
+    struct Recording(Option<PathBuf>);
+    impl Radio for Recording {
+        fn scan(&self) -> BoxStream<'static, DiscoveredDevice> {
+            stream::empty().boxed()
+        }
+        fn trainer(&self, _: Arc<dyn Clock>, _: RideGate) -> Arc<dyn TrainerDriver> {
+            unreachable!("not used")
+        }
+        fn heart(&self, _: Arc<dyn Clock>, _: RideGate) -> Arc<dyn HeartRateDriver> {
+            unreachable!("not used")
+        }
+        fn remember(&self, _: Pairing) {}
+        fn forget(&self, _: &str) {}
+    }
+    impl Capturing for Recording {
+        fn capturing(self, dir: PathBuf) -> Self {
+            Self(Some(dir))
+        }
+    }
+
+    #[tokio::test]
+    async fn acquiring_the_radio_points_it_at_the_capture_dir_only_when_there_is_one() {
+        let capturing =
+            |dir| async move { acquire(async { Ok(Recording(None)) }, dir).await.unwrap().0 };
+        assert_eq!(
+            capturing(Some("/cap".into())).await,
+            Some(PathBuf::from("/cap"))
+        );
+        assert_eq!(capturing(None).await, None);
     }
 
     #[tokio::test]

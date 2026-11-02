@@ -1793,3 +1793,80 @@ async fn a_failing_capture_writer_warns_once_and_the_ride_goes_on() {
     link.control.send(TrainerCommand::Disconnect).await.unwrap();
     tick().await;
 }
+
+/// A central without an adapter: hands out a fake transport and a capture directory.
+#[derive(Clone)]
+struct FakePeripherals {
+    transport: Arc<dyn FecTransport>,
+    capture: Option<CaptureDir>,
+}
+impl crate::central::Peripherals for FakePeripherals {
+    fn open(&self, _: &DeviceRef) -> crate::central::Opened {
+        let transport = self.transport.clone();
+        Box::pin(async move { Ok((transport, None)) })
+    }
+    fn capture_dir(&self) -> Option<CaptureDir> {
+        self.capture.clone()
+    }
+}
+fn peripheral_trainer(
+    transport: Arc<dyn FecTransport>,
+    capture: Option<CaptureDir>,
+) -> crate::central::PeripheralTrainer<FakePeripherals> {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    crate::central::PeripheralTrainer {
+        peripherals: FakePeripherals { transport, capture },
+        clock,
+        cleanup: ConnectCleanup::new(),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_production_connect_path_captures_into_its_centrals_dir() {
+    enable_trace();
+    let dir = tempfile::tempdir().unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let driver = peripheral_trainer(
+        Arc::new(Fake::new(clock)),
+        Some(CaptureDir::new(dir.path())),
+    );
+    let link = driver
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    settle().await;
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+    let files = capture_files(dir.path());
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(std::fs::read_to_string(&files[0]).unwrap().contains(" tx "));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_production_connect_path_without_a_dir_writes_no_file() {
+    enable_trace();
+    let dir = tempfile::tempdir().unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let driver = peripheral_trainer(Arc::new(Fake::new(clock)), None);
+    let link = driver
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+    assert!(capture_files(dir.path()).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connect_that_fails_before_any_frame_leaves_no_capture_file() {
+    enable_trace();
+    let dir = tempfile::tempdir().unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let fake = Fake::new(clock.clone());
+    // The fake hands its notification stream out once: a second connect fails at the transport.
+    let _used = fake.connect(DeviceRef("fake".into()), clock).await.unwrap();
+    let driver = peripheral_trainer(Arc::new(fake), Some(CaptureDir::new(dir.path())));
+    let result = driver.connect(&DeviceRef("fake".into()), rider()).await;
+    assert!(matches!(result, Err(DeviceError::ConnectFailed(_))));
+    assert!(capture_files(dir.path()).is_empty());
+}
