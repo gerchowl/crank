@@ -5,8 +5,16 @@ use crank_devices::MonoTime;
 pub const TICK_US: u64 = 250_000;
 /// Ticks per second.
 pub const TICKS_PER_SECOND: u64 = 4;
-/// A trainer value is held for up to 1.0 s (4 ticks) after its sample's tick.
+/// A page-25 trainer value (power, cadence) is held for up to 1.0 s (4 ticks) after the tick
+/// of the last sample that carried it (ADR-0001 §5 "Sample holding").
 pub const TRAINER_HOLD_TICKS: u64 = 4;
+/// Speed, which only FE-C page 16 carries, is held for up to 6.0 s (24 ticks) after the tick of
+/// the last sample that carried it, and only while page 25 is within [`TRAINER_HOLD_TICKS`]
+/// (#437). The NEO sends page 16 instead of about one page 25 in four; in the #44 Part A
+/// captures its interval is 1.0 s at the median but 5.0 s to 5.5 s at the 99th percentile
+/// (`latency.fecap`, `spacing.fecap`), up to 5.97 s, so a 1.0 s hold would blank speed most
+/// seconds. ADR-0001 §5, implementation notes.
+pub const SPEED_HOLD_TICKS: u64 = 24;
 /// A heart-rate value is held for up to 3.0 s (12 ticks) after its sample's tick.
 pub const HR_HOLD_TICKS: u64 = 12;
 /// Consecutive ticks without a trainer sample that mean the trainer is lost (2.0 s).

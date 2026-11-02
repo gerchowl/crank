@@ -193,7 +193,9 @@ async fn full_45_minute_workout() {
     // 5 min warm-up + 5 x (5 min work + 3 min recovery) = 45 min of workout time.
     // With seed 1 the simulated trainer also goes silent once, without a link event,
     // for a few seconds around 915 s (SimCore's "link blip"): the 8-tick rule fires
-    // inside this very ride, so session time ends 5 ticks after workout time.
+    // inside this very ride, so session time ends 6 ticks after workout time. The last
+    // sample before it is a page 16, which keeps no trainer alive (#437): the silence counts
+    // from the page 25 one tick earlier.
     let mut blocks = vec![block(300.0, 120.0, Phase::Warmup)];
     for _ in 0..5 {
         blocks.push(block(300.0, 200.0, Phase::Work));
@@ -208,7 +210,7 @@ async fn full_45_minute_workout() {
         st.workout.0, 10_800,
         "45 min of workout time = 10 800 ticks"
     );
-    assert_eq!(st.session.0, 10_805, "plus the 5 paused ticks of the blip");
+    assert_eq!(st.session.0, 10_806, "plus the 6 paused ticks of the blip");
     assert_eq!(st.block_index, None);
     assert_eq!((st.late_samples, st.record_error), (0, None));
     assert_eq!(*r.gate.lock().expect("test mutex"), vec![true, false]);
@@ -223,21 +225,25 @@ async fn full_45_minute_workout() {
         let at = f32::from(u16::try_from(i + 1).unwrap());
         match i {
             ..915 => assert_eq!(row.workout_s, Some(at)),
-            // two riding ticks inside the 2 s window (null values), the rest paused
-            915 => assert_eq!((row.workout_s, row.power), (Some(915.5), None)),
-            916 => assert_eq!(row.workout_s, Some(915.75)),
-            _ => assert_eq!(row.workout_s, Some(at - 1.25)),
+            // one riding tick inside the 2 s window (null values), the rest paused
+            915 => assert_eq!((row.workout_s, row.power), (Some(915.25), None)),
+            916 => assert_eq!(row.workout_s, Some(915.5)),
+            _ => assert_eq!(row.workout_s, Some(at - 1.5)),
         }
+        // Second 916's one riding tick comes before the first page 16 after the blip, and the
+        // silence cleared the speed held from before it (#437): its speed is unknown.
         if i != 915 {
-            assert!(row.power.is_some() && row.cadence.is_some() && row.speed.is_some());
+            assert!(row.power.is_some() && row.cadence.is_some(), "{i}: {row:?}");
+            assert_eq!(row.speed.is_some(), i != 916, "{i}: {row:?}");
         }
     }
     // Controls: one mode per block on its boundary tick (ADR-0002 §7.2). The blip is
-    // detected at 915.6 s and the mode re-issued then at 0 W (no pedalling sample yet,
+    // detected at 915.35 s and the mode re-issued then at 0 W (no pedalling sample yet,
     // #231); the soft start runs once samples flow again, from the then-current 3 s
-    // power (71 W: the trainer is spinning up) to the target, one step per second. The ride
+    // power (58 W: the trainer is spinning up from the 0 W it was given) to the target, one
+    // step per second. The ride
     // start is a reconnect too (#250): the first ramp runs from the rider's 29 W to the first
-    // block's 120 W. Every later boundary lies 1.25 s later in session time.
+    // block's 120 W. Every later boundary lies 1.5 s later in session time.
     assert_eq!(
         r.modes(),
         [
@@ -250,20 +256,20 @@ async fn full_45_minute_workout() {
             (300_100, 200),
             (600_100, 100),
             (780_100, 200),
-            (915_600, 0),
-            (916_850, 71),
-            (917_850, 97),
-            (918_850, 123),
-            (919_850, 148),
-            (920_850, 174),
+            (915_350, 0),
+            (916_850, 58),
+            (917_850, 86),
+            (918_850, 115),
+            (919_850, 143),
+            (920_850, 172),
             (921_850, 200),
-            (1_081_350, 100),
-            (1_261_350, 200),
-            (1_561_350, 100),
-            (1_741_350, 200),
-            (2_041_350, 100),
-            (2_221_350, 200),
-            (2_521_350, 100),
+            (1_081_600, 100),
+            (1_261_600, 200),
+            (1_561_600, 100),
+            (1_741_600, 200),
+            (2_041_600, 100),
+            (2_221_600, 200),
+            (2_521_600, 100),
         ]
     );
     let rec = r.rec.lock().expect("test mutex");
@@ -335,28 +341,29 @@ async fn silent_dropout_keeps_the_two_second_window_in_workout_time() {
     )
     .await;
     sleep(secs(104)).await;
-    // last sample at 99.75 s is in tick 398; ticks 399..=406 are the 8 missed ticks.
-    // They are workout time (no rollback); the ride is paused from tick 407.
+    // The last sample, at 99.75 s in tick 398, is a page 16 (#437: no sign of life); the last
+    // page 25, at 99.5 s, is in tick 397, so ticks 398..=405 are the 8 missed ticks. They are
+    // workout time (no rollback); the ride is paused from tick 406.
     let st = r.handle.status();
     assert_eq!(st.state, RideState::Paused(PauseReason::TrainerLost));
-    assert_eq!(st.workout.0, 407);
+    assert_eq!(st.workout.0, 406);
     assert_eq!(
         st.session.0, 415,
         "(104 - 0.1) s / 250 ms = 415 complete ticks"
     );
     let rows = r.rows();
     // second 100 (ticks 400..=403) and 101 are in the window: riding, values null
-    // after the 1 s hold (tick 398 held through tick 402)
+    // after the 1 s hold (tick 397 held through tick 401)
     assert_eq!(rows[100].1.workout_s, Some(101.0));
     assert!(
         rows[100].1.power.is_some(),
-        "ticks 400..=402 are still held"
+        "ticks 400..=401 are still held"
     );
     assert_eq!(rows[101].1.power, None);
     assert_eq!(
         rows[101].1.workout_s,
-        Some(101.75),
-        "tick 407 is the first paused"
+        Some(101.5),
+        "tick 406 is the first paused"
     );
     // second 102 holds ticks 408..=411: all paused
     assert_eq!(rows[102].1, SecondRow::default());

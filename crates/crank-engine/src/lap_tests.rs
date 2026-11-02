@@ -333,10 +333,12 @@ fn np_joins_the_seconds_with_power_end_to_end_across_pauses_and_gaps() {
     let mut r = rig();
     r.load(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
     r.start();
-    // 20 s at 100 W, an 8 s rider pause, 5 s without power, 20 s at 300 W
+    // 20 s at 100 W, an 8 s rider pause, 5 s without power, 20 s at 300 W. No power arrives
+    // in the pause either, so the 1.0 s hold of the last 100 W ends inside it (a sample without
+    // power holds the last real power, #437).
     seconds(&mut r, 0, 20, |_| Some(100));
     r.engine.command(EngineCmd::Pause).unwrap();
-    seconds(&mut r, 20, 28, |_| Some(100));
+    seconds(&mut r, 20, 28, |_| None);
     r.engine.command(EngineCmd::Resume).unwrap();
     seconds(&mut r, 28, 33, |_| None);
     seconds(&mut r, 33, 53, |_| Some(300));
