@@ -30,6 +30,8 @@ pub enum Check {
     Redact,
     /// Reply accounting and stale-echo ages of a capture (offline).
     Analyse,
+    /// Check 5: page 25 against Cycling Power 2A63 during a ride (rider).
+    Check5,
     /// Check 6: ERG steps and cadence steps (rider).
     Check6,
     /// Check 7: target held without keep-alive (rider).
@@ -43,7 +45,7 @@ pub enum Check {
 }
 
 impl Check {
-    const ALL: [(&'static str, Self); 16] = [
+    const ALL: [(&'static str, Self); 17] = [
         ("scan", Self::Scan),
         ("known", Self::Known),
         ("idle", Self::Idle),
@@ -55,6 +57,7 @@ impl Check {
         ("spacing", Self::Spacing),
         ("redact", Self::Redact),
         ("analyse", Self::Analyse),
+        ("check5", Self::Check5),
         ("check6", Self::Check6),
         ("check7", Self::Check7),
         ("check8", Self::Check8),
@@ -65,6 +68,7 @@ impl Check {
     pub fn procedure(self) -> Option<crate::rider::Procedure> {
         use crate::rider::Procedure;
         match self {
+            Self::Check5 => Some(Procedure::Check5),
             Self::Check6 => Some(Procedure::Check6),
             Self::Check7 => Some(Procedure::Check7),
             Self::Check8 => Some(Procedure::Check8),
@@ -98,7 +102,7 @@ pub struct Args {
 }
 
 /// Usage text.
-pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check6|check7|check8|check9|check12> \
+pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check5|check6|check7|check8|check9|check12> \
 [--out DIR] [--scan-secs N] [--idle-secs N] [--target ID_OR_PATH]";
 
 fn number(flag: &str, text: &str) -> Result<u64, String> {
@@ -175,6 +179,7 @@ mod tests {
     fn part_b_subcommands_map_to_their_procedures() {
         use crate::rider::Procedure;
         for (name, p) in [
+            ("check5", Procedure::Check5),
             ("check6", Procedure::Check6),
             ("check7", Procedure::Check7),
             ("check8", Procedure::Check8),

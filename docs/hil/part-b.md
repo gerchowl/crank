@@ -1,9 +1,9 @@
 # HIL session 1, Part B runbook: control checks with a rider (#44, #412)
 
 How to run the Part B pedalling checks of ADR-0002 §9 with `hil_fec`. The owner's step-by-step session
-script (app flow plus these checks) is [part-b-runbook.md](part-b-runbook.md). This covers the control checks
-6, 7, 8, 9 and 12. Check 5 (page 25 against CPS `2A63`) and checks 10/11a–c (second central, dropout)
-follow in their own PRs (#412 parts b and c). Results go to a new `docs/hil/<date>-fec.md` in the
+script (app flow plus these checks) is [part-b-runbook.md](part-b-runbook.md). This covers check 5 (page 25
+against the Cycling Power measurement `2A63`) and the control checks 6, 7, 8, 9 and 12. Checks
+10/11a–c (second central, dropout) follow in their own PR (#412 part c). Results go to a new `docs/hil/<date>-fec.md` in the
 format of [the Part A results](2026-10-14-fec.md): one "Results at a glance" row per check, which each
 run prints.
 
@@ -56,6 +56,7 @@ check's `.fecap`.
 
 | Check | Invocation | Rider | About |
 |---|---|---|---|
+| 5 | `hil_fec check5 --out DIR` | 90 rpm through ERG 150 W (30 s), then 200 W (30 s); steady cadence is all that is asked. Also subscribes read-only to `2A63`; the run ends (released) if none arrives 5 s into the ride | 1.5 min |
 | 6 | `hil_fec check6 --out DIR` | 90 rpm through ERG 100 → 150 → 250 → 100 → 200 W (20 s each), then at 200 W cues 60 rpm and back to 90 rpm (20 s each) | 2.5 min |
 | 7 | `hil_fec check7 --out DIR` | 90 rpm at 150 W; the harness writes nothing for 40 s (no keep-alive, no page-70 poll) | 1 min |
 | 8 | `hil_fec check8 --out DIR` | Easy gear, steady effort; SIM 0 %, 5 %, 5 % with page 55 rider mass 100 kg, 10 % with 75 kg (30 s each); shift down on the steep part | 2.5 min |
@@ -79,10 +80,11 @@ hil_fec analyse --target docs/hil/captures/check6.fecap --out docs/hil/captures 
 ```
 
 `analyse` keeps the reply accounting it always wrote and adds `part_b` (the same `result`) for a capture
-named `check6`, `check7`, `check8`, `check9` or `check12`, and prints the row again.
+named `check5`, `check6`, `check7`, `check8`, `check9` or `check12`, and prints the row again.
 
 | Check | What `result` reports (method text is in the JSON) | ADR-0002 |
 |---|---|---|
+| 5 | Page-25 arrival rate, and page-25 power and cadence against `2A63` over the settled holds ([below](#check-5-page-25-against-cps-2a63)): seconds compared, mean difference, largest difference; verdict `agree` or `disagree: …` | §5 (telemetry source), §9 |
 | 6 | Per ERG step (a page-49 target held ≥ 10 s after another): t90 from the write to the first page-25 sample past 90 % of the step. Per cadence crossing of 75 rpm inside a hold: largest power deviation in the next 10 s and the time until power stays within ±5 % for 3 s | §7.2 (step response, "lead") |
 | 7 | From the procedure's 150 W write (the end of the soft start) to the next write, after its first 10 s: share of samples within ±5 %/±10 % of the target and the last 10 s mean; held = ≥ 90 % within ±10 % and last 10 s within ±5 % | §4.4 (no keep-alive) |
 | 8 | Per SIM state held ≥ 10 s: mean power, page-16 speed and cadence, and the road model at that speed (`v·m·g·(grade + Crr) + cw·(v + wind)²·drafting·v`, m from page 55): the ratio shows whether grade and mass apply | §7.9 (SIM, page 55) |
@@ -157,3 +159,55 @@ capture for `hil_fec analyse`. Run check 6 before check 9, with the same `--out`
   slow trainer, a lagging reading at 36–37 rpm can still show 250 W after the trainer has let go above
   40 rpm. The sim test `check9_first_needs_check_6_within_the_power_lag_bound` shows this with a 2 s lag:
   without check 6 it reported "comes first".
+
+### Check 5: page 25 against CPS 2A63
+
+ADR-0002 §5 keeps page 25 as the telemetry source on the condition that, in HIL check 5, "page 25
+arrives at ≥ 2 Hz and its per-second mean power agrees with 2A63 within ±1 W; otherwise the ADR is
+amended to use 2A63 for telemetry." `check5` measures exactly that, on a ride at two ERG targets
+(150 W, then 200 W, 30 s each, 90 rpm), and adds cadence.
+
+**Capture.** `hil_fec` subscribes to `2A63` on the same connection (read-only: a CCCD write, nothing to
+the trainer) and records each notification in the `.fecap`, in processing order with the FE-C frames, as
+a comment line `# cps <elapsed_us> <hex bytes>` on the same clock (`Capture::record_aux`). The format
+stays compatible: every reader skips comment lines (the `.fecap` README says so), so old captures and
+tools read new files as before; only `hil_fec` reads the `# cps` lines. They carry no serial, so
+`redact` keeps them as they are. A device without `2A63` ends the run before anything is written:
+`BLOCKED: check 5 needs Cycling Power 2A63 on the NEO`.
+
+**Time alignment.** Both streams are stamped on arrival by the same process on the same monotonic
+clock, so there is no offset between them to estimate. What remains is each stream's own jitter and
+that `2A63` is slower than page 25, so the comparison avoids transients instead of correcting them:
+only the **settled windows** are used, each page-49 target held ≥ 10 s (check 6's definition of a hold)
+after its first 10 s. Under ERG the power is steady there, so a few hundred milliseconds of misalignment
+are not mistaken for disagreement. Read back from the capture's own tx writes, they are the same live and offline.
+
+**Power.** For every whole capture second inside a window that has at least one sample of each stream:
+the mean page-25 power minus the mean `2A63` power. Page 25 power is the instantaneous 12-bit field;
+`2A63` is the signed 16-bit instantaneous power. The tolerance is the ADR's: every compared second
+within **±1 W** (exactly ±1 W passes), of at least **20** (`MIN_SECONDS`; fewer is `insufficient`, a
+verdict needs a ride, not a glimpse). The result also gives the mean difference (`bias_w`), the
+largest, and how many seconds were within the tolerance.
+
+**Rate.** Page-25 samples over the whole capture: (n − 1) / span must be ≥ **2 Hz** (the ADR's figure),
+and the largest gap is reported.
+
+**Cadence.** `2A63` carries cumulative crank revolutions and the last crank event time (1/1024 s), both
+unsigned 16 bit. Between two notifications that carry a new event, cadence is
+60 · Δrevolutions / Δevent time, with both differences taken modulo 2¹⁶ (the event time wraps every 64 s,
+the revolutions every 65 536): a wrap is invisible to the subtraction. Notifications without a new event
+(same event time) add a power reading only. A pair is rejected, and counted, when its notifications are
+more than 32 s apart (a whole event-time wrap could hide in the gap) or the cadence is above 255 rpm.
+Per window, the `2A63` cadence is the revolutions over the event time of all its pairs, and it is
+compared with the mean page-25 cadence of the window: the difference must be within **±1 rpm**.
+ADR-0002 sets no cadence figure; this one is derived: page 25 rounds to 1 rpm (±0.5) and the two streams
+are sampled at different instants within a window (±0.5). The revolution count is exact, so the
+derivation adds no quantisation error. A `2A63` without crank-revolution data cannot confirm cadence:
+`insufficient: no 2A63 crank-revolution data`.
+
+**Verdict.** `agree` when the rate, every compared second's power and every window's cadence meet the
+tolerances, else `disagree: …` naming each that failed. Other verdicts: `no CPS: …` (no decodable `2A63`
+notification in the capture), `insufficient: …`. As for every Part B check, only a completed run gives a
+verdict (`partb::analyse` nulls it otherwise), and the live row and `hil_fec analyse` on the capture are
+computed by the same function from the same capture. A `disagree` is the ADR's trigger to amend §5 to use
+`2A63`: the owner decides, with the numbers in the JSON.

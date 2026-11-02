@@ -176,6 +176,33 @@ pub fn parse_capture(text: &str) -> Vec<Record> {
         .collect()
 }
 
+/// Tag of the comment line that carries one Cycling Power measurement (2A63) notification:
+/// `# cps <elapsed_us> <hex bytes>` (`Capture::record_aux`; check 5, #412).
+pub const CPS_TAG: &str = "# cps ";
+
+/// One Cycling Power measurement notification of a capture.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cps {
+    /// Arrival, µs from capture start (the FE-C records' time base).
+    pub at_us: u64,
+    /// The characteristic value.
+    pub bytes: Vec<u8>,
+}
+
+/// The Cycling Power notifications of `.fecap` text, in file order; malformed lines are skipped.
+pub fn parse_cps(text: &str) -> Vec<Cps> {
+    text.lines()
+        .filter_map(|line| {
+            let mut f = line.strip_prefix(CPS_TAG)?.split_whitespace();
+            let at_us = f.next()?.parse().ok()?;
+            let bytes = f
+                .map(|h| u8::from_str_radix(h, 16).ok())
+                .collect::<Option<_>>()?;
+            Some(Cps { at_us, bytes })
+        })
+        .collect()
+}
+
 /// Per-page arrival statistics over rx records (idle notification pattern).
 pub fn page_rates(records: &[Record]) -> Value {
     let mut by_page: BTreeMap<u8, Vec<u64>> = BTreeMap::new();
