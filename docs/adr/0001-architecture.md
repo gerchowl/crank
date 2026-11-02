@@ -438,15 +438,15 @@ spans). The owner decided on 2026-11-02 to adopt [vig-os/vigil](https://github.c
 instead of building that on `tracing-appender`. #431 (bug reports, ADR-0003) reads vigil's output.
 
 **Decision.** The desktop entry point initialises `vigil::Config::new("crank")` once, holds the
-`Guard` in Tauri state, and calls `Guard::shutdown()` on `RunEvent::Exit`. This replaces
+`Guard` in Tauri state, and shuts it down on exit within the quit budget below. This replaces
 `RotatingFile`. Each §7 requirement maps to a vigil setting as follows:
 
 | §7 requirement | vigil 0.2.0 setting | Deviation |
 |---|---|---|
 | JSON lines | `logs.jsonl`: one OTLP/JSON `LogsData` per line (OTel file-exporter spec) | OTLP envelope, not flat `tracing-subscriber` JSON. Readers must unwrap `resourceLogs[].scopeLogs[].logRecords[]` (ADR-0003 §2.2) |
 | `tracing-appender` daily files, 7 days | `Config::retention(Some(7 days))`, plus `signal_rotation(Logs, max_bytes(8 MiB).max_segments(Some(6)))`, `signal_rotation(Traces, max_bytes(8 MiB).max_segments(Some(2)))` and `max_total_bytes(Some(96 MiB))` | Segments rotate by size, not by day. The 7-day age limit is kept, and the count and byte caps (off by default upstream, vigil#168) bound the directory to under 96 MiB |
-| `<log_dir>` | `Config::dir(app_log_dir)` (`~/Library/Logs/io.github.gerchowl.crank/`) | none. The explicit builder value wins over `VIGIL_DIR` and `XDG_STATE_HOME` |
-| `CRANK_LOG` (`EnvFilter`), default `info` | `filter_env("CRANK_LOG").default_filter("info")` | none. Without `filter_env`, vigil would read `RUST_LOG` |
+| `<log_dir>` | normal launch: `Config::dir(app_log_dir)` (`~/Library/Logs/io.github.gerchowl.crank/`) | none. The explicit builder value wins over `VIGIL_DIR` and `XDG_STATE_HOME` |
+| `CRANK_LOG` (`EnvFilter`), default `info` | normal launch: `filter_env("CRANK_LOG").default_filter("info")`. Capture mode: see below | none. Without `filter_env`, vigil would read `RUST_LOG` |
 | Spans `ride{id}`, `device{kind,id}`, `coach{call_id}` | Feature `traces`: spans go to `traces.jsonl`, and records inside an entered span carry its `traceId`/`spanId` | **Span fields are not on log records in 0.2.0** (spike below). Correlate by span id. Tracked in #432 |
 | Default `info`, raw frames at TRACE to `.fecap` | unchanged: `.fecap` is written by `crank-ble`, not by vigil | none |
 | — | `version(CARGO_PKG_VERSION)`, `revision(<build commit>)`, the same provenance ADR-0003 §2.6 uses | addition |
@@ -462,21 +462,53 @@ finding there. vigil's MSRV is 1.95, which crank's pinned 1.96 toolchain satisfi
 
 **#411 HIL contract (kept, tested).** When `CRANK_CAPTURE_DIR=<dir>` is set:
 
-- `Config::dir(<dir>)` with `default_filter("info,crank_ble=trace")`.
-- If `CRANK_LOG` is also set, the app reports that it would override the capture filter and **exits
-  without riding**, so it cannot fail open into an uncaptured session. That exit, and the existing
-  "capture dir cannot be opened" exit, call `Guard::shutdown()` first, because
-  `std::process::exit` skips vigil's flush.
-- `.fecap` files stay in `<dir>`, separate from `logs.jsonl`/`traces.jsonl`. vigil keeps foreign files
-  when it prunes.
+- **Location.** `Config::dir(<dir>)`. The `.fecap` files stay in `<dir>`, separate from
+  `logs.jsonl`/`traces.jsonl`. vigil keeps foreign files when it prunes.
+- **No retention, no caps:** `retention(None)`, `max_total_bytes(None)` and, for both signals,
+  `signal_rotation(_, max_bytes(8 MiB).max_segments(None).retention(None))`. They are set explicitly,
+  so the `VIGIL_*` environment cannot re-enable them. The reason: with the normal-launch
+  limits, a long TRACE session would prune its own early segments, and a reused capture directory
+  would lose an earlier session's logs. A capture directory is evidence the owner curates (#44
+  Part B), so vigil never deletes anything in it; only size rotation (8 MiB segments) remains. The
+  cost is that disk use there is unbounded, which the owner accepts for an explicitly opted-in session.
+- **Filter (architect decision 2026-11-02, the owner may override).** The capture's `crank_ble=trace`
+  always applies, and `CRANK_LOG` adds to it; the app does not exit.
+  - vigil 0.2.0 reads its filter only from one environment variable or `default_filter`, so in capture
+    mode crank resolves the filter itself and passes the result as `default_filter`:
+    `info` (or `CRANK_LOG`'s directives, if it is set and valid), then any directive whose target is
+    `crank_ble` or `crank_ble::…` removed, then `crank_ble=trace` appended.
+  - Removing those directives is what makes "always" true: `EnvFilter` lets the most specific
+    directive win, so `CRANK_LOG=crank_ble::driver=warn` would otherwise lower the capture. Each removed
+    directive is reported in a WARN record. An invalid `CRANK_LOG` is reported the same way, and the
+    capture default is used.
+  - `filter_env` names `CRANK_LOG_CAPTURE_RESERVED`, a variable crank documents as reserved, so vigil
+    cannot override the resolved filter with `CRANK_LOG`. If that variable is set, the app reports it
+    and exits without riding, because vigil would apply it. #432 tracks asking vigil for an explicit
+    filter, which removes the reserved name.
+- **Exits.** The existing "capture dir cannot be opened" exit and the reserved-variable exit call
+  `Guard::shutdown()` first, because `std::process::exit` skips vigil's flush.
 
 The tests that exist today for the filter plan (`crank_ble` at TRACE only with a capture directory)
-move to the vigil configuration unchanged, and a new test pins the `CRANK_LOG`-in-capture-mode refusal.
+move to the vigil configuration unchanged. New tests pin the merge (`CRANK_LOG=warn` and
+`CRANK_LOG=crank_ble::driver=warn` both still enable `crank_ble::driver` at TRACE), the
+`None` retention and caps in capture mode, and the reserved-variable refusal.
 
-**Migration.** The first vigil-era launch deletes `crank.log` and `crank.log.1` from `app_log_dir`,
-those two names only, and logs that it did. Capture directories are never touched. AGENTS.md's
-logging paragraph is rewritten in the implementation PR. Sequencing follows #414: implement after the
-#44 Part B session.
+**Quit budget (decision; the owner may override).** AGENTS.md's quit path must finish within 3 s,
+because macOS may kill a terminating app a few seconds in. The 3 s are split:
+
+- `Core::shutdown` waits at most **2.5 s** for the devices to be released. That is lowered from 3 s.
+- vigil then gets the rest: `Guard::shutdown_with_timeout(3 s − elapsed)`, at least 0.5 s.
+  Because shutdown is explicit, the guard's Drop does nothing, so its 5 s wait never runs.
+- Metrics are off, so the 5 s metrics floor (vigil#112) does not apply.
+- When the bound is hit, the records still queued are lost. That is at most the last ~1 s batch
+  interval: typically the shutdown's own lines. Spans not yet exported are lost from `traces.jsonl`.
+  vigil reports the loss on stderr, which a Finder launch does not have.
+- Because crank also flushes when each ride ends (below), the ride's records are on disk before quit.
+
+**Migration (architect decision 2026-11-02).** The app never deletes the old plain-text `crank.log` or
+`crank.log.1`; they stay in `app_log_dir` next to `logs.jsonl`. AGENTS.md's logging paragraph is
+rewritten in the implementation PR and says the old files can be deleted by hand. Sequencing follows
+#414: implement after the #44 Part B session.
 
 **Spike (2026-11-02, outside the repo, crank's dev shell, vigil tag `0.2.0` @ `64f9b8f`).** A binary
 initialised vigil, emitted two events inside an entered `info_span!("ride", ride_id = 7)` and shut
@@ -503,7 +535,6 @@ spans. vigil logs-only: loses span correlation entirely (spike).
 - Records overflowing the 65 536-record queue are dropped with a stderr warning. A Finder launch has no
   stderr, so crank calls `Guard::flush()` when a ride ends. If the flush returns a `FlushError`,
   crank writes its `lost(Signal::Logs)` count as a WARN record.
-- A guard drop waits up to 5 s, so quitting can take that long if the disk stalls.
 
 ## 8. Decision: testing strategy and definition of done
 
