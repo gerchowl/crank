@@ -210,9 +210,10 @@ export function Devices() {
     });
 
   const busy = scan.pending || pair.pending || forget.pending;
-  const pairedIds = new Set(
-    (links ?? []).flatMap((l) => (l.device ? [l.device.id] : [])),
-  );
+  // The core pairs by role: one trainer and one strap, each replaced by a new pairing, so a peripheral that offers
+  // both may hold both. `ScannedDevice.paired` carries no role, so the role comes from the pairings read above.
+  const pairedIn = (d: ScannedDevice, role: DeviceRole) =>
+    links?.find((l) => l.role === role)?.device?.id === d.id;
   return (
     <div className="page devices">
       <div className="page-head">
@@ -292,23 +293,37 @@ export function Devices() {
                     <strong>{name}</strong>
                     <div className="muted">
                       {roles.map((r) => ROLE_LABEL[r]).join(" · ")}
-                      {pairedIds.has(d.id) && " · Paired"}
                     </div>
                   </div>
                   <div className="device-actions">
-                    {roles.map((role) => (
-                      <button
-                        key={role}
-                        type="button"
-                        disabled={busy}
-                        aria-label={`Pair ${name} as ${ROLE_LABEL[role].toLowerCase()}`}
-                        onClick={() => void runPair(d, role)}
-                      >
-                        {pairing === `${d.id}:${role}` && pair.pending
-                          ? "Pairing…"
-                          : `Pair as ${role === "trainer" ? "trainer" : "strap"}`}
-                      </button>
-                    ))}
+                    {roles.map((role) => {
+                      const roleName = role === "trainer" ? "trainer" : "strap";
+                      return pairedIn(d, role) ? (
+                        <span key={role} className="device-actions">
+                          <span className="muted">✓ Paired as {roleName}</span>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            aria-label={`Forget ${name} as ${ROLE_LABEL[role].toLowerCase()}`}
+                            onClick={() => void runForget(role)}
+                          >
+                            Forget
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          key={role}
+                          type="button"
+                          disabled={busy}
+                          aria-label={`Pair ${name} as ${ROLE_LABEL[role].toLowerCase()}`}
+                          onClick={() => void runPair(d, role)}
+                        >
+                          {pairing === `${d.id}:${role}` && pair.pending
+                            ? "Pairing…"
+                            : `Pair as ${roleName}`}
+                        </button>
+                      );
+                    })}
                   </div>
                 </li>
               );
