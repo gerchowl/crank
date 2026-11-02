@@ -6,6 +6,8 @@ use crate::{
         parse_capture, redact_capture, redact_frame, redact_name, request_latencies,
         with_page_byte,
     },
+    partb,
+    rider::{self, Wire},
     session::{Exchange, Result, Session, adapter, find_trainer, scan},
 };
 use crank_ble::{
@@ -26,6 +28,9 @@ pub enum Outcome {
     Done(PathBuf),
     /// Precondition missing; the owner must act.
     Blocked(String),
+    /// A Part B procedure stopped early (guard, signal, failure); the trainer was released
+    /// and the summary is at this path.
+    Stopped(PathBuf, String),
 }
 
 const BLOCKED_NO_NEO: &str = "NEO not advertising — owner: power the trainer (mains plugged in) and keep the phone/Tacx app disconnected";
@@ -49,8 +54,25 @@ pub async fn run(args: &Args) -> Result<Outcome> {
     };
     std::fs::create_dir_all(&args.out)?;
     let capture_path = args.out.join(format!("{}.fecap", args.check.name()));
+    let mut stopped = None;
     let summary = if args.check == Check::Latency {
         latency(args, &adv, adapter, device, &capture_path).await?
+    } else if let Some(p) = args.check.procedure() {
+        let s = Session::open(&adv, adapter, device, &capture_path).await?;
+        let report = rider::drive(&s, &rider::Console::new(), p, rider::signals()).await;
+        let mut summary = rider::summary(p, args.check.name(), &report, &Wire::records(&s));
+        summary["identity"] = identity(&s);
+        summary["link_dropped_during_run"] = json!(s.pump_ended());
+        s.close().await;
+        // The outcome line lets `analyse` tell a completed run from a stopped one.
+        if let Err(e) = partb::append_outcome(&capture_path, &rider::outcome(&report.procedure)) {
+            summary["outcome_line_error"] = json!(e.to_string());
+        }
+        if let Some(line) = summary["result"]["line"].as_str() {
+            println!("{line}");
+        }
+        stopped = report.procedure.err().map(|e| format!("{e:?}"));
+        summary
     } else {
         let s = Session::open(&adv, adapter, device, &capture_path).await?;
         let summary = match args.check {
@@ -60,7 +82,14 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             Check::Check3 => check3(&s).await,
             Check::Check4 => check4(&s).await,
             Check::Spacing => spacing(&s).await,
-            Check::Scan | Check::Known | Check::Latency | Check::Redact | Check::Analyse => {
+            Check::Scan
+            | Check::Known
+            | Check::Latency
+            | Check::Redact
+            | Check::Analyse
+            | Check::Check6
+            | Check::Check7
+            | Check::Check12 => {
                 unreachable!()
             }
         };
@@ -70,9 +99,11 @@ pub async fn run(args: &Args) -> Result<Outcome> {
         summary["link_dropped_during_run"] = json!(ended);
         summary
     };
-    Ok(Outcome::Done(write_summary(
-        &args.out, args.check, &summary,
-    )?))
+    let path = write_summary(&args.out, args.check, &summary)?;
+    Ok(match stopped {
+        None => Outcome::Done(path),
+        Some(why) => Outcome::Stopped(path, why),
+    })
 }
 
 fn redact(args: &Args) -> Result<Outcome> {
@@ -104,7 +135,15 @@ fn analyse(args: &Args) -> Result<Outcome> {
         .ok_or("bad --target")?;
     std::fs::create_dir_all(&args.out)?;
     let dest = args.out.join(format!("{stem}.analysis.json"));
-    let mut body = serde_json::to_string_pretty(&analysis(&parse_capture(&text)))?;
+    let records = parse_capture(&text);
+    let mut v = analysis(&records);
+    if let Some(part_b) = partb::analyse(stem, &records, partb::outcome_in(&text).as_deref()) {
+        if let Some(line) = part_b["line"].as_str() {
+            println!("{line}");
+        }
+        v["part_b"] = part_b;
+    }
+    let mut body = serde_json::to_string_pretty(&v)?;
     body.push('\n');
     std::fs::write(&dest, body)?;
     Ok(Outcome::Done(dest))
