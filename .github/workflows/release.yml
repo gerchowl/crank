@@ -1,0 +1,95 @@
+# Tag-and-release step (#428): after the owner merges release/X.Y.Z into main, build crank.app on a macOS
+# runner and draft the GitHub release with crank-X.Y.Z-aarch64-darwin.zip and its SHA-256. The owner publishes
+# the draft (that creates the X.Y.Z tag). Unsigned and not notarized until #47 / #426. No secrets.
+name: Release
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect release merge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Find the merged release PR
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -I scripts/release-version.py check | sed -E 's/^version sources agree: ([0-9.]+) .*/\1/')
+          HEADS=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[].head.ref')
+          if ! grep -qx "release/$VERSION" <<<"$HEADS"; then
+            echo "main@$GITHUB_SHA is not the merge of release/$VERSION: nothing to release"; exit 0
+          fi
+          # `gh release view` cannot resolve a draft by tag, so list.
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/releases" | jq -s -e --arg t "$VERSION" 'add // [] | any(.[]; .tag_name == $t)' >/dev/null; then
+            echo "a release for $VERSION already exists"; exit 0
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build crank.app and draft the release
+    needs: detect
+    if: needs.detect.outputs.version != ''
+    runs-on: macos-latest   # Apple Silicon, like CI's macos job
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.detect.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - name: Build and package crank.app
+        run: |
+          set -euo pipefail
+          nix build -L .#crank-app
+          ZIP="crank-$VERSION-aarch64-darwin.zip"
+          ditto -c -k --keepParent result/crank.app "$ZIP"
+          shasum -a 256 "$ZIP" > "$ZIP.sha256"
+          cat "$ZIP.sha256"
+          { python3 -I scripts/release-version.py notes "$VERSION"; sed "s/@VERSION@/$VERSION/g" .github/release-notes-footer.md; } > notes.md
+      - name: Draft the release
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" --draft --target "$GITHUB_SHA" --title "crank $VERSION" \
+            --notes-file notes.md "crank-$VERSION-aarch64-darwin.zip" "crank-$VERSION-aarch64-darwin.zip.sha256"
+
+  sync-dev:
+    name: Open the main to dev sync PR
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Open the PR
+        run: |
+          set -euo pipefail
+          if ! gh pr create --repo "$GITHUB_REPOSITORY" --base dev --head main --title "chore: sync main into dev" \
+            --body "Carries the release commit (version bump, frozen changelog) back to dev. Merge with a merge commit. Prepare Release refuses to run while dev is behind main."; then
+            echo "::warning::could not open the sync PR (open one from main into dev by hand, RELEASING.md)"
+          fi

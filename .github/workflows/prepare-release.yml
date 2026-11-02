@@ -1,0 +1,96 @@
+# Prepare a release (#428), adopted from devkit's prepare-release.yml: validate, cut release/X.Y.Z from dev,
+# bump every version source and freeze the changelog on it, dispatch CI there and open a draft PR into main.
+# The owner merges that PR; release.yml does the rest. No secrets: GITHUB_TOKEN only (RELEASING.md).
+name: Prepare Release
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version to prepare (e.g. 0.1.0)'
+        required: true
+        type: string
+      dry-run:
+        description: 'Validate and build the release commit without pushing anything'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare Release Branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write        # push release/X.Y.Z
+      actions: write         # dispatch CI on it
+      pull-requests: write   # open the draft PR
+    env:
+      VERSION: ${{ inputs.version }}
+      DRY_RUN: ${{ inputs.dry-run }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Validate
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$VERSION' is not MAJOR.MINOR.PATCH"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::tag $VERSION already exists"; exit 1
+          fi
+          # One release train at a time: a second would predate the first's fixes.
+          IN_FLIGHT=$(git for-each-ref --format='%(refname:lstrip=3)' refs/remotes/origin/release/)
+          if [ -n "$IN_FLIGHT" ]; then
+            echo "::error::release train in flight: $IN_FLIGHT. Merge it or run Abandon Release first"; exit 1
+          fi
+          # main carries release commits dev lacks until the sync PR is merged; cutting ahead of it
+          # would freeze a changelog that omits them.
+          BEHIND=$(git rev-list --count origin/main ^origin/dev)
+          if [ "$BEHIND" != 0 ]; then
+            echo "::error::dev is behind main by $BEHIND commit(s). Merge the 'chore: sync main into dev' PR first"; exit 1
+          fi
+          python3 -I scripts/release-version.py check
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - name: Bump versions and freeze the changelog on release/${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git switch -c "release/$VERSION"
+          python3 -I scripts/release-version.py bump "$VERSION"
+          # Cargo.lock names the workspace crates; --workspace touches nothing else.
+          nix develop -c cargo update --workspace
+          python3 -I scripts/release-version.py freeze "$VERSION" "$(date -u +%F)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: release $VERSION" -m "Refs: #428"
+          git show --stat HEAD
+
+      - name: Push release/${{ inputs.version }} and dispatch CI
+        if: ${{ !inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          git push origin "release/$VERSION"
+          gh workflow run ci.yml --ref "release/$VERSION"
+
+      - name: Open the draft release PR
+        if: ${{ !inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          NOTES=$(python3 -I scripts/release-version.py notes "$VERSION")
+          BODY="# Release $VERSION"$'\n\n'"Merge with a **merge commit** once \`CI Summary\` is green; \`release.yml\` then builds crank.app and drafts the release (RELEASING.md)."$'\n\n'"$NOTES"
+          if ! gh pr create --base main --head "release/$VERSION" --draft --title "chore: release $VERSION" --body "$BODY"; then
+            # Needs the repo setting "Allow GitHub Actions to create and approve pull requests" (RELEASING.md).
+            echo "::warning::could not open the PR; open it by hand: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...release/${VERSION}"
+          fi

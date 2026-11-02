@@ -5,6 +5,9 @@ on:
     branches: [dev, main]
   push:
     branches: [dev, main]
+  # prepare-release.yml dispatches CI on release/X.Y.Z: a push made with GITHUB_TOKEN starts no
+  # workflow, and the release PR needs `CI Summary` on its head (RELEASING.md).
+  workflow_dispatch:
 
 permissions:
   contents: read
