@@ -426,6 +426,85 @@ on top).
   the IPC contract (commands return `has_key: bool`). Debug builds only accept `CRANK_ANTHROPIC_API_KEY` /
   `CRANK_INTERVALS_API_KEY` from the environment; release builds compile that path out.
 
+### 7.1 Amendment 2026-11-02: logs via vigil (#414)
+
+*Amends the **Logging** bullet of §7 (#414 and its owner comment call it "§9"; logging is decided here).
+The raw-frame capture and the #411 HIL contract are unchanged.*
+
+**Context.** #411 shipped `app/src-tauri/src/logging.rs`: a plain-text `crank.log` in Tauri's
+`app_log_dir`, size-rotated at 5 MiB with one previous generation, and fixed filters. That was enough
+for the #44 Part B session, but it is not what §7 specifies (JSON lines, 7 days kept, `CRANK_LOG`,
+spans). The owner decided on 2026-11-02 to adopt [vig-os/vigil](https://github.com/vig-os/vigil)
+instead of building that on `tracing-appender`. #431 (bug reports, ADR-0003) reads vigil's output.
+
+**Decision.** The desktop entry point initialises `vigil::Config::new("crank")` once, holds the
+`Guard` in Tauri state, and calls `Guard::shutdown()` on `RunEvent::Exit`. This replaces
+`RotatingFile`. Each §7 requirement maps to a vigil setting as follows:
+
+| §7 requirement | vigil 0.2.0 setting | Deviation |
+|---|---|---|
+| JSON lines | `logs.jsonl`: one OTLP/JSON `LogsData` per line (OTel file-exporter spec) | OTLP envelope, not flat `tracing-subscriber` JSON. Readers must unwrap `resourceLogs[].scopeLogs[].logRecords[]` (ADR-0003 §2.2) |
+| `tracing-appender` daily files, 7 days | `Config::retention(Some(7 days))`, plus `signal_rotation(Logs, max_bytes(8 MiB).max_segments(Some(6)))`, `signal_rotation(Traces, max_bytes(8 MiB).max_segments(Some(2)))` and `max_total_bytes(Some(96 MiB))` | Segments rotate by size, not by day. The 7-day age limit is kept, and the count and byte caps (off by default upstream, vigil#168) bound the directory to under 96 MiB |
+| `<log_dir>` | `Config::dir(app_log_dir)` (`~/Library/Logs/io.github.gerchowl.crank/`) | none. The explicit builder value wins over `VIGIL_DIR` and `XDG_STATE_HOME` |
+| `CRANK_LOG` (`EnvFilter`), default `info` | `filter_env("CRANK_LOG").default_filter("info")` | none. Without `filter_env`, vigil would read `RUST_LOG` |
+| Spans `ride{id}`, `device{kind,id}`, `coach{call_id}` | Feature `traces`: spans go to `traces.jsonl`, and records inside an entered span carry its `traceId`/`spanId` | **Span fields are not on log records in 0.2.0** (spike below). Correlate by span id. Tracked in #432 |
+| Default `info`, raw frames at TRACE to `.fecap` | unchanged: `.fecap` is written by `crank-ble`, not by vigil | none |
+| — | `version(CARGO_PKG_VERSION)`, `revision(<build commit>)`, the same provenance ADR-0003 §2.6 uses | addition |
+| — | `console(Console::Stderr)` in debug builds only | addition. Its text is not parsed |
+
+**Dependency.** `vigil-telemetry = { git = "https://github.com/vig-os/vigil", tag = "0.2.0",
+default-features = false, features = ["traces"] }`, imported as `vigil` (Apache-2.0). The exact tag
+is pinned because a pre-1.0 minor may break the API, and moving the tag is a deliberate PR.
+`metrics` is off because crank has no metrics consumer, and `audit` is not needed. `deny.toml [sources]`
+gains `allow-git = ["https://github.com/vig-os/vigil"]`. The implementation PR runs the full `deny`
+check (licences, advisories, bans) over vigil's OpenTelemetry tree and fixes or justifies each
+finding there. vigil's MSRV is 1.95, which crank's pinned 1.96 toolchain satisfies.
+
+**#411 HIL contract (kept, tested).** When `CRANK_CAPTURE_DIR=<dir>` is set:
+
+- `Config::dir(<dir>)` with `default_filter("info,crank_ble=trace")`.
+- If `CRANK_LOG` is also set, the app reports that it would override the capture filter and **exits
+  without riding**, so it cannot fail open into an uncaptured session. That exit, and the existing
+  "capture dir cannot be opened" exit, call `Guard::shutdown()` first, because
+  `std::process::exit` skips vigil's flush.
+- `.fecap` files stay in `<dir>`, separate from `logs.jsonl`/`traces.jsonl`. vigil keeps foreign files
+  when it prunes.
+
+The tests that exist today for the filter plan (`crank_ble` at TRACE only with a capture directory)
+move to the vigil configuration unchanged, and a new test pins the `CRANK_LOG`-in-capture-mode refusal.
+
+**Migration.** The first vigil-era launch deletes `crank.log` and `crank.log.1` from `app_log_dir`,
+those two names only, and logs that it did. Capture directories are never touched. AGENTS.md's
+logging paragraph is rewritten in the implementation PR. Sequencing follows #414: implement after the
+#44 Part B session.
+
+**Spike (2026-11-02, outside the repo, crank's dev shell, vigil tag `0.2.0` @ `64f9b8f`).** A binary
+initialised vigil, emitted two events inside an entered `info_span!("ride", ride_id = 7)` and shut
+down. `cargo run` exited 0 for both builds:
+
+- **Logs-only build.** One `logs.jsonl` line held both records. `attributes` carried only the event
+  fields, `traceId`/`spanId` were empty, and there was no `ride_id`.
+- **Default-features build.** The same records carried a non-empty `spanId`/`traceId`, and
+  `traces.jsonl` held the span. Hence `features = ["traces"]`.
+- **Resource attributes** included `host.name`, which is the machine name. ADR-0003 §2.2 drops them.
+
+**Alternatives.** `tracing-subscriber` JSON with `tracing-appender`, as §7 originally said: rejected
+by the owner in favour of the vig-os shared crate, which brings caps, multi-process-safe rotation and
+an OTLP format Loki reads. Keeping #411's `RotatingFile` and adding JSON: hand-rolled rotation and no
+spans. vigil logs-only: loses span correlation entirely (spike).
+
+**Consequences and known limits.**
+
+- Pre-1.0: a vigil minor may break crank's build. Bumps are reviewed PRs.
+- Open spans at shutdown are not exported (vigil#8 8d), so `RunEvent::Exit` ends the ride and device
+  sessions before `shutdown()`. This affects `traces.jsonl` only. Tracked in #432.
+- vigil supports Unix targets only (`flock` rotation). Windows (#41) needs vigil support or another
+  backend.
+- Records overflowing the 65 536-record queue are dropped with a stderr warning. A Finder launch has no
+  stderr, so crank calls `Guard::flush()` when a ride ends. If the flush returns a `FlushError`,
+  crank writes its `lost(Signal::Logs)` count as a WARN record.
+- A guard drop waits up to 5 s, so quitting can take that long if the disk stalls.
+
 ## 8. Decision: testing strategy and definition of done
 
 ### 8.1 Definition of done (owner, 2026-10-13)
