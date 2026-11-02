@@ -93,6 +93,7 @@ pub struct Session {
     pub capture_path: std::path::PathBuf,
     pub device: DeviceRef,
     pub info: DeviceInfo,
+    started: MonoTime,
     log: Arc<Mutex<Vec<Rx>>>,
     pump: tokio::task::JoinHandle<Option<String>>,
 }
@@ -122,7 +123,8 @@ impl Session {
         let clock = Arc::new(MonotonicClock::default());
         let peripheral = adv.peripheral(&device).await?;
         let transport = BtleplugTransport::new(peripheral, adapter);
-        let capture = Arc::new(Capture::create(capture_path, clock.now())?);
+        let started = clock.now();
+        let capture = Arc::new(Capture::create(capture_path, started)?);
         let (info, mut notifications) = transport.connect(device.clone(), clock.clone()).await?;
         let log = Arc::new(Mutex::new(Vec::new()));
         let pump = tokio::spawn({
@@ -151,6 +153,7 @@ impl Session {
             capture_path: capture_path.to_path_buf(),
             device,
             info,
+            started,
             log,
             pump,
         })
@@ -167,6 +170,16 @@ impl Session {
     /// Frames received since `mark`.
     pub fn since(&self, mark: usize) -> Vec<Rx> {
         self.log.lock().unwrap_or_else(PoisonError::into_inner)[mark..].to_vec()
+    }
+
+    /// Microseconds since the capture started.
+    pub fn elapsed_us(&self) -> u64 {
+        self.capture_us(self.clock.now())
+    }
+
+    /// A clock stamp on the capture's time base.
+    pub fn capture_us(&self, at: MonoTime) -> u64 {
+        at.0.saturating_sub(self.started.0)
     }
 
     /// Why the rx pump ended, if it has (disconnect, capture failure).
