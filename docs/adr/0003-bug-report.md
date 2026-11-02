@@ -200,5 +200,5 @@ can rely on it. The destination is set explicitly as `gerchowl/crank`, not taken
 - squelch README and `src/redact.rs`, `src/report.rs`, `tests/issue_form.rs` at `4f0d064` (checked 2026-11-02):
   https://github.com/gerchowl/squelch
 - vigil README and ADR-0003 at tag `0.2.0` (`64f9b8f`, checked 2026-11-02): https://github.com/vig-os/vigil
-- GitHub issue forms syntax: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-open-source-contributions/syntax-for-issue-forms
+- GitHub issue forms syntax: https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-issue-forms
 - In-repo: ADR-0001 §4.4, §7.1; ADR-0002 §4.2 (page 81); `spec/TRAINER-BLE.md`; `app/src-tauri/src/logging.rs`
