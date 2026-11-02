@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>crank · A Telemetry</title>
+<!-- Self-contained: no remote fonts. Inter and JetBrains Mono render when installed locally, else the system fallbacks in --font-ui / --font-num; the PNGs were rendered with both fonts. -->
+<style>
+/* Direction A · Telemetry. Tokens first: 4 px base, 8 px rhythm, 3 radii, one elevation. Dark-first. */
+:root {
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --radius-s: 4px; --radius-m: 6px; --radius-l: 10px;
+  --font-ui: Inter, system-ui, -apple-system, sans-serif;
+  --font-num: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-xs: 12px; --fs-s: 13px; --fs-m: 15px; --fs-l: 20px; --fs-xl: 40px; --fs-hero: 112px;
+  --bg: #0b0d10; --panel: #111418; --panel-2: #161a20; --line: #232a33; --line-2: #2e3742;
+  --ink: #e6ebf0; --ink-2: #a3aebb; --ink-3: #7b8796;
+  --power: #7fb4ff; --hr: #ff7a66; --cad: #c39bff; --target: #e6ebf0; --band: rgba(127,180,255,.14);
+  --good: #3ddc84; --warn: #f2c14e; --accent: #4c8dff;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 400 var(--fs-m)/1.4 var(--font-ui); }
+.num { font-family: var(--font-num); font-variant-numeric: tabular-nums slashed-zero; letter-spacing: -0.02em; }
+svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; vertical-align: -3px; }
+kbd { font: 500 11px var(--font-num); color: var(--ink-2); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: var(--radius-s); padding: 0 5px; }
+.screen { display: none; height: 100vh; }
+:target.screen, .screen.on { display: grid; }
+body { overflow: hidden; }
+
+/* ---------- ride ---------- */
+#ride { grid-template-rows: 48px 1fr 112px 44px; }
+.bar { display: flex; align-items: center; gap: var(--space-4); padding: 0 var(--space-5); border-bottom: 1px solid var(--line); font-size: var(--fs-s); color: var(--ink-2); }
+.bar .title { color: var(--ink); font-weight: 600; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 var(--space-2); border: 1px solid var(--line-2); border-radius: var(--radius-s); font: 500 var(--fs-xs) var(--font-num); color: var(--ink-2); }
+.chip.ok svg { color: var(--good); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--good); }
+.spacer { flex: 1; }
+.main { display: grid; grid-template-columns: minmax(0, 8fr) minmax(0, 4fr); gap: var(--space-4); padding: var(--space-4) var(--space-5); min-height: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-l); min-height: 0; }
+.charts { display: grid; grid-template-rows: 2fr 1fr 1fr; padding: var(--space-3) var(--space-4) var(--space-2); }
+.trace { position: relative; border-bottom: 1px solid var(--line); }
+.trace:last-child { border-bottom: 0; }
+.trace .lbl { position: absolute; top: var(--space-2); left: 0; font-size: var(--fs-xs); color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; }
+.trace .lbl b { font-weight: 500; }
+.trace svg { width: 100%; height: 100%; display: block; }
+.readouts { display: grid; grid-template-rows: auto 1fr 1fr 1fr; }
+.ro { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto; align-items: baseline; }
+.ro:last-child { border-bottom: 0; }
+.ro .k { font-size: var(--fs-xs); color: var(--ink-3); text-transform: uppercase; letter-spacing: .06em; display: flex; gap: 6px; align-items: center; }
+.ro .sub { font-size: var(--fs-s); color: var(--ink-2); text-align: right; }
+.ro .v { grid-column: 1 / -1; font: 500 64px/1 var(--font-num); }
+.ro .v small { font: 400 var(--fs-l) var(--font-ui); color: var(--ink-3); margin-left: 6px; }
+.ro.hero { background: var(--panel-2); border-radius: var(--radius-l) var(--radius-l) 0 0; }
+.ro.hero .v { font-size: var(--fs-hero); font-weight: 700; letter-spacing: -0.04em; }
+.delta { color: var(--good); font-family: var(--font-num); }
+.band { grid-column: 1 / -1; height: 6px; margin-top: var(--space-2); background: var(--line); border-radius: 3px; position: relative; }
+.band i { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); }
+.band span { position: absolute; top: 0; bottom: 0; background: var(--band); border-left: 1px solid var(--power); border-right: 1px solid var(--power); }
+.timeline { margin: 0 var(--space-5); padding: var(--space-3) var(--space-4); display: grid; grid-template-rows: 16px 1fr 16px; }
+.timeline .hd { display: flex; justify-content: space-between; font-size: var(--fs-xs); color: var(--ink-3); }
+.timeline svg { width: 100%; height: 100%; }
+.keys { display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-5); font-size: var(--fs-s); color: var(--ink-2); }
+.btn { display: inline-flex; align-items: center; gap: var(--space-2); height: 32px; padding: 0 var(--space-3); border-radius: var(--radius-m); border: 1px solid var(--line-2); background: var(--panel-2); color: var(--ink); font: 500 var(--fs-s) var(--font-ui); }
+.btn.danger { color: #ff8b8b; }
+
+/* ---------- workouts ---------- */
+#workouts { grid-template-columns: 56px 1fr; }
+.rail { border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; gap: var(--space-2); padding-top: var(--space-3); }
+.rail .logo { font: 700 13px var(--font-num); margin-bottom: var(--space-3); }
+.rail a { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--radius-m); color: var(--ink-3); }
+.rail a.on { background: var(--panel-2); color: var(--ink); box-shadow: inset 2px 0 0 var(--accent); }
+.rail svg.i { width: 20px; height: 20px; }
+.wk { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: var(--space-5); padding: var(--space-5) var(--space-6); max-width: 1384px; min-height: 0; }
+.wk h1 { font-size: var(--fs-l); font-weight: 600; margin: 0; }
+.toolbar { display: flex; gap: var(--space-2); align-items: center; margin: var(--space-4) 0 var(--space-3); }
+.search { flex: 1; height: 32px; display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); border: 1px solid var(--line-2); border-radius: var(--radius-m); color: var(--ink-3); font-size: var(--fs-s); background: var(--panel); }
+table { width: 100%; border-collapse: collapse; font-size: var(--fs-s); }
+th { text-align: left; font-weight: 500; color: var(--ink-3); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .06em; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--line); }
+td { padding: 0 var(--space-3); height: 44px; border-bottom: 1px solid var(--line); }
+tr.sel td { background: var(--panel-2); }
+tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+td.r, th.r { text-align: right; }
+.prof { width: 140px; height: 20px; display: block; }
+.detail { padding: var(--space-5); display: grid; gap: var(--space-4); align-content: start; }
+.detail h2 { margin: 0; font-size: var(--fs-l); font-weight: 600; }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-2); }
+.stat { background: var(--panel-2); border-radius: var(--radius-m); padding: var(--space-2) var(--space-3); }
+.stat .k { font-size: var(--fs-xs); color: var(--ink-3); }
+.stat .v { font: 500 var(--fs-l) var(--font-num); }
+.dsl { font: 400 var(--fs-s)/1.6 var(--font-num); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-m); padding: var(--space-3); color: var(--ink-2); }
+.dsl b { color: var(--power); font-weight: 500; }
+.steps { font-size: var(--fs-s); }
+.steps div { display: grid; grid-template-columns: 24px 1fr auto auto; gap: var(--space-3); padding: var(--space-2) 0; border-bottom: 1px solid var(--line); }
+.cta { display: flex; gap: var(--space-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <!-- Lucide (ISC), 24 viewBox, stroke 1.5 -->
+  <symbol id="i-bike" viewBox="0 0 24 24"><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+  <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></symbol>
+  <symbol id="i-timer" viewBox="0 0 24 24"><line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></symbol>
+  <symbol id="i-skip" viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" x2="19" y1="5" y2="19"/></symbol>
+  <symbol id="i-square" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+  <symbol id="i-bt" viewBox="0 0 24 24"><path d="m7 7 10 10-5 5V2l5 5L7 17"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M3 12h.01M3 18h.01M3 6h.01M8 12h13M8 18h13M8 6h13"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M20 7h-9M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+</svg>
+<script>const I = (n, c = "i") => `<svg class="${c}"><use href="#i-${n}"/></svg>`;</script>
+
+<section class="screen" id="ride">
+  <header class="bar">
+    <span class="title">Sensor check (3 min)</span>
+    <span class="chip">ERG</span>
+    <span class="num">1:22 <span style="color:var(--ink-3)">/ 3:00</span></span>
+    <span class="num" style="color:var(--ink-3)">−1:38</span>
+    <span class="spacer"></span>
+    <span class="chip ok" id="dev1"></span>
+    <span class="chip ok" id="dev2"></span>
+    <span class="chip num">FTP 250</span>
+  </header>
+  <div class="main">
+    <div class="panel charts">
+      <div class="trace"><span class="lbl"><b style="color:var(--power)">Power</b> · target band ±5 % · 3 s</span><svg id="tp" preserveAspectRatio="none"></svg></div>
+      <div class="trace"><span class="lbl"><b style="color:var(--hr)">Heart rate</b> · bpm</span><svg id="th" preserveAspectRatio="none"></svg></div>
+      <div class="trace"><span class="lbl"><b style="color:var(--cad)">Cadence</b> · rpm</span><svg id="tc" preserveAspectRatio="none"></svg></div>
+    </div>
+    <div class="panel readouts">
+      <div class="ro hero"><span class="k" id="k-int"></span><span class="sub">block 2/3 · next Cool-down 1:00 @ 100 W</span><div class="v num">0:38</div></div>
+      <div class="ro"><span class="k" id="k-pw"></span><span class="sub num">target 200 W · <span class="delta">−2</span></span><div class="v num">198<small>W</small></div><div class="band"><span style="left:40%;width:20%"></span><i style="left:49%"></i></div></div>
+      <div class="ro"><span class="k" id="k-hr"></span><span class="sub">Z2 · ↗ +0.9/s</span><div class="v num">134<small>bpm</small></div></div>
+      <div class="ro"><span class="k" id="k-cad"></span><span class="sub">steady</span><div class="v num">89<small>rpm</small></div></div>
+    </div>
+  </div>
+  <div class="panel timeline">
+    <div class="hd"><span>Workout · 3 blocks</span><span class="num">0:00 ─────── 1:22 now ─────── 3:00</span></div>
+    <svg id="tl" preserveAspectRatio="none"></svg>
+    <div class="hd num"><span>Warm-up 125 W</span><span>Work 200 W</span><span>Cool-down 100 W</span></div>
+  </div>
+  <footer class="keys" id="keys"></footer>
+</section>
+
+<section class="screen" id="workouts">
+  <nav class="rail" id="rail"></nav>
+  <div class="wk">
+    <div>
+      <h1>Workouts</h1>
+      <div class="toolbar"><div class="search" id="search"></div><span class="btn" id="newbtn"></span></div>
+      <table><thead><tr><th>Name</th><th>Profile</th><th class="r">Duration</th><th class="r">TSS</th><th class="r">IF</th></tr></thead><tbody id="rows"></tbody></table>
+    </div>
+    <aside class="panel detail" id="detail"></aside>
+  </div>
+</section>
+
+<script src="sim.js"></script>
+<script>
+const S = window.SIM;
+document.getElementById("dev1").innerHTML = `${I("bt")} NEO 2T <span class="dot"></span>`;
+document.getElementById("dev2").innerHTML = `${I("heart")} HRM-Pro <span class="dot"></span>`;
+document.getElementById("k-int").innerHTML = `${I("timer")} Work · left`;
+document.getElementById("k-pw").innerHTML = `${I("zap")} Power 3 s`;
+document.getElementById("k-hr").innerHTML = `${I("heart")} Heart rate`;
+document.getElementById("k-cad").innerHTML = `${I("rotate")} Cadence`;
+document.getElementById("keys").innerHTML =
+  `<span class="btn">${I("pause")} Pause <kbd>Space</kbd></span><span class="btn">${I("skip")} Skip block <kbd>S</kbd></span>` +
+  `<span class="btn num">−5 % <kbd>−</kbd></span><span class="btn num">+5 % <kbd>+</kbd></span><span class="spacer"></span>` +
+  `<span style="color:var(--ink-3)">trainer following · settle done · compliance 98 %</span><span class="spacer"></span>` +
+  `<span class="btn">? <kbd>?</kbd></span><span class="btn danger">${I("square")} End <kbd>E</kbd></span>`;
+
+// traces: x = whole workout (180 s), future target ghosted
+function trace(id, key, lo, hi, color, withTarget) {
+  const svg = document.getElementById(id), W = 1000, H = 100;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const x = (t) => (t / 180) * W, y = (v) => H - ((v - lo) / (hi - lo)) * (H - 18) - 4;
+  let g = "";
+  for (let t = 30; t < 180; t += 30) g += `<line x1="${x(t)}" x2="${x(t)}" y1="0" y2="${H}" stroke="#1d242c" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+  if (withTarget) for (const b of S.blocks) {
+    const fut = b.s >= S.NOW;
+    g += `<rect x="${x(b.s)}" width="${x(b.d)}" y="${y(b.w * 1.05)}" height="${y(b.w * 0.95) - y(b.w * 1.05)}" fill="${fut ? "rgba(127,180,255,.06)" : "rgba(127,180,255,.14)"}"/>`;
+    g += `<line x1="${x(b.s)}" x2="${x(b.s + b.d)}" y1="${y(b.w)}" y2="${y(b.w)}" stroke="#e6ebf0" stroke-opacity="${fut ? .35 : .7}" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>`;
+  }
+  const pts = S.series.map((d) => `${x(d.t).toFixed(1)},${y(d[key]).toFixed(1)}`).join(" ");
+  g += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.75" vector-effect="non-scaling-stroke"/>`;
+  g += `<line x1="${x(S.NOW)}" x2="${x(S.NOW)}" y1="0" y2="${H}" stroke="#e6ebf0" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+  svg.innerHTML = g;
+}
+trace("tp", "p", 60, 240, "#7fb4ff", true);
+trace("th", "hr", 90, 150, "#ff7a66");
+trace("tc", "cad", 80, 98, "#c39bff");
+(() => {
+  const svg = document.getElementById("tl"), W = 1000, H = 40; svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  let g = "";
+  for (const b of S.blocks) {
+    const h = (b.w / 250) * H * 0.95, done = b.s + b.d <= S.NOW;
+    g += `<rect x="${(b.s / 180) * W + 1}" y="${H - h}" width="${(b.d / 180) * W - 2}" height="${h}" rx="2" fill="${done ? "#2a3a52" : b.s < S.NOW ? "#3d6fb8" : "#22314a"}" stroke="#7fb4ff" stroke-opacity=".5" vector-effect="non-scaling-stroke"/>`;
+  }
+  g += `<rect x="0" y="0" width="${(S.NOW / 180) * W}" height="${H}" fill="rgba(11,13,16,.35)"/>`;
+  g += `<line x1="${(S.NOW / 180) * W}" x2="${(S.NOW / 180) * W}" y1="0" y2="${H}" stroke="#fff" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+  svg.innerHTML = g;
+})();
+
+// workouts
+document.getElementById("rail").innerHTML = `<span class="logo">crank</span>` +
+  [["home", "Today"], ["list", "Workouts", 1], ["history", "History"], ["settings", "Settings"]].map(([i, l, on]) => `<a class="${on ? "on" : ""}" title="${l}" aria-label="${l}">${I(i)}</a>`).join("");
+document.getElementById("search").innerHTML = `${I("search")} Filter workouts… <span class="spacer"></span><kbd>/</kbd>`;
+document.getElementById("newbtn").innerHTML = `New <kbd>N</kbd>`;
+const prof = (w) => {
+  const tot = w.blocks.reduce((s, b) => s + b[0], 0); let x = 0, g = "";
+  for (const [d, a, b2 = a] of w.blocks) { const x2 = x + (d / tot) * 140; g += `<polygon points="${x},20 ${x},${20 - a * 18} ${x2},${20 - b2 * 18} ${x2},20" fill="${a >= .76 ? "#4c8dff" : "#2a4a78"}"/>`; x = x2; }
+  return `<svg class="prof" viewBox="0 0 140 20">${g}</svg>`;
+};
+document.getElementById("rows").innerHTML = S.workouts.map((w, i) =>
+  `<tr class="${i === 0 ? "sel" : ""}"><td>${w.name} <span style="color:var(--ink-3);font-size:12px">· ${w.tag}</span></td><td>${prof(w)}</td><td class="r num">${S.fmt(w.dur)}</td><td class="r num">${w.tss}</td><td class="r num">${w.if.toFixed(2)}</td></tr>`).join("");
+const w = S.workouts[0];
+document.getElementById("detail").innerHTML = `
+  <div style="display:flex;justify-content:space-between;align-items:center"><h2>${w.name}</h2><span class="chip">built-in · FTP 250</span></div>
+  <svg viewBox="0 0 400 90" style="width:100%;height:110px">${S.blocks.map((b) => `<rect x="${(b.s / 180) * 400 + 1}" y="${90 - (b.w / 250) * 80}" width="${(b.d / 180) * 400 - 2}" height="${(b.w / 250) * 80}" rx="2" fill="${b.w >= 190 ? "#4c8dff" : "#2a4a78"}"/><text x="${(b.s / 180) * 400 + 8}" y="${90 - (b.w / 250) * 80 + 16}" fill="#e6ebf0" font-size="11" font-family="JetBrains Mono">${b.w} W</text>`).join("")}</svg>
+  <div class="stats"><div class="stat"><div class="k">Duration</div><div class="v">3:00</div></div><div class="stat"><div class="k">TSS</div><div class="v">3</div></div><div class="stat"><div class="k">IF</div><div class="v">0.62</div></div><div class="stat"><div class="k">kJ</div><div class="v">27</div></div></div>
+  <div class="steps">${S.blocks.map((b, i) => `<div><span class="num" style="color:var(--ink-3)">${i + 1}</span><span>${b.name}</span><span class="num">1:00</span><span class="num">${b.w} W · ${Math.round(b.w / 2.5)} %</span></div>`).join("")}</div>
+  <div class="dsl">${w.dsl.replace(/"([^"]+)"/g, '<b>"$1"</b>')}</div>
+  <div class="cta"><span class="btn primary">${I("play")} Ride this <kbd style="color:#dfe8ff;border-color:#8fb3ff">⏎</kbd></span><span class="btn">${I("copy")} Duplicate &amp; edit</span></div>
+  <div style="font-size:12px;color:var(--ink-3)">Ready check next: NEO 2T connected · HRM-Pro connected · starts with 1:00 warm-up</div>`;
+
+document.getElementById(location.hash.slice(1) || "ride").classList.add("on");
+</script>
+</body>
+</html>

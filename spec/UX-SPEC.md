@@ -30,12 +30,18 @@ bindings". Semantics that differ from the mock and that every screen below assum
   (the mock's `localStorage["crank.layouts.v1"]` is spike-only).
 
 ## Defaults for open questions (v0)
+**Amended by [DESIGN.md §18](../docs/design/DESIGN.md#18-amendment-452-design-direction-a-telemetry)** (design direction A "Telemetry", #452): the
+number sizes, the input defaults and the theme below are superseded as marked; everything else in this spec that
+§18 does not name still applies.
 - Primary form factor: laptop landscape (≥1280×800); must also work on tablet landscape 1024×768.
-  Readable from ~1 m: big numbers ≥ 64 px on the ride screen.
-- Interaction mid-ride: big on-screen buttons + keyboard shortcuts (no typing required).
+  Readable from ~1 m: ~~big numbers ≥ 64 px on the ride screen~~ superseded by DESIGN §18.1: hero 112 px (≈ 55′),
+  secondaries 64 px (≈ 32′), as fixed tokens.
+- Interaction mid-ride: ~~big on-screen buttons + keyboard shortcuts~~ superseded by DESIGN §18.4: remote and keyboard
+  bindings first; 32 px on-screen buttons, each showing its key (no typing required).
 - HR-limited / open-ended blocks: in v1 (shown as duration ranges).
 - Workout text DSL: own syntax (intervals.icu-inspired), defined in `shared/` (`parseDsl`/`printDsl`).
-- Theme: dark by default (pain cave), light supported.
+- Theme: dark by default (pain cave), light supported; the graphite palette, Inter / JetBrains Mono and Lucide icons
+  (DESIGN §18.1).
 
 ## Screens
 
@@ -45,7 +51,8 @@ optional free-text "how do you feel". Submit → mock planner returns a proposed
 (`backend.planner.propose(checkin)`) with a short rationale → accept / regenerate / edit.
 
 ### 2. Ride screen (the core)
-- **Widget grid**, layouts are **data** (`Layout` type in the ADR-0001 bindings, persisted in SQLite, ADR-0001 §6). Multiple **pages** per layout;
+- ~~**Widget grid**~~ superseded by DESIGN §5.2 and §18.3 (stacked power, heart-rate and cadence traces, a metric
+  column, a block timeline). **Widget grid**, layouts are **data** (`Layout` type in the ADR-0001 bindings, persisted in SQLite, ADR-0001 §6). Multiple **pages** per layout;
   swipe / ←→ keys / page dots. **Context-aware**: optional auto page switch by phase
   (`warmup | work | recovery | cooldown | free`).
 - **Edit mode**: drag / resize widgets on a grid, add/remove widgets from the metric catalog,
@@ -117,6 +124,7 @@ dropouts are gaps, and `workout_s` maps each session second to its workout posit
   **tabular numerals** for every live number, reserved space for optional elements (coach card,
   warnings). Nothing moves except values.
 - One dominant number per tile; the main metric must be readable at a glance from ~1 m.
+- Numbers are never tweened; traces advance at 1 Hz (DESIGN §18.5).
 
 ## Non-functional
 - 60 fps while riding on a mid laptop; no full-tree re-render per telemetry frame.
