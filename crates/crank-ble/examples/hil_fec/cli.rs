@@ -30,10 +30,16 @@ pub enum Check {
     Redact,
     /// Reply accounting and stale-echo ages of a capture (offline).
     Analyse,
+    /// Check 6: ERG steps and cadence steps (rider).
+    Check6,
+    /// Check 7: target held without keep-alive (rider).
+    Check7,
+    /// Check 12: ERG 200 W → `Free` release (rider).
+    Check12,
 }
 
 impl Check {
-    const ALL: [(&'static str, Self); 11] = [
+    const ALL: [(&'static str, Self); 14] = [
         ("scan", Self::Scan),
         ("known", Self::Known),
         ("idle", Self::Idle),
@@ -45,7 +51,20 @@ impl Check {
         ("spacing", Self::Spacing),
         ("redact", Self::Redact),
         ("analyse", Self::Analyse),
+        ("check6", Self::Check6),
+        ("check7", Self::Check7),
+        ("check12", Self::Check12),
     ];
+    /// The Part B control procedure behind this subcommand, if it is one.
+    pub fn procedure(self) -> Option<crate::rider::Procedure> {
+        use crate::rider::Procedure;
+        match self {
+            Self::Check6 => Some(Procedure::Check6),
+            Self::Check7 => Some(Procedure::Check7),
+            Self::Check12 => Some(Procedure::Check12),
+            _ => None,
+        }
+    }
     /// Subcommand spelling.
     pub fn name(self) -> &'static str {
         Self::ALL
@@ -71,7 +90,7 @@ pub struct Args {
 }
 
 /// Usage text.
-pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse> \
+pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check6|check7|check12> \
 [--out DIR] [--scan-secs N] [--idle-secs N] [--target ID_OR_PATH]";
 
 fn number(flag: &str, text: &str) -> Result<u64, String> {
@@ -142,6 +161,20 @@ mod tests {
             (a.idle_secs, a.out, a.target),
             (5, PathBuf::from("/x"), Some("t".into()))
         );
+    }
+
+    #[test]
+    fn part_b_subcommands_map_to_their_procedures() {
+        use crate::rider::Procedure;
+        for (name, p) in [
+            ("check6", Procedure::Check6),
+            ("check7", Procedure::Check7),
+            ("check12", Procedure::Check12),
+        ] {
+            let a = parse(args(&[name, "--out", "/x"]), Path::new("/o")).expect("parses");
+            assert_eq!((a.check.name(), a.check.procedure()), (name, Some(p)));
+        }
+        assert_eq!(Check::Check3.procedure(), None);
     }
 
     #[test]

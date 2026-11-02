@@ -2,6 +2,8 @@
 //!
 //! Run from an Alacritty window (flock panes are denied Bluetooth by TCC; AGENTS.md):
 //! `cargo run -p crank-ble --features hil --example hil_fec -- check1 --out DIR`.
+//! The Part B control checks (`check6`, `check7`, `check12`) drive the
+//! trainer under a rider and always release it (`rider.rs`); `docs/hil/part-b.md` is the runbook.
 //! Each subcommand writes `<check>.fecap` (raw frames, both directions, the
 //! `crank-ble` capture format) and `<check>.json` into `--out`. Raw captures carry
 //! the device serial; commit only the output of `redact`.
@@ -10,7 +12,11 @@ mod cli;
 #[cfg(test)]
 mod desktop_capture;
 mod frames;
+mod partb;
+mod rider;
 mod session;
+#[cfg(test)]
+mod sim;
 mod trace;
 
 use std::process::ExitCode;
@@ -29,6 +35,13 @@ async fn main() -> ExitCode {
         Ok(checks::Outcome::Done(path)) => {
             println!("wrote {}", path.display());
             ExitCode::SUCCESS
+        }
+        Ok(checks::Outcome::Stopped(path, why)) => {
+            println!(
+                "STOPPED: {why} (trainer released); wrote {}",
+                path.display()
+            );
+            ExitCode::from(4)
         }
         Ok(checks::Outcome::Blocked(why)) => {
             println!("BLOCKED: {why}");
