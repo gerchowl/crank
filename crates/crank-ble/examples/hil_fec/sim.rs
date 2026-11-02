@@ -47,6 +47,8 @@ pub struct Plan {
     pub power_tau_s: f64,
     /// Page 25 reports cadence as unavailable (0xFF) from this capture time.
     pub cadence_unavailable_from_us: Option<u64>,
+    /// The page-81 serial the trainer answers a request with (`None`: never answers one).
+    pub serial: Option<u32>,
 }
 
 impl Default for Plan {
@@ -69,6 +71,7 @@ impl Default for Plan {
             warm_w: 0.0,
             power_tau_s: 0.8,
             cadence_unavailable_from_us: None,
+            serial: Some(0x1234_5678),
         }
     }
 }
@@ -139,6 +142,7 @@ struct State {
     seq: u8,
     last_control: [u8; 13],
     replies: Vec<u64>,
+    serial_replies: Vec<u64>,
     cues: Vec<(u64, Cue)>,
 }
 
@@ -200,6 +204,7 @@ impl Sim {
                 seq: 0,
                 last_control: [0; 13],
                 replies: Vec::new(),
+                serial_replies: Vec::new(),
                 cues: Vec::new(),
             }),
             panicked: std::sync::atomic::AtomicBool::new(false),
@@ -315,6 +320,15 @@ impl Sim {
             let frame = checked([0xa4, 9, 0x4e, 5, 16, 25, 0, 0, mm[0], mm[1], 0xff, 0x30, 0]);
             emit(st, now, frame);
         }
+        while st.serial_replies.first().is_some_and(|due| *due <= now) {
+            st.serial_replies.remove(0);
+            let [a, b, c, d] = self.plan.serial.unwrap_or(0xffff_ffff).to_le_bytes();
+            emit(
+                st,
+                now,
+                checked([0xa4, 9, 0x4e, 5, 0x51, 0xff, 0xff, 1, a, b, c, d, 0]),
+            );
+        }
         while st.replies.first().is_some_and(|due| *due <= now) {
             st.replies.remove(0);
             let last = st.last_control;
@@ -400,6 +414,9 @@ impl Sim {
             Ok(Page::Request { page: 71, .. }) => {
                 s.seq = s.seq.wrapping_add(1);
                 s.replies.push(at + 100_000);
+            }
+            Ok(Page::Request { page: 81, .. }) if self.plan.serial.is_some() => {
+                s.serial_replies.push(at + 100_000);
             }
             _ => {}
         }
