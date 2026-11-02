@@ -150,6 +150,8 @@ struct Window {
     compared: usize,
     page25_gap: u64,
     cps_gap: u64,
+    /// Longest stretch of the window without a page-25 sample that carries a cadence.
+    cadence_gap: u64,
     /// Longest stretch of the window not covered by a crank-revolution pair lying inside it.
     crank_gap: u64,
     /// Mean page-25 cadence and the CPS cadence over the window, rpm.
@@ -249,6 +251,14 @@ fn compare_window(
             to,
         ),
         cps_gap: max_gap(parsed.readings.iter().map(|r| r.at_us).collect(), from, to),
+        cadence_gap: max_gap(
+            s.iter()
+                .filter(|x| x.cadence.is_some())
+                .map(|x| x.at_us)
+                .collect(),
+            from,
+            to,
+        ),
         crank_gap: crank_gap(&inside, from, to),
         cadence: fe.filter(|_| time > 0.0).map(|fe| (fe, 60.0 * revs / time)),
     }
@@ -295,7 +305,7 @@ pub fn check5(records: &[Record], cps: &[Cps]) -> Value {
 
     let verdict = verdict(&parsed, rate_hz, &windows, (outside, max_abs, cadence_max));
     json!({
-        "method": "both streams are stamped on arrival by the same process clock, so no offset is estimated; settled windows = each page-49 target held >= 10 s, after its first 10 s (power is steady under ERG, so the residual jitter of the two notification streams is not mistaken for disagreement); coverage, in continuous time: every ERG target of the procedure needs its window (>= 10 s); inside it neither stream may be silent for more than 2 s (page 25) / 3 s (2A63), window edges included, and the crank-revolution pairs lying wholly inside the window must leave no stretch of it uncovered by more than 3 s, else the verdict names the target and is insufficient; more than 10 % malformed 2A63 notifications is insufficient; power: for each whole second of a window with at least one sample of each stream, mean page-25 power minus mean 2A63 power, which must be within ±1 W (ADR-0002 §5) in every compared second; cadence: per window, mean page-25 cadence against 2A63 crank revolutions over crank event time (differences modulo 2^16, event time in 1/1024 s), within ±1 rpm; page 25 must arrive at >= 2 Hz",
+        "method": "both streams are stamped on arrival by the same process clock, so no offset is estimated; settled windows = each page-49 target held >= 10 s, after its first 10 s (power is steady under ERG, so the residual jitter of the two notification streams is not mistaken for disagreement); coverage, in continuous time: every ERG target of the procedure needs its window (>= 10 s); inside it neither stream may be silent for more than 2 s (page 25, power and cadence each) / 3 s (2A63), window edges included, and the crank-revolution pairs lying wholly inside the window must leave no stretch of it uncovered by more than 3 s, else the verdict names the target and is insufficient; more than 10 % malformed 2A63 notifications is insufficient; power: for each whole second of a window with at least one sample of each stream, mean page-25 power minus mean 2A63 power, which must be within ±1 W (ADR-0002 §5) in every compared second; cadence: per window, mean page-25 cadence against 2A63 crank revolutions over crank event time (differences modulo 2^16, event time in 1/1024 s), within ±1 rpm; page 25 must arrive at >= 2 Hz",
         "tolerances": {
             "power_w": POWER_TOL_W, "cadence_rpm": CADENCE_TOL_RPM, "page25_min_hz": RATE_MIN_HZ,
             "page25_gap_max_s": secs(PAGE25_GAP_MAX_US), "cps_gap_max_s": secs(CPS_GAP_MAX_US),
@@ -317,6 +327,8 @@ pub fn check5(records: &[Record], cps: &[Cps]) -> Value {
             "seconds": w.whole,
             "seconds_compared": w.compared,
             "page25_max_gap_s": round1(secs(w.page25_gap)),
+            "page25_cadence_max_gap_s": round1(secs(w.cadence_gap)),
+            "crank_max_gap_s": round1(secs(w.crank_gap)),
             "cps_max_gap_s": round1(secs(w.cps_gap)),
         })).collect::<Vec<_>>(),
         "seconds_compared": seconds.len(),
@@ -384,9 +396,16 @@ fn verdict(
         if w.compared == 0 {
             gaps.push(format!("{what}: no second holds both streams"));
         }
-        if w.crank_gap > CPS_GAP_MAX_US || w.cadence.is_none() {
+        if w.cadence_gap > PAGE25_GAP_MAX_US {
             gaps.push(format!(
-                "{what}: no 2A63 crank-revolution data for {} s (> {} s) inside the window to derive cadence",
+                "{what}: no page-25 cadence for {} s (> {} s)",
+                round1(secs(w.cadence_gap)),
+                secs(PAGE25_GAP_MAX_US)
+            ));
+        }
+        if w.crank_gap > CPS_GAP_MAX_US {
+            gaps.push(format!(
+                "{what}: no 2A63 crank-revolution data for {} s (> {} s) inside the window",
                 round1(secs(w.crank_gap)),
                 secs(CPS_GAP_MAX_US)
             ));
@@ -642,9 +661,16 @@ mod tests {
 
     /// A page-25 frame at 90 rpm and 150 W (power unavailable when asked).
     fn fe_frame(at_us: u64, power_unavailable: bool) -> Record {
+        fe_frame_with(at_us, power_unavailable, false)
+    }
+
+    fn fe_frame_with(at_us: u64, power_unavailable: bool, cadence_unavailable: bool) -> Record {
         let mut f = [0xa4, 9, 0x4e, 5, 25, 0, 90, 0, 0, 150, 0, 0x30, 0];
         if power_unavailable {
             (f[9], f[10]) = (0xff, 0x0f);
+        }
+        if cadence_unavailable {
+            f[6] = 0xff;
         }
         f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
         Record {
@@ -869,5 +895,112 @@ mod tests {
             agreed * 100 >= runs * 99,
             "{agreed} of {runs} agree: {failures:?}"
         );
+    }
+
+    /// Page-25 frames on `times` whose cadence is unavailable in `(a, b)` and whose last frame
+    /// before `b` is followed by one at exactly `b`.
+    fn fe_without_cadence(times: &[u64], a: u64, b: u64) -> Vec<Record> {
+        let mut fe: Vec<Record> = times
+            .iter()
+            .map(|t| fe_frame_with(*t, false, *t > a && *t < b))
+            .collect();
+        if !times.contains(&b) {
+            fe.push(fe_frame(b, false));
+        }
+        fe.sort_by_key(|r| r.at_us);
+        fe
+    }
+
+    #[test]
+    fn the_page_25_cadence_gap_bound_is_2_s_exactly() {
+        let (fe, cp) = (grid(250_000, 0), cps_of(&grid(SEC, 400_000)));
+        let at = verdict_of(fe_without_cadence(&fe, 15 * SEC, 17 * SEC), &cp);
+        assert_eq!(at, "agree", "2 s without a cadence is within the bound");
+        let over = verdict_of(fe_without_cadence(&fe, 15 * SEC, 17 * SEC + 1), &cp);
+        assert!(insufficient(&over, "no page-25 cadence for"), "{over}");
+    }
+
+    #[test]
+    fn page_25_cadence_in_one_frame_of_a_window_is_not_coverage_and_the_message_names_page_25() {
+        let (fe, cp) = (grid(250_000, 0), cps_of(&grid(SEC, 400_000)));
+        // Window 2 (40–60 s): cadence only in the frame at 50 s.
+        let one: Vec<Record> = fe
+            .iter()
+            .map(|t| fe_frame_with(*t, false, *t >= 40 * SEC && *t != 50 * SEC))
+            .collect();
+        let v = verdict_of(one, &cp);
+        assert!(
+            insufficient(&v, "200 W target") && v.contains("no page-25 cadence for"),
+            "{v}"
+        );
+        // Unavailable throughout: the page-25 stream is named, and 2A63 is not blamed.
+        let none: Vec<Record> = fe
+            .iter()
+            .map(|t| fe_frame_with(*t, false, *t >= 40 * SEC))
+            .collect();
+        let v = verdict_of(none, &cp);
+        assert!(insufficient(&v, "no page-25 cadence for"), "{v}");
+        assert!(!v.contains("2A63 crank"), "{v}");
+    }
+
+    /// 2A63 notifications at `phase` after each second, crank data off in `[from, to)`.
+    fn without_crank(phase: u64, from: u64, to: u64) -> Vec<Cps> {
+        grid(SEC, phase)
+            .into_iter()
+            .map(|t| {
+                let mut c = cps_at(t, t, 150);
+                if t >= from && t < to {
+                    c.bytes = vec![0, 0, c.bytes[2], c.bytes[3]];
+                }
+                c
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_crank_gap_bound_is_3_s_exactly_at_the_start_of_a_window() {
+        let fe = fe_of(&grid(250_000, 0));
+        // No crank data 40–43 s: the first pair of window 2 starts at 43.0 s, 3 s in.
+        let at = verdict_of(fe.clone(), &without_crank(0, 40 * SEC, 43 * SEC));
+        assert_eq!(
+            at, "agree",
+            "a crank gap of exactly 3 s is within the bound"
+        );
+        let over = verdict_of(fe.clone(), &without_crank(1, 40 * SEC, 43 * SEC + 1));
+        assert!(
+            insufficient(&over, "no 2A63 crank-revolution data for 3 s"),
+            "{over}"
+        );
+        // 35–44 s off: the first pair starts at 44.4 s, 4.4 s into window 2.
+        let long = verdict_of(fe, &without_crank(400_000, 35 * SEC, 44 * SEC));
+        assert!(
+            insufficient(&long, "200 W target") && long.contains("data for 4.4 s"),
+            "{long}"
+        );
+    }
+
+    #[test]
+    fn the_crank_gap_counts_the_end_of_a_window_too() {
+        let fe = fe_of(&grid(250_000, 0));
+        // Crank data stops at 56 s; window 2 ends at 59.75 s with its last frame.
+        let v = verdict_of(fe, &without_crank(400_000, 56 * SEC, 70 * SEC));
+        assert!(insufficient(&v, "no 2A63 crank-revolution data for"), "{v}");
+    }
+
+    #[test]
+    fn a_stream_silent_from_the_start_or_to_the_end_of_a_window_is_a_gap() {
+        let (fe, cp) = (grid(250_000, 0), grid(SEC, 400_000));
+        // Window 1 is 10–30 s: page 25 resumes 2.5 s after it starts.
+        let late: Vec<u64> = fe
+            .iter()
+            .copied()
+            .filter(|t| *t < 10 * SEC || *t >= 12_500_000)
+            .collect();
+        let v = verdict_of(fe_of(&late), &cps_of(&cp));
+        assert!(insufficient(&v, "no page 25 for 2.5 s"), "{v}");
+        // 2A63 stops at 55.4 s, 4.35 s before window 2 ends.
+        let early: Vec<u64> = cp.iter().copied().filter(|t| *t < 56 * SEC).collect();
+        let v = verdict_of(fe_of(&fe), &cps_of(&early));
+        assert!(insufficient(&v, "no 2A63 for"), "{v}");
     }
 }
