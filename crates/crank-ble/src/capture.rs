@@ -3,8 +3,12 @@ use crank_devices::MonoTime;
 use std::{
     fs::File,
     io::{self, Write},
-    path::Path,
-    sync::Mutex,
+    path::{Path, PathBuf},
+    sync::{
+        Mutex,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::{SystemTime, UNIX_EPOCH},
 };
 /// Per-ride raw capture, preserving complete payloads including malformed bytes.
 pub struct Capture(Mutex<(File, MonoTime)>);
@@ -41,4 +45,42 @@ fn append(state: &mut (File, MonoTime), at: MonoTime, rx: bool, bytes: &[u8]) ->
     writeln!(state.0)?;
     state.0.flush()?;
     Ok(())
+}
+
+/// A directory that receives one `.fecap` per trainer connection (#411), named
+/// `trainer-<unix seconds>-<n>.fecap`. The files hold raw device frames: see
+/// [`Capture`] and AGENTS.md for what they identify.
+#[derive(Clone, Debug)]
+pub struct CaptureDir(PathBuf);
+impl CaptureDir {
+    /// Captures go into `dir`, which is created on the first capture.
+    #[must_use]
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self(dir.into())
+    }
+    /// The directory.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+    /// Start the capture of one connection, with `start` as its epoch. Never overwrites
+    /// a file: a name taken by an earlier connection (or process) moves on to the next `n`.
+    /// # Errors
+    /// Returns filesystem errors.
+    pub fn create(&self, start: MonoTime) -> io::Result<(PathBuf, Capture)> {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        std::fs::create_dir_all(&self.0)?;
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        loop {
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = self.0.join(format!("trainer-{secs}-{n}.fecap"));
+            match Capture::create(&path, start) {
+                Ok(capture) => return Ok((path, capture)),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
 }

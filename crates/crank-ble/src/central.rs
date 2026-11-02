@@ -11,8 +11,8 @@
 //! stop waits for that stop to complete, so a late stop never ends a newer scan.
 use crate::{
     Advertisement, Advertisements, BtleplugAdvertisements, BtleplugHrTransport, BtleplugTransport,
-    ConnectCleanup, FecTrainer, HrsDriver, Pairing, Reconnecting, ReconnectingHr, RideGate,
-    Scanner, classify,
+    CaptureDir, ConnectCleanup, FecTrainer, FecTransport, HrsDriver, Pairing, Reconnecting,
+    ReconnectingHr, RideGate, Scanner, classify,
 };
 use btleplug::{
     api::Manager as _,
@@ -277,6 +277,7 @@ pub struct BleCentral {
     adapter: Adapter,
     source: SharedScan<BtleplugAdvertisements>,
     pairings: Arc<Pairings>,
+    capture: Option<CaptureDir>,
 }
 
 /// What is remembered of the paired devices, by platform id.
@@ -321,7 +322,15 @@ impl BleCentral {
             },
             adapter,
             pairings: Arc::default(),
+            capture: None,
         })
+    }
+    /// Write a raw `.fecap` capture of every trainer connection into `dir` (#411). The
+    /// frames are recorded only while a subscriber enables TRACE for this crate.
+    #[must_use]
+    pub fn with_capture_dir(mut self, dir: CaptureDir) -> Self {
+        self.capture = Some(dir);
+        self
     }
     /// Remember what is known of a paired peripheral so a reconnect can find it by name
     /// when its platform id is no longer listed, and verify serial and model after
@@ -418,16 +427,43 @@ impl TrainerDriver for PeripheralTrainer {
             let pairing = central.pairing(&dev);
             let peripheral = resolve(&central.source, &dev, pairing.as_ref(), RESOLVE_SCAN).await?;
             let transport = BtleplugTransport::new(peripheral, central.adapter.clone());
-            let link = FecTrainer::new(Arc::new(transport), clock)
-                .with_cleanup(cleanup)
-                .connect(&dev, rider)
-                .await?;
+            let link = fec_trainer(
+                Arc::new(transport),
+                clock,
+                cleanup,
+                central.capture.as_ref(),
+            )
+            .connect(&dev, rider)
+            .await?;
             if pairing.is_some_and(|p| !p.verify(&link.info)) {
                 let _ = link.control.send(TrainerCommand::Disconnect).await;
                 return Err(DeviceError::NotFound);
             }
             Ok(link)
         })
+    }
+}
+/// The FE-C driver of one connection, with a fresh capture file when `capture` is set. A
+/// capture that cannot be created is a diagnostic failure: it is logged and the
+/// connection goes ahead without it.
+pub(crate) fn fec_trainer(
+    transport: Arc<dyn FecTransport>,
+    clock: Arc<dyn Clock>,
+    cleanup: ConnectCleanup,
+    capture: Option<&CaptureDir>,
+) -> FecTrainer {
+    let start = clock.now();
+    let trainer = FecTrainer::new(transport, clock).with_cleanup(cleanup);
+    let Some(dir) = capture else { return trainer };
+    match dir.create(start) {
+        Ok((path, capture)) => {
+            tracing::info!(path = %path.display(), "capturing trainer frames");
+            trainer.with_capture(Arc::new(capture))
+        }
+        Err(error) => {
+            tracing::warn!(dir = %dir.path().display(), %error, "trainer capture not created");
+            trainer
+        }
     }
 }
 struct PeripheralHr {

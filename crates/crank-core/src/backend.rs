@@ -1,21 +1,28 @@
 //! Where devices come from: the host's BLE central, or the deterministic simulator
 //! (`--sim`, ADR-0002 §3), so the UI and e2e run without hardware.
 use crate::dto::DeviceRole;
-use crank_ble::{BleCentral, Pairing, RideGate};
+use crank_ble::{BleCentral, CaptureDir, Pairing, RideGate};
 use crank_devices::{
     Clock, DeviceError, DeviceInfo, DeviceRef, DiscoveredDevice, Discovery, DriverKind,
     HeartRateDriver, TrainerDriver,
     sim::{SimConfig, SimRig},
 };
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream, stream::BoxStream};
-use std::sync::{Arc, Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::OnceCell;
 
 /// Which devices a [`crate::Core`] drives.
 #[derive(Clone, Debug)]
 pub enum DeviceMode {
     /// Real peripherals over the host's Bluetooth.
-    Ble,
+    Ble {
+        /// Directory for a raw `.fecap` capture of each trainer connection (#411); none
+        /// when `None`.
+        capture_dir: Option<PathBuf>,
+    },
     /// The simulator: one seeded rider with a trainer and a strap.
     Sim(SimConfig),
 }
@@ -77,11 +84,16 @@ const SIM_STRAP: &str = "strap";
 impl Backend {
     pub(crate) fn new(mode: DeviceMode, clock: Arc<dyn Clock>, pairings: Vec<Pairing>) -> Self {
         let kind = match mode {
-            DeviceMode::Ble => Kind::Radio {
+            DeviceMode::Ble { capture_dir } => Kind::Radio {
                 cell: OnceCell::new(),
-                factory: Arc::new(|| {
-                    async {
-                        let central: Arc<dyn Radio> = Arc::new(BleCentral::new().await?);
+                factory: Arc::new(move || {
+                    let capture_dir = capture_dir.clone();
+                    async move {
+                        let mut central = BleCentral::new().await?;
+                        if let Some(dir) = capture_dir {
+                            central = central.with_capture_dir(CaptureDir::new(dir));
+                        }
+                        let central: Arc<dyn Radio> = Arc::new(central);
                         Ok(central)
                     }
                     .boxed()
