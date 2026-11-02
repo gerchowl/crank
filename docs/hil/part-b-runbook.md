@@ -76,11 +76,12 @@ OUT=~/crank-captures/$(date +%F)-partb
 mkdir -p "$OUT"
 ```
 
-Run the checks **in this order, with the same `--out`**, from an Alacritty window on `sage`. The binary is
+Run the checks **in this order (5, 6, 7, 8, 9, 12), with the same `--out`**, from an Alacritty window on `sage`. The binary is
 `${CARGO_TARGET_DIR:-target}/debug/examples/hil_fec`:
 
 | # | Command | You do | About |
 |---|---|---|---|
+| 5 | `hil_fec check5 --out "$OUT"` | 90 rpm through ERG 150 W then 200 W (30 s each); steady cadence is all that is asked | 1.5 min |
 | 6 | `hil_fec check6 --out "$OUT"` | 90 rpm through ERG 100 → 150 → 250 → 100 → 200 W, then 60 rpm and back | 2.5 min |
 | 7 | `hil_fec check7 --out "$OUT"` | 90 rpm at 150 W; the harness stays silent for 40 s | 1 min |
 | 8 | `hil_fec check8 --out "$OUT"` | Easy gear, steady; grades 0 / 5 / 5 / 10 %, shift down when steep | 2.5 min |
@@ -101,12 +102,11 @@ Run the checks **in this order, with the same `--out`**, from an Alacritty windo
   250 W and a falling cadence it gets hard: keep turning until the run ends.
 - Each run prints one results row. Send them all, or just the `$OUT` folder name.
 
-### Added when #412 b/c land
+### Added when #412 c lands
 
-- **Check 5** (page 25 against CPS `2A63`): `TBD: command and procedure (#412 part b)`.
 - **Checks 10 and 11a–c** (second central, dropout): `TBD: command and procedure (#412 part c)`.
 
-Both need their own session; they are not part of this one.
+They need their own session; they are not part of this one.
 
 ## 4. Afterwards
 

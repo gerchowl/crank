@@ -3,11 +3,10 @@ use crate::{
     cli::{Args, Check, write_summary},
     frames::{
         Checksum, analysis, build, command_status, distribution, hex, page_of, page_rates,
-        parse_capture, redact_capture, redact_frame, redact_name, request_latencies,
+        parse_capture, parse_cps, redact_capture, redact_frame, redact_name, request_latencies,
         with_page_byte,
     },
-    partb,
-    rider::{self, Wire},
+    partb, rider,
     session::{Exchange, Result, Session, adapter, find_trainer, scan},
 };
 use crank_ble::{
@@ -58,23 +57,29 @@ pub async fn run(args: &Args) -> Result<Outcome> {
     let summary = if args.check == Check::Latency {
         latency(args, &adv, adapter, device, &capture_path).await?
     } else if let Some(p) = args.check.procedure() {
-        let s = Session::open(&adv, adapter, device, &capture_path).await?;
+        let mut s = Session::open(&adv, adapter, device, &capture_path).await?;
+        if p == rider::Procedure::Check5
+            && let Err(e) = s.subscribe_cps().await
+        {
+            // Nothing was applied yet; release anyway, so that a hung setup never leaves the
+            // trainer in a state this run did not choose.
+            let released = rider::release(&s).await;
+            s.close().await;
+            let released = released.map_or(String::new(), |r| format!("; release: {r}"));
+            return Err(
+                format!("check 5 needs Cycling Power 2A63 on the NEO: {e}{released}").into(),
+            );
+        }
         let report = rider::drive(&s, &rider::Console::new(), p, rider::signals()).await;
-        let records = Wire::records(&s);
         let identity = identity(&s);
         let dropped = s.pump_ended();
         s.close().await;
         let finished = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let mut summary = procedure_summary(
-            p,
-            args.check.name(),
-            &report,
-            &records,
-            &capture_path,
-            finished,
-        );
+        // Read the capture only now that nothing writes it: the row is then exactly what
+        // `analyse` reads from the file later.
+        let mut summary = procedure_summary(p, args.check.name(), &report, &capture_path, finished);
         summary["identity"] = identity;
         summary["link_dropped_during_run"] = json!(dropped);
         if let Some(line) = summary["result"]["line"].as_str() {
@@ -96,6 +101,7 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             | Check::Latency
             | Check::Redact
             | Check::Analyse
+            | Check::Check5
             | Check::Check6
             | Check::Check7
             | Check::Check8
@@ -125,7 +131,6 @@ fn procedure_summary(
     p: rider::Procedure,
     stem: &str,
     report: &rider::Report,
-    records: &[crate::frames::Record],
     capture_path: &std::path::Path,
     finished_unix_s: u64,
 ) -> Value {
@@ -135,11 +140,24 @@ fn procedure_summary(
         &rider::outcome(&report.procedure),
         finished_unix_s,
     );
-    let lag = match std::fs::read_to_string(capture_path) {
-        Ok(text) => partb::PowerLag::beside(capture_path, &text),
-        Err(e) => partb::PowerLag::NotMeasured(format!("{}: {e}", capture_path.display())),
+    let (text, lag) = match std::fs::read_to_string(capture_path) {
+        Ok(text) => {
+            let lag = partb::PowerLag::beside(capture_path, &text);
+            (text, lag)
+        }
+        Err(e) => (
+            String::new(),
+            partb::PowerLag::NotMeasured(format!("{}: {e}", capture_path.display())),
+        ),
     };
-    let mut summary = rider::summary(p, stem, report, records, &lag);
+    let mut summary = rider::summary(
+        p,
+        stem,
+        report,
+        &parse_capture(&text),
+        &parse_cps(&text),
+        &lag,
+    );
     if let Err(e) = appended {
         summary["outcome_line_error"] = json!(e.to_string());
     }
@@ -178,8 +196,14 @@ fn analyse(args: &Args) -> Result<Outcome> {
     let records = parse_capture(&text);
     let mut v = analysis(&records);
     let lag = partb::PowerLag::beside(std::path::Path::new(src), &text);
-    if let Some(part_b) = partb::analyse(stem, &records, partb::outcome_in(&text).as_deref(), &lag)
-    {
+    let cps = parse_cps(&text);
+    if let Some(part_b) = partb::analyse(
+        stem,
+        &records,
+        &cps,
+        partb::outcome_in(&text).as_deref(),
+        &lag,
+    ) {
         if let Some(line) = part_b["line"].as_str() {
             println!("{line}");
         }
@@ -960,7 +984,7 @@ mod tests {
     use crate::{
         frames::{Record, hex},
         partb::{FINISHED, OUTCOME, SESSION_BOUND_S},
-        rider::{Procedure, Report},
+        rider::{Procedure, Report, Wire},
         sim::{Pattern, Plan, Sim},
     };
     use std::{fmt::Write as _, path::Path};
@@ -987,6 +1011,7 @@ mod tests {
         power_tau_s: 2.0,
         cadence_unavailable_from_us: None,
         serial: Some(OTHER),
+        cps: None,
     };
 
     async fn driven(p: Procedure, plan: Plan) -> (Report, Vec<Record>) {
@@ -1031,8 +1056,7 @@ mod tests {
         let path = live.path().join("check9.fecap");
         std::fs::write(&path, lines(&records)).expect("write");
         let live =
-            procedure_summary(Procedure::Check9, "check9", &report, &records, &path, T9)["result"]
-                .clone();
+            procedure_summary(Procedure::Check9, "check9", &report, &path, T9)["result"].clone();
         let target = offline.path().join("check9.fecap");
         std::fs::write(&target, capture(&records, &report, T9)).expect("write");
         let args = Args {
@@ -1162,5 +1186,353 @@ mod tests {
         assert_unproven(&result, "check6.fecap");
         let absent = check9_beside(Plan::default(), |_| {}).await;
         assert_unproven(&absent, "no check6.fecap");
+    }
+
+    use crate::sim::CpsPlan;
+
+    /// `records` and `cps` written by the real [`crank_ble::Capture`] writer, as a live run does.
+    fn write_capture(path: &Path, records: &[Record], cps: &[crate::frames::Cps]) {
+        use crank_devices::MonoTime;
+        enum Item<'a> {
+            Frame(&'a Record),
+            Cps(&'a crate::frames::Cps),
+        }
+        let mut items: Vec<(u64, Item)> = records
+            .iter()
+            .map(|r| (r.at_us, Item::Frame(r)))
+            .chain(cps.iter().map(|c| (c.at_us, Item::Cps(c))))
+            .collect();
+        items.sort_by_key(|i| i.0);
+        let capture = crank_ble::Capture::create(path, MonoTime(0)).expect("create");
+        for (at, item) in items {
+            match item {
+                Item::Frame(r) => capture.record(MonoTime(at), r.rx, &r.bytes),
+                Item::Cps(c) => capture.record_aux(MonoTime(at), "cps", &c.bytes),
+            }
+            .expect("record");
+        }
+    }
+
+    /// Check 5 of `plan` through the live summary and then through `analyse` on the very file
+    /// the live run leaves (written by the real capture writer): the report, and the `result` of
+    /// both, which must agree field by field.
+    async fn check5_of(plan: Plan) -> (Report, Value) {
+        let sim = Sim::new(plan);
+        let report = rider::drive(&sim, &sim, Procedure::Check5, std::future::pending()).await;
+        let (records, cps) = (Wire::records(&sim), Wire::cps(&sim));
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("check5.fecap");
+        write_capture(&path, &records, &cps);
+        let live =
+            procedure_summary(Procedure::Check5, "check5", &report, &path, T9)["result"].clone();
+        let args = Args {
+            check: Check::Analyse,
+            out: dir.path().join("out"),
+            scan_secs: 0,
+            idle_secs: 0,
+            target: Some(path.display().to_string()),
+        };
+        analyse(&args).expect("analyse");
+        let back = std::fs::read_to_string(args.out.join("check5.analysis.json")).expect("read");
+        let back: Value = serde_json::from_str(&back).expect("json");
+        let offline = &back["part_b"];
+        for (key, value) in live.as_object().expect("object") {
+            assert_eq!(value, &offline[key], "live and offline differ in {key}");
+        }
+        assert_eq!(live, *offline, "live and offline differ");
+        assert_eq!(live["cps"]["notifications"], cps.len(), "{live}");
+        (report, live)
+    }
+
+    /// A completed default ride: its records and CPS notifications.
+    async fn sim_ride() -> (Vec<Record>, Vec<crate::frames::Cps>) {
+        let sim = Sim::new(Plan::default());
+        let report = rider::drive(&sim, &sim, Procedure::Check5, std::future::pending()).await;
+        assert_eq!(report.procedure, Ok(()));
+        (Wire::records(&sim), Wire::cps(&sim))
+    }
+
+    fn verdict_of(records: &[Record], cps: &[crate::frames::Cps]) -> (String, Value) {
+        let v = crate::cps::check5(records, cps);
+        (v["verdict"].as_str().expect("verdict").to_string(), v)
+    }
+
+    /// Seconds from the capture start to where window `i` begins, µs.
+    fn window_from_us(v: &Value, i: usize) -> u64 {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let us = (v["windows"][i]["from_s"].as_f64().expect("window") * 1e6) as u64;
+        us
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_no_cps_during_a_whole_target_is_insufficient_whatever_the_stamps() {
+        let (records, cps) = sim_ride().await;
+        let (verdict, v) = verdict_of(&records, &cps);
+        assert_eq!(verdict, "agree", "{v}");
+        // CPS stops at the start of the 200 W hold: that target is never compared.
+        let cut = window_from_us(&v, 1) - 10_000_000;
+        for shift_ms in [0, 100, 250, 500, 750, 999] {
+            let late: Vec<_> = cps
+                .iter()
+                .filter(|c| c.at_us < cut)
+                .map(|c| crate::frames::Cps {
+                    at_us: c.at_us + shift_ms * 1000,
+                    bytes: c.bytes.clone(),
+                })
+                .collect();
+            let (verdict, v) = verdict_of(&records, &late);
+            assert!(
+                verdict.starts_with("insufficient: ") && verdict.contains("200 W target"),
+                "shift {shift_ms} ms: {verdict}\n{v}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_the_verdict_does_not_depend_on_the_sub_second_alignment() {
+        let (records, cps) = sim_ride().await;
+        for shift_ms in (0..=1000).step_by(50) {
+            let shifted: Vec<_> = cps
+                .iter()
+                .map(|c| crate::frames::Cps {
+                    at_us: c.at_us + shift_ms * 1000,
+                    bytes: c.bytes.clone(),
+                })
+                .collect();
+            let (verdict, v) = verdict_of(&records, &shifted);
+            assert_eq!(verdict, "agree", "shift {shift_ms} ms\n{v}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_a_long_page_25_gap_inside_a_window_is_insufficient() {
+        let (records, cps) = sim_ride().await;
+        let (_, v) = verdict_of(&records, &cps);
+        let from = window_from_us(&v, 0);
+        // 15 s without page 25 inside the first window; the average rate stays above 2 Hz.
+        let holed: Vec<Record> = records
+            .iter()
+            .filter(|r| {
+                !(r.rx
+                    && page_of(&r.bytes) == Some(25)
+                    && r.at_us > from + 2_000_000
+                    && r.at_us < from + 17_000_000)
+            })
+            .cloned()
+            .collect();
+        let (verdict, v) = verdict_of(&holed, &cps);
+        assert!(
+            verdict.starts_with("insufficient: ")
+                && verdict.contains("150 W target")
+                && verdict.contains("no page 25 for"),
+            "{verdict}\n{v}"
+        );
+        assert!(v["page25"]["rate_hz"].as_f64().unwrap_or(0.0) >= 2.0, "{v}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_a_cps_gap_inside_a_window_and_a_single_target_are_insufficient() {
+        let (records, cps) = sim_ride().await;
+        let (_, v) = verdict_of(&records, &cps);
+        let from = window_from_us(&v, 1);
+        let holed: Vec<_> = cps
+            .iter()
+            .filter(|c| c.at_us < from + 3_000_000 || c.at_us > from + 8_000_000)
+            .cloned()
+            .collect();
+        let (verdict, _) = verdict_of(&records, &holed);
+        assert!(
+            verdict.starts_with("insufficient: ") && verdict.contains("no 2A63 for"),
+            "{verdict}"
+        );
+        // The 200 W write never happened: one target, so one window.
+        let one: Vec<Record> = records
+            .iter()
+            .filter(|r| {
+                r.rx || !matches!(
+                    crank_fec::decode(&r.bytes).map(|f| f.page),
+                    Ok(crank_fec::Page::TargetPower { watts }) if (watts - 200.0).abs() < 1e-3
+                )
+            })
+            .cloned()
+            .collect();
+        let (verdict, _) = verdict_of(&one, &cps);
+        assert!(
+            verdict.starts_with("insufficient: 1 settled windows"),
+            "{verdict}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_half_the_cps_notifications_malformed_is_insufficient() {
+        let (records, cps) = sim_ride().await;
+        let cut: Vec<_> = cps
+            .iter()
+            .enumerate()
+            .map(|(i, c)| crate::frames::Cps {
+                at_us: c.at_us,
+                bytes: if i % 2 == 0 {
+                    c.bytes[..5].to_vec()
+                } else {
+                    c.bytes.clone()
+                },
+            })
+            .collect();
+        let (verdict, _) = verdict_of(&records, &cut);
+        assert!(
+            verdict.starts_with("insufficient: ") && verdict.contains("malformed"),
+            "{verdict}"
+        );
+    }
+
+    fn with_cps(cps: Option<CpsPlan>) -> Plan {
+        Plan {
+            cps,
+            ..Plan::default()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_agreeing_streams_pass_and_analyse_reproduces_the_row() {
+        let (report, v) = check5_of(Plan::default()).await;
+        assert_eq!(report.procedure, Ok(()));
+        assert_eq!(v["verdict"], "agree", "{v}");
+        assert!(v["seconds_compared"].as_u64().unwrap_or(0) >= 20, "{v}");
+        assert!(v["page25"]["rate_hz"].as_f64().unwrap_or(0.0) >= 2.0, "{v}");
+        let line = v["line"].as_str().expect("row");
+        assert!(
+            line.starts_with("| 5 |") && line.ends_with("§5 |") && line.contains("agree"),
+            "{line}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_a_mismatch_beyond_the_tolerance_fails_and_the_boundary_passes() {
+        let cps = |offset_w| {
+            with_cps(Some(CpsPlan {
+                offset_w,
+                ..CpsPlan::default()
+            }))
+        };
+        let (_, v) = check5_of(cps(2.0)).await;
+        let verdict = v["verdict"].as_str().expect("verdict");
+        assert!(
+            verdict.starts_with("disagree: power:") && verdict.contains("outside ±1 W"),
+            "{v}"
+        );
+        assert_eq!(v["bias_w"], -2.0);
+        let (_, v) = check5_of(cps(1.0)).await;
+        assert_eq!(
+            v["verdict"], "agree",
+            "exactly ±1 W is within the tolerance: {v}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_derives_cadence_across_the_rollover_of_both_cps_counters() {
+        let wrap = CpsPlan {
+            revs0: 65_530,
+            time0: 65_000,
+            ..CpsPlan::default()
+        };
+        let (_, v) = check5_of(with_cps(Some(wrap))).await;
+        assert_eq!(v["verdict"], "agree", "{v}");
+        assert_eq!(v["cps"]["rejected_pairs"], 0, "{v}");
+        for w in v["cadence_windows"].as_array().expect("windows") {
+            assert!(
+                (w["cps_rpm"].as_f64().unwrap_or(0.0) - 90.0).abs() <= 1.0,
+                "{v}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_without_cps_ends_released_with_no_result() {
+        let (sim, report) = {
+            let sim = Sim::new(with_cps(None));
+            let report = rider::drive(&sim, &sim, Procedure::Check5, std::future::pending()).await;
+            (sim, report)
+        };
+        assert!(
+            matches!(&report.procedure, Err(rider::Stop::Aborted(w)) if w.contains("2A63")),
+            "{:?}",
+            report.procedure
+        );
+        assert_eq!(report.release_error, None);
+        let (_, v) = check5_of(with_cps(None)).await;
+        assert_eq!(v["completed"], false);
+        assert!(v["verdict"].is_null(), "{v}");
+        assert!(
+            v["line"]
+                .as_str()
+                .is_some_and(|l| l.contains("no result: procedure aborted")),
+            "{v}"
+        );
+        assert_eq!(Wire::cps(&sim).len(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_on_a_capture_without_cps_gives_no_verdict() {
+        let sim = Sim::new(Plan::default());
+        let report = rider::drive(&sim, &sim, Procedure::Check5, std::future::pending()).await;
+        assert_eq!(report.procedure, Ok(()));
+        let v = partb::analyse(
+            "check5",
+            &Wire::records(&sim),
+            &[],
+            Some(partb::COMPLETED),
+            &partb::PowerLag::NotMeasured(String::new()),
+        )
+        .expect("check5");
+        assert!(
+            v["verdict"]
+                .as_str()
+                .is_some_and(|x| x.starts_with("no CPS")),
+            "{v}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_without_crank_data_cannot_confirm_cadence() {
+        let plan = with_cps(Some(CpsPlan {
+            no_crank: true,
+            ..CpsPlan::default()
+        }));
+        let (_, v) = check5_of(plan).await;
+        assert!(
+            v["verdict"]
+                .as_str()
+                .is_some_and(|x| x.contains("no 2A63 crank-revolution data")),
+            "{v}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_an_aborted_run_gives_no_result_even_with_agreeing_streams() {
+        let plan = Plan {
+            stop_at_us: Some(40_000_000),
+            ..Plan::default()
+        };
+        let (report, v) = check5_of(plan).await;
+        assert!(
+            matches!(report.procedure, Err(rider::Stop::Aborted(_))),
+            "{:?}",
+            report.procedure
+        );
+        assert!(v["verdict"].is_null() && v["completed"] == false, "{v}");
+        assert!(
+            v["line"]
+                .as_str()
+                .is_some_and(|l| l.contains("no result: procedure aborted")),
+            "{v}"
+        );
+    }
+
+    #[test]
+    fn redact_keeps_the_cps_lines() {
+        let text = "0 rx A4 09 4E 05 51 FF FF 01 01 02 03 04 00\n# cps 5 20 00 96 00 01 00 02 00\n";
+        let out = crate::frames::redact_capture(text);
+        assert!(out.contains("# cps 5 20 00 96 00 01 00 02 00\n"), "{out}");
+        assert_eq!(crate::frames::parse_cps(&out).len(), 1);
     }
 }

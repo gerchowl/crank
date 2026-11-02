@@ -9,7 +9,7 @@
 //! (completion, a guard, an error, a panic, SIGINT/SIGTERM/SIGHUP) the trainer is
 //! released with page 48 at 0 %, the ride-end mode of §7.9, before the link is closed.
 use crate::{
-    frames::{Record, page_of},
+    frames::{Cps, Record, page_of},
     partb::{Descent, STALL_FLOOR_RPM, Sample},
     session::Session,
 };
@@ -40,6 +40,12 @@ pub const WRITE_WAIT: Duration = Duration::from_secs(2);
 /// Check 7's target: the page-49 write the silent window starts from.
 pub const CHECK7_W: u16 = 150;
 const HOLD: Duration = Duration::from_secs(20);
+/// Check 5's two ERG targets, W.
+pub const CHECK5_W: [u16; 2] = [150, 200];
+/// How long check 5 holds each target.
+const CHECK5_HOLD: Duration = Duration::from_secs(30);
+/// How long into check 5's ride a Cycling Power notification may take to arrive.
+const CPS_WAIT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(100);
 
 /// What a procedure drives: the live [`Session`] or the test simulator.
@@ -56,6 +62,8 @@ pub trait Wire {
     fn dropped(&self) -> bool;
     /// Every record so far, both directions.
     fn records(&self) -> Vec<Record>;
+    /// Every Cycling Power notification so far (check 5), on the capture time base.
+    fn cps(&self) -> Vec<Cps>;
 }
 
 impl Wire for Session {
@@ -84,6 +92,11 @@ impl Wire for Session {
     fn records(&self) -> Vec<Record> {
         std::fs::read_to_string(&self.capture_path)
             .map(|t| crate::frames::parse_capture(&t))
+            .unwrap_or_default()
+    }
+    fn cps(&self) -> Vec<Cps> {
+        std::fs::read_to_string(&self.capture_path)
+            .map(|t| crate::frames::parse_cps(&t))
             .unwrap_or_default()
     }
 }
@@ -410,6 +423,27 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
     }
 }
 
+/// #44 check 5: a ride at two ERG targets, 150 W then 200 W at 90 rpm, 30 s each, while the
+/// capture records page 25 and the trainer's Cycling Power notifications side by side. Settled
+/// windows (the target held ≥ 10 s, after its first 10 s) are compared by [`crate::cps`].
+///
+/// The ride is useless without CPS, so it ends (released) when no notification has arrived
+/// 5 s after the rider is up to power.
+async fn check5<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
+    r.engage(CHECK5_W[0]).await?;
+    r.cue(Cue::Cadence(90));
+    r.hold(CPS_WAIT).await?;
+    if r.w.cps().is_empty() {
+        return Err(Stop::Aborted(
+            "no Cycling Power (2A63) notification 5 s after the rider is up to power".into(),
+        ));
+    }
+    r.hold(CHECK5_HOLD.saturating_sub(CPS_WAIT)).await?;
+    r.erg(CHECK5_W[1]).await?;
+    r.hold(CHECK5_HOLD).await?;
+    Ok(())
+}
+
 /// #44 check 6: ERG steps 100→150→250→100 W at 90 rpm, then cadence 90→60→90 at 200 W.
 async fn check6<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
     r.engage(100).await?;
@@ -507,6 +541,8 @@ async fn check12<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop
 /// The Part B control checks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Procedure {
+    /// #44 check 5.
+    Check5,
     /// #44 check 6.
     Check6,
     /// #44 check 7.
@@ -523,6 +559,9 @@ impl Procedure {
     /// What the procedure writes, for the summary.
     pub fn what(self) -> &'static str {
         match self {
+            Self::Check5 => {
+                "page 48 0 %; soft start to 150 W; 30 s at 90 rpm; page 49 200 W; 30 s; release; also subscribes (read-only) to Cycling Power 2A63 and records it beside page 25"
+            }
             Self::Check6 => {
                 "page 48 0 %; page 49 0 W until cadence, 5 s soft start to 100 W; 100/150/250/100/200 W held 20 s; at 200 W cues 60 then 90 rpm, 20 s each; release"
             }
@@ -551,6 +590,16 @@ pub struct Report {
     pub release_error: Option<String>,
 }
 
+/// The release write (page 48 at 0 %, ADR-0002 §7.9), bounded at [`RELEASE_WAIT`]; its error, if any.
+pub async fn release<W: Wire>(w: &W) -> Option<String> {
+    match frame(&ControlPage::BasicResistance { pct: 0.0 }) {
+        Ok(f) => tokio::time::timeout(RELEASE_WAIT, w.send(f))
+            .await
+            .unwrap_or_else(|_| Some("release write not completed within 2 s".into())),
+        Err(e) => Some(format!("{e:?}")),
+    }
+}
+
 /// Connect state → confirmation → procedure, then always the release.
 ///
 /// `interrupt` resolves on a signal; the procedure is dropped at its next await and the
@@ -561,14 +610,7 @@ pub async fn drive<W: Wire, O: Operator>(
     p: Procedure,
     interrupt: impl Future<Output = String>,
 ) -> Report {
-    let release = || async {
-        match frame(&ControlPage::BasicResistance { pct: 0.0 }) {
-            Ok(f) => tokio::time::timeout(RELEASE_WAIT, w.send(f))
-                .await
-                .unwrap_or_else(|_| Some("release write not completed within 2 s".into())),
-            Err(e) => Some(format!("{e:?}")),
-        }
-    };
+    let release = || release(w);
     if let Some(e) = release().await {
         return Report {
             procedure: Err(Stop::Failed(format!("initial page 48: {e}"))),
@@ -587,6 +629,7 @@ pub async fn drive<W: Wire, O: Operator>(
         }
         let mut r = Rig::new(w, op);
         match p {
+            Procedure::Check5 => check5(&mut r).await,
             Procedure::Check6 => check6(&mut r).await,
             Procedure::Check7 => check7(&mut r).await,
             Procedure::Check8 => check8(&mut r).await,
@@ -657,6 +700,7 @@ pub fn summary(
     stem: &str,
     report: &Report,
     records: &[Record],
+    cps: &[Cps],
     lag: &crate::partb::PowerLag,
 ) -> Value {
     let outcome = outcome(&report.procedure);
@@ -667,7 +711,8 @@ pub fn summary(
         "release_write_error": report.release_error,
         "page71_frames": records.iter().filter(|r| r.rx && page_of(&r.bytes) == Some(71)).count(),
     });
-    v["result"] = crate::partb::analyse(stem, records, Some(&outcome), lag).unwrap_or(Value::Null);
+    v["result"] =
+        crate::partb::analyse(stem, records, cps, Some(&outcome), lag).unwrap_or(Value::Null);
     v
 }
 
@@ -675,7 +720,7 @@ pub fn summary(
 mod tests {
     use super::*;
     use crate::{
-        frames::{hex, parse_capture},
+        frames::{CPS_TAG, hex, parse_capture, parse_cps},
         partb::{Control, FINISHED, MAX_T90_US, OUTCOME, PowerLag, analyse, controls, outcome_in},
         sim::{Pattern, Plan, Sim},
     };
@@ -796,6 +841,9 @@ mod tests {
             let _ = writeln!(t, "{} {dir} {}", r.at_us, hex(&r.bytes));
             t
         });
+        for c in sim.cps() {
+            let _ = writeln!(text, "{CPS_TAG}{} {}", c.at_us, hex(&c.bytes));
+        }
         let _ = writeln!(text, "{OUTCOME}{}", outcome(&report.procedure));
         let _ = writeln!(text, "{FINISHED}{SESSION_START_S}");
         text
@@ -820,11 +868,12 @@ mod tests {
         stem: &str,
         lag: &PowerLag,
     ) -> Value {
-        let live = summary(p, stem, report, &sim.records(), lag)["result"].clone();
+        let live = summary(p, stem, report, &sim.records(), &sim.cps(), lag)["result"].clone();
         let text = fecap(sim, report);
         let offline = analyse(
             stem,
             &parse_capture(&text),
+            &parse_cps(&text),
             outcome_in(&text).as_deref(),
             lag,
         )
@@ -999,7 +1048,7 @@ mod tests {
         let released = crate::partb::secs(release_at(&sim));
         assert!((at..=at + 0.25).contains(&released), "{released} {v}");
         // Without the outcome line (a killed run) the same capture gives no verdict.
-        let v = analyse("check9", &sim.records(), None, &MEASURED).expect("part B stem");
+        let v = analyse("check9", &sim.records(), &[], None, &MEASURED).expect("part B stem");
         assert_eq!(v["verdict"], Value::Null, "{v}");
     }
 
@@ -1303,6 +1352,7 @@ mod tests {
                     "check9",
                     &report,
                     &sim.records(),
+                    &[],
                     &MEASURED,
                 )["result"]
                     .clone();
@@ -1354,6 +1404,7 @@ mod tests {
                 "check9",
                 &report,
                 &sim.records(),
+                &[],
                 &MEASURED,
             )["result"]
                 .clone();
@@ -1372,6 +1423,7 @@ mod tests {
                     "check9",
                     &report,
                     &sim.records(),
+                    &[],
                     &MEASURED,
                 )["result"]
                     .clone();
@@ -1638,7 +1690,7 @@ mod tests {
         // A capture without an outcome line (killed run, older capture) is no result either.
         let (sim, report) = run(Procedure::Check7, Plan::default(), None).await;
         assert_eq!(report.procedure, Ok(()));
-        let v = analyse("check7", &sim.records(), None, &MEASURED).expect("part B stem");
+        let v = analyse("check7", &sim.records(), &[], None, &MEASURED).expect("part B stem");
         assert_eq!(v["held"], Value::Null, "{v}");
         assert!(v["line"].as_str().expect("line").contains("no result"));
     }
