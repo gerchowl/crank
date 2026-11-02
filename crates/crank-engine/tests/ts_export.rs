@@ -1,8 +1,10 @@
-//! The stream wire types export to TypeScript the way `export-bindings` does
+//! The stream wire types and the lap query's `Lap` (#243) export to TypeScript the way `export-bindings` does
 //! (`tauri-specta`'s default `specta_serde::PhasesFormat`). specta-typescript forbids
 //! `u64`; ids, `seq` and `late_samples` are `u32` for that reason (#271).
 #![cfg(feature = "specta")]
-use crank_engine::{StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts};
+use crank_engine::{
+    Lap, StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts,
+};
 use specta::Types;
 use specta_typescript::Typescript;
 
@@ -14,7 +16,8 @@ fn stream_types_export_to_typescript() {
         .register::<SubscribeOpts>()
         .register::<StreamFrame>()
         .register::<StreamStatus>()
-        .register::<StreamSnapshot>();
+        .register::<StreamSnapshot>()
+        .register::<Lap>();
     let ts = Typescript::default()
         .export(&types, specta_serde::PhasesFormat)
         .unwrap_or_else(|e| panic!("TypeScript export failed: {e}"));
@@ -23,6 +26,8 @@ fn stream_types_export_to_typescript() {
         "StreamStatus",
         "StreamSnapshot",
         "SubscribeOpts",
+        "Lap",
+        "LapStats",
     ] {
         assert!(ts.contains(name), "{name} missing");
     }
