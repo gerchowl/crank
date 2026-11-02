@@ -2,8 +2,8 @@
 //!
 //! The trainer answers like the NEO in Part A: page 25 every 350 ms, page 16 every 1.35 s,
 //! a page-71 reply 100 ms after a page-70 request echoing the last control page. Power
-//! follows the applied control with a 0.8 s lag: ERG holds the target down to 35 rpm and
-//! collapses below it, page 48 and SIM follow cadence (SIM through the road model). The
+//! follows the applied control with a first-order lag (0.8 s by default): ERG holds the
+//! target down to 35 rpm and collapses below it, page 48 and SIM follow cadence (SIM through the road model). The
 //! rider moves cadence towards the last cue at 30 rpm/s; after `Descend` towards [`Pattern`].
 use crate::{
     frames::{Record, page_of},
@@ -37,6 +37,14 @@ pub struct Plan {
     /// ERG holds the target down to this cadence and collapses in proportion below it
     /// (0: never collapses).
     pub erg_floor_rpm: f64,
+    /// Instead of the floor: the share of an ERG target held by cadence, straight lines
+    /// through `(rpm, share)` points in rising cadence, the end points held beyond them.
+    pub erg_curve: Option<&'static [(f64, f64)]>,
+    /// The rider already pedals at 90 rpm with this power when the procedure starts, and keeps
+    /// it under page 48 and an ERG target of 0 W (0: the rider waits for the start cue).
+    pub warm_w: f64,
+    /// Time constant of the first-order lag of power behind the applied control, s.
+    pub power_tau_s: f64,
     /// Page 25 reports cadence as unavailable (0xFF) from this capture time.
     pub cadence_unavailable_from_us: Option<u64>,
 }
@@ -57,6 +65,9 @@ impl Default for Plan {
                 hold_rpm: 0.0,
             },
             erg_floor_rpm: 35.0,
+            erg_curve: None,
+            warm_w: 0.0,
+            power_tau_s: 0.8,
             cadence_unavailable_from_us: None,
         }
     }
@@ -149,6 +160,19 @@ fn emit(s: &mut State, at_us: u64, f: [u8; 13]) {
     s.rx.push(r);
 }
 
+/// `curve` (see [`Plan::erg_curve`]) at `rpm`.
+fn share(curve: &[(f64, f64)], rpm: f64) -> f64 {
+    let next = curve.iter().position(|p| p.0 > rpm);
+    match next {
+        Some(0) => curve[0].1,
+        None => curve.last().map_or(1.0, |p| p.1),
+        Some(i) => {
+            let ((c0, s0), (c1, s1)) = (curve[i - 1], curve[i]);
+            s0 + (s1 - s0) * (rpm - c0) / (c1 - c0)
+        }
+    }
+}
+
 fn checked(mut f: [u8; 13]) -> [u8; 13] {
     f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
     f
@@ -167,9 +191,9 @@ impl Sim {
                 applied: Applied::Resistance(0.0),
                 grade: 0.0,
                 mass: 85.0,
-                power: 0.0,
-                cadence: 0.0,
-                goal: 0.0,
+                power: plan.warm_w,
+                cadence: if plan.warm_w > 0.0 { 90.0 } else { 0.0 },
+                goal: if plan.warm_w > 0.0 { 90.0 } else { 0.0 },
                 descend_from: None,
                 accumulated: 0,
                 events: 0,
@@ -235,6 +259,11 @@ impl Sim {
         st.cadence += delta;
         let speed = st.cadence * 0.09;
         let follow = match st.applied {
+            Applied::Erg(w) if w <= 0.0 && self.plan.warm_w > 0.0 => self.plan.warm_w,
+            Applied::Resistance(_) if self.plan.warm_w > 0.0 => self.plan.warm_w,
+            Applied::Erg(w) if self.plan.erg_curve.is_some() => {
+                w * self.plan.erg_curve.map_or(1.0, |c| share(c, st.cadence))
+            }
             Applied::Erg(w) if self.plan.erg_floor_rpm > 0.0 => {
                 w * (st.cadence / self.plan.erg_floor_rpm).min(1.0)
             }
@@ -244,7 +273,7 @@ impl Sim {
                 speed * st.mass * 9.81 * (st.grade / 100.0 + 0.004) + 0.51 * speed * speed * speed
             }
         };
-        st.power += (follow - st.power) * (dt / 0.8);
+        st.power += (follow - st.power) * (dt / self.plan.power_tau_s);
         if st.cadence < 1.0 {
             st.power = 0.0;
         }

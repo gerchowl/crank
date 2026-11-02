@@ -5,7 +5,7 @@
 //! from its tx writes, the rider's from page 25 (power, cadence) and page 16 (speed). Only a run whose procedure
 //! completed gives a result; any other run (or a capture without an outcome line) reports
 //! "no result" and no verdict.
-use crate::frames::{Record, page_of};
+use crate::frames::{Record, page_of, parse_capture};
 use crank_engine::erg::policy::{REENGAGE_RPM, RELEASE_RPM};
 use crank_fec::{Page, decode};
 use serde_json::{Value, json};
@@ -284,19 +284,27 @@ fn crossings(s: &[Sample], h: &Hold) -> Vec<(u64, bool)> {
     out
 }
 
+/// The ERG steps of a check-6 capture (a hold following a hold): `(from_w, hold, t90)`.
+fn erg_steps(records: &[Record], s: &[Sample]) -> Vec<(f64, Hold, Option<u64>)> {
+    let ctl = controls(records);
+    erg_holds(&ctl, procedure_end(records, &ctl))
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [(true, prev), (true, h)] => Some((prev.watts, *h, t90(s, prev.watts, h))),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Check 6: ERG step response (t90) and cadence steps at a held target.
 pub fn check6(records: &[Record]) -> Value {
     let s = samples(records);
     let ctl = controls(records);
     let holds = erg_holds(&ctl, procedure_end(records, &ctl));
     let mut steps = Vec::new();
-    for pair in holds.windows(2) {
-        let [(true, prev), (true, h)] = pair else {
-            continue;
-        };
-        let t = t90(&s, prev.watts, h);
+    for (from_w, h, t) in erg_steps(records, &s) {
         steps.push(json!({
-            "from_w": prev.watts, "to_w": h.watts, "t90_s": t.map(|t| round1(secs(t))),
+            "from_w": from_w, "to_w": h.watts, "t90_s": t.map(|t| round1(secs(t))),
             "mean_power_last_10s_w": mean(powers(&s, h.end.saturating_sub(10 * SEC), h.end)).map(round1),
             "mean_cadence_rpm": mean(cadences(&s, h.at, h.end)).map(round1),
         }));
@@ -457,6 +465,85 @@ const MAX_GAP_US: u64 = 500_000;
 const MARGIN_RPM: u8 = 2;
 /// The descent ends at the first sample below this cadence while power is still held.
 pub const STALL_FLOOR_RPM: u8 = 25;
+/// Check 6 shows the power-lag bound when every ERG step reaches 90 % within this: a
+/// first-order lag of time constant [`POWER_TAU_US`] does after ln 10 = 2.303 of them, and
+/// any delay before the response only adds to t90, so it can only fail a trainer.
+pub const MAX_T90_US: u64 = 2_300_000;
+
+/// The trainer's power response as check 6 of the same capture set measured it. Check 9's
+/// "the release comes first" holds only within [`MAX_T90_US`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PowerLag {
+    /// No t90 to go by: why.
+    NotMeasured(String),
+    /// Every step within [`MAX_T90_US`]; the slowest t90, µs.
+    Within(u64),
+    /// A step slower than [`MAX_T90_US`]: the slowest t90, µs (`None`: never reached 90 %).
+    TooSlow(Option<u64>),
+}
+
+impl PowerLag {
+    /// From the step t90s of a completed check 6.
+    fn of_steps(t90s: &[Option<u64>]) -> Self {
+        if t90s.is_empty() {
+            return Self::NotMeasured("check 6 has no ERG step".into());
+        }
+        match t90s.iter().copied().max_by_key(|t| t.unwrap_or(u64::MAX)) {
+            Some(Some(t)) if t <= MAX_T90_US => Self::Within(t),
+            Some(t) => Self::TooSlow(t),
+            None => unreachable!("not empty"),
+        }
+    }
+
+    /// From the text of a check-6 `.fecap` (`None`: there is none).
+    pub fn of_check6(text: Option<&str>) -> Self {
+        let Some(text) = text else {
+            return Self::NotMeasured("no check6.fecap in the capture set".into());
+        };
+        match outcome_in(text) {
+            Some(o) if o == COMPLETED => {
+                let records = parse_capture(text);
+                let s = samples(&records);
+                let t90s: Vec<Option<u64>> =
+                    erg_steps(&records, &s).iter().map(|(_, _, t)| *t).collect();
+                Self::of_steps(&t90s)
+            }
+            o => Self::NotMeasured(format!(
+                "check 6 did not complete ({})",
+                o.unwrap_or_else(|| "no outcome line".into())
+            )),
+        }
+    }
+
+    /// From `check6.fecap` next to `capture` (the same `--out` directory).
+    pub fn beside(capture: &std::path::Path) -> Self {
+        match std::fs::read_to_string(capture.with_file_name("check6.fecap")) {
+            Ok(text) => Self::of_check6(Some(&text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::of_check6(None),
+            Err(e) => Self::NotMeasured(format!("check6.fecap: {e}")),
+        }
+    }
+
+    fn t90(&self) -> String {
+        match self {
+            Self::Within(t) | Self::TooSlow(Some(t)) => format!("{:.2} s", secs(*t)),
+            Self::TooSlow(None) => "not reached".into(),
+            Self::NotMeasured(_) => "not measured".into(),
+        }
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "check6_t90": self.t90(),
+            "max_t90_s": secs(MAX_T90_US),
+            "within": match self {
+                Self::Within(_) => json!(true),
+                Self::TooSlow(_) => json!(false),
+                Self::NotMeasured(why) => json!(why),
+            },
+        })
+    }
+}
 /// A cadence bin is followed when this share of its samples is within ±10 % of the target.
 const FOLLOWED_SHARE: f64 = 0.8;
 
@@ -604,8 +691,10 @@ pub fn settled_hold(samples: &[&Sample], target_w: f64) -> Option<u8> {
 ///   cadences up to `held_rpm` (valid under the 1 s power-lag bound).
 ///
 /// "First" needs the upper bound below 40 rpm; "too late" the lower bound at or above it;
-/// anything else is ambiguous.
-pub fn stall_verdict(d: &Descent, held_rpm: Option<u8>) -> Option<String> {
+/// anything else is ambiguous. The upper bound rests on the lag bound, so "first" needs it
+/// measured by check 6 (`lag`): unmeasured, the verdict says so; too slow, only "too late"
+/// (which needs no lag bound) stands and anything else is not valid.
+pub fn stall_verdict(d: &Descent, held_rpm: Option<u8>, lag: &PowerLag) -> Option<String> {
     let dropped = match *d {
         Descent::Stalled { dropped_at_rpm, .. } => Some(dropped_at_rpm),
         Descent::Floor { .. } => None,
@@ -618,7 +707,18 @@ pub fn stall_verdict(d: &Descent, held_rpm: Option<u8>) -> Option<String> {
         dropped.map_or_else(|| "no".into(), |c| c.to_string()),
         held_rpm.map_or_else(|| "no settled hold".into(), |c| c.to_string()),
     );
+    if let PowerLag::TooSlow(_) = lag {
+        return Some(if late {
+            "stall at or above the release cadence: the release comes too late".into()
+        } else {
+            format!("not valid: power response too slow (t90 = {})", lag.t90())
+        });
+    }
     Some(match (first, late) {
+        (true, false) if matches!(lag, PowerLag::NotMeasured(_)) => format!(
+            "stall below the release cadence: the release comes first only if check 6 t90 ≤ {} s (not measured)",
+            secs(MAX_T90_US)
+        ),
         (true, false) => "stall below the release cadence: the release comes first".into(),
         (false, true) => "stall at or above the release cadence: the release comes too late".into(),
         (true, true) => format!("inconsistent: {range} (power not monotone in cadence)"),
@@ -633,17 +733,26 @@ fn bin_followed(p: &[f64], target: f64) -> bool {
     p.len() >= 2 && share_within(p, target, 0.10).is_some_and(|x| x >= FOLLOWED_SHARE)
 }
 
+/// The capture time of the procedure's first page-49 write of 250 W: [`DESCENT_AFTER_US`]
+/// before the descent starts. The live run and `analyse` both start it from here, also when
+/// the soft start begins at 250 W and writes it six times.
+pub fn descent_target_at(records: &[Record]) -> Option<u64> {
+    let ctl = controls(records);
+    let end = procedure_end(records, &ctl);
+    let target = f64::from(crate::rider::MAX_ERG_W);
+    ctl.iter()
+        .find(|(at, c)| *at < end && *c == Control::Erg(target))
+        .map(|(at, _)| *at)
+}
+
 /// Check 9: down to which cadence ERG holds 250 W while the rider follows the cued descent.
-pub fn check9(records: &[Record]) -> Value {
+/// `lag` is check 6's measure of the power response, which "the release comes first" needs.
+pub fn check9(records: &[Record], lag: &PowerLag) -> Value {
     let s = samples(records);
     let ctl = controls(records);
     let end = procedure_end(records, &ctl);
     let target = f64::from(crate::rider::MAX_ERG_W);
-    let Some(at) = ctl
-        .iter()
-        .find(|(at, c)| *at < end && *c == Control::Erg(target))
-        .map(|(at, _)| *at)
-    else {
+    let Some(at) = descent_target_at(records) else {
         return json!({"error": format!("no page-49 write of {target} W")});
     };
     let from = at + DESCENT_AFTER_US;
@@ -691,7 +800,7 @@ pub fn check9(records: &[Record]) -> Value {
         ),
     };
     json!({
-        "method": "descent from 10 s after the procedure's 250 W write; the cue falls from 90 rpm by 0.5 rpm/s; followed = cadence never falls > 9 rpm within 3 s and stays within 15 rpm of the cue; stall = power < 90 % of the target for 2 s with the cadence followed from 1 s before the drop; floor = first sample below 25 rpm with power held; anything else departs (no verdict). Verdict (power lag assumed first-order, tau <= 1 s): first = power settled >= 90 % for 5 s (samples <= 0.5 s apart) at cadences up to N with N + 2 < 40; too late = power < 90 % at a cadence > 40; otherwise ambiguous. Bins: 5 rpm, followed = >= 2 samples and >= 80 % within ±10 %",
+        "method": "descent from 10 s after the procedure's 250 W write; the cue falls from 90 rpm by 0.5 rpm/s; followed = cadence never falls > 9 rpm within 3 s and stays within 15 rpm of the cue; stall = power < 90 % of the target for 2 s with the cadence followed from 1 s before the drop; floor = first sample below 25 rpm with power held; anything else departs (no verdict). Verdict (power lag assumed first-order, tau <= 1 s): first = power settled >= 90 % for 5 s (samples <= 0.5 s apart) at cadences up to N with N + 2 < 40, and only with check 6 of the same capture set at t90 <= 2.3 s; too late = power < 90 % at a cadence > 40; otherwise ambiguous (not valid when check 6 t90 > 2.3 s). Bins: 5 rpm, followed = >= 2 samples and >= 80 % within ±10 %",
         "target_w": target,
         "descent_from_s": round1(secs(from)),
         "descent": event,
@@ -704,7 +813,8 @@ pub fn check9(records: &[Record]) -> Value {
         "lowest_followed_rpm": lowest,
         "release_rpm": RELEASE_RPM,
         "reengage_rpm": REENGAGE_RPM,
-        "verdict": stall_verdict(&d, held),
+        "power_lag": lag.json(),
+        "verdict": stall_verdict(&d, held, lag),
     })
 }
 
@@ -768,12 +878,18 @@ pub fn check12(records: &[Record]) -> Value {
 
 /// Part B analysis by capture stem (`check6` …), `None` for other captures. `outcome` is how
 /// the procedure ended (the capture's outcome line); without `completed` there is no verdict.
-pub fn analyse(stem: &str, records: &[Record], outcome: Option<&str>) -> Option<Value> {
+/// `lag` is check 6 of the same capture set ([`PowerLag::beside`]), which check 9 needs.
+pub fn analyse(
+    stem: &str,
+    records: &[Record],
+    outcome: Option<&str>,
+    lag: &PowerLag,
+) -> Option<Value> {
     let mut v = match stem {
         "check6" => check6(records),
         "check7" => check7(records),
         "check8" => check8(records),
-        "check9" => check9(records),
+        "check9" => check9(records, lag),
         "check12" => check12(records),
         _ => return None,
     };
@@ -1049,7 +1165,7 @@ mod tests {
             "{d:?}"
         );
         assert_eq!(
-            stall_verdict(&d, None).expect("verdict"),
+            stall_verdict(&d, None, &PowerLag::Within(MAX_T90_US)).expect("verdict"),
             "stall at or above the release cadence: the release comes too late"
         );
     }
@@ -1078,7 +1194,8 @@ mod tests {
             dropped_at_rpm,
         };
         let floor = Descent::Floor { at_us: 0 };
-        let v = |d: &Descent, held| stall_verdict(d, held).expect("verdict");
+        let ok = PowerLag::Within(MAX_T90_US);
+        let v = |d: &Descent, held| stall_verdict(d, held, &ok).expect("verdict");
         let first = "stall below the release cadence: the release comes first";
         let late = "stall at or above the release cadence: the release comes too late";
         // Held settled up to 37 rpm: the trainer holds at 39 rpm at the latest.
@@ -1090,7 +1207,90 @@ mod tests {
         assert!(v(&stalled(40), None).starts_with("ambiguous"));
         assert_eq!(v(&stalled(30), Some(35)), first);
         assert!(v(&stalled(41), Some(30)).starts_with("inconsistent"));
-        assert_eq!(stall_verdict(&Descent::Going, Some(30)), None);
+        assert_eq!(stall_verdict(&Descent::Going, Some(30), &ok), None);
+    }
+
+    #[test]
+    fn first_needs_check_6_t90_within_2_3_s() {
+        assert_eq!(
+            PowerLag::of_steps(&[Some(SEC), Some(2_300_000)]),
+            PowerLag::Within(2_300_000)
+        );
+        assert_eq!(
+            PowerLag::of_steps(&[Some(2_300_001), Some(SEC)]),
+            PowerLag::TooSlow(Some(2_300_001))
+        );
+        assert_eq!(
+            PowerLag::of_steps(&[Some(SEC), None]),
+            PowerLag::TooSlow(None)
+        );
+        assert!(matches!(PowerLag::of_steps(&[]), PowerLag::NotMeasured(_)));
+        assert!(matches!(
+            PowerLag::of_check6(None),
+            PowerLag::NotMeasured(_)
+        ));
+        assert!(matches!(
+            PowerLag::of_check6(Some(&format!("{OUTCOME}aborted: x\n"))),
+            PowerLag::NotMeasured(_)
+        ));
+        let floor = Descent::Floor { at_us: 0 };
+        let late = Descent::Stalled {
+            onset_us: 0,
+            at_us: 0,
+            dropped_at_rpm: 41,
+        };
+        let v = |d: &Descent, lag| stall_verdict(d, Some(37), &lag).expect("verdict");
+        assert_eq!(
+            v(&floor, PowerLag::Within(2_300_000)),
+            "stall below the release cadence: the release comes first"
+        );
+        assert_eq!(
+            v(&floor, PowerLag::of_check6(None)),
+            "stall below the release cadence: the release comes first only if check 6 t90 ≤ 2.3 s (not measured)"
+        );
+        assert_eq!(
+            v(&floor, PowerLag::TooSlow(Some(2_310_000))),
+            "not valid: power response too slow (t90 = 2.31 s)"
+        );
+        assert_eq!(
+            v(&floor, PowerLag::TooSlow(None)),
+            "not valid: power response too slow (t90 = not reached)"
+        );
+        // Power below 90 % at 41 rpm needs no lag bound.
+        assert_eq!(
+            v(&late, PowerLag::TooSlow(None)),
+            "stall at or above the release cadence: the release comes too late"
+        );
+    }
+
+    #[test]
+    fn a_gradual_fall_of_10_rpm_within_3_s_leaves_the_cue() {
+        // 90 rpm, then 1 rpm lower every 0.25 s: no fall between two samples exceeds 1 rpm.
+        for (to, leaves) in [(81, false), (80, true)] {
+            let s = series(250_000, 6 * SEC, |t| {
+                let k = u8::try_from(t.saturating_sub(SEC) / 250_000).expect("fits");
+                (90_u8.saturating_sub(k).max(to), 250)
+            });
+            assert_eq!(departed(&descent(&s, 0, 250.0)), leaves, "90 -> {to}");
+        }
+    }
+
+    #[test]
+    fn a_stall_is_confirmed_after_exactly_2_s() {
+        // Power below 90 % from 1 s; the samples 0.5 s apart reach 3 s exactly.
+        let s = series(500_000, 3_000_001, |t| {
+            (60, if t < SEC { 250 } else { 200 })
+        });
+        let s = into_descent(s, 60);
+        assert_eq!(
+            descent(&s, 0, 250.0),
+            Descent::Stalled {
+                onset_us: 61 * SEC,
+                at_us: 63 * SEC,
+                dropped_at_rpm: 60
+            }
+        );
+        assert_eq!(descent(&s[..s.len() - 1], 0, 250.0), Descent::Going);
     }
 
     #[test]
@@ -1104,10 +1304,8 @@ mod tests {
         ];
         records.extend((0..200).map(|k| p25(3 * SEC + k * 350_000, 90, 250)));
         assert_eq!(
-            check9(&records)["error"],
-            json!("no page-49 write of 250 W"),
-            "{}",
-            check9(&records)
+            check9(&records, &PowerLag::Within(MAX_T90_US))["error"],
+            json!("no page-49 write of 250 W")
         );
     }
 }

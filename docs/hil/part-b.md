@@ -94,8 +94,11 @@ page-71 reply echoed it.
 ### Check 9: what counts as a stall
 
 Check 9 measures the trainer: down to which cadence the NEO's ERG holds 250 W while the rider follows
-the cue. The cue starts 10 s after the 250 W write at 90 rpm and falls 5 rpm every 10 s (0.5 rpm/s). The
-live run and `analyse` apply the same rule (`partb::descent`) to the page-25 samples:
+the cue. The cue starts 10 s after the first 250 W write at 90 rpm and falls 5 rpm every 10 s
+(0.5 rpm/s). When the rider already makes 250 W or more at the start, the soft start writes 250 W six
+times, 1 s apart. The live run and `analyse` both count from the first of these writes
+(`partb::descent_target_at`), and the cue then comes 5 s after the soft start ends. Both apply the same
+rule (`partb::descent`) to the page-25 samples:
 
 - **Following the cue:** the cadence never falls more than 9 rpm within 3 s, and stays within 15 rpm of
   the cue, above or below. 3 rpm/s is six times the cue's rate, so a 5 rpm step made over a second or two
@@ -121,8 +124,9 @@ two bounds on the cadence `c*` below which the trainer can no longer hold 90 %:
   - This assumes page-25 power lags the trainer like a first-order lag with a time constant of at most
     1 s. Five time constants settle within e⁻⁵ (under 1 %) of a step, so the reading cannot still be
     carried by the higher power from before.
-  - The assumption is checked on the trainer by check 6: its `t90` must be at most 2.3 s (2.3 time
-    constants). A slower `t90` means check 9's "comes first" is not supported.
+  - The assumption is checked on the trainer by check 6: every ERG step's `t90` must be at most 2.3 s
+    (a first-order lag reaches 90 % after 2.303 time constants; delay before the response only adds to
+    `t90`). See the next section.
   - "Comes first" needs `N + 2 < 40`.
 
 Otherwise the verdict is `ambiguous: …` with both bounds. If both bounds hold at once (power not monotone
@@ -130,3 +134,17 @@ in cadence), it is `inconsistent: …`.
 
 The resolution has a cost: a trainer that lets go at 38 rpm is safe but reads ambiguous, because a 5 s
 settled hold at 0.5 rpm/s covers 2.5 rpm. A trainer that holds 250 W down to the low 30s resolves.
+
+**Check 9 depends on check 6.** "The release comes first" is only sound within the lag bound, so check 9
+reads `check6.fecap` from the same directory: the same `--out` for a live run, or the directory of the
+capture for `hil_fec analyse`. Run check 6 before check 9, with the same `--out`. The result's
+`power_lag` field shows what was used:
+
+- **Check 6 completed and every step's `t90` ≤ 2.3 s:** the verdicts stand as above.
+- **No completed check 6** (missing, aborted, or no outcome line): "comes first" reads `… the release comes
+  first only if check 6 t90 ≤ 2.3 s (not measured)`. Re-run `analyse` once check 6 is in the directory.
+- **A step's `t90` > 2.3 s, or one that never reaches 90 %:** the verdict reads `not valid: power response
+  too slow (t90 = X s)`. Only "too late" still stands, because its lower bound needs no lag bound. With a
+  slow trainer, a lagging reading at 36–37 rpm can still show 250 W after the trainer has let go above
+  40 rpm. The sim test `check9_first_needs_check_6_within_the_power_lag_bound` shows this with a 2 s lag:
+  without check 6 it reported "comes first".

@@ -466,23 +466,19 @@ async fn check8<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop>
 
 /// #44 check 9: 250 W ERG while the rider lowers cadence until the trainer lets go.
 ///
-/// The descent has no timer of its own: [`crate::partb::descent`] ends it at a stall or at
+/// The descent starts 10 s after the first 250 W write ([`crate::partb::descent_target_at`],
+/// as `analyse` reads it), so 5 s after the soft start when it begins at 250 W and writes it
+/// six times. It has no timer of its own: [`crate::partb::descent`] ends it at a stall or at
 /// the floor, and aborts it once the cadence is 15 rpm above the cue, which falls from 90 rpm
 /// at 0.5 rpm/s; so it ends within 160 s (the cue at 10 rpm, 15 under the floor).
 async fn check9<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
     r.engage(MAX_ERG_W).await?;
-    // The capture stamp of the 250 W write, which `analyse` starts the descent from too.
-    let target_at =
-        r.w.records()
-            .iter()
-            .rev()
-            .find(|x| !x.rx)
-            .map_or_else(|| r.w.now_us(), |x| x.at_us);
+    let from_us = crate::partb::descent_target_at(&r.w.records()).unwrap_or_else(|| r.w.now_us())
+        + crate::partb::DESCENT_AFTER_US;
     r.cue(Cue::Cadence(90));
-    r.hold(Duration::from_secs(10)).await?;
-    r.guard = Guard::Descent {
-        from_us: target_at + crate::partb::DESCENT_AFTER_US,
-    };
+    r.hold(Duration::from_micros(from_us.saturating_sub(r.w.now_us())))
+        .await?;
+    r.guard = Guard::Descent { from_us };
     r.cue(Cue::Descend);
     while !r.hold(Duration::from_secs(1)).await? {}
     Ok(())
@@ -649,8 +645,14 @@ pub fn outcome(procedure: &Result<(), Stop>) -> String {
     text.replace(['\n', '\r'], " ")
 }
 
-/// The summary of one driven run (live or simulated).
-pub fn summary(p: Procedure, stem: &str, report: &Report, records: &[Record]) -> Value {
+/// The summary of one driven run (live or simulated); `lag` is check 6 of the capture set.
+pub fn summary(
+    p: Procedure,
+    stem: &str,
+    report: &Report,
+    records: &[Record],
+    lag: &crate::partb::PowerLag,
+) -> Value {
     let outcome = outcome(&report.procedure);
     let mut v = json!({
         "check": stem,
@@ -659,7 +661,7 @@ pub fn summary(p: Procedure, stem: &str, report: &Report, records: &[Record]) ->
         "release_write_error": report.release_error,
         "page71_frames": records.iter().filter(|r| r.rx && page_of(&r.bytes) == Some(71)).count(),
     });
-    v["result"] = crate::partb::analyse(stem, records, Some(&outcome)).unwrap_or(Value::Null);
+    v["result"] = crate::partb::analyse(stem, records, Some(&outcome), lag).unwrap_or(Value::Null);
     v
 }
 
@@ -668,7 +670,7 @@ mod tests {
     use super::*;
     use crate::{
         frames::{hex, parse_capture},
-        partb::{Control, OUTCOME, analyse, controls, outcome_in},
+        partb::{Control, MAX_T90_US, OUTCOME, PowerLag, analyse, controls, outcome_in},
         sim::{Pattern, Plan, Sim},
     };
     use std::fmt::Write as _;
@@ -792,12 +794,31 @@ mod tests {
         text
     }
 
+    /// A check 6 that met the power-lag bound.
+    const MEASURED: PowerLag = PowerLag::Within(MAX_T90_US);
+
     /// The live result equals the one re-derived offline from the written `.fecap` text.
     fn reanalysed(sim: &Sim, report: &Report, p: Procedure, stem: &str) -> Value {
-        let live = summary(p, stem, report, &sim.records())["result"].clone();
+        reanalysed_with(sim, report, p, stem, &MEASURED)
+    }
+
+    /// [`reanalysed`] with check 6 of the capture set measuring `lag`.
+    fn reanalysed_with(
+        sim: &Sim,
+        report: &Report,
+        p: Procedure,
+        stem: &str,
+        lag: &PowerLag,
+    ) -> Value {
+        let live = summary(p, stem, report, &sim.records(), lag)["result"].clone();
         let text = fecap(sim, report);
-        let offline = analyse(stem, &parse_capture(&text), outcome_in(&text).as_deref())
-            .expect("part B stem");
+        let offline = analyse(
+            stem,
+            &parse_capture(&text),
+            outcome_in(&text).as_deref(),
+            lag,
+        )
+        .expect("part B stem");
         assert_eq!(live, offline);
         live
     }
@@ -968,7 +989,7 @@ mod tests {
         let released = crate::partb::secs(release_at(&sim));
         assert!((at..=at + 0.25).contains(&released), "{released} {v}");
         // Without the outcome line (a killed run) the same capture gives no verdict.
-        let v = analyse("check9", &sim.records(), None).expect("part B stem");
+        let v = analyse("check9", &sim.records(), None, &MEASURED).expect("part B stem");
         assert_eq!(v["verdict"], Value::Null, "{v}");
     }
 
@@ -1064,27 +1085,167 @@ mod tests {
         assert_eq!(v["verdict"], Value::Null, "{v}");
     }
 
+    /// Check 6 on the trainer of `plan`, as its capture set holds it.
+    async fn check6_of(plan: Plan) -> PowerLag {
+        let (sim, report) = run(Procedure::Check6, plan, None).await;
+        assert_eq!(report.procedure, Ok(()));
+        PowerLag::of_check6(Some(&fecap(&sim, &report)))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_simulated_trainer_meets_the_power_lag_bound() {
+        // A 0.8 s lag: t90 is 1.84 s plus up to 0.35 s to the next page-25 sample.
+        let lag = check6_of(Plan::default()).await;
+        assert!(
+            matches!(lag, PowerLag::Within(t) if (1_840_000..=2_200_000).contains(&t)),
+            "{lag:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check9_first_needs_check_6_within_the_power_lag_bound() {
+        // ERG at 224 W (below 90 %) from 40.5 rpm down, with a 2 s power lag: the rider follows
+        // to 43 rpm, then 37 rpm and holds. Power still reads >= 225 W for 6 s at 37 rpm, so
+        // the settled hold says the trainer holds at 39 rpm; it does not at 40 rpm.
+        let plan = Plan {
+            power_tau_s: 2.0,
+            erg_curve: Some(&[(40.5, 0.896), (43.0, 1.0)]),
+            descent: Pattern::Path(&[(0, 90.0), (100_000_000, 43.0), (101_500_000, 37.0)]),
+            ..Plan::default()
+        };
+        let lag = check6_of(plan).await;
+        let PowerLag::TooSlow(Some(t90)) = lag else {
+            panic!("{lag:?}")
+        };
+        assert!(t90 > 4 * SEC, "{lag:?}");
+        let (sim, report) = run(Procedure::Check9, plan, None).await;
+        assert_eq!(report.procedure, Ok(()));
+        let v = reanalysed_with(&sim, &report, Procedure::Check9, "check9", &lag);
+        assert_eq!(v["held_settled_to_rpm"], json!(37), "{v}");
+        assert_eq!(
+            v["verdict"],
+            json!(format!(
+                "not valid: power response too slow (t90 = {:.2} s)",
+                crate::partb::secs(t90)
+            )),
+            "{v}"
+        );
+        // A trainer within the bound (0.8 s lag, ERG letting go below 35 rpm): "first" with a
+        // check 6 that shows it, and only conditionally without one.
+        let lag = check6_of(Plan::default()).await;
+        let (sim, report) = run(Procedure::Check9, Plan::default(), None).await;
+        let v = reanalysed_with(&sim, &report, Procedure::Check9, "check9", &lag);
+        assert_eq!(v["verdict"], json!(FIRST), "{v}");
+        let none = PowerLag::of_check6(None);
+        let v = reanalysed_with(&sim, &report, Procedure::Check9, "check9", &none);
+        assert_eq!(
+            v["verdict"],
+            json!(
+                "stall below the release cadence: the release comes first only if check 6 t90 ≤ 2.3 s (not measured)"
+            ),
+            "{v}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check9_reads_check_6_from_its_capture_set() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let check9 = dir.path().join("check9.fecap");
+        assert!(matches!(
+            PowerLag::beside(&check9),
+            PowerLag::NotMeasured(_)
+        ));
+        let (sim, report) = run(Procedure::Check6, Plan::default(), None).await;
+        let text = fecap(&sim, &report);
+        let without_outcome: String =
+            text.lines()
+                .filter(|l| !l.starts_with(OUTCOME))
+                .fold(String::new(), |mut t, l| {
+                    let _ = writeln!(t, "{l}");
+                    t
+                });
+        std::fs::write(dir.path().join("check6.fecap"), &without_outcome).expect("write");
+        assert!(matches!(
+            PowerLag::beside(&check9),
+            PowerLag::NotMeasured(_)
+        ));
+        // The same steps, but the procedure did not complete.
+        let aborted = format!("{without_outcome}{OUTCOME}aborted: the rider stopped\n");
+        std::fs::write(dir.path().join("check6.fecap"), aborted).expect("write");
+        assert!(matches!(
+            PowerLag::beside(&check9),
+            PowerLag::NotMeasured(_)
+        ));
+        std::fs::write(dir.path().join("check6.fecap"), &text).expect("write");
+        assert!(matches!(PowerLag::beside(&check9), PowerLag::Within(_)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check9_descent_starts_where_analyse_starts_it_when_the_soft_start_is_at_250_w() {
+        // The rider already makes 260 W: the soft start writes 250 W six times, 1 s apart.
+        let plan = Plan {
+            warm_w: 260.0,
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check9, plan, None).await;
+        assert_eq!(report.procedure, Ok(()));
+        let ramp = &erg_targets(&ctl(&sim))[1..7];
+        assert!(ramp.iter().all(|w| (w - 250.0).abs() < 1e-9), "{ramp:?}");
+        let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
+        let from = v["descent_from_s"].as_f64().expect("from");
+        let first = writes(&sim)
+            .iter()
+            .find(|w| w.1 == 49 && w.0 > 0)
+            .expect("ramp")
+            .0;
+        assert!(
+            (from - crate::partb::secs(first + 10 * SEC)).abs() < 0.05,
+            "{v}"
+        );
+        let cue = crate::partb::secs(sim.cue_at(Cue::Descend).expect("cue"));
+        assert!((from..from + 0.2).contains(&cue), "cue at {cue} s: {v}");
+        assert_eq!(v["verdict"], json!(FIRST), "{v}");
+    }
+
     const FIRST: &str = "stall below the release cadence: the release comes first";
     const TOO_LATE: &str = "stall at or above the release cadence: the release comes too late";
 
     /// Ramps, step patterns and step-then-hold riders that follow the cue.
     fn riders() -> Vec<(String, Pattern)> {
-        let mut out = vec![("steps 5 rpm / 10 s".to_string(), Plan::default().descent)];
+        // Faster from 90 rpm, a rider falls more than 15 rpm below the cue before power drops
+        // and departs without a verdict; these follow the cue to 50 rpm (at 80 s) first.
+        const AT_50: u64 = 80_000_000;
+        let leak = |path: Vec<(u64, f64)>| -> Pattern { Pattern::Path(Box::leak(path.into())) };
+        let mut out = vec![
+            ("steps 5 rpm / 10 s".to_string(), Plan::default().descent),
+            (
+                "ramp 0.5 rpm/s".to_string(),
+                leak(vec![(0, 90.0), (180_000_000, 0.0)]),
+            ),
+        ];
         for (rpm, every_us) in [(9.0, 3_050_000), (9.0, 6_000_000), (3.0, 3_000_000)] {
+            let mut path = vec![(0, 90.0), (AT_50, 50.0)];
+            let mut k = 0_u32;
+            while 50.0 - rpm * f64::from(k) > 20.0 {
+                k += 1;
+                let at = AT_50 + u64::from(k) * every_us;
+                path.extend([
+                    (at - 1, 50.0 - rpm * f64::from(k - 1)),
+                    (at, 50.0 - rpm * f64::from(k)),
+                ]);
+            }
             out.push((
-                format!("steps {rpm} rpm / {every_us} us"),
-                Pattern::Steps {
-                    rpm,
-                    every_us,
-                    hold_rpm: 0.0,
-                },
+                format!("cue to 50, steps {rpm} rpm / {every_us} us"),
+                leak(path),
             ));
         }
-        for rate in [0.5, 1.0, 2.0, 2.9, 3.1] {
+        for rate in [1.0, 2.0, 2.9, 3.1] {
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let end = (90.0 / rate * 1e6) as u64;
-            let path: &'static [(u64, f64)] = Box::leak(Box::new([(0, 90.0), (end, 0.0)]));
-            out.push((format!("ramp {rate} rpm/s"), Pattern::Path(path)));
+            let end = AT_50 + (50.0 / rate * 1e6) as u64;
+            out.push((
+                format!("cue to 50, ramp {rate} rpm/s"),
+                leak(vec![(0, 90.0), (AT_50, 50.0), (end, 0.0)]),
+            ));
         }
         for hold in 36_u32..=44 {
             // With the cue down to 6 rpm above, then a 6 rpm step, then hold.
@@ -1110,6 +1271,7 @@ mod tests {
         // above is an unsafe trainer (the release comes too late), above 225 W a safe one.
         // Floors 40-50 rpm in 0.5 rpm steps, and 30 and 35 rpm, where a safe trainer resolves.
         let mut wrong = Vec::new();
+        let mut judged = std::collections::BTreeSet::new();
         let mut verdicts = std::collections::BTreeMap::<String, usize>::new();
         for half in [60_u32, 70].into_iter().chain(80..=100) {
             let floor = f64::from(half) / 2.0;
@@ -1121,9 +1283,18 @@ mod tests {
                     ..Plan::default()
                 };
                 let (sim, report) = run(Procedure::Check9, plan, None).await;
-                let v =
-                    summary(Procedure::Check9, "check9", &report, &sim.records())["result"].clone();
+                let v = summary(
+                    Procedure::Check9,
+                    "check9",
+                    &report,
+                    &sim.records(),
+                    &MEASURED,
+                )["result"]
+                    .clone();
                 let verdict = v["verdict"].as_str().unwrap_or("no verdict").to_string();
+                if unsafe_trainer && !v["verdict"].is_null() {
+                    judged.insert(name.clone());
+                }
                 *verdicts
                     .entry(verdict.split(':').next().unwrap_or("").to_string())
                     .or_default() += 1;
@@ -1136,7 +1307,9 @@ mod tests {
                 }
             }
         }
-        // Not vacuous: the sweep resolves both ways somewhere.
+        // Not vacuous: every rider is judged on an unsafe trainer, and the sweep resolves both
+        // ways somewhere.
+        assert_eq!(judged.len(), riders().len(), "{judged:?}");
         assert!(
             verdicts.contains_key("stall below the release cadence")
                 && verdicts.contains_key("stall at or above the release cadence"),
@@ -1161,7 +1334,14 @@ mod tests {
                 ..Plan::default()
             };
             let (sim, report) = run(Procedure::Check9, plan, None).await;
-            let v = summary(Procedure::Check9, "check9", &report, &sim.records())["result"].clone();
+            let v = summary(
+                Procedure::Check9,
+                "check9",
+                &report,
+                &sim.records(),
+                &MEASURED,
+            )["result"]
+                .clone();
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let end = (v["descent_detail"]["onset_s"].as_f64().expect("onset") * 1e6) as u64;
             let mut offset = 0;
@@ -1172,8 +1352,14 @@ mod tests {
                     ..Plan::default()
                 };
                 let (sim, report) = run(Procedure::Check9, plan, None).await;
-                let v =
-                    summary(Procedure::Check9, "check9", &report, &sim.records())["result"].clone();
+                let v = summary(
+                    Procedure::Check9,
+                    "check9",
+                    &report,
+                    &sim.records(),
+                    &MEASURED,
+                )["result"]
+                    .clone();
                 assert!(
                     matches!(&report.procedure, Err(Stop::Aborted(_))) && v["verdict"].is_null(),
                     "floor {floor}, stop at cue + {offset} us: {report:?} {}",
@@ -1437,7 +1623,7 @@ mod tests {
         // A capture without an outcome line (killed run, older capture) is no result either.
         let (sim, report) = run(Procedure::Check7, Plan::default(), None).await;
         assert_eq!(report.procedure, Ok(()));
-        let v = analyse("check7", &sim.records(), None).expect("part B stem");
+        let v = analyse("check7", &sim.records(), None, &MEASURED).expect("part B stem");
         assert_eq!(v["held"], Value::Null, "{v}");
         assert!(v["line"].as_str().expect("line").contains("no result"));
     }
