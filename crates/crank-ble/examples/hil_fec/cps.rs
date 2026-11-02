@@ -424,4 +424,37 @@ mod tests {
             "{v}"
         );
     }
+
+    #[test]
+    fn a_cadence_beyond_1_rpm_disagrees_and_within_it_agrees() {
+        let (records, _) = ride(250_000, 0, 60);
+        // One notification per revolution at `rpm`; the event time follows from the revolutions.
+        let at_rpm = |rpm: f64| -> Vec<Cps> {
+            (0..)
+                .map(|k| f64::from(k) * 60.0 / rpm)
+                .take_while(|t| *t < 60.0)
+                .enumerate()
+                .map(|(k, t)| {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let (at, ticks) = ((t * 1e6) as u64 + 400_000, (t * 1024.0).round() as u16);
+                    cps(at, 150, u16::try_from(k).expect("fits"), ticks)
+                })
+                .collect()
+        };
+        let verdict = |rpm| check5(&records, &at_rpm(rpm))["verdict"].clone();
+        assert_eq!(verdict(90.0), "agree");
+        assert_eq!(verdict(89.2), "agree", "within 1 rpm");
+        let off = verdict(75.0);
+        assert!(
+            off.as_str()
+                .is_some_and(|x| x.starts_with("disagree: cadence: 15")),
+            "{off}"
+        );
+        let off = verdict(88.0);
+        assert!(
+            off.as_str()
+                .is_some_and(|x| x.starts_with("disagree: cadence: 2")),
+            "{off}"
+        );
+    }
 }
