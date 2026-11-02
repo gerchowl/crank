@@ -1,4 +1,5 @@
-//! The Part B control checks with a rider on the trainer (#44 checks 6, 7, 8, 9, 12; #412).
+//! The Part B control checks with a rider on the trainer (#44 checks 6, 7, 8, 9, 12; #412), and
+//! check 10, which holds the link while the operator tries a second central.
 //!
 //! Safety (ADR-0002 §7): every run connects into page 48 at 0 %, the release state; ERG is
 //! engaged as the engine does at a ride start (§7.5: 0 W until the first sample with cadence,
@@ -9,7 +10,7 @@
 //! (completion, a guard, an error, a panic, SIGINT/SIGTERM/SIGHUP) the trainer is
 //! released with page 48 at 0 %, the ride-end mode of §7.9, before the link is closed.
 use crate::{
-    frames::{Cps, Record, page_of},
+    frames::{Cps, Note, Record, page_of},
     partb::{Descent, STALL_FLOOR_RPM, Sample},
     session::Session,
 };
@@ -19,7 +20,7 @@ use crank_engine::{
     ticks::TICKS_PER_SECOND,
 };
 use crank_fec::{ControlPage, encode};
-use futures_util::FutureExt;
+use futures_util::{FutureExt, StreamExt, stream::BoxStream};
 use serde_json::{Value, json};
 use std::{future::Future, panic::AssertUnwindSafe, time::Duration};
 use tokio::time::{Instant, sleep};
@@ -64,6 +65,11 @@ pub trait Wire {
     fn records(&self) -> Vec<Record>;
     /// Every Cycling Power notification so far (check 5), on the capture time base.
     fn cps(&self) -> Vec<Cps>;
+    /// Append a tagged comment line to the capture (`Capture::record_aux`); its error, if any.
+    fn note(&self, tag: &str, bytes: &[u8]) -> Option<String>;
+    /// A scan running beside the connection: one item per advertisement, `true` for this
+    /// trainer's; the stream ends when the scan stops by itself, dropping it stops the scan.
+    fn adverts(&self) -> BoxStream<'static, bool>;
 }
 
 impl Wire for Session {
@@ -99,6 +105,15 @@ impl Wire for Session {
             .map(|t| crate::frames::parse_cps(&t))
             .unwrap_or_default()
     }
+    fn note(&self, tag: &str, bytes: &[u8]) -> Option<String> {
+        self.capture
+            .record_aux(crank_devices::Clock::now(&*self.clock), tag, bytes)
+            .err()
+            .map(|e| e.to_string())
+    }
+    fn adverts(&self) -> BoxStream<'static, bool> {
+        Session::adverts(self)
+    }
 }
 
 /// An instruction to the rider; the agent relays it.
@@ -112,6 +127,8 @@ pub enum Cue {
     Descend,
     /// SIM: steady, comfortable effort.
     Steady,
+    /// Check 10: stay off the pedals and try the phone as a second central.
+    Phone,
     /// The run is over and the trainer released.
     Stop,
 }
@@ -129,6 +146,7 @@ impl Cue {
                 "easy gear, steady comfortable effort; shift down when it gets steep, never strain"
                     .into()
             }
+            Self::Phone => "stay off the pedals; on your phone open the Tacx app, look for the NEO and try to connect to it, then answer the questions here".into(),
             Self::Stop => "done: trainer released (0 % resistance), stop pedalling".into(),
         }
     }
@@ -140,6 +158,12 @@ pub trait Operator {
     fn cue(&self, at_us: u64, cue: Cue);
     /// Ask to start; `false` (refused, no answer, closed input) runs nothing.
     fn confirm(&self, text: &str) -> impl Future<Output = bool>;
+    /// Ask `question` until the answer is one of `options`; `None` when the input closes.
+    fn ask(
+        &self,
+        question: &str,
+        options: &'static [&'static str],
+    ) -> impl Future<Output = Option<&'static str>>;
 }
 
 /// Prompts on stdout, confirmation on stdin.
@@ -192,6 +216,24 @@ impl Operator for Console {
             .recv()
             .await
             .is_some_and(|l| matches!(l.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+    }
+    async fn ask(&self, question: &str, options: &'static [&'static str]) -> Option<&'static str> {
+        let choices = options.join(" / ");
+        say(&format!(
+            "QUESTION: {question}\nType one of {choices} and Enter."
+        ));
+        let mut lines = self.0.lock().await;
+        loop {
+            let line = lines.recv().await?;
+            let typed = line.trim().to_ascii_lowercase();
+            if let Some(o) = options.iter().find(|o| **o == typed) {
+                return Some(o);
+            }
+            say(&format!(
+                "{:?} is not an answer; type one of {choices}",
+                line.trim()
+            ));
+        }
     }
 }
 
@@ -421,6 +463,50 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
         sleep(Duration::from_millis(300)).await;
         Ok(())
     }
+
+    fn note(&self, tag: &str, bytes: &[u8]) -> Result<(), Stop> {
+        self.w
+            .note(tag, bytes)
+            .map_or(Ok(()), |e| Err(Stop::Failed(format!("capture: {e}"))))
+    }
+
+    /// Await `fut` until `until`, recording `scan`'s advertisements and running the guard every
+    /// [`POLL`] meanwhile (on a fixed tick, so a busy scan cannot starve it); `None` at `until`.
+    async fn during<T>(
+        &mut self,
+        scan: &mut Option<BoxStream<'static, bool>>,
+        until: Instant,
+        fut: impl Future<Output = T>,
+    ) -> Result<Option<T>, Stop> {
+        use crate::check10::{ADV, ENDED, SCAN};
+        tokio::pin!(fut);
+        let mut tick = tokio::time::interval(POLL);
+        loop {
+            let next = async {
+                match scan.as_mut() {
+                    Some(s) => s.next().await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                v = &mut fut => return Ok(Some(v)),
+                ad = next => {
+                    if let Some(mine) = ad {
+                        self.note(ADV, &[u8::from(mine)])?;
+                    } else {
+                        *scan = None;
+                        self.note(SCAN, &[ENDED])?;
+                    }
+                }
+                _ = tick.tick() => {
+                    self.observe()?;
+                    if Instant::now() >= until {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// #44 check 5: a ride at two ERG targets, 150 W then 200 W at 90 rpm, 30 s each, while the
@@ -538,6 +624,52 @@ async fn check12<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop
     Ok(())
 }
 
+/// #44 check 10: hold the link at the release state, with no rider, while the operator tries to
+/// connect the phone (a second central) and answers [`crate::check10::QUESTIONS`]; a scan beside
+/// the connection records whether the trainer still advertises. The window lasts at least
+/// [`crate::check10::MIN_WINDOW`]; the answers must be in within [`crate::check10::ANSWER_WAIT`].
+async fn check10<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
+    use crate::check10::{
+        ANSWER_WAIT, CLOSE, MIN_WINDOW, OPEN, QUESTIONS, SCAN, WINDOW, answer_tag,
+    };
+    let lost = |e: Stop| match e {
+        Stop::Failed(why) if why == "link dropped" => Stop::Failed(
+            "link dropped while the phone was trying to connect (second central)".into(),
+        ),
+        e => e,
+    };
+    r.guard = Guard::Sim;
+    let start = Instant::now();
+    r.note(WINDOW, &[OPEN])?;
+    let mut scan = Some(r.w.adverts());
+    r.note(SCAN, &[OPEN])?;
+    r.cue(Cue::Phone);
+    let op = r.op;
+    for (key, question, options) in QUESTIONS {
+        let answer = r
+            .during(&mut scan, start + ANSWER_WAIT, op.ask(question, options))
+            .await
+            .map_err(lost)?
+            .ok_or_else(|| {
+                Stop::Aborted(format!(
+                    "no answer to {question:?} within {} s",
+                    ANSWER_WAIT.as_secs()
+                ))
+            })?
+            .ok_or_else(|| {
+                Stop::Aborted(format!("the input closed before an answer to {question:?}"))
+            })?;
+        r.note(&answer_tag(key), answer.as_bytes())?;
+    }
+    r.during(&mut scan, start + MIN_WINDOW, std::future::pending::<()>())
+        .await
+        .map_err(lost)?;
+    if scan.take().is_some() {
+        r.note(SCAN, &[CLOSE])?;
+    }
+    r.note(WINDOW, &[CLOSE])
+}
+
 /// The Part B control checks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Procedure {
@@ -551,6 +683,8 @@ pub enum Procedure {
     Check8,
     /// #44 check 9.
     Check9,
+    /// #44 check 10.
+    Check10,
     /// #44 check 12.
     Check12,
 }
@@ -573,6 +707,9 @@ impl Procedure {
             }
             Self::Check9 => {
                 "page 48 0 %; soft start to 250 W; 10 s at 90 rpm; cue to lower cadence 5 rpm per 10 s; end when power stays below 90 % for 2 s while the cadence follows the cue, or at the first sample below 25 rpm; abort when the cadence leaves the cue (falls > 9 rpm in 3 s, or > 15 rpm above it); release"
+            }
+            Self::Check10 => {
+                "page 48 0 %; no rider; holds the link at least 60 s while the operator tries to connect the phone (a second central) and types two answers (within 180 s); a scan beside the connection records the trainer's advertisements; release"
             }
             Self::Check12 => {
                 "page 48 0 %; soft start to 200 W; 15 s; page 50 defaults, request 71, page 51 0 %, request 71; 10 s at 90 rpm, 15 s at 70 rpm; release"
@@ -634,6 +771,7 @@ pub async fn drive<W: Wire, O: Operator>(
             Procedure::Check7 => check7(&mut r).await,
             Procedure::Check8 => check8(&mut r).await,
             Procedure::Check9 => check9(&mut r).await,
+            Procedure::Check10 => check10(&mut r).await,
             Procedure::Check12 => check12(&mut r).await,
         }
     };
@@ -701,6 +839,7 @@ pub fn summary(
     report: &Report,
     records: &[Record],
     cps: &[Cps],
+    notes: &[Note],
     lag: &crate::partb::PowerLag,
 ) -> Value {
     let outcome = outcome(&report.procedure);
@@ -711,8 +850,8 @@ pub fn summary(
         "release_write_error": report.release_error,
         "page71_frames": records.iter().filter(|r| r.rx && page_of(&r.bytes) == Some(71)).count(),
     });
-    v["result"] =
-        crate::partb::analyse(stem, records, cps, Some(&outcome), lag).unwrap_or(Value::Null);
+    v["result"] = crate::partb::analyse(stem, records, cps, notes, Some(&outcome), lag)
+        .unwrap_or(Value::Null);
     v
 }
 
@@ -720,7 +859,7 @@ pub fn summary(
 mod tests {
     use super::*;
     use crate::{
-        frames::{CPS_TAG, hex, parse_capture, parse_cps},
+        frames::{CPS_TAG, hex, parse_capture, parse_cps, parse_notes},
         partb::{Control, FINISHED, MAX_T90_US, OUTCOME, PowerLag, analyse, controls, outcome_in},
         sim::{Pattern, Plan, Sim},
     };
@@ -844,6 +983,9 @@ mod tests {
         for c in sim.cps() {
             let _ = writeln!(text, "{CPS_TAG}{} {}", c.at_us, hex(&c.bytes));
         }
+        for n in sim.notes() {
+            let _ = writeln!(text, "# {} {} {}", n.tag, n.at_us, hex(&n.bytes));
+        }
         let _ = writeln!(text, "{OUTCOME}{}", outcome(&report.procedure));
         let _ = writeln!(text, "{FINISHED}{SESSION_START_S}");
         text
@@ -868,12 +1010,22 @@ mod tests {
         stem: &str,
         lag: &PowerLag,
     ) -> Value {
-        let live = summary(p, stem, report, &sim.records(), &sim.cps(), lag)["result"].clone();
+        let live = summary(
+            p,
+            stem,
+            report,
+            &sim.records(),
+            &sim.cps(),
+            &sim.notes(),
+            lag,
+        )["result"]
+            .clone();
         let text = fecap(sim, report);
         let offline = analyse(
             stem,
             &parse_capture(&text),
             &parse_cps(&text),
+            &parse_notes(&text),
             outcome_in(&text).as_deref(),
             lag,
         )
@@ -1048,7 +1200,7 @@ mod tests {
         let released = crate::partb::secs(release_at(&sim));
         assert!((at..=at + 0.25).contains(&released), "{released} {v}");
         // Without the outcome line (a killed run) the same capture gives no verdict.
-        let v = analyse("check9", &sim.records(), &[], None, &MEASURED).expect("part B stem");
+        let v = analyse("check9", &sim.records(), &[], &[], None, &MEASURED).expect("part B stem");
         assert_eq!(v["verdict"], Value::Null, "{v}");
     }
 
@@ -1353,6 +1505,7 @@ mod tests {
                     &report,
                     &sim.records(),
                     &[],
+                    &[],
                     &MEASURED,
                 )["result"]
                     .clone();
@@ -1405,6 +1558,7 @@ mod tests {
                 &report,
                 &sim.records(),
                 &[],
+                &[],
                 &MEASURED,
             )["result"]
                 .clone();
@@ -1423,6 +1577,7 @@ mod tests {
                     "check9",
                     &report,
                     &sim.records(),
+                    &[],
                     &[],
                     &MEASURED,
                 )["result"]
@@ -1690,7 +1845,7 @@ mod tests {
         // A capture without an outcome line (killed run, older capture) is no result either.
         let (sim, report) = run(Procedure::Check7, Plan::default(), None).await;
         assert_eq!(report.procedure, Ok(()));
-        let v = analyse("check7", &sim.records(), &[], None, &MEASURED).expect("part B stem");
+        let v = analyse("check7", &sim.records(), &[], &[], None, &MEASURED).expect("part B stem");
         assert_eq!(v["held"], Value::Null, "{v}");
         assert!(v["line"].as_str().expect("line").contains("no result"));
     }
@@ -1805,6 +1960,270 @@ mod tests {
         assert!(
             w[w.len() - 2].0 <= 32_200_000,
             "released 2 s into the silence, {w:?}"
+        );
+    }
+
+    /// Check 10's events in the capture, adverts left out: `(tag, payload)`.
+    fn check10_events(sim: &Sim) -> Vec<(String, Vec<u8>)> {
+        sim.notes()
+            .into_iter()
+            .filter(|n| n.tag != crate::check10::ADV)
+            .map(|n| (n.tag, n.bytes))
+            .collect()
+    }
+
+    fn event_at(sim: &Sim, tag: &str, code: u8) -> u64 {
+        sim.notes()
+            .iter()
+            .find(|n| n.tag == tag && n.bytes == [code])
+            .expect("event")
+            .at_us
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check10_holds_the_link_records_the_answers_and_releases() {
+        use crate::check10::{CLOSE, OPEN, WINDOW};
+        let (sim, report) = run(Procedure::Check10, Plan::default(), None).await;
+        assert_eq!(report.procedure, Ok(()));
+        assert_released(&sim, &report);
+        assert_eq!(
+            ctl(&sim),
+            [Control::Resistance(0.0), Control::Resistance(0.0)],
+            "nothing but the release state"
+        );
+        assert_eq!(sim.cues(), [Cue::Phone, Cue::Stop]);
+        let e = |t: &str, b: &[u8]| (t.to_string(), b.to_vec());
+        assert_eq!(
+            check10_events(&sim),
+            [
+                e("check10", &[1]),
+                e("scan", &[1]),
+                e("answer-listed", b"seen"),
+                e("answer-connect", b"stuck"),
+                e("scan", &[2]),
+                e("check10", &[2]),
+            ]
+        );
+        // Answered at 20 s; the window still lasts its 60 s.
+        let open = event_at(&sim, WINDOW, OPEN);
+        let close = event_at(&sim, WINDOW, CLOSE);
+        assert!(
+            (60 * SEC..60 * SEC + 200_000).contains(&(close - open)),
+            "{open} {close}"
+        );
+        let v = reanalysed(&sim, &report, Procedure::Check10, "check10");
+        assert_eq!(
+            v["second_central"],
+            json!("refused: the phone's connect never completed")
+        );
+        let adv = v["advertising"].as_str().expect("advertising");
+        assert!(
+            adv.starts_with("continues: the scan saw 6")
+                && adv.ends_with("longest gap 1 s; the phone: seen"),
+            "{v}"
+        );
+        assert_eq!(v["link"], json!("held"));
+        assert!(
+            v["line"].as_str().expect("line").starts_with(
+                "| 10 | Second central (phone) while connected | second central refused"
+            ),
+            "{v}"
+        );
+        // A killed run (no outcome line) gives neither verdict.
+        let v = analyse(
+            "check10",
+            &sim.records(),
+            &[],
+            &sim.notes(),
+            None,
+            &MEASURED,
+        )
+        .expect("part B stem");
+        assert_eq!(
+            (&v["verdict"], &v["advertising"], &v["second_central"]),
+            (&Value::Null, &Value::Null, &Value::Null)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check10_answers_after_180_s_or_closed_input_abort_with_no_verdict() {
+        for (plan, why) in [
+            (
+                Plan {
+                    answer_at_us: 181 * SEC,
+                    ..Plan::default()
+                },
+                "within 180 s",
+            ),
+            (
+                Plan {
+                    answers: &["seen"],
+                    ..Plan::default()
+                },
+                "the input closed before an answer to \"Try to connect",
+            ),
+        ] {
+            let (sim, report) = bounded(Procedure::Check10, plan).await;
+            let report = report.expect("drive returns");
+            assert!(
+                matches!(&report.procedure, Err(Stop::Aborted(w)) if w.contains(why)),
+                "{why}: {report:?}"
+            );
+            assert_released(&sim, &report);
+            let v = reanalysed(&sim, &report, Procedure::Check10, "check10");
+            assert_eq!(
+                (&v["verdict"], &v["advertising"], &v["second_central"]),
+                (&Value::Null, &Value::Null, &Value::Null),
+                "{why}: {v}"
+            );
+            assert!(
+                v["line"]
+                    .as_str()
+                    .expect("line")
+                    .contains("no result: procedure aborted")
+            );
+        }
+        // The 180 s bound counts from the window's start: an answer at 179 s still counts.
+        let plan = Plan {
+            answer_at_us: 179 * SEC,
+            ..Plan::default()
+        };
+        let (_, report) = run(Procedure::Check10, plan, None).await;
+        assert_eq!(report.procedure, Ok(()));
+        let plan = Plan {
+            answer_at_us: 181 * SEC,
+            ..Plan::default()
+        };
+        let (sim, _) = run(Procedure::Check10, plan, None).await;
+        let w = writes(&sim);
+        let released = w[w.len() - 2].0;
+        let open = event_at(&sim, crate::check10::WINDOW, crate::check10::OPEN);
+        assert!(
+            (open + 180 * SEC..=open + 180 * SEC + 200_000).contains(&released),
+            "released at {released} us, window opened at {open} us"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check10_says_what_was_observed_and_unknown_when_nothing_was() {
+        let quiet = Plan {
+            advertisers: crate::sim::Advertisers::Others,
+            ..Plan::default()
+        };
+        for (plan, advertising, second) in [
+            (
+                Plan {
+                    answers: &["unsure", "failed"],
+                    ..quiet
+                },
+                "unknown: the phone's answer is \"unsure\", and the scan saw no advertisement of the trainer (the scan ran over the whole window, 59 of other peripherals;",
+                "refused: the phone's connect failed",
+            ),
+            (
+                Plan {
+                    answers: &["unsure", "not-tried"],
+                    scan_ends_at_us: Some(30 * SEC),
+                    ..quiet
+                },
+                "unknown: the phone's answer is \"unsure\", and the scan saw no advertisement of the trainer (the scan ended by itself at 30 s",
+                "unknown: the phone did not try",
+            ),
+            (
+                Plan {
+                    answers: &["seen", "connected"],
+                    ..quiet
+                },
+                "continues: the phone listed it; the scan saw none (the scan ran over the whole window)",
+                "accepted: the phone connected while hil_fec held the link",
+            ),
+            (
+                Plan {
+                    answers: &["not-seen", "stuck"],
+                    ..quiet
+                },
+                "not seen: the phone did not list it and the scan saw none (the scan ran over the whole window)",
+                "refused: the phone's connect never completed",
+            ),
+            (
+                Plan {
+                    answers: &["not-seen", "stuck"],
+                    ..Plan::default()
+                },
+                "continues: the scan saw 6",
+                "refused: the phone's connect never completed",
+            ),
+        ] {
+            let (sim, report) = run(Procedure::Check10, plan, None).await;
+            assert_eq!(report.procedure, Ok(()));
+            let v = reanalysed(&sim, &report, Procedure::Check10, "check10");
+            assert!(
+                v["advertising"]
+                    .as_str()
+                    .is_some_and(|a| a.starts_with(advertising)),
+                "{advertising}: {v}"
+            );
+            assert_eq!(v["second_central"], json!(second), "{v}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check10_a_dropped_link_fails_with_its_cause_and_no_verdict() {
+        let plan = Plan {
+            drop_at_us: Some(30 * SEC),
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check10, plan, None).await;
+        assert_eq!(
+            report.procedure,
+            Err(Stop::Failed(
+                "link dropped while the phone was trying to connect (second central)".into()
+            ))
+        );
+        assert_eq!(report.release_error.as_deref(), Some("not connected"));
+        let v = reanalysed(&sim, &report, Procedure::Check10, "check10");
+        assert_eq!(v["verdict"], Value::Null, "{v}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check10_the_guards_run_while_waiting_for_an_answer_even_with_a_busy_scan() {
+        // 100 advertisements a second, no answer yet, and the trainer goes silent at 30 s.
+        let plan = Plan {
+            advert_every_us: 10_000,
+            answer_at_us: 150 * SEC,
+            silent_from_us: Some(30 * SEC),
+            ..Plan::default()
+        };
+        let (sim, report) = bounded(Procedure::Check10, plan).await;
+        let report = report.expect("drive returns");
+        assert!(
+            matches!(&report.procedure, Err(Stop::Aborted(w)) if w.contains("no page 25")),
+            "{report:?}"
+        );
+        let w = writes(&sim);
+        assert!(
+            w[w.len() - 2].0 <= 32_500_000,
+            "released 2 s into the silence, {w:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_question_takes_only_an_accepted_answer() {
+        const OPTIONS: &[&str] = &["seen", "not-seen"];
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        for line in ["y", "SEEN maybe", " Not-Seen "] {
+            tx.send(line.to_string()).await.expect("send");
+        }
+        assert_eq!(
+            Console::from_lines(rx).ask("q?", OPTIONS).await,
+            Some("not-seen")
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tx.send("yes".to_string()).await.expect("send");
+        drop(tx);
+        assert_eq!(
+            Console::from_lines(rx).ask("q?", OPTIONS).await,
+            None,
+            "closed input"
         );
     }
 

@@ -3,8 +3,8 @@ use crate::{
     cli::{Args, Check, write_summary},
     frames::{
         Checksum, analysis, build, command_status, distribution, hex, page_of, page_rates,
-        parse_capture, parse_cps, redact_capture, redact_frame, redact_name, request_latencies,
-        with_page_byte,
+        parse_capture, parse_cps, parse_notes, redact_capture, redact_frame, redact_name,
+        request_latencies, with_page_byte,
     },
     partb, rider,
     session::{Exchange, Result, Session, adapter, find_trainer, scan},
@@ -106,6 +106,7 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             | Check::Check7
             | Check::Check8
             | Check::Check9
+            | Check::Check10
             | Check::Check12 => {
                 unreachable!()
             }
@@ -156,6 +157,7 @@ fn procedure_summary(
         report,
         &parse_capture(&text),
         &parse_cps(&text),
+        &parse_notes(&text),
         &lag,
     );
     if let Err(e) = appended {
@@ -201,6 +203,7 @@ fn analyse(args: &Args) -> Result<Outcome> {
         stem,
         &records,
         &cps,
+        &parse_notes(&text),
         partb::outcome_in(&text).as_deref(),
         &lag,
     ) {
@@ -1012,6 +1015,11 @@ mod tests {
         cadence_unavailable_from_us: None,
         serial: Some(OTHER),
         cps: None,
+        advert_every_us: 500_000,
+        advertisers: crate::sim::Advertisers::Both,
+        scan_ends_at_us: None,
+        answers: &[],
+        answer_at_us: 0,
     };
 
     async fn driven(p: Procedure, plan: Plan) -> (Report, Vec<Record>) {
@@ -1479,6 +1487,7 @@ mod tests {
         let v = partb::analyse(
             "check5",
             &Wire::records(&sim),
+            &[],
             &[],
             Some(partb::COMPLETED),
             &partb::PowerLag::NotMeasured(String::new()),
