@@ -7,8 +7,10 @@
 //! stamps every event with its grid time (`start + k·250 ms`), so the output depends
 //! only on the seed, the commands and the fault plan, never on scheduling.
 //!
-//! Observable behaviour follows the FE-C driver in `crank-ble`: a `Sample` and its
-//! page-25 `Observed` per tick, one `Delivered` per mode once all its components are written, a page-71 echo
+//! Observable behaviour follows the FE-C driver in `crank-ble`: one sample per tick, by
+//! default as the NEO interleaves its pages (four page-25 ticks, each a `Sample` with power and
+//! cadence plus its page-25 `Observed`, then one page-16 tick with speed and distance only;
+//! [`SimTelemetry`], #437), one `Delivered` per mode once all its components are written, a page-71 echo
 //! every `T_poll` = 1 s while a controlled mode is active (SIM alternates wind and
 //! track), and `SetRider` on a live link is a protocol fault. A lost link follows the
 //! sequence of the real stack, `Reconnecting<FecTrainer>` (#206, ADR-0002 §6): `Lost`,
@@ -55,6 +57,9 @@ use tokio::sync::mpsc;
 
 const TICK_US: u64 = 250_000;
 const POLL_TICKS: u64 = 4;
+/// [`SimTelemetry::Interleaved`]: tick `k` is a page-16 tick when `k % PAGE_CYCLE_TICKS` is
+/// the last of the cycle.
+const PAGE_CYCLE_TICKS: u64 = 5;
 /// Cadence below which an ERG target spirals (ADR-0002 §7.4 release threshold), rpm.
 pub const SPIRAL_ONSET_RPM: f64 = 40.0;
 const DIP: Duration = Duration::from_secs(4);
@@ -142,6 +147,19 @@ pub enum SimFault {
     },
 }
 
+/// Which FE-C pages the simulated trainer's samples stand for (#437).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SimTelemetry {
+    /// As the NEO sends them: in every five ticks, four page-25 samples (power, cadence,
+    /// accumulated power, event count, status, target limit) and then one page-16 sample
+    /// (speed, distance). The HIL captures of #44 Part A show about 3.8 page-25 frames per
+    /// page-16 frame (`docs/hil/captures/latency.fecap`: 916 to 242).
+    #[default]
+    Interleaved,
+    /// Every field in every sample, one per tick: no real trainer does this.
+    Combined,
+}
+
 /// Simulator configuration.
 #[derive(Clone, Debug)]
 pub struct SimConfig {
@@ -156,6 +174,8 @@ pub struct SimConfig {
     /// Faults to inject. Overlapping [`SimFault::Dropout`]s (and overlapping
     /// [`SimFault::HrLoss`]es) are merged into one outage when the rig is built.
     pub faults: Vec<SimFault>,
+    /// Page layout of the trainer samples.
+    pub telemetry: SimTelemetry,
 }
 impl Default for SimConfig {
     fn default() -> Self {
@@ -175,6 +195,7 @@ impl Default for SimConfig {
                 max_target_w: 16383,
             },
             faults: Vec::new(),
+            telemetry: SimTelemetry::default(),
         }
     }
 }
@@ -280,6 +301,8 @@ struct TrainerSide {
     pending: Vec<TrainerCommand>,
     was_down: bool,
     acc_power: u32,
+    /// Page-25 event counter, wrapping at 256.
+    events: u8,
     dip_until: Option<u64>,
     spiral_basis: Option<f64>,
     spiral_done: bool,
@@ -523,11 +546,16 @@ impl World {
             }
             if !down && self.trainer.was_down {
                 // the trainer fell back to standalone: the engine must re-issue SetMode
-                let (tx, acc) = (self.trainer.tx.take(), self.trainer.acc_power);
+                let (tx, acc, events) = (
+                    self.trainer.tx.take(),
+                    self.trainer.acc_power,
+                    self.trainer.events,
+                );
                 self.trainer = TrainerSide {
                     generation: self.trainer.generation,
                     tx,
                     acc_power: acc,
+                    events,
                     ..TrainerSide::default()
                 };
                 out.trainer.push(TrainerEvent::Link(LinkState::Connecting));
@@ -562,26 +590,50 @@ impl World {
     ) {
         let rel = k * TICK_US;
         if let (Some(p), Some(c), Some(s)) = (tick.power_w, tick.cadence_rpm, tick.speed_kmh) {
-            let power = core::saturate_u16(p);
-            self.trainer.acc_power = self.trainer.acc_power.wrapping_add(u32::from(power)) & 0xFFFF;
-            out.trainer.push(TrainerEvent::Sample(TrainerSample {
+            let (page25, page16) = match self.cfg.telemetry {
+                SimTelemetry::Combined => (true, true),
+                SimTelemetry::Interleaved => {
+                    let page16 = k % PAGE_CYCLE_TICKS == PAGE_CYCLE_TICKS - 1;
+                    (!page16, page16)
+                }
+            };
+            let mut sample = TrainerSample {
                 at,
-                power_w: Some(power),
-                cadence_rpm: Some(u8::try_from(core::saturate_u16(c).min(254)).unwrap_or(u8::MAX)),
-                speed_mps: Some(to_f32(s / 3.6)),
-                distance_m: Some(to_f32((tick.distance_km * 1000.0) % 256.0)),
-                accumulated_power_w: Some(self.trainer.acc_power),
-                event_count: Some(k.to_le_bytes()[0]),
+                power_w: None,
+                cadence_rpm: None,
+                speed_mps: None,
+                distance_m: None,
+                accumulated_power_w: None,
+                event_count: None,
                 status: TrainerStatus::default(),
-                target_limit,
-            }));
-            out.trainer.push(TrainerEvent::Observed(TrainerObservation {
-                at,
-                source: ObservationSource::Page25Flags,
-                control: None,
-                status: None,
-                target_limit: Some(target_limit),
-            }));
+                target_limit: TargetLimit::Undetermined,
+            };
+            if page16 {
+                sample.speed_mps = Some(to_f32(s / 3.6));
+                sample.distance_m = Some(to_f32((tick.distance_km * 1000.0) % 256.0));
+            }
+            if page25 {
+                let power = core::saturate_u16(p);
+                self.trainer.acc_power =
+                    self.trainer.acc_power.wrapping_add(u32::from(power)) & 0xFFFF;
+                self.trainer.events = self.trainer.events.wrapping_add(1);
+                sample.power_w = Some(power);
+                sample.cadence_rpm =
+                    Some(u8::try_from(core::saturate_u16(c).min(254)).unwrap_or(u8::MAX));
+                sample.accumulated_power_w = Some(self.trainer.acc_power);
+                sample.event_count = Some(self.trainer.events);
+                sample.target_limit = target_limit;
+            }
+            out.trainer.push(TrainerEvent::Sample(sample));
+            if page25 {
+                out.trainer.push(TrainerEvent::Observed(TrainerObservation {
+                    at,
+                    source: ObservationSource::Page25Flags,
+                    control: None,
+                    status: None,
+                    target_limit: Some(target_limit),
+                }));
+            }
         }
         if self.trainer.poll_next.is_some_and(|due| k >= due) {
             self.trainer.poll_next = Some(k + POLL_TICKS);

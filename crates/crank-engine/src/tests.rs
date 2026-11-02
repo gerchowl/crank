@@ -135,16 +135,37 @@ impl Rig {
     pub(crate) fn sample(&self, k: u64, power: u16, cadence: u8) {
         self.sample_opt(k, Some(power), Some(cadence));
     }
+    /// A sample with every field (a page-25 sample that also carries speed, as the combined
+    /// simulator sends) arriving at the start of tick `k`.
     pub(crate) fn sample_opt(&self, k: u64, power: Option<u16>, cadence: Option<u8>) {
+        self.send_sample(k * TICK_US + 1, power, cadence, Some(10.0), Some(0));
+    }
+    /// A page-25 sample (power and cadence, no speed) at the start of tick `k`.
+    pub(crate) fn page25(&self, k: u64, power: Option<u16>, cadence: Option<u8>) {
+        self.send_sample(k * TICK_US + 1, power, cadence, None, Some(0));
+    }
+    /// A page-16 sample (speed only) in tick `k`, after a page-25 sample of the same tick.
+    pub(crate) fn page16(&self, k: u64, speed: f32) {
+        self.send_sample(k * TICK_US + 2, None, None, Some(speed), None);
+    }
+    /// A sample stamped `at` µs on the engine clock.
+    pub(crate) fn send_sample(
+        &self,
+        at: u64,
+        power: Option<u16>,
+        cadence: Option<u8>,
+        speed: Option<f32>,
+        event_count: Option<u8>,
+    ) {
         self.events
             .try_send(TrainerEvent::Sample(TrainerSample {
-                at: MonoTime(k * TICK_US + 1),
+                at: MonoTime(at),
                 power_w: power,
                 cadence_rpm: cadence,
-                speed_mps: Some(10.0),
+                speed_mps: speed,
                 distance_m: None,
                 accumulated_power_w: None,
-                event_count: None,
+                event_count,
                 status: TrainerStatus::default(),
                 target_limit: TargetLimit::AtTarget,
             }))
@@ -1000,19 +1021,8 @@ fn a_pedalling_sample_without_power_ramps_from_zero_and_never_jumps() {
     r.through(9);
     assert_eq!(r.modes(), vec![erg(150), erg(160), erg(0)]);
     for k in 10..40 {
-        r.events
-            .try_send(TrainerEvent::Sample(TrainerSample {
-                at: MonoTime(k * TICK_US + 1),
-                power_w: None,
-                cadence_rpm: Some(80),
-                speed_mps: Some(8.0),
-                distance_m: None,
-                accumulated_power_w: None,
-                event_count: None,
-                status: TrainerStatus::default(),
-                target_limit: TargetLimit::AtTarget,
-            }))
-            .unwrap();
+        // page 25 with power "none" (0xFFF)
+        r.page25(k, None, Some(80));
     }
     r.through(10);
     // origin 0 W (no power in the new epoch), then the normal ramp: 0, 40, ... 200
@@ -1181,13 +1191,17 @@ mod soft_start_property {
     use proptest::prelude::*;
 
     /// One generated step. `Stale` is a sample stamped before a link event that is
-    /// delivered after it was sent (#239 N1): queued, then the link, then the tick.
+    /// delivered after it was sent (#239 N1): queued, then the link, then the tick. A
+    /// page-16 sample carries speed only (#437): `Page16` is a tick with nothing else, and a
+    /// `Sample` with `page16` is followed by one in the same tick.
     #[derive(Clone, Debug)]
     enum Op {
         Sample {
             power: Option<u16>,
             cadence: Option<u8>,
+            page16: bool,
         },
+        Page16,
         Stale {
             link: u8,
             power: Option<u16>,
@@ -1216,8 +1230,9 @@ mod soft_start_property {
         ];
         let power = prop::option::weighted(0.8, 0_u16..=400);
         prop_oneof![
-            6 => (power.clone(), cadence.clone())
-                .prop_map(|(power, cadence)| Op::Sample { power, cadence }),
+            6 => (power.clone(), cadence.clone(), any::<bool>())
+                .prop_map(|(power, cadence, page16)| Op::Sample { power, cadence, page16 }),
+            2 => Just(Op::Page16),
             2 => (0_u8..3, power, cadence)
                 .prop_map(|(link, power, cadence)| Op::Stale { link, power, cadence }),
             1 => (40_u8..180).prop_map(Op::Hr),
@@ -1355,10 +1370,11 @@ mod soft_start_property {
             self.ready = state == LinkState::Ready;
             self.new_epoch();
         }
+        /// Each field is held on its own (#437): the last real cadence, for 4 ticks.
         fn held_cadence(&self, k: u64) -> Option<u8> {
             self.epoch
                 .iter()
-                .filter(|(j, ..)| *j <= k && k - j <= 4)
+                .filter(|(j, _, c)| c.is_some() && *j <= k && k - j <= 4)
                 .max_by_key(|(j, ..)| *j)
                 .and_then(|(_, _, c)| *c)
         }
@@ -1561,7 +1577,9 @@ mod soft_start_property {
         cap: Option<u16>,
         ready: bool,
         applied: Option<ControlMode>,
-        hold: Option<(u64, Option<u16>, Option<u8>)>,
+        /// The last real power and cadence, each with its tick (#437).
+        power_hold: Option<(u64, u16)>,
+        cadence_hold: Option<(u64, u8)>,
         powers: Vec<(u64, u16)>,
         pedalled: bool,
         silent: u32,
@@ -1600,7 +1618,8 @@ mod soft_start_property {
                 cap,
                 ready: true,
                 applied: None,
-                hold: None,
+                power_hold: None,
+                cadence_hold: None,
                 powers: vec![],
                 // a ride start is a reconnect (#250): no torque before a pedalling sample
                 pedalled: false,
@@ -1622,7 +1641,8 @@ mod soft_start_property {
         /// An applied link transition, or 8 silent ticks: the old link is forgotten.
         fn epoch(&mut self) {
             self.applied = None;
-            self.hold = None;
+            self.power_hold = None;
+            self.cadence_hold = None;
             self.powers.clear();
             self.pedalled = false;
             self.low = 0;
@@ -1664,9 +1684,12 @@ mod soft_start_property {
             self.now = Some(k);
             if let Some((power, cadence)) = sample {
                 self.silent = 0;
-                self.hold = Some((k, power, cadence));
                 if let Some(p) = power {
+                    self.power_hold = Some((k, p));
                     self.powers.push((k, p));
+                }
+                if let Some(c) = cadence {
+                    self.cadence_hold = Some((k, c));
                 }
                 if cadence.is_some_and(|c| c > 0) {
                     self.pedalled = true;
@@ -1677,10 +1700,14 @@ mod soft_start_property {
                     self.epoch();
                 }
             }
-            let held = self.hold.filter(|(j, ..)| k - j <= 4);
-            let cadence = held.and_then(|(_, _, c)| c).unwrap_or(0);
+            let power = self.power_hold.filter(|(j, _)| k - j <= 4).map(|(_, p)| p);
+            let held = self
+                .cadence_hold
+                .filter(|(j, _)| k - j <= 4)
+                .map(|(_, c)| c);
+            let cadence = held.unwrap_or(0);
             // auto-pause (ADR-0001 §5): 3 s of held power 0 and cadence 0
-            if held.is_some_and(|(_, p, c)| p == Some(0) && c == Some(0)) {
+            if power == Some(0) && held == Some(0) {
                 self.zero_run += 1;
             } else {
                 self.zero_run = 0;
@@ -1920,10 +1947,22 @@ mod soft_start_property {
             let mut over = false;
             for op in ops {
                 match op {
-                    Op::Sample { power, cadence } => {
-                        r.sample_opt(k, *power, *cadence);
+                    Op::Sample {
+                        power,
+                        cadence,
+                        page16,
+                    } => {
+                        r.page25(k, *power, *cadence);
+                        if *page16 {
+                            r.page16(k, 8.0);
+                        }
                         m.sample(k, *power, *cadence);
                         step(&mut r, &mut m, &mut mon, &mut k, Some((*power, *cadence)))?;
+                    }
+                    // no page 25 in the tick: it counts towards the silence
+                    Op::Page16 => {
+                        r.page16(k, 8.0);
+                        step(&mut r, &mut m, &mut mon, &mut k, None)?;
                     }
                     Op::Ride {
                         ticks,
@@ -1931,6 +1970,12 @@ mod soft_start_property {
                         cadence,
                     } => {
                         for _ in 0..*ticks {
+                            // the NEO's page order: page 16 instead of page 25 on one tick in five
+                            if k % 5 == 4 {
+                                r.page16(k, 8.0);
+                                step(&mut r, &mut m, &mut mon, &mut k, None)?;
+                                continue;
+                            }
                             r.sample(k, *power, *cadence);
                             m.sample(k, Some(*power), Some(*cadence));
                             step(

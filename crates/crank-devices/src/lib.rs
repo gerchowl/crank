@@ -204,6 +204,12 @@ pub enum LinkState {
     Lost,
 }
 /// Raw telemetry; the engine unwraps counters and fills gaps (ADR-0002 §5).
+///
+/// A sample is one notification: FE-C page 25 (power, cadence, accumulated power, event
+/// count, status, target limit) or page 16 (speed, distance), never both on a real trainer.
+/// A field the page does not carry is `None` and means "not in this sample", never "zero";
+/// on a page-16 sample `status` and `target_limit` are their defaults and carry nothing. The
+/// engine holds each field on its own (#437).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrainerSample {
     /// Notification arrival time.
@@ -218,7 +224,9 @@ pub struct TrainerSample {
     pub distance_m: Option<f32>,
     /// Raw page-25 counter, wrapping at 65536 W.
     pub accumulated_power_w: Option<u32>,
-    /// Raw page-25 event counter, wrapping at 256.
+    /// Raw page-25 event counter, wrapping at 256. `Some` exactly on samples that carry
+    /// page-25 data (the counter is a mandatory byte of page 25): the engine's 2 s silence
+    /// rule (ADR-0002 §6) counts these samples only.
     pub event_count: Option<u8>,
     /// Calibration/configuration flags.
     pub status: TrainerStatus,
