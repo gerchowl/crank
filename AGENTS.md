@@ -69,7 +69,7 @@ identity (by its SHA-1, the identity the requirement check verifies) and swaps i
 and the recipe is macOS-only, so on Linux the script skips with a message. `just bundle` reads the
 identity's SHA-1 from the keychain at run time, never creates or changes identities, and uses no
 hardened runtime or App Sandbox (library validation rejects the unsigned nix-store dylibs;
-distribution signing is #47). `just e2e` (`scripts/e2e.sh`, ADR-0001 §8.3.1) builds `.#crank-desktop-e2e` and runs the WebdriverIO specs of
+distribution signing is #47). The bundle must not depend on the Nix store at runtime (#413): the `crank-app` derivation points the Darwin stdenv's libiconv load command at the system `/usr/lib/libiconv.2.dylib` (`install_name_tool`, then an ad-hoc re-sign, all before `just bundle` signs), and the `bundle-no-nix-store` flake check (aarch64-darwin, `scripts/check-bundle-no-nix-store.sh <crank.app>`, also runnable by hand on an installed app) fails if `otool` shows `/nix/store` in a load command or rpath of any Mach-O in the bundle. A new native dependency must be linked from the system or bundled under Contents/Frameworks, never left on a store path. `just e2e` (`scripts/e2e.sh`, ADR-0001 §8.3.1) builds `.#crank-desktop-e2e` and runs the WebdriverIO specs of
 `app/e2e/` (in sim mode, scratch data dir per launch) in the GUI session through Alacritty IPC (`CRANK_E2E_DIRECT=1` from a GUI terminal); output goes to the
 gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and compares screenshots across them; on Linux it skips with a message.
 `just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
