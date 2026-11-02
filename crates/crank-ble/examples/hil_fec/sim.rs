@@ -34,6 +34,11 @@ pub struct Plan {
     pub panic_at_us: Option<u64>,
     /// Follows the check-9 cue to lower cadence (otherwise holds 90 rpm).
     pub descends: bool,
+    /// ERG holds the target down to this cadence and collapses in proportion below it
+    /// (0: never collapses).
+    pub erg_floor_rpm: f64,
+    /// Page 25 reports cadence as unavailable (0xFF) from this capture time.
+    pub cadence_unavailable_from_us: Option<u64>,
 }
 
 impl Default for Plan {
@@ -47,6 +52,8 @@ impl Default for Plan {
             silent_from_us: None,
             panic_at_us: None,
             descends: true,
+            erg_floor_rpm: 35.0,
+            cadence_unavailable_from_us: None,
         }
     }
 }
@@ -178,7 +185,10 @@ impl Sim {
         st.cadence += delta;
         let speed = st.cadence * 0.09;
         let follow = match st.applied {
-            Applied::Erg(w) => w * (st.cadence / 35.0).min(1.0),
+            Applied::Erg(w) if self.plan.erg_floor_rpm > 0.0 => {
+                w * (st.cadence / self.plan.erg_floor_rpm).min(1.0)
+            }
+            Applied::Erg(w) => w,
             Applied::Resistance(pct) => st.cadence * (0.5 + pct / 50.0),
             Applied::Sim => {
                 speed * st.mass * 9.81 * (st.grade / 100.0 + 0.004) + 0.51 * speed * speed * speed
@@ -203,7 +213,15 @@ impl Sim {
                 5,
                 25,
                 st.events,
-                st.cadence.round() as u8,
+                if self
+                    .plan
+                    .cadence_unavailable_from_us
+                    .is_some_and(|x| now >= x)
+                {
+                    0xff
+                } else {
+                    st.cadence.round() as u8
+                },
                 acc[0],
                 acc[1],
                 (watts & 0xff) as u8,

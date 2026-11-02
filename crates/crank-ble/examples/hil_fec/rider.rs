@@ -10,7 +10,7 @@
 //! released with page 48 at 0 %, the ride-end mode of §7.9, before the link is closed.
 use crate::{
     frames::{Record, page_of},
-    partb::Sample,
+    partb::{Descent, STALL_FLOOR_RPM, Sample},
     session::Session,
 };
 use crank_engine::{
@@ -28,15 +28,11 @@ use tokio::time::{Instant, sleep};
 pub const MAX_ERG_W: u16 = 250;
 /// Steepest SIM grade any check may command (#44 check 8).
 pub const MAX_GRADE_PCT: f32 = 10.0;
-/// Check 9 stops on the first sample below this cadence (the stall).
-pub const STALL_FLOOR_RPM: u8 = 25;
 const SEC: u64 = 1_000_000;
 /// No page 25 for this long while riding stops the run (ADR-0002 §6: 8 ticks).
 const SILENCE_US: u64 = 2 * SEC;
 /// The rider must start pedalling within this time.
 const START_WAIT: Duration = Duration::from_mins(2);
-/// How long check 9 may descend before it ends on its own.
-const DESCEND_MAX: Duration = Duration::from_mins(3);
 /// Bound on the release write: a stalled GATT write must not hold the exit (ADR-0002 §7.9's 2 s).
 const RELEASE_WAIT: Duration = Duration::from_secs(2);
 /// Bound on a procedure write: unacknowledged this long, the link counts as lost (ADR-0002 §6).
@@ -114,7 +110,7 @@ impl Cue {
             Self::Start => "start pedalling at about 90 rpm".into(),
             Self::Cadence(rpm) => format!("hold about {rpm} rpm, steady"),
             Self::Descend => format!(
-                "lower cadence by about 5 rpm every 10 s; when it gets too hard stop pressing (released below {STALL_FLOOR_RPM} rpm)"
+                "lower cadence smoothly, about 5 rpm every 10 s, and keep turning: the run ends when the trainer lets go or at {STALL_FLOOR_RPM} rpm; stopping early is safe (released) but gives no result"
             ),
             Self::Steady => {
                 "easy gear, steady comfortable effort; shift down when it gets steep, never strain"
@@ -202,8 +198,12 @@ pub enum Stop {
 pub enum Guard {
     /// ERG applied: §7.4 release rule.
     Erg,
-    /// Check 9: end the hold at the first sample below [`STALL_FLOOR_RPM`].
-    Stall,
+    /// Check 9's descent from `from_us` (capture time): [`crate::partb::descent`] ends the
+    /// hold at a stall or the floor and aborts the run when the rider leaves the cue.
+    Descent {
+        /// When the cued descent starts.
+        from_us: u64,
+    },
     /// SIM: no torque target; silence and link only.
     Sim,
 }
@@ -289,14 +289,13 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
         .await
     }
 
-    /// Take new page-25 samples and apply the guard; `Ok(true)` when check 9 stalled.
+    /// Take new page-25 samples and apply the guard; `Ok(true)` when check 9's descent ended.
     fn observe(&mut self) -> Result<bool, Stop> {
         if self.w.dropped() {
             return Err(Stop::Failed("link dropped".into()));
         }
         let fresh = self.w.since(self.seen);
         self.seen += fresh.len();
-        let mut stalled = false;
         for s in crate::partb::samples(&fresh) {
             self.last_sample_us = s.at_us;
             self.recent.push(s);
@@ -315,17 +314,23 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
                         )));
                     }
                 }
-                Guard::Stall => stalled |= s.cadence.is_none_or(|c| c < STALL_FLOOR_RPM),
-                Guard::Sim => {}
+                Guard::Descent { .. } | Guard::Sim => {}
             }
         }
         if self.w.now_us().saturating_sub(self.last_sample_us) > SILENCE_US {
             return Err(Stop::Aborted("no page 25 for 2 s (ADR-0002 §6)".into()));
         }
-        Ok(stalled)
+        let Guard::Descent { from_us } = self.guard else {
+            return Ok(false);
+        };
+        match crate::partb::descent(&self.recent, from_us, f64::from(MAX_ERG_W)) {
+            Descent::Going => Ok(false),
+            Descent::Stalled { .. } | Descent::Floor { .. } => Ok(true),
+            Descent::Departed { why, .. } => Err(Stop::Aborted(why)),
+        }
     }
 
-    /// Ride for `dur` under the guard; returns early (`true`) only on a check-9 stall.
+    /// Ride for `dur` under the guard; returns early (`true`) only when check 9's descent ended.
     async fn hold(&mut self, dur: Duration) -> Result<bool, Stop> {
         let end = Instant::now() + dur;
         while Instant::now() < end {
@@ -459,14 +464,27 @@ async fn check8<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop>
     Ok(())
 }
 
-/// #44 check 9: 250 W ERG while the rider lowers cadence until it stalls.
+/// #44 check 9: 250 W ERG while the rider lowers cadence until the trainer lets go.
+///
+/// The descent has no timer of its own: [`crate::partb::descent`] ends it at a stall or at
+/// the floor, and aborts it once the cadence is 15 rpm above the cue, which falls from 90 rpm
+/// at 0.5 rpm/s; so it ends within 160 s (the cue at 10 rpm, 15 under the floor).
 async fn check9<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
     r.engage(MAX_ERG_W).await?;
+    // The capture stamp of the 250 W write, which `analyse` starts the descent from too.
+    let target_at =
+        r.w.records()
+            .iter()
+            .rev()
+            .find(|x| !x.rx)
+            .map_or_else(|| r.w.now_us(), |x| x.at_us);
     r.cue(Cue::Cadence(90));
     r.hold(Duration::from_secs(10)).await?;
-    r.guard = Guard::Stall;
+    r.guard = Guard::Descent {
+        from_us: target_at + crate::partb::DESCENT_AFTER_US,
+    };
     r.cue(Cue::Descend);
-    r.hold(DESCEND_MAX).await?;
+    while !r.hold(Duration::from_secs(1)).await? {}
     Ok(())
 }
 
@@ -519,7 +537,7 @@ impl Procedure {
                 "page 48 0 %; after cadence: page 55 75+10 kg 708 mm, page 50 defaults, page 51 0 %; 30 s each at 0 %, 5 %, 5 % with page 55 100 kg, 10 % with 75 kg; release"
             }
             Self::Check9 => {
-                "page 48 0 %; soft start to 250 W; 10 s at 90 rpm; cue to lower cadence; stop at the first sample below 25 rpm or after 180 s; release"
+                "page 48 0 %; soft start to 250 W; 10 s at 90 rpm; cue to lower cadence 5 rpm per 10 s; end when power stays below 90 % for 2 s while the cadence follows the cue, or at the first sample below 25 rpm; abort when the cadence leaves the cue (falls > 9 rpm in 3 s, or > 15 rpm above it); release"
             }
             Self::Check12 => {
                 "page 48 0 %; soft start to 200 W; 15 s; page 50 defaults, request 71, page 51 0 %, request 71; 10 s at 90 rpm, 15 s at 70 rpm; release"
@@ -912,8 +930,16 @@ mod tests {
         assert!(seg.iter().all(|s| (0.9..=1.1).contains(&s.2)), "{seg:?}");
     }
 
+    /// Release (page 48) and the page-70 request after it: `(at_us of the release)`.
+    fn release_at(sim: &Sim) -> u64 {
+        let w = writes(sim);
+        assert_eq!(w[w.len() - 2].1, 48, "{w:?}");
+        w[w.len() - 2].0
+    }
+
     #[tokio::test(start_paused = true)]
     async fn check9_descends_to_the_stall_and_releases() {
+        // ERG collapses below 35 rpm while the rider follows the cue: a trainer stall.
         let (sim, report) = run(Procedure::Check9, Plan::default(), None).await;
         assert_eq!(report.procedure, Ok(()));
         assert_released(&sim, &report);
@@ -926,51 +952,197 @@ mod tests {
             [Cue::Start, Cue::Cadence(90), Cue::Descend, Cue::Stop]
         );
         let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
-        // The sim holds 250 W down to 35 rpm and collapses below.
+        assert_eq!(v["descent"], json!("stalled"), "{v}");
+        // The cue steps 35 -> 30 rpm; with the 0.8 s lag power crosses 225 W about 1 s later,
+        // so the second before the drop is all at 30 rpm.
+        assert_eq!(v["descent_detail"]["stall_rpm"], json!([30, 30]), "{v}");
         assert_eq!(v["lowest_followed_rpm"], json!(35));
-        let stall = v["stall_rpm"].as_u64().expect("stalled");
-        assert!((25..35).contains(&stall), "{v}");
         assert_eq!(
             v["verdict"],
             json!("stall below the release cadence: the release comes first")
         );
-        // The hold ends at the first sample below the floor, and the release follows at once.
-        let floor = crate::partb::samples(&sim.records())
-            .into_iter()
-            .find(|s| s.at_us > 10 * SEC && s.cadence.is_some_and(|c| c < STALL_FLOOR_RPM))
-            .expect("a sample below the floor")
-            .at_us;
-        let w = writes(&sim);
-        let release = w[w.len() - 2];
-        assert_eq!(release.1, 48);
-        assert!(
-            (floor..=floor + 200_000).contains(&release.0),
-            "released at {} us, first sample below {STALL_FLOOR_RPM} rpm at {floor} us",
-            release.0
-        );
+        // The hold ends when the stall is confirmed (2 s), and the release follows at once.
+        let at = v["descent_detail"]["at_s"].as_f64().expect("at");
+        let onset = v["descent_detail"]["onset_s"].as_f64().expect("onset");
+        assert!((2.0..2.5).contains(&(at - onset)), "{v}");
+        let released = crate::partb::secs(release_at(&sim));
+        assert!((at..=at + 0.25).contains(&released), "{released} {v}");
+        // Without the outcome line (a killed run) the same capture gives no verdict.
+        let v = analyse("check9", &sim.records(), None).expect("part B stem");
+        assert_eq!(v["verdict"], Value::Null, "{v}");
     }
 
     #[tokio::test(start_paused = true)]
-    async fn check9_ends_after_three_minutes_without_a_stall() {
+    async fn check9_ends_at_25_rpm_when_erg_holds() {
+        // ERG never collapses: the descent ends at the first sample below 25 rpm.
         let plan = Plan {
-            descends: false,
+            erg_floor_rpm: 0.0,
             ..Plan::default()
         };
         let (sim, report) = run(Procedure::Check9, plan, None).await;
         assert_eq!(report.procedure, Ok(()));
         assert_released(&sim, &report);
-        let descend = sim.cue_at(Cue::Descend).expect("descend cue");
-        let w = writes(&sim);
-        let release = w[w.len() - 2].0;
-        // The documented bound (runbook, `what`): 180 s.
-        let limit = 180 * SEC;
+        let below = crate::partb::samples(&sim.records())
+            .into_iter()
+            .find(|s| s.at_us > 30 * SEC && s.cadence.is_some_and(|c| c < 25))
+            .expect("a sample below 25 rpm")
+            .at_us;
+        let released = release_at(&sim);
         assert!(
-            (descend + limit..=descend + limit + 200_000).contains(&release),
-            "released {} us after the cue",
-            release - descend
+            (below..=below + 200_000).contains(&released),
+            "released at {released} us, first sample below 25 rpm at {below} us"
         );
         let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
-        assert_eq!(v["verdict"], json!("no stall before the end of the run"));
+        assert_eq!(v["descent"], json!("floor"), "{v}");
+        assert_eq!(
+            v["verdict"],
+            json!("no stall down to 25 rpm: the release comes first")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check9_aborts_a_rider_who_does_not_descend() {
+        let plan = Plan {
+            descends: false,
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check9, plan, None).await;
+        assert!(
+            matches!(&report.procedure, Err(Stop::Aborted(why)) if why.contains("did not follow the cued descent")),
+            "{report:?}"
+        );
+        assert_released(&sim, &report);
+        // 90 rpm is 15 rpm above the cue 30 s into the descent.
+        let descend = sim.cue_at(Cue::Descend).expect("descend cue");
+        let after = release_at(&sim) - descend;
+        assert!((29_500_000..=30_600_000).contains(&after), "{after} us");
+        let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
+        assert_eq!(
+            (&v["descent"], &v["verdict"]),
+            (&json!("departed"), &Value::Null)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check9_aborts_when_cadence_is_unavailable() {
+        let descend = descend_cue_us().await;
+        let plan = Plan {
+            cadence_unavailable_from_us: Some(descend + 5 * SEC),
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check9, plan, None).await;
+        assert!(
+            matches!(&report.procedure, Err(Stop::Aborted(why)) if why.contains("cadence or power unavailable")),
+            "{report:?}"
+        );
+        assert_released(&sim, &report);
+        assert!(release_at(&sim) < descend + 6 * SEC);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check9_a_rider_who_stops_while_power_falls_is_no_stall() {
+        // ERG lets go below 50 rpm; the rider stops 0.5 s into the power drop, before it has
+        // lasted 2 s: cadence and power fall together, so no stall cadence can be named.
+        let plan = Plan {
+            erg_floor_rpm: 50.0,
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check9, plan, None).await;
+        let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
+        let onset = v["descent_detail"]["onset_s"].as_f64().expect("onset");
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let stop = (onset * 1e6) as u64 + 500_000;
+        let plan = Plan {
+            erg_floor_rpm: 50.0,
+            stop_at_us: Some(stop),
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check9, plan, None).await;
+        assert!(
+            matches!(&report.procedure, Err(Stop::Aborted(why)) if why.contains("fell together")),
+            "{report:?}"
+        );
+        assert_released(&sim, &report);
+        let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
+        assert_eq!(v["verdict"], Value::Null, "{v}");
+    }
+
+    #[test]
+    fn check9_verdict_at_the_release_cadence() {
+        let stall = |lo_rpm, hi_rpm| crate::partb::Descent::Stalled {
+            onset_us: 0,
+            at_us: 0,
+            lo_rpm,
+            hi_rpm,
+        };
+        let verdict = |d| crate::partb::stall_verdict(&d).expect("verdict");
+        // §7.4 releases below 40 rpm: a stall at exactly 40 comes before the release.
+        assert_eq!(
+            verdict(stall(40, 40)),
+            "stall at or above the release cadence: the release comes too late"
+        );
+        assert_eq!(
+            verdict(stall(39, 39)),
+            "stall below the release cadence: the release comes first"
+        );
+        assert!(verdict(stall(38, 42)).starts_with("ambiguous"));
+    }
+
+    /// The Descend cue time of an undisturbed check 9 run (the same in every run until the
+    /// plan diverges).
+    async fn descend_cue_us() -> u64 {
+        let (sim, _) = run(Procedure::Check9, Plan::default(), None).await;
+        sim.cue_at(Cue::Descend).expect("descend cue")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check9_a_rider_who_stops_is_no_stall() {
+        // Falsifier repro (#421): the rider stops abruptly at the cue + 0/1/5/20/60 s, with
+        // ERG collapsing below 35 rpm and below 50 rpm. That is not a trainer stall: the run
+        // is aborted, no verdict, and the trainer is released.
+        let descend = descend_cue_us().await;
+        for floor in [35.0, 50.0] {
+            for offset in [0, 1, 5, 20, 60] {
+                let plan = Plan {
+                    stop_at_us: Some(descend + offset * SEC),
+                    erg_floor_rpm: floor,
+                    ..Plan::default()
+                };
+                let (sim, report) = run(Procedure::Check9, plan, None).await;
+                let case = format!("collapse below {floor} rpm, stop at cue + {offset} s");
+                assert!(
+                    matches!(&report.procedure, Err(Stop::Aborted(why)) if why.contains("rider")),
+                    "{case}: {report:?}"
+                );
+                assert_released(&sim, &report);
+                let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
+                assert_eq!(v["verdict"], Value::Null, "{case}: {v}");
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check9_slow_descent_verdicts() {
+        for (floor, verdict) in [
+            (
+                35.0,
+                "stall below the release cadence: the release comes first",
+            ),
+            (
+                50.0,
+                "stall at or above the release cadence: the release comes too late",
+            ),
+        ] {
+            let plan = Plan {
+                erg_floor_rpm: floor,
+                ..Plan::default()
+            };
+            let (sim, report) = run(Procedure::Check9, plan, None).await;
+            assert_eq!(report.procedure, Ok(()), "{floor}");
+            assert_released(&sim, &report);
+            let v = reanalysed(&sim, &report, Procedure::Check9, "check9");
+            assert_eq!(v["verdict"], json!(verdict), "{floor}: {v}");
+        }
     }
 
     #[tokio::test(start_paused = true)]
