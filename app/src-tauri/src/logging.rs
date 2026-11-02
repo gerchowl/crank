@@ -81,16 +81,30 @@ impl LogPlan {
 }
 
 /// An append-only log file that moves to `<path>.1` (replacing it) when a write would
-/// pass `max` bytes.
+/// pass `max` bytes. If the move fails it keeps appending to the current file (a log that
+/// grows is better than a log that stops) and tells `report` once, never silently.
 struct RotatingFile {
     path: PathBuf,
     max: u64,
     file: File,
     len: u64,
+    report: Box<dyn FnMut(&io::Error) + Send>,
+    reported: bool,
 }
 
 impl RotatingFile {
     fn open(path: PathBuf, max: u64) -> io::Result<Self> {
+        Self::open_reporting(
+            path,
+            max,
+            Box::new(|e| eprintln!("crank: log rotation failed, the log keeps growing: {e}")),
+        )
+    }
+    fn open_reporting(
+        path: PathBuf,
+        max: u64,
+        report: Box<dyn FnMut(&io::Error) + Send>,
+    ) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
@@ -101,6 +115,8 @@ impl RotatingFile {
             max,
             file,
             len,
+            report,
+            reported: false,
         })
     }
     fn rotate(&mut self) -> io::Result<()> {
@@ -118,8 +134,12 @@ impl RotatingFile {
 
 impl Write for RotatingFile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.len > 0 && self.len + buf.len() as u64 > self.max {
-            self.rotate()?;
+        if self.len > 0
+            && self.len + buf.len() as u64 > self.max
+            && let Err(error) = self.rotate()
+            && !std::mem::replace(&mut self.reported, true)
+        {
+            (self.report)(&error);
         }
         let n = self.file.write(buf)?;
         self.len += n as u64;
@@ -164,6 +184,28 @@ mod tests {
                 .filter()
                 .would_enable("crank_ble::driver", &tracing::Level::TRACE)
         );
+    }
+
+    #[test]
+    fn a_rotation_that_fails_is_reported_once_and_the_log_keeps_growing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // `crank.log.1` is a non-empty directory: renaming the log onto it fails.
+        let blocker = dir.path().join("crank.log.1");
+        fs::create_dir_all(blocker.join("x")).expect("dir");
+        let reports = std::sync::Arc::new(Mutex::new(0));
+        let counted = reports.clone();
+        let mut log = RotatingFile::open_reporting(
+            dir.path().join("crank.log"),
+            10,
+            Box::new(move |_| *counted.lock().expect("lock") += 1),
+        )
+        .expect("open");
+        for line in ["aaaaaa\n", "bbbbbb\n", "cccccc\n"] {
+            log.write_all(line.as_bytes()).expect("write");
+        }
+        let all = fs::read_to_string(dir.path().join("crank.log")).expect("read");
+        assert_eq!(all, "aaaaaa\nbbbbbb\ncccccc\n");
+        assert_eq!(*reports.lock().expect("lock"), 1);
     }
 
     #[test]

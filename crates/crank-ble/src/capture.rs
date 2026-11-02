@@ -49,7 +49,8 @@ impl Capture {
         append(&mut state, at, rx, bytes)
     }
     /// Log the first write failure of this capture (and only the first: a full disk would
-    /// fail every frame). The ride goes on without the capture; nothing else tells the
+    /// fail every frame). That is once per capture, hence once per trainer connection (each
+    /// connect, reconnects included, has its own file), not once per process. The ride goes on without the capture; nothing else tells the
     /// rider that the file stopped growing.
     pub(crate) fn warn_failed(&self, error: &dyn std::fmt::Display) {
         if !self.warned.swap(true, Ordering::Relaxed) {
