@@ -328,8 +328,7 @@ mod tests {
             acquire(async { Ok(Recording(sink.clone())) }, dir)
                 .await
                 .unwrap();
-            let seen = sink.lock().unwrap().clone();
-            seen
+            sink.lock().unwrap().clone()
         };
         assert_eq!(
             capturing(Some("/cap".into())).await,
