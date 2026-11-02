@@ -1,0 +1,72 @@
+name: Bug report
+description: Something crank does wrong, or does not do.
+title: "bug: "
+labels: ["bug"]
+
+# The form the in-app "Report a problem" dialog prefills (ADR-0003).
+#
+# The ids below are a contract with `crank_desktop::report::fields`: GitHub drops a prefilled
+# query parameter that names no field, silently, after the reporter has approved the preview.
+# `app/src-tauri/tests/issue_form.rs` fails if this file and those constants disagree.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. If you arrived from the app's "Report a problem" dialog, the fields
+        below are already filled in. Read them before you submit and delete anything you would rather
+        not make public. Nothing has been sent yet.
+
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: What happened
+      description: What does crank do now?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The steps that trigger it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error
+      description: The error code and message the app showed, if any. Filled in when you report from an error banner.
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: App version, build and platform, filled in by the app with identifiers scrubbed. Fill it in by hand otherwise.
+      render: markdown
+    validations:
+      required: false
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >-
+        A redacted log tail. The app keeps it out of the link, because GitHub logs request URLs and a
+        long log would push your own words out of the form. Paste the block the app copied for you.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmation
+      description: Only you can tick these. GitHub cannot prefill a checkbox, and the app must not attest for you.
+      options:
+        - label: I can reproduce this
+          required: true
+        - label: I have read the fields above and am happy for them to be public
+          required: true

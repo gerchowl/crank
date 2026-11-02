@@ -9,6 +9,7 @@ mod config;
 pub mod display;
 pub mod lifecycle;
 pub mod logging;
+pub mod report;
 
 use commands::{
     core_ready, device_forget, device_links, device_pair, devices_scan, open_stream, ride_end,
