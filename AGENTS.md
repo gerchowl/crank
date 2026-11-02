@@ -10,6 +10,9 @@ Use branches `<type>/<issue>-<slug>` and open PRs into `dev`. Before pushing,
 an actual `Refs: #N` trailer. Never push main/dev, bypass hooks, stash, touch
 spike worktrees, or terminate processes you did not start.
 
+Releases (owner only; agents never push or merge `main`) follow [RELEASING.md](RELEASING.md); keep `## Unreleased` in
+[CHANGELOG.md](CHANGELOG.md) current and bump no version by hand (`scripts/release-version.py`, the `release-versions` flake check, #428).
+
 Run everything in `nix develop`; first run `pnpm install --frozen-lockfile`.
 Inner loop (#371): `just test-changed [base=origin/dev]` runs nextest and doctests only for the workspace crates that
 `git diff base...HEAD` (plus the working tree and untracked files) touches and their reverse dependencies
