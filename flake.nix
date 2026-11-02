@@ -15,6 +15,8 @@
       inherit (pkgs) lib;
       toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+      # One version, the workspace's (#428): the derivations below take it, so a release bump cannot leave them behind.
+      version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
       cargoFiles = lib.fileset.difference (craneLib.fileset.commonCargoSources ./.) ./crates/crank-fec/fuzz;
       rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./crates/crank-fec/tests/fixtures ./crates/crank-engine/tests/fixtures ./docs/hil/captures/check4.fecap ./clippy.toml ./.config/nextest.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md
@@ -35,7 +37,7 @@
         fetcherVersion = 4; hash = "sha256-vXa9T4Z10I53+L/3womR+RLALIddxrTrAmFg4L1ZPGk=";
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
-        pname = name; version = "0.1.0"; src = frontendSrc;
+        pname = name; inherit version; src = frontendSrc;
         inherit pnpmDeps;
         nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm_12 pkgs.pnpmConfigHook ];
         buildPhase = command;
@@ -63,7 +65,7 @@
           else drv;
       };
       common = {
-        pname = "crank"; version = "0.1.0"; src = source rustFiles;
+        pname = "crank"; inherit version; src = source rustFiles;
         inherit cargoVendorDir;
         strictDeps = true;
         nativeBuildInputs = [ pkgs.pkg-config ];
@@ -119,7 +121,7 @@
       # The directory name is cargo-deny's hash of the default db URL (see AGENTS.md).
       denyCheck = { pname, src, cargoDenyChecks, policy ? ./deny.toml, manifest ? "Cargo.toml", cargoVendorDir ? null }:
         craneLib.cargoDeny ({
-          inherit pname; version = "0.1.0"; inherit src cargoDenyChecks;
+          inherit pname; inherit version; inherit src cargoDenyChecks;
           cargoDenyExtraArgs = "--offline --manifest-path ${manifest} --config $TMPDIR/deny.toml";
           nativeBuildInputs = [ pkgs.git ];
           preBuild = ''
@@ -136,7 +138,7 @@
         build = desktop "";
         # The e2e package must keep building where CI runs (ADR-0001 §8.3, #35); the harness itself is `just e2e`.
         build-e2e = desktop ",e2e";
-        fmt = craneLib.cargoFmt { pname = "crank"; version = "0.1.0"; src = source cargoFiles; };
+        fmt = craneLib.cargoFmt { pname = "crank"; inherit version; src = source cargoFiles; };
         clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--features crank-ble/replay,crank-ble/hil --all-targets -- -D warnings"; });
         nextest = craneLib.cargoNextest (rustCheck // { cargoNextestExtraArgs = "--features crank-ble/replay,crank-ble/hil"; });
         doctest = craneLib.cargoDocTest rustCheck;
@@ -256,6 +258,16 @@
         rust-citations-test = pkgs.runCommand "rust-citations-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           cp -r ${source (lib.fileset.unions [ ./scripts/check-rust-citations.py ./scripts/test-check-rust-citations.py ])} src
           cd src && python3 -I scripts/test-check-rust-citations.py
+          touch $out
+        '';
+        # The Cargo, tauri.conf.json and package.json versions agree (#428); its tests run on a scratch tree.
+        release-versions = pkgs.runCommand "release-versions" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          python3 -I ${./scripts/release-version.py} --root ${source (lib.fileset.unions [ ./Cargo.toml ./app/src-tauri/tauri.conf.json ./app/src-tauri/Info.plist (lib.fileset.intersection (lib.fileset.gitTracked ./.) (lib.fileset.fileFilter (f: f.name == "package.json") ./.)) ])} check
+          touch $out
+        '';
+        release-versions-test = pkgs.runCommand "release-versions-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+          cp -r ${source (lib.fileset.unions [ ./scripts/release-version.py ./scripts/test-release-version.py ])} src
+          cd src && python3 -I scripts/test-release-version.py
           touch $out
         '';
         npm-licenses-test = pkgs.runCommand "npm-licenses-test" { nativeBuildInputs = [ pkgs.python3 ]; } ''
