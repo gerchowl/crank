@@ -9,6 +9,8 @@
 //! the device serial; commit only the output of `redact`.
 mod checks;
 mod cli;
+#[cfg(test)]
+mod desktop_capture;
 mod frames;
 mod partb;
 mod rider;
