@@ -8,6 +8,7 @@ pub mod commands;
 mod config;
 pub mod display;
 pub mod lifecycle;
+pub mod logging;
 
 use commands::{
     core_ready, device_forget, device_links, device_pair, devices_scan, open_stream, ride_end,
@@ -64,7 +65,9 @@ pub fn open_core(config: &RuntimeConfig, data_dir: &Path) -> Result<Core, ApiErr
             devices: if config.sim {
                 DeviceMode::Sim(SimConfig::default())
             } else {
-                DeviceMode::Ble
+                DeviceMode::Ble {
+                    capture_dir: config.capture_dir.clone(),
+                }
             },
             clock: None,
             engine_host: EngineHost::Thread,
@@ -98,6 +101,21 @@ pub fn run() -> tauri::Result<()> {
             .invoke_handler(bindings.invoke_handler())
             .setup(|app| {
                 let config = RuntimeConfig::from_env();
+                let plan =
+                    logging::LogPlan::new(config.capture_dir.as_deref(), app.path().app_log_dir()?);
+                // Asked for a capture, the rider must not ride without one unnoticed; the
+                // default log is a courtesy and never stops the app.
+                if let Err(e) = plan.install() {
+                    if plan.capture {
+                        app.dialog()
+                            .message(format!("crank could not open its capture log: {e}"))
+                            .kind(MessageDialogKind::Error)
+                            .title("crank")
+                            .blocking_show();
+                        std::process::exit(1)
+                    }
+                    eprintln!("crank: no log file: {e}");
+                }
                 let data_dir = match &config.data_dir {
                     Some(dir) => dir.clone(),
                     None => app.path().app_data_dir()?,

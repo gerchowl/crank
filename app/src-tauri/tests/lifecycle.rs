@@ -484,6 +484,7 @@ fn the_application_runs_the_engine_on_its_own_thread() {
         let config = RuntimeConfig {
             sim,
             data_dir: None,
+            capture_dir: None,
         };
         let core = open_core(&config, &dir.path().join(sim.to_string())).unwrap();
         assert_eq!(core.engine_host(), EngineHost::Thread, "sim={sim}");

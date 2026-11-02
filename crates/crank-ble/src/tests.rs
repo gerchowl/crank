@@ -1626,3 +1626,85 @@ async fn a_hung_disconnect_of_a_cancelled_connect_frees_the_trainer_admission() 
         .await
         .expect("the admission is free after the disconnect timeout");
 }
+
+fn capture_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|d| d.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_with_a_capture_dir_writes_its_own_readable_capture() {
+    use crate::central::fec_trainer;
+    enable_trace();
+    let dir = tempfile::tempdir().unwrap();
+    let captures = CaptureDir::new(dir.path().join("nested"));
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let mut paths = Vec::new();
+    for _ in 0..2 {
+        let fake = Fake::new(clock.clone());
+        let link = fec_trainer(
+            Arc::new(fake),
+            clock.clone(),
+            ConnectCleanup::new(),
+            Some(&captures),
+        )
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+        settle().await;
+        link.control.send(TrainerCommand::Disconnect).await.unwrap();
+        tick().await;
+        paths = capture_files(captures.path());
+    }
+    // One file per connection, none overwritten.
+    assert_eq!(paths.len(), 2, "{paths:?}");
+    for path in paths {
+        assert_eq!(path.extension().unwrap(), "fecap");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# elapsed_us direction complete_frame_hex"));
+        // The connection's own page-54 request went out and its replay input parses.
+        assert!(text.lines().any(|l| l.contains(" tx ")), "{text}");
+        #[cfg(feature = "replay")]
+        crate::ReplayTrainer::new(&text, clock.clone()).unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_without_a_capture_dir_writes_nothing() {
+    use crate::central::fec_trainer;
+    enable_trace();
+    let dir = tempfile::tempdir().unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let link = fec_trainer(
+        Arc::new(Fake::new(clock.clone())),
+        clock,
+        ConnectCleanup::new(),
+        None,
+    )
+    .connect(&DeviceRef("fake".into()), rider())
+    .await
+    .unwrap();
+    settle().await;
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+    assert!(capture_files(dir.path()).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_uncreatable_capture_dir_does_not_stop_the_connection() {
+    use crate::central::fec_trainer;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a-file");
+    std::fs::write(&file, b"").unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let link = fec_trainer(
+        Arc::new(Fake::new(clock.clone())),
+        clock,
+        ConnectCleanup::new(),
+        Some(&CaptureDir::new(file.join("sub"))),
+    )
+    .connect(&DeviceRef("fake".into()), rider())
+    .await;
+    assert!(link.is_ok());
+}
