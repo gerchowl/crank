@@ -190,21 +190,27 @@ within **±1 W** (exactly ±1 W passes). The result also gives the mean differen
 largest, and how many seconds were within the tolerance.
 
 **Coverage.** A good average must not hide a target that was never compared, so the verdict first
-checks, for **each** ERG target of the procedure (one settled window per target, `rider::CHECK5_W`):
+checks, for **each** ERG target of the procedure (one settled window per target, `rider::CHECK5_W`),
+in **continuous time**, not in capture seconds (a notification near a second boundary must not cost a
+whole second):
 
-- both streams have a sample in at least **3/4** of the window's whole seconds, and at least
-  **10** seconds (a verdict needs a ride, not a glimpse; a 30 s hold gives a 20 s window);
-- page 25 has no gap above **2 s** inside the window, edges included (the 2 s silence at which the
-  harness itself stops the ride, ADR-0002 §6);
-- `2A63` has no gap above **3 s** (three missed notifications at its nominal 1 Hz);
-- the window has `2A63` crank data to derive a cadence from.
+- the window is at least **10 s** long;
+- page 25 (samples with a power) has no gap above **2 s** inside the window, the window's edges
+  included, i.e. the first sample is at most 2 s after the start and the last at most 2 s before the
+  end (2 s is the silence at which the harness itself stops the ride, ADR-0002 §6);
+- `2A63` has no gap above **3 s** by the same rule (three missed notifications at its nominal 1 Hz);
+- cadence comes only from crank-revolution pairs whose **both** notifications lie inside the window,
+  and those pairs leave no stretch of the window uncovered by more than **3 s** (so a pair reaching back
+  before the window, over a stretch without crank data, is not used);
+- at least one second of the window holds a sample of each stream, so a power difference exists.
 
-Anything else is `insufficient: <target> (<window>): <which stream, how long>`: it names the target and
-the stream. The checks count samples and gaps, never the placement of a notification inside its second,
-so shifting one stream by up to a second (the skew between the two clocks' notification paths) gives the
-same verdict; the sim tests sweep it. More than **10 %** of the `2A63` notifications malformed (shorter
-than their flags say) is `insufficient` too, since those seconds are silently missing. The settled-window
-bounds are the same live and offline.
+Anything else is `insufficient: <target> (<window>): <which stream, how long>`. A gap exactly at its
+bound is within it. More than **10 %** of the `2A63` notifications malformed (shorter than their flags
+say) is `insufficient` too (exactly 10 % passes), since those notifications are silently missing. The
+per-second power comparison itself still bins by capture second, but a second that lacks a sample of
+one stream is skipped, not failed: coverage is decided by the gaps. The sim tests sweep the 2A63 phase
+(0–1 s) × jitter (σ 0–100 ms) × drops (0–3 %): a matching run agrees in at least 99 % of them, and a
+run with a 4 s hole in 2A63 or a 2.6 s hole in page 25 never does.
 
 **Rate.** Page-25 samples over the whole capture: (n − 1) / span must be ≥ **2 Hz** (the ADR's figure),
 and the largest gap is reported.
