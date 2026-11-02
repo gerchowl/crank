@@ -590,6 +590,16 @@ pub struct Report {
     pub release_error: Option<String>,
 }
 
+/// The release write (page 48 at 0 %, ADR-0002 §7.9), bounded at [`RELEASE_WAIT`]; its error, if any.
+pub async fn release<W: Wire>(w: &W) -> Option<String> {
+    match frame(&ControlPage::BasicResistance { pct: 0.0 }) {
+        Ok(f) => tokio::time::timeout(RELEASE_WAIT, w.send(f))
+            .await
+            .unwrap_or_else(|_| Some("release write not completed within 2 s".into())),
+        Err(e) => Some(format!("{e:?}")),
+    }
+}
+
 /// Connect state → confirmation → procedure, then always the release.
 ///
 /// `interrupt` resolves on a signal; the procedure is dropped at its next await and the
@@ -600,14 +610,7 @@ pub async fn drive<W: Wire, O: Operator>(
     p: Procedure,
     interrupt: impl Future<Output = String>,
 ) -> Report {
-    let release = || async {
-        match frame(&ControlPage::BasicResistance { pct: 0.0 }) {
-            Ok(f) => tokio::time::timeout(RELEASE_WAIT, w.send(f))
-                .await
-                .unwrap_or_else(|_| Some("release write not completed within 2 s".into())),
-            Err(e) => Some(format!("{e:?}")),
-        }
-    };
+    let release = || release(w);
     if let Some(e) = release().await {
         return Report {
             procedure: Err(Stop::Failed(format!("initial page 48: {e}"))),

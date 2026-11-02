@@ -21,6 +21,18 @@ use uuid::Uuid;
 /// Cycling Power Measurement characteristic (Bluetooth SIG 2A63).
 const CPS_MEASUREMENT: Uuid = Uuid::from_u128(0x0000_2a63_0000_1000_8000_0080_5f9b_34fb);
 
+/// Await a GATT operation for at most [`crate::rider::WRITE_WAIT`] (ADR-0002 §6: an operation
+/// unacknowledged this long means the link is lost).
+pub async fn bounded<T, E: std::error::Error + Send + Sync + 'static>(
+    what: &str,
+    op: impl std::future::Future<Output = std::result::Result<T, E>>,
+) -> Result<T> {
+    match tokio::time::timeout(crate::rider::WRITE_WAIT, op).await {
+        Ok(r) => Ok(r?),
+        Err(_) => Err(format!("{what} not completed within 2 s").into()),
+    }
+}
+
 /// Boxed error: this is an operator tool, failures are printed.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -177,7 +189,7 @@ impl Session {
             .find(|c| c.uuid == CPS_MEASUREMENT)
             .ok_or("the device has no Cycling Power measurement (2A63)")?;
         let mut notifications = p.notifications().await?;
-        p.subscribe(&characteristic).await?;
+        bounded("subscribe to 2A63", p.subscribe(&characteristic)).await?;
         let (clock, capture) = (self.clock.clone(), self.capture.clone());
         self.cps_pump = Some(tokio::spawn(async move {
             while let Some(n) = notifications.next().await {
@@ -286,5 +298,30 @@ impl Session {
             cps.abort();
             let _ = cps.await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_gatt_operation_fails_within_the_bound() {
+        let started = tokio::time::Instant::now();
+        let hung =
+            bounded::<(), btleplug::Error>("subscribe to 2A63", std::future::pending()).await;
+        assert_eq!(
+            hung.err().map(|e| e.to_string()),
+            Some("subscribe to 2A63 not completed within 2 s".into())
+        );
+        assert_eq!(started.elapsed(), crate::rider::WRITE_WAIT);
+        let failed = bounded::<(), _>("x", async { Err(btleplug::Error::NotConnected) }).await;
+        assert!(failed.is_err());
+        assert_eq!(
+            bounded("x", async { Ok::<_, btleplug::Error>(7) })
+                .await
+                .ok(),
+            Some(7)
+        );
     }
 }
