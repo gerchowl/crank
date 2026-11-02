@@ -17,6 +17,8 @@ tauri.workspace = true
 tauri-specta.workspace = true
 tauri-plugin-dialog.workspace = true
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+# The file log of the desktop process (#411): `fmt` writes it, `registry` hosts the per-target filter. No ANSI, no env-filter regex.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "registry"] }
 specta.workspace = true
 specta-typescript.workspace = true
 tauri-plugin-wdio-webdriver = { workspace = true, optional = true }
@@ -30,11 +32,13 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSScre
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSDictionary", "NSString", "NSValue"] }
 
 [dev-dependencies]
+# The reconnect supervisor and the monotonic clock, to prove its events reach the log file (#411).
+crank-ble.workspace = true
 # The mock runtime builds a window and managed state for the command-layer tests.
 tauri = { workspace = true, features = ["test"] }
 serde_json.workspace = true
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "test-util", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "test-util", "time"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
