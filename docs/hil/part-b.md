@@ -85,7 +85,7 @@ named `check6`, `check7`, `check8`, `check9` or `check12`, and prints the row ag
 | 6 | Per ERG step (a page-49 target held ≥ 10 s after another): t90 from the write to the first page-25 sample past 90 % of the step. Per cadence crossing of 75 rpm inside a hold: largest power deviation in the next 10 s and the time until power stays within ±5 % for 3 s | §7.2 (step response, "lead") |
 | 7 | From the procedure's 150 W write (the end of the soft start) to the next write, after its first 10 s: share of samples within ±5 %/±10 % of the target and the last 10 s mean; held = ≥ 90 % within ±10 % and last 10 s within ±5 % | §4.4 (no keep-alive) |
 | 8 | Per SIM state held ≥ 10 s: mean power, page-16 speed and cadence, and the road model at that speed (`v·m·g·(grade + Crr) + cw·(v + wind)²·drafting·v`, m from page 55): the ratio shows whether grade and mass apply | §7.9 (SIM, page 55) |
-| 9 | How the descent ended (`stalled`, `floor`, `departed`), the stall cadence as a range, power by 5 rpm cadence bin and the lowest bin still followed (≥ 2 samples, ≥ 80 % within ±10 % of 250 W); the verdict compares the stall with the 40 rpm release: below it the release comes first, at or above it too late, across it ambiguous | §7.4 |
+| 9 | How the descent ended (`stalled`, `floor`, `departed`), the cadence at which power fell below 90 % and the lowest cadence it was settled at or above 90 % (the two bounds below), power by 5 rpm cadence bin and the lowest bin still followed (≥ 2 samples, ≥ 80 % within ±10 % of 250 W); the verdict: the release comes first, too late, or ambiguous | §7.4 |
 | 12 | Mean power below 80 rpm after `Free` against the ERG target (released = below 90 %: ERG would hold it) and whether page 71 echoed pages 50 and 51 | §7.9 (`Free` sent explicitly) |
 
 Every result also carries `release`: whether page 48 at 0 % was the last control write and whether a
@@ -97,16 +97,36 @@ Check 9 measures the trainer: down to which cadence the NEO's ERG holds 250 W wh
 the cue. The cue starts 10 s after the 250 W write at 90 rpm and falls 5 rpm every 10 s (0.5 rpm/s). The
 live run and `analyse` apply the same rule (`partb::descent`) to the page-25 samples:
 
-- **Following the cue:** the cadence never falls more than 9 rpm within 3 s (3 rpm/s, six times the cue's
-  rate, so a 5 rpm step made over a second or two passes) and stays no more than 15 rpm above the cue
-  (30 s behind it). At 3 rpm/s a power lag of up to 1 s blurs the stall cadence by at most 3 rpm, less
-  than a 5 rpm bin.
-- **Stall:** power below 90 % of 250 W for 2 s (the 2 s of the §7.4 rule) while the cadence still
-  follows, from 1 s before the drop. The stall cadence is the range over that second. If the range spans
-  40 rpm, the verdict says it is ambiguous rather than picking a side.
-- **Floor:** the first sample below 25 rpm with power still held ends the run as `no stall down to …`.
-- **Anything else aborts the run:** a cadence that falls faster, unavailable cadence or power, or falling behind
-  the cue. The trainer is released, the outcome is `aborted: <why>`, and there is no verdict. Power and
-  cadence falling together cannot be told apart from page 25. It could be a rider who stops on purpose or
-  one the trainer overpowers, and neither gives a stall cadence. In both cases the abort reason gives the
-  cadence it was seen at.
+- **Following the cue:** the cadence never falls more than 9 rpm within 3 s, and stays within 15 rpm of
+  the cue, above or below. 3 rpm/s is six times the cue's rate, so a 5 rpm step made over a second or two
+  passes.
+- **Stall:** power below 90 % of 250 W for 2 s (the 2 s of the §7.4 rule), with the cadence still
+  following from 1 s before the drop.
+- **Floor:** the first sample below 25 rpm with power still held ends the descent.
+- **Anything else aborts the run:** a faster fall, power and cadence falling together, unavailable cadence
+  or power, or leaving the 15 rpm band. The trainer is released, the outcome is `aborted: <why>`, and there
+  is no verdict. Power and cadence falling together cannot be told apart from page 25: it could be a rider
+  who stops on purpose or one the trainer overpowers, so neither gives a stall cadence. The abort reason
+  gives the cadence.
+
+**Verdict.** The verdict needs evidence on the correct side of 40 rpm and never guesses. It is built from
+two bounds on the cadence `c*` below which the trainer can no longer hold 90 %:
+
+- **Lower bound, independent of lag:** power below 90 % at a sample with cadence `c` means `c* > c − 0.5`
+  (cadence is rounded to 1 rpm). While cadence falls, a lagging power reads high, never low. "Too late"
+  needs such a sample above 40 rpm.
+- **Upper bound, needs a stated lag:** power at or above 90 % throughout a stretch of samples that spans
+  5 s, with samples at most 0.5 s apart and cadences up to `N`, means `c* ≤ N + 2`. The 2 rpm cover the
+  0.5 rpm of rounding and up to 1.5 rpm of movement between samples at 3 rpm/s.
+  - This assumes page-25 power lags the trainer like a first-order lag with a time constant of at most
+    1 s. Five time constants settle within e⁻⁵ (under 1 %) of a step, so the reading cannot still be
+    carried by the higher power from before.
+  - The assumption is checked on the trainer by check 6: its `t90` must be at most 2.3 s (2.3 time
+    constants). A slower `t90` means check 9's "comes first" is not supported.
+  - "Comes first" needs `N + 2 < 40`.
+
+Otherwise the verdict is `ambiguous: …` with both bounds. If both bounds hold at once (power not monotone
+in cadence), it is `inconsistent: …`.
+
+The resolution has a cost: a trainer that lets go at 38 rpm is safe but reads ambiguous, because a 5 s
+settled hold at 0.5 rpm/s covers 2.5 rpm. A trainer that holds 250 W down to the low 30s resolves.
