@@ -1,8 +1,8 @@
 # HIL session 1, Part B runbook: control checks with a rider (#44, #412)
 
-How to run the Part B pedalling checks of ADR-0002 §9 with `hil_fec`. This covers the ERG control
-checks 6, 7 and 12. Checks 8 and 9 (SIM grades, low-cadence stall), check 5 (page 25 against CPS
-`2A63`) and checks 10/11a–c (second central, dropout) follow in their own PRs (#412 parts a2, b and c). Results go to a new `docs/hil/<date>-fec.md` in the
+How to run the Part B pedalling checks of ADR-0002 §9 with `hil_fec`. This covers the control checks
+6, 7, 8, 9 and 12. Check 5 (page 25 against CPS `2A63`) and checks 10/11a–c (second central, dropout)
+follow in their own PRs (#412 parts b and c). Results go to a new `docs/hil/<date>-fec.md` in the
 format of [the Part A results](2026-10-14-fec.md): one "Results at a glance" row per check, which each
 run prints.
 
@@ -15,7 +15,9 @@ The checks drive a real trainer under a rider, so every subcommand (`crates/cran
 - engages ERG as the engine does at a ride start (ADR-0002 §7.5): page 49 at 0 W until the first page-25
   sample with cadence above 0, then a 5 s ramp in 1 Hz steps from the 3 s power to the target;
 - never commands more than 250 W or a grade steeper than 10 % (the #44 values);
-- while ERG is applied, stops on the §7.4 release rule (cadence below 40 rpm for 2 s);
+- while ERG is applied, stops on the §7.4 release rule (cadence below 40 rpm for 2 s), except during check 9's
+  descent, which is the test of that threshold and ends instead when the trainer lets go, at the first sample
+  below 25 rpm, or (aborted) as soon as the rider leaves the cued descent (below; within 160 s in any case);
 - stops on 2 s without page 25 (ADR-0002 §6), a dropped link, a failed write, a write not acknowledged
   within 2 s, or a rider who does not start pedalling within 120 s; these rules keep running while a write
   is pending;
@@ -55,6 +57,8 @@ check's `.fecap`.
 |---|---|---|---|
 | 6 | `hil_fec check6 --out DIR` | 90 rpm through ERG 100 → 150 → 250 → 100 → 200 W (20 s each), then at 200 W cues 60 rpm and back to 90 rpm (20 s each) | 2.5 min |
 | 7 | `hil_fec check7 --out DIR` | 90 rpm at 150 W; the harness writes nothing for 40 s (no keep-alive, no page-70 poll) | 1 min |
+| 8 | `hil_fec check8 --out DIR` | Easy gear, steady effort; SIM 0 %, 5 %, 5 % with page 55 rider mass 100 kg, 10 % with 75 kg (30 s each); shift down on the steep part | 2.5 min |
+| 9 | `hil_fec check9 --out DIR` | 90 rpm at 250 W ERG, then lower cadence smoothly, about 5 rpm every 10 s, and keep turning until the run ends. Stopping early is safe (the trainer is released) but aborts the run without a result | up to 3 min |
 | 12 | `hil_fec check12 --out DIR` | 90 rpm at 200 W ERG; the harness switches to `Free` (page 50 defaults, page 51 grade 0); after 10 s, cue to 70 rpm for 15 s | 1 min |
 
 Each run writes `DIR/<check>.fecap` (both directions, the `.fecap` format) and `DIR/<check>.json` with the
@@ -66,7 +70,7 @@ procedure's outcome, the release, the identity, and `result` (below), and prints
 After the link is closed, `hil_fec` appends the procedure's outcome as the capture's last line,
 `# hil_fec procedure: completed` (or `aborted: …`, `interrupted: …`, `failed: …`). Only a completed
 procedure gives a result: for any other outcome, or a capture without that line, the row reads
-`no result: procedure …` and `held`/`released` are null.
+`no result: procedure …` and `held`/`released`/`verdict` are null.
 
 ```text
 hil_fec redact  --target RAW/check6.fecap --out docs/hil/captures
@@ -74,13 +78,73 @@ hil_fec analyse --target docs/hil/captures/check6.fecap --out docs/hil/captures 
 ```
 
 `analyse` keeps the reply accounting it always wrote and adds `part_b` (the same `result`) for a capture
-named `check6`, `check7` or `check12`, and prints the row again.
+named `check6`, `check7`, `check8`, `check9` or `check12`, and prints the row again.
 
 | Check | What `result` reports (method text is in the JSON) | ADR-0002 |
 |---|---|---|
 | 6 | Per ERG step (a page-49 target held ≥ 10 s after another): t90 from the write to the first page-25 sample past 90 % of the step. Per cadence crossing of 75 rpm inside a hold: largest power deviation in the next 10 s and the time until power stays within ±5 % for 3 s | §7.2 (step response, "lead") |
 | 7 | From the procedure's 150 W write (the end of the soft start) to the next write, after its first 10 s: share of samples within ±5 %/±10 % of the target and the last 10 s mean; held = ≥ 90 % within ±10 % and last 10 s within ±5 % | §4.4 (no keep-alive) |
+| 8 | Per SIM state held ≥ 10 s: mean power, page-16 speed and cadence, and the road model at that speed (`v·m·g·(grade + Crr) + cw·(v + wind)²·drafting·v`, m from page 55): the ratio shows whether grade and mass apply | §7.9 (SIM, page 55) |
+| 9 | How the descent ended (`stalled`, `floor`, `departed`), the cadence at which power fell below 90 % and the lowest cadence it was settled at or above 90 % (the two bounds below), power by 5 rpm cadence bin and the lowest bin still followed (≥ 2 samples, ≥ 80 % within ±10 % of 250 W); the verdict: the release comes first, too late, or ambiguous | §7.4 |
 | 12 | Mean power below 80 rpm after `Free` against the ERG target (released = below 90 %: ERG would hold it) and whether page 71 echoed pages 50 and 51 | §7.9 (`Free` sent explicitly) |
 
 Every result also carries `release`: whether page 48 at 0 % was the last control write and whether a
 page-71 reply echoed it.
+
+### Check 9: what counts as a stall
+
+Check 9 measures the trainer: down to which cadence the NEO's ERG holds 250 W while the rider follows
+the cue. The cue starts 10 s after the first 250 W write at 90 rpm and falls 5 rpm every 10 s
+(0.5 rpm/s). When the rider already makes 250 W or more at the start, the soft start writes 250 W six
+times, 1 s apart. The live run and `analyse` both count from the first of these writes
+(`partb::descent_target_at`), and the cue then comes 5 s after the soft start ends. Both apply the same
+rule (`partb::descent`) to the page-25 samples:
+
+- **Following the cue:** the cadence never falls more than 9 rpm within 3 s, and stays within 15 rpm of
+  the cue, above or below. 3 rpm/s is six times the cue's rate, so a 5 rpm step made over a second or two
+  passes.
+- **Stall:** power below 90 % of 250 W for 2 s (the 2 s of the §7.4 rule), with the cadence still
+  following from 1 s before the drop.
+- **Floor:** the first sample below 25 rpm with power still held ends the descent.
+- **Anything else aborts the run:** a faster fall, power and cadence falling together, unavailable cadence
+  or power, or leaving the 15 rpm band. The trainer is released, the outcome is `aborted: <why>`, and there
+  is no verdict. Power and cadence falling together cannot be told apart from page 25: it could be a rider
+  who stops on purpose or one the trainer overpowers, so neither gives a stall cadence. The abort reason
+  gives the cadence.
+
+**Verdict.** The verdict needs evidence on the correct side of 40 rpm and never guesses. It is built from
+two bounds on the cadence `c*` below which the trainer can no longer hold 90 %:
+
+- **Lower bound, independent of lag:** power below 90 % at a sample with cadence `c` means `c* > c − 0.5`
+  (cadence is rounded to 1 rpm). While cadence falls, a lagging power reads high, never low. "Too late"
+  needs such a sample above 40 rpm.
+- **Upper bound, needs a stated lag:** power at or above 90 % throughout a stretch of samples that spans
+  5 s, with samples at most 0.5 s apart and cadences up to `N`, means `c* ≤ N + 2`. The 2 rpm cover the
+  0.5 rpm of rounding and up to 1.5 rpm of movement between samples at 3 rpm/s.
+  - This assumes page-25 power lags the trainer like a first-order lag with a time constant of at most
+    1 s. Five time constants settle within e⁻⁵ (under 1 %) of a step, so the reading cannot still be
+    carried by the higher power from before.
+  - The assumption is checked on the trainer by check 6: every ERG step's `t90` must be at most 2.3 s
+    (a first-order lag reaches 90 % after 2.303 time constants; delay before the response only adds to
+    `t90`). See the next section.
+  - "Comes first" needs `N + 2 < 40`.
+
+Otherwise the verdict is `ambiguous: …` with both bounds. If both bounds hold at once (power not monotone
+in cadence), it is `inconsistent: …`.
+
+The resolution has a cost: a trainer that lets go at 38 rpm is safe but reads ambiguous, because a 5 s
+settled hold at 0.5 rpm/s covers 2.5 rpm. A trainer that holds 250 W down to the low 30s resolves.
+
+**Check 9 depends on check 6.** "The release comes first" is only sound within the lag bound, so check 9
+reads `check6.fecap` from the same directory: the same `--out` for a live run, or the directory of the
+capture for `hil_fec analyse`. Run check 6 before check 9, with the same `--out`. The result's
+`power_lag` field shows what was used:
+
+- **Check 6 completed and every step's `t90` ≤ 2.3 s:** the verdicts stand as above.
+- **No completed check 6** (missing, aborted, or no outcome line): "comes first" reads `… the release comes
+  first only if check 6 t90 ≤ 2.3 s (not measured)`. Re-run `analyse` once check 6 is in the directory.
+- **A step's `t90` > 2.3 s, or one that never reaches 90 %:** the verdict reads `not valid: power response
+  too slow (t90 = X s)`. Only "too late" still stands, because its lower bound needs no lag bound. With a
+  slow trainer, a lagging reading at 36–37 rpm can still show 250 W after the trainer has let go above
+  40 rpm. The sim test `check9_first_needs_check_6_within_the_power_lag_bound` shows this with a 2 s lag:
+  without check 6 it reported "comes first".
