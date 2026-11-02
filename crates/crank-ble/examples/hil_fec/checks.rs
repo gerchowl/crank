@@ -64,6 +64,10 @@ pub async fn run(args: &Args) -> Result<Outcome> {
         summary["identity"] = identity(&s);
         summary["link_dropped_during_run"] = json!(s.pump_ended());
         s.close().await;
+        // The outcome line lets `analyse` tell a completed run from a stopped one.
+        if let Err(e) = partb::append_outcome(&capture_path, &rider::outcome(&report.procedure)) {
+            summary["outcome_line_error"] = json!(e.to_string());
+        }
         if let Some(line) = summary["result"]["line"].as_str() {
             println!("{line}");
         }
@@ -133,7 +137,7 @@ fn analyse(args: &Args) -> Result<Outcome> {
     let dest = args.out.join(format!("{stem}.analysis.json"));
     let records = parse_capture(&text);
     let mut v = analysis(&records);
-    if let Some(part_b) = partb::analyse(stem, &records) {
+    if let Some(part_b) = partb::analyse(stem, &records, partb::outcome_in(&text).as_deref()) {
         if let Some(line) = part_b["line"].as_str() {
             println!("{line}");
         }

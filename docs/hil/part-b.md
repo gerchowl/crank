@@ -10,20 +10,22 @@ run prints.
 
 The checks drive a real trainer under a rider, so every subcommand (`crates/crank-ble/examples/hil_fec/rider.rs`):
 
-- connects into the release state, page 48 at 0 %, and writes nothing else until the operator presses
-  Enter in the window;
+- connects into the release state, page 48 at 0 %, and writes nothing else until the operator types
+  `y` (or `yes`) and Enter in the window; anything else, or closed input, aborts;
 - engages ERG as the engine does at a ride start (ADR-0002 §7.5): page 49 at 0 W until the first page-25
   sample with cadence above 0, then a 5 s ramp in 1 Hz steps from the 3 s power to the target;
 - never commands more than 250 W or a grade steeper than 10 % (the #44 values);
 - while ERG is applied, stops on the §7.4 release rule (cadence below 40 rpm for 2 s);
-- stops on 2 s without page 25 (ADR-0002 §6), a dropped link, a failed write, or a rider who does not
-  start pedalling within 120 s;
+- stops on 2 s without page 25 (ADR-0002 §6), a dropped link, a failed write, a write not acknowledged
+  within 2 s, or a rider who does not start pedalling within 120 s; these rules keep running while a write
+  is pending;
 - on completion, on any stop, on a panic, and on SIGINT (Ctrl-C), SIGTERM or SIGHUP (the window closed),
   writes page 48 at 0 % (the ride-end mode of ADR-0002 §7.9) and a page-70 request for page 71, so the
-  capture shows whether the trainer took it, then disconnects.
+  capture shows whether the trainer took it, then disconnects. Each of these two writes is bounded at
+  2 s, so a stuck link cannot hold the exit.
 
 A run that stops early prints `STOPPED: <why> (trainer released)` and exits with status 4; its capture and
-summary are still written and analysable.
+summary are still written and analysable, but give no result (below).
 
 ## Running
 
@@ -36,7 +38,7 @@ cargo build -p crank-ble --features hil --example hil_fec
 
 Then one wrapper per check, launched with
 `alacritty msg --socket "$(ls -t $TMPDIR/Alacritty-*.sock | head -1)" create-window -e /abs/path/check6.sh`.
-The window shows the cues; the owner presses Enter there to start. The log file is for the agent:
+The window shows the cues; the owner types `y` and Enter there to start. The log file is for the agent:
 
 ```sh
 #!/bin/bash
@@ -60,7 +62,11 @@ procedure's outcome, the release, the identity, and `result` (below), and prints
 
 ## Results and re-analysis
 
-`result` is computed only from the capture, so it is reproducible from a committed, redacted capture:
+`result` is computed only from the capture, so it is reproducible from a committed, redacted capture.
+After the link is closed, `hil_fec` appends the procedure's outcome as the capture's last line,
+`# hil_fec procedure: completed` (or `aborted: …`, `interrupted: …`, `failed: …`). Only a completed
+procedure gives a result: for any other outcome, or a capture without that line, the row reads
+`no result: procedure …` and `held`/`released` are null.
 
 ```text
 hil_fec redact  --target RAW/check6.fecap --out docs/hil/captures
@@ -73,7 +79,7 @@ named `check6`, `check7` or `check12`, and prints the row again.
 | Check | What `result` reports (method text is in the JSON) | ADR-0002 |
 |---|---|---|
 | 6 | Per ERG step (a page-49 target held ≥ 10 s after another): t90 from the write to the first page-25 sample past 90 % of the step. Per cadence crossing of 75 rpm inside a hold: largest power deviation in the next 10 s and the time until power stays within ±5 % for 3 s | §7.2 (step response, "lead") |
-| 7 | Over the longest stretch without any write, after its first 10 s: share of samples within ±5 %/±10 % of the target and the last 10 s mean; held = ≥ 90 % within ±10 % and last 10 s within ±5 % | §4.4 (no keep-alive) |
+| 7 | From the procedure's 150 W write (the end of the soft start) to the next write, after its first 10 s: share of samples within ±5 %/±10 % of the target and the last 10 s mean; held = ≥ 90 % within ±10 % and last 10 s within ±5 % | §4.4 (no keep-alive) |
 | 12 | Mean power below 80 rpm after `Free` against the ERG target (released = below 90 %: ERG would hold it) and whether page 71 echoed pages 50 and 51 | §7.9 (`Free` sent explicitly) |
 
 Every result also carries `release`: whether page 48 at 0 % was the last control write and whether a
