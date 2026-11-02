@@ -5,12 +5,12 @@
 //! from its tx writes, the rider's from page 25 (power, cadence) and page 16 (speed). Only a run whose procedure
 //! completed gives a result; any other run (or a capture without an outcome line) reports
 //! "no result" and no verdict.
-use crate::frames::{Record, page_of, parse_capture};
+use crate::frames::{Cps, Record, page_of, parse_capture};
 use crank_engine::erg::policy::{REENGAGE_RPM, RELEASE_RPM};
 use crank_fec::{Page, decode};
 use serde_json::{Value, json};
 
-const SEC: u64 = 1_000_000;
+pub(crate) const SEC: u64 = 1_000_000;
 
 /// Prefix of the comment line `hil_fec` appends to a Part B capture once the link is closed.
 pub const OUTCOME: &str = "# hil_fec procedure: ";
@@ -166,7 +166,7 @@ pub fn controls(records: &[Record]) -> Vec<(u64, Control)> {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn mean(v: impl IntoIterator<Item = f64>) -> Option<f64> {
+pub(crate) fn mean(v: impl IntoIterator<Item = f64>) -> Option<f64> {
     let (n, sum) = v
         .into_iter()
         .fold((0_usize, 0.0), |(n, s), x| (n + 1, s + x));
@@ -193,7 +193,7 @@ pub fn secs(us: u64) -> f64 {
     us as f64 / 1e6
 }
 
-fn round1(x: f64) -> f64 {
+pub(crate) fn round1(x: f64) -> f64 {
     (x * 10.0).round() / 10.0
 }
 
@@ -208,7 +208,7 @@ fn share_within(p: &[f64], target: f64, tol: f64) -> Option<f64> {
 }
 
 /// End of the procedure: the release write (page 48 0 %), or the last record.
-fn procedure_end(records: &[Record], ctl: &[(u64, Control)]) -> u64 {
+pub(crate) fn procedure_end(records: &[Record], ctl: &[(u64, Control)]) -> u64 {
     ctl.iter()
         .rev()
         .find(|(_, c)| *c == Control::Resistance(0.0))
@@ -241,17 +241,17 @@ pub fn release(records: &[Record]) -> Value {
 
 /// A page-49 target held for at least `HOLD_MIN` with no other control write.
 #[derive(Clone, Copy, Debug)]
-struct Hold {
-    at: u64,
-    end: u64,
-    watts: f64,
+pub(crate) struct Hold {
+    pub(crate) at: u64,
+    pub(crate) end: u64,
+    pub(crate) watts: f64,
 }
 
 const HOLD_MIN: u64 = 10 * SEC;
 /// Check 7: the start of the silent window that is still settling.
-const SETTLE: u64 = 10 * SEC;
+pub(crate) const SETTLE: u64 = 10 * SEC;
 
-fn erg_holds(ctl: &[(u64, Control)], end: u64) -> Vec<(bool, Hold)> {
+pub(crate) fn erg_holds(ctl: &[(u64, Control)], end: u64) -> Vec<(bool, Hold)> {
     ctl.iter()
         .enumerate()
         .filter_map(|(i, (at, c))| {
@@ -959,16 +959,19 @@ pub fn check12(records: &[Record]) -> Value {
     })
 }
 
-/// Part B analysis by capture stem (`check6` …), `None` for other captures. `outcome` is how
+/// Part B analysis by capture stem (`check5` …), `None` for other captures. `outcome` is how
 /// the procedure ended (the capture's outcome line); without `completed` there is no verdict.
-/// `lag` is check 6 of the same capture set ([`PowerLag::beside`]), which check 9 needs.
+/// `lag` is check 6 of the same capture set ([`PowerLag::beside`]), which check 9 needs; `cps`
+/// is the capture's Cycling Power notifications, which check 5 compares.
 pub fn analyse(
     stem: &str,
     records: &[Record],
+    cps: &[Cps],
     outcome: Option<&str>,
     lag: &PowerLag,
 ) -> Option<Value> {
     let mut v = match stem {
+        "check5" => crate::cps::check5(records, cps),
         "check6" => check6(records),
         "check7" => check7(records),
         "check8" => check8(records),
@@ -1019,6 +1022,12 @@ fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'static
     let empty = Vec::new();
     let list = |key: &str| v[key].as_array().unwrap_or(&empty).clone();
     match stem {
+        "check5" => (
+            "5",
+            "Page 25 rate and power/cadence against CPS 2A63",
+            crate::cps::result(v),
+            "§5",
+        ),
         "check6" => {
             let steps = list("steps")
                 .iter()

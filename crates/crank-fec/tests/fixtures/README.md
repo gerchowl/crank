@@ -13,7 +13,9 @@ stamps even if processed after a later TX; readers stably sort by timestamp
 (ties preserve file order). `rx` means trainer →
 host (`fec2` notification); `tx` means host → trainer (`fec3` write).
 Remaining whitespace-separated tokens are hexadecimal bytes. Blank lines and
-`#` comments (including trailing comments) are allowed. Preserve each complete
+`#` comments (including trailing comments) are allowed.
+`hil_fec check5` (#412) records Cycling Power measurements (2A63) as comment lines
+`# cps <elapsed_us> <hex bytes>` between the frames; readers skip them like any comment. Preserve each complete
 GATT payload, even when its ANT framing/checksum is invalid. Never combine or
 split notifications. This format records both directions and timing as required
 by ADR-0002 §9. Decoding is immediate and deterministic; replay does not sleep.

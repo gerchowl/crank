@@ -48,6 +48,28 @@ impl Capture {
             .map_err(|_| io::Error::other("capture lock poisoned"))?;
         append(&mut state, at, rx, bytes)
     }
+    /// Append a notification of another characteristic as a comment line
+    /// `# <tag> <elapsed_us> <hex bytes>`, in processing order with the frames (#412: the Cycling
+    /// Power measurement beside FE-C in the `hil_fec` check 5). Readers that skip comments (the
+    /// replay and `crank-fec`'s fixtures) read the file exactly as before.
+    /// # Errors
+    /// As [`Capture::record`].
+    pub fn record_aux(&self, at: MonoTime, tag: &str, bytes: &[u8]) -> io::Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("capture lock poisoned"))?;
+        let elapsed =
+            at.0.checked_sub(state.1.0)
+                .ok_or_else(|| io::Error::other("capture time before epoch"))?;
+        let mut line = format!("# {tag} {elapsed}");
+        for byte in bytes {
+            // Writing to a String cannot fail.
+            let _ = write!(line, " {byte:02X}");
+        }
+        line.push('\n');
+        state.0.write_all(line.as_bytes())
+    }
     /// Log the first write failure of this capture (and only the first: a full disk would
     /// fail every frame). That is once per capture, hence once per trainer connection (each
     /// connect, reconnects included, has its own file), not once per process. The ride goes on without the capture; nothing else tells the
