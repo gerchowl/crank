@@ -67,13 +67,87 @@ describe("Devices", () => {
       id: "neo-1",
       role: "trainer",
     });
-    expect(screen.getByText(/· Paired/)).toBeTruthy();
+    expect(screen.getByText("✓ Paired as trainer")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Forget trainer" }));
     await waitFor(() =>
       expect(screen.getAllByText("Not paired").length).toBe(2),
     );
     expect(st.paired.trainer).toBeUndefined();
+  });
+
+  test("a paired device shows its paired state, not a pair button, for that role", async () => {
+    installDevices({
+      nearby: [trainer, strap],
+      paired: { trainer: neo },
+    });
+    const user = userEvent.setup();
+    render(<Devices />);
+    await screen.findByRole("button", { name: "Forget trainer" });
+    await scan(user);
+    expect(await screen.findByText("✓ Paired as trainer")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Pair Tacx Neo 55624 as trainer" }),
+    ).toBeNull();
+    // The strap is not paired: it still offers pairing, and shows no paired state.
+    expect(
+      screen.getByRole("button", { name: "Pair HRM-Dual as heart-rate strap" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("✓ Paired as strap")).toBeNull();
+  });
+
+  test("a dual-role device paired as trainer still offers the strap role", async () => {
+    installDevices({
+      nearby: [both],
+      paired: { trainer: { ...neo, id: "both-1", name: "Dual Thing" } },
+    });
+    const user = userEvent.setup();
+    render(<Devices />);
+    await screen.findByRole("button", { name: "Forget trainer" });
+    await scan(user);
+    expect(await screen.findByText("✓ Paired as trainer")).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Pair Dual Thing as heart-rate strap",
+      }).textContent,
+    ).toBe("Pair as strap");
+  });
+
+  test("Forget on a paired device returns it to Pair as", async () => {
+    const st = installDevices({ nearby: [trainer], paired: { trainer: neo } });
+    const user = userEvent.setup();
+    render(<Devices />);
+    await screen.findByRole("button", { name: "Forget trainer" });
+    await scan(user);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Forget Tacx Neo 55624 as trainer",
+      }),
+    );
+    expect(
+      (
+        await screen.findByRole("button", {
+          name: "Pair Tacx Neo 55624 as trainer",
+        })
+      ).textContent,
+    ).toBe("Pair as trainer");
+    expect(screen.queryByText("✓ Paired as trainer")).toBeNull();
+    expect(st.paired.trainer).toBeUndefined();
+  });
+
+  test("an unpaired device still offers pairing", async () => {
+    installDevices({ nearby: [trainer] });
+    const user = userEvent.setup();
+    render(<Devices />);
+    await scan(user);
+    expect(
+      (
+        await screen.findByRole("button", {
+          name: "Pair Tacx Neo 55624 as trainer",
+        })
+      ).textContent,
+    ).toBe("Pair as trainer");
+    expect(screen.queryByText(/Paired as/)).toBeNull();
   });
 
   test("starts from the core's pairings", async () => {
@@ -288,7 +362,11 @@ describe("Devices", () => {
 
   test("Scan, Pair and Forget are disabled while a command is in flight", async () => {
     let open!: () => void;
-    const st = installDevices({ nearby: [trainer], paired: { trainer: neo } });
+    // Another trainer is paired, so the nearby one offers "Pair as trainer" (it replaces the pairing).
+    const st = installDevices({
+      nearby: [trainer],
+      paired: { trainer: { ...neo, id: "neo-2" } },
+    });
     const user = userEvent.setup();
     render(<Devices />);
     await screen.findByRole("button", { name: "Forget trainer" });
@@ -340,7 +418,10 @@ describe("Devices", () => {
         true,
       ),
     );
-    expect(await pairBtn()).toHaveProperty("disabled", true);
+    // The pair finished, so the nearby row now offers Forget for the role; it is disabled too.
+    expect(
+      screen.getByRole("button", { name: "Forget Tacx Neo 55624 as trainer" }),
+    ).toHaveProperty("disabled", true);
     open();
     await waitFor(() =>
       expect(screen.getAllByText("Not paired").length).toBe(2),
