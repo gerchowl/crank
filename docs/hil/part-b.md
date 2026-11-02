@@ -172,8 +172,9 @@ the trainer) and records each notification in the `.fecap`, in processing order 
 a comment line `# cps <elapsed_us> <hex bytes>` on the same clock (`Capture::record_aux`). The format
 stays compatible: every reader skips comment lines (the `.fecap` README says so), so old captures and
 tools read new files as before; only `hil_fec` reads the `# cps` lines. They carry no serial, so
-`redact` keeps them as they are. A device without `2A63` ends the run before anything is written:
-`BLOCKED: check 5 needs Cycling Power 2A63 on the NEO`.
+`redact` keeps them as they are. A device without `2A63`, or a subscription not completed within 2 s, ends the run with an error
+(`check 5 needs Cycling Power 2A63 on the NEO: …`) before anything is applied; the trainer is
+released (page 48 at 0 %) first, bounded at 2 s.
 
 **Time alignment.** Both streams are stamped on arrival by the same process on the same monotonic
 clock, so there is no offset between them to estimate. What remains is each stream's own jitter and
