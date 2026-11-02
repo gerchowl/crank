@@ -42,6 +42,7 @@ const METRICS: readonly MetricId[] = [
   "speed",
   "hr",
   "workout_s",
+  "power_lap",
 ];
 /** `Filter`'s serde shape (`crank-domain` `filters.rs` `Filter` (~12): `tag = "kind"`, camelCase fields, `f64` parameters). */
 const FILTER_FIELDS: Record<string, readonly string[]> = {
@@ -59,6 +60,9 @@ export const status = (over: Partial<StreamStatus> = {}): StreamStatus => ({
   workoutS: 0,
   blockIndex: 0,
   blockElapsedS: 0,
+  blockStartSessionS: 0,
+  blockStartWorkoutS: 0,
+  lapsClosed: 0,
   lateSamples: 0,
   recordError: null,
   trainerFollowing: "following",

@@ -22,7 +22,7 @@ pub(crate) const MAX_SUBSCRIPTIONS: usize = 64;
 /// reload racing its predecessor's cleanup.
 pub(crate) const MAX_STREAMS: usize = 16;
 /// Source metrics published per tick, in [`crate::METRICS`] order.
-pub(crate) const SOURCES: usize = 5;
+pub(crate) const SOURCES: usize = 6;
 
 struct Sub {
     metric: MetricId,

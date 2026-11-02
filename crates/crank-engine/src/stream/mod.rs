@@ -7,8 +7,9 @@
 //! * `hub`: the streams of an engine: subscriptions, filter chains, window cleanup,
 //!   heartbeat. The engine calls it synchronously and never awaits a subscriber.
 //!
-//! Not here: laps (#12), thresholds and flags (#13), the cursor's actual block start
-//! (#14), nudges (the judge hook): all #243. The IPC transport is #34.
+//! Laps are a query ([`crate::lap`]); the status carries the cursor's actual block start
+//! (#14) and `laps_closed`. Not here: thresholds and flags (#13), nudges (the judge hook,
+//! #248). The IPC transport is #34.
 pub(crate) mod flow;
 pub(crate) mod hub;
 pub mod types;
