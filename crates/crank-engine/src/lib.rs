@@ -11,15 +11,17 @@
 //! * [`erg`]: the ERG policy (ADR-0002 §7), the trainer-following machine (§4.4.1),
 //!   compliance and the health-cap clamp (#218).
 //! * [`record`]: the 1 Hz record sink; core adapts it to `crank-store`.
+//! * [`lap`]: laps, one per block as ridden, with their statistics (#12, #243).
 //!
 //! * [`stream`]: subscriptions with filter chains, the multiplexed `StreamFrame`, flow
 //!   control and the status heartbeat (#219).
 //!
-//! Not here: laps, thresholds, the cursor's actual block start, nudges (#243).
+//! Not here: thresholds and flags (#13, #243), nudges (#248).
 pub mod clock;
 pub mod control;
 pub mod engine;
 pub mod erg;
+pub mod lap;
 pub mod record;
 pub mod stream;
 pub mod ticks;
@@ -31,6 +33,7 @@ pub use engine::{
     RideStatus,
 };
 pub use erg::{Compliance, Component, ErgPolicy, TrainerFollowing};
+pub use lap::{Lap, LapBlock, LapEnd, LapGaps, LapStats};
 pub use record::{METRICS, RecordError, RideRecorder, SecondRow};
 pub use stream::types::{
     StreamCap, StreamCommanded, StreamCompliance, StreamComponent, StreamError, StreamFollowing,
@@ -44,5 +47,7 @@ pub use ticks::{SessionTicks, WorkoutTicks};
 
 #[cfg(test)]
 mod erg_tests;
+#[cfg(test)]
+mod lap_tests;
 #[cfg(test)]
 mod tests;
