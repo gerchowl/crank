@@ -4,7 +4,8 @@
 //! engaged as the engine does at a ride start (§7.5: 0 W until the first sample with cadence,
 //! then a 5 s ramp in 1 Hz steps from the 3 s power); targets never exceed [`MAX_ERG_W`] and
 //! grades [`MAX_GRADE_PCT`]; while ERG is applied the §7.4 release rule (cadence below
-//! 40 rpm for 2 s) and a 2 s telemetry silence (§6) stop the procedure. Whatever ends it
+//! 40 rpm for 2 s) and a 2 s telemetry silence (§6) stop the procedure, also while a write is
+//! pending, and a write not acknowledged within [`WRITE_WAIT`] fails it. Whatever ends it
 //! (completion, a guard, an error, a panic, SIGINT/SIGTERM/SIGHUP) the trainer is
 //! released with page 48 at 0 %, the ride-end mode of §7.9, before the link is closed.
 use crate::{
@@ -34,6 +35,10 @@ const SILENCE_US: u64 = 2 * SEC;
 const START_WAIT: Duration = Duration::from_mins(2);
 /// Bound on the release write: a stalled GATT write must not hold the exit (ADR-0002 §7.9's 2 s).
 const RELEASE_WAIT: Duration = Duration::from_secs(2);
+/// Bound on a procedure write: unacknowledged this long, the link counts as lost (ADR-0002 §6).
+pub const WRITE_WAIT: Duration = Duration::from_secs(2);
+/// Check 7's target: the page-49 write the silent window starts from.
+pub const CHECK7_W: u16 = 150;
 const HOLD: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 
@@ -128,7 +133,12 @@ impl Console {
                 }
             }
         });
-        Self(tokio::sync::Mutex::new(rx))
+        Self::from_lines(rx)
+    }
+
+    /// Confirmation answers from `lines` (stdin, or a test).
+    pub fn from_lines(lines: tokio::sync::mpsc::Receiver<String>) -> Self {
+        Self(tokio::sync::Mutex::new(lines))
     }
 }
 
@@ -150,9 +160,14 @@ impl Operator for Console {
     }
     async fn confirm(&self, text: &str) -> bool {
         say(&format!(
-            "{text}\nPress Enter to start (Ctrl-C at any time releases the trainer and stops)."
+            "{text}\nType y and Enter to start; anything else aborts (Ctrl-C at any time releases the trainer and stops)."
         ));
-        self.0.lock().await.recv().await.is_some()
+        self.0
+            .lock()
+            .await
+            .recv()
+            .await
+            .is_some_and(|l| matches!(l.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
     }
 }
 
@@ -208,14 +223,31 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
         self.op.cue(self.w.now_us(), cue);
     }
 
-    async fn write(&self, page: &ControlPage) -> Result<(), Stop> {
-        match self.w.send(frame(page)?).await {
-            None => Ok(()),
-            Some(e) => Err(Stop::Failed(format!("write {page:?}: {e}"))),
+    /// Write one control page. The guards keep running while it is pending, and a write not
+    /// acknowledged within [`WRITE_WAIT`] fails the run.
+    async fn write(&mut self, page: &ControlPage) -> Result<(), Stop> {
+        let w = self.w;
+        let send = w.send(frame(page)?);
+        tokio::pin!(send);
+        let deadline = Instant::now() + WRITE_WAIT;
+        loop {
+            tokio::select! {
+                e = &mut send => {
+                    return e.map_or(Ok(()), |e| Err(Stop::Failed(format!("write {page:?}: {e}"))));
+                }
+                () = sleep(POLL) => {
+                    self.observe()?;
+                    if Instant::now() >= deadline {
+                        return Err(Stop::Failed(format!(
+                            "write {page:?} not completed within 2 s"
+                        )));
+                    }
+                }
+            }
         }
     }
 
-    async fn erg(&self, watts: u16) -> Result<(), Stop> {
+    async fn erg(&mut self, watts: u16) -> Result<(), Stop> {
         if watts > MAX_ERG_W {
             return Err(Stop::Failed(format!(
                 "{watts} W is above the {MAX_ERG_W} W limit"
@@ -227,8 +259,8 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
         .await
     }
 
-    async fn track(&self, grade_pct: f32) -> Result<(), Stop> {
-        if grade_pct.abs() > MAX_GRADE_PCT {
+    async fn track(&mut self, grade_pct: f32) -> Result<(), Stop> {
+        if !grade_pct.is_finite() || grade_pct.abs() > MAX_GRADE_PCT {
             return Err(Stop::Failed(format!(
                 "{grade_pct} % is outside ±{MAX_GRADE_PCT} %"
             )));
@@ -365,7 +397,7 @@ async fn check6<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop>
 
 /// #44 check 7: 150 W, then 30 s with no write at all (no keep-alive, no page-70 poll).
 async fn check7<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
-    r.engage(150).await?;
+    r.engage(CHECK7_W).await?;
     r.cue(Cue::Cadence(90));
     r.hold(Duration::from_secs(10)).await?;
     r.hold(Duration::from_secs(30)).await?;
@@ -469,10 +501,10 @@ pub async fn drive<W: Wire, O: Operator>(
         sig = interrupt => Err(Stop::Interrupted(sig)),
     };
     let release_error = release().await;
-    // Leave the command status of the release in the capture (evidence only).
+    // Leave the command status of the release in the capture (evidence only, bounded).
     if let Ok(f) = frame(&ControlPage::Request { page: 71, times: 1 }) {
         sleep(Duration::from_millis(300)).await;
-        let _ = w.send(f).await;
+        let _ = tokio::time::timeout(RELEASE_WAIT, w.send(f)).await;
         sleep(Duration::from_millis(700)).await;
     }
     op.cue(w.now_us(), Cue::Stop);
@@ -509,21 +541,29 @@ pub async fn signals() -> String {
     }
 }
 
+/// How a procedure ended, as one line: `completed`, `aborted: …`, `interrupted: …`, `failed: …`.
+/// The capture carries it as its outcome line ([`crate::partb::OUTCOME`]).
+pub fn outcome(procedure: &Result<(), Stop>) -> String {
+    let text = match procedure {
+        Ok(()) => crate::partb::COMPLETED.to_string(),
+        Err(Stop::Aborted(why)) => format!("aborted: {why}"),
+        Err(Stop::Interrupted(sig)) => format!("interrupted: {sig}"),
+        Err(Stop::Failed(why)) => format!("failed: {why}"),
+    };
+    text.replace(['\n', '\r'], " ")
+}
+
 /// The summary of one driven run (live or simulated).
 pub fn summary(p: Procedure, stem: &str, report: &Report, records: &[Record]) -> Value {
+    let outcome = outcome(&report.procedure);
     let mut v = json!({
         "check": stem,
         "what_was_sent": p.what(),
-        "procedure": match &report.procedure {
-            Ok(()) => json!("completed"),
-            Err(Stop::Aborted(why)) => json!({"aborted": why}),
-            Err(Stop::Interrupted(sig)) => json!({"interrupted": sig}),
-            Err(Stop::Failed(why)) => json!({"failed": why}),
-        },
+        "procedure": outcome,
         "release_write_error": report.release_error,
         "page71_frames": records.iter().filter(|r| r.rx && page_of(&r.bytes) == Some(71)).count(),
     });
-    v["result"] = crate::partb::analyse(stem, records).unwrap_or(Value::Null);
+    v["result"] = crate::partb::analyse(stem, records, Some(&outcome)).unwrap_or(Value::Null);
     v
 }
 
@@ -532,7 +572,7 @@ mod tests {
     use super::*;
     use crate::{
         frames::{hex, parse_capture},
-        partb::{Control, analyse, controls},
+        partb::{Control, OUTCOME, analyse, controls, outcome_in},
         sim::{Plan, Sim},
     };
     use std::fmt::Write as _;
@@ -550,6 +590,27 @@ mod tests {
         };
         let report = drive(&sim, &sim, p, interrupt).await;
         (sim, report)
+    }
+
+    /// A run bounded at 10 min of (paused) time: `None` when `drive` does not return.
+    async fn bounded(p: Procedure, plan: Plan) -> (Sim, Option<Report>) {
+        let sim = Sim::new(plan);
+        let report = tokio::time::timeout(
+            Duration::from_mins(10),
+            drive(&sim, &sim, p, std::future::pending()),
+        )
+        .await
+        .ok();
+        (sim, report)
+    }
+
+    /// Writes `(at_us, page)` in order.
+    fn writes(sim: &Sim) -> Vec<(u64, u8)> {
+        sim.records()
+            .iter()
+            .filter(|r| !r.rx)
+            .filter_map(|r| Some((r.at_us, page_of(&r.bytes)?)))
+            .collect()
     }
 
     fn ctl(sim: &Sim) -> Vec<Control> {
@@ -613,15 +674,23 @@ mod tests {
         assert!(erg_targets(&c).iter().all(|w| *w <= f64::from(MAX_ERG_W)));
     }
 
-    /// A summary re-derived offline from the written `.fecap` text equals the live one.
-    fn reanalysed(sim: &Sim, stem: &str) -> Value {
-        let text = sim.records().iter().fold(String::new(), |mut t, r| {
+    /// The `.fecap` text of a run, with its outcome line as `hil_fec` appends it.
+    fn fecap(sim: &Sim, report: &Report) -> String {
+        let mut text = sim.records().iter().fold(String::new(), |mut t, r| {
             let dir = if r.rx { "rx" } else { "tx" };
             let _ = writeln!(t, "{} {dir} {}", r.at_us, hex(&r.bytes));
             t
         });
-        let live = analyse(stem, &sim.records()).expect("part B stem");
-        let offline = analyse(stem, &parse_capture(&text)).expect("part B stem");
+        let _ = writeln!(text, "{OUTCOME}{}", outcome(&report.procedure));
+        text
+    }
+
+    /// The live result equals the one re-derived offline from the written `.fecap` text.
+    fn reanalysed(sim: &Sim, report: &Report, p: Procedure, stem: &str) -> Value {
+        let live = summary(p, stem, report, &sim.records())["result"].clone();
+        let text = fecap(sim, report);
+        let offline = analyse(stem, &parse_capture(&text), outcome_in(&text).as_deref())
+            .expect("part B stem");
         assert_eq!(live, offline);
         live
     }
@@ -650,7 +719,7 @@ mod tests {
                 Cue::Stop
             ]
         );
-        let v = reanalysed(&sim, "check6");
+        let v = reanalysed(&sim, &report, Procedure::Check6, "check6");
         let steps: Vec<(f64, f64)> = v["steps"]
             .as_array()
             .expect("steps")
@@ -701,7 +770,7 @@ mod tests {
             assert_soft_start(&ctl(&sim), 150.0),
             [Control::Resistance(0.0)]
         );
-        let v = reanalysed(&sim, "check7");
+        let v = reanalysed(&sim, &report, Procedure::Check7, "check7");
         assert!(v["silent_s"].as_f64().expect("silent") >= 40.0, "{v}");
         assert_eq!(
             (v["target_w"].as_f64(), &v["held"]),
@@ -719,7 +788,7 @@ mod tests {
             matches!(rest[..], [Control::Wind(..), Control::Track(g, _), Control::Resistance(r)] if g == 0.0 && r == 0.0),
             "{rest:?}"
         );
-        let v = reanalysed(&sim, "check12");
+        let v = reanalysed(&sim, &report, Procedure::Check12, "check12");
         assert_eq!(v["released"], json!(true), "{v}");
         assert_eq!(
             (&v["page71_echoed_50"], &v["page71_echoed_51"]),
@@ -823,12 +892,178 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn limits_refuse_unsafe_targets() {
         let sim = Sim::new(Plan::default());
-        let r = Rig::new(&sim, &sim);
+        let mut r = Rig::new(&sim, &sim);
         assert!(matches!(r.erg(MAX_ERG_W + 1).await, Err(Stop::Failed(_))));
-        assert!(matches!(
-            r.track(MAX_GRADE_PCT + 0.5).await,
-            Err(Stop::Failed(_))
-        ));
+        for grade in [
+            MAX_GRADE_PCT + 0.5,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ] {
+            assert!(
+                matches!(r.track(grade).await, Err(Stop::Failed(why)) if why.contains("outside")),
+                "{grade}: refused by the limit, not left to the encoder"
+            );
+        }
         assert!(sim.records().iter().all(|x| x.rx), "nothing written");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_ride_that_never_started_is_no_result() {
+        let plan = Plan {
+            pedals: false,
+            ..Plan::default()
+        };
+        for p in [Procedure::Check6, Procedure::Check7, Procedure::Check12] {
+            let (sim, report) = run(p, plan, None).await;
+            assert!(matches!(&report.procedure, Err(Stop::Aborted(_))));
+            let stem = format!("{p:?}").to_lowercase();
+            // Live and offline (`hil_fec analyse` reads the outcome line of the capture).
+            let v = reanalysed(&sim, &report, p, &stem);
+            let line = v["line"].as_str().expect("line");
+            assert!(
+                line.contains("no result: procedure aborted") && !line.contains("true"),
+                "{line}"
+            );
+            assert_eq!(
+                (&v["held"], &v["released"]),
+                (&Value::Null, &Value::Null),
+                "{v}"
+            );
+            assert_eq!(v["completed"], json!(false));
+        }
+        // A capture without an outcome line (killed run, older capture) is no result either.
+        let (sim, report) = run(Procedure::Check7, Plan::default(), None).await;
+        assert_eq!(report.procedure, Ok(()));
+        let v = analyse("check7", &sim.records(), None).expect("part B stem");
+        assert_eq!(v["held"], Value::Null, "{v}");
+        assert!(v["line"].as_str().expect("line").contains("no result"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_write_fails_and_the_exit_stays_bounded() {
+        // From 40 s no write is acknowledged: the 250 W step, the release and its request.
+        let plan = Plan {
+            hang_from_us: Some(40 * SEC),
+            ..Plan::default()
+        };
+        let (sim, report) = bounded(Procedure::Check6, plan).await;
+        let report = report.expect("drive returns although no write completes");
+        assert!(
+            matches!(&report.procedure, Err(Stop::Failed(why)) if why.contains("not completed within 2 s")),
+            "{report:?}"
+        );
+        assert_eq!(
+            report.release_error.as_deref(),
+            Some("release write not completed within 2 s")
+        );
+        let w = writes(&sim);
+        let hung = w
+            .iter()
+            .position(|(at, _)| *at >= 40 * SEC)
+            .expect("hung write");
+        let (at, _) = w[hung];
+        assert_eq!(
+            w[hung + 1..].iter().map(|x| x.1).collect::<Vec<_>>(),
+            [48, 70]
+        );
+        assert!(
+            w[hung + 1].0 <= at + 2_100_000,
+            "released 2 s after the stuck write"
+        );
+        assert!(sim.now_us() <= at + 8 * SEC, "the exit is bounded too");
+        assert_eq!(sim.cues().last(), Some(&Cue::Stop));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_guards_keep_running_while_a_write_is_pending() {
+        // The 250 W write (at about 46 s) never completes; the rider has stopped, or the
+        // trainer has gone silent, just before it: the guard stops the run before the write's
+        // own 2 s limit.
+        for (plan, why) in [
+            (
+                Plan {
+                    stop_at_us: Some(43 * SEC),
+                    hang_from_us: Some(45 * SEC),
+                    ..Plan::default()
+                },
+                "40 rpm",
+            ),
+            (
+                Plan {
+                    silent_from_us: Some(45 * SEC),
+                    hang_from_us: Some(45 * SEC),
+                    ..Plan::default()
+                },
+                "no page 25",
+            ),
+        ] {
+            let (sim, report) = bounded(Procedure::Check6, plan).await;
+            let report = report.expect("drive returns");
+            assert!(
+                matches!(&report.procedure, Err(Stop::Aborted(w)) if w.contains(why)),
+                "{why}: {report:?}"
+            );
+            let w = writes(&sim);
+            let hung = w.iter().position(|(at, _)| *at >= 45 * SEC).expect("hung");
+            assert!(
+                w[hung + 1].0 < w[hung].0 + 2 * SEC,
+                "{why}: stopped while the write was pending, {w:?}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_panic_in_the_procedure_releases() {
+        let plan = Plan {
+            panic_at_us: Some(30 * SEC),
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check6, plan, None).await;
+        assert_eq!(
+            report.procedure,
+            Err(Stop::Failed("procedure panicked".into()))
+        );
+        assert_released(&sim, &report);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_trainer_aborts_and_releases() {
+        let plan = Plan {
+            silent_from_us: Some(30 * SEC),
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check7, plan, None).await;
+        assert!(
+            matches!(&report.procedure, Err(Stop::Aborted(why)) if why.contains("no page 25")),
+            "{report:?}"
+        );
+        assert_released(&sim, &report);
+        let w = writes(&sim);
+        assert!(
+            w[w.len() - 2].0 <= 32_200_000,
+            "released 2 s into the silence, {w:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmation_needs_an_explicit_yes() {
+        for (line, ok) in [
+            ("", false),
+            ("n", false),
+            ("yes please", false),
+            ("y", true),
+            (" YES ", true),
+        ] {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tx.send(line.to_string()).await.expect("send");
+            assert_eq!(Console::from_lines(rx).confirm("go?").await, ok, "{line:?}");
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
+        drop(tx);
+        assert!(
+            !Console::from_lines(rx).confirm("go?").await,
+            "closed input"
+        );
     }
 }

@@ -26,6 +26,12 @@ pub struct Plan {
     pub stop_at_us: Option<u64>,
     /// The link drops at this capture time.
     pub drop_at_us: Option<u64>,
+    /// Writes from this capture time reach the trainer but are never acknowledged.
+    pub hang_from_us: Option<u64>,
+    /// The trainer sends nothing from this capture time.
+    pub silent_from_us: Option<u64>,
+    /// The harness panics (once) when it reads telemetry at or after this capture time.
+    pub panic_at_us: Option<u64>,
 }
 
 impl Default for Plan {
@@ -35,6 +41,9 @@ impl Default for Plan {
             pedals: true,
             stop_at_us: None,
             drop_at_us: None,
+            hang_from_us: None,
+            silent_from_us: None,
+            panic_at_us: None,
         }
     }
 }
@@ -69,6 +78,7 @@ pub struct Sim {
     plan: Plan,
     start: Instant,
     state: Mutex<State>,
+    panicked: std::sync::atomic::AtomicBool,
 }
 
 fn emit(s: &mut State, at_us: u64, f: [u8; 13]) {
@@ -109,6 +119,7 @@ impl Sim {
                 replies: Vec::new(),
                 cues: Vec::new(),
             }),
+            panicked: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -143,6 +154,7 @@ impl Sim {
     fn step(&self, st: &mut State) {
         let now = st.at;
         let dt = STEP_US as f64 / 1e6;
+        let silent = self.plan.silent_from_us.is_some_and(|x| now >= x);
         if self.plan.stop_at_us.is_some_and(|x| now >= x) {
             st.goal = 0.0;
         }
@@ -159,6 +171,9 @@ impl Sim {
         st.power += (follow - st.power) * (dt / 0.8);
         if st.cadence < 1.0 {
             st.power = 0.0;
+        }
+        if silent {
+            return;
         }
         if now.is_multiple_of(350_000) {
             st.events = st.events.wrapping_add(1);
@@ -204,10 +219,49 @@ impl Wire for Sim {
         self.lock().at
     }
     async fn send(&self, frame: [u8; 13]) -> Option<String> {
+        if self.record_tx(frame) {
+            std::future::pending::<()>().await;
+        }
+        self.advance();
+        let s = self.lock();
+        self.plan
+            .drop_at_us
+            .is_some_and(|x| s.at >= x)
+            .then(|| "not connected".into())
+    }
+    fn mark(&self) -> usize {
+        self.advance();
+        self.lock().rx.len()
+    }
+    fn since(&self, mark: usize) -> Vec<Record> {
+        self.advance();
+        let now = self.lock().at;
+        if self.plan.panic_at_us.is_some_and(|x| now >= x)
+            && !self
+                .panicked
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            panic!("simulated harness panic");
+        }
+        self.lock().rx[mark..].to_vec()
+    }
+    fn dropped(&self) -> bool {
+        self.advance();
+        self.plan.drop_at_us.is_some_and(|x| self.lock().at >= x)
+    }
+    fn records(&self) -> Vec<Record> {
+        self.advance();
+        self.lock().records.clone()
+    }
+}
+
+impl Sim {
+    /// Record and apply a write; `true` when it will never be acknowledged.
+    fn record_tx(&self, frame: [u8; 13]) -> bool {
         self.advance();
         let mut s = self.lock();
         if self.plan.drop_at_us.is_some_and(|x| s.at >= x) {
-            return Some("not connected".into());
+            return false;
         }
         let at = s.at;
         s.records.push(Record {
@@ -240,23 +294,7 @@ impl Wire for Sim {
             s.seq = s.seq.wrapping_add(1);
             s.last_control = frame;
         }
-        None
-    }
-    fn mark(&self) -> usize {
-        self.advance();
-        self.lock().rx.len()
-    }
-    fn since(&self, mark: usize) -> Vec<Record> {
-        self.advance();
-        self.lock().rx[mark..].to_vec()
-    }
-    fn dropped(&self) -> bool {
-        self.advance();
-        self.plan.drop_at_us.is_some_and(|x| self.lock().at >= x)
-    }
-    fn records(&self) -> Vec<Record> {
-        self.advance();
-        self.lock().records.clone()
+        self.plan.hang_from_us.is_some_and(|x| at >= x)
     }
 }
 

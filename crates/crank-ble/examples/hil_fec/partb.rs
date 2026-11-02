@@ -1,13 +1,35 @@
 //! Offline analysis of the Part B control checks (#44 checks 6, 7, 12; #412).
 //!
-//! Every result is a pure function of the `.fecap` records, so `analyse` re-derives it from a
-//! committed capture: the procedure's own timing is read back from its tx writes, the rider's
-//! from page 25 (power, cadence).
+//! Every result is a pure function of the `.fecap` records and the capture's outcome line, so
+//! `analyse` re-derives it from a committed capture: the procedure's own timing is read back
+//! from its tx writes, the rider's from page 25 (power, cadence). Only a run whose procedure
+//! completed gives a result; any other run (or a capture without an outcome line) reports
+//! "no result" and no verdict.
 use crate::frames::{Record, page_of};
 use crank_fec::{Page, decode};
 use serde_json::{Value, json};
 
 const SEC: u64 = 1_000_000;
+
+/// Prefix of the comment line `hil_fec` appends to a Part B capture once the link is closed.
+pub const OUTCOME: &str = "# hil_fec procedure: ";
+/// The outcome of a procedure that ran to its end.
+pub const COMPLETED: &str = "completed";
+
+/// The outcome line of a capture's text, if it has one.
+pub fn outcome_in(text: &str) -> Option<String> {
+    text.lines()
+        .rev()
+        .find_map(|l| l.strip_prefix(OUTCOME))
+        .map(|o| o.trim().to_string())
+}
+
+/// Append the outcome line; call it after the link is closed, when nothing else writes.
+pub fn append_outcome(path: &std::path::Path, outcome: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().append(true).open(path)?;
+    writeln!(f, "{OUTCOME}{outcome}")
+}
 
 /// One page-25 sample.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -288,24 +310,24 @@ pub fn check6(records: &[Record]) -> Value {
     })
 }
 
-/// Check 7: the target over the longest stretch without any write.
+/// Check 7: the procedure's target over the stretch from its write to the next write.
 pub fn check7(records: &[Record]) -> Value {
     let s = samples(records);
-    let mut tx: Vec<u64> = records.iter().filter(|r| !r.rx).map(|r| r.at_us).collect();
-    tx.sort_unstable();
-    let Some((from, to)) = tx
-        .windows(2)
-        .map(|w| (w[0], w[1]))
-        .max_by_key(|(a, b)| b - a)
+    let target = f64::from(crate::rider::CHECK7_W);
+    let Some(from) = controls(records)
+        .iter()
+        .find(|(_, c)| *c == Control::Erg(target))
+        .map(|(at, _)| *at)
     else {
-        return json!({"error": "fewer than two writes"});
+        return json!({"error": format!("no page-49 write of {target} W")});
     };
-    let target = controls(records).iter().rev().find_map(|(at, c)| match c {
-        Control::Erg(w) if *at <= from => Some(*w),
-        _ => None,
-    });
-    let Some(target) = target else {
-        return json!({"error": "no page-49 target before the silent window"});
+    let Some(to) = records
+        .iter()
+        .filter(|r| !r.rx && r.at_us > from)
+        .map(|r| r.at_us)
+        .min()
+    else {
+        return json!({"error": "no write after the target"});
     };
     let p = powers(&s, from + SETTLE, to);
     let last = mean(powers(&s, to.saturating_sub(10 * SEC), to));
@@ -313,7 +335,7 @@ pub fn check7(records: &[Record]) -> Value {
     let held = within10.is_some_and(|x| x >= 0.9)
         && last.is_some_and(|m| (m - target).abs() <= target * 0.05);
     json!({
-        "method": "silent window = longest gap between two writes (any page); its first 10 s settle; held = >= 90 % of the later page-25 samples within ±10 % and the last 10 s mean within ±5 % of the target",
+        "method": "silent window = from the page-49 write of the procedure's target (the end of the soft start) to the next write of any page; its first 10 s settle; held = >= 90 % of the later page-25 samples within ±10 % and the last 10 s mean within ±5 % of the target",
         "target_w": target,
         "silent_s": round1(secs(to - from)),
         "samples": p.len(),
@@ -385,14 +407,25 @@ pub fn check12(records: &[Record]) -> Value {
     })
 }
 
-/// Part B analysis by capture stem (`check6` …), `None` for other captures.
-pub fn analyse(stem: &str, records: &[Record]) -> Option<Value> {
+/// Part B analysis by capture stem (`check6` …), `None` for other captures. `outcome` is how
+/// the procedure ended (the capture's outcome line); without `completed` there is no verdict.
+pub fn analyse(stem: &str, records: &[Record], outcome: Option<&str>) -> Option<Value> {
     let mut v = match stem {
         "check6" => check6(records),
         "check7" => check7(records),
         "check12" => check12(records),
         _ => return None,
     };
+    let completed = outcome == Some(COMPLETED);
+    v["procedure"] = json!(outcome.unwrap_or("unknown: the capture has no outcome line"));
+    v["completed"] = json!(completed);
+    if !completed {
+        for verdict in ["held", "released"] {
+            if v.get(verdict).is_some() {
+                v[verdict] = Value::Null;
+            }
+        }
+    }
     v["release"] = release(records);
     v["line"] = json!(line(stem, &v));
     Some(v)
@@ -406,6 +439,12 @@ fn num(v: &Value) -> String {
 pub fn line(stem: &str, v: &Value) -> String {
     let empty = Vec::new();
     let list = |key: &str| v[key].as_array().unwrap_or(&empty).clone();
+    let no_result = (v["completed"] != json!(true)).then(|| {
+        format!(
+            "no result: procedure {}",
+            v["procedure"].as_str().unwrap_or("unknown")
+        )
+    });
     let (n, what, result, adr) = match stem {
         "check6" => {
             let steps = list("steps")
@@ -467,6 +506,7 @@ pub fn line(stem: &str, v: &Value) -> String {
             "§7.9",
         ),
     };
+    let result = no_result.unwrap_or(result);
     let release = if v["release"]["page48_0pct_last"] == json!(true) {
         "released"
     } else {

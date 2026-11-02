@@ -239,9 +239,10 @@ impl Session {
         }
     }
 
-    /// Release the peripheral.
+    /// Release the peripheral; once this returns the pump no longer writes the capture.
     pub async fn close(self) {
         let _ = FecTransport::disconnect(&self.transport).await;
         self.pump.abort();
+        let _ = self.pump.await;
     }
 }
