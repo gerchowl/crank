@@ -22,6 +22,9 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 specta.workspace = true
 specta-typescript.workspace = true
 tauri-plugin-wdio-webdriver = { workspace = true, optional = true }
+# The bug-report surface (ADR-0003 §2.1): `Transport::Browser` only, so the core never opens a browser. `serde` is for
+# `squelch::form::github::IssueForm`, which the issue-form sync test parses. Moving the rev is a reviewed PR; crates.io is #433.
+squelch = { git = "https://github.com/gerchowl/squelch", rev = "4f0d0640e4dbf941b87b5cc5dc59e5e60dc86816", default-features = false, features = ["browser", "logs", "serde"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CGDisplayScreenSize for the window's display (#286); already in the lockfile through tao.
@@ -38,6 +41,8 @@ crank-ble.workspace = true
 tauri = { workspace = true, features = ["test"] }
 serde_json.workspace = true
 tempfile = "3"
+# Parses `.github/ISSUE_TEMPLATE/bug.yml` in the issue-form sync test; squelch's own test uses it (`serde_yaml` is archived).
+serde_yaml_ng = "0.10"
 tokio = { version = "1", features = ["macros", "rt", "test-util", "time"] }
 
 [build-dependencies]
