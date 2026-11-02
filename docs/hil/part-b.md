@@ -198,13 +198,19 @@ whole second):
 - page 25 (samples with a power) has no gap above **2 s** inside the window, the window's edges
   included, i.e. the first sample is at most 2 s after the start and the last at most 2 s before the
   end (2 s is the silence at which the harness itself stops the ride, ADR-0002 §6);
+- the page-25 samples that carry a **cadence** (not 0xFF) have no gap above **2 s** either, by the same
+  rule: cadence present in one frame of a window is not coverage;
 - `2A63` has no gap above **3 s** by the same rule (three missed notifications at its nominal 1 Hz);
 - cadence comes only from crank-revolution pairs whose **both** notifications lie inside the window,
   and those pairs leave no stretch of the window uncovered by more than **3 s** (so a pair reaching back
   before the window, over a stretch without crank data, is not used);
+  one pair may itself span up to 32 s inside the window (`PAIR_MAX_US`; notifications without a new crank
+  event add nothing), which is fine: the counters are cumulative, so revolutions over event time stay
+  exact whatever lies between the two notifications;
 - at least one second of the window holds a sample of each stream, so a power difference exists.
 
-Anything else is `insufficient: <target> (<window>): <which stream, how long>`. A gap exactly at its
+Anything else is `insufficient: <target> (<window>): <which stream, how long>`, naming the stream that is
+missing (page-25 power, page-25 cadence, 2A63 power, 2A63 crank data). A gap exactly at its
 bound is within it. More than **10 %** of the `2A63` notifications malformed (shorter than their flags
 say) is `insufficient` too (exactly 10 % passes), since those notifications are silently missing. The
 per-second power comparison itself still bins by capture second, but a second that lacks a sample of
