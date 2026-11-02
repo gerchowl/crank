@@ -22,11 +22,8 @@ const PAGE25_GAP_MAX_US: u64 = 2 * SEC;
 /// Inside a settled window 2A63 may be silent for at most this long: three missed notifications
 /// at its nominal 1 Hz.
 const CPS_GAP_MAX_US: u64 = 3 * SEC;
-/// A window needs at least `COVERAGE_NUM / COVERAGE_DEN` of its whole seconds with both streams.
-const COVERAGE_NUM: usize = 3;
-const COVERAGE_DEN: usize = 4;
-/// ... and at least this many seconds in absolute terms: a verdict needs a ride, not a glimpse.
-const MIN_WINDOW_SECONDS: usize = 10;
+/// A settled window must be at least this long: a verdict needs a ride, not a glimpse.
+const MIN_WINDOW_SECONDS: u64 = 10;
 /// More than this share of malformed 2A63 notifications leaves no verdict.
 const MALFORMED_MAX_PERCENT: usize = 10;
 /// Two CPS notifications further apart than this are not paired for cadence: the 16-bit
@@ -75,6 +72,9 @@ struct Reading {
 
 /// Crank revolutions over the crank-event time between two notifications.
 struct Pair {
+    /// Arrival of the notification the pair starts at.
+    from_us: u64,
+    /// Arrival of the notification the pair ends at.
     at_us: u64,
     revs: f64,
     secs: f64,
@@ -121,6 +121,7 @@ fn parse(cps: &[Cps]) -> Parsed {
             out.rejected += 1;
         } else {
             out.pairs.push(Pair {
+                from_us: at,
                 at_us: c.at_us,
                 revs: dr,
                 secs,
@@ -149,6 +150,8 @@ struct Window {
     compared: usize,
     page25_gap: u64,
     cps_gap: u64,
+    /// Longest stretch of the window not covered by a crank-revolution pair lying inside it.
+    crank_gap: u64,
     /// Mean page-25 cadence and the CPS cadence over the window, rpm.
     cadence: Option<(f64, f64)>,
 }
@@ -176,10 +179,17 @@ fn max_gap(mut times: Vec<u64>, from: u64, to: u64) -> u64 {
     gap.max(to.saturating_sub(prev))
 }
 
-/// Enough of a window's whole seconds were compared (`COVERAGE_NUM` / `COVERAGE_DEN` of them,
-/// and at least `MIN_WINDOW_SECONDS`).
-fn covered(compared: usize, whole: usize) -> bool {
-    compared >= MIN_WINDOW_SECONDS && compared * COVERAGE_DEN >= whole * COVERAGE_NUM
+/// Longest stretch of `[from, to)` not covered by a pair lying wholly inside it: the cadence of
+/// a window may only come from revolutions counted between two notifications of the window.
+fn crank_gap(pairs: &[&Pair], from: u64, to: u64) -> u64 {
+    let mut sorted: Vec<&&Pair> = pairs.iter().collect();
+    sorted.sort_by_key(|p| p.from_us);
+    let (mut prev, mut gap) = (from, 0);
+    for p in sorted {
+        gap = gap.max(p.from_us.saturating_sub(prev));
+        prev = prev.max(p.at_us);
+    }
+    gap.max(to.saturating_sub(prev))
 }
 
 /// The comparison inside one settled window; `seconds` collects the per-second `(page 25, 2A63)`
@@ -216,10 +226,13 @@ fn compare_window(
             .filter(|x| in_window(x.at_us, from, to))
             .filter_map(|x| x.cadence.map(f64::from)),
     );
-    let (revs, time) = parsed
+    let inside: Vec<&Pair> = parsed
         .pairs
         .iter()
-        .filter(|p| in_window(p.at_us, from, to))
+        .filter(|p| p.from_us >= from && p.at_us < to)
+        .collect();
+    let (revs, time) = inside
+        .iter()
         .fold((0.0, 0.0), |(r, t), p| (r + p.revs, t + p.secs));
     Window {
         watts,
@@ -236,6 +249,7 @@ fn compare_window(
             to,
         ),
         cps_gap: max_gap(parsed.readings.iter().map(|r| r.at_us).collect(), from, to),
+        crank_gap: crank_gap(&inside, from, to),
         cadence: fe.filter(|_| time > 0.0).map(|fe| (fe, 60.0 * revs / time)),
     }
 }
@@ -281,11 +295,11 @@ pub fn check5(records: &[Record], cps: &[Cps]) -> Value {
 
     let verdict = verdict(&parsed, rate_hz, &windows, (outside, max_abs, cadence_max));
     json!({
-        "method": "both streams are stamped on arrival by the same process clock, so no offset is estimated; settled windows = each page-49 target held >= 10 s, after its first 10 s (power is steady under ERG, so the residual jitter of the two notification streams is not mistaken for disagreement); coverage: every ERG target of the procedure needs its window, in each window both streams must have no gap above 2 s (page 25) / 3 s (2A63) and at least 3/4 of its whole seconds must hold a sample of each, else the verdict names the target and is insufficient; more than 10 % malformed 2A63 notifications is insufficient; power: for each whole second of a window with at least one sample of each stream, mean page-25 power minus mean 2A63 power, which must be within ±1 W (ADR-0002 §5) in every compared second; cadence: per window, mean page-25 cadence against 2A63 crank revolutions over crank event time (differences modulo 2^16, event time in 1/1024 s), within ±1 rpm; page 25 must arrive at >= 2 Hz",
+        "method": "both streams are stamped on arrival by the same process clock, so no offset is estimated; settled windows = each page-49 target held >= 10 s, after its first 10 s (power is steady under ERG, so the residual jitter of the two notification streams is not mistaken for disagreement); coverage, in continuous time: every ERG target of the procedure needs its window (>= 10 s); inside it neither stream may be silent for more than 2 s (page 25) / 3 s (2A63), window edges included, and the crank-revolution pairs lying wholly inside the window must leave no stretch of it uncovered by more than 3 s, else the verdict names the target and is insufficient; more than 10 % malformed 2A63 notifications is insufficient; power: for each whole second of a window with at least one sample of each stream, mean page-25 power minus mean 2A63 power, which must be within ±1 W (ADR-0002 §5) in every compared second; cadence: per window, mean page-25 cadence against 2A63 crank revolutions over crank event time (differences modulo 2^16, event time in 1/1024 s), within ±1 rpm; page 25 must arrive at >= 2 Hz",
         "tolerances": {
             "power_w": POWER_TOL_W, "cadence_rpm": CADENCE_TOL_RPM, "page25_min_hz": RATE_MIN_HZ,
             "page25_gap_max_s": secs(PAGE25_GAP_MAX_US), "cps_gap_max_s": secs(CPS_GAP_MAX_US),
-            "coverage_share": 0.75, "min_window_seconds": MIN_WINDOW_SECONDS,
+            "min_window_seconds": MIN_WINDOW_SECONDS,
             "malformed_max_percent": MALFORMED_MAX_PERCENT,
         },
         "page25": {"samples": s.len(), "rate_hz": rate_hz.map(round1), "max_gap_s": max_gap_s.map(round1)},
@@ -317,7 +331,8 @@ pub fn check5(records: &[Record], cps: &[Cps]) -> Value {
     })
 }
 
-/// The verdict: `insufficient` unless every target is covered by both streams, else `agree` or
+/// The verdict: `insufficient` unless every target is covered, in continuous time, by both streams
+/// and by crank data, else `agree` or
 /// `disagree`. `(outside, max_abs, cadence_max)` are the seconds outside ±1 W, the largest
 /// power difference and the largest cadence difference.
 fn verdict(
@@ -363,15 +378,17 @@ fn verdict(
                 secs(CPS_GAP_MAX_US)
             ));
         }
-        if !covered(w.compared, w.whole) {
-            gaps.push(format!(
-                "{what}: only {} of {} seconds hold both streams",
-                w.compared, w.whole
-            ));
+        if w.to - w.from < MIN_WINDOW_SECONDS * SEC {
+            gaps.push(format!("{what}: shorter than {MIN_WINDOW_SECONDS} s"));
         }
-        if w.cadence.is_none() {
+        if w.compared == 0 {
+            gaps.push(format!("{what}: no second holds both streams"));
+        }
+        if w.crank_gap > CPS_GAP_MAX_US || w.cadence.is_none() {
             gaps.push(format!(
-                "{what}: no 2A63 crank-revolution data to derive cadence"
+                "{what}: no 2A63 crank-revolution data for {} s (> {} s) inside the window to derive cadence",
+                round1(secs(w.crank_gap)),
+                secs(CPS_GAP_MAX_US)
             ));
         }
     }
@@ -521,14 +538,7 @@ mod tests {
             at += every_us;
         }
         let cps = (0..secs)
-            .map(|k| {
-                cps(
-                    k * SEC + 400_000,
-                    150 + offset_w,
-                    u16::try_from(k * 3 / 2).expect("fits"),
-                    u16::try_from(k * 1024).expect("fits"),
-                )
-            })
+            .map(|k| cps_at(k * SEC + 400_000, k * SEC + 400_000, 150 + offset_w))
             .collect();
         (records, cps)
     }
@@ -589,14 +599,6 @@ mod tests {
     }
 
     #[test]
-    fn coverage_needs_three_quarters_and_ten_seconds() {
-        assert!(covered(10, 10) && covered(15, 20));
-        assert!(!covered(14, 20), "under 3/4");
-        assert!(!covered(9, 9), "under 10 s whatever the share");
-        assert!(covered(10, 13) && !covered(10, 14));
-    }
-
-    #[test]
     fn a_gap_is_measured_from_the_edges_of_the_window() {
         assert_eq!(max_gap(vec![], 10, 30), 20);
         assert_eq!(max_gap(vec![12, 13, 29], 10, 30), 16);
@@ -622,6 +624,250 @@ mod tests {
                 .as_str()
                 .is_some_and(|x| x.starts_with("insufficient: 1 settled windows")),
             "{v}"
+        );
+    }
+
+    // ---- coverage in continuous time ----
+
+    fn erg(at_us: u64, watts: f32) -> Record {
+        use crank_fec::{ControlPage, encode};
+        Record {
+            at_us,
+            rx: false,
+            bytes: encode(&ControlPage::TargetPower { watts })
+                .expect("encodes")
+                .to_vec(),
+        }
+    }
+
+    /// A page-25 frame at 90 rpm and 150 W (power unavailable when asked).
+    fn fe_frame(at_us: u64, power_unavailable: bool) -> Record {
+        let mut f = [0xa4, 9, 0x4e, 5, 25, 0, 90, 0, 0, 150, 0, 0x30, 0];
+        if power_unavailable {
+            (f[9], f[10]) = (0xff, 0x0f);
+        }
+        f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
+        Record {
+            at_us,
+            rx: true,
+            bytes: f.to_vec(),
+        }
+    }
+
+    /// The 2A63 notification a 90 rpm rider's trainer sends at `nominal` (a crank event every
+    /// 2/3 s, event time in 1/1024 s), arriving at `arrival`.
+    fn cps_at(arrival: u64, nominal: u64, power: i16) -> Cps {
+        let events = nominal * 3 / 2 / SEC;
+        let ticks = (events * 2048 + 1) / 3;
+        cps(
+            arrival,
+            power,
+            u16::try_from(events % 65_536).expect("fits"),
+            u16::try_from(ticks % 65_536).expect("fits"),
+        )
+    }
+
+    /// `step`-spaced times in `[first, 60 s)`.
+    fn grid(step: u64, first: u64) -> Vec<u64> {
+        (0..=60 * SEC / step)
+            .map(|k| first + k * step)
+            .filter(|t| *t < 60 * SEC)
+            .collect()
+    }
+
+    /// `times` with a hole: nothing in `(a, a + gap)`, a sample at exactly `a + gap`.
+    fn holed(times: &[u64], a: u64, gap: u64) -> Vec<u64> {
+        times
+            .iter()
+            .copied()
+            .filter(|t| *t <= a)
+            .chain([a + gap])
+            .chain(times.iter().copied().filter(|t| *t > a + gap))
+            .collect()
+    }
+
+    /// Check 5's verdict of a 60 s ride (150 W, then 200 W from 30 s) with these streams.
+    fn verdict_of(fe: Vec<Record>, cp: &[Cps]) -> String {
+        let mut records = vec![erg(0, 150.0), erg(30 * SEC, 200.0)];
+        records.extend(fe);
+        check5(&records, cp)["verdict"]
+            .as_str()
+            .expect("verdict")
+            .to_string()
+    }
+
+    fn fe_of(times: &[u64]) -> Vec<Record> {
+        times.iter().map(|t| fe_frame(*t, false)).collect()
+    }
+
+    fn cps_of(times: &[u64]) -> Vec<Cps> {
+        times.iter().map(|t| cps_at(*t, *t, 150)).collect()
+    }
+
+    fn insufficient(v: &str, what: &str) -> bool {
+        v.starts_with("insufficient: ") && v.contains(what)
+    }
+
+    #[test]
+    fn the_page_25_gap_bound_is_2_s_exactly() {
+        let (fe, cp) = (grid(250_000, 0), cps_of(&grid(SEC, 400_000)));
+        assert_eq!(verdict_of(fe_of(&fe), &cp), "agree");
+        let at = verdict_of(fe_of(&holed(&fe, 15 * SEC, 2 * SEC)), &cp);
+        assert_eq!(at, "agree", "a gap of exactly 2 s is within the bound");
+        let over = verdict_of(fe_of(&holed(&fe, 15 * SEC, 2 * SEC + 1)), &cp);
+        assert!(insufficient(&over, "no page 25 for"), "{over}");
+    }
+
+    #[test]
+    fn the_2a63_gap_bound_is_3_s_exactly() {
+        let (fe, cp) = (grid(250_000, 0), grid(SEC, 400_000));
+        let at = verdict_of(
+            fe_of(&fe),
+            &cps_of(&holed(&cp, 15 * SEC + 400_000, 3 * SEC)),
+        );
+        assert_eq!(at, "agree", "a gap of exactly 3 s is within the bound");
+        let over = verdict_of(
+            fe_of(&fe),
+            &cps_of(&holed(&cp, 15 * SEC + 400_000, 3 * SEC + 1)),
+        );
+        assert!(insufficient(&over, "no 2A63 for"), "{over}");
+    }
+
+    #[test]
+    fn page_25_samples_without_power_do_not_cover_a_gap() {
+        let (fe, cp) = (grid(250_000, 0), cps_of(&grid(SEC, 400_000)));
+        let blind: Vec<Record> = fe
+            .iter()
+            .map(|t| fe_frame(*t, (15 * SEC..20 * SEC).contains(t)))
+            .collect();
+        let v = verdict_of(blind, &cp);
+        assert!(insufficient(&v, "no page 25 for"), "{v}");
+    }
+
+    #[test]
+    fn the_malformed_bound_is_10_percent_exactly() {
+        let (fe, times) = (grid(250_000, 0), grid(SEC, 400_000));
+        let cut = |n: usize| -> Vec<Cps> {
+            let mut cp = cps_of(&times);
+            for i in &[5, 15, 25, 35, 45, 55, 20][..n] {
+                cp[*i].bytes.truncate(5);
+            }
+            cp
+        };
+        assert_eq!(
+            verdict_of(fe_of(&fe), &cut(6)),
+            "agree",
+            "6 of 60 is exactly 10 %"
+        );
+        let v = verdict_of(fe_of(&fe), &cut(7));
+        assert!(insufficient(&v, "malformed"), "{v}");
+    }
+
+    #[test]
+    fn cadence_needs_crank_pairs_inside_the_window_not_one_that_reaches_back() {
+        let (fe, times) = (grid(250_000, 0), grid(SEC, 400_000));
+        let mut cp = cps_of(&times);
+        // No crank data from 33.5 s to 59 s: window 2 (40–60 s) has it in its last notification
+        // only, whose pair would start about 25 s before the window.
+        for c in cp
+            .iter_mut()
+            .filter(|c| c.at_us >= 33_500_000 && c.at_us < 59 * SEC)
+        {
+            c.bytes = vec![0, 0, c.bytes[2], c.bytes[3]];
+        }
+        let v = verdict_of(fe_of(&fe), &cp);
+        assert!(
+            insufficient(&v, "200 W target") && v.contains("no 2A63 crank-revolution data"),
+            "{v}"
+        );
+    }
+
+    /// A small deterministic generator (xorshift64) for the sweep.
+    struct Rng(u64);
+    impl Rng {
+        #[allow(clippy::cast_precision_loss)]
+        fn unit(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as f64 / (1_u64 << 53) as f64
+        }
+        /// Normal with the given σ, µs (sum of 12 uniforms).
+        fn jitter(&mut self, sigma_us: f64) -> f64 {
+            ((0..12).map(|_| self.unit()).sum::<f64>() - 6.0) * sigma_us
+        }
+    }
+
+    /// `(page-25 hole, 2A63 hole)`, each `(from, length)` in µs.
+    type Holes = (Option<(u64, u64)>, Option<(u64, u64)>);
+
+    /// One 60 s ride with jittered, thinned streams; `(page-25 hole, 2A63 hole)` removes what
+    /// arrives in `[a, a + len)`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    fn jittered((phase, sigma_ms, drop_pct, seed): (u64, u64, u64, u64), holes: Holes) -> String {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15
+            ^ ((seed + 1) * 0x1234_5679)
+            ^ phase << 20
+            ^ sigma_ms << 8
+            ^ drop_pct);
+        let sigma = sigma_ms as f64 * 1000.0;
+        let stamp =
+            |nominal: u64, rng: &mut Rng| (nominal as f64 + rng.jitter(sigma)).max(0.0) as u64;
+        let keep = |rng: &mut Rng| rng.unit() * 100.0 >= drop_pct as f64;
+        let gone = |hole: Option<(u64, u64)>, at: u64| {
+            hole.is_some_and(|(a, len)| at >= a && at < a + len)
+        };
+        let mut fe: Vec<u64> = grid(250_000, 0)
+            .into_iter()
+            .map(|t| stamp(t, &mut rng))
+            .collect();
+        fe.retain(|t| !gone(holes.0, *t));
+        fe.retain(|_| keep(&mut rng));
+        let mut cp: Vec<Cps> = grid(SEC, phase * 1000)
+            .into_iter()
+            .map(|t| cps_at(stamp(t, &mut rng), t, 150))
+            .collect();
+        cp.retain(|c| !gone(holes.1, c.at_us));
+        cp.retain(|_| keep(&mut rng));
+        fe.sort_unstable();
+        verdict_of(fe_of(&fe), &cp)
+    }
+
+    #[test]
+    fn a_matching_run_agrees_wherever_its_notifications_fall_and_missing_coverage_never_does() {
+        let (mut runs, mut agreed, mut leaked) = (0, 0, Vec::new());
+        let mut failures = Vec::new();
+        for phase in (0..1000).step_by(100) {
+            for sigma_ms in [0, 5, 20, 50, 100] {
+                for drop_pct in [0, 1, 3] {
+                    for seed in 0..4 {
+                        let k = (phase, sigma_ms, drop_pct, seed);
+                        runs += 1;
+                        let v = jittered(k, (None, None));
+                        if v == "agree" {
+                            agreed += 1;
+                        } else if failures.len() < 5 {
+                            failures.push(format!("{k:?}: {v}"));
+                        }
+                        let a = (12 + seed * 3) * SEC;
+                        for holes in [(Some((a, 2_600_000)), None), (None, Some((a, 4 * SEC)))] {
+                            let v = jittered(k, holes);
+                            if v == "agree" || v.starts_with("disagree") && !v.contains("rate") {
+                                leaked.push(format!("{k:?} {holes:?}: {v}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(leaked.is_empty(), "{leaked:?}");
+        assert!(
+            agreed * 100 >= runs * 99,
+            "{agreed} of {runs} agree: {failures:?}"
         );
     }
 }
