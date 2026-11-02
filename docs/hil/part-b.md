@@ -186,9 +186,25 @@ are not mistaken for disagreement. Read back from the capture's own tx writes, t
 **Power.** For every whole capture second inside a window that has at least one sample of each stream:
 the mean page-25 power minus the mean `2A63` power. Page 25 power is the instantaneous 12-bit field;
 `2A63` is the signed 16-bit instantaneous power. The tolerance is the ADR's: every compared second
-within **±1 W** (exactly ±1 W passes), of at least **20** (`MIN_SECONDS`; fewer is `insufficient`, a
-verdict needs a ride, not a glimpse). The result also gives the mean difference (`bias_w`), the
+within **±1 W** (exactly ±1 W passes). The result also gives the mean difference (`bias_w`), the
 largest, and how many seconds were within the tolerance.
+
+**Coverage.** A good average must not hide a target that was never compared, so the verdict first
+checks, for **each** ERG target of the procedure (one settled window per target, `rider::CHECK5_W`):
+
+- both streams have a sample in at least **3/4** of the window's whole seconds, and at least
+  **10** seconds (a verdict needs a ride, not a glimpse; a 30 s hold gives a 20 s window);
+- page 25 has no gap above **2 s** inside the window, edges included (the 2 s silence at which the
+  harness itself stops the ride, ADR-0002 §6);
+- `2A63` has no gap above **3 s** (three missed notifications at its nominal 1 Hz);
+- the window has `2A63` crank data to derive a cadence from.
+
+Anything else is `insufficient: <target> (<window>): <which stream, how long>`: it names the target and
+the stream. The checks count samples and gaps, never the placement of a notification inside its second,
+so shifting one stream by up to a second (the skew between the two clocks' notification paths) gives the
+same verdict; the sim tests sweep it. More than **10 %** of the `2A63` notifications malformed (shorter
+than their flags say) is `insufficient` too, since those seconds are silently missing. The settled-window
+bounds are the same live and offline.
 
 **Rate.** Page-25 samples over the whole capture: (n − 1) / span must be ≥ **2 Hz** (the ADR's figure),
 and the largest gap is reported.
