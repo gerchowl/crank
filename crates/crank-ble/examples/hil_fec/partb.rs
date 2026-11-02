@@ -25,12 +25,51 @@ pub fn outcome_in(text: &str) -> Option<String> {
         .map(|o| o.trim().to_string())
 }
 
-/// Append the outcome line; call it after the link is closed, when nothing else writes.
-pub fn append_outcome(path: &std::path::Path, outcome: &str) -> std::io::Result<()> {
+/// Prefix of the comment line that follows the outcome line: when the run ended, Unix seconds.
+/// It orders the runs of a riding session ([`SESSION_BOUND_S`]).
+pub const FINISHED: &str = "# hil_fec finished: ";
+
+/// When the capture's run ended, Unix seconds, if it says.
+pub fn finished_in(text: &str) -> Option<u64> {
+    text.lines()
+        .rev()
+        .find_map(|l| l.strip_prefix(FINISHED))
+        .and_then(|t| t.trim().parse().ok())
+}
+
+/// Append the outcome line and the finished stamp; call it after the link is closed, when
+/// nothing else writes.
+pub fn append_outcome(
+    path: &std::path::Path,
+    outcome: &str,
+    finished_unix_s: u64,
+) -> std::io::Result<()> {
     use std::io::Write;
     let mut f = std::fs::OpenOptions::new().append(true).open(path)?;
-    writeln!(f, "{OUTCOME}{outcome}")
+    writeln!(f, "{OUTCOME}{outcome}")?;
+    writeln!(f, "{FINISHED}{finished_unix_s}")
 }
+
+/// The trainer serial of a capture: the page-81 serial of its rx frames. `Err`: why there is
+/// none to go by (no page 81, a redacted `FF FF FF FF`, or frames that disagree).
+pub fn serial_in(records: &[Record]) -> Result<u32, String> {
+    let mut serials = records
+        .iter()
+        .filter(|r| r.rx && page_of(&r.bytes) == Some(0x51))
+        .map(|r| u32::from_le_bytes([r.bytes[8], r.bytes[9], r.bytes[10], r.bytes[11]]))
+        .collect::<Vec<_>>();
+    serials.sort_unstable();
+    serials.dedup();
+    match serials[..] {
+        [] => Err("no page-81 serial".into()),
+        [UNSPECIFIED_SERIAL] => Err("the page-81 serial is unspecified (redacted)".into()),
+        [serial] => Ok(serial),
+        _ => Err("page-81 serials disagree".into()),
+    }
+}
+
+/// Page 81's "no serial" value, which `redact` writes over the real one.
+const UNSPECIFIED_SERIAL: u32 = 0xffff_ffff;
 
 /// One page-25 sample.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -470,6 +509,11 @@ pub const STALL_FLOOR_RPM: u8 = 25;
 /// any delay before the response only adds to t90, so it can only fail a trainer.
 pub const MAX_T90_US: u64 = 2_300_000;
 
+/// Check 6 and check 9 are of one riding session when check 6 ended at most this long before
+/// check 9 (2 h): long enough for the runbook's checks and rests in between, short enough that
+/// it is the same rider on the same setup rather than another day's.
+pub const SESSION_BOUND_S: u64 = 2 * 60 * 60;
+
 /// The trainer's power response as check 6 of the same capture set measured it. Check 9's
 /// "the release comes first" holds only within [`MAX_T90_US`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -515,12 +559,51 @@ impl PowerLag {
         }
     }
 
-    /// From `check6.fecap` next to `capture` (the same `--out` directory).
-    pub fn beside(capture: &std::path::Path) -> Self {
+    /// Check 6 of the same trainer and session as `capture` (its text `text`), read from
+    /// `check6.fecap` next to it (the same `--out` directory). A check 6 that cannot be shown to
+    /// be this trainer's, from this session, is [`Self::NotMeasured`], never a measurement:
+    /// "the release comes first" rests on it.
+    pub fn beside(capture: &std::path::Path, text: &str) -> Self {
         match std::fs::read_to_string(capture.with_file_name("check6.fecap")) {
-            Ok(text) => Self::of_check6(Some(&text)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::of_check6(None),
+            Ok(check6) => Self::of_session(text, Some(&check6)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::of_session(text, None),
             Err(e) => Self::NotMeasured(format!("check6.fecap: {e}")),
+        }
+    }
+
+    /// [`Self::of_check6`] of `check6`, if it is of the trainer that `check9` (a check-9 capture
+    /// text) is of, and ended no more than [`SESSION_BOUND_S`] before it. Both captures must
+    /// carry the same page-81 serial and a finished stamp ([`FINISHED`]).
+    pub fn of_session(check9: &str, check6: Option<&str>) -> Self {
+        let lag = Self::of_check6(check6);
+        let Some(check6) = check6.filter(|_| matches!(lag, Self::Within(_) | Self::TooSlow(_)))
+        else {
+            return lag;
+        };
+        let not = |why: String| Self::NotMeasured(why);
+        let serial = |name: &str, text: &str| {
+            serial_in(&parse_capture(text)).map_err(|e| not(format!("{name}: {e}")))
+        };
+        let (s9, s6) = match (serial("check 9", check9), serial("check 6", check6)) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(e), _) | (_, Err(e)) => return e,
+        };
+        if s9 != s6 {
+            return not("check 6 is of a different trainer (page-81 serials differ)".into());
+        }
+        let (Some(f9), Some(f6)) = (finished_in(check9), finished_in(check6)) else {
+            return not(
+                "check 6 or check 9 has no finished stamp, so the session is unknown".into(),
+            );
+        };
+        match f9.checked_sub(f6) {
+            None => not("check 6 ended after check 9; run check 6 first".into()),
+            Some(gap) if gap > SESSION_BOUND_S => not(format!(
+                "check 6 ended {} min before check 9, outside the {} min session bound",
+                gap / 60,
+                SESSION_BOUND_S / 60
+            )),
+            Some(_) => lag,
         }
     }
 
