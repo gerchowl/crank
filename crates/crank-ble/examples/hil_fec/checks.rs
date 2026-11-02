@@ -3,7 +3,7 @@ use crate::{
     cli::{Args, Check, write_summary},
     frames::{
         Checksum, analysis, build, command_status, distribution, hex, page_of, page_rates,
-        parse_capture, redact_capture, redact_frame, redact_name, request_latencies,
+        parse_capture, parse_cps, redact_capture, redact_frame, redact_name, request_latencies,
         with_page_byte,
     },
     partb,
@@ -58,9 +58,19 @@ pub async fn run(args: &Args) -> Result<Outcome> {
     let summary = if args.check == Check::Latency {
         latency(args, &adv, adapter, device, &capture_path).await?
     } else if let Some(p) = args.check.procedure() {
-        let s = Session::open(&adv, adapter, device, &capture_path).await?;
+        let mut s = Session::open(&adv, adapter, device, &capture_path).await?;
+        if p == rider::Procedure::Check5
+            && let Err(e) = s.subscribe_cps().await
+        {
+            // Nothing was written to the trainer yet: it is still in the state it connected in.
+            s.close().await;
+            return Ok(Outcome::Blocked(format!(
+                "check 5 needs Cycling Power 2A63 on the NEO: {e}"
+            )));
+        }
         let report = rider::drive(&s, &rider::Console::new(), p, rider::signals()).await;
         let records = Wire::records(&s);
+        let cps = Wire::cps(&s);
         let identity = identity(&s);
         let dropped = s.pump_ended();
         s.close().await;
@@ -72,6 +82,7 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             args.check.name(),
             &report,
             &records,
+            &cps,
             &capture_path,
             finished,
         );
@@ -96,6 +107,7 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             | Check::Latency
             | Check::Redact
             | Check::Analyse
+            | Check::Check5
             | Check::Check6
             | Check::Check7
             | Check::Check8
@@ -126,6 +138,7 @@ fn procedure_summary(
     stem: &str,
     report: &rider::Report,
     records: &[crate::frames::Record],
+    cps: &[crate::frames::Cps],
     capture_path: &std::path::Path,
     finished_unix_s: u64,
 ) -> Value {
@@ -139,7 +152,7 @@ fn procedure_summary(
         Ok(text) => partb::PowerLag::beside(capture_path, &text),
         Err(e) => partb::PowerLag::NotMeasured(format!("{}: {e}", capture_path.display())),
     };
-    let mut summary = rider::summary(p, stem, report, records, &lag);
+    let mut summary = rider::summary(p, stem, report, records, cps, &lag);
     if let Err(e) = appended {
         summary["outcome_line_error"] = json!(e.to_string());
     }
@@ -178,8 +191,14 @@ fn analyse(args: &Args) -> Result<Outcome> {
     let records = parse_capture(&text);
     let mut v = analysis(&records);
     let lag = partb::PowerLag::beside(std::path::Path::new(src), &text);
-    if let Some(part_b) = partb::analyse(stem, &records, partb::outcome_in(&text).as_deref(), &lag)
-    {
+    let cps = parse_cps(&text);
+    if let Some(part_b) = partb::analyse(
+        stem,
+        &records,
+        &cps,
+        partb::outcome_in(&text).as_deref(),
+        &lag,
+    ) {
         if let Some(line) = part_b["line"].as_str() {
             println!("{line}");
         }
@@ -987,6 +1006,7 @@ mod tests {
         power_tau_s: 2.0,
         cadence_unavailable_from_us: None,
         serial: Some(OTHER),
+        cps: None,
     };
 
     async fn driven(p: Procedure, plan: Plan) -> (Report, Vec<Record>) {
@@ -1030,9 +1050,16 @@ mod tests {
         place(offline.path());
         let path = live.path().join("check9.fecap");
         std::fs::write(&path, lines(&records)).expect("write");
-        let live =
-            procedure_summary(Procedure::Check9, "check9", &report, &records, &path, T9)["result"]
-                .clone();
+        let live = procedure_summary(
+            Procedure::Check9,
+            "check9",
+            &report,
+            &records,
+            &[],
+            &path,
+            T9,
+        )["result"]
+            .clone();
         let target = offline.path().join("check9.fecap");
         std::fs::write(&target, capture(&records, &report, T9)).expect("write");
         let args = Args {
@@ -1162,5 +1189,201 @@ mod tests {
         assert_unproven(&result, "check6.fecap");
         let absent = check9_beside(Plan::default(), |_| {}).await;
         assert_unproven(&absent, "no check6.fecap");
+    }
+
+    use crate::sim::CpsPlan;
+
+    /// Check 5 of `plan` through the live summary and then through `analyse` on the very file
+    /// the live run leaves: the report, and the `result` of both, which must be one and the same.
+    async fn check5_of(plan: Plan) -> (Report, Value) {
+        let sim = Sim::new(plan);
+        let report = rider::drive(&sim, &sim, Procedure::Check5, std::future::pending()).await;
+        let (records, cps) = (Wire::records(&sim), Wire::cps(&sim));
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("check5.fecap");
+        let mut text = lines(&records);
+        for c in &cps {
+            let _ = writeln!(
+                text,
+                "{}{} {}",
+                crate::frames::CPS_TAG,
+                c.at_us,
+                hex(&c.bytes)
+            );
+        }
+        std::fs::write(&path, text).expect("write");
+        let live = procedure_summary(
+            Procedure::Check5,
+            "check5",
+            &report,
+            &records,
+            &cps,
+            &path,
+            T9,
+        )["result"]
+            .clone();
+        let args = Args {
+            check: Check::Analyse,
+            out: dir.path().join("out"),
+            scan_secs: 0,
+            idle_secs: 0,
+            target: Some(path.display().to_string()),
+        };
+        analyse(&args).expect("analyse");
+        let back = std::fs::read_to_string(args.out.join("check5.analysis.json")).expect("read");
+        let back: Value = serde_json::from_str(&back).expect("json");
+        assert_eq!(live, back["part_b"], "live and offline differ");
+        (report, live)
+    }
+
+    fn with_cps(cps: Option<CpsPlan>) -> Plan {
+        Plan {
+            cps,
+            ..Plan::default()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_agreeing_streams_pass_and_analyse_reproduces_the_row() {
+        let (report, v) = check5_of(Plan::default()).await;
+        assert_eq!(report.procedure, Ok(()));
+        assert_eq!(v["verdict"], "agree", "{v}");
+        assert!(v["seconds_compared"].as_u64().unwrap_or(0) >= 20, "{v}");
+        assert!(v["page25"]["rate_hz"].as_f64().unwrap_or(0.0) >= 2.0, "{v}");
+        let line = v["line"].as_str().expect("row");
+        assert!(
+            line.starts_with("| 5 |") && line.ends_with("§5 |") && line.contains("agree"),
+            "{line}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_a_mismatch_beyond_the_tolerance_fails_and_the_boundary_passes() {
+        let cps = |offset_w| {
+            with_cps(Some(CpsPlan {
+                offset_w,
+                ..CpsPlan::default()
+            }))
+        };
+        let (_, v) = check5_of(cps(2.0)).await;
+        let verdict = v["verdict"].as_str().expect("verdict");
+        assert!(
+            verdict.starts_with("disagree: power:") && verdict.contains("outside ±1 W"),
+            "{v}"
+        );
+        assert_eq!(v["bias_w"], -2.0);
+        let (_, v) = check5_of(cps(1.0)).await;
+        assert_eq!(
+            v["verdict"], "agree",
+            "exactly ±1 W is within the tolerance: {v}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_derives_cadence_across_the_rollover_of_both_cps_counters() {
+        let wrap = CpsPlan {
+            revs0: 65_530,
+            time0: 65_000,
+            ..CpsPlan::default()
+        };
+        let (_, v) = check5_of(with_cps(Some(wrap))).await;
+        assert_eq!(v["verdict"], "agree", "{v}");
+        assert_eq!(v["cps"]["rejected_pairs"], 0, "{v}");
+        for w in v["cadence_windows"].as_array().expect("windows") {
+            assert!(
+                (w["cps_rpm"].as_f64().unwrap_or(0.0) - 90.0).abs() <= 1.0,
+                "{v}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_without_cps_ends_released_with_no_result() {
+        let (sim, report) = {
+            let sim = Sim::new(with_cps(None));
+            let report = rider::drive(&sim, &sim, Procedure::Check5, std::future::pending()).await;
+            (sim, report)
+        };
+        assert!(
+            matches!(&report.procedure, Err(rider::Stop::Aborted(w)) if w.contains("2A63")),
+            "{:?}",
+            report.procedure
+        );
+        assert_eq!(report.release_error, None);
+        let (_, v) = check5_of(with_cps(None)).await;
+        assert_eq!(v["completed"], false);
+        assert!(v["verdict"].is_null(), "{v}");
+        assert!(
+            v["line"]
+                .as_str()
+                .is_some_and(|l| l.contains("no result: procedure aborted")),
+            "{v}"
+        );
+        assert_eq!(Wire::cps(&sim).len(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_on_a_capture_without_cps_gives_no_verdict() {
+        let sim = Sim::new(Plan::default());
+        let report = rider::drive(&sim, &sim, Procedure::Check5, std::future::pending()).await;
+        assert_eq!(report.procedure, Ok(()));
+        let v = partb::analyse(
+            "check5",
+            &Wire::records(&sim),
+            &[],
+            Some(partb::COMPLETED),
+            &partb::PowerLag::NotMeasured(String::new()),
+        )
+        .expect("check5");
+        assert!(
+            v["verdict"]
+                .as_str()
+                .is_some_and(|x| x.starts_with("no CPS")),
+            "{v}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_without_crank_data_cannot_confirm_cadence() {
+        let plan = with_cps(Some(CpsPlan {
+            no_crank: true,
+            ..CpsPlan::default()
+        }));
+        let (_, v) = check5_of(plan).await;
+        assert!(
+            v["verdict"]
+                .as_str()
+                .is_some_and(|x| x.starts_with("insufficient: no 2A63 crank")),
+            "{v}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check5_an_aborted_run_gives_no_result_even_with_agreeing_streams() {
+        let plan = Plan {
+            stop_at_us: Some(40_000_000),
+            ..Plan::default()
+        };
+        let (report, v) = check5_of(plan).await;
+        assert!(
+            matches!(report.procedure, Err(rider::Stop::Aborted(_))),
+            "{:?}",
+            report.procedure
+        );
+        assert!(v["verdict"].is_null() && v["completed"] == false, "{v}");
+        assert!(
+            v["line"]
+                .as_str()
+                .is_some_and(|l| l.contains("no result: procedure aborted")),
+            "{v}"
+        );
+    }
+
+    #[test]
+    fn redact_keeps_the_cps_lines() {
+        let text = "0 rx A4 09 4E 05 51 FF FF 01 01 02 03 04 00\n# cps 5 20 00 96 00 01 00 02 00\n";
+        let out = crate::frames::redact_capture(text);
+        assert!(out.contains("# cps 5 20 00 96 00 01 00 02 00\n"), "{out}");
+        assert_eq!(crate::frames::parse_cps(&out).len(), 1);
     }
 }

@@ -6,7 +6,7 @@
 //! target down to 35 rpm and collapses below it, page 48 and SIM follow cadence (SIM through the road model). The
 //! rider moves cadence towards the last cue at 30 rpm/s; after `Descend` towards [`Pattern`].
 use crate::{
-    frames::{Record, page_of},
+    frames::{Cps, Record, page_of},
     rider::{Cue, Operator, Wire},
 };
 use crank_fec::{Page, decode};
@@ -49,6 +49,32 @@ pub struct Plan {
     pub cadence_unavailable_from_us: Option<u64>,
     /// The page-81 serial the trainer answers a request with (`None`: never answers one).
     pub serial: Option<u32>,
+    /// The trainer notifies Cycling Power 2A63 once a second (`None`: it does not).
+    pub cps: Option<CpsPlan>,
+}
+
+/// How the simulated 2A63 differs from page 25.
+#[derive(Clone, Copy, Debug)]
+pub struct CpsPlan {
+    /// Added to the power page 25 reports.
+    pub offset_w: f64,
+    /// Where the cumulative crank revolutions start (near 65 535 to cross the wrap).
+    pub revs0: u16,
+    /// Where the crank event time (1/1024 s) starts (near 65 535 to cross the wrap).
+    pub time0: u16,
+    /// Notifications without crank data (flags 0).
+    pub no_crank: bool,
+}
+
+impl Default for CpsPlan {
+    fn default() -> Self {
+        Self {
+            offset_w: 0.0,
+            revs0: 0,
+            time0: 0,
+            no_crank: false,
+        }
+    }
 }
 
 impl Default for Plan {
@@ -72,6 +98,7 @@ impl Default for Plan {
             power_tau_s: 0.8,
             cadence_unavailable_from_us: None,
             serial: Some(0x1234_5678),
+            cps: Some(CpsPlan::default()),
         }
     }
 }
@@ -144,6 +171,9 @@ struct State {
     replies: Vec<u64>,
     serial_replies: Vec<u64>,
     cues: Vec<(u64, Cue)>,
+    turns: f64,
+    crank_event_us: u64,
+    cps: Vec<Cps>,
 }
 
 /// The simulator: a [`Wire`] and the rider's [`Operator`] in one.
@@ -206,6 +236,9 @@ impl Sim {
                 replies: Vec::new(),
                 serial_replies: Vec::new(),
                 cues: Vec::new(),
+                turns: 0.0,
+                crank_event_us: 0,
+                cps: Vec::new(),
             }),
             panicked: std::sync::atomic::AtomicBool::new(false),
         }
@@ -241,6 +274,26 @@ impl Sim {
             s.at += STEP_US;
             self.step(&mut s);
         }
+    }
+
+    /// One 2A63 notification: power as page 25 reports it plus the plan's offset, and the
+    /// crank counters (flags 0x20), which start at the plan's values and wrap at 16 bits.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    fn notify_cps(st: &mut State, c: CpsPlan, now: u64) {
+        let revs = c.revs0.wrapping_add(st.turns.floor() as u16);
+        let ticks = (st.crank_event_us as f64 * 1024.0 / 1e6).round() as u64;
+        let time = c.time0.wrapping_add((ticks % 65_536) as u16);
+        let watts = ((st.power + c.offset_w).round() as i16).to_le_bytes();
+        let mut bytes = vec![if c.no_crank { 0 } else { 0x20 }, 0, watts[0], watts[1]];
+        if !c.no_crank {
+            bytes.extend(revs.to_le_bytes());
+            bytes.extend(time.to_le_bytes());
+        }
+        st.cps.push(Cps { at_us: now, bytes });
     }
 
     #[allow(
@@ -282,8 +335,16 @@ impl Sim {
         if st.cadence < 1.0 {
             st.power = 0.0;
         }
+        let turns = st.turns;
+        st.turns += st.cadence / 60.0 * dt;
+        if st.turns.floor() > turns.floor() {
+            st.crank_event_us = now;
+        }
         if silent {
             return;
+        }
+        if let Some(c) = self.plan.cps.filter(|_| now.is_multiple_of(1_000_000)) {
+            Self::notify_cps(st, c, now);
         }
         if now.is_multiple_of(350_000) {
             st.events = st.events.wrapping_add(1);
@@ -379,6 +440,10 @@ impl Wire for Sim {
     fn records(&self) -> Vec<Record> {
         self.advance();
         self.lock().records.clone()
+    }
+    fn cps(&self) -> Vec<Cps> {
+        self.advance();
+        self.lock().cps.clone()
     }
 }
 
