@@ -208,8 +208,11 @@ pub enum LinkState {
 /// A sample is one notification: FE-C page 25 (power, cadence, accumulated power, event
 /// count, status, target limit) or page 16 (speed, distance), never both on a real trainer.
 /// A field the page does not carry is `None` and means "not in this sample", never "zero";
-/// on a page-16 sample `status` and `target_limit` are their defaults and carry nothing. The
-/// engine holds each field on its own (#437).
+/// a field the page carries is `None` when the trainer reports it invalid (page 25's cadence
+/// `0xFF`, power `0xFFF`). [`TrainerSample::power`], [`TrainerSample::cadence`] and
+/// [`TrainerSample::speed`] tell the two apart. On a page-16 sample `status` and
+/// `target_limit` are their defaults and carry nothing. The engine holds each field on its
+/// own (#437).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrainerSample {
     /// Notification arrival time.
@@ -220,7 +223,8 @@ pub struct TrainerSample {
     pub cadence_rpm: Option<u8>,
     /// Speed in metres per second.
     pub speed_mps: Option<f32>,
-    /// Raw page-16 distance counter, wrapping at 256 metres.
+    /// Raw page-16 distance counter, wrapping at 256 metres. `Some` exactly on samples that
+    /// carry page-16 data (the counter is a mandatory byte of page 16).
     pub distance_m: Option<f32>,
     /// Raw page-25 counter, wrapping at 65536 W.
     pub accumulated_power_w: Option<u32>,
@@ -232,6 +236,47 @@ pub struct TrainerSample {
     pub status: TrainerStatus,
     /// Reported target-power limitation.
     pub target_limit: TargetLimit,
+}
+/// One telemetry field of a [`TrainerSample`] (#437).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reading<T> {
+    /// The sample's page does not carry the field: the last value still stands.
+    NotCarried,
+    /// The page carries the field and the trainer reports it invalid: unknown now.
+    Invalid,
+    /// A real value, zero included.
+    Value(T),
+}
+impl<T> Reading<T> {
+    fn of(value: Option<T>, carried: bool) -> Self {
+        match value {
+            Some(v) => Self::Value(v),
+            None if carried => Self::Invalid,
+            None => Self::NotCarried,
+        }
+    }
+}
+impl TrainerSample {
+    /// The sample carries page-25 data (power, cadence): it has an event count.
+    #[must_use]
+    pub fn has_page25(&self) -> bool {
+        self.event_count.is_some()
+    }
+    /// Power: carried by page 25.
+    #[must_use]
+    pub fn power(&self) -> Reading<u16> {
+        Reading::of(self.power_w, self.has_page25())
+    }
+    /// Cadence: carried by page 25.
+    #[must_use]
+    pub fn cadence(&self) -> Reading<u8> {
+        Reading::of(self.cadence_rpm, self.has_page25())
+    }
+    /// Speed: carried by page 16 (it has a distance counter).
+    #[must_use]
+    pub fn speed(&self) -> Reading<f32> {
+        Reading::of(self.speed_mps, self.distance_m.is_some())
+    }
 }
 /// Raw page-25 status nibble (byte 6, high nibble), `0..=15`: bits 0/1/2 report power
 /// calibration, resistance calibration and user configuration required; bit 3 is reserved

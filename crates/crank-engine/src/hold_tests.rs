@@ -180,19 +180,17 @@ fn cadence_zero_is_a_value_and_a_missing_cadence_is_not() {
     let w = watch(&mut r);
     neo(&r, 0, 8, 200, 90);
     r.through(7);
-    // the rider stops: page 25 reports 0 W and 0 rpm, then page 16 alone
+    // the rider stops: page 25 reports 0 W and 0 rpm, then page 16 alone (no cadence in it)
     r.page25(8, Some(0), Some(0));
     r.page16(9, 0.0);
-    // page 25 with cadence "none" (0xFF): not a value, the held 0 rpm stands
-    r.page25(10, Some(0), None);
-    for k in 8..=10 {
+    for k in 8..=9 {
         r.through(k);
         let [power, cadence, _] = values(&r, &w);
         assert_eq!((power, cadence), (Some(0.0), Some(0.0)), "k={k}");
     }
     // stopped pedalling (ADR-0001 §5): 12 ticks of held 0 W and 0 rpm from tick 8, page-16
     // ticks included
-    for k in 11..24 {
+    for k in 10..24 {
         if k % 5 == 4 {
             r.page16(k, 0.0);
         } else {
@@ -205,37 +203,104 @@ fn cadence_zero_is_a_value_and_a_missing_cadence_is_not() {
     assert_eq!(r.state(), RideState::Paused(PauseReason::StoppedPedalling));
 }
 
+/// The tick ERG is released on when, from tick 20, page 25 reports `cadence` (page 16 still
+/// interleaved).
+fn release_tick(cadence: Option<u8>) -> u64 {
+    let mut r = ride(200.0);
+    neo(&r, 0, 20, 200, 90);
+    for k in 20..40 {
+        if k % 5 != 4 {
+            r.page25(k, Some(150), cadence);
+        }
+        if k % 5 == 4 || k % 5 == 2 {
+            r.page16(k, 8.0);
+        }
+    }
+    (20..40)
+        .find(|&k| {
+            r.through(k);
+            r.status().erg_released
+        })
+        .expect("released")
+}
+
 #[test]
-fn each_field_expires_on_its_own_bound() {
+fn an_invalid_cadence_on_page_25_releases_like_cadence_zero() {
+    // page 25 always carries cadence: `None` there is the trainer's 0xFF (invalid), unknown at
+    // once and 0 for the release (ADR-0002 §7.4), never a held 90 rpm
+    assert_eq!(release_tick(Some(0)), 27, "8 ticks below 40 rpm: 20..=27");
+    assert_eq!(release_tick(None), 27);
+}
+
+#[test]
+fn an_invalid_field_is_unknown_at_once_and_a_field_not_carried_is_held() {
     let mut r = ride(200.0);
     let w = watch(&mut r);
     r.page25(0, Some(200), Some(90));
     r.page16(0, 8.0);
-    // page 25 keeps flowing with power and cadence "none": the stream is live
-    for k in 1..30 {
-        r.page25(k, None, None);
+    // tick 1: page 16 alone carries no power or cadence: both held
+    r.page16(1, 8.0);
+    // tick 2: page 25 reports power and cadence invalid, then page 16 its speed invalid
+    r.page25(2, None, None);
+    r.page16_invalid(2);
+    r.through(1);
+    assert_eq!(values(&r, &w), [Some(200.0), Some(90.0), Some(8.0)]);
+    r.through(2);
+    assert_eq!(values(&r, &w), [None, None, None]);
+}
+
+#[test]
+fn speed_is_held_six_seconds_while_page_25_flows() {
+    let mut r = ride(200.0);
+    let w = watch(&mut r);
+    r.page16(0, 8.0);
+    for k in 0..30 {
+        r.page25(k, Some(200), Some(90));
     }
     for k in 0..30 {
         r.through(k);
-        let [power, cadence, speed] = values(&r, &w);
-        // power and cadence: 1.0 s (ticks 0..=4); speed: 6.0 s (ticks 0..=24)
-        assert_eq!(power, (k <= 4).then_some(200.0), "k={k}");
-        assert_eq!(cadence, (k <= 4).then_some(90.0), "k={k}");
+        let [_, _, speed] = values(&r, &w);
+        // 6.0 s: ticks 0..=24
         assert_eq!(speed, (k <= 24).then_some(8.0), "k={k}");
     }
 }
 
 #[test]
-fn within_a_tick_the_last_real_value_of_each_field_wins() {
+fn within_a_tick_the_last_value_of_each_field_wins() {
     let mut r = ride(300.0);
     let w = watch(&mut r);
     // tick 0 holds three samples: page 25 (150 W, 80 rpm), page 16, then page 25 with 210 W
-    // and cadence "none"
+    // and cadence invalid: the last word on cadence is "unknown"
     r.page25(0, Some(150), Some(80));
     r.page16(0, 8.0);
     r.send_sample(3, Some(210), None, None, Some(1));
     r.through(0);
-    assert_eq!(values(&r, &w), [Some(210.0), Some(80.0), Some(8.0)]);
+    assert_eq!(values(&r, &w), [Some(210.0), None, Some(8.0)]);
     // the 3 s power window takes the tick's power once: the soft start begins at 210 W
+    r.page25(1, Some(210), Some(80));
+    r.through(1);
+    assert_eq!(positive_erg(&r.modes()).first(), Some(&210));
+}
+
+#[test]
+fn a_real_zero_after_ninety_in_the_same_tick_wins() {
+    let mut r = ride(200.0);
+    let w = watch(&mut r);
+    r.page25(0, Some(200), Some(90));
+    r.send_sample(3, Some(0), Some(0), None, Some(1));
+    r.through(0);
+    assert_eq!(values(&r, &w)[..2], [Some(0.0), Some(0.0)]);
+}
+
+#[test]
+fn an_invalid_power_after_a_value_leaves_the_tick_without_power() {
+    let mut r = ride(300.0);
+    // tick 0: 150 W, then the same tick's page 25 reports power (and cadence) invalid: the 3 s
+    // power window gets nothing from tick 0, and the flow starts on tick 1
+    r.page25(0, Some(150), Some(80));
+    r.send_sample(3, None, None, None, Some(1));
+    r.page25(1, Some(210), Some(80));
+    r.through(1);
+    // the soft start's origin is the 3 s mean of 210 W alone, not of 150 and 210
     assert_eq!(positive_erg(&r.modes()).first(), Some(&210));
 }
