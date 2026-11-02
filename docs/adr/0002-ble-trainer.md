@@ -818,8 +818,12 @@ facade command (ADR-0001 §4) with `LinkIntent`:
 
 - `Likely`: the window is visible and focused, and it shows a **warm view**: Today, Workouts (list or a selected
   workout) or the Ready sheet (DESIGN §5.1, §5.4, §5.7). The UI sends it when one of these appears or gains focus,
-  and again on rider input while it is shown, at most once per 30 s. On the Ready sheet it is `Likely { ready: true }`,
-  which holds without input (§5.1.3).
+  and again on rider input while it is shown, at most once per 30 s. On the Ready sheet, while no ride is loaded
+  (the load is in flight or failed), it is `Likely { ready: true }`, which holds without input (§5.1.3).
+
+**While a ride is loaded or active the keeper is inactive.** It ignores every `Likely`, whatever any window shows,
+and warms up no device. The session owns its links (§5.1.4). A strap that missed the load stays out of that ride
+(#450).
 - `Left`: the window now shows another view (History, Review, Settings other than Devices, Onboarding). This starts
   the idle timer (§5.1.3).
 - `Background`: crank is no longer the frontmost app while its window stays visible. This starts a 60 s grace
@@ -921,9 +925,10 @@ streams: the drivers `try_send` into bounded channels, and a full channel would 
 **Cool-down.** A `warm`, `searching`, `connecting` or `handshake` device is released, and becomes `cold`:
 
 - **after `T_cool` = 5 min without a `Likely`**: after `Left`, or on a warm view with no rider input (the throttled
-  refresh above) for 5 min. **The Ready sheet is exempt from the input rule**: while it is shown (`Likely { ready:
-  true }`) the links are held without input, because the rider is about to ride and idling there must not drop them.
-  Hiding, the background grace and sleep still apply to it;
+  refresh above) for 5 min. **The Ready sheet is exempt from the input rule**, but only for the keeper's own links:
+  while the load is in flight or has failed (`Likely { ready: true }`), the links are held without input, because the
+  rider is about to ride. Hiding, the background grace and sleep still apply to those keeper-owned links. Once the
+  load succeeds the links are the session's, and the rules below do not apply;
 - **after the 60 s grace on `Background`**: crank is no longer the frontmost app, also while its window stays
   visible. A `Likely` within 60 s cancels it, so a quick switch to another app costs no reconnect;
 - **at once on `Release`**, with these reasons:
@@ -937,8 +942,20 @@ streams: the drivers `try_send` into bounded channels, and a full channel would 
 
 The release is the driver's bounded disconnect (§7.9, #304). A disconnect that timed out leaves the same residual as
 there (#335). An attempt that is still connecting is cancelled, and the cancelled connect disconnects the half-open
-peripheral (#304). None of this applies to a link in `riding`: a loaded or running ride keeps its links whatever the
-focus is, as today (sleep during a ride is #51).
+peripheral (#304).
+
+**A loaded ride owns its links (architect decision on #451, 2026-11-03; the owner may override).** When `ride_load`
+succeeds, the links are `riding` and the **session** owns them until one of three things happens: the ride is
+discarded (Cancel on the Ready sheet), it ends, or the app quits. Focus, hiding, the background grace and `T_cool`
+never release a loaded ride. Holding them writes nothing, the same as warm: nothing is armed before Start (the
+ride's first `SetMode`). Two rules bound an **unstarted** loaded ride:
+
+- **Abandoned load.** It is discarded, and its links released, after `T_abandon` = 10 min without Start and without
+  rider input on the Ready sheet (the throttled refresh above). The core runs this timer, not the UI.
+- **Sleep.** `Release(Sleep)` discards it, because a load that sleeps through is stale.
+
+Both go through the same path as Cancel (`ride_end` on a loaded ride, §7.9). A **started** ride follows §6 and §7
+unchanged: it keeps its links through focus changes, hiding and background (sleep during a ride is #51).
 
 **Quit, `Core` drop and crash while warm.** Warm links are the keeper's, so no ride's end mode covers them, and none is
 needed: nothing was written.
@@ -1048,7 +1065,7 @@ cold warm-up per phase. No timing is derived from the UI.
    assumption is reworded and nothing else changes.
 2. **Link keeper.** The keeper's state machine: pure transitions over intent, the clock, link events, pairing and
    rider-config changes, and load or release. Also `links_intent`, `T_cool`, the background grace, the Ready-sheet
-   exemption, the scan cap, release on shutdown, the latch, handover to `ride_load` with
+   exemption, the keeper's inactivity during a ride, `T_abandon` and the sleep discard of an unstarted ride, the scan cap, release on shutdown, the latch, handover to `ride_load` with
    the link's current state, event draining, and the sim latency model below.
 3. **Contract.** `LoadProgress` in `ride_status`, `links_open` / `LinkFrame`, and the regenerated bindings.
 4. **UI.** Intent reporting (warm views, focus, visibility, throttled input), `crank-desktop`'s sleep observer, the
@@ -1070,8 +1087,16 @@ cold warm-up per phase. No timing is derived from the UI.
   Retry or "Ride this".
 - **Background grace.** After `Background` the devices are still warm at 59 s and released at 60 s. A `Likely` at 30 s
   cancels the release.
-- **The Ready sheet holds.** With `Likely { ready: true }` and no input for 30 min of virtual time, the links stay
-  `warm`. `Hidden` on the Ready sheet still releases at once.
+- **The Ready sheet holds.** With a failed load, `Likely { ready: true }` and no input for 30 min of virtual time,
+  the keeper's links stay `warm`.
+- **A loaded ride keeps its links.** With a loaded, unstarted ride, `Hidden`, `Background` past 60 s and `T_cool`
+  past 5 min each leave the links connected, and nothing is written (recording transport: no write after `Ready`).
+- **An abandoned load releases.** A ride loaded but unstarted, with no input, is discarded at `T_abandon` = 10 min
+  (links released, phase `cold`). Input at 9 min restarts the timer.
+- **Sleep discards an unstarted ride.** `Release(Sleep)` with a loaded, unstarted ride discards it and releases its
+  links. With a started ride, the ride and its links are untouched.
+- **`Likely` during a ride warms nothing.** With a ride loaded or active and the strap not linked, `Likely` from any
+  view starts no attempt (connect count unchanged).
 - **Scan cap.** With the trainer never advertising and intent `Likely` for 10 min, the scan is continuous for
   `SCAN_CONTINUOUS`, then on for `RESOLVE_SCAN` in every `SCAN_PERIOD`. It stops on `Left` / cool-down. An
   advertisement in a window starts the attempt.
@@ -1099,8 +1124,8 @@ cold warm-up per phase. No timing is derived from the UI.
 | An unbounded scan while a device is `not_found` | Hours of radio time for a NEO held by another app; replaced by the scan cap (§5.1.2) |
 
 **Consequences.** A warm "Ride this" does no Bluetooth work. A cold one costs one `CONNECT_TIMEOUT` at worst, not
-two. crank holds the NEO only while it is frontmost on a ride-likely view, within 5 min of one, or for up to 60 s after
-going to the background. The core gains a
+two. Before a ride, crank holds the NEO only in these cases: while it is frontmost on a ride-likely view, within 5 min of
+one, for up to 60 s after going to the background, or with a loaded, unstarted ride for up to 10 min. The core gains a
 second owner of links before a ride, with a one-way handover. The UI must report intent faithfully: an intent it
 fails to send costs latency (no warm-up) or the slot (no release), never safety, because nothing is written while
 warm.
@@ -1110,8 +1135,10 @@ warm.
 - The first warm-up after launch scans (#206-3), and later ones may too: handle reuse is an assumption (§5.1.2).
 - Another app waits up to 60 s for the NEO after crank goes to the background, unless the rider uses "Release
   trainer" or hides crank.
-- A Ready sheet left open on a frontmost, awake Mac holds the links until it is hidden, the Mac sleeps, or the rider
-  leaves.
+- A loaded but unstarted ride holds the NEO for up to 10 min, whatever the focus, including while crank is hidden or
+  in the background. It is released on Cancel, on `T_abandon`, on sleep or on quit.
+- A Ready sheet over a failed load holds the keeper's links without input, until crank is hidden, goes to the
+  background, the Mac sleeps, or the rider leaves.
 - A device that returns is seen within about 34 s under the scan cap, or at once with Retry.
 - Until #314, "held by another app" cannot be told from "off".
 - A strap missing at load stays missing for that ride (#450).
