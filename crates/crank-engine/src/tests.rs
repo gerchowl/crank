@@ -148,7 +148,12 @@ impl Rig {
     pub(crate) fn page16(&self, k: u64, speed: f32) {
         self.send_sample(k * TICK_US + 2, None, None, Some(speed), None);
     }
-    /// A sample stamped `at` µs on the engine clock.
+    /// A page-16 sample whose speed the trainer reports invalid.
+    pub(crate) fn page16_invalid(&self, k: u64) {
+        self.send_sample(k * TICK_US + 2, None, None, None, None);
+    }
+    /// A sample stamped `at` µs on the engine clock: page 25 iff it has an event count, page 16
+    /// iff it has a speed or no event count.
     pub(crate) fn send_sample(
         &self,
         at: u64,
@@ -163,7 +168,8 @@ impl Rig {
                 power_w: power,
                 cadence_rpm: cadence,
                 speed_mps: speed,
-                distance_m: None,
+                // page 16 always carries its distance counter
+                distance_m: (speed.is_some() || event_count.is_none()).then_some(0.0),
                 accumulated_power_w: None,
                 event_count,
                 status: TrainerStatus::default(),
@@ -1370,11 +1376,12 @@ mod soft_start_property {
             self.ready = state == LinkState::Ready;
             self.new_epoch();
         }
-        /// Each field is held on its own (#437): the last real cadence, for 4 ticks.
+        /// The cadence of the last page-25 sample, for 4 ticks: page 16 carries none and leaves
+        /// it, an invalid one (`None` on page 25) is unknown at once (#437).
         fn held_cadence(&self, k: u64) -> Option<u8> {
             self.epoch
                 .iter()
-                .filter(|(j, _, c)| c.is_some() && *j <= k && k - j <= 4)
+                .filter(|(j, ..)| *j <= k && k - j <= 4)
                 .max_by_key(|(j, ..)| *j)
                 .and_then(|(_, _, c)| *c)
         }
@@ -1577,7 +1584,8 @@ mod soft_start_property {
         cap: Option<u16>,
         ready: bool,
         applied: Option<ControlMode>,
-        /// The last real power and cadence, each with its tick (#437).
+        /// Power and cadence of the last page-25 sample, each with its tick; an invalid one
+        /// (`None`) is unknown at once (#437).
         power_hold: Option<(u64, u16)>,
         cadence_hold: Option<(u64, u8)>,
         powers: Vec<(u64, u16)>,
@@ -1684,12 +1692,10 @@ mod soft_start_property {
             self.now = Some(k);
             if let Some((power, cadence)) = sample {
                 self.silent = 0;
+                self.power_hold = power.map(|p| (k, p));
+                self.cadence_hold = cadence.map(|c| (k, c));
                 if let Some(p) = power {
-                    self.power_hold = Some((k, p));
                     self.powers.push((k, p));
-                }
-                if let Some(c) = cadence {
-                    self.cadence_hold = Some((k, c));
                 }
                 if cadence.is_some_and(|c| c > 0) {
                     self.pedalled = true;

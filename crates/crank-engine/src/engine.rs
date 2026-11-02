@@ -13,7 +13,7 @@ use crate::ticks::{
     TICKS_PER_SECOND, TRAINER_HOLD_TICKS, TickWindow, WorkoutTicks, ticks_to_seconds,
 };
 use crank_devices::{
-    Clock, CommandSeq, ControlMode, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime,
+    Clock, CommandSeq, ControlMode, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime, Reading,
     SeqSource, TrainerCommand, TrainerEvent, TrainerLink, TrainerObservation, TrainerSample,
 };
 use crank_domain::workout::{FlatBlock, Phase as BlockPhase};
@@ -380,8 +380,9 @@ struct TrainerValues {
     speed: Option<f32>,
 }
 /// The trainer hold, one per field (#437). A sample carries one FE-C page, so a field it does
-/// not carry (`None`) leaves that field's last real value in place; a real value, cadence 0
-/// included, replaces it. Each field expires on its own bound: power and cadence after
+/// not carry leaves that field's last real value in place; a real value, cadence 0 included,
+/// replaces it; a field the page carries but reports invalid is unknown from that tick on, with
+/// no hold (an invalid cadence counts as 0 for the release, ADR-0002 §7.4). Each field expires on its own bound: power and cadence after
 /// [`TRAINER_HOLD_TICKS`], speed after [`SPEED_HOLD_TICKS`] but never later than page 25
 /// itself, so no held value outlives a stopped page-25 stream.
 struct TrainerHold {
@@ -402,18 +403,19 @@ impl TrainerHold {
     }
     /// Take in the fields a sample of tick `k` carries.
     fn push(&mut self, k: u64, t: &TrainerSample) {
-        if t.event_count.is_some() {
+        fn take<T: Copy>(hold: &mut Hold<T>, k: u64, r: Reading<T>) {
+            match r {
+                Reading::Value(v) => hold.push(k, v),
+                Reading::Invalid => hold.clear(),
+                Reading::NotCarried => {}
+            }
+        }
+        if t.has_page25() {
             self.page25.push(k, ());
         }
-        if let Some(p) = t.power_w {
-            self.power.push(k, p);
-        }
-        if let Some(c) = t.cadence_rpm {
-            self.cadence.push(k, c);
-        }
-        if let Some(v) = t.speed_mps {
-            self.speed.push(k, v);
-        }
+        take(&mut self.power, k, t.power());
+        take(&mut self.cadence, k, t.cadence());
+        take(&mut self.speed, k, t.speed());
     }
     fn get(&self, k: u64) -> TrainerValues {
         TrainerValues {
@@ -1121,8 +1123,12 @@ impl Engine {
             if tag < self.trainer_log.applied {
                 continue;
             }
-            page25 |= t.event_count.is_some();
-            power = t.power_w.or(power);
+            page25 |= t.has_page25();
+            power = match t.power() {
+                Reading::Value(p) => Some(p),
+                Reading::Invalid => None,
+                Reading::NotCarried => power,
+            };
             s.trainer.push(k, &t);
         }
         if page25 {
