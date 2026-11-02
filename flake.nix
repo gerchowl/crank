@@ -89,11 +89,24 @@
       });
       # ADR-0001 §9.3: file layout only. Tauri's bundler and codesign do not run in the
       # sandbox; `just bundle` copies this to ~/Applications and signs it with nix-tcc.
-      crankApp = pkgs.runCommand "crank-app" { } ''
+      # The Darwin stdenv links libiconv from the store; macOS ships the same library (install name
+      # /usr/lib/libiconv.2.dylib, compatibility 7.0.0, in the dyld shared cache), so the load command is
+      # pointed at it and the app no longer depends on a store path that a GC can remove (#413). That is
+      # a rewrite, not a bundled copy: nothing extra to sign and Apple patches the system one. Rewriting
+      # invalidates the linker's ad-hoc signature, so the binary is re-signed ad hoc here (arm64 refuses
+      # to run unsigned code); `just bundle` replaces that signature with the nix-tcc one. The
+      # `bundle-no-nix-store` check fails if any Mach-O (also an unexpected library) still names the store.
+      crankApp = pkgs.runCommand "crank-app" { nativeBuildInputs = [ pkgs.cctools pkgs.darwin.sigtool ]; } ''
         app=$out/crank.app/Contents
         mkdir -p $app/MacOS $app/Resources
         install -m755 ${desktop ""}/bin/crank-desktop $app/MacOS/crank-desktop
         install -m755 ${cli}/bin/crank $app/MacOS/crank
+        for bin in $app/MacOS/*; do
+          otool -L "$bin" | awk '/^\t\/nix\/store\/.*-libiconv-.*\/libiconv\.2\.dylib /{print $1}' | while read -r lib; do
+            install_name_tool -change "$lib" /usr/lib/libiconv.2.dylib "$bin"
+          done
+          codesign -f -s - "$bin"
+        done
         install -m644 ${./app/src-tauri/icons/icon.icns} $app/Resources/icon.icns
         install -m644 ${./app/src-tauri/Info.plist} $app/Info.plist
       '';
@@ -255,6 +268,11 @@
         install-app = pkgs.runCommand "install-app" { nativeBuildInputs = [ pkgs.python3 ]; } ''
           cp -r ${source (lib.fileset.unions [ ./scripts/install-app.sh ./scripts/test-install-app.sh ])} src
           cd src && bash scripts/test-install-app.sh
+          touch $out
+        '';
+        # No Mach-O of the built bundle may load from /nix/store (#413); the script is the same one the docs name.
+        bundle-no-nix-store = pkgs.runCommand "bundle-no-nix-store" { nativeBuildInputs = [ pkgs.cctools ]; } ''
+          bash ${./scripts/check-bundle-no-nix-store.sh} ${crankApp}/crank.app
           touch $out
         '';
       } // {
