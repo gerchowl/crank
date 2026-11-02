@@ -80,6 +80,24 @@ pub(crate) async fn acquire<R: Capturing>(
         None => radio,
     })
 }
+/// The production [`RadioFactory`], generic over the radio so a test can build it with one
+/// that needs no adapter. `make` creates the radio on first use; the factory then points it
+/// at the capture directory it is given, through [`acquire`].
+pub(crate) fn radio_factory<R, F, Fut>(make: F) -> RadioFactory
+where
+    R: Capturing + 'static,
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<R, DeviceError>> + Send + 'static,
+{
+    Arc::new(move |capture_dir| {
+        let radio = make();
+        async move {
+            let radio: Arc<dyn Radio> = Arc::new(acquire(radio, capture_dir).await?);
+            Ok(radio)
+        }
+        .boxed()
+    })
+}
 /// Acquires the radio on first use.
 /// It is given the directory for trainer captures ([`DeviceMode::Ble`]), so a test can see
 /// that the configured one arrives.
@@ -118,14 +136,7 @@ impl Backend {
                 capture_dir = dir;
                 Kind::Radio {
                     cell: OnceCell::new(),
-                    factory: Arc::new(|capture_dir: Option<PathBuf>| {
-                        async move {
-                            let central = acquire(BleCentral::new(), capture_dir).await?;
-                            let radio: Arc<dyn Radio> = Arc::new(central);
-                            Ok(radio)
-                        }
-                        .boxed()
-                    }),
+                    factory: radio_factory(BleCentral::new),
                 }
             }
             DeviceMode::Sim(cfg) => Kind::Sim(SimRig::new(cfg, clock)),
@@ -288,8 +299,8 @@ mod tests {
         );
     }
 
-    /// A radio that remembers the capture directory it was given.
-    struct Recording(Option<PathBuf>);
+    /// A radio that reports the capture directory it was given into `sink`.
+    struct Recording(Arc<Mutex<Option<PathBuf>>>);
     impl Radio for Recording {
         fn scan(&self) -> BoxStream<'static, DiscoveredDevice> {
             stream::empty().boxed()
@@ -305,14 +316,20 @@ mod tests {
     }
     impl Capturing for Recording {
         fn capturing(self, dir: PathBuf) -> Self {
-            Self(Some(dir))
+            *self.0.lock().unwrap() = Some(dir);
+            self
         }
     }
 
     #[tokio::test]
     async fn acquiring_the_radio_points_it_at_the_capture_dir_only_when_there_is_one() {
-        let capturing =
-            |dir| async move { acquire(async { Ok(Recording(None)) }, dir).await.unwrap().0 };
+        let capturing = |dir| async move {
+            let sink = Arc::new(Mutex::new(None));
+            acquire(async { Ok(Recording(sink.clone())) }, dir)
+                .await
+                .unwrap();
+            sink.lock().unwrap().clone()
+        };
         assert_eq!(
             capturing(Some("/cap".into())).await,
             Some(PathBuf::from("/cap"))
@@ -334,5 +351,19 @@ mod tests {
         backend.capture_dir = Some("/cap".into());
         assert!(backend.scan().await.is_err());
         assert_eq!(*seen.lock().unwrap(), [Some(PathBuf::from("/cap"))]);
+    }
+
+    #[tokio::test]
+    async fn the_production_factory_hands_its_capture_dir_to_the_radio() {
+        let sink = Arc::new(Mutex::new(None));
+        let factory = {
+            let sink = sink.clone();
+            radio_factory(move || {
+                let sink = sink.clone();
+                async move { Ok(Recording(sink)) }
+            })
+        };
+        assert!(factory(Some("/cap".into())).await.is_ok());
+        assert_eq!(*sink.lock().unwrap(), Some(PathBuf::from("/cap")));
     }
 }
