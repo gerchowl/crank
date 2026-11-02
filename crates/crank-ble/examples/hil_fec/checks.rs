@@ -58,18 +58,25 @@ pub async fn run(args: &Args) -> Result<Outcome> {
     let summary = if args.check == Check::Latency {
         latency(args, &adv, adapter, device, &capture_path).await?
     } else if let Some(p) = args.check.procedure() {
-        // Check 9's verdict needs check 6's power response from the same `--out` directory.
-        let lag = partb::PowerLag::beside(&capture_path);
         let s = Session::open(&adv, adapter, device, &capture_path).await?;
         let report = rider::drive(&s, &rider::Console::new(), p, rider::signals()).await;
-        let mut summary = rider::summary(p, args.check.name(), &report, &Wire::records(&s), &lag);
-        summary["identity"] = identity(&s);
-        summary["link_dropped_during_run"] = json!(s.pump_ended());
+        let records = Wire::records(&s);
+        let identity = identity(&s);
+        let dropped = s.pump_ended();
         s.close().await;
-        // The outcome line lets `analyse` tell a completed run from a stopped one.
-        if let Err(e) = partb::append_outcome(&capture_path, &rider::outcome(&report.procedure)) {
-            summary["outcome_line_error"] = json!(e.to_string());
-        }
+        let finished = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let mut summary = procedure_summary(
+            p,
+            args.check.name(),
+            &report,
+            &records,
+            &capture_path,
+            finished,
+        );
+        summary["identity"] = identity;
+        summary["link_dropped_during_run"] = json!(dropped);
         if let Some(line) = summary["result"]["line"].as_str() {
             println!("{line}");
         }
@@ -110,6 +117,35 @@ pub async fn run(args: &Args) -> Result<Outcome> {
     })
 }
 
+/// The summary of a finished procedure whose link is closed and whose capture is at
+/// `capture_path`, finished at `finished_unix_s`. The capture gets its outcome line and finished stamp first, so that check 9's
+/// verdict reads check 6 ([`partb::PowerLag::beside`]) from the capture exactly as `analyse` will
+/// later: from the same trainer (page-81 serial) and session (finished stamps), else not measured.
+fn procedure_summary(
+    p: rider::Procedure,
+    stem: &str,
+    report: &rider::Report,
+    records: &[crate::frames::Record],
+    capture_path: &std::path::Path,
+    finished_unix_s: u64,
+) -> Value {
+    // The outcome line lets `analyse` tell a completed run from a stopped one.
+    let appended = partb::append_outcome(
+        capture_path,
+        &rider::outcome(&report.procedure),
+        finished_unix_s,
+    );
+    let lag = match std::fs::read_to_string(capture_path) {
+        Ok(text) => partb::PowerLag::beside(capture_path, &text),
+        Err(e) => partb::PowerLag::NotMeasured(format!("{}: {e}", capture_path.display())),
+    };
+    let mut summary = rider::summary(p, stem, report, records, &lag);
+    if let Err(e) = appended {
+        summary["outcome_line_error"] = json!(e.to_string());
+    }
+    summary
+}
+
 fn redact(args: &Args) -> Result<Outcome> {
     let src = args
         .target
@@ -141,7 +177,7 @@ fn analyse(args: &Args) -> Result<Outcome> {
     let dest = args.out.join(format!("{stem}.analysis.json"));
     let records = parse_capture(&text);
     let mut v = analysis(&records);
-    let lag = partb::PowerLag::beside(std::path::Path::new(src));
+    let lag = partb::PowerLag::beside(std::path::Path::new(src), &text);
     if let Some(part_b) = partb::analyse(stem, &records, partb::outcome_in(&text).as_deref(), &lag)
     {
         if let Some(line) = part_b["line"].as_str() {
@@ -919,5 +955,212 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    use crate::{
+        frames::{Record, hex},
+        partb::{FINISHED, OUTCOME, SESSION_BOUND_S},
+        rider::{Procedure, Report},
+        sim::{Pattern, Plan, Sim},
+    };
+    use std::{fmt::Write as _, path::Path};
+
+    /// When check 9 of these tests ended, Unix seconds.
+    const T9: u64 = 1_700_100_000;
+    const FIRST: &str = "stall below the release cadence: the release comes first";
+    /// Another trainer than the default simulated one (`0x1234_5678`).
+    const OTHER: u32 = 0xaaaa_0001;
+
+    /// A 2 s power lag that lets go at 40.5 rpm: slower than the bound check 9 relies on.
+    const CLIFF: Plan = Plan {
+        confirms: true,
+        pedals: true,
+        stop_at_us: None,
+        drop_at_us: None,
+        hang_from_us: None,
+        silent_from_us: None,
+        panic_at_us: None,
+        descent: Pattern::Path(&[(0, 90.0), (100_000_000, 43.0), (101_500_000, 37.0)]),
+        erg_floor_rpm: 35.0,
+        erg_curve: Some(&[(40.5, 0.896), (43.0, 1.0)]),
+        warm_w: 0.0,
+        power_tau_s: 2.0,
+        cadence_unavailable_from_us: None,
+        serial: Some(OTHER),
+    };
+
+    async fn driven(p: Procedure, plan: Plan) -> (Report, Vec<Record>) {
+        let sim = Sim::new(plan);
+        let report = rider::drive(&sim, &sim, p, std::future::pending()).await;
+        (report, Wire::records(&sim))
+    }
+
+    /// The `.fecap` lines of a run, before `hil_fec` appends its outcome and finished lines.
+    fn lines(records: &[Record]) -> String {
+        records.iter().fold(String::new(), |mut t, r| {
+            let _ = writeln!(
+                t,
+                "{} {} {}",
+                r.at_us,
+                if r.rx { "rx" } else { "tx" },
+                hex(&r.bytes)
+            );
+            t
+        })
+    }
+
+    /// `lines` with the outcome and a finished stamp, as a completed capture file reads.
+    fn capture(records: &[Record], report: &Report, finished: u64) -> String {
+        let mut t = lines(records);
+        let _ = writeln!(t, "{OUTCOME}{}", rider::outcome(&report.procedure));
+        let _ = writeln!(t, "{FINISHED}{finished}");
+        t
+    }
+
+    /// Check 9 of `plan9` (finished at `T9`) with the check 6 that `place` puts beside it, through
+    /// the live path ([`procedure_summary`]) and through `analyse`: the `result` of both, which
+    /// must be one and the same.
+    async fn check9_beside(plan9: Plan, place: impl Fn(&Path)) -> Value {
+        let (report, records) = driven(Procedure::Check9, plan9).await;
+        let (live, offline) = (
+            tempfile::tempdir().expect("tmp"),
+            tempfile::tempdir().expect("tmp"),
+        );
+        place(live.path());
+        place(offline.path());
+        let path = live.path().join("check9.fecap");
+        std::fs::write(&path, lines(&records)).expect("write");
+        let live =
+            procedure_summary(Procedure::Check9, "check9", &report, &records, &path, T9)["result"]
+                .clone();
+        let target = offline.path().join("check9.fecap");
+        std::fs::write(&target, capture(&records, &report, T9)).expect("write");
+        let args = Args {
+            check: Check::Analyse,
+            out: offline.path().join("out"),
+            scan_secs: 0,
+            idle_secs: 0,
+            target: Some(target.display().to_string()),
+        };
+        analyse(&args).expect("analyse");
+        let back = std::fs::read_to_string(args.out.join("check9.analysis.json")).expect("read");
+        let back: Value = serde_json::from_str(&back).expect("json");
+        assert_eq!(live, back["part_b"], "live and offline differ");
+        live
+    }
+
+    /// `check6.fecap` of the default simulated trainer (serial `serial`) finished at `finished`.
+    async fn check6_text(serial: Option<u32>, finished: u64) -> String {
+        let plan = Plan {
+            serial,
+            ..Plan::default()
+        };
+        let (report, records) = driven(Procedure::Check6, plan).await;
+        capture(&records, &report, finished)
+    }
+
+    fn put(text: String) -> impl Fn(&Path) {
+        move |dir| std::fs::write(dir.join("check6.fecap"), &text).expect("write")
+    }
+
+    /// The verdict was not "comes first" and the power lag is `NotMeasured` for a reason with `why`.
+    fn assert_unproven(result: &Value, why: &str) {
+        let lag = result["power_lag"]["within"]
+            .as_str()
+            .expect("a reason, not a bool");
+        assert!(lag.contains(why), "{lag:?} lacks {why:?}");
+        assert_ne!(result["verdict"], json!(FIRST), "{result}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_6_of_the_same_trainer_and_session_unlocks_comes_first() {
+        let result = check9_beside(
+            Plan::default(),
+            put(check6_text(Some(0x1234_5678), T9 - 3600).await),
+        )
+        .await;
+        assert_eq!(result["power_lag"]["within"], json!(true), "{result}");
+        assert_eq!(result["verdict"], json!(FIRST), "{result}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_6_of_another_trainer_is_not_measured() {
+        // The falsifier's repro: a 2 s cliff trainer (check 9) beside the check 6 of the
+        // default 0.8 s simulation, which would read "comes first".
+        let result =
+            check9_beside(CLIFF, put(check6_text(Some(0x1234_5678), T9 - 600).await)).await;
+        assert_unproven(&result, "different trainer");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_6_or_check_9_without_a_known_serial_is_not_measured() {
+        // Check 6 never got a page-81 answer.
+        let none = check6_text(None, T9 - 600).await;
+        assert_unproven(
+            &check9_beside(Plan::default(), put(none)).await,
+            "check 6: no page-81 serial",
+        );
+        // Check 6 redacted (`FF FF FF FF`): the capture no longer says whose it is.
+        let redacted =
+            crate::frames::redact_capture(&check6_text(Some(0x1234_5678), T9 - 600).await);
+        assert_unproven(
+            &check9_beside(Plan::default(), put(redacted)).await,
+            "unspecified",
+        );
+        // Check 9 never got one.
+        let ok = check6_text(Some(0x1234_5678), T9 - 600).await;
+        let plan = Plan {
+            serial: None,
+            ..Plan::default()
+        };
+        assert_unproven(
+            &check9_beside(plan, put(ok)).await,
+            "check 9: no page-81 serial",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_6_outside_the_session_bound_is_not_measured() {
+        let serial = Some(0x1234_5678);
+        // Exactly the bound is the same session; one second more is not.
+        let at_bound = check6_text(serial, T9 - SESSION_BOUND_S).await;
+        let result = check9_beside(Plan::default(), put(at_bound)).await;
+        assert_eq!(result["verdict"], json!(FIRST), "{result}");
+        let old = check6_text(serial, T9 - SESSION_BOUND_S - 1).await;
+        assert_unproven(
+            &check9_beside(Plan::default(), put(old)).await,
+            "session bound",
+        );
+        // Check 6 after check 9 is not the check 6 that came before it.
+        let later = check6_text(serial, T9 + 1).await;
+        assert_unproven(
+            &check9_beside(Plan::default(), put(later)).await,
+            "ended after check 9",
+        );
+        // No stamp: the session is unknown.
+        let unstamped: String = check6_text(serial, T9)
+            .await
+            .lines()
+            .filter(|l| !l.starts_with(FINISHED))
+            .fold(String::new(), |mut t, l| {
+                let _ = writeln!(t, "{l}");
+                t
+            });
+        assert_unproven(
+            &check9_beside(Plan::default(), put(unstamped)).await,
+            "no finished stamp",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unreadable_check_6_is_not_measured() {
+        // A read error other than NotFound (a directory in its place), not an absent file.
+        let result = check9_beside(Plan::default(), |dir| {
+            std::fs::create_dir(dir.join("check6.fecap")).expect("dir");
+        })
+        .await;
+        assert_unproven(&result, "check6.fecap");
+        let absent = check9_beside(Plan::default(), |_| {}).await;
+        assert_unproven(&absent, "no check6.fecap");
     }
 }

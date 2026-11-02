@@ -141,6 +141,14 @@ capture for `hil_fec analyse`. Run check 6 before check 9, with the same `--out`
 `power_lag` field shows what was used:
 
 - **Check 6 completed and every step's `t90` ≤ 2.3 s:** the verdicts stand as above.
+- **Check 6 must be this trainer's, from this session.** Both captures must carry the same page-81 serial
+  (each run requests page 81 once at its start, a read-only request) and a `# hil_fec finished: <unix s>`
+  line (written after the outcome line), and check 6 must have ended no more than 2 h before check 9
+  (`SESSION_BOUND_S`: the runbook's checks and rests, not another day's setup) and not after it. A
+  different, missing, unspecified or conflicting serial, a missing stamp, a check 6 outside the bound, or
+  a `check6.fecap` that cannot be read (any error other than "not found") reads as not measured, with the
+  reason in `power_lag.within`; never as a measurement. A redacted capture (serial `FF FF FF FF`) is
+  therefore never a trainer match: run `analyse` on the raw captures, then `redact`.
 - **No completed check 6** (missing, aborted, or no outcome line): "comes first" reads `… the release comes
   first only if check 6 t90 ≤ 2.3 s (not measured)`. Re-run `analyse` once check 6 is in the directory.
 - **A step's `t90` > 2.3 s, or one that never reaches 90 %:** the verdict reads `not valid: power response
