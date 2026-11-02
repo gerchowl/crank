@@ -2,7 +2,7 @@
 //! Time is tokio's paused clock behind the injected [`Clock`]; nothing sleeps for real.
 use crank_devices::sim::{
     Drive, EchoFault, SPIRAL_ONSET_RPM, SimComponent, SimConfig, SimCore, SimFault, SimRig,
-    reconnect_backoff,
+    SimTelemetry, reconnect_backoff,
 };
 use crank_devices::*;
 use futures_util::future::BoxFuture;
@@ -86,8 +86,16 @@ fn echoes(ev: &[TrainerEvent]) -> Vec<(MonoTime, ObservedControl)> {
         })
         .collect()
 }
+/// The page-25 samples (power, cadence, flags): the default sim sends page 16 instead on
+/// one tick in five (#437).
+fn page25(ev: &[TrainerEvent]) -> Vec<&TrainerSample> {
+    samples(ev)
+        .into_iter()
+        .filter(|x| x.event_count.is_some())
+        .collect()
+}
 fn mean_power(ev: &[TrainerEvent], from_s: u64, to_s: u64) -> f64 {
-    let v: Vec<f64> = samples(ev)
+    let v: Vec<f64> = page25(ev)
         .iter()
         .filter(|x| (from_s * 1_000_000..to_s * 1_000_000).contains(&x.at.0))
         .map(|x| f64::from(x.power_w.expect("sim")))
@@ -95,8 +103,16 @@ fn mean_power(ev: &[TrainerEvent], from_s: u64, to_s: u64) -> f64 {
     assert!(!v.is_empty());
     v.iter().sum::<f64>() / f64::from(u32::try_from(v.len()).expect("sim"))
 }
-fn last_sample(ev: &[TrainerEvent]) -> &TrainerSample {
-    samples(ev).pop().expect("sim")
+fn last_page25(ev: &[TrainerEvent]) -> &TrainerSample {
+    page25(ev).pop().expect("sim")
+}
+/// The speed of the last page-16 sample.
+fn last_speed(ev: &[TrainerEvent]) -> f32 {
+    samples(ev)
+        .into_iter()
+        .filter_map(|x| x.speed_mps)
+        .next_back()
+        .expect("sim")
 }
 fn sim_mode(grade_pct: f32) -> ControlMode {
     ControlMode::Sim {
@@ -173,8 +189,8 @@ async fn erg_tracks_target_and_echoes_page_49_each_second() {
         e.iter()
             .all(|(_, c)| *c == ObservedControl::Erg { quarter_w: 800 })
     );
-    // one page-25 flags observation per sample, in arrival order
-    assert_eq!(last_sample(&ev).target_limit, TargetLimit::AtTarget);
+    // one page-25 flags observation per page-25 sample, in arrival order
+    assert_eq!(last_page25(&ev).target_limit, TargetLimit::AtTarget);
 }
 #[tokio::test(start_paused = true)]
 async fn sim_grade_slows_the_rider_and_echoes_wind_then_track() {
@@ -186,10 +202,7 @@ async fn sim_grade_slows_the_rider_and_echoes_wind_then_track() {
     let mut b = connect(&hill).await;
     set(&b, sim_mode(8.0)).await;
     let hill_ev = run(&mut b, 40).await;
-    assert!(
-        last_sample(&hill_ev).speed_mps.expect("sim")
-            < 0.6 * last_sample(&flat_ev).speed_mps.expect("sim")
-    );
+    assert!(last_speed(&hill_ev) < 0.6 * last_speed(&flat_ev));
     assert_eq!(
         hill_ev
             .iter()
@@ -294,21 +307,22 @@ async fn driver_stream_equals_the_core_fed_the_applied_target() {
     let ev = run(&mut link, 20).await;
     let cfg = SimConfig::default();
     let mut core = SimCore::new(cfg.rider, 81.0, cfg.seed);
-    let want: Vec<f64> = (0..80)
-        .map(|_| {
+    // sim tick k (stamped k·250 ms) is page 16, without power, when k % 5 == 4
+    let want: Vec<f64> = (1..=80_u64)
+        .filter_map(|k| {
             let t = core.step(Drive {
                 target_w: 200.0,
                 grade_pct: 0.0,
                 cadence_pref: None,
                 cadence_force: None,
             });
-            t.power_w.expect("sim")
+            (k % 5 != 4).then(|| t.power_w.expect("sim"))
         })
         .collect();
     let got: Vec<f64> = samples(&ev)
         .iter()
         .take(80)
-        .map(|x| f64::from(x.power_w.expect("sim")))
+        .filter_map(|x| x.power_w.map(f64::from))
         .collect();
     assert_eq!(got, want);
     let t: Vec<u64> = samples(&ev).iter().take(3).map(|x| x.at.0).collect();
@@ -317,6 +331,74 @@ async fn driver_stream_equals_the_core_fed_the_applied_target() {
         vec![250_000, 500_000, 750_000],
         "grid-stamped, not scheduler-stamped"
     );
+}
+#[tokio::test(start_paused = true)]
+async fn the_default_sim_interleaves_page_16_and_combined_sends_every_field() {
+    // #437: four page-25 ticks, then one page-16 tick, as the NEO does
+    let r = rig(vec![]);
+    let mut link = connect(&r).await;
+    set(&link, ControlMode::Erg { target_w: 200 }).await;
+    let ev = run(&mut link, 5).await;
+    let all = samples(&ev);
+    assert!(all.len() >= 19, "{}", all.len());
+    let mut events = Vec::new();
+    for x in &all {
+        let k = x.at.0 / 250_000;
+        if k % 5 == 4 {
+            assert!(
+                x.speed_mps.is_some() && x.distance_m.is_some(),
+                "k={k}: {x:?}"
+            );
+            assert_eq!(
+                (
+                    x.power_w,
+                    x.cadence_rpm,
+                    x.accumulated_power_w,
+                    x.event_count
+                ),
+                (None, None, None, None),
+                "k={k}: page 16 carries no page-25 field"
+            );
+            assert_eq!(x.target_limit, TargetLimit::Undetermined, "k={k}");
+        } else {
+            assert!(
+                x.power_w.is_some() && x.cadence_rpm.is_some(),
+                "k={k}: {x:?}"
+            );
+            assert_eq!((x.speed_mps, x.distance_m), (None, None), "k={k}");
+            events.push(x.event_count.expect("page 25"));
+        }
+    }
+    // one page-25 flags observation per page-25 sample; the event count counts page 25 only
+    let flags = ev
+        .iter()
+        .filter(|e| {
+            matches!(e, TrainerEvent::Observed(o) if o.source == ObservationSource::Page25Flags)
+        })
+        .count();
+    assert_eq!(flags, events.len());
+    assert!(
+        events.windows(2).all(|w| w[1] == w[0].wrapping_add(1)),
+        "{events:?}"
+    );
+
+    let combined = SimRig::new(
+        SimConfig {
+            telemetry: SimTelemetry::Combined,
+            ..SimConfig::default()
+        },
+        Arc::new(TestClock(Instant::now())),
+    );
+    let mut link = connect(&combined).await;
+    let ev = run(&mut link, 5).await;
+    assert!(samples(&ev).len() >= 19);
+    for x in samples(&ev) {
+        assert!(
+            x.power_w.is_some() && x.cadence_rpm.is_some() && x.speed_mps.is_some(),
+            "{x:?}"
+        );
+        assert!(x.event_count.is_some(), "{x:?}");
+    }
 }
 #[tokio::test(start_paused = true)]
 async fn same_seed_and_faults_reproduce_the_same_events() {
@@ -631,7 +713,7 @@ async fn dropped_track_write_is_neither_applied_nor_echoed() {
         "{track:?}"
     );
     // the wind page was applied (echoed as the new default), the track page was not
-    assert!(last_sample(&ev).speed_mps.expect("sim") < 4.0);
+    assert!(last_speed(&ev) < 4.0);
 }
 #[tokio::test(start_paused = true)]
 async fn cadence_stall_stops_cadence_and_power_then_recovers() {
@@ -643,7 +725,7 @@ async fn cadence_stall_stops_cadence_and_power_then_recovers() {
     set(&link, ControlMode::Erg { target_w: 200 }).await;
     let ev = run(&mut link, 50).await;
     let at = |sec: u64| {
-        samples(&ev)
+        page25(&ev)
             .into_iter()
             .find(|x| x.at.0 >= sec * 1_000_000)
             .expect("sim")
@@ -663,7 +745,7 @@ async fn deep_cadence_dip_spirals_in_erg_and_release_recovers() {
     let mut link = connect(&r).await;
     set(&link, ControlMode::Erg { target_w: 250 }).await;
     let ev = run(&mut link, 45).await;
-    let end = last_sample(&ev);
+    let end = last_page25(&ev);
     assert!(
         end.cadence_rpm.expect("sim") < 10 && end.power_w.expect("sim") < 40,
         "{end:?}"
@@ -672,7 +754,7 @@ async fn deep_cadence_dip_spirals_in_erg_and_release_recovers() {
     // ADR-0002 §7.4: releasing ERG to zero resistance lets the rider spin up again
     set(&link, ControlMode::Resistance { pct: 0.0 }).await;
     let rec = run(&mut link, 20).await;
-    assert!(last_sample(&rec).cadence_rpm.expect("sim") > 60);
+    assert!(last_page25(&rec).cadence_rpm.expect("sim") > 60);
 }
 #[tokio::test(start_paused = true)]
 async fn shallow_cadence_dip_recovers_by_itself() {
@@ -683,7 +765,7 @@ async fn shallow_cadence_dip_recovers_by_itself() {
     let mut link = connect(&r).await;
     set(&link, ControlMode::Erg { target_w: 250 }).await;
     let ev = run(&mut link, 45).await;
-    let end = last_sample(&ev);
+    let end = last_page25(&ev);
     assert!(
         end.cadence_rpm.expect("sim") > 70 && end.power_w.expect("sim") > 220,
         "{end:?}"
