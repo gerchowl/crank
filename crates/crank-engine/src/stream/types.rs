@@ -26,7 +26,8 @@ pub struct StreamId(pub u32);
 pub struct SubId(pub u32);
 
 /// A source metric the engine publishes every tick: the record's catalogue names
-/// ([`crate::METRICS`]).
+/// ([`crate::METRICS`]) and the live lap power, all from the store's metric catalogue.
+/// Every source is `null` while the ride is paused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "snake_case")]
@@ -41,9 +42,12 @@ pub enum MetricId {
     Hr,
     /// Workout position, s (null while paused).
     WorkoutS,
+    /// Mean power of the current lap's record seconds so far, W (#243 Q5): the lap's
+    /// `avgPowerW` when it closes. `null` until the lap has a second with power. Not recorded.
+    PowerLap,
 }
 impl MetricId {
-    /// Index into the per-tick source vector, in [`crate::METRICS`] order.
+    /// Index into the per-tick source vector: [`crate::METRICS`] order, then `power_lap`.
     pub(crate) fn index(self) -> usize {
         match self {
             Self::Power => 0,
@@ -51,6 +55,7 @@ impl MetricId {
             Self::Speed => 2,
             Self::Hr => 3,
             Self::WorkoutS => 4,
+            Self::PowerLap => 5,
         }
     }
 }
@@ -298,6 +303,15 @@ pub struct StreamStatus {
     pub block_index: Option<u32>,
     /// Workout seconds in the current block.
     pub block_elapsed_s: f64,
+    /// Session second at which the current block actually began (the live cursor, ADR-0001
+    /// §5, #14); it stays put across pauses. `null` exactly when `block_index` is.
+    pub block_start_session_s: Option<f64>,
+    /// Workout second at which the current block actually began: `workout_s -
+    /// block_elapsed_s`. `null` exactly when `block_index` is.
+    pub block_start_workout_s: Option<f64>,
+    /// Laps closed so far; re-query `laps` when it changes (#243 Q5). Kept after the ride
+    /// finished.
+    pub laps_closed: u32,
     /// Samples that arrived after their tick (dropped), saturating at `u32::MAX` (the
     /// engine counts in `u64`; TypeScript cannot carry it, #271).
     pub late_samples: u32,
@@ -369,6 +383,9 @@ impl From<&RideStatus> for StreamStatus {
             workout_s: ticks_to_seconds(s.workout.0),
             block_index: s.block_index.and_then(|i| u32::try_from(i).ok()),
             block_elapsed_s: ticks_to_seconds(s.block_elapsed.0),
+            block_start_session_s: s.block_start_session.map(|t| ticks_to_seconds(t.0)),
+            block_start_workout_s: s.block_start_workout.map(|t| ticks_to_seconds(t.0)),
+            laps_closed: s.laps_closed,
             late_samples: u32::try_from(s.late_samples).unwrap_or(u32::MAX),
             record_error: s.record_error.as_ref().map(|e| {
                 let mut end = e.len().min(MAX_RECORD_ERROR_BYTES);
@@ -410,7 +427,8 @@ impl StreamStatus {
     }
     /// Equal in everything but the clock fields (`session_s`, `workout_s`,
     /// `block_elapsed_s`), which advance every tick and are refreshed by the heartbeat
-    /// instead of counting as a change. The loss fields are discrete: each changes only at a
+    /// instead of counting as a change. The block's start and `laps_closed` change only at a
+    /// block boundary, a skip or a free-ride lap, so they are sent on change. The loss fields are discrete: each changes only at a
     /// transition (a loss, an attempt, the trainer back, the soft start ending, a rider pause),
     /// never per tick, so they are sent on change and add no heartbeat churn (#329).
     #[must_use]
@@ -418,6 +436,9 @@ impl StreamStatus {
         self.state == other.state
             && self.loaded == other.loaded
             && self.block_index == other.block_index
+            && self.block_start_session_s == other.block_start_session_s
+            && self.block_start_workout_s == other.block_start_workout_s
+            && self.laps_closed == other.laps_closed
             && self.late_samples == other.late_samples
             && self.record_error == other.record_error
             && self.user_paused == other.user_paused
