@@ -431,7 +431,168 @@ pub fn check8(records: &[Record]) -> Value {
     })
 }
 
-/// Check 9: how far ERG power follows the target as cadence falls.
+/// Check 9: the cued descent starts this long after the 250 W write (the 90 rpm hold).
+pub const DESCENT_AFTER_US: u64 = 10 * SEC;
+/// The cue: from 90 rpm, 5 rpm every 10 s.
+const CUE_START_RPM: f64 = 90.0;
+const CUE_RPM_PER_S: f64 = 0.5;
+/// Following the cue: at most this far above it (30 s behind the cue).
+const BEHIND_RPM: f64 = 15.0;
+/// Following the cue: the cadence falls at most this much within [`DROP_WINDOW_US`].
+const DROP_RPM: f64 = 9.0;
+const DROP_WINDOW_US: u64 = 3 * SEC;
+/// A stall: power below this share of the target for [`STALL_CONFIRM_US`].
+const STALL_SHARE: f64 = 0.9;
+const STALL_CONFIRM_US: u64 = 2 * SEC;
+/// Power lags cadence by up to this much: the stall cadence is the range over it.
+const LAG_US: u64 = SEC;
+/// The descent ends at the first sample below this cadence while power is still held.
+pub const STALL_FLOOR_RPM: u8 = 25;
+/// A cadence bin is followed when this share of its samples is within ±10 % of the target.
+const FOLLOWED_SHARE: f64 = 0.8;
+
+/// Where a check-9 descent stands after the samples so far.
+///
+/// The check measures the trainer: down to which cadence the NEO's ERG holds 250 W while
+/// the rider follows the cue. The rider follows it while the cadence never falls more than
+/// 9 rpm within 3 s (3 rpm/s, six times the cue's 0.5 rpm/s, so a 5 rpm step made over a
+/// second or two passes) and stays no more than 15 rpm above the cue. At 3 rpm/s a power lag
+/// of up to 1 s blurs the stall cadence by at most 3 rpm, under the 5 rpm bins. A stall is
+/// power below 90 % of the target for 2 s (the 2 s of the §7.4 release rule) with the cadence
+/// falling no faster than that from 1 s before the drop: the trainer let go while the rider
+/// kept turning. Power and cadence falling together is a rider who stopped, or one the
+/// trainer overpowered; from page 25 the two look alike, so neither names a stall cadence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Descent {
+    /// No decision yet.
+    Going,
+    /// The trainer let go: power fell at a cadence between `lo_rpm` and `hi_rpm`.
+    Stalled {
+        /// First sample of the power drop.
+        onset_us: u64,
+        /// The drop has lasted 2 s.
+        at_us: u64,
+        /// Lowest cadence over the second before the drop.
+        lo_rpm: u8,
+        /// Highest cadence over the second before the drop.
+        hi_rpm: u8,
+    },
+    /// The cadence reached the floor with power still held.
+    Floor {
+        /// The first sample below the floor.
+        at_us: u64,
+        /// The last cadence with power held.
+        held_to_rpm: u8,
+    },
+    /// The rider did not follow the cue: no stall can be named.
+    Departed {
+        /// Where it was seen.
+        at_us: u64,
+        /// What happened.
+        why: String,
+    },
+}
+
+/// Largest fall of cadence (from a running peak) over the samples `s[..=to]` at or after
+/// `from_us`.
+fn largest_fall(s: &[&Sample], from_us: u64, to: usize) -> f64 {
+    let mut peak: Option<u8> = None;
+    let mut fall = 0_u8;
+    for x in s[..=to].iter().filter(|x| x.at_us >= from_us) {
+        let Some(c) = x.cadence else { continue };
+        peak = Some(peak.map_or(c, |p| p.max(c)));
+        fall = fall.max(peak.unwrap_or(c).saturating_sub(c));
+    }
+    f64::from(fall)
+}
+
+/// Judge a check-9 descent that started at `from_us` against `target_w` (see [`Descent`]).
+/// The live run and `analyse` call it on the same page-25 samples.
+pub fn descent(samples: &[Sample], from_us: u64, target_w: f64) -> Descent {
+    let s: Vec<&Sample> = samples.iter().filter(|x| x.at_us >= from_us).collect();
+    let mut onset: Option<u64> = None;
+    for (i, x) in s.iter().enumerate() {
+        let departed = |why: String| Descent::Departed {
+            at_us: x.at_us,
+            why,
+        };
+        let (Some(c), Some(p)) = (x.cadence, x.power) else {
+            return departed("cadence or power unavailable during the descent".into());
+        };
+        let low = f64::from(p) < STALL_SHARE * target_w;
+        onset = if low { onset.or(Some(x.at_us)) } else { None };
+        if let Some(o) = onset {
+            if x.at_us - o < STALL_CONFIRM_US {
+                continue;
+            }
+            let fall = largest_fall(&s, o.saturating_sub(LAG_US), i);
+            if fall > DROP_RPM {
+                return departed(format!(
+                    "power and cadence fell together ({fall} rpm within {} s, now {c} rpm): the rider stopped or was overpowered, not a trainer stall",
+                    round1(secs(x.at_us - o.saturating_sub(LAG_US)))
+                ));
+            }
+            let before = s
+                .iter()
+                .filter(|y| y.at_us + LAG_US >= o && y.at_us <= o)
+                .filter_map(|y| y.cadence);
+            // The window holds at least the onset sample itself.
+            let (lo, hi) = before.fold((u8::MAX, 0), |(lo, hi), y| (lo.min(y), hi.max(y)));
+            return Descent::Stalled {
+                onset_us: o,
+                at_us: x.at_us,
+                lo_rpm: lo.min(hi),
+                hi_rpm: hi,
+            };
+        }
+        let fall = largest_fall(&s, x.at_us.saturating_sub(DROP_WINDOW_US), i);
+        if fall > DROP_RPM {
+            return departed(format!(
+                "cadence fell {fall} rpm within 3 s to {c} rpm (the cue is 5 rpm per 10 s): the rider stopped, not the trainer"
+            ));
+        }
+        if c < STALL_FLOOR_RPM {
+            let held_to_rpm = i.checked_sub(1).and_then(|k| s[k].cadence).unwrap_or(c);
+            return Descent::Floor {
+                at_us: x.at_us,
+                held_to_rpm,
+            };
+        }
+        let cue = CUE_START_RPM - CUE_RPM_PER_S * secs(x.at_us - from_us);
+        if f64::from(c) > cue + BEHIND_RPM {
+            return departed(format!(
+                "{c} rpm where the cue is at {cue:.0} rpm: the rider did not follow the cued descent"
+            ));
+        }
+    }
+    Descent::Going
+}
+
+/// The check-9 verdict of a descent that ended in a stall or at the floor.
+pub fn stall_verdict(d: &Descent) -> Option<String> {
+    match *d {
+        Descent::Stalled { lo_rpm, hi_rpm, .. } => Some(if lo_rpm >= RELEASE_RPM {
+            "stall at or above the release cadence: the release comes too late".into()
+        } else if hi_rpm < RELEASE_RPM {
+            "stall below the release cadence: the release comes first".into()
+        } else {
+            format!(
+                "ambiguous: the stall cadence spans {lo_rpm}-{hi_rpm} rpm, across the {RELEASE_RPM} rpm release (power lag)"
+            )
+        }),
+        Descent::Floor { held_to_rpm, .. } => Some(format!(
+            "no stall down to {held_to_rpm} rpm: the release comes first"
+        )),
+        Descent::Going | Descent::Departed { .. } => None,
+    }
+}
+
+/// A cadence bin is followed: at least 2 samples, [`FOLLOWED_SHARE`] within ±10 %.
+fn bin_followed(p: &[f64], target: f64) -> bool {
+    p.len() >= 2 && share_within(p, target, 0.10).is_some_and(|x| x >= FOLLOWED_SHARE)
+}
+
+/// Check 9: down to which cadence ERG holds 250 W while the rider follows the cued descent.
 pub fn check9(records: &[Record]) -> Value {
     let s = samples(records);
     let ctl = controls(records);
@@ -444,40 +605,58 @@ pub fn check9(records: &[Record]) -> Value {
     else {
         return json!({"error": format!("no page-49 write of {target} W")});
     };
-    let win: Vec<(u8, f64)> = s
-        .iter()
-        .filter(|x| x.at_us >= at && x.at_us < end)
-        .filter_map(|x| Some((x.cadence?, f64::from(x.power?))))
-        .collect();
+    let from = at + DESCENT_AFTER_US;
+    let d = descent(&s, from, target);
+    let until = match &d {
+        Descent::Stalled { at_us, .. }
+        | Descent::Floor { at_us, .. }
+        | Descent::Departed { at_us, .. } => (*at_us).min(end),
+        Descent::Going => end,
+    };
     let mut bins: std::collections::BTreeMap<u8, Vec<f64>> = std::collections::BTreeMap::new();
-    for (c, p) in &win {
-        bins.entry(c / 5 * 5).or_default().push(*p);
-    }
-    let followed =
-        |p: &Vec<f64>| p.len() >= 2 && share_within(p, target, 0.10).is_some_and(|x| x >= 0.8);
-    let lowest = bins.iter().find(|(_, p)| followed(p)).map(|(c, _)| *c);
-    let stall = (0..win.len())
-        .find(|i| win[*i..].iter().all(|(_, p)| *p < 0.9 * target))
-        .map(|i| win[i].0);
-    let verdict = match stall {
-        Some(c) if c >= RELEASE_RPM => {
-            "stall at or above the release cadence: the release comes too late"
+    for x in s.iter().filter(|x| x.at_us >= at && x.at_us <= until) {
+        if let (Some(c), Some(p)) = (x.cadence, x.power) {
+            bins.entry(c / 5 * 5).or_default().push(f64::from(p));
         }
-        Some(_) => "stall below the release cadence: the release comes first",
-        None => "no stall before the end of the run",
+    }
+    let lowest = bins
+        .iter()
+        .find(|(_, p)| bin_followed(p, target))
+        .map(|(c, _)| *c);
+    let (event, detail) = match &d {
+        Descent::Going => ("not ended", json!(null)),
+        Descent::Stalled {
+            onset_us,
+            at_us,
+            lo_rpm,
+            hi_rpm,
+        } => (
+            "stalled",
+            json!({"onset_s": round1(secs(*onset_us)), "at_s": round1(secs(*at_us)), "stall_rpm": [lo_rpm, hi_rpm]}),
+        ),
+        Descent::Floor { at_us, held_to_rpm } => (
+            "floor",
+            json!({"at_s": round1(secs(*at_us)), "held_to_rpm": held_to_rpm}),
+        ),
+        Descent::Departed { at_us, why } => (
+            "departed",
+            json!({"at_s": round1(secs(*at_us)), "why": why}),
+        ),
     };
     json!({
-        "method": "samples from the procedure's 250 W write (the end of the soft start) to the release; 5 rpm bins; followed = >= 80 % of a bin's samples within ±10 % of the target; stall = first sample from which power stays below 90 % of the target",
+        "method": "descent from 10 s after the procedure's 250 W write; the cue falls from 90 rpm by 0.5 rpm/s; followed = cadence never falls > 9 rpm within 3 s and stays <= 15 rpm above the cue; stall = power < 90 % of the target for 2 s with the cadence followed from 1 s before the drop, stall cadence = the range over that second; floor = first sample below 25 rpm with power held; anything else departs (no verdict). Bins: 5 rpm, followed = >= 2 samples and >= 80 % within ±10 %",
         "target_w": target,
+        "descent_from_s": round1(secs(from)),
+        "descent": event,
+        "descent_detail": detail,
         "bins": bins.iter().map(|(c, p)| json!({
             "cadence_rpm": c, "samples": p.len(), "mean_power_w": mean(p.iter().copied()).map(round1),
             "within_10pct": share_within(p, target, 0.10).map(|x| round1(x * 100.0)),
         })).collect::<Vec<_>>(),
         "lowest_followed_rpm": lowest,
-        "stall_rpm": stall,
         "release_rpm": RELEASE_RPM,
         "reengage_rpm": REENGAGE_RPM,
-        "verdict": verdict,
+        "verdict": stall_verdict(&d),
     })
 }
 
@@ -661,10 +840,10 @@ fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'static
             "9",
             "Low cadence at 250 W ERG",
             format!(
-                "followed down to {} rpm; stall at {} rpm; {}",
+                "descent {}; 250 W followed down to the {} rpm bin; {}",
+                v["descent"].as_str().unwrap_or("?"),
                 num(&v["lowest_followed_rpm"]),
-                num(&v["stall_rpm"]),
-                v["verdict"].as_str().unwrap_or("?")
+                v["verdict"].as_str().unwrap_or("no verdict")
             ),
             "§7.4",
         ),
@@ -681,5 +860,88 @@ fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'static
             ),
             "§7.9",
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crank_fec::{ControlPage, encode};
+
+    fn tx(at_us: u64, page: &ControlPage) -> Record {
+        Record {
+            at_us,
+            rx: false,
+            bytes: encode(page).expect("encode").to_vec(),
+        }
+    }
+
+    fn p25(at_us: u64, cadence: u8, watts: u16) -> Record {
+        let w = watts.to_le_bytes();
+        let mut f = [0xa4, 9, 0x4e, 5, 25, 0, cadence, 0, 0, w[0], w[1], 0x30, 0];
+        f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
+        Record {
+            at_us,
+            rx: true,
+            bytes: f.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_bin_is_followed_from_80_percent_within_10_percent() {
+        let bin = |inside: usize, outside: usize| {
+            let mut p = vec![250.0; inside];
+            p.extend(vec![200.0; outside]);
+            bin_followed(&p, 250.0)
+        };
+        assert!(bin(8, 2));
+        assert!(!bin(7, 3));
+        assert!(!bin(1, 0), "one sample is not a bin");
+    }
+
+    #[test]
+    fn a_cadence_step_inside_the_lag_window_makes_the_stall_ambiguous() {
+        // 42 rpm, a 4 rpm step to 38 at 5 s, power drops at 5.5 s: within the 1 s lag the
+        // stall cadence is anywhere from 38 to 42, across the 40 rpm release.
+        let s: Vec<Sample> = (0..40)
+            .map(|k| {
+                let at_us = k * 250_000;
+                Sample {
+                    at_us,
+                    cadence: Some(if at_us < 5 * SEC { 42 } else { 38 }),
+                    power: Some(if at_us < 5_500_000 { 250 } else { 200 }),
+                    target_limit: 0,
+                }
+            })
+            .collect();
+        let d = descent(&s, 0, 250.0);
+        assert_eq!(
+            d,
+            Descent::Stalled {
+                onset_us: 5_500_000,
+                at_us: 7_500_000,
+                lo_rpm: 38,
+                hi_rpm: 42
+            }
+        );
+        assert!(stall_verdict(&d).expect("verdict").starts_with("ambiguous"));
+    }
+
+    #[test]
+    fn check9_ignores_a_250_w_write_after_the_release() {
+        // The procedure ended (page 48 0 % after its 0 W write) before any 250 W write.
+        let mut records = vec![
+            tx(0, &ControlPage::BasicResistance { pct: 0.0 }),
+            tx(SEC, &ControlPage::TargetPower { watts: 0.0 }),
+            tx(2 * SEC, &ControlPage::BasicResistance { pct: 0.0 }),
+            tx(3 * SEC, &ControlPage::TargetPower { watts: 250.0 }),
+        ];
+        records.extend((0..200).map(|k| p25(3 * SEC + k * 350_000, 90, 250)));
+        assert_eq!(
+            check9(&records)["error"],
+            json!("no page-49 write of 250 W"),
+            "{}",
+            check9(&records)
+        );
     }
 }
