@@ -4,7 +4,7 @@
 //! a page-71 reply 100 ms after a page-70 request echoing the last control page. Power
 //! follows the applied control with a 0.8 s lag: ERG holds the target down to 35 rpm and
 //! collapses below it, page 48 and SIM follow cadence (SIM through the road model). The
-//! rider moves cadence towards the last cue at 30 rpm/s.
+//! rider moves cadence towards the last cue at 30 rpm/s; `Descend` lowers it 5 rpm per 10 s.
 use crate::{
     frames::{Record, page_of},
     rider::{Cue, Operator, Wire},
@@ -32,6 +32,8 @@ pub struct Plan {
     pub silent_from_us: Option<u64>,
     /// The harness panics (once) when it reads telemetry at or after this capture time.
     pub panic_at_us: Option<u64>,
+    /// Follows the check-9 cue to lower cadence (otherwise holds 90 rpm).
+    pub descends: bool,
 }
 
 impl Default for Plan {
@@ -44,6 +46,7 @@ impl Default for Plan {
             hang_from_us: None,
             silent_from_us: None,
             panic_at_us: None,
+            descends: true,
         }
     }
 }
@@ -65,6 +68,7 @@ struct State {
     power: f64,
     cadence: f64,
     goal: f64,
+    descend_from: Option<u64>,
     accumulated: u16,
     events: u8,
     seq: u8,
@@ -112,6 +116,7 @@ impl Sim {
                 power: 0.0,
                 cadence: 0.0,
                 goal: 0.0,
+                descend_from: None,
                 accumulated: 0,
                 events: 0,
                 seq: 0,
@@ -136,6 +141,15 @@ impl Sim {
         self.lock().cues.iter().map(|(_, c)| *c).collect()
     }
 
+    /// Capture time of the first `cue`.
+    pub fn cue_at(&self, cue: Cue) -> Option<u64> {
+        self.lock()
+            .cues
+            .iter()
+            .find(|(_, c)| *c == cue)
+            .map(|(at, _)| *at)
+    }
+
     /// Bring the trainer and rider to the present.
     fn advance(&self) {
         let now = self.elapsed();
@@ -157,6 +171,8 @@ impl Sim {
         let silent = self.plan.silent_from_us.is_some_and(|x| now >= x);
         if self.plan.stop_at_us.is_some_and(|x| now >= x) {
             st.goal = 0.0;
+        } else if let Some(from) = st.descend_from {
+            st.goal = (90.0 - 5.0 * ((now - from) / 10_000_000) as f64).max(0.0);
         }
         let delta = (st.goal - st.cadence).clamp(-30.0 * dt, 30.0 * dt);
         st.cadence += delta;
@@ -306,9 +322,11 @@ impl Operator for Sim {
             return;
         }
         match cue {
-            Cue::Start => s.goal = s.goal.max(90.0),
-            Cue::Cadence(rpm) => s.goal = f64::from(rpm),
-            Cue::Stop => s.goal = 0.0,
+            Cue::Start | Cue::Steady => s.goal = s.goal.max(90.0),
+            Cue::Cadence(rpm) => (s.goal, s.descend_from) = (f64::from(rpm), None),
+            Cue::Descend if self.plan.descends => s.descend_from = Some(at_us),
+            Cue::Descend => {}
+            Cue::Stop => (s.goal, s.descend_from) = (0.0, None),
         }
     }
     async fn confirm(&self, _: &str) -> bool {

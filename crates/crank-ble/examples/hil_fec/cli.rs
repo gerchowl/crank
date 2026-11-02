@@ -34,12 +34,16 @@ pub enum Check {
     Check6,
     /// Check 7: target held without keep-alive (rider).
     Check7,
+    /// Check 8: SIM grades and page 55 mass (rider).
+    Check8,
+    /// Check 9: low-cadence stall at 250 W ERG (rider).
+    Check9,
     /// Check 12: ERG 200 W → `Free` release (rider).
     Check12,
 }
 
 impl Check {
-    const ALL: [(&'static str, Self); 14] = [
+    const ALL: [(&'static str, Self); 16] = [
         ("scan", Self::Scan),
         ("known", Self::Known),
         ("idle", Self::Idle),
@@ -53,6 +57,8 @@ impl Check {
         ("analyse", Self::Analyse),
         ("check6", Self::Check6),
         ("check7", Self::Check7),
+        ("check8", Self::Check8),
+        ("check9", Self::Check9),
         ("check12", Self::Check12),
     ];
     /// The Part B control procedure behind this subcommand, if it is one.
@@ -61,6 +67,8 @@ impl Check {
         match self {
             Self::Check6 => Some(Procedure::Check6),
             Self::Check7 => Some(Procedure::Check7),
+            Self::Check8 => Some(Procedure::Check8),
+            Self::Check9 => Some(Procedure::Check9),
             Self::Check12 => Some(Procedure::Check12),
             _ => None,
         }
@@ -90,7 +98,7 @@ pub struct Args {
 }
 
 /// Usage text.
-pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check6|check7|check12> \
+pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check6|check7|check8|check9|check12> \
 [--out DIR] [--scan-secs N] [--idle-secs N] [--target ID_OR_PATH]";
 
 fn number(flag: &str, text: &str) -> Result<u64, String> {
@@ -169,6 +177,8 @@ mod tests {
         for (name, p) in [
             ("check6", Procedure::Check6),
             ("check7", Procedure::Check7),
+            ("check8", Procedure::Check8),
+            ("check9", Procedure::Check9),
             ("check12", Procedure::Check12),
         ] {
             let a = parse(args(&[name, "--out", "/x"]), Path::new("/o")).expect("parses");
