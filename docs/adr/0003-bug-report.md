@@ -92,8 +92,8 @@ is skipped, never guessed at, which is squelch's own rule.
     `name` and `local_name` fields.
 - **Field allowlist** (`Redactor::allow_fields`). It applies in addition to squelch's scrubbed defaults:
   `target`, `event`, `kind`, `page`, `result`, `connected`, `takeover`, `taken`, `last`, `discarded`,
-  `command`, `st`, `dir`, `path`, `ride_id`, `db_id`. These are the field names crank logs today (the
-  #431 survey of `tracing` calls). `dir` and `path` still go through squelch's home-path rule. `raw`
+  `command`, `st`, `dir`, `path`, `ride_id`, `db_id`. These are the field names crank logs today (a
+  survey of the `tracing` calls in `crates/` and `app/src-tauri/`, 2026-11-02). `dir` and `path` still go through squelch's home-path rule. `raw`
   (unknown FE-C page bytes) is **not** allowlisted. A new log field is absent from reports until it is
   added here deliberately.
 - **Pinning test** (`crank-desktop/tests/report_privacy.rs`). It uses a fixture `logs.jsonl`, built from a real
