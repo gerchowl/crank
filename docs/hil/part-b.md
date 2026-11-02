@@ -1,6 +1,7 @@
 # HIL session 1, Part B runbook: control checks with a rider (#44, #412)
 
-How to run the Part B pedalling checks of ADR-0002 §9 with `hil_fec`. This covers the control checks
+How to run the Part B pedalling checks of ADR-0002 §9 with `hil_fec`. The owner's step-by-step session
+script (app flow plus these checks) is [part-b-runbook.md](part-b-runbook.md). This covers the control checks
 6, 7, 8, 9 and 12. Check 5 (page 25 against CPS `2A63`) and checks 10/11a–c (second central, dropout)
 follow in their own PRs (#412 parts b and c). Results go to a new `docs/hil/<date>-fec.md` in the
 format of [the Part A results](2026-10-14-fec.md): one "Results at a glance" row per check, which each
