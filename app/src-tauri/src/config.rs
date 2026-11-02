@@ -102,4 +102,21 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn the_capture_dir_reaches_the_ble_device_mode_and_not_the_simulator() {
+        use crank_core::DeviceMode;
+        let c = RuntimeConfig::parse(args(&[]), None, None, Some("/tmp/cap".into()));
+        assert!(matches!(
+            crate::device_mode(&c),
+            DeviceMode::Ble { capture_dir: Some(d) } if d == std::path::Path::new("/tmp/cap")
+        ));
+        let none = RuntimeConfig::parse(args(&[]), None, None, None);
+        assert!(matches!(
+            crate::device_mode(&none),
+            DeviceMode::Ble { capture_dir: None }
+        ));
+        let sim = RuntimeConfig::parse(args(&["--sim"]), None, None, Some("/tmp/cap".into()));
+        assert!(matches!(crate::device_mode(&sim), DeviceMode::Sim(_)));
+    }
 }
