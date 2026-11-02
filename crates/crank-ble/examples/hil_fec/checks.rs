@@ -6,8 +6,7 @@ use crate::{
         parse_capture, parse_cps, redact_capture, redact_frame, redact_name, request_latencies,
         with_page_byte,
     },
-    partb,
-    rider::{self, Wire},
+    partb, rider,
     session::{Exchange, Result, Session, adapter, find_trainer, scan},
 };
 use crank_ble::{
@@ -985,7 +984,7 @@ mod tests {
     use crate::{
         frames::{Record, hex},
         partb::{FINISHED, OUTCOME, SESSION_BOUND_S},
-        rider::{Procedure, Report},
+        rider::{Procedure, Report, Wire},
         sim::{Pattern, Plan, Sim},
     };
     use std::{fmt::Write as _, path::Path};

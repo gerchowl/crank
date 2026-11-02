@@ -6,7 +6,7 @@
 //! `docs/hil/part-b.md` states the method and the reasoning behind every tolerance.
 use crate::{
     frames::{Cps, Record},
-    partb::{SEC, SETTLE, controls, erg_holds, mean, procedure_end, round1, samples, secs},
+    partb::{SEC, SETTLE, Sample, controls, erg_holds, mean, procedure_end, round1, samples, secs},
 };
 use serde_json::{Value, json};
 
@@ -182,6 +182,64 @@ fn covered(compared: usize, whole: usize) -> bool {
     compared >= MIN_WINDOW_SECONDS && compared * COVERAGE_DEN >= whole * COVERAGE_NUM
 }
 
+/// The comparison inside one settled window; `seconds` collects the per-second `(page 25, 2A63)`
+/// mean powers.
+fn compare_window(
+    s: &[Sample],
+    parsed: &Parsed,
+    (watts, from, to): (f64, u64, u64),
+    seconds: &mut Vec<(f64, f64)>,
+) -> Window {
+    let (mut whole, mut compared) = (0, 0);
+    for sec in whole_seconds(from, to) {
+        let (lo, hi) = (sec * SEC, (sec + 1) * SEC);
+        let fe = mean(
+            s.iter()
+                .filter(|x| in_window(x.at_us, lo, hi))
+                .filter_map(|x| x.power.map(f64::from)),
+        );
+        let cp = mean(
+            parsed
+                .readings
+                .iter()
+                .filter(|r| in_window(r.at_us, lo, hi))
+                .map(|r| r.power_w),
+        );
+        whole += 1;
+        if let (Some(fe), Some(cp)) = (fe, cp) {
+            seconds.push((fe, cp));
+            compared += 1;
+        }
+    }
+    let fe = mean(
+        s.iter()
+            .filter(|x| in_window(x.at_us, from, to))
+            .filter_map(|x| x.cadence.map(f64::from)),
+    );
+    let (revs, time) = parsed
+        .pairs
+        .iter()
+        .filter(|p| in_window(p.at_us, from, to))
+        .fold((0.0, 0.0), |(r, t), p| (r + p.revs, t + p.secs));
+    Window {
+        watts,
+        from,
+        to,
+        whole,
+        compared,
+        page25_gap: max_gap(
+            s.iter()
+                .filter(|x| x.power.is_some())
+                .map(|x| x.at_us)
+                .collect(),
+            from,
+            to,
+        ),
+        cps_gap: max_gap(parsed.readings.iter().map(|r| r.at_us).collect(), from, to),
+        cadence: fe.filter(|_| time > 0.0).map(|fe| (fe, 60.0 * revs / time)),
+    }
+}
+
 /// Check 5: page-25 rate, and page-25 against CPS power and cadence over the settled holds.
 pub fn check5(records: &[Record], cps: &[Cps]) -> Value {
     let s = samples(records);
@@ -196,57 +254,10 @@ pub fn check5(records: &[Record], cps: &[Cps]) -> Value {
         .collect();
 
     let mut seconds = Vec::new();
-    let mut windows = Vec::new();
-    for &(watts, from, to) in &spans {
-        let (mut whole, mut compared) = (0, 0);
-        for sec in whole_seconds(from, to) {
-            let (lo, hi) = (sec * SEC, (sec + 1) * SEC);
-            let fe = mean(
-                s.iter()
-                    .filter(|x| in_window(x.at_us, lo, hi))
-                    .filter_map(|x| x.power.map(f64::from)),
-            );
-            let cp = mean(
-                parsed
-                    .readings
-                    .iter()
-                    .filter(|r| in_window(r.at_us, lo, hi))
-                    .map(|r| r.power_w),
-            );
-            whole += 1;
-            if let (Some(fe), Some(cp)) = (fe, cp) {
-                seconds.push((fe, cp));
-                compared += 1;
-            }
-        }
-        let fe = mean(
-            s.iter()
-                .filter(|x| in_window(x.at_us, from, to))
-                .filter_map(|x| x.cadence.map(f64::from)),
-        );
-        let (revs, time) = parsed
-            .pairs
-            .iter()
-            .filter(|p| in_window(p.at_us, from, to))
-            .fold((0.0, 0.0), |(r, t), p| (r + p.revs, t + p.secs));
-        windows.push(Window {
-            watts,
-            from,
-            to,
-            whole,
-            compared,
-            page25_gap: max_gap(
-                s.iter()
-                    .filter(|x| x.power.is_some())
-                    .map(|x| x.at_us)
-                    .collect(),
-                from,
-                to,
-            ),
-            cps_gap: max_gap(parsed.readings.iter().map(|r| r.at_us).collect(), from, to),
-            cadence: fe.filter(|_| time > 0.0).map(|fe| (fe, 60.0 * revs / time)),
-        });
-    }
+    let windows: Vec<Window> = spans
+        .iter()
+        .map(|&span| compare_window(&s, &parsed, span, &mut seconds))
+        .collect();
 
     let diffs: Vec<f64> = seconds.iter().map(|(a, b)| a - b).collect();
     let outside = diffs
