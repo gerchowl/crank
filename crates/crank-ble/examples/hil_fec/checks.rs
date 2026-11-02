@@ -58,9 +58,11 @@ pub async fn run(args: &Args) -> Result<Outcome> {
     let summary = if args.check == Check::Latency {
         latency(args, &adv, adapter, device, &capture_path).await?
     } else if let Some(p) = args.check.procedure() {
+        // Check 9's verdict needs check 6's power response from the same `--out` directory.
+        let lag = partb::PowerLag::beside(&capture_path);
         let s = Session::open(&adv, adapter, device, &capture_path).await?;
         let report = rider::drive(&s, &rider::Console::new(), p, rider::signals()).await;
-        let mut summary = rider::summary(p, args.check.name(), &report, &Wire::records(&s));
+        let mut summary = rider::summary(p, args.check.name(), &report, &Wire::records(&s), &lag);
         summary["identity"] = identity(&s);
         summary["link_dropped_during_run"] = json!(s.pump_ended());
         s.close().await;
@@ -89,6 +91,8 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             | Check::Analyse
             | Check::Check6
             | Check::Check7
+            | Check::Check8
+            | Check::Check9
             | Check::Check12 => {
                 unreachable!()
             }
@@ -137,7 +141,9 @@ fn analyse(args: &Args) -> Result<Outcome> {
     let dest = args.out.join(format!("{stem}.analysis.json"));
     let records = parse_capture(&text);
     let mut v = analysis(&records);
-    if let Some(part_b) = partb::analyse(stem, &records, partb::outcome_in(&text).as_deref()) {
+    let lag = partb::PowerLag::beside(std::path::Path::new(src));
+    if let Some(part_b) = partb::analyse(stem, &records, partb::outcome_in(&text).as_deref(), &lag)
+    {
         if let Some(line) = part_b["line"].as_str() {
             println!("{line}");
         }
