@@ -357,7 +357,7 @@ mod tests {
             cps(0, 100, 10, 1000),
             cps(SEC, 101, 10, 1000),
             cps(2 * SEC, 102, 11, 1700),
-            cps(40 * SEC, 103, 40, 5000),
+            cps(40 * SEC, 103, 14, 3748),
         ]);
         assert_eq!((p.readings.len(), p.pairs.len(), p.rejected), (4, 1, 1));
     }
@@ -430,7 +430,7 @@ mod tests {
         let (records, _) = ride(250_000, 0, 60);
         // One notification per revolution at `rpm`; the event time follows from the revolutions.
         let at_rpm = |rpm: f64| -> Vec<Cps> {
-            (0..)
+            (0..200_u32)
                 .map(|k| f64::from(k) * 60.0 / rpm)
                 .take_while(|t| *t < 60.0)
                 .enumerate()
