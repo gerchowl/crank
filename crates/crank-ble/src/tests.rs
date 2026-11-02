@@ -1626,3 +1626,247 @@ async fn a_hung_disconnect_of_a_cancelled_connect_frees_the_trainer_admission() 
         .await
         .expect("the admission is free after the disconnect timeout");
 }
+
+fn capture_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .map(|d| d.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_with_a_capture_dir_writes_its_own_readable_capture() {
+    use crate::central::fec_trainer;
+    enable_trace();
+    let dir = tempfile::tempdir().unwrap();
+    let captures = CaptureDir::new(dir.path().join("nested"));
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let mut paths = Vec::new();
+    for _ in 0..2 {
+        let fake = Fake::new(clock.clone());
+        let (trainer, _) = fec_trainer(
+            Arc::new(fake),
+            clock.clone(),
+            ConnectCleanup::new(),
+            Some(&captures),
+        );
+        assert!(trainer.has_capture());
+        let link = trainer
+            .connect(&DeviceRef("fake".into()), rider())
+            .await
+            .unwrap();
+        settle().await;
+        link.control.send(TrainerCommand::Disconnect).await.unwrap();
+        tick().await;
+        paths = capture_files(captures.path());
+    }
+    // One file per connection, none overwritten.
+    assert_eq!(paths.len(), 2, "{paths:?}");
+    for path in paths {
+        assert_eq!(path.extension().unwrap(), "fecap");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# elapsed_us direction complete_frame_hex"));
+        // The connection's own page-54 request went out and its replay input parses.
+        assert!(text.lines().any(|l| l.contains(" tx ")), "{text}");
+        #[cfg(feature = "replay")]
+        crate::ReplayTrainer::new(&text, clock.clone()).unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_without_a_capture_dir_has_no_capture_sink() {
+    use crate::central::fec_trainer;
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let (trainer, path) = fec_trainer(
+        Arc::new(Fake::new(clock.clone())),
+        clock,
+        ConnectCleanup::new(),
+        None,
+    );
+    // Nothing is attached to write anywhere, whatever directory it would be.
+    assert!(!trainer.has_capture());
+    assert_eq!(path, None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_uncreatable_capture_dir_does_not_stop_the_connection() {
+    use crate::central::fec_trainer;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a-file");
+    std::fs::write(&file, b"").unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let (trainer, path) = fec_trainer(
+        Arc::new(Fake::new(clock.clone())),
+        clock,
+        ConnectCleanup::new(),
+        Some(&CaptureDir::new(file.join("sub"))),
+    );
+    assert_eq!(path, None);
+    assert!(
+        trainer
+            .connect(&DeviceRef("fake".into()), rider())
+            .await
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_capture_without_frames_is_discarded_and_one_with_frames_kept() {
+    let dir = CaptureDir::new(tempfile::tempdir().unwrap().keep());
+    let (empty, _capture) = dir.create(MonoTime(0)).unwrap();
+    let (used, capture) = dir.create(MonoTime(0)).unwrap();
+    capture.record(MonoTime(5), false, &[0xa4]).unwrap();
+    CaptureDir::discard_if_empty(&empty);
+    CaptureDir::discard_if_empty(&used);
+    assert!(!empty.exists());
+    assert!(used.exists());
+}
+
+/// Collects the message of every WARN event.
+struct Warnings(Arc<Mutex<Vec<String>>>);
+impl tracing::Subscriber for Warnings {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                let _ =
+                    std::fmt::Write::write_fmt(&mut self.0, format_args!("{}={v:?} ", f.name()));
+            }
+        }
+        if *event.metadata().level() == tracing::Level::WARN {
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0.lock().unwrap().push(fields.0);
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failing_capture_writer_warns_once_and_the_ride_goes_on() {
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+    let _scoped = tracing::subscriber::set_default(Warnings(warnings.clone()));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("failing.fecap");
+    // An epoch in the future makes every record fail, as a full disk would.
+    let capture = Arc::new(Capture::create(&path, MonoTime(u64::MAX)).unwrap());
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let fake = Fake::new(clock.clone());
+    let mut link = FecTrainer::new(Arc::new(fake.clone()), clock)
+        .with_capture(capture)
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    settle().await;
+    for watts in [150, 200, 250] {
+        link.control
+            .send(TrainerCommand::SetMode {
+                mode: ControlMode::Erg { target_w: watts },
+                seq: CommandSeq(1),
+            })
+            .await
+            .unwrap();
+        tick().await;
+    }
+    // The commands still reached the trainer: the capture is a diagnostic only.
+    assert_eq!(fake.writes.lock().unwrap().last().unwrap().1[4], 49);
+    let mut events = Vec::new();
+    while let Ok(event) = link.events.try_recv() {
+        events.push(event);
+    }
+    assert!(!events.contains(&TrainerEvent::Link(LinkState::Lost)));
+    let warned = warnings.lock().unwrap().clone();
+    let failures: Vec<_> = warned
+        .iter()
+        .filter(|w| w.contains("capture write failed"))
+        .collect();
+    assert_eq!(failures.len(), 1, "{warned:?}");
+    assert!(failures[0].contains("failing.fecap"), "{warned:?}");
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+}
+
+/// A central without an adapter: hands out a fake transport and a capture directory.
+#[derive(Clone)]
+struct FakePeripherals {
+    transport: Arc<dyn FecTransport>,
+    capture: Option<CaptureDir>,
+}
+impl crate::central::Peripherals for FakePeripherals {
+    fn open(&self, _: &DeviceRef) -> crate::central::Opened {
+        let transport = self.transport.clone();
+        Box::pin(async move { Ok((transport, None)) })
+    }
+    fn capture_dir(&self) -> Option<CaptureDir> {
+        self.capture.clone()
+    }
+}
+fn peripheral_trainer(
+    transport: Arc<dyn FecTransport>,
+    capture: Option<CaptureDir>,
+) -> crate::central::PeripheralTrainer<FakePeripherals> {
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    crate::central::PeripheralTrainer {
+        peripherals: FakePeripherals { transport, capture },
+        clock,
+        cleanup: ConnectCleanup::new(),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_production_connect_path_captures_into_its_centrals_dir() {
+    enable_trace();
+    let dir = tempfile::tempdir().unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let driver = peripheral_trainer(
+        Arc::new(Fake::new(clock)),
+        Some(CaptureDir::new(dir.path())),
+    );
+    let link = driver
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    settle().await;
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+    let files = capture_files(dir.path());
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(std::fs::read_to_string(&files[0]).unwrap().contains(" tx "));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_production_connect_path_without_a_dir_writes_no_file() {
+    enable_trace();
+    let dir = tempfile::tempdir().unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let driver = peripheral_trainer(Arc::new(Fake::new(clock)), None);
+    let link = driver
+        .connect(&DeviceRef("fake".into()), rider())
+        .await
+        .unwrap();
+    link.control.send(TrainerCommand::Disconnect).await.unwrap();
+    tick().await;
+    assert!(capture_files(dir.path()).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connect_that_fails_before_any_frame_leaves_no_capture_file() {
+    enable_trace();
+    let dir = tempfile::tempdir().unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::default());
+    let fake = Fake::new(clock.clone());
+    // The fake hands its notification stream out once: a second connect fails at the transport.
+    let _used = fake.connect(DeviceRef("fake".into()), clock).await.unwrap();
+    let driver = peripheral_trainer(Arc::new(fake), Some(CaptureDir::new(dir.path())));
+    let result = driver.connect(&DeviceRef("fake".into()), rider()).await;
+    assert!(matches!(result, Err(DeviceError::ConnectFailed(_))));
+    assert!(capture_files(dir.path()).is_empty());
+}

@@ -37,7 +37,15 @@ pinned `advisory-db` input (bump: `nix flake update advisory-db`; ADR-0001 §9.5
 `crank-desktop` wires `crank-core` as Tauri commands (`app/src-tauri/src/commands.rs`, one per facade method; `ApiError` is the only
 error type that crosses) and manages one `Core`. Runtime configuration: `--sim` or `CRANK_SIM=1` (anything but empty, `0`, `false`)
 drives the seeded device simulator instead of Bluetooth; `CRANK_DATA_DIR` sets the directory of `crank.db` and `ride.lock` (default:
-the app-data directory of the bundle identifier). Streams belong to the calling window's label and are dropped when it is destroyed
+the app-data directory of the bundle identifier). **Logs and raw-frame captures (#411)**: the desktop main (`app/src-tauri/src/logging.rs`,
+never a library crate) installs a file `tracing` subscriber. A normal launch logs INFO to `~/Library/Logs/io.github.gerchowl.crank/crank.log`
+(Tauri's `app_log_dir`; a Finder launch has no stderr) and captures nothing; the file moves to `crank.log.1` at 5 MiB, so the log holds
+at most 10 MiB (plain text and fixed filters for now; ADR-0001's JSON/daily/`CRANK_LOG` logging is #414). With `CRANK_CAPTURE_DIR=<dir>` (the HIL riding session, #44 Part B) `<dir>/crank.log` also records `crank-ble` at TRACE, and
+each trainer connection (reconnects included) writes `<dir>/trainer-<unix secs>-<n>.fecap`, the `.fecap` format that `hil_fec analyse`
+and `redact` read (`hil_fec analyse --target <dir>/trainer-….fecap --out <dir>`; reconnect timings are the `reconnecting trainer` and
+`trainer reconnect failed` lines of `crank.log`). If that directory cannot be opened the app says so and exits instead of riding uncaptured.
+Everything stays on the machine. A capture holds raw device frames: page 81 carries the trainer serial, and `redact` masks only that;
+the log can carry device names in error text. Redact before committing, and do not share either file unreviewed. Streams belong to the calling window's label and are dropped when it is destroyed
 or its page (re)loads (a reload keeps the webview, so the old channel would not fail). **Quitting ends a ride**: an exit request (last window closed, `app.exit`, Cmd+Q, whose menu item replaces the default one, on macOS only and only after it is verified as the built-in Quit, so it calls
 `app.exit(0)`; Windows and Linux get no custom menu and quit through the run-event hold-back, #306) is held back, `Core::shutdown` ends the ride (end mode `Resistance{0}`, ADR-0002 §7.9) and waits at most 3 s for the
 devices to be released, then the app exits (`app/src-tauri/src/lifecycle.rs`). Exits that never ask (Dock Quit, logout, system shutdown:

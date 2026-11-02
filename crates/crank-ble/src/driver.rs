@@ -135,6 +135,11 @@ impl FecTrainer {
         self.cleanup = cleanup;
         self
     }
+    /// Whether a capture is attached.
+    #[cfg(test)]
+    pub(crate) fn has_capture(&self) -> bool {
+        self.capture.is_some()
+    }
     /// Attach a TRACE capture. Diagnostic failures emit Fault and never stop BLE.
     #[must_use]
     pub fn with_capture(mut self, capture: Arc<Capture>) -> Self {
@@ -284,9 +289,10 @@ fn record_capture(
     if tracing::enabled!(tracing::Level::TRACE)
         && let Some(capture) = capture
     {
-        capture
-            .record(at, rx, bytes)
-            .map_err(|e| DeviceError::Capture(e.to_string()))?;
+        capture.record(at, rx, bytes).map_err(|e| {
+            capture.warn_failed(&e);
+            DeviceError::Capture(e.to_string())
+        })?;
     }
     Ok(())
 }

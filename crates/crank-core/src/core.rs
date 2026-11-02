@@ -2463,7 +2463,7 @@ mod tests {
     /// Re-opening the data dir with a radio the test controls.
     fn open(dir: &std::path::Path, radio: &FakeRadio) -> Core {
         let radio = radio.clone();
-        let factory: crate::backend::RadioFactory = Arc::new(move || {
+        let factory: crate::backend::RadioFactory = Arc::new(move |_| {
             let radio: Arc<dyn Radio> = Arc::new(radio.clone());
             async move { Ok(radio) }.boxed()
         });
@@ -2535,7 +2535,7 @@ mod tests {
     /// As [`open`], on `host`, real time and the production clock.
     fn open_on(dir: &std::path::Path, radio: &FakeRadio, host: EngineHost) -> Core {
         let radio = radio.clone();
-        let factory: crate::backend::RadioFactory = Arc::new(move || {
+        let factory: crate::backend::RadioFactory = Arc::new(move |_| {
             let radio: Arc<dyn Radio> = Arc::new(radio.clone());
             async move { Ok(radio) }.boxed()
         });
