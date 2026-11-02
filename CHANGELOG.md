@@ -21,4 +21,7 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Fixed
 
+- Devices: a nearby device that is already paired shows "Paired as trainer/strap" with Forget instead of "Pair as"
+  for that role ([#436](https://github.com/gerchowl/crank/issues/436))
+
 ### Security
