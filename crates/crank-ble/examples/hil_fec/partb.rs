@@ -1,11 +1,12 @@
-//! Offline analysis of the Part B control checks (#44 checks 6, 7, 12; #412).
+//! Offline analysis of the Part B control checks (#44 checks 6, 7, 8, 9, 12; #412).
 //!
 //! Every result is a pure function of the `.fecap` records and the capture's outcome line, so
 //! `analyse` re-derives it from a committed capture: the procedure's own timing is read back
-//! from its tx writes, the rider's from page 25 (power, cadence). Only a run whose procedure
+//! from its tx writes, the rider's from page 25 (power, cadence) and page 16 (speed). Only a run whose procedure
 //! completed gives a result; any other run (or a capture without an outcome line) reports
 //! "no result" and no verdict.
 use crate::frames::{Record, page_of};
+use crank_engine::erg::policy::{REENGAGE_RPM, RELEASE_RPM};
 use crank_fec::{Page, decode};
 use serde_json::{Value, json};
 
@@ -60,6 +61,20 @@ pub fn samples(records: &[Record]) -> Vec<Sample> {
         })
         .collect();
     out.sort_by_key(|s| s.at_us);
+    out
+}
+
+/// Page-16 speeds `(at_us, m/s)`, in arrival order.
+fn speeds(records: &[Record]) -> Vec<(u64, f64)> {
+    let mut out: Vec<(u64, f64)> = records
+        .iter()
+        .filter(|r| r.rx)
+        .filter_map(|r| match decode(&r.bytes).ok()?.page {
+            Page::GeneralFe(g) => g.speed_mps.map(|v| (r.at_us, f64::from(v))),
+            _ => None,
+        })
+        .collect();
+    out.sort_by_key(|s| s.0);
     out
 }
 
@@ -349,6 +364,123 @@ pub fn check7(records: &[Record]) -> Value {
     })
 }
 
+/// SIM state for the check-8 power model.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SimState {
+    grade: f64,
+    crr: f64,
+    cw: f64,
+    wind_kmh: f64,
+    drafting: f64,
+    mass: f64,
+}
+
+/// Steady-state road power at `v` m/s (ADR-0002 §7.9 SIM inputs): rolling and grade force
+/// times speed plus the wind term `cw · (v + wind)² · drafting · v`.
+fn model_power(st: &SimState, v: f64) -> f64 {
+    let air = v + st.wind_kmh / 3.6;
+    v * st.mass * 9.81 * (st.grade / 100.0 + st.crr) + st.cw * air * air.abs() * st.drafting * v
+}
+
+/// Check 8: power per SIM state against the road model at the measured speed.
+pub fn check8(records: &[Record]) -> Value {
+    let s = samples(records);
+    let v = speeds(records);
+    let ctl = controls(records);
+    let end = procedure_end(records, &ctl);
+    let mut st = SimState {
+        grade: f64::NAN,
+        crr: 0.004,
+        cw: 0.51,
+        wind_kmh: 0.0,
+        drafting: 1.0,
+        mass: f64::NAN,
+    };
+    let mut segments = Vec::new();
+    for (i, (at, c)) in ctl.iter().enumerate() {
+        match *c {
+            Control::Track(g, crr) => (st.grade, st.crr) = (g, crr),
+            Control::Wind(cw, w, d) => (st.cw, st.wind_kmh, st.drafting) = (cw, w, d),
+            Control::User(r, b) => st.mass = r + b,
+            Control::Erg(_) | Control::Resistance(_) => continue,
+        }
+        let next = ctl.get(i + 1).map_or(end, |n| n.0.min(end));
+        if st.grade.is_nan() || st.mass.is_nan() || next.saturating_sub(*at) < HOLD_MIN {
+            continue;
+        }
+        let from = at + 5 * SEC;
+        let speed = mean(
+            v.iter()
+                .filter(|(t, _)| *t >= from && *t < next)
+                .map(|(_, x)| *x),
+        );
+        let power = mean(powers(&s, from, next));
+        let model = speed.map(|x| model_power(&st, x));
+        segments.push(json!({
+            "grade_pct": st.grade, "mass_kg": round1(st.mass), "crr": st.crr,
+            "mean_power_w": power.map(round1),
+            "mean_speed_kmh": speed.map(|x| round1(x * 3.6)),
+            "mean_cadence_rpm": mean(cadences(&s, from, next)).map(round1),
+            "model_power_w": model.map(round1),
+            "measured_over_model": power.zip(model).filter(|(_, m)| *m > 0.0).map(|(p, m)| (p / m * 100.0).round() / 100.0),
+        }));
+    }
+    json!({
+        "method": "a segment is a SIM state (pages 50, 51, 55) held >= 10 s; means from 5 s after the write; model = v·m·g·(grade + Crr) + cw·(v + wind)²·drafting·v at the mean page-16 speed, m = rider + bike from page 55",
+        "segments": segments,
+    })
+}
+
+/// Check 9: how far ERG power follows the target as cadence falls.
+pub fn check9(records: &[Record]) -> Value {
+    let s = samples(records);
+    let ctl = controls(records);
+    let end = procedure_end(records, &ctl);
+    let target = f64::from(crate::rider::MAX_ERG_W);
+    let Some(at) = ctl
+        .iter()
+        .find(|(at, c)| *at < end && *c == Control::Erg(target))
+        .map(|(at, _)| *at)
+    else {
+        return json!({"error": format!("no page-49 write of {target} W")});
+    };
+    let win: Vec<(u8, f64)> = s
+        .iter()
+        .filter(|x| x.at_us >= at && x.at_us < end)
+        .filter_map(|x| Some((x.cadence?, f64::from(x.power?))))
+        .collect();
+    let mut bins: std::collections::BTreeMap<u8, Vec<f64>> = std::collections::BTreeMap::new();
+    for (c, p) in &win {
+        bins.entry(c / 5 * 5).or_default().push(*p);
+    }
+    let followed =
+        |p: &Vec<f64>| p.len() >= 2 && share_within(p, target, 0.10).is_some_and(|x| x >= 0.8);
+    let lowest = bins.iter().find(|(_, p)| followed(p)).map(|(c, _)| *c);
+    let stall = (0..win.len())
+        .find(|i| win[*i..].iter().all(|(_, p)| *p < 0.9 * target))
+        .map(|i| win[i].0);
+    let verdict = match stall {
+        Some(c) if c >= RELEASE_RPM => {
+            "stall at or above the release cadence: the release comes too late"
+        }
+        Some(_) => "stall below the release cadence: the release comes first",
+        None => "no stall before the end of the run",
+    };
+    json!({
+        "method": "samples from the procedure's 250 W write (the end of the soft start) to the release; 5 rpm bins; followed = >= 80 % of a bin's samples within ±10 % of the target; stall = first sample from which power stays below 90 % of the target",
+        "target_w": target,
+        "bins": bins.iter().map(|(c, p)| json!({
+            "cadence_rpm": c, "samples": p.len(), "mean_power_w": mean(p.iter().copied()).map(round1),
+            "within_10pct": share_within(p, target, 0.10).map(|x| round1(x * 100.0)),
+        })).collect::<Vec<_>>(),
+        "lowest_followed_rpm": lowest,
+        "stall_rpm": stall,
+        "release_rpm": RELEASE_RPM,
+        "reengage_rpm": REENGAGE_RPM,
+        "verdict": verdict,
+    })
+}
+
 /// Check 12: does `Free` (page 50 defaults, page 51 grade 0) release an ERG target?
 pub fn check12(records: &[Record]) -> Value {
     let s = samples(records);
@@ -413,6 +545,8 @@ pub fn analyse(stem: &str, records: &[Record], outcome: Option<&str>) -> Option<
     let mut v = match stem {
         "check6" => check6(records),
         "check7" => check7(records),
+        "check8" => check8(records),
+        "check9" => check9(records),
         "check12" => check12(records),
         _ => return None,
     };
@@ -420,7 +554,7 @@ pub fn analyse(stem: &str, records: &[Record], outcome: Option<&str>) -> Option<
     v["procedure"] = json!(outcome.unwrap_or("unknown: the capture has no outcome line"));
     v["completed"] = json!(completed);
     if !completed {
-        for verdict in ["held", "released"] {
+        for verdict in ["held", "released", "verdict"] {
             if v.get(verdict).is_some() {
                 v[verdict] = Value::Null;
             }
@@ -437,15 +571,28 @@ fn num(v: &Value) -> String {
 
 /// The result row for `docs/hil/<date>-fec.md` (`| # | Check | Result | ADR-0002 |`).
 pub fn line(stem: &str, v: &Value) -> String {
-    let empty = Vec::new();
-    let list = |key: &str| v[key].as_array().unwrap_or(&empty).clone();
-    let no_result = (v["completed"] != json!(true)).then(|| {
+    let (n, what, result, adr) = cells(stem, v);
+    let result = if v["completed"] == json!(true) {
+        result
+    } else {
         format!(
             "no result: procedure {}",
             v["procedure"].as_str().unwrap_or("unknown")
         )
-    });
-    let (n, what, result, adr) = match stem {
+    };
+    let release = if v["release"]["page48_0pct_last"] == json!(true) {
+        "released"
+    } else {
+        "NOT released"
+    };
+    format!("| {n} | {what} | {result} (trainer {release} at the end) | {adr} |")
+}
+
+/// Check number, check, result and ADR-0002 section of a completed run's row.
+fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'static str) {
+    let empty = Vec::new();
+    let list = |key: &str| v[key].as_array().unwrap_or(&empty).clone();
+    match stem {
         "check6" => {
             let steps = list("steps")
                 .iter()
@@ -492,6 +639,35 @@ pub fn line(stem: &str, v: &Value) -> String {
             ),
             "§4.4",
         ),
+        "check8" => {
+            let segs = list("segments")
+                .iter()
+                .map(|s| {
+                    format!(
+                        "{} % at {} kg: {} W at {} km/h (model {} W, ×{})",
+                        num(&s["grade_pct"]),
+                        num(&s["mass_kg"]),
+                        num(&s["mean_power_w"]),
+                        num(&s["mean_speed_kmh"]),
+                        num(&s["model_power_w"]),
+                        num(&s["measured_over_model"])
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            ("8", "SIM page 51 at 0/5/10 %; page 55 mass", segs, "§7.9")
+        }
+        "check9" => (
+            "9",
+            "Low cadence at 250 W ERG",
+            format!(
+                "followed down to {} rpm; stall at {} rpm; {}",
+                num(&v["lowest_followed_rpm"]),
+                num(&v["stall_rpm"]),
+                v["verdict"].as_str().unwrap_or("?")
+            ),
+            "§7.4",
+        ),
         _ => (
             "12",
             "ERG 200 W → Free",
@@ -505,12 +681,5 @@ pub fn line(stem: &str, v: &Value) -> String {
             ),
             "§7.9",
         ),
-    };
-    let result = no_result.unwrap_or(result);
-    let release = if v["release"]["page48_0pct_last"] == json!(true) {
-        "released"
-    } else {
-        "NOT released"
-    };
-    format!("| {n} | {what} | {result} (trainer {release} at the end) | {adr} |")
+    }
 }
