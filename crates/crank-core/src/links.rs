@@ -214,6 +214,20 @@ mod tests {
         );
     }
 
+    /// A connect that fails ends `not_found`, never `ready`.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_connect_ends_not_found() {
+        let clock: Arc<dyn Clock> = Arc::new(VirtualClock::new(1));
+        let trainer = Timeline::new(LinkDevice::Trainer, 1, clock);
+        let failed = attempt(trainer.clone(), Duration::from_secs(15), async {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Err::<(), _>("no such device")
+        })
+        .await;
+        assert_eq!(failed, Some(Err("no such device")));
+        assert_eq!(trainer.steps(), [step("resolve", "not_found", 2000, None)]);
+    }
+
     #[test]
     fn attempts_count_per_device_from_one() {
         let attempts = Attempts::default();

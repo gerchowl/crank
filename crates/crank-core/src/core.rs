@@ -3055,6 +3055,27 @@ mod tests {
 
     /// #468: with both connecting at once, a trainer that fails fails the load at once, and
     /// a strap that has linked meanwhile is released.
+    /// #468: a trainer that fails beside a strap that never answers fails the load at the
+    /// trainer's failure, not at `CONNECT_TIMEOUT`.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_trainer_fails_the_load_at_once_beside_a_hung_strap() {
+        let dir = tempfile::tempdir().unwrap();
+        let hung = SimLatency {
+            never_answers: true,
+            ..SimLatency::default()
+        };
+        let (_, mut radio) = latent_core(dir.path(), SimLatency::default(), hung).await;
+        radio.connect_delay = Duration::from_secs(3);
+        radio
+            .fail_connect
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let core = open(dir.path(), &radio);
+        let started = tokio::time::Instant::now();
+        let error = core.ride_load(None).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::DeviceUnavailable);
+        assert_eq!(started.elapsed(), Duration::from_secs(3));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_failed_trainer_releases_the_strap_that_linked_beside_it() {
         let dir = tempfile::tempdir().unwrap();

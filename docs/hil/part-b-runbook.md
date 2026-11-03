@@ -128,7 +128,7 @@ hil_fec check10 --out "$OUT"
 This measures the assumption of ADR-0002 §5.1.2: does a connect find the device by adapter lookup (`via=lookup`) or
 does it have to scan (`via=scan`)? Each run is a fresh process that scans like Settings → Devices, waits
 `--idle-secs`, connects once through the app's own drivers (`first`), releases, and connects again at once
-(`after_disconnect`). It writes no control page. Run it per device, with the trainer free (no ride, phone apps
+(`after_disconnect`). It writes no mode or target page (a trainer connect writes page 55, the rider configuration, as pairing does). Run it per device, with the trainer free (no ride, phone apps
 closed) and the strap worn: `hil_fec reuse --scan-secs 5 --idle-secs 0 --target <id> --out "$OUT/reuse-now"` gives
 "right after a Devices scan", and the same with `--idle-secs 60` and `--out "$OUT/reuse-60s"` gives "after that scan
 stopped"; both give "after a disconnect". The ids of the paired devices are listed by

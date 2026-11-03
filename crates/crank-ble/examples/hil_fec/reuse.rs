@@ -8,7 +8,7 @@
 //! Devices scan" and with a longer wait for "after that scan stopped"; both runs give the
 //! after-a-disconnect case. `--target` picks the platform id; without it the first trainer
 //! seen is used. Each connect is the app's own (`BleCentral`), so a trainer gets page 55 and
-//! the page-54 request, as pairing does, and no control page.
+//! the page-54 request, as pairing does, and no mode or target page.
 use crate::{
     checks::Outcome,
     cli::{Args, Check, write_summary},

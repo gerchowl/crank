@@ -1043,8 +1043,8 @@ Every phase change is logged at INFO under the target `crank_core::links`, so a 
 
 - `resolve`, with `via=lookup|scan` (it measures the handle-reuse assumption of §5.1.2);
 - `gatt` (connect and discovery);
-- `identity` (subscribe, DIS read, verify);
-- `handshake` (page 55 to the page-54 reply);
+- `identity` (subscribe and DIS read; for the strap also the identity check, `Pairing::verify`);
+- `handshake` (trainer only: page 55 to the page-54 reply, then the trainer's identity check, which runs after it);
 - `ready_total`.
 
 Beside the phase lines:
