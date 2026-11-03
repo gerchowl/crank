@@ -521,6 +521,10 @@ because macOS may kill a terminating app a few seconds in. The 3 s are split:
 - When the bound is hit, the records still queued are lost. That is at most the last ~1 s batch
   interval: typically the shutdown's own lines. Spans not yet exported are lost from `traces.jsonl`.
   vigil reports the loss on stderr, which a Finder launch does not have.
+- A quit that gives up on a flush, a crash or a SIGKILL can leave `logs.jsonl` ending in a **partial last
+  line**. Readers (`vigil::rotate::read_since` returns it as a line; squelch's `flatten`, #444, and the bug report,
+  ADR-0003 §2.2) take every complete line and skip the one that does not parse, as squelch already does. crank pins the rule with
+  `read_since`; the squelch reader owns its own test (#444).
 - Because crank also flushes when each ride ends (below), the ride's records are on disk before quit.
 
 **Migration (architect decision 2026-11-02, the owner may override).** The app never deletes the old plain-text `crank.log` or
@@ -548,6 +552,14 @@ spans. vigil logs-only: loses span correlation entirely (spike).
 - Pre-1.0: a vigil minor may break crank's build. Bumps are reviewed PRs.
 - Open spans at shutdown are not exported (vigil#8 8d), so `RunEvent::Exit` ends the ride and device
   sessions before `shutdown()`. This affects `traces.jsonl` only. Tracked in #432.
+- **Spans as built (#465).** `ride{id}` is opened by `Core`'s load and held by the session until the reap,
+  which every end, replacing load, discard and quit goes through; `device{kind,id}` is its child, opened as
+  each device connects and held the same way, so the devices close first. The engine and the drivers hold no
+  clone: a wedged engine detached from its session would keep a span open for ever, and vigil exports none still
+  open. Records the core logs inside the span (the ride's release) carry its `traceId`/`spanId`. A quit that
+  times out or fails closes the spans of the session it leaves loaded (`Core::shutdown`). `id` is crank's ride
+  id; a device is named by its role placeholder (`<trainer-id>`, `<strap-id>`, ADR-0003 §2.3), never its name,
+  serial, platform id or the store id that embeds it. `coach{call_id}` has no call site yet (#474).
 - vigil supports Unix targets only (`flock` rotation). Windows (#41) needs vigil support or another
   backend.
 - Records overflowing the 65 536-record queue are dropped with a stderr warning. A Finder launch has no

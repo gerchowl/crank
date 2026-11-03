@@ -192,3 +192,37 @@ fn records_flushed_when_a_ride_ends_survive_a_quit_with_no_budget_left() {
     logging.shut_down(Duration::ZERO);
     assert!(read(dir.path()).contains("ride-marker"));
 }
+
+/// The complete records of `dir`: a line that does not parse is skipped, never guessed at (the
+/// rule of squelch, ADR-0003 §2.2).
+fn complete_lines(dir: &Path) -> Vec<serde_json::Value> {
+    vigil::rotate::read_since(dir, "logs", None)
+        .expect("a partial last line is no read error")
+        .iter()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+/// A quit that gives up on the flush, or a SIGKILL, can leave `logs.jsonl` ending in half a line
+/// (ADR-0001 §7.1, #465): readers take the complete lines and skip that one.
+#[test]
+fn a_partial_last_line_costs_a_reader_only_that_line() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let plan = LogPlan::new(None, dir.path().into());
+    let logging = Logging::new(plan.install(None).expect("logging starts"));
+    tracing::info!("whole-marker");
+    logging.shut_down(Duration::from_secs(5));
+    let before = complete_lines(dir.path());
+    assert!(!before.is_empty());
+    let mut live = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.path().join(LOG_FILE))
+        .expect("live file");
+    std::io::Write::write_all(&mut live, br#"{"resourceLogs":[{"scopeLo"#).expect("append");
+    assert_eq!(
+        complete_lines(dir.path()),
+        before,
+        "only the torn line is lost"
+    );
+    assert!(read(dir.path()).contains("whole-marker"));
+}
