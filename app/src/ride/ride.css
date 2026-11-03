@@ -24,19 +24,19 @@
   grid-area: bar;
   display: flex;
   align-items: center;
-  gap: 8px 16px;
-  min-height: 64px;
-  padding: 0 16px;
+  gap: var(--space-2) var(--space-4);
+  min-height: var(--control-h-l);
+  padding: 0 var(--space-4);
   font-size: var(--t3);
   border-bottom: 1px solid var(--border);
 }
 .ride-controls {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .ride-btn {
   width: 8.5ch;
-  min-height: 48px;
+  min-height: var(--control-h-l);
   white-space: nowrap;
 }
 .ride-times {
@@ -80,7 +80,7 @@
   display: grid;
   grid-template-rows: calc(var(--t3) + 10px) minmax(0, 1fr) auto;
   min-height: 0;
-  padding: 0 16px;
+  padding: 0 var(--space-4);
 }
 .hero-row1 {
   display: flex;
@@ -99,13 +99,13 @@
 .hero-band {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: var(--space-4);
 }
 .ride-side {
   grid-area: side;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
-  padding: 0 16px;
+  padding: 0 var(--space-4);
   border-left: 1px solid var(--border);
 }
 .coach-cell {
@@ -123,7 +123,7 @@
 .tile-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   white-space: nowrap;
 }
 .tile-value {
@@ -144,7 +144,7 @@
 }
 .ride-notice {
   grid-area: note;
-  padding: 0 16px;
+  padding: 0 var(--space-4);
   overflow: hidden;
   font-size: var(--t3);
 }
@@ -163,7 +163,7 @@
 .ride-overview {
   grid-area: overview;
   min-height: 0;
-  padding: 8px 16px;
+  padding: var(--space-2) var(--space-4);
   border-top: 1px solid var(--border);
 }
 .ride-chart {
@@ -181,13 +181,13 @@
 .confirm {
   background: var(--surface-1);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 24px;
+  border-radius: var(--radius-l);
+  padding: var(--space-5);
   display: grid;
-  gap: 12px;
+  gap: var(--space-3);
   font-size: var(--t3);
 }
 .confirm button {
-  min-height: 56px;
+  min-height: var(--control-h-l);
   font-size: var(--t3);
 }

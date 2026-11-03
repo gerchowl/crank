@@ -244,7 +244,12 @@ describe("Devices", () => {
 
   test("buttons are at least 48 px", () => {
     const css = readFileSync("src/shell.css", "utf8");
-    expect(css).toMatch(/\.devices button \{[^}]*min-height:\s*48px/);
+    expect(css).toMatch(
+      /\.devices button \{[^}]*min-height:\s*var\(--control-h-l\)/,
+    );
+    expect(readFileSync("src/theme.css", "utf8")).toMatch(
+      /--control-h-l:\s*48px/,
+    );
   });
 
   test("a failed re-read keeps the last good list; an initial failure is shown", async () => {
