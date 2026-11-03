@@ -14,7 +14,8 @@ Releases (owner only; agents never push or merge `main`) follow [RELEASING.md](R
 [CHANGELOG.md](CHANGELOG.md) current and bump no version by hand (`scripts/release-version.py`, the `release-versions` flake check, #428).
 
 Run everything in `nix develop`; first run `pnpm install --frozen-lockfile`.
-Pre-commit (#456): run `prek install` once per clone (prek is pinned in the devShell). `prek.toml` runs ESLint, stylelint and
+Pre-commit (#456): run `prek install --allow-missing-config` once per clone (prek is pinned in the devShell). The hook lives in the
+shared `.git/hooks`, so every worktree and branch runs it; the flag lets a branch without `prek.toml` still commit. `prek.toml` runs ESLint, stylelint and
 Prettier on staged app files, `tsc --noEmit`, and `cargo fmt --check` on staged Rust, all offline from the devShell
 toolchain. Hooks can be skipped, so CI stays the gate; `prek run --all-files` runs them on everything.
 Inner loop (#371): `just test-changed [base=origin/dev]` runs nextest and doctests only for the workspace crates that
