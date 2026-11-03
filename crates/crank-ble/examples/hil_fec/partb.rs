@@ -5,7 +5,7 @@
 //! from its tx writes, the rider's from page 25 (power, cadence) and page 16 (speed). Only a run whose procedure
 //! completed gives a result; any other run (or a capture without an outcome line) reports
 //! "no result" and no verdict.
-use crate::frames::{Cps, Record, page_of, parse_capture};
+use crate::frames::{Cps, Note, Record, page_of, parse_capture};
 use crank_engine::erg::policy::{REENGAGE_RPM, RELEASE_RPM};
 use crank_fec::{Page, decode};
 use serde_json::{Value, json};
@@ -962,11 +962,13 @@ pub fn check12(records: &[Record]) -> Value {
 /// Part B analysis by capture stem (`check5` …), `None` for other captures. `outcome` is how
 /// the procedure ended (the capture's outcome line); without `completed` there is no verdict.
 /// `lag` is check 6 of the same capture set ([`PowerLag::beside`]), which check 9 needs; `cps`
-/// is the capture's Cycling Power notifications, which check 5 compares.
+/// is the capture's Cycling Power notifications, which check 5 compares; `notes` its tagged
+/// comment lines, which hold check 10's events.
 pub fn analyse(
     stem: &str,
     records: &[Record],
     cps: &[Cps],
+    notes: &[Note],
     outcome: Option<&str>,
     lag: &PowerLag,
 ) -> Option<Value> {
@@ -976,6 +978,7 @@ pub fn analyse(
         "check7" => check7(records),
         "check8" => check8(records),
         "check9" => check9(records, lag),
+        "check10" => crate::check10::check10(records, notes),
         "check12" => check12(records),
         _ => return None,
     };
@@ -983,7 +986,13 @@ pub fn analyse(
     v["procedure"] = json!(outcome.unwrap_or("unknown: the capture has no outcome line"));
     v["completed"] = json!(completed);
     if !completed {
-        for verdict in ["held", "released", "verdict"] {
+        for verdict in [
+            "held",
+            "released",
+            "verdict",
+            "advertising",
+            "second_central",
+        ] {
             if v.get(verdict).is_some() {
                 v[verdict] = Value::Null;
             }
@@ -1092,6 +1101,7 @@ fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'static
                 .join("; ");
             ("8", "SIM page 51 at 0/5/10 %; page 55 mass", segs, "§7.9")
         }
+        "check10" => crate::check10::cells(v),
         "check9" => (
             "9",
             "Low cadence at 250 W ERG",

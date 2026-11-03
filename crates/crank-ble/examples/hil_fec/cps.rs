@@ -170,7 +170,7 @@ impl Window {
 }
 
 /// Longest stretch of `[from, to)` without a timestamp in `times`, the window's edges included.
-fn max_gap(mut times: Vec<u64>, from: u64, to: u64) -> u64 {
+pub(crate) fn max_gap(mut times: Vec<u64>, from: u64, to: u64) -> u64 {
     times.sort_unstable();
     let mut prev = from;
     let mut gap = 0;
