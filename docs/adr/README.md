@@ -10,6 +10,7 @@ result).
 | [0001](0001-architecture.md) | Architecture, crate layout, Rust↔UI contract, persistence, testing | Proposed, Amended (#414) | #26, #414 |
 | [0002](0002-ble-trainer.md) | Bluetooth stack and Trainer abstraction (FE-C first) | Proposed, Amended (#54, #435) | #27, #54, #435 |
 | [0003](0003-bug-report.md) | In-app bug reports with squelch | Proposed | #431 |
+| [0004](0004-threshold-test.md) | Threshold (FTP) test | Proposed | #486 |
 
 ## Process
 
