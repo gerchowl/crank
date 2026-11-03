@@ -343,9 +343,10 @@ impl Quit {
         )
     }
 
-    /// End the ride (the engine's end mode), then allow the exit.
+    /// End the ride (the engine's end mode), then allow the exit. It does not start the clock:
+    /// its callers do, at the exit request ([`Quit::request`]) or at `Exit` ([`on_run_event`]),
+    /// so the budget counts from the first event and not from the ride end.
     pub async fn shut_down(&self, core: &Core) -> Shutdown {
-        self.start();
         let outcome = core.shutdown(SHUTDOWN_CAP).await;
         match &outcome {
             Shutdown::Idle | Shutdown::Ended => {}
