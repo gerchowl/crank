@@ -27,7 +27,8 @@ const lintCss = async (decl: string, file = "src/x.css") => {
 };
 
 // The first lint loads stylelint.config.mjs and its plugins: a one-time cold start that can pass the 5 s per-test
-// default on a slow runner. Pay it once here (#455), so the cases below reuse the warm instance.
+// default on a slow runner. Pay it once here (#455): stylelint keeps no instance between calls, but its config and
+// module caches stay warm, so the cases below skip the cold load.
 // Measured cold: about 50 ms locally.
 beforeAll(async () => {
   await lintCss("margin: 0");
