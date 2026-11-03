@@ -1,30 +1,114 @@
-/* Design tokens, written against spec/THEMES.md (Ocean preset). Components reference roles, never hex.
+/* Design tokens: DESIGN §18.1 direction A "Telemetry" (graphite, dark-first). Components reference roles, never
+   literals (§18.7 rules 1 and 2). The §18.1 names (--bg, --panel, --ink, --power, ...) are the source values; the
+   earlier role names (--surface-0, --ink-primary, --series-power, ...) alias them so current CSS keeps working.
    `data-theme` is always "dark" or "light" on <html>: theme.ts resolves Auto from prefers-color-scheme,
    so there is one source of truth and no duplicated media-query block. Values are checked by
-   theme.test.ts (DESIGN §6.3 contrast pairs); the dataviz validator pass is #30. */
+   theme.test.ts (DESIGN §6.3 and §18.7 contrast pairs, scale tokens); the dataviz validator pass is #30. */
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/inter-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./assets/fonts/inter-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono-latin-400-normal.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono-latin-700-normal.woff2")
+    format("woff2");
+}
+
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --radius-s: 4px;
+  --radius-m: 6px;
+  --radius-l: 10px;
+
+  --text-xs: 12px;
+  --text-s: 13px;
+  --text-m: 15px;
+  --text-l: 20px;
+  --text-t3: 32px;
+  --tier-t1: 112px;
+  --tier-t2: 64px;
+  --tier-t3plus: 40px;
+
+  --control-h: 32px;
+  --control-h-m: 40px;
+  --control-h-l: 48px;
+
+  --font-ui: Inter, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Every live number uses the number face (DESIGN §18.1). */
+.num,
+[data-live] {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --surface-0: #0a0e13;
-  --surface-1: #121920;
-  --surface-2: #1a232d;
-  --border: #283441;
-  --ink-primary: #edf2f7;
-  --ink-secondary: #b8c4d0;
-  --ink-muted: #8795a3;
+  --bg: #0b0d10;
+  --panel: #111418;
+  --panel-2: #161a20;
+  --line: #232a33;
+  --line-2: #2e3742;
+  --edge: #6b7887;
+  --ink: #e6ebf0;
+  --ink-2: #a3aebb;
+  --ink-3: #7b8796;
+  --power: #7fb4ff;
+  --hr: #ff7a66;
+  --cad: #c39bff;
+  --band: rgb(127 180 255 / 14%);
+  --good: #3ddc84;
+  --warn: #f2c14e;
+  --surface-0: var(--bg);
+  --surface-1: var(--panel);
+  --surface-2: var(--panel-2);
+  --border: var(--line);
+  --ink-primary: var(--ink);
+  --ink-secondary: var(--ink-2);
+  --ink-muted: var(--ink-3);
   --focus: #8cc2ff;
   --accent: #1f66d9;
   --accent-ink: #ffffff;
   --accent-text: #79b0ff;
   --accent-soft: #15304f;
 
-  --series-power: #8ab8ff;
-  --series-hr: #ff7a59;
-  --series-cadence: #c3a0ff;
+  --series-power: var(--power);
+  --series-hr: var(--hr);
+  --series-cadence: var(--cad);
   --series-dfa: #5fd0b8;
   --series-torque: #e3b341;
   --series-muted: #6b7a89;
-  --target: #c8d2dc;
+  --target: #e6ebf0;
 
   --zone-1: #1b3150;
   --zone-2: #22446c;
@@ -44,10 +128,10 @@
   --div-mid: #8b96a1;
   --div-pos: #ff9f45;
 
-  --status-good: #46c25a;
+  --status-good: var(--good);
   --status-info: #6cb6ff;
-  --status-warning: #e3b341;
-  --warning-ink: #0a0e13;
+  --status-warning: var(--warn);
+  --warning-ink: #0b0d10;
   --status-serious: #f0883e;
   --status-critical: #ff5c6c;
 
@@ -57,26 +141,41 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --surface-0: #f3f5f8;
-  --surface-1: #ffffff;
-  --surface-2: #e9edf2;
-  --border: #d3dae2;
-  --ink-primary: #141a21;
-  --ink-secondary: #3d4752;
-  --ink-muted: #5b6570;
+  --bg: #f2f4f7;
+  --panel: #ffffff;
+  --panel-2: #eaedf1;
+  --line: #d5dbe2;
+  --line-2: #bcc5ce;
+  --edge: #727e8b;
+  --ink: #12171d;
+  --ink-2: #3b4651;
+  --ink-3: #56616d;
+  --power: #1f5fbf;
+  --hr: #c93e27;
+  --cad: #6f45c4;
+  --band: rgb(31 95 191 / 12%);
+  --good: #1a7f37;
+  --warn: #8a5a00;
+  --surface-0: var(--bg);
+  --surface-1: var(--panel);
+  --surface-2: var(--panel-2);
+  --border: var(--line);
+  --ink-primary: var(--ink);
+  --ink-secondary: var(--ink-2);
+  --ink-muted: var(--ink-3);
   --focus: #0b5fd3;
   --accent: #0b63d6;
   --accent-ink: #ffffff;
   --accent-text: #0a58bf;
   --accent-soft: #dbe9fb;
 
-  --series-power: #1f5fbf;
-  --series-hr: #d2442a;
-  --series-cadence: #7a4fd0;
+  --series-power: var(--power);
+  --series-hr: var(--hr);
+  --series-cadence: var(--cad);
   --series-dfa: #0f7d68;
   --series-torque: #9a6700;
   --series-muted: #6f7a86;
-  --target: #4a5560;
+  --target: #3b4651;
 
   --zone-1: #d7e6f8;
   --zone-2: #b5d0f1;
@@ -96,9 +195,9 @@
   --div-mid: #7b8590;
   --div-pos: #a8520a;
 
-  --status-good: #1a7f37;
+  --status-good: var(--good);
   --status-info: #0969da;
-  --status-warning: #9a6700;
+  --status-warning: var(--warn);
   --warning-ink: #ffffff;
   --status-serious: #bc4c00;
   --status-critical: #cf222e;
