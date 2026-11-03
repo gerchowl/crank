@@ -203,6 +203,34 @@ pub fn parse_cps(text: &str) -> Vec<Cps> {
         .collect()
 }
 
+/// One tagged comment line of a capture, `# <tag> <elapsed_us> <hex bytes>` (`Capture::record_aux`):
+/// check 10's window, scan, advertisement and answer events (#412), and check 5's `cps` lines.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    /// The tag after `# `.
+    pub tag: String,
+    /// When it was recorded, µs from capture start.
+    pub at_us: u64,
+    /// The payload.
+    pub bytes: Vec<u8>,
+}
+
+/// The tagged comment lines of `.fecap` text, in file order. Other comments (the header, the
+/// outcome and finished lines, a `redact` header) have no number after the tag and are skipped.
+pub fn parse_notes(text: &str) -> Vec<Note> {
+    text.lines()
+        .filter_map(|line| {
+            let mut f = line.strip_prefix("# ")?.split_whitespace();
+            let tag = f.next()?.to_string();
+            let at_us = f.next()?.parse().ok()?;
+            let bytes = f
+                .map(|h| u8::from_str_radix(h, 16).ok())
+                .collect::<Option<_>>()?;
+            Some(Note { tag, at_us, bytes })
+        })
+        .collect()
+}
+
 /// Per-page arrival statistics over rx records (idle notification pattern).
 pub fn page_rates(records: &[Record]) -> Value {
     let mut by_page: BTreeMap<u8, Vec<u64>> = BTreeMap::new();
@@ -691,6 +719,34 @@ mod tests {
             "Example Trainer *****"
         );
         assert_eq!(redact_name("HRM 3 pro"), "HRM 3 pro");
+    }
+
+    #[test]
+    fn notes_are_the_tagged_comment_lines_only() {
+        let text = "# elapsed_us direction complete_frame_hex\n\
+                    # Real Tacx NEO capture (HIL #44); page-81 serial redacted to FF FF FF FF.\n\
+                    10 rx A4 09\n\
+                    # check10 20 01\n\
+                    # scan 30\n\
+                    # answer-listed 40 73 65 65 6E\n\
+                    # adv 50 zz\n\
+                    # see: 0A 0B\n\
+                    # hil_fec procedure: completed\n\
+                    # hil_fec finished: 1700000000\n";
+        let n = parse_notes(text);
+        let got: Vec<(&str, u64, &[u8])> = n
+            .iter()
+            .map(|n| (n.tag.as_str(), n.at_us, &n.bytes[..]))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("check10", 20, &[1][..]),
+                ("scan", 30, &[][..]),
+                ("answer-listed", 40, &b"seen"[..])
+            ]
+        );
+        assert_eq!(parse_capture(text).len(), 1, "frames read as before");
     }
 
     #[test]

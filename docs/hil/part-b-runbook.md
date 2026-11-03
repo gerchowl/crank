@@ -76,7 +76,7 @@ OUT=~/crank-captures/$(date +%F)-partb
 mkdir -p "$OUT"
 ```
 
-Run the checks **in this order (5, 6, 7, 8, 9, 12), with the same `--out`**, from an Alacritty window on `sage`. The binary is
+Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10), with the same `--out`**, from an Alacritty window on `sage`. The binary is
 `${CARGO_TARGET_DIR:-target}/debug/examples/hil_fec`:
 
 | # | Command | You do | About |
@@ -102,11 +102,31 @@ Run the checks **in this order (5, 6, 7, 8, 9, 12), with the same `--out`**, fro
   250 W and a falling cadence it gets hard: keep turning until the run ends.
 - Each run prints one results row. Send them all, or just the `$OUT` folder name.
 
-### Added when #412 c lands
+### Check 10: the phone as a second central (no pedalling)
 
-- **Checks 10 and 11a–c** (second central, dropout): `TBD: command and procedure (#412 part c)`.
+Run it after check 12, with the same `--out`, while the trainer is powered. Have your phone at hand with
+the Tacx app installed but **not** connected to the NEO.
 
-They need their own session; they are not part of this one.
+```sh
+hil_fec check10 --out "$OUT"
+```
+
+1. Type **`y`** and Enter when asked. Stay off the pedals.
+2. At the cue, open the Tacx app on the phone and look for the NEO.
+3. When the window asks *Does the phone list the NEO…*, type **`seen`**, **`not-seen`** or **`unsure`**
+   and Enter.
+4. Only if you typed `seen`: try to connect the phone to the NEO and wait about 30 s. When asked *What
+   did the connect do?*, type **`connected`**, **`failed`** (an error), **`stuck`** (still
+   "connecting") or **`not-tried`** and Enter. Anything else is asked again. After `not-seen` or
+   `unsure` this question is not asked.
+5. Leave the phone alone. The window stays open for at least 60 s in all, then the run releases the
+   trainer and prints the row. Answer within 3 min of the cue, or the run stops without a result.
+6. Afterwards, cancel the connect in the Tacx app and close the app before the next run.
+
+### Still to come (#412 parts c2 and c3)
+
+- **Checks 11a–c** (dropout: unplug while pedalling, unplugged stop, unplugged cold start):
+  `TBD: command and procedure (#412 parts c2 and c3)`. They need their own session.
 
 ## 4. Afterwards
 
