@@ -44,6 +44,8 @@ pub enum Check {
     Check10,
     /// Check 12: ERG 200 W → `Free` release (rider).
     Check12,
+    /// Handle reuse: adapter lookup or scan, per connect (#468, ADR-0002 §5.1.2).
+    Reuse,
 }
 
 impl Check {
@@ -66,6 +68,7 @@ impl Check {
         ("check9", Self::Check9),
         ("check10", Self::Check10),
         ("check12", Self::Check12),
+        ("reuse", Self::Reuse),
     ];
     /// The Part B control procedure behind this subcommand, if it is one.
     pub fn procedure(self) -> Option<crate::rider::Procedure> {
@@ -106,7 +109,7 @@ pub struct Args {
 }
 
 /// Usage text.
-pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check5|check6|check7|check8|check9|check10|check12> \
+pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check5|check6|check7|check8|check9|check10|check12|reuse> \
 [--out DIR] [--scan-secs N] [--idle-secs N] [--target ID_OR_PATH]";
 
 fn number(flag: &str, text: &str) -> Result<u64, String> {

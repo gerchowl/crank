@@ -123,6 +123,21 @@ hil_fec check10 --out "$OUT"
    trainer and prints the row. Answer within 3 min of the cue, or the run stops without a result.
 6. Afterwards, cancel the connect in the Tacx app and close the app before the next run.
 
+### Handle reuse (#468, no pedalling)
+
+This measures the assumption of ADR-0002 §5.1.2: does a connect find the device by adapter lookup (`via=lookup`) or
+does it have to scan (`via=scan`)? Each run is a fresh process that scans like Settings → Devices, waits
+`--idle-secs`, connects once through the app's own drivers (`first`), releases, and connects again at once
+(`after_disconnect`). It writes no control page. Run it per device, with the trainer free (no ride, phone apps
+closed) and the strap worn: `hil_fec reuse --scan-secs 5 --idle-secs 0 --target <id> --out "$OUT/reuse-now"` gives
+"right after a Devices scan", and the same with `--idle-secs 60` and `--out "$OUT/reuse-60s"` gives "after that scan
+stopped"; both give "after a disconnect". The ids of the paired devices are listed by
+`sqlite3 ~/Library/Application\ Support/io.github.gerchowl.crank/crank.db 'select kind, platform_id from device'`;
+without `--target` the first trainer seen is taken. Each run prints and writes `reuse.json` with `via` and `ms` per connect.
+A recorded app session also logs each connect's phases with their times (`link phase` and `ready_total` lines of
+`crank.log`, target `crank_core::links`). The architect records the results in the HIL doc and rewords §5.1.2 if
+the lookup fails.
+
 ### Still to come (#412 parts c2 and c3)
 
 - **Checks 11a–c** (dropout: unplug while pedalling, unplugged stop, unplugged cold start):

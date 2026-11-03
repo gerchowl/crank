@@ -17,6 +17,7 @@ use crate::dto::{
 };
 use crate::error::{ApiError, ErrorCode};
 use crate::library::Library;
+use crate::links::{self, Attempts, LinkDevice, Timeline};
 use crate::recorder::{RideMeta, StoreRecorder};
 use crank_ble::{Pairing, RideGate};
 use crank_devices::{
@@ -858,6 +859,8 @@ struct Inner {
     quits: watch::Sender<u64>,
     /// The next core stream id (never 0).
     next_stream: AtomicU32,
+    /// The connect attempts of each device so far, for the phase log (ADR-0002 §5.1.6).
+    attempts: Attempts,
     /// Lets a test interleave a command into `discard` (#278).
     #[cfg(test)]
     discard_hook: Rendezvous,
@@ -1058,6 +1061,7 @@ impl Core {
             load_done: Notify::new(),
             quits: watch::channel(0).0,
             next_stream: AtomicU32::new(1),
+            attempts: Attempts::default(),
             #[cfg(test)]
             discard_hook: Rendezvous::default(),
             #[cfg(test)]
@@ -1329,6 +1333,11 @@ impl Core {
         Ok(())
     }
 
+    /// Connect the paired trainer and strap, concurrently (ADR-0002 §5.1.4, #468): a load
+    /// takes the longer of the two connects, at most one `CONNECT_TIMEOUT`, and both resolve
+    /// through the one shared adapter scan. The trainer is required; a strap that fails or
+    /// times out gives a ride without heart rate. When the trainer fails, the strap's attempt
+    /// is dropped, which releases it, half-open or linked.
     async fn connect_links(
         &self,
         spans: &mut RideSpans,
@@ -1337,36 +1346,53 @@ impl Core {
         let find = |kind: &str| devices.iter().find(|d| d.kind == kind);
         let trainer = find("trainer")
             .ok_or_else(|| ApiError::new(ErrorCode::DeviceUnavailable, "no trainer paired"))?;
-        let (clock, gate) = (self.0.clock.clone(), self.0.gate.clone());
-        let driver = self.0.backend.trainer(clock.clone(), gate.clone()).await?;
-        let span = spans.device("trainer", "<trainer-id>");
-        let link = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            driver
-                .connect(&DeviceRef(trainer.platform_id.clone()), RIDER)
-                .instrument(span.clone()),
-        )
-        .await
-        .map_err(|_| ApiError::new(ErrorCode::DeviceUnavailable, "trainer connect timed out"))??;
-        spans.devices.push(span);
-        let mut hr = None;
-        let mut hr_id = None;
-        if let Some(strap) = find("hr") {
-            let driver = self.0.backend.heart(clock, gate).await?;
+        let (clock, gate) = (&self.0.clock, &self.0.gate);
+        let timeline = |device| Timeline::new(device, self.0.attempts.next(device), clock.clone());
+        let trainer_span = spans.device("trainer", "<trainer-id>");
+        let trainer_link = async {
+            let driver = self.0.backend.trainer(clock.clone(), gate.clone()).await?;
+            let connect = driver.connect(&DeviceRef(trainer.platform_id.clone()), RIDER);
+            links::attempt(timeline(LinkDevice::Trainer), CONNECT_TIMEOUT, connect)
+                .instrument(trainer_span.clone())
+                .await
+                .ok_or_else(|| {
+                    ApiError::new(ErrorCode::DeviceUnavailable, "trainer connect timed out")
+                })?
+                .map_err(ApiError::from)
+        };
+        let strap_link = async {
+            let Some(strap) = find("hr") else {
+                return Ok(None);
+            };
+            let driver = self.0.backend.heart(clock.clone(), gate.clone()).await?;
             let span = spans.device("strap", "<strap-id>");
-            let connect = driver
-                .connect(&DeviceRef(strap.platform_id.clone()))
-                .instrument(span.clone());
-            match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
-                Ok(Ok(l)) => {
-                    spans.devices.push(span);
-                    hr = Some(l);
-                    hr_id = Some(strap.id.clone());
-                }
-                Ok(Err(e)) => tracing::warn!(%e, "strap unavailable: riding without heart rate"),
-                Err(_) => tracing::warn!("strap connect timed out: riding without heart rate"),
+            let connect = driver.connect(&DeviceRef(strap.platform_id.clone()));
+            Ok::<_, ApiError>(
+                match links::attempt(timeline(LinkDevice::Strap), CONNECT_TIMEOUT, connect)
+                    .instrument(span.clone())
+                    .await
+                {
+                    Some(Ok(l)) => Some((l, strap.id.clone(), span)),
+                    Some(Err(e)) => {
+                        tracing::warn!(%e, "strap unavailable: riding without heart rate");
+                        None
+                    }
+                    None => {
+                        tracing::warn!("strap connect timed out: riding without heart rate");
+                        None
+                    }
+                },
+            )
+        };
+        let (link, strap) = tokio::try_join!(trainer_link, strap_link)?;
+        spans.devices.push(trainer_span);
+        let (hr, hr_id) = match strap {
+            Some((l, id, span)) => {
+                spans.devices.push(span);
+                (Some(l), Some(id))
             }
-        }
+            None => (None, None),
+        };
         Ok((link, hr, [Some(trainer.id.clone()), hr_id]))
     }
 
@@ -2369,7 +2395,7 @@ mod tests {
     use crate::backend::Radio;
     use crank_devices::{
         DriverKind, HeartRateDriver, TrainerDriver, TrainerLink,
-        sim::{SimConfig, SimRig},
+        sim::{SimConfig, SimLatency, SimRig},
     };
     use crank_engine::VirtualClock;
     use futures_util::{FutureExt, future::BoxFuture, stream, stream::BoxStream};
@@ -2943,6 +2969,111 @@ mod tests {
         loading.await.unwrap().unwrap();
         let view = core.ride_status().await.unwrap();
         assert!(!view.loading && view.status.loaded);
+    }
+
+    /// A core whose paired trainer and strap (paired with no latency) now connect with
+    /// these latencies (ADR-0002 §5.1.8).
+    async fn latent_core(
+        dir: &std::path::Path,
+        trainer: SimLatency,
+        heart: SimLatency,
+    ) -> (Core, FakeRadio) {
+        {
+            let core = open(dir, &fake(vec![], false));
+            core.device_pair("neo".into(), DeviceRole::Trainer)
+                .await
+                .unwrap();
+            core.device_pair("hrm".into(), DeviceRole::HeartRate)
+                .await
+                .unwrap();
+        }
+        let mut radio = fake(vec![], false);
+        let cfg = SimConfig {
+            trainer_latency: trainer,
+            heart_latency: heart,
+            ..SimConfig::default()
+        };
+        radio.rig = SimRig::new(cfg, Arc::new(VirtualClock::new(1)));
+        (open(dir, &radio), radio)
+    }
+    /// A connect of `resolve` + `gatt` + `handshake` seconds.
+    fn latency(resolve: u64, gatt: u64, handshake: u64) -> SimLatency {
+        SimLatency {
+            resolve: Duration::from_secs(resolve),
+            gatt: Duration::from_secs(gatt),
+            handshake: Duration::from_secs(handshake),
+            never_answers: false,
+        }
+    }
+    /// One engine tick: the tolerance of the §5.1.8 load bounds.
+    const TICK: Duration = Duration::from_millis(250);
+
+    /// #468, ADR-0002 §5.1.8: a cold load takes the longer of the two connects, not their sum.
+    #[tokio::test(start_paused = true)]
+    async fn a_cold_load_takes_the_longer_connect_not_the_sum() {
+        // (trainer, strap): the trainer 3 s or 2 s, the strap the other
+        for (trainer, strap, longer) in [
+            (latency(1, 1, 1), latency(1, 1, 0), 3),
+            (latency(1, 0, 1), latency(1, 2, 0), 3),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (core, _radio) = latent_core(dir.path(), trainer, strap).await;
+            let started = tokio::time::Instant::now();
+            let loaded = core.ride_load(None).await.unwrap();
+            let took = started.elapsed();
+            let longer = Duration::from_secs(longer);
+            assert!(
+                took >= longer && took <= longer + TICK,
+                "a load over {trainer:?} and {strap:?} took {took:?}"
+            );
+            assert!(loaded.hr_linked);
+        }
+    }
+
+    /// #468, ADR-0002 §5.1.8: a strap that never answers ends the load at `CONNECT_TIMEOUT`
+    /// with the trainer linked and no heart rate, not later.
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_strap_ends_the_load_at_the_connect_timeout_with_the_trainer_linked() {
+        let dir = tempfile::tempdir().unwrap();
+        let hung = SimLatency {
+            never_answers: true,
+            ..latency(1, 0, 0)
+        };
+        let (core, _radio) = latent_core(dir.path(), latency(1, 1, 1), hung).await;
+        let started = tokio::time::Instant::now();
+        let loaded = core.ride_load(None).await.unwrap();
+        let took = started.elapsed();
+        assert!(
+            took >= CONNECT_TIMEOUT && took <= CONNECT_TIMEOUT + TICK,
+            "{took:?}"
+        );
+        assert!(!loaded.hr_linked);
+        let links = core.device_links().await.unwrap();
+        assert!(links[0].link.is_some(), "the trainer is linked: {links:?}");
+        assert!(links[1].link.is_none(), "no heart rate: {links:?}");
+    }
+
+    /// #468: with both connecting at once, a trainer that fails fails the load at once, and
+    /// a strap that has linked meanwhile is released.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_trainer_releases_the_strap_that_linked_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_, mut radio) =
+            latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
+        radio.connect_delay = Duration::from_secs(3);
+        radio
+            .fail_connect
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let core = open(dir.path(), &radio);
+        let started = tokio::time::Instant::now();
+        let error = core.ride_load(None).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::DeviceUnavailable);
+        assert_eq!(started.elapsed(), Duration::from_secs(3));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            radio.hr_released.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 
     #[tokio::test(start_paused = true)]

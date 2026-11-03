@@ -44,6 +44,7 @@ pub async fn run(args: &Args) -> Result<Outcome> {
         Check::Analyse => return analyse(args),
         Check::Scan => return scan_check(args).await,
         Check::Known => return known(args).await,
+        Check::Reuse => return crate::reuse::run(args).await,
         _ => {}
     }
     let adapter = adapter().await?;
@@ -107,7 +108,8 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             | Check::Check8
             | Check::Check9
             | Check::Check10
-            | Check::Check12 => {
+            | Check::Check12
+            | Check::Reuse => {
                 unreachable!()
             }
         };
