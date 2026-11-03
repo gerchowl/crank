@@ -34,7 +34,7 @@
         # pnpm leaves an empty v11/links directory on macOS but not Linux.
         # Empty store directories carry no cache data; normalize before packing.
         postInstall = ''find "$storePath" -type d -empty -delete'';
-        fetcherVersion = 4; hash = "sha256-vXa9T4Z10I53+L/3womR+RLALIddxrTrAmFg4L1ZPGk=";
+        fetcherVersion = 4; hash = "sha256-YnlEcpZWOdnnZSH1ixQ2caG6qa/SQTUsv9H+TTlUrK0=";
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
         pname = name; inherit version; src = frontendSrc;

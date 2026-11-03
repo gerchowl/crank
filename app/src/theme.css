@@ -60,6 +60,9 @@
   --control-h-m: 40px;
   --control-h-l: 48px;
 
+  /* Side padding of .page: 20 px at 1024 wide to 32 px at 1440, with no breakpoint (DESIGN §16.3). */
+  --page-gutter: clamp(20px, calc(2.885vw - 9.5px), 32px);
+
   --font-ui: Inter, system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -204,4 +207,20 @@
 
   --scrim: rgb(20 26 33 / 40%);
   --shadow: rgb(20 26 33 / 20%);
+}
+
+/* Cold-start screen: brand pair of the mark, deliberately not the app tokens (BRAND.md §Colour). */
+.start[data-mode="dark"] {
+  --start-bg: #1a1d22;
+  --start-ink: #ece6dc;
+  --start-muted: #9ba0a8;
+  --start-accent: #c08a4a;
+  color-scheme: dark;
+}
+.start[data-mode="light"] {
+  --start-bg: #f4f1ea;
+  --start-ink: #1a1d22;
+  --start-muted: #5b6068;
+  --start-accent: #94642d;
+  color-scheme: light;
 }

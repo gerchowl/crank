@@ -7,8 +7,8 @@
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . && prettier --check src e2e index.html *.json *.ts *.js",
-    "fmt": "prettier --write src e2e index.html *.json *.ts *.js",
+    "lint": "eslint . && stylelint \"src/**/*.css\" && prettier --check src e2e index.html *.json *.ts *.js *.mjs",
+    "fmt": "prettier --write src e2e index.html *.json *.ts *.js *.mjs",
     "test": "vitest run"
   },
   "dependencies": {
@@ -37,6 +37,9 @@
     "globals": "^16.0.0",
     "jsdom": "^30.1.2",
     "prettier": "^3.0.0",
+    "stylelint": "17.16.0",
+    "stylelint-declaration-strict-value": "1.12.1",
+    "stylelint-value-no-unknown-custom-properties": "6.1.1",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.0.0",
     "vite": "^7.0.0",

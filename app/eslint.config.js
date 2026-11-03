@@ -7,6 +7,11 @@ export default ts.config(
   js.configs.recommended,
   ...ts.configs.recommended,
   {
+    // Tool configs (stylelint.config.mjs) run in Node.
+    files: ["*.mjs"],
+    languageOptions: { globals: globals.node },
+  },
+  {
     // e2e specs run in Node and hand functions to the WebView, so both global sets apply (#35).
     files: ["e2e/**/*.mjs"],
     languageOptions: {

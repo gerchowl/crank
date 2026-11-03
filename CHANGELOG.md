@@ -10,6 +10,9 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- stylelint (17) in `pnpm -C app lint`: token-only colours and sizes, no unknown `var(--…)`, no `outline: none`
+  (DESIGN §18.7 rules 1 to 3, [#454](https://github.com/gerchowl/crank/issues/454)); the shell and ride stylesheets
+  now use the theme tokens, so a few sizes moved to the nearest token
 - Release workflow adopted from devkit: `prepare-release`, `release` and `abandon-release`
   ([#428](https://github.com/gerchowl/crank/issues/428))
 - Direction A design tokens in `theme.css` (space, radius, type, control height, graphite palette in both themes)
