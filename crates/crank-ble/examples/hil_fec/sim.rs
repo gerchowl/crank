@@ -5,12 +5,14 @@
 //! follows the applied control with a first-order lag (0.8 s by default): ERG holds the
 //! target down to 35 rpm and collapses below it, page 48 and SIM follow cadence (SIM through the road model). The
 //! rider moves cadence towards the last cue at 30 rpm/s; after `Descend` towards [`Pattern`].
+//! A scan beside the connection (check 10) reports the trainer and another peripheral in turn.
 use crate::{
-    frames::{Cps, Record, page_of},
+    frames::{Cps, Note, Record, page_of},
     rider::{Cue, Operator, Wire},
 };
 use crank_fec::{Page, decode};
-use std::sync::Mutex;
+use futures_util::stream::{BoxStream, StreamExt};
+use std::{sync::Mutex, time::Duration};
 use tokio::time::Instant;
 
 const STEP_US: u64 = 50_000;
@@ -51,6 +53,31 @@ pub struct Plan {
     pub serial: Option<u32>,
     /// The trainer notifies Cycling Power 2A63 once a second (`None`: it does not).
     pub cps: Option<CpsPlan>,
+    /// Check 10's scan reports an advertisement every this long, alternately the trainer's and
+    /// another peripheral's.
+    pub advert_every_us: u64,
+    /// Who advertises while the trainer is connected.
+    pub advertisers: Advertisers,
+    /// The scan stops by itself at this capture time.
+    pub scan_ends_at_us: Option<u64>,
+    /// The operator's typed answers, each given to the question that accepts it; a question no
+    /// answer fits sees closed input.
+    pub answers: &'static [&'static str],
+    /// The operator answers at this capture time (at once when it has passed).
+    pub answer_at_us: u64,
+    /// The connect question's answer comes this much later than `answer_at_us`.
+    pub connect_answer_after_us: u32,
+}
+
+/// Who check 10's scan can see while the trainer is connected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Advertisers {
+    /// The trainer and another peripheral.
+    Both,
+    /// Only another peripheral: the trainer is silent, or the host does not report it.
+    Others,
+    /// Nothing at all.
+    Nobody,
 }
 
 /// How the simulated 2A63 differs from page 25.
@@ -99,6 +126,12 @@ impl Default for Plan {
             cadence_unavailable_from_us: None,
             serial: Some(0x1234_5678),
             cps: Some(CpsPlan::default()),
+            advert_every_us: 500_000,
+            advertisers: Advertisers::Both,
+            scan_ends_at_us: None,
+            answers: &["seen", "stuck"],
+            answer_at_us: 20_000_000,
+            connect_answer_after_us: 0,
         }
     }
 }
@@ -174,6 +207,7 @@ struct State {
     turns: f64,
     crank_event_us: u64,
     cps: Vec<Cps>,
+    notes: Vec<Note>,
 }
 
 /// The simulator: a [`Wire`] and the rider's [`Operator`] in one.
@@ -239,6 +273,7 @@ impl Sim {
                 turns: 0.0,
                 crank_event_us: 0,
                 cps: Vec::new(),
+                notes: Vec::new(),
             }),
             panicked: std::sync::atomic::AtomicBool::new(false),
         }
@@ -445,9 +480,54 @@ impl Wire for Sim {
         self.advance();
         self.lock().cps.clone()
     }
+    fn note(&self, tag: &str, bytes: &[u8]) -> Option<String> {
+        self.advance();
+        let mut s = self.lock();
+        let at_us = s.at;
+        s.notes.push(Note {
+            tag: tag.into(),
+            at_us,
+            bytes: bytes.to_vec(),
+        });
+        None
+    }
+    fn adverts(&self) -> BoxStream<'static, bool> {
+        let (plan, start) = (self.plan, self.start);
+        let at = move |us: u64| start + Duration::from_micros(us);
+        let first = self.elapsed() / plan.advert_every_us + 1;
+        futures_util::stream::unfold(first, move |mut k| async move {
+            if plan.advertisers == Advertisers::Nobody && plan.scan_ends_at_us.is_none() {
+                std::future::pending::<()>().await;
+            }
+            loop {
+                let due = k * plan.advert_every_us;
+                if let Some(end) = plan.scan_ends_at_us.filter(|end| due >= *end) {
+                    tokio::time::sleep_until(at(end)).await;
+                    return None;
+                }
+                k += 1;
+                let mine = k % 2 == 0;
+                let shown = match plan.advertisers {
+                    Advertisers::Both => true,
+                    Advertisers::Others => !mine,
+                    Advertisers::Nobody => false,
+                };
+                if shown {
+                    tokio::time::sleep_until(at(due)).await;
+                    return Some((mine, k));
+                }
+            }
+        })
+        .boxed()
+    }
 }
 
 impl Sim {
+    /// Every tagged comment line so far (what the capture would hold).
+    pub fn notes(&self) -> Vec<Note> {
+        self.lock().notes.clone()
+    }
+
     /// Record and apply a write; `true` when it will never be acknowledged.
     fn record_tx(&self, frame: [u8; 13]) -> bool {
         self.advance();
@@ -506,11 +586,20 @@ impl Operator for Sim {
             Cue::Descend if !matches!(self.plan.descent, Pattern::Hold) => {
                 s.descend_from = Some(at_us);
             }
-            Cue::Descend => {}
+            Cue::Descend | Cue::Phone => {}
             Cue::Stop => (s.goal, s.descend_from) = (0.0, None),
         }
     }
     async fn confirm(&self, _: &str) -> bool {
         self.plan.confirms
+    }
+    async fn ask(&self, _: &str, options: &'static [&'static str]) -> Option<&'static str> {
+        let mut at_us = self.plan.answer_at_us;
+        if options == crate::check10::CONNECT.options {
+            at_us += u64::from(self.plan.connect_answer_after_us);
+        }
+        tokio::time::sleep_until(self.start + Duration::from_micros(at_us)).await;
+        let given = self.plan.answers.iter().find(|a| options.contains(a))?;
+        options.iter().copied().find(|o| o == given)
     }
 }

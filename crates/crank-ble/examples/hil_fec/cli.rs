@@ -40,12 +40,14 @@ pub enum Check {
     Check8,
     /// Check 9: low-cadence stall at 250 W ERG (rider).
     Check9,
+    /// Check 10: a second central while connected (operator with a phone).
+    Check10,
     /// Check 12: ERG 200 W → `Free` release (rider).
     Check12,
 }
 
 impl Check {
-    const ALL: [(&'static str, Self); 17] = [
+    const ALL: [(&'static str, Self); 18] = [
         ("scan", Self::Scan),
         ("known", Self::Known),
         ("idle", Self::Idle),
@@ -62,6 +64,7 @@ impl Check {
         ("check7", Self::Check7),
         ("check8", Self::Check8),
         ("check9", Self::Check9),
+        ("check10", Self::Check10),
         ("check12", Self::Check12),
     ];
     /// The Part B control procedure behind this subcommand, if it is one.
@@ -73,6 +76,7 @@ impl Check {
             Self::Check7 => Some(Procedure::Check7),
             Self::Check8 => Some(Procedure::Check8),
             Self::Check9 => Some(Procedure::Check9),
+            Self::Check10 => Some(Procedure::Check10),
             Self::Check12 => Some(Procedure::Check12),
             _ => None,
         }
@@ -102,7 +106,7 @@ pub struct Args {
 }
 
 /// Usage text.
-pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check5|check6|check7|check8|check9|check12> \
+pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check5|check6|check7|check8|check9|check10|check12> \
 [--out DIR] [--scan-secs N] [--idle-secs N] [--target ID_OR_PATH]";
 
 fn number(flag: &str, text: &str) -> Result<u64, String> {
@@ -184,6 +188,7 @@ mod tests {
             ("check7", Procedure::Check7),
             ("check8", Procedure::Check8),
             ("check9", Procedure::Check9),
+            ("check10", Procedure::Check10),
             ("check12", Procedure::Check12),
         ] {
             let a = parse(args(&[name, "--out", "/x"]), Path::new("/o")).expect("parses");
