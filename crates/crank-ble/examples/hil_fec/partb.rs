@@ -979,6 +979,7 @@ pub fn analyse(
         "check8" => check8(records),
         "check9" => check9(records, lag),
         "check10" => crate::check10::check10(records, notes),
+        "check11b" => crate::check11::check11b(records, notes),
         "check12" => check12(records),
         _ => return None,
     };
@@ -992,6 +993,10 @@ pub fn analyse(
             "verdict",
             "advertising",
             "second_central",
+            "drop",
+            "cause",
+            "reconnect",
+            "after_reconnect",
         ] {
             if v.get(verdict).is_some() {
                 v[verdict] = Value::Null;
@@ -1102,6 +1107,7 @@ fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'static
             ("8", "SIM page 51 at 0/5/10 %; page 55 mass", segs, "§7.9")
         }
         "check10" => crate::check10::cells(v),
+        "check11b" => crate::check11::cells(v),
         "check9" => (
             "9",
             "Low cadence at 250 W ERG",

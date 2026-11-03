@@ -12,7 +12,13 @@ use crate::{
 };
 use crank_fec::{Page, decode};
 use futures_util::stream::{BoxStream, StreamExt};
-use std::{sync::Mutex, time::Duration};
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tokio::time::Instant;
 
 const STEP_US: u64 = 50_000;
@@ -67,6 +73,35 @@ pub struct Plan {
     pub answer_at_us: u64,
     /// The connect question's answer comes this much later than `answer_at_us`.
     pub connect_answer_after_us: u32,
+}
+
+/// Check 11b's scripted dropout ([`Sim::with_dropout`]): unplugged, the trainer powers off once
+/// the rider has stopped and boots when pedalling resumes.
+#[derive(Clone, Copy, Debug)]
+pub struct Dropout {
+    /// The trainer powers off (frames stop, the link drops) this long after the cadence reaches 0
+    /// following the stop cue (before it, the scripted rider is not off the pedals for good).
+    pub off_after_us: u64,
+    /// After the wake cue it advertises again this much later (`None`: it never comes back).
+    pub boots_after_us: Option<u64>,
+    /// A reconnect's connect, then its discovery, take this long each.
+    pub connect_us: u64,
+    /// See `connect_us`.
+    pub discover_us: u64,
+    /// The answer to the confirmation after the reconnect.
+    pub confirms_again: bool,
+}
+
+impl Default for Dropout {
+    fn default() -> Self {
+        Self {
+            off_after_us: 8_000_000,
+            boots_after_us: Some(4_000_000),
+            connect_us: 700_000,
+            discover_us: 1_200_000,
+            confirms_again: true,
+        }
+    }
 }
 
 /// Who check 10's scan can see while the trainer is connected.
@@ -208,6 +243,10 @@ struct State {
     crank_event_us: u64,
     cps: Vec<Cps>,
     notes: Vec<Note>,
+    linked: bool,
+    stopping: bool,
+    still_since: Option<u64>,
+    confirmations: u8,
 }
 
 /// The simulator: a [`Wire`] and the rider's [`Operator`] in one.
@@ -216,6 +255,9 @@ pub struct Sim {
     start: Instant,
     state: Mutex<State>,
     panicked: std::sync::atomic::AtomicBool,
+    dropout: Option<Dropout>,
+    /// Capture time from which the trainer is powered (`u64::MAX`: off).
+    up_at: Arc<AtomicU64>,
 }
 
 fn emit(s: &mut State, at_us: u64, f: [u8; 13]) {
@@ -274,9 +316,21 @@ impl Sim {
                 crank_event_us: 0,
                 cps: Vec::new(),
                 notes: Vec::new(),
+                linked: true,
+                stopping: false,
+                still_since: None,
+                confirmations: 0,
             }),
             panicked: std::sync::atomic::AtomicBool::new(false),
+            dropout: None,
+            up_at: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// The same simulator with check 11b's dropout scripted.
+    pub fn with_dropout(mut self, d: Dropout) -> Self {
+        self.dropout = Some(d);
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -331,6 +385,24 @@ impl Sim {
         st.cps.push(Cps { at_us: now, bytes });
     }
 
+    /// Check 11b: lights out once the rider has stood still long enough after the stop cue; the
+    /// link goes, and the trainer forgets what was applied.
+    fn power_off(&self, st: &mut State, now: u64) {
+        if let Some(d) = self.dropout
+            && self.up_at.load(Ordering::SeqCst) <= now
+        {
+            st.still_since = if st.stopping && st.cadence < 1.0 {
+                st.still_since.or(Some(now))
+            } else {
+                None
+            };
+            if st.still_since.is_some_and(|t| now >= t + d.off_after_us) {
+                self.up_at.store(u64::MAX, Ordering::SeqCst);
+                (st.linked, st.applied, st.still_since) = (false, Applied::Resistance(0.0), None);
+            }
+        }
+    }
+
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -375,7 +447,8 @@ impl Sim {
         if st.turns.floor() > turns.floor() {
             st.crank_event_us = now;
         }
-        if silent {
+        self.power_off(st, now);
+        if silent || !st.linked {
             return;
         }
         if let Some(c) = self.plan.cps.filter(|_| now.is_multiple_of(1_000_000)) {
@@ -447,9 +520,7 @@ impl Wire for Sim {
         }
         self.advance();
         let s = self.lock();
-        self.plan
-            .drop_at_us
-            .is_some_and(|x| s.at >= x)
+        (self.plan.drop_at_us.is_some_and(|x| s.at >= x) || !s.linked)
             .then(|| "not connected".into())
     }
     fn mark(&self) -> usize {
@@ -470,7 +541,8 @@ impl Wire for Sim {
     }
     fn dropped(&self) -> bool {
         self.advance();
-        self.plan.drop_at_us.is_some_and(|x| self.lock().at >= x)
+        let s = self.lock();
+        self.plan.drop_at_us.is_some_and(|x| s.at >= x) || !s.linked
     }
     fn records(&self) -> Vec<Record> {
         self.advance();
@@ -491,30 +563,53 @@ impl Wire for Sim {
         });
         None
     }
+    async fn reconnect(&self) -> Option<String> {
+        let Some(d) = self.dropout else {
+            return Some("not scripted".into());
+        };
+        loop {
+            let up = self.up_at.load(Ordering::SeqCst);
+            if up != u64::MAX && self.now_us() >= up {
+                break;
+            }
+            tokio::time::sleep(Duration::from_micros(STEP_US)).await;
+        }
+        tokio::time::sleep(Duration::from_micros(d.connect_us)).await;
+        self.note(crate::check11::LINK, &[crate::check11::CONNECTED]);
+        tokio::time::sleep(Duration::from_micros(d.discover_us)).await;
+        self.advance();
+        self.lock().linked = true;
+        None
+    }
     fn adverts(&self) -> BoxStream<'static, bool> {
+        let up_at = self.up_at.clone();
         let (plan, start) = (self.plan, self.start);
         let at = move |us: u64| start + Duration::from_micros(us);
         let first = self.elapsed() / plan.advert_every_us + 1;
-        futures_util::stream::unfold(first, move |mut k| async move {
-            if plan.advertisers == Advertisers::Nobody && plan.scan_ends_at_us.is_none() {
-                std::future::pending::<()>().await;
-            }
-            loop {
-                let due = k * plan.advert_every_us;
-                if let Some(end) = plan.scan_ends_at_us.filter(|end| due >= *end) {
-                    tokio::time::sleep_until(at(end)).await;
-                    return None;
+        futures_util::stream::unfold(first, move |mut k| {
+            let up_at = up_at.clone();
+            async move {
+                if plan.advertisers == Advertisers::Nobody && plan.scan_ends_at_us.is_none() {
+                    std::future::pending::<()>().await;
                 }
-                k += 1;
-                let mine = k % 2 == 0;
-                let shown = match plan.advertisers {
-                    Advertisers::Both => true,
-                    Advertisers::Others => !mine,
-                    Advertisers::Nobody => false,
-                };
-                if shown {
-                    tokio::time::sleep_until(at(due)).await;
-                    return Some((mine, k));
+                loop {
+                    let due = k * plan.advert_every_us;
+                    if let Some(end) = plan.scan_ends_at_us.filter(|end| due >= *end) {
+                        tokio::time::sleep_until(at(end)).await;
+                        return None;
+                    }
+                    k += 1;
+                    let mine = k % 2 == 0;
+                    let powered = up_at.load(Ordering::SeqCst) <= due;
+                    let shown = match plan.advertisers {
+                        Advertisers::Both => powered || !mine,
+                        Advertisers::Others => !mine,
+                        Advertisers::Nobody => false,
+                    };
+                    if shown {
+                        tokio::time::sleep_until(at(due)).await;
+                        return Some((mine, k));
+                    }
                 }
             }
         })
@@ -532,7 +627,7 @@ impl Sim {
     fn record_tx(&self, frame: [u8; 13]) -> bool {
         self.advance();
         let mut s = self.lock();
-        if self.plan.drop_at_us.is_some_and(|x| s.at >= x) {
+        if self.plan.drop_at_us.is_some_and(|x| s.at >= x) || !s.linked {
             return false;
         }
         let at = s.at;
@@ -588,10 +683,24 @@ impl Operator for Sim {
             }
             Cue::Descend | Cue::Phone => {}
             Cue::Stop => (s.goal, s.descend_from) = (0.0, None),
+            Cue::LightsOut => (s.goal, s.stopping) = (0.0, true),
+            Cue::Wake => {
+                (s.goal, s.stopping) = (60.0, false);
+                if let Some(boot) = self.dropout.and_then(|d| d.boots_after_us)
+                    && self.up_at.load(Ordering::SeqCst) == u64::MAX
+                {
+                    self.up_at.store(at_us + boot, Ordering::SeqCst);
+                }
+            }
         }
     }
     async fn confirm(&self, _: &str) -> bool {
-        self.plan.confirms
+        let mut s = self.lock();
+        s.confirmations += 1;
+        match self.dropout {
+            Some(d) if s.confirmations > 1 => d.confirms_again,
+            _ => self.plan.confirms,
+        }
     }
     async fn ask(&self, _: &str, options: &'static [&'static str]) -> Option<&'static str> {
         let mut at_us = self.plan.answer_at_us;

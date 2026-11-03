@@ -76,7 +76,7 @@ OUT=~/crank-captures/$(date +%F)-partb
 mkdir -p "$OUT"
 ```
 
-Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10), with the same `--out`**, from an Alacritty window on `sage`. The binary is
+Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10 and 11b), with the same `--out`**, from an Alacritty window on `sage`. The binary is
 `${CARGO_TARGET_DIR:-target}/debug/examples/hil_fec`:
 
 | # | Command | You do | About |
@@ -138,10 +138,31 @@ A recorded app session also logs each connect's phases with their times (`link p
 `crank.log`, target `crank_core::links`). The architect records the results in the HIL doc and rewords §5.1.2 if
 the lookup fails.
 
-### Still to come (#412 parts c2 and c3)
+### Check 11b: the unplugged stop (pedalling)
 
-- **Checks 11a–c** (dropout: unplug while pedalling, unplugged stop, unplugged cold start):
-  `TBD: command and procedure (#412 parts c2 and c3)`. They need their own session.
+Run it after check 10, with the same `--out`. **Unplug the trainer from mains before you start**, then get
+on and pedal easily so that it powers up (its lights come on).
+
+```sh
+hil_fec check11b --out "$OUT"
+```
+
+1. Type **`y`** and Enter when asked, then ride at about 90 rpm through the 100 W soft start and 20 s.
+2. At the cue *stop pedalling and wait until its lights go out*, stop and wait. The trainer is already
+   released. Within 90 s the lights go out and the link drops; if it does not, the run stops (is the
+   trainer unplugged?).
+3. At the cue *the link dropped: pedal again*, pedal easily. The trainer wakes, and the harness reconnects
+   within 60 s.
+4. It releases the trainer first, then asks *had the trainer's lights gone out?*: type **`out`**, **`on`**
+   or **`unsure`** and Enter.
+5. It asks again before it applies anything: type **`y`** and Enter, then ride at about 90 rpm through the
+   100 W soft start and 20 s. The run releases the trainer and prints the row.
+6. Plug the trainer back in afterwards.
+
+### Still to come (#412 part c3)
+
+- **Checks 11a and 11c** (unplug while pedalling, unplugged cold start): `TBD: command and procedure (#412
+  part c3)`.
 
 ## 4. Afterwards
 

@@ -1,6 +1,6 @@
 //! Live BLE session over the real `crank-ble` transport; every frame goes to a `.fecap`.
 use btleplug::{
-    api::{Manager as _, Peripheral as _},
+    api::{Central as _, CentralEvent, Manager as _, Peripheral as _},
     platform::{Adapter, Manager, Peripheral},
 };
 use crank_ble::{
@@ -54,6 +54,20 @@ pub fn attributed(
         .advertisements()
         .map(move |ad| ad.device == device)
         .boxed()
+}
+
+/// Resolves `true` once `events` (the adapter's events: a connected peripheral's id, `None` for
+/// any other kind) reports `device` connected, `false` when they end first.
+pub async fn connect_of(
+    mut events: impl futures_util::Stream<Item = Option<String>> + Unpin,
+    device: &DeviceRef,
+) -> bool {
+    while let Some(e) = events.next().await {
+        if e.as_deref() == Some(device.0.as_str()) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Default adapter of the first BLE manager.
@@ -121,11 +135,37 @@ pub struct Session {
     pub device: DeviceRef,
     pub info: DeviceInfo,
     adv: BtleplugAdvertisements,
+    adapter: Adapter,
     started: MonoTime,
     peripheral: Peripheral,
     cps_pump: Option<tokio::task::JoinHandle<Option<String>>>,
     log: Arc<Mutex<Vec<Rx>>>,
-    pump: tokio::task::JoinHandle<Option<String>>,
+    /// The rx pump of the current connection; a reconnect starts a new one.
+    pump: Mutex<tokio::task::JoinHandle<Option<String>>>,
+}
+
+/// Record each notification in `capture` and keep it in `log`; ends with the link.
+fn pump(
+    mut notifications: crank_ble::Notifications,
+    log: Arc<Mutex<Vec<Rx>>>,
+    capture: Arc<Capture>,
+) -> tokio::task::JoinHandle<Option<String>> {
+    tokio::spawn(async move {
+        while let Some(item) = notifications.next().await {
+            match item {
+                Ok((at, bytes)) => {
+                    if let Err(e) = capture.record(at, true, &bytes) {
+                        return Some(format!("capture: {e}"));
+                    }
+                    log.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(Rx { at, bytes });
+                }
+                Err(e) => return Some(e.to_string()),
+            }
+        }
+        None
+    })
 }
 
 /// Locate the NEO (scan up to `secs`); `None` when no FE-C device advertises.
@@ -152,30 +192,12 @@ impl Session {
     ) -> Result<Self> {
         let clock = Arc::new(MonotonicClock::default());
         let peripheral = adv.peripheral(&device).await?;
-        let transport = BtleplugTransport::new(peripheral.clone(), adapter);
+        let transport = BtleplugTransport::new(peripheral.clone(), adapter.clone());
         let started = clock.now();
         let capture = Arc::new(Capture::create(capture_path, started)?);
-        let (info, mut notifications) = transport.connect(device.clone(), clock.clone()).await?;
+        let (info, notifications) = transport.connect(device.clone(), clock.clone()).await?;
         let log = Arc::new(Mutex::new(Vec::new()));
-        let pump = tokio::spawn({
-            let (log, capture) = (log.clone(), capture.clone());
-            async move {
-                while let Some(item) = notifications.next().await {
-                    match item {
-                        Ok((at, bytes)) => {
-                            if let Err(e) = capture.record(at, true, &bytes) {
-                                return Some(format!("capture: {e}"));
-                            }
-                            log.lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .push(Rx { at, bytes });
-                        }
-                        Err(e) => return Some(e.to_string()),
-                    }
-                }
-                None
-            }
-        });
+        let pump = Mutex::new(pump(notifications, log.clone(), capture.clone()));
         Ok(Self {
             transport,
             clock,
@@ -184,6 +206,7 @@ impl Session {
             device,
             info,
             adv: adv.clone(),
+            adapter,
             started,
             peripheral,
             cps_pump: None,
@@ -224,6 +247,41 @@ impl Session {
         attributed(&self.adv, self.device.clone())
     }
 
+    /// After a drop: connect again, discover and subscribe, and pump the new link's frames into
+    /// the same log and capture. The adapter's connect event for this peripheral is recorded as
+    /// `# link <us> 03` when it comes (`CoreBluetooth` reports it before discovery starts).
+    pub async fn reconnect(&self) -> Result<()> {
+        use crate::check11::{CONNECTED, LINK};
+        let events = self.adapter.events().await?.map(|e| match e {
+            CentralEvent::DeviceConnected(p) => Some(p.to_string()),
+            _ => None,
+        });
+        let (clock, capture, device) = (
+            self.clock.clone(),
+            self.capture.clone(),
+            self.device.clone(),
+        );
+        let connected = tokio::spawn(async move {
+            if connect_of(events, &device).await {
+                return capture.record_aux(clock.now(), LINK, &[CONNECTED]).err();
+            }
+            None
+        });
+        let opened = self
+            .transport
+            .connect(self.device.clone(), self.clock.clone())
+            .await;
+        // The connect event is already queued once the link is open; wait for it briefly.
+        let recorded = tokio::time::timeout(Duration::from_secs(1), connected).await;
+        let (_, notifications) = opened?;
+        if let Ok(Ok(Some(e))) = recorded {
+            return Err(format!("capture: {e}").into());
+        }
+        *self.pump.lock().unwrap_or_else(PoisonError::into_inner) =
+            pump(notifications, self.log.clone(), self.capture.clone());
+        Ok(())
+    }
+
     /// Number of frames received so far (use as a `since` mark).
     pub fn mark(&self) -> usize {
         self.log
@@ -249,7 +307,10 @@ impl Session {
 
     /// Why the rx pump ended, if it has (disconnect, capture failure).
     pub fn pump_ended(&self) -> bool {
-        self.pump.is_finished()
+        self.pump
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_finished()
             || self
                 .cps_pump
                 .as_ref()
@@ -311,8 +372,12 @@ impl Session {
     /// Release the peripheral; once this returns the pump no longer writes the capture.
     pub async fn close(self) {
         let _ = FecTransport::disconnect(&self.transport).await;
-        self.pump.abort();
-        let _ = self.pump.await;
+        let pump = self
+            .pump
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
+        pump.abort();
+        let _ = pump.await;
         if let Some(cps) = self.cps_pump {
             cps.abort();
             let _ = cps.await;
@@ -322,7 +387,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::{attributed, bounded};
+    use super::{attributed, bounded, connect_of};
     use crank_ble::{Advertisement, Advertisements};
     use crank_devices::DeviceRef;
     use futures_util::{StreamExt, stream::BoxStream};
@@ -346,6 +411,22 @@ mod tests {
         let scan = Scan(&["phone", "neo", "watch", "neo-2", "neo", "phone"]);
         let seen: Vec<bool> = attributed(&scan, DeviceRef("neo".into())).collect().await;
         assert_eq!(seen, [false, true, false, false, true, false]);
+    }
+
+    #[tokio::test]
+    async fn only_the_trainers_connect_event_counts() {
+        let neo = DeviceRef("neo".into());
+        let events = |e: &[Option<&str>]| {
+            futures_util::stream::iter(e.iter().map(|x| x.map(String::from)).collect::<Vec<_>>())
+        };
+        assert!(
+            connect_of(
+                events(&[None, Some("phone"), Some("neo-2"), Some("neo")]),
+                &neo
+            )
+            .await
+        );
+        assert!(!connect_of(events(&[None, Some("phone"), Some("neo-2")]), &neo).await);
     }
 
     #[tokio::test(start_paused = true)]
