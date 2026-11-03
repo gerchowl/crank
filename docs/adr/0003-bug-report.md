@@ -146,7 +146,7 @@ is skipped, never guessed at, which is squelch's own rule.
   The **Open on GitHub** button is disabled until both fields are filled. squelch's `require` checks the
   same fields in Rust.
 - **Error and failure banners** (`ApiError` banners, the reconnect-failed banner) get a "Report this"
-  action (architect decision 2026-11-02, because the owner asked for a report surface). It opens the same dialog with `error` prefilled with the banner's code and message, scrubbed
+  action (architect decision 2026-11-02, because the owner asked for a report surface; the owner may override). It opens the same dialog with `error` prefilled with the banner's code and message, scrubbed
   like any other value.
 - **Transport.** `Transport::Browser` only, and no other route is compiled in. The user's click on
   Submit in GitHub is the only send. After the browser opens, the dialog keeps the diagnostics block

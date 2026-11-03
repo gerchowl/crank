@@ -1,6 +1,7 @@
 //! The Tauri commands: one thin wrapper per `crank-core` facade method (ADR-0001 §4).
 //! They hold no logic; the window label of the caller is the only thing added, and
 //! [`ApiError`] is the only error that crosses.
+use crate::logging::Logging;
 use crank_core::{
     ApiError, Core, CoreInfo, DeviceLinkInfo, DeviceRole, FrameSink, PairedDevice, RideEnded,
     RideLoaded, RideRecord, RideStatusView, ScannedDevice, SinkClosed, WorkoutDetail,
@@ -154,8 +155,15 @@ pub async fn ride_skip(core: State<'_, Core>) -> Result<(), ApiError> {
 /// As [`Core::ride_end_outcome`].
 #[tauri::command]
 #[specta::specta]
-pub async fn ride_end(core: State<'_, Core>) -> Result<RideEnded, ApiError> {
-    core.ride_end_outcome().await.map(Into::into)
+pub async fn ride_end(
+    core: State<'_, Core>,
+    logging: State<'_, Logging>,
+) -> Result<RideEnded, ApiError> {
+    let ended = core.ride_end_outcome().await.map(Into::into);
+    // The ride's records reach the disk now, not only at quit (ADR-0001 §7.1). Not awaited:
+    // a stalled disk must not hold up the ride's end (vigil waits up to 5 s).
+    drop(logging.flush_in_background());
+    ended
 }
 
 /// The ride's state.

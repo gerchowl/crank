@@ -14,13 +14,25 @@
 //!      `ExitRequested` to hold back. If the shutdown has not run, `Exit` runs it
 //!      synchronously. macOS may kill the app a few seconds after `terminate:` at logout, so
 //!      [`QUIT_CAP`] must stay at or below 3 s.
+//!
+//! Both paths end in [`RunEvent::Exit`], which then shuts vigil down ([`Logging::shut_down`])
+//! with what [`QUIT_CAP`] left: the ride end may use [`SHUTDOWN_CAP`] of it (ADR-0001 §7.1).
+//!
+//! The quit's clock ([`Quit::start`]) starts at the first exit request, or on the backstop path at
+//! `Exit`, the first event Tauri delivers for a `terminate:`. That understates the quit by
+//! what macOS spends before `applicationWillTerminate:`: tao answers no
+//! `applicationShouldTerminate:` and crank is not document-based, so `terminate:` runs none of
+//! crank's code first. The gap is `AppKit`'s own work plus the wait for the main thread to take
+//! the quit event, which is short because crank's main-thread handlers never block (only
+//! [`on_exit`] does, and it is the handler for this event).
+use crate::logging::{Logging, remaining};
 use crank_core::{Core, Shutdown};
 use std::{
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU8, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{
     AppHandle, Manager, RunEvent, Runtime, Webview, Window, WindowEvent,
@@ -28,10 +40,14 @@ use tauri::{
     webview::{PageLoadEvent, PageLoadPayload},
 };
 
-/// Longest a quit waits for the engine to end the ride (the end mode delivered). Above the engine's own 2 s end
-/// deadline (ADR-0002 §7.9), so a trainer that never answers is still given up on, and
-/// at most the ~3 s macOS grants a terminating app at logout (see the module docs).
+/// Longest a quit takes, from its start to vigil's shutdown: at most the ~3 s macOS grants a
+/// terminating app at logout (see the module docs).
 pub const QUIT_CAP: Duration = Duration::from_secs(3);
+
+/// Longest a quit waits for the engine to end the ride (the end mode delivered). Above the engine's own 2 s end
+/// deadline (ADR-0002 §7.9), so a trainer that never answers is still given up on; the rest of
+/// [`QUIT_CAP`] is vigil's (ADR-0001 §7.1, Quit budget).
+pub const SHUTDOWN_CAP: Duration = Duration::from_millis(2500);
 
 /// Id of the menu item that replaces the default Quit item.
 pub const QUIT_ITEM_ID: &str = "crank-quit";
@@ -272,9 +288,9 @@ fn drop_streams<R: Runtime>(app: &AppHandle<R>, window: &str) {
     }
 }
 
-/// Where the quit stands.
+/// Where the quit stands, and when it started.
 #[derive(Default)]
-pub struct Quit(AtomicU8);
+pub struct Quit(AtomicU8, OnceLock<Instant>);
 
 /// What to do with an exit request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -300,7 +316,10 @@ impl Quit {
             Ordering::SeqCst,
             Ordering::SeqCst,
         ) {
-            Ok(_) => Decision::Begin,
+            Ok(_) => {
+                self.start();
+                Decision::Begin
+            }
             Err(Self::SHUTTING_DOWN) => Decision::Wait,
             Err(_) => Decision::Proceed,
         }
@@ -311,9 +330,23 @@ impl Quit {
         self.0.load(Ordering::SeqCst) != Self::DONE
     }
 
+    /// Start the quit's clock, unless it runs already.
+    pub fn start(&self) {
+        self.1.get_or_init(Instant::now);
+    }
+
+    /// What [`QUIT_CAP`] has left since the quit started (all of it if none has).
+    pub fn remaining(&self) -> Duration {
+        remaining(
+            QUIT_CAP,
+            self.1.get().map_or(Duration::ZERO, Instant::elapsed),
+        )
+    }
+
     /// End the ride (the engine's end mode), then allow the exit.
     pub async fn shut_down(&self, core: &Core) -> Shutdown {
-        let outcome = core.shutdown(QUIT_CAP).await;
+        self.start();
+        let outcome = core.shutdown(SHUTDOWN_CAP).await;
         match &outcome {
             Shutdown::Idle | Shutdown::Ended => {}
             Shutdown::TimedOut => tracing::warn!("quit: the ride was not ended within the cap"),
@@ -349,7 +382,7 @@ pub fn on_exit_requested(
 
 /// The app is exiting (`Exit`): the backstop for exits that never asked (Dock Quit, logout,
 /// system shutdown). Unless the ride was ended already, end it here, synchronously and
-/// bounded by [`QUIT_CAP`]: the process is going away as soon as this returns.
+/// bounded by [`SHUTDOWN_CAP`]: the process is going away as soon as this returns.
 pub fn on_exit(quit: &Quit, core: &Core) {
     if quit.pending() {
         tauri::async_runtime::block_on(quit.shut_down(core));
@@ -380,18 +413,28 @@ pub fn handle_exit_requested(
     on_exit_requested(quit, core, status, || api.prevent_exit(), exit);
 }
 
-/// The `App::run` callback: [`on_exit_requested`] and [`on_exit`] on the managed core.
+/// The `App::run` callback: [`on_exit_requested`] and [`on_exit`] on the managed core, then
+/// on `Exit` vigil's shutdown within what [`QUIT_CAP`] left ([`Quit::remaining`]).
 pub fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent, quit: &Arc<Quit>) {
     // Without a core (startup failed) there is no ride to end.
-    let Some(core) = app.try_state::<Core>() else {
-        return;
-    };
+    let core = app.try_state::<Core>();
     match event {
         RunEvent::ExitRequested { code, api, .. } => {
-            let app = app.clone();
-            handle_exit_requested(quit, core.inner(), *code, api, move |code| app.exit(code));
+            if let Some(core) = core {
+                let app = app.clone();
+                handle_exit_requested(quit, core.inner(), *code, api, move |code| app.exit(code));
+            }
         }
-        RunEvent::Exit => on_exit(quit, core.inner()),
+        RunEvent::Exit => {
+            // The earliest this path can start the clock (module docs).
+            quit.start();
+            if let Some(core) = core {
+                on_exit(quit, core.inner());
+            }
+            if let Some(logging) = app.try_state::<Logging>() {
+                logging.shut_down(quit.remaining());
+            }
+        }
         _ => {}
     }
 }
