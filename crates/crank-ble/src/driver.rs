@@ -7,6 +7,7 @@ use crate::{
 use crank_devices::{
     Clock, DeviceError, DeviceInfo, DeviceRef, DriverKind, LinkState, MonoTime, ProtocolErrorKind,
     RiderConfig, TrainerCaps, TrainerCommand, TrainerDriver, TrainerEvent, TrainerLink,
+    phase::{self, ConnectPhase},
 };
 use crank_fec::{ControlPage, Page, decode, encode};
 use futures_util::{StreamExt, future::BoxFuture, stream::BoxStream};
@@ -191,6 +192,7 @@ impl TrainerDriver for FecTrainer {
                     return Err(error);
                 }
             };
+            phase::report(ConnectPhase::Handshake);
             let (events, receiver) = mpsc::channel(256);
             let (commands, control) = mpsc::channel(64);
             let result = async {

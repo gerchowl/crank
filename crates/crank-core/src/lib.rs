@@ -14,6 +14,7 @@ mod core;
 mod dto;
 mod error;
 mod library;
+mod links;
 mod recorder;
 
 pub use backend::DeviceMode;

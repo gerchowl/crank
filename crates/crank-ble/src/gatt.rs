@@ -9,7 +9,10 @@ use btleplug::{
     },
     platform::{Adapter, Peripheral, PeripheralId},
 };
-use crank_devices::{DeviceError, DeviceInfo, DeviceRef, MonoTime};
+use crank_devices::{
+    DeviceError, DeviceInfo, DeviceRef, MonoTime,
+    phase::{self, ConnectPhase},
+};
 use futures_util::{Stream, StreamExt, future::BoxFuture, stream::BoxStream};
 use std::{
     pin::Pin,
@@ -119,6 +122,7 @@ fn open(
         })?;
         let result = async {
             p.discover_services().await.map_err(gatt)?;
+            phase::report(ConnectPhase::Identity);
             let subscribed = characteristic(&p, notify)?;
             if let Some(uuid) = required {
                 characteristic(&p, uuid)?;
