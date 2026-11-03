@@ -258,22 +258,25 @@ and holds the link through it:
   find the trainer) and every advertisement it reports is recorded, flagged as this trainer's or another
   peripheral's;
 - the cue asks the operator to open the Tacx app on the phone, look for the NEO and try to connect;
-- two questions take a typed answer, re-asked until the answer is one of the accepted words:
+- the questions take a typed answer, re-asked until the answer is one of the accepted words:
   - *Does the phone list the NEO while hil_fec is connected?* `seen` / `not-seen` / `unsure`
-  - *Try to connect the phone to the NEO and give it 30 s. What did the connect do?* `connected` /
+  - only after `seen` (`check10::follow_up`; a phone that did not list the NEO has nothing to connect
+    to): *Try to connect the phone to the NEO and give it 30 s. What did the connect do?* `connected` /
     `failed` / `stuck` / `not-tried`
 - the window lasts at least **60 s** from its start, answers or not, so the scan covers a connected
-  stretch (`check10::MIN_WINDOW`), and both answers must be in within **180 s** of its start
+  stretch (`check10::MIN_WINDOW`), and the answers must be in within **180 s** of its start
   (`check10::ANSWER_WAIT`); otherwise the run is aborted (`no answer to … within 180 s`), and closed
   input aborts it too.
 
 While the window is open, the guards run every 100 ms on a fixed tick, whatever the scan delivers: a
 dropped link fails the run (`link dropped while the phone was trying to connect (second central)`),
-page 25 silent for 2 s aborts it (the idle NEO sends page 25 at about 2.8 Hz, Part A), and the trainer
-is released as on every other path. A run that ends this way gives no verdict. If the phone takes the
-trainer, crank's link drops and the run fails; the message names that.
+page 25 silent for 2 s aborts it (`no page 25 for 2 s while the phone was trying to connect: the second
+central may have taken the trainer`; the idle NEO sends page 25 at about 2.8 Hz, Part A), and the
+trainer is released as on every other path. A run that ends this way gives no verdict. Both messages
+name the phone, since it is the likely cause: a phone that takes the trainer either drops crank's link
+or leaves it up with page 25 stopped.
 
-**Completed** means the window ran to its close with both answers recorded; only then is there a
+**Completed** means the window ran to its close with the answers it asked recorded; only then is there a
 verdict (`advertising`, `second_central` and `verdict` are null otherwise, as for every Part B check).
 
 **Capture.** The events are tagged comment lines in the `.fecap` (`Capture::record_aux`), so `analyse`
@@ -288,16 +291,31 @@ Readers that skip comments read the file as before. The lines carry no serial; `
   - `continues: the scan saw N advertisements of the trainer, longest gap X s` when the scan reported at
     least one inside the window. The gap is measured in continuous time, the window's edges included.
   - `continues: the phone listed it; the scan saw none (…)` on the phone's `seen` alone.
-  - `not seen: the phone did not list it and the scan saw none (…)` on `not-seen`.
+  - `not seen: …` only when both observations agree: the phone's `not-seen`, and a scan that ran over
+    the whole window and reported other peripherals (so it was working) but none of the trainer.
+    `not-seen` with a scan that was not started, ended early or reported nobody is `unknown: the phone
+    did not list it, but the scan …, so it cannot confirm that`.
   - Otherwise `unknown: …`, with the scan's state (ran over the whole window, ended by itself at T s,
     not started) and how many advertisements of other peripherals it reported. A scan that saw nothing
     of the trainer is not evidence that advertising stopped: a host may not report a peripheral it is
     connected to (CoreBluetooth is not documented either way), and a scan that reports other peripherals
     only shows that it was working.
-- **second central:** `connected` → `accepted: the phone connected while hil_fec held the link`;
-  `failed` → `refused: the phone's connect failed`; `stuck` → `refused: the phone's connect never
-  completed`; `not-tried` → `unknown: the phone did not try`; a missing or unrecognised answer is
-  `unknown` with the reason.
+- **second central**, a decision table over the two answers (`check10::second_central`); only a phone
+  that listed the NEO can have been accepted or refused:
+
+  | listed | connect | second central |
+  |---|---|---|
+  | `seen` | `connected` | `accepted: the phone connected while hil_fec held the link` |
+  | `seen` | `failed` | `refused: the phone's connect failed` |
+  | `seen` | `stuck` | `refused: the phone's connect never completed` |
+  | `seen` | `not-tried` | `unknown: the phone listed the NEO but did not try to connect` |
+  | `seen` | missing or unrecognised | `unknown: <reason> to whether the phone connected` |
+  | `not-seen` | not asked | `unknown: the phone did not find the NEO, so it could not try to connect` |
+  | `unsure` | not asked | `unknown: the operator was unsure the phone listed the NEO, so no connect was tried` |
+  | `not-seen` or `unsure` | recorded anyway (an edited capture) | `unknown: contradictory answers: …` |
+  | missing or unrecognised | any | `unknown: <reason> to whether the phone listed the NEO` |
+
+  So `accepted` and `refused` always come with advertising `continues`.
 - **hil_fec link:** `held` when page 25 has no gap above 2 s inside the window (edges included, ADR-0002
   §6), else `lost (page 25 silent for X s)`.
 

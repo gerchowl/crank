@@ -115,11 +115,12 @@ hil_fec check10 --out "$OUT"
 2. At the cue, open the Tacx app on the phone and look for the NEO.
 3. When the window asks *Does the phone list the NEO…*, type **`seen`**, **`not-seen`** or **`unsure`**
    and Enter.
-4. Try to connect the phone to the NEO and wait about 30 s. When asked *What did the connect do?*, type
-   **`connected`**, **`failed`** (an error), **`stuck`** (still "connecting") or **`not-tried`** and
-   Enter. Anything else is asked again.
+4. Only if you typed `seen`: try to connect the phone to the NEO and wait about 30 s. When asked *What
+   did the connect do?*, type **`connected`**, **`failed`** (an error), **`stuck`** (still
+   "connecting") or **`not-tried`** and Enter. Anything else is asked again. After `not-seen` or
+   `unsure` this question is not asked.
 5. Leave the phone alone. The window stays open for at least 60 s in all, then the run releases the
-   trainer and prints the row. Answer both questions within 3 min, or the run stops without a result.
+   trainer and prints the row. Answer within 3 min of the cue, or the run stops without a result.
 6. Afterwards, cancel the connect in the Tacx app and close the app before the next run.
 
 ### Still to come (#412 parts c2 and c3)

@@ -44,6 +44,18 @@ pub struct Seen {
     pub adverts: u32,
 }
 
+/// A scan of `source`: `true` for each advertisement of `device` (the connected trainer), `false`
+/// for any other peripheral's. It ends when the scan stops by itself.
+pub fn attributed(
+    source: &impl Advertisements,
+    device: DeviceRef,
+) -> futures_util::stream::BoxStream<'static, bool> {
+    source
+        .advertisements()
+        .map(move |ad| ad.device == device)
+        .boxed()
+}
+
 /// Default adapter of the first BLE manager.
 pub async fn adapter() -> Result<Adapter> {
     let manager = Manager::new().await?;
@@ -207,14 +219,9 @@ impl Session {
         Ok(())
     }
 
-    /// A scan beside the connection (check 10): `true` for each advertisement of this trainer,
-    /// `false` for any other peripheral's. It ends when the scan stops by itself.
+    /// A scan beside the connection (check 10), attributed by [`attributed`].
     pub fn adverts(&self) -> futures_util::stream::BoxStream<'static, bool> {
-        let device = self.device.clone();
-        self.adv
-            .advertisements()
-            .map(move |ad| ad.device == device)
-            .boxed()
+        attributed(&self.adv, self.device.clone())
     }
 
     /// Number of frames received so far (use as a `since` mark).
@@ -315,7 +322,31 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::bounded;
+    use super::{attributed, bounded};
+    use crank_ble::{Advertisement, Advertisements};
+    use crank_devices::DeviceRef;
+    use futures_util::{StreamExt, stream::BoxStream};
+
+    /// A scan that reports these devices' advertisements, in order, then ends.
+    struct Scan(&'static [&'static str]);
+
+    impl Advertisements for Scan {
+        fn advertisements(&self) -> BoxStream<'static, Advertisement> {
+            futures_util::stream::iter(self.0.iter().map(|d| Advertisement {
+                device: DeviceRef((*d).into()),
+                name: None,
+                services: Vec::new(),
+            }))
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_connected_trainers_adverts_count_as_its_own() {
+        let scan = Scan(&["phone", "neo", "watch", "neo-2", "neo", "phone"]);
+        let seen: Vec<bool> = attributed(&scan, DeviceRef("neo".into())).collect().await;
+        assert_eq!(seen, [false, true, false, false, true, false]);
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_hung_gatt_operation_fails_within_the_bound() {
