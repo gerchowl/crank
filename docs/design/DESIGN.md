@@ -470,24 +470,30 @@ multiples of that. Reference devices: a 13–15″ laptop at default scaling (�
 
 | Tier | Use | Target | Laptop 1440×900 @ 1.0 m | Tablet 1024×768 @ 0.8 m | Prototype rule |
 |---|---|---|---|---|---|
-| **T1 glance** | countdown, recovery range, sprint power | ~~≥ 90′ (1.5°)~~ superseded by §18.1: ≈ 55′ (112 px) | 182 px | 151 px | ~~`clamp(150px, 21vh, 240px)` → 189 / 161~~ superseded by §16.1: `clamp(150px, min(24.5vh, 17.2vw), 260px)` → 220 / 176 |
-| **T2 glance** | ~~target~~ power, HR, cadence (§18.3) | ~~≥ 50′~~ superseded by §18.1: ≈ 32′ (64 px) | 101 px | 84 px | `clamp(84px, 11.4vh, 128px)` → 103 / 88 |
-| **T3+ read** | next block, coach verb, banners | ≥ 20′ | 40 px | 34 px | `clamp(34px, 4.5vh, 44px)` → 41 / 35 |
-| **T3 read** | ~~labels, captions,~~ coach reason, deadlines~~, status-bar values~~ (§18.1: the others are T4) | ≥ 16′ | 32 px | 27 px | `clamp(27px, 3.7vh, 36px)` → 33 / 28 |
-| T1r range | the recovery band when shown as the hero ("1:40–3:40") | ≥ 55′ | 117 px | 100 px | `0.62 × T1` → ~~117 / 100~~ superseded by §16.1: 137 / 109 |
-| T4 chrome | key hints, axis ticks, band word, road labels — never needed mid-effort | — | 15–18 px | 15–18 px | fixed px |
+| **T1 glance** (superseded by §18.1) | countdown, ~~recovery range, sprint power~~ (#462) | ~~≥ 90′ (1.5°)~~ ≈ 55′ / 67′ | ~~182 px~~ 112 px | ~~151 px~~ 112 px | ~~`clamp(150px, 21vh, 240px)` → 189 / 161~~ ~~`clamp(150px, min(24.5vh, 17.2vw), 260px)` → 220 / 176~~ fixed token |
+| **T2 glance** (superseded by §18.1) | ~~target~~ power, HR, cadence (§18.3) | ~~≥ 50′~~ ≈ 32′ / 38′ | ~~101 px~~ 64 px | ~~84 px~~ 64 px | ~~`clamp(84px, 11.4vh, 128px)` → 103 / 88~~ fixed token |
+| **T3+ read** (superseded by §18.1) | next block, coach verb, banners | ≥ 20′ (20′ / 24′) | 40 px | ~~34 px~~ 40 px | ~~`clamp(34px, 4.5vh, 44px)` → 41 / 35~~ fixed token |
+| **T3 read** (superseded by §18.1) | ~~labels, captions,~~ coach reason, deadlines ~~, status-bar values~~ (the others are T4) | ≥ 16′ (16′ / 19′) | 32 px | ~~27 px~~ 32 px | ~~`clamp(27px, 3.7vh, 36px)` → 33 / 28~~ fixed token |
+| T1r range | the recovery band when shown as the hero ("1:40–3:40") | ≥ 55′ | ~~117 px~~ ~~137 px~~ open: 0.62 × 112 px = 69 px is 34′ (#462) | ~~100 px~~ ~~109 px~~ open (#462) | ~~`0.62 × T1`~~ open (#462) |
+| T4 chrome | ~~key hints, axis ticks, band word, road labels~~ labels, captions, units, status-bar values, key hints, axis ticks — never needed mid-effort | — | ~~15–18 px~~ 12–20 px | ~~15–18 px~~ 12–20 px | ~~fixed px~~ fixed tokens |
 
-Achieved at the prototype's sizes (laptop / tablet): ~~T1 94′ / 96′, T1r 58′ / 59′~~ superseded by §16.1: T1 109′ / 105′, T1r 68′ / 65′,
-T2 51′ / 52′, T3+ 20′ / 21′, T3 16.5′ / 16.9′.
-~~The px columns, the prototype rules and the achieved angles~~ superseded by §18.1: the tiers are fixed tokens; the
-angles above stay the definition of each tier.
-The vh rules only hold for the two reference devices. **Production computes px from the monitor's
+~~Achieved at the prototype's sizes (laptop / tablet): T1 94′ / 96′, T1r 58′ / 59′, then T1 109′ / 105′, T1r 68′ / 65′,
+T2 51′ / 52′, T3+ 20′ / 21′, T3 16.5′ / 16.9′.~~ Superseded by §18.1: the tiers are fixed tokens, so the angles in the
+Target column are the achieved ones at the reference devices (laptop / tablet).
+~~The vh rules only hold for the two reference devices. **Production computes px from the monitor's
 physical size, its scale factor and the rider's distance** (Settings → Ride screen, default 1.0 m) and warns
-when the window is too small to meet T2 (#52; under §18's fixed tokens, #462 decides whether this still applies). Numbers: tabular, lining figures.
-**Too-small rule.** The window is too small for T2 when T2 px exceeds **13 %** of its inner height
+when the window is too small to meet T2 (#52).~~ Superseded by §18.1: no vh rules; whether the physical display and
+distance still scale the tokens (#52) is open (#462). Numbers: tabular, lining figures.
+**Too-small rule.** ~~The window is too small for T2 when T2 px exceeds **13 %** of its inner height
 (`T2_MAX_HEIGHT_SHARE`, `app/src/typeTiers.ts`). Calibration: the reference devices in their real maximized
 windows (1440×900 less ≈ 50 px of menu and title bars ≈ 850 px: T2 101 px = 11.9 %; 1024×768 ≈ 715 px: T2 84 px
-= 11.7 %) must not warn, and 1200×700 @ 1.0 m (14.4 %) must. The warning (and the unknown-screen-size notice)
+= 11.7 %) must not warn, and 1200×700 @ 1.0 m (14.4 %) must.~~ Superseded by §18.2: with fixed tokens a height share
+no longer measures anything (64 px is 7.5 % of 850 px and would only reach 13 % below 492 px, under the 768 px
+minimum window). The window is too small when the ride's main row is shorter than the metric column's minimum
+content, **462 px** (§18.2 budget). The main row is the inner height less 236 px (status bar 48, timeline 112, key row
+44, main padding 32). Calibration, same windows as before: 1440×900 ≈ 850 px → main 614 px and 1024×768 ≈ 715 px →
+main 479 px must not warn; 1200×700 ≈ 650 px → main 414 px must. The share constant goes with the ride-screen work
+(#438). The warning (and the unknown-screen-size notice)
 appears in the status bar's reserved slot, never in the page flow (§10 #10); the banner (≤ 36 characters) is T3+ size, the unknown-size notice (≤ 48 characters, "Screen size unknown: text sized to the window.") is T4; both stay on one line at 1024 px, and the slot is one T3+ line tall.
 
 ### 6.3 Colour and contrast
@@ -1218,7 +1224,7 @@ Today #94, ride anatomy #96, #97, editor #111, layout shift #10.
 
 Superseded by §18.3 for the anatomy: the band row becomes the power trace with its target band, the hero and
 side become the trace stack and the metric column. The content rules below (captions, the "next" label, the lane
-rows, no shift) still hold; where they go in A's anatomy is #462.
+rows, no shift) still hold; where they go in A's anatomy is §18.3, and the coach lane's cell is #462.
 
 ```
 ┌ [❚❚ Pause] 13:25 left  ERG you [−] ±0% [+]  ─────── free ───────  (NEO ● │ HR ●) [?] ┐ groups sized to content
@@ -1239,9 +1245,9 @@ rows, no shift) still hold; where they go in A's anatomy is #462.
 
 | Decision | What it is | Why |
 |---|---|---|
-| **Status bar groups sized to content** | Left: Pause · time left · mode chip with − / ±% / + (~~**48 × 48 px** targets at both sizes~~ superseded by §18.4: 32 px, §6.7 — the issue's "≥ 44 px" floor raised to the app-wide rule; the 40 px buttons at 1024 are gone). Right: **one device pill** "NEO ● │ HR ●"; a device expands to its status only on a fault or a reconnect note ("⚠ NEO lost", "↻ NEO back · 0:14 gap"), then `?`. | The old fixed widths summed to 1118 px (932 at 1024) and reserved room for statuses that are almost always "connected". **No layout shift (P4):** every value that changes reserves its widest form — Pause and Resume share one box, the clock reserves `h:mm:ss`, ±% a fixed width, the mode chip its widest word — and the pill is right-aligned, so it grows leftwards into free space and nothing else moves. No group may shrink; the widest pill — the trainer's reconnect note with the widest gap and HR lost ("↻ NEO back · 59:59 gap │ ⚠ HR lost", scene `ride-reconnected-hr-lost`) — fits at 1024 with ≈ 13 px to spare (8 px group gaps at ≤ 1100). |
+| **Status bar groups sized to content** | Left: Pause · time left · mode chip with − / ±% / + (~~**48 × 48 px** targets at both sizes~~ superseded by §18.4: 32 px, §6.7 — ~~the issue's "≥ 44 px" floor raised to the app-wide rule; the 40 px buttons at 1024 are gone~~ no size floor). Right: **one device pill** "NEO ● │ HR ●"; a device expands to its status only on a fault or a reconnect note ("⚠ NEO lost", "↻ NEO back · 0:14 gap"), then `?`. | The old fixed widths summed to 1118 px (932 at 1024) and reserved room for statuses that are almost always "connected". **No layout shift (P4):** every value that changes reserves its widest form — Pause and Resume share one box, the clock reserves `h:mm:ss`, ±% a fixed width, the mode chip its widest word — and the pill is right-aligned, so it grows leftwards into free space and nothing else moves. No group may shrink; the widest pill — the trainer's reconnect note with the widest gap and HR lost ("↻ NEO back · 59:59 gap │ ⚠ HR lost", scene `ride-reconnected-hr-lost`) — fits at 1024 with ≈ 13 px to spare (8 px group gaps at ≤ 1100). |
 | **Hero rows `auto \| 1fr \| band`** | The old row-2 caption moves onto row 1, right-aligned; the old row 5 leaves the hero. Row 1 is a fixed T3 line plus 10 px, so a chip (cadence, cap) never grows it. | Two rows of chrome (≈ 100 px) go to the number the rider reads most. The geometry check (§16.4) found that row 1 grew by 10 px when the cadence chip appeared — a #10 shift in the old anatomy too; the fixed height closes it. |
-| **T1 re-derived** | `clamp(150px, min(24.5vh, 17.2vw), 260px)` → **220 px at 1440×900 (109′), 176 px at 1024×768 (105′)**, was 189 / 161 (94′ / 96′); T1r = 0.62 × T1 → 137 / 109 (68′ / 65′). | The freed rows give row 3 382 px at 1440 and 303 px at 1024, so height no longer bounds T1. At 1024 the hero's width (62 % of the window) bounds the widest T1 strings ("≈ 1:05" with its range, "312 W"), hence the vw term; the two terms meet the accepted 220 / 176. Both stay ≥ 90′ (§6.2); the vh/vw rule still holds only for the reference devices (production computes px from physical size, #52). |
+| **T1 re-derived** | `clamp(150px, min(24.5vh, 17.2vw), 260px)` → **220 px at 1440×900 (109′), 176 px at 1024×768 (105′)**, was 189 / 161 (94′ / 96′); T1r = 0.62 × T1 → 137 / 109 (68′ / 65′). | The freed rows give row 3 382 px at 1440 and 303 px at 1024, so height no longer bounds T1. At 1024 the hero's width (62 % of the window) bounds the widest T1 strings ("≈ 1:05" with its range, "312 W"), hence the vw term; the two terms meet the accepted 220 / 176. ~~Both stay ≥ 90′ (§6.2);~~ superseded by §18.1: T1 is a fixed 112 px (55′ / 67′); the vh/vw rule still holds only for the reference devices (production computes px from physical size, #52). |
 | **Captions fit row 1** | A caption shares its line with the block's identity, so it is ≤ 27 characters: "block's minimum in", "HR < 118 · or block max", "HR lost · block max in", "paused · block max in" (were 28–41). "min" and "max" never stand alone, so they can't be read as minutes. | The long forms clipped at 1024 ("RECOVER rep 1/3" + caption, 603–781 px in 594 px). The caption still names the event (HR crossing vs the block's rule, P7); the times stay on the row-4 sub-line ("block ends in 2:00–4:00", "HR due below 118 before then"). The T3 tier is unchanged. |
 | **"Next" on the road** | A T3+ label in a label lane above the near road, pinned to its block's start: it begins at the start when it fits, else ends there, so it never straddles the ▼ notch that always marks the start. When neither fits it sheds the word "next", then the watts; only if it still can't, it is right-aligned over the start with a 2 px leader under it from its left edge to the notch. On the last block it marks the ride's end: "ride complete → Review". | The forward look is in one place: the label sits on the block it names, at the time it begins. The label lane costs the near road ≈ 30 px (95 / 77 px tall at 1440 / 1024), the price of not overlaying the profile. The "now" tick stays; the time scale moves to the overview line. |
 | **Coach lane = fixed grid row** | The side column is `auto auto 1fr`; the lane is the 1fr row with a 3 px top rule (border colour by state). Inside, five fixed rows: head (T3+) · reason (T3) · actions (button height) · deadline text + bar · grammar. Idle reserves the button and deadline rows; Detail density's T2 metric spans head–actions and its note takes the deadline row. A band word ("CALIBRATING", "AUTO") ends the head line after a 14 px gutter, never under the headline. | An ask, an applied change or the feel prompt fills rows that already exist, so no state moves any geometry (#10). The deadline bar is drawn in every timed state (ask, undo window, feel save). The idle note is ≤ 28 characters ("last call −3 %: not taken"; the call's time is in Review), which the new `ride-cooldown` scene showed was needed. |
@@ -1283,7 +1289,7 @@ Key glyphs, on every key hint (Today, the ride's `?` list and hints, wish mode, 
 
 | Decision | What it is | Why |
 |---|---|---|
-| **Labelled icon rail** | 72 px at every size (the accepted 72–76 px range's lower end): icon over a 12.5 px word, 62 px items, ~~≥ 48 px targets~~ superseded by §18.4: 40 px items with 20 px Lucide icons, never an icon alone. Replaces the 184 px text rail (148 px at ≤ 1100). The page's max width rises from 1240 to 1368 px (= 1440 − rail). | Content width: 1304 px at 1440 (was 1176, +128 — the old max width capped the rail's gain), **912 px at 1024** (was 836). The words stay, so the rail is as findable as before. |
+| **Labelled icon rail** | 72 px at every size (the accepted 72–76 px range's lower end): icon over a 12.5 px word, ~~62 px items, ≥ 48 px targets~~ superseded by §18.4: 40 px items with 20 px Lucide icons, never an icon alone. Replaces the 184 px text rail (148 px at ≤ 1100). The page's max width rises from 1240 to 1368 px (= 1440 − rail). | Content width: 1304 px at 1440 (was 1176, +128 — the old max width capped the rail's gain), **912 px at 1024** (was 836). The words stay, so the rail is as findable as before. |
 | **Workouts library drawer** | Below 1280 px the library is a drawer: **☰ Library** in the editor header opens it over the panes and a dimming scrim; its items are ~~≥ 48 px~~ superseded by §18.4: 32 px. While open it is **modal**: focus moves to its first item, Tab and Shift+Tab wrap inside it, and the editor behind it is inert. A pick, ✕, Esc or a click on the scrim closes it, and focus returns to ☰ Library. Growing the window to ≥ 1280 px closes it too — whichever place is showing when the window crosses 1280 px, so it cannot come back as a modal when the window shrinks or when Workouts is opened again. ≥ 1280 px keeps the 200 px column (not modal). | Outline · Text · Summary stay in one row at 1024 (#111), instead of the summary moving under them; the library is used once per edit session, the panes all the time. |
 
 ### 16.4 Prototype, screens, checks
@@ -1842,9 +1848,10 @@ selection and lane controls in §17.6) follows §18.4 in the same way.
 **What A keeps:** the principles P1–P9 and the jobs (§1), the information architecture and flows (§3, §4), each
 view's content, phase templates, states and copy limits (§5, §15, §17), sensor loss, crashes and the re-entry policy
 (§6.5, §6.6), contrast floors (§6.3), the coach model and decision rules (§7.1, §7.2), sound (§7.3), window sizes
-(§8), and the visual-angle definition of the tiers (§6.2). Where A's ride anatomy has no place yet for the coach
-lane, the state banners, the road's coach marks or the recovery hero, **#462** decides it before the ride-screen work
-(#438 step 3) builds them; until then the §5.2 and §16.1 rules for their content bind.
+(§8), and the visual-angle definition of the tiers (§6.2). State banners and the road's coach marks are placed in
+§18.3. The coach lane's cell, the recovery hero's size and whether #52 still scales the tokens are open for the owner
+(**#462**), to be decided before the ride-screen work (#438 step 3) builds them; until then the §5.2 and §16.1 rules
+for their content bind.
 
 ### 18.1 Visual language
 
@@ -1892,6 +1899,13 @@ A 12-column grid with `--space-4` gutters and `--space-5` page padding; every re
 four rows: status bar 48 px · main `1fr` · block timeline 112 px · key row 44 px. Workouts splits 7 / 5 (list /
 detail). Same anatomy at 1024 and 1440 (§8); no breakpoint reflows the ride screen.
 
+**Height budget.** The main row is the inner height less 236 px: 614 px at 1440×900 and 479 px at 1024×768 (the §6.2
+calibration windows). The metric column's minimum content must fit the smaller one: the T1 row 184 px (label 16, the
+"next" line at T3+ 48, T1 112, padding 8) plus three T2 rows of 88 px (label 16, T2 64, padding 8) plus the power band
+14 px = **462 px**. Padding above the minimum comes from the 1fr rows, so the column breathes at 1440 and is tight at
+1024. At 1024 the 4-column metric column is ≈ 320 px wide, so the T3+ "next" line holds ≈ 14 characters and sheds per
+§16.1 (the word "next", then the watts).
+
 ### 18.3 Ride anatomy
 
 ```text
@@ -1917,7 +1931,13 @@ detail). Same anatomy at 1024 and 1440 (§8); no breakpoint reflows the ride scr
   the band), heart rate (zone, trend) and cadence (state, §5.2). Each readout is a fixed row, so no value moves
   another (P4). The target is in the power row's sub-line, never over the power value (walkthrough finding).
 - **Block timeline:** the workout's blocks by height, the ridden part dimmed, a "now" marker, block names and watts
-  in the number face. It replaces the road-ahead and overview rows of §16.1; coach marks on it are #462.
+  in the number face. It replaces the road-ahead and overview rows of §16.1. **Coach marks** (§7.1) are drawn on it:
+  a dashed outline at the proposed height for a proposed change, a solid one for an applied change, each with its
+  word label. "Next" stays in the metric column, at T3+.
+- **State banners** (§5.2 States, §6.5: trainer lost, ERG released, reconnected, paused, free ride) sit at the **top
+  of the traces column** at T3+ (one bold line and at most two short lines, §6.1), in a band the column always
+  reserves, so a banner appearing or leaving moves nothing (P4). The traces keep the space below it.
+- Coach marks, "next" and banner placement are architect decisions recorded from #462; the owner may override them.
 - **Key row:** the ride controls (§18.4) and one status line (trainer following, settle, compliance; ADR-0002
   §4.4.1, §7.8). `?` opens the bindings list.
 
@@ -1974,15 +1994,25 @@ review. Rules start as warnings where the current UI fails them and move to erro
    binding (§18.4). Check: the layout audit (#457).
 10. **No layout shift.** The ride's region boxes are identical across phase templates and states at each size (the
     §16.4 geometry rule, ported). Check: the layout audit (#457) and the baselines (#459).
-11. **Colour never alone.** Each series and state also carries a word, an icon or ▲ / ▼. Check: the layout audit
-    (#457) asserts a label or glyph beside every series and state marker.
-12. **No tweening.** Live values have no CSS transition or animation; traces step at 1 Hz. Check: the layout audit
-    (#457) reads computed `transition` and `animation` on live values.
+11. **Colour never alone.** Each series and state also carries a word, an icon or ▲ / ▼. Hooks: every trace and
+    readout carries `data-series="power|hr|cad"` and contains a `[data-series-label]` with non-empty text; every state
+    marker (device pill, banner, cadence state, band) carries `data-state` and contains a `[data-state-label]` with
+    non-empty text or one of the glyphs ▲ ▼ ✓ ⚠ ↻; the power Δ (`[data-delta]`) starts with ▲ or ▼ outside the band.
+    Check: the layout audit (#457) on those hooks.
+12. **No tweening.** Live values (`[data-live]`) have no CSS transition or animation. Check: the layout audit (#457)
+    reads computed `transition-duration` and `animation-name` on them.
 13. **Every screen × state has a reviewed baseline.** An unreviewed visual change fails. Check: visual baselines on
     deterministic fixtures (#459).
 14. **Staged files pass** ESLint, stylelint, Prettier and the type check before a commit. Check: prek hooks (#456).
 15. **Rules only tighten.** A rule at error never goes back to warning, and a screen once clean stays clean. Check:
     the ratchet (#460).
+16. **Tiers are exact.** The countdown (`[data-tier="t1"]`) renders at 112 px, each readout value
+    (`[data-tier="t2"]`) at 64 px, and T3+ text (`[data-tier="t3plus"]`: next, banners, coach verb) at 40 px; any size
+    from the scale is not enough. Check: computed `font-size` in the layout audit (#457).
+17. **Traces step once a second.** A trace appends one sample per second of session time and never interpolates
+    between samples. The browser harness can't time this reliably, so a Vitest unit test of the trace component
+    checks it, `app/src/ride/Trace.test.tsx` "advances one sample per second and never interpolates", written with the
+    component in the ride-screen work (#438 step 3) and run by `just test`.
 
 ### 18.8 Licences
 
