@@ -46,6 +46,7 @@ use crate::{
     HrSample, LinkState, MonoTime, ObservationSource, ObservedControl, ProtocolErrorKind,
     RiderConfig, TargetLimit, TrainerCaps, TrainerCommand, TrainerDriver, TrainerEvent,
     TrainerLink, TrainerObservation, TrainerSample, TrainerStatus,
+    phase::{self, ConnectPhase, Via},
 };
 use futures_util::future::BoxFuture;
 use smallvec::SmallVec;
@@ -176,6 +177,58 @@ pub struct SimConfig {
     pub faults: Vec<SimFault>,
     /// Page layout of the trainer samples.
     pub telemetry: SimTelemetry,
+    /// How long a trainer connect takes, phase by phase.
+    pub trainer_latency: SimLatency,
+    /// How long a strap connect takes, phase by phase.
+    pub heart_latency: SimLatency,
+}
+
+/// The connect latency of a simulated device (ADR-0002 §5.1.8): a delay per phase on the
+/// rig's clock, each reported as it is entered ([`crate::phase`]), or a device that never
+/// answers. The default connects at once, as the sim always did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SimLatency {
+    /// Finding the peripheral: a nonzero delay stands for a scan (`via=scan`), zero for an
+    /// adapter lookup.
+    pub resolve: Duration,
+    /// GATT connect and discovery.
+    pub gatt: Duration,
+    /// Trainer only, page 55 to the page-54 reply; a strap has no handshake and ignores it.
+    pub handshake: Duration,
+    /// The device is found, but its GATT connect never answers: the connect never ends.
+    pub never_answers: bool,
+}
+impl SimLatency {
+    /// Wait out each phase of a connect and report it; never returns when the device never
+    /// answers.
+    async fn connect(self, clock: &dyn Clock, handshake: bool) {
+        let wait = |d: Duration| {
+            let at = MonoTime(clock.now().0 + u64::try_from(d.as_micros()).unwrap_or(u64::MAX));
+            (!d.is_zero()).then(|| clock.sleep_until(at))
+        };
+        if let Some(sleep) = wait(self.resolve) {
+            sleep.await;
+        }
+        let via = if self.resolve.is_zero() {
+            Via::Lookup
+        } else {
+            Via::Scan
+        };
+        phase::report(ConnectPhase::Gatt(via));
+        if self.never_answers {
+            std::future::pending::<()>().await;
+        }
+        if let Some(sleep) = wait(self.gatt) {
+            sleep.await;
+        }
+        phase::report(ConnectPhase::Identity);
+        if handshake {
+            phase::report(ConnectPhase::Handshake);
+            if let Some(sleep) = wait(self.handshake) {
+                sleep.await;
+            }
+        }
+    }
 }
 impl Default for SimConfig {
     fn default() -> Self {
@@ -196,6 +249,8 @@ impl Default for SimConfig {
             },
             faults: Vec::new(),
             telemetry: SimTelemetry::default(),
+            trainer_latency: SimLatency::default(),
+            heart_latency: SimLatency::default(),
         }
     }
 }
@@ -822,6 +877,8 @@ impl TrainerDriver for SimTrainer {
     ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
         let rig = self.0.clone();
         Box::pin(async move {
+            let latency = lock(&rig.world).cfg.trainer_latency;
+            latency.connect(rig.clock.as_ref(), true).await;
             let (events, receiver) = mpsc::channel(256);
             let (commands, mut control) = mpsc::channel(64);
             let caps = lock(&rig.world).cfg.caps.clone();
@@ -882,6 +939,8 @@ impl HeartRateDriver for SimHeart {
     fn connect(&self, _dev: &DeviceRef) -> BoxFuture<'static, Result<HeartRateLink, DeviceError>> {
         let rig = self.0.clone();
         Box::pin(async move {
+            let latency = lock(&rig.world).cfg.heart_latency;
+            latency.connect(rig.clock.as_ref(), false).await;
             let (events, receiver) = mpsc::channel(256);
             for s in [LinkState::Connecting, LinkState::Ready] {
                 events

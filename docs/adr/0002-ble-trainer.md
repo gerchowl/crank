@@ -820,15 +820,16 @@ facade command (ADR-0001 §4) with `LinkIntent`:
   workout) or the Ready sheet (DESIGN §5.1, §5.4, §5.7). The UI sends it when one of these appears or gains focus,
   and again on rider input while it is shown, at most once per 30 s. On the Ready sheet, while no ride is loaded
   (the load is in flight or failed), it is `Likely { ready: true }`, which holds without input (§5.1.3).
-
-**While a ride is loaded or active the keeper is inactive.** It ignores every `Likely`, whatever any window shows,
-and warms up no device. The session owns its links (§5.1.4). A strap that missed the load stays out of that ride
-(#450).
 - `Left`: the window now shows another view (History, Review, Settings other than Devices, Onboarding). This starts
   the idle timer (§5.1.3).
 - `Background`: crank is no longer the frontmost app while its window stays visible. This starts a 60 s grace
   timer (§5.1.3); a `Likely` within it cancels it.
 - `Release(reason)`: cool down now (§5.1.3). The reasons are `Hidden`, `Sleep`, `Devices` and `RiderRelease`.
+
+**While a ride is loaded or active the keeper is inactive.** It ignores every `Likely`, whatever any window shows,
+and warms up no device. The session owns its links (§5.1.4). A strap that missed the load stays out of that ride
+(#450). The core still counts the throttled `Likely` refresh of the Ready sheet as rider input for `T_abandon`
+(§5.1.3): only the keeper ignores it.
 
 On `Likely` the keeper starts an attempt for every paired device that is `cold` or `not_found`, **trainer and strap in
 parallel** (two tasks, never one after the other). Each attempt is one `connect` of the existing driver, bounded by
@@ -1042,8 +1043,8 @@ Every phase change is logged at INFO under the target `crank_core::links`, so a 
 
 - `resolve`, with `via=lookup|scan` (it measures the handle-reuse assumption of §5.1.2);
 - `gatt` (connect and discovery);
-- `identity` (subscribe, DIS read, verify);
-- `handshake` (page 55 to the page-54 reply);
+- `identity` (subscribe and DIS read; for the strap also the identity check, `Pairing::verify`);
+- `handshake` (trainer only: page 55 to the page-54 reply, then the trainer's identity check, which runs after it);
 - `ready_total`.
 
 Beside the phase lines:
@@ -1125,7 +1126,8 @@ cold warm-up per phase. No timing is derived from the UI.
 
 **Consequences.** A warm "Ride this" does no Bluetooth work. A cold one costs one `CONNECT_TIMEOUT` at worst, not
 two. Before a ride, crank holds the NEO only in these cases: while it is frontmost on a ride-likely view, within 5 min of
-one, for up to 60 s after going to the background, or with a loaded, unstarted ride for up to 10 min. The core gains a
+one, for up to 60 s after going to the background, or with a loaded, unstarted ride until `T_abandon` (10 min
+without Start or rider input) discards it. The core gains a
 second owner of links before a ride, with a one-way handover. The UI must report intent faithfully: an intent it
 fails to send costs latency (no warm-up) or the slot (no release), never safety, because nothing is written while
 warm.
@@ -1135,10 +1137,11 @@ warm.
 - The first warm-up after launch scans (#206-3), and later ones may too: handle reuse is an assumption (§5.1.2).
 - Another app waits up to 60 s for the NEO after crank goes to the background, unless the rider uses "Release
   trainer" or hides crank.
-- A loaded but unstarted ride holds the NEO for up to 10 min, whatever the focus, including while crank is hidden or
-  in the background. It is released on Cancel, on `T_abandon`, on sleep or on quit.
+- A loaded but unstarted ride holds the NEO whatever the focus, including while crank is hidden or in the
+  background, until 10 min pass without Start or rider input (`T_abandon`): active use of the Ready sheet holds it for
+  as long as that use continues. It is released on Cancel, on `T_abandon`, on sleep or on quit.
 - A Ready sheet over a failed load holds the keeper's links without input, until crank is hidden, goes to the
-  background, the Mac sleeps, or the rider leaves.
+  background or the Mac sleeps. Leaving the sheet does not release them at once: it starts `T_cool` (§5.1.3).
 - A device that returns is seen within about 34 s under the scan cap, or at once with Retry.
 - Until #314, "held by another app" cannot be told from "off".
 - A strap missing at load stays missing for that ride (#450).

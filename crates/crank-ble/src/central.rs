@@ -21,6 +21,7 @@ use btleplug::{
 use crank_devices::{
     Clock, DeviceError, DeviceInfo, DeviceRef, DiscoveredDevice, DriverKind, HeartRateDriver,
     HeartRateLink, RiderConfig, TrainerCommand, TrainerDriver, TrainerLink,
+    phase::{self, ConnectPhase, Via},
 };
 use futures_util::{FutureExt, Stream, StreamExt, future::BoxFuture, stream::BoxStream};
 use std::{
@@ -71,7 +72,7 @@ async fn resolve<S: Source>(
 ) -> Result<S::Peripheral, DeviceError> {
     match source.find(dev.clone()).await {
         Err(DeviceError::NotFound) => {}
-        other => return other,
+        other => return other.inspect(|_| phase::report(ConnectPhase::Gatt(Via::Lookup))),
     }
     let mut ads = source.advertisements();
     let seen = tokio::time::timeout(scan_for, async {
@@ -100,7 +101,10 @@ async fn resolve<S: Source>(
     // start waits for that stop).
     drop(ads);
     match seen {
-        Ok(Some(device)) => source.find(device).await,
+        Ok(Some(device)) => source
+            .find(device)
+            .await
+            .inspect(|_| phase::report(ConnectPhase::Gatt(Via::Scan))),
         _ => Err(DeviceError::NotFound),
     }
 }
@@ -623,13 +627,29 @@ mod tests {
         }
     }
 
+    /// `resolve` of `id` on `fake`, with the phases it reported (ADR-0002 §5.1.6).
+    async fn resolve_reporting(
+        fake: &Fake,
+        id: &str,
+    ) -> (Result<String, DeviceError>, Vec<ConnectPhase>) {
+        let reports = Arc::new(Mutex::new(Vec::new()));
+        let sink = reports.clone();
+        let got = phase::observe(
+            Arc::new(move |p| sink.lock().unwrap().push(p)),
+            resolve(fake, &DeviceRef(id.into()), None, SCAN),
+        )
+        .await;
+        let reports = reports.lock().unwrap().clone();
+        (got, reports)
+    }
     #[tokio::test(start_paused = true)]
     async fn a_listed_peripheral_connects_without_scanning() {
         let fake = Fake::default();
         fake.listed.lock().unwrap().push("neo".into());
-        let got = resolve(&fake, &DeviceRef("neo".into()), None, SCAN).await;
+        let (got, reports) = resolve_reporting(&fake, "neo").await;
         assert_eq!(got.unwrap(), "neo");
         assert_eq!(fake.scans.load(Ordering::SeqCst), 0);
+        assert_eq!(reports, [ConnectPhase::Gatt(Via::Lookup)]);
     }
     #[tokio::test(start_paused = true)]
     async fn after_a_drop_the_stored_id_is_found_by_a_bounded_scan() {
@@ -638,9 +658,14 @@ mod tests {
             script: vec![("other", Some("Wahoo"), false), ("neo", Some("NEO"), false)],
             ..Fake::default()
         };
-        let got = resolve(&fake, &DeviceRef("neo".into()), None, SCAN).await;
+        let (got, reports) = resolve_reporting(&fake, "neo").await;
         assert_eq!(got.unwrap(), "neo");
         assert_eq!(fake.scans.load(Ordering::SeqCst), 1);
+        assert_eq!(reports, [ConnectPhase::Gatt(Via::Scan)]);
+        // A device that is never found reports no phase: it is still resolving.
+        let (got, reports) = resolve_reporting(&Fake::default(), "neo").await;
+        assert_eq!(got.unwrap_err(), DeviceError::NotFound);
+        assert!(reports.is_empty());
     }
     #[tokio::test(start_paused = true)]
     async fn a_reassigned_id_is_matched_by_the_remembered_name() {
