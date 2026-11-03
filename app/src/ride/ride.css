@@ -191,3 +191,9 @@
   min-height: var(--control-h-l);
   font-size: var(--t3);
 }
+
+/* A key hint in the ride's large text stays at the T4 size, not the 12 px of the shell's kbd. */
+.ride-bar kbd,
+.confirm kbd {
+  font-size: var(--t4);
+}
