@@ -104,21 +104,62 @@ is skipped, never guessed at, which is squelch's own rule.
   reads only `app_log_dir/logs*.jsonl`. It does not read `traces.jsonl`, the capture directory or
   `data_dir`.
 - **Pre-scrub** (`crank-desktop::report::scrub`). It runs on every string value **before** squelch, because
-  squelch cannot take custom rules (#433):
+  squelch cannot take custom rules (#433). The order is normalisation, then the structural rules (hex identifiers,
+  serial values after a label), then the known-device table, so a device name or serial can never cut an address
+  or id apart before its rule sees it (#482 review, round 2). The rules are structural by design: three review
+  rounds each found a new spelling while the rules enumerated spellings, so they describe shapes instead
+  (#482 review, round 3):
+  - **Normalisation first.** Each value loses its zero-width, bidi and soft-hyphen characters, is NFKC-normalised (a
+    no-break space becomes a space, full-width letters ASCII) and has every whitespace run folded to one space,
+    before any rule below. squelch normalises later, so a name split by `U+00A0` or `U+200B` would otherwise pass
+    crank's table and be joined again by squelch (#482 review).
   - **Serials.** The FE-C page 81 serial and the DIS Serial Number String (`0x2A25`) are replaced by `<serial>`.
-    In a field, the rule is by name: `serial`, `serial_number`, `sn`. In free text, it applies after the
-    words `serial`, `S/N` or `SN`.
-  - **BLE addresses** `XX:XX:XX:XX:XX:XX` (either separator, either case) are replaced by `<ble-addr>`.
-  - **Platform ids.** Hyphenated UUIDs, which is what CoreBluetooth gives as `PeripheralId` and what `platform_id`
-    stores, are replaced by `<ble-id>`. The GATT service and characteristic UUIDs crank uses (FE-C, DIS, Cycling Power) are on a keep-list, because
-    they identify a protocol, not a device.
-  - **Known devices, in every kept field.** `report_preview` asks the core for every remembered and
-    currently connected device, and builds a replacement table from each one's name and local name,
+    In a field, the rule is by name: `serial`, `serial_number`, `sn`. In free text, after the words `serial`
+    (`serial_number`), `S/N` or `SN`, any label words (`number`, `no.`, `string`, `is`, `of`, `read`) and any
+    punctuation (`:`, `—`, `→`, `;`, quotes, brackets, Rust's `Some(`, or none as in `serial7788991`), the
+    **value** is replaced and the label kept (`serial no. <serial>`). The value is a token **with a digit**, so
+    `serial port opened` and `the serial is not available` stay as they are.
+  - **Hex identifiers.** A run of hex digits joined by single optional separators (`:`, `-`, `_`, `.`, a space,
+    mixed allowed), bounded only by what is neither, is an identifier when it has at least 12 hex digits and
+    either an `a`–`f` letter or the layout of an address (six pairs) or a UUID (8-4-4-4-12). It becomes
+    `<ble-addr>` with exactly 12 hex digits, else `<ble-id>`, or the device's placeholder when it is a known
+    platform id (`<trainer-id>`). This covers colon, dash, underscore and bluez `dev_…` addresses, Cisco and
+    bare forms, dashless UUIDs and a hex dump of raw bytes, by construction. A first or last group glued to a
+    letter (the `ce` of `device-C4-…`) is left out when the rest still qualifies.
+    - **Decimal runs** (only the digits 0–9) count only with the address or UUID layout: a run like
+      `2026-11-03 21:13:30.619` or a 12-digit counter is a date, a time or a count, never an identifier.
+      Adjacent identifiers joined by a space merge into one `<ble-id>`, and a sentence of pure-hex words
+      (`a dead beef cafe`) with 12 or more hex digits would be masked; both only over-redact.
+    - The GATT service and characteristic UUIDs crank uses (FE-C, FTMS, Cycling Power, Heart Rate, DIS) are on
+      a keep-list, because they identify a protocol, not a device.
+  - **Known devices, in every kept field.** `report_preview` asks the core (`Core::known_devices`) for every
+    remembered pairing and every **kept sighting**, and builds a replacement table from each one's name,
     serial and platform id:
-    - The placeholder is named after the device's role: `<trainer>`, `<strap>`, `<sensor>`, with `-serial` and
-      `-id` variants such as `<trainer-id>`.
-    - The table is applied, longest needle first and ignoring case, to **every** string that survives into
-      a record: `message`, `error` and every allowlisted field.
+    - A sighting is recorded when a scan reports a trainer or strap (paired or not), when a pairing is
+      attempted (before its connect, so a failed pairing counts) and when a connect answers (with the name and
+      serial it reports). Sightings are persisted (`crank-store` `seen_device`, migration 0004), because
+      rotated logs of an earlier run can name a device that run forgot. The store keeps the newest 64; a
+      forgotten pairing therefore stays in `seen_device` until 64 newer sightings displace it. It is local
+      data, used only to scrub.
+    - Needles are matched with Aho–Corasick (linear in the text, whatever the number of devices; no regex size
+      limit) on the text's **skeleton**: lower-cased, letters and digits only, each placeholder a stop no needle
+      crosses. Separators and case therefore never need a spelling of their own: `Tacx_Neo_55624`,
+      `Tacx+Neo+55624`, `TacxNeo` (a zero-width space removed), a dashless or Cisco id, `2655 624` and
+      `[88, 85, 28, 00]` are the same needle. Listed spellings: the name and its URL encoding (`%20`, `%3A`);
+      the platform id; the serial, and for a decimal one its hex (`0x`, also zero-padded, or bare) and its
+      little- and big-endian bytes as hex (the big-endian ones are also the zero-padded bare hex), as `0x`
+      bytes and as decimal bytes (`88 85 28 00`, `0x00 0x28 0x85 0x88`, `[136, 133, 40, 0]`).
+    - A match must be a **whole token or token sequence** (between non-alphanumerics), never inside a word and
+      never inside a placeholder; the longest of overlapping matches wins.
+    - Needles under **4** letters and digits are not matched in free text, nor decimal ones under **5** digits:
+      a name `N` or `Pro`, a serial `1`, `12` or `2026` is a common word, number or year, and replacing it
+      everywhere would hide the log, not the device. A short serial stays covered where it is labelled, and
+      addresses and ids by the hex rule. A needle with no letter or digit (`🚴🚴`) is never matched.
+    - The placeholder is named after the device's role: `<trainer>`, `<strap>`, with `-serial` and `-id`
+      variants such as `<trainer-id>`. crank has no third role, so there is no `<sensor>`.
+    - The table is applied to **every** string that survives into a record: `message`, `error` and every
+      allowlisted field. Only the last 200 records are scrubbed: the tail is selected before the scrub, never
+      the whole 8 MiB segment.
     - This closes the free-text leak: AGENTS.md notes that error text carries device names, a name such
       as `Tacx Neo 55624` embeds the serial, and §5 keeps bare digit runs. Spike 3 shows
       `connect to Tacx Neo 55624 (<uuid>) failed` arriving as `connect to <trainer> (<trainer-id>) failed`.
@@ -130,13 +171,15 @@ is skipped, never guessed at, which is squelch's own rule.
   survey of the `tracing` calls in `crates/` and `app/src-tauri/`, 2026-11-02). `dir` and `path` still go through squelch's home-path rule. `raw`
   (unknown FE-C page bytes) is **not** allowlisted. A new log field is absent from reports until it is
   added here deliberately.
-- **Pinning test** (`crank-desktop/tests/report_privacy.rs`). It uses a fixture `logs.jsonl`, built from a real
-  `CRANK_CAPTURE_DIR` session log and then hand-salted with a NEO serial, a DIS serial, a BLE address, a
-  CoreBluetooth UUID, a home path and `host.name`. It also contains an `error` message with the
-  paired trainer's name with its serial (`Tacx Neo 55624`) and its BLE id, and a strap's name. The
-  test's known-device table holds those devices. It asserts that none of these appear in
-  `report.preview()`, and that the strings a triager needs survive: `crank_ble`, `trainer reconnect failed`,
-  `page=25`, and a GATT UUID from the keep-list.
+- **Pinning test** (`crank-desktop/tests/report_privacy.rs`). It uses a fixture `logs.jsonl`: vigil output of
+  crank's own logging pipeline in a capture directory (no hardware session log is committed), then
+  hand-salted with a NEO serial, a DIS serial, BLE addresses, CoreBluetooth UUIDs, a home path, `host.name`,
+  every spelling the pre-scrub lists, unknown device names and serials in the name and serial fields, and a
+  partial last line. It also contains an `error` message with the paired trainer's name with its serial
+  (`Tacx Neo 55624`) and its BLE id, and a strap's name. The test's known-device table holds those devices.
+  It asserts that none of these appear in `report.preview()`, with crank's allowlist and again with every
+  fixture field allowlisted, so removing any one pre-scrub rule fails it; and that the strings a triager
+  needs survive: `crank_ble`, `trainer reconnect failed`, `page=25`, and a GATT UUID from the keep-list.
 
 ### 2.4 The UI surface
 

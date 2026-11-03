@@ -12,8 +12,8 @@
 //! loaded ride's engine and to a window label; they end with the ride.
 use crate::backend::{Backend, DeviceMode};
 use crate::dto::{
-    CoreInfo, DeviceLinkInfo, DeviceRole, PairedDevice, RideLoaded, RideOutcome, RideRecord,
-    RideStatusView, RideSummary, ScannedDevice, WorkoutDetail, WorkoutSummary,
+    CoreInfo, DeviceLinkInfo, DeviceRole, KnownDevice, PairedDevice, RideLoaded, RideOutcome,
+    RideRecord, RideStatusView, RideSummary, ScannedDevice, WorkoutDetail, WorkoutSummary,
 };
 use crate::error::{ApiError, ErrorCode};
 use crate::library::Library;
@@ -29,7 +29,7 @@ use crank_engine::{
     CommandError, Engine, EngineCmd, EngineHandle, MetricId, MonotonicClock, RideSetup, RideState,
     StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts,
 };
-use crank_store::{Device, RideListing, Store};
+use crank_store::{Device, RideListing, SeenDevice, Store};
 use futures_util::StreamExt;
 use std::{
     collections::BTreeMap,
@@ -812,6 +812,23 @@ impl Drop for LoadGuard {
     }
 }
 impl Inner {
+    /// Record that `role` saw `platform_id` (with what it said its name and serial were), for
+    /// [`Core::known_devices`]. Kept in the store, so a later run can still replace it in its logs.
+    fn note_seen(
+        &self,
+        role: DeviceRole,
+        platform_id: &str,
+        name: Option<String>,
+        serial: Option<String>,
+    ) -> Result<(), ApiError> {
+        Ok(self.store.note_seen_devices(vec![SeenDevice {
+            kind: role.kind().into(),
+            platform_id: platform_id.to_owned(),
+            name,
+            serial,
+            last_seen: unix_now(),
+        }])?)
+    }
     /// A `ride_load` is over: clear the flag and wake a quit waiting for it.
     fn finish_loading(&self) {
         self.loading.store(false, Ordering::SeqCst);
@@ -1121,7 +1138,7 @@ impl Core {
     ///
     /// # Errors
     /// `Conflict` while a ride is loaded (one central), `PermissionDenied` or
-    /// `DeviceUnavailable` from the adapter.
+    /// `DeviceUnavailable` from the adapter, `Storage`.
     pub async fn devices_scan(&self, for_ms: Option<u32>) -> Result<Vec<ScannedDevice>, ApiError> {
         self.require_no_ride().await?;
         let limit = for_ms.map_or(SCAN_FOR, |ms| {
@@ -1157,6 +1174,24 @@ impl Core {
             }
         })
         .await;
+        // Every sighting, paired or not, so the bug report can replace it (ADR-0003 §2.3).
+        let now = unix_now();
+        let sightings = found.iter().flat_map(|f| {
+            [
+                (f.trainer, DeviceRole::Trainer),
+                (f.heart_rate, DeviceRole::HeartRate),
+            ]
+            .into_iter()
+            .filter(|(offered, _)| *offered)
+            .map(|(_, role)| SeenDevice {
+                kind: role.kind().into(),
+                platform_id: f.id.clone(),
+                name: f.name.clone(),
+                serial: None,
+                last_seen: now,
+            })
+        });
+        self.0.store.note_seen_devices(sightings.collect())?;
         Ok(found)
     }
 
@@ -1182,6 +1217,8 @@ impl Core {
                 format!("device {id:?} cannot be paired as {role:?}"),
             ));
         }
+        // Before the connect, so a pairing that fails is still replaced in the report.
+        self.0.note_seen(role, &id, None, None)?;
         let dev = DeviceRef(id.clone());
         let connect = async {
             match role {
@@ -1209,6 +1246,8 @@ impl Core {
         let (info, events) = tokio::time::timeout(CONNECT_TIMEOUT, connect)
             .await
             .map_err(|_| ApiError::new(ErrorCode::DeviceUnavailable, "connect timed out"))??;
+        self.0
+            .note_seen(role, &id, info.name.clone(), info.serial.clone())?;
         if let Some(mut events) = events {
             // The trainer driver closes its stream once the peripheral is handed back:
             // wait for that before anyone connects again.
@@ -1296,6 +1335,50 @@ impl Core {
             .collect())
     }
 
+    /// Every device whose identity the bug report must replace (ADR-0003 §2.3): each remembered
+    /// pairing, then each kept sighting (`crank_store::SeenDevice`, the newest
+    /// `crank_store::SEEN_DEVICES_KEPT`): scanned, attempted (even when the pairing failed) or
+    /// connected, in this run or an earlier one, forgotten or not.
+    ///
+    /// # Errors
+    /// `Storage`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn known_devices(&self) -> Result<Vec<KnownDevice>, ApiError> {
+        let mut known: Vec<KnownDevice> = self
+            .0
+            .store
+            .devices()?
+            .into_iter()
+            .filter_map(paired)
+            .map(|d| KnownDevice {
+                role: d.role,
+                platform_id: d.id,
+                name: d.name,
+                serial: d.serial,
+            })
+            .collect();
+        for seen in self.0.store.seen_devices()? {
+            let role = match seen.kind.as_str() {
+                "trainer" => DeviceRole::Trainer,
+                "hr" => DeviceRole::HeartRate,
+                _ => continue,
+            };
+            let seen = KnownDevice {
+                role,
+                platform_id: seen.platform_id,
+                name: seen.name,
+                serial: seen.serial,
+            };
+            if !known.contains(&seen) {
+                known.push(seen);
+            }
+        }
+        Ok(known)
+    }
+
     /// The workout library.
     ///
     /// # Errors
@@ -1372,7 +1455,7 @@ impl Core {
                     .instrument(span.clone())
                     .await
                 {
-                    Some(Ok(l)) => Some((l, strap.id.clone(), span)),
+                    Some(Ok(l)) => Some((l, strap, span)),
                     Some(Err(e)) => {
                         tracing::warn!(%e, "strap unavailable: riding without heart rate");
                         None
@@ -1386,10 +1469,22 @@ impl Core {
         };
         let (link, strap) = tokio::try_join!(trainer_link, strap_link)?;
         spans.devices.push(trainer_span);
+        self.0.note_seen(
+            DeviceRole::Trainer,
+            &trainer.platform_id,
+            link.info.name.clone(),
+            link.info.serial.clone(),
+        )?;
         let (hr, hr_id) = match strap {
-            Some((l, id, span)) => {
+            Some((l, strap, span)) => {
                 spans.devices.push(span);
-                (Some(l), Some(id))
+                self.0.note_seen(
+                    DeviceRole::HeartRate,
+                    &strap.platform_id,
+                    l.info.name.clone(),
+                    l.info.serial.clone(),
+                )?;
+                (Some(l), Some(strap.id.clone()))
             }
             None => (None, None),
         };
@@ -2784,6 +2879,54 @@ mod tests {
         assert_eq!(links[0].device.as_ref().unwrap().id, "neo-b");
         core.device_forget(DeviceRole::Trainer).await.unwrap();
         assert_eq!(*radio.forgotten.lock().unwrap(), ["neo-a", "neo-b"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn known_devices_keep_scanned_failed_and_forgotten_devices_across_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![found("kickr", Some("KICKR 1A2B"), true, false)], false);
+        let neo = {
+            let core = open(dir.path(), &radio);
+            core.devices_scan(Some(200)).await.unwrap();
+            radio.fail_connect.store(true, Ordering::SeqCst);
+            core.device_pair("wahoo".into(), DeviceRole::Trainer)
+                .await
+                .unwrap_err();
+            radio.fail_connect.store(false, Ordering::SeqCst);
+            let neo = core
+                .device_pair("neo".into(), DeviceRole::Trainer)
+                .await
+                .unwrap();
+            core.device_forget(DeviceRole::Trainer).await.unwrap();
+            neo
+        };
+        let core = open(dir.path(), &radio);
+        let known = core.known_devices().await.unwrap();
+        let has = |role, id: &str, name: Option<&str>, serial: Option<&str>| {
+            known.contains(&KnownDevice {
+                role,
+                platform_id: id.into(),
+                name: name.map(Into::into),
+                serial: serial.map(Into::into),
+            })
+        };
+        assert!(
+            has(DeviceRole::Trainer, "kickr", Some("KICKR 1A2B"), None),
+            "scanned: {known:?}"
+        );
+        assert!(
+            has(DeviceRole::Trainer, "wahoo", None, None),
+            "failed pairing: {known:?}"
+        );
+        assert!(
+            has(
+                DeviceRole::Trainer,
+                "neo",
+                neo.name.as_deref(),
+                neo.serial.as_deref()
+            ),
+            "forgotten in an earlier run: {known:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
