@@ -1,8 +1,8 @@
 # ADR-0002: Bluetooth stack and Trainer abstraction (FE-C first)
 
-- **Status:** Proposed, Amended (#54, #250, #264, #266)
+- **Status:** Proposed, Amended (#54, #250, #264, #266, #435)
 - **Date:** 2026-10-13
-- **Issue:** #27 (decides the design questions of #23); amendment #54 (trainer-following state machine, §4.4.1)
+- **Issue:** #27 (decides the design questions of #23); amendment #54 (trainer-following state machine, §4.4.1); amendment #435 (connection lifecycle, §5.1)
 - **Related:** ADR-0001 (crate layout, clock, testing), `spec/TRAINER-BLE.md`
 
 ## 1. Context
@@ -772,11 +772,378 @@ for those issues.
   was identical across separate processes. No BLE bonding: connect, subscribe and control writes worked
   with no pairing prompt (confirmed on the NEO; HR strap still to confirm).
 - **Single central:** while crank is connected, no other app can control the NEO, and while another app
-  (Zwift, Tacx app, a second crank process) is connected, crank cannot. crank therefore connects when the
-  rider enters pre-ride or ride, stays connected while the app is open, and offers "Release trainer" in
-  the devices view. If a remembered trainer is not seen during a scan, the UI says so with the likely
+  (Zwift, Tacx app, a second crank process) is connected, crank cannot. When crank connects, holds and
+  releases the devices is §5.1 (amendment, #435); the devices view offers "Release trainer". If a remembered trainer is not seen during a scan, the UI says so with the likely
   causes (another app connected, trainer asleep or unpowered) while the scan continues. Within crank,
   the ride lock (ADR-0001 §2) prevents two crank processes from competing.
+
+### 5.1 Connection lifecycle and speculative connect (amendment, #435, 2026-11-02)
+
+**Context.** `ride_load` connects the paired devices before it builds the engine (`core.rs` `Core::connect_links`). It
+connects the trainer, then the strap, one after the other, each bounded by `CONNECT_TIMEOUT` (15 s). Each connect
+resolves its peripheral first (`central.rs` `resolve`): a lookup of the adapter's list, then a scan of up to
+`RESOLVE_SCAN` (4 s) when the adapter does not list it, which after launch it never does (#206-3: btleplug resolves only
+peripherals this process has already seen). Then GATT connect, discovery, subscribe, the DIS read, page 55, a fixed
+250 ms wait and the page-54 reply, awaited for up to 2 s (`driver.rs` `FecTrainer`). From code reading, not yet
+measured: about 4–8 s typical and about 30 s worst case, while the UI shows "Loading ride…". The owner's direction on
+#435 is speculative connect: connect while a ride is likely, as a photo uploads while the caption is still being
+written, and let go when it is not. The constraints are those of §5: one central at a time on the NEO (other apps, HIL
+check 10's second central), and the strap's coin cell. This section replaces the "connects when the rider enters
+pre-ride or ride, stays connected while the app is open" of "Single central" above.
+
+#### 5.1.1 States and who owns a link
+
+Each paired device (trainer, strap) has one **link phase**, owned by a new core component, the **link keeper**
+(`crank-core`, beside the session; one per `Core`):
+
+| Phase | Meaning |
+|---|---|
+| `cold` | not connected, no attempt running |
+| `searching` | resolving the peripheral (adapter lookup, then the shared scan) |
+| `connecting` | GATT connect, discovery, subscribe, DIS read and identity check (`Pairing::verify`) |
+| `handshake` | trainer only: page 55 written, page-54 reply awaited |
+| `warm` | `Link(Ready)` reached; the keeper holds the link and drains its events |
+| `not_found` | the last attempt failed (not seen in the scan, connect failed, identity mismatch, timeout); kept until the next attempt |
+| `riding` | the link was handed to a ride's session (§5.1.4); the keeper no longer owns it |
+
+Ownership is one way: **keeper → session**, at `ride_load`. A session never hands a link back. The ride's end
+releases its links exactly as today (end mode, release, disconnect: §7.9, `LinkRelease`), and the phase becomes
+`cold`. If a warm view is shown again, the keeper warms up again from `cold`. All of §6 and §7 stays attached to the
+session and is not touched: reconnect backoff, `RideGate`, end mode, forced end, command gate.
+
+#### 5.1.2 Warm-up: when and how
+
+**Intent.** The UI reports the rider's intent; the core owns every timer and decision. `links_intent(intent)` is a
+facade command (ADR-0001 §4) with `LinkIntent`:
+
+- `Likely`: the window is visible and focused, and it shows a **warm view**: Today, Workouts (list or a selected
+  workout) or the Ready sheet (DESIGN §5.1, §5.4, §5.7). The UI sends it when one of these appears or gains focus,
+  and again on rider input while it is shown, at most once per 30 s. On the Ready sheet, while no ride is loaded
+  (the load is in flight or failed), it is `Likely { ready: true }`, which holds without input (§5.1.3).
+
+**While a ride is loaded or active the keeper is inactive.** It ignores every `Likely`, whatever any window shows,
+and warms up no device. The session owns its links (§5.1.4). A strap that missed the load stays out of that ride
+(#450).
+- `Left`: the window now shows another view (History, Review, Settings other than Devices, Onboarding). This starts
+  the idle timer (§5.1.3).
+- `Background`: crank is no longer the frontmost app while its window stays visible. This starts a 60 s grace
+  timer (§5.1.3); a `Likely` within it cancels it.
+- `Release(reason)`: cool down now (§5.1.3). The reasons are `Hidden`, `Sleep`, `Devices` and `RiderRelease`.
+
+On `Likely` the keeper starts an attempt for every paired device that is `cold` or `not_found`, **trainer and strap in
+parallel** (two tasks, never one after the other). Each attempt is one `connect` of the existing driver, bounded by
+`CONNECT_TIMEOUT`. A device with no pairing has no phase and gets no attempt.
+
+**Handle reuse (an assumption, to be measured).** Both attempts resolve through `resolve`, which looks the
+peripheral up in the adapter's list before it scans. #206-3 showed only that an id resolves after a scan **in the same
+process**. It did not test the lookup after the device was disconnected, or after the scan that saw it stopped, and
+`resolve`'s own documentation (`central.rs` `resolve`) says the adapter lists a peripheral "only while it is
+connected or was seen by a running scan". So the lookup may well fail after a cool-down or once a Devices scan has
+ended, and the attempt then scans. The design assumes nothing beyond that: a failed lookup costs one scan of latency
+(about 0.3 s typical for the NEO, at most `RESOLVE_SCAN`), never safety, because identity is checked after connecting
+either way (`Pairing::verify`). The `via=lookup|scan` field of §5.1.6 measures how often the lookup works, and
+sub-issue 1 (§5.1.7) verifies it on hardware. The NEO advertises about 3.5 times per second (Part A, #206-1: 104–108 advertisements in 30 s), so that scan
+normally ends well inside `RESOLVE_SCAN`. The two attempts share one adapter scan (`central.rs` `RESOLVE_SCAN` notes
+that the scan is shared). No platform id is "connected without a scan" from a previous process: #206-3 showed that
+btleplug cannot do that, and it is not attempted.
+
+**Retries while likely.** A `not_found` device is retried while intent is `Likely`. The trigger is the device's next
+advertisement in the shared scan, not a connect timer, so no connect loops against an absent device. The scan runs
+only while a paired device is `not_found` and intent is `Likely`, and it is **capped**:
+
+- it scans continuously for the first `SCAN_CONTINUOUS` = 30 s after a device becomes `not_found`;
+- then it scans in windows of `RESOLVE_SCAN` (4 s) every `SCAN_PERIOD` = 30 s, a duty cycle of about 13 %;
+- it stops when intent is no longer `Likely`, when every paired device is `warm`, or at cool-down.
+
+**Cost of the cap.** An unbounded scan is a real cost while a NEO is held by another app and a warm view stays open.
+Active scanning keeps the Mac's Bluetooth radio receiving, and every scan response is a request from crank. On a
+MacBook, the radio is shared with Wi-Fi in the 2.4 GHz band and with the other app's connection to the NEO. Its
+power draw is small next to the display, but it is not zero, and it is spent for hours on a device that cannot come.
+The cap keeps detection prompt where it matters: a strap put on, or a NEO the other app just let go of, is seen within
+30 s plus one window, at most about 34 s. A rider who knows the device is back presses Retry, which scans
+continuously again. These values are starting values, measured in Part B (§5.1.6).
+
+A strap that sleeps without skin contact therefore warms up when
+the rider puts it on. A trainer held by another app does not advertise, so it stays `not_found` (§5.1.5).
+
+**What warm-up runs: the full connect, up to `Link(Ready)`.** This includes the DIS identity check, page 55 and the
+page-54 capabilities. It is not a GATT connection alone. Pages 80/81 are not requested, today or here: identity is
+the DIS serial and model (§5). The reasons:
+
+- **Latency.** GATT alone would leave subscribe, page 55, the fixed 250 ms and up to 2 s of page 54 on the ride-start
+  path, which rules out a start under 1 s.
+- **Honesty.** A `warm` chip that says "Trainer: ready" must mean that this is the paired unit (serial checked) and
+  that it answers FE-C (page 54 replied). A GATT connection to a same-named unit, or to a trainer that does not answer,
+  is not ready.
+- **Cost.** Once the GATT connection exists, holding the handshake's result costs nothing more. The NEO's single slot
+  is taken either way, and a subscribed but silent link has no writes (§5.1.3). The strap's HR notifications (about
+  1 Hz) feed the Ready sheet's HR row (DESIGN §5.4), which is wanted.
+
+The rider configuration goes out as page 55 at connect, and `SetRider` on a live link is a protocol fault (§4.4). So
+a change to rider or bike mass, or to wheel size, while the trainer is `warm` makes the keeper reconnect it: release
+it, then warm it up again.
+
+#### 5.1.3 Connected is not controlling; cool-down
+
+**Nothing is written while warm.** After `Link(Ready)` the keeper sends no `TrainerCommand` and the driver writes
+nothing:
+
+- no control page (48–51);
+- no page-70 request (polls run only while a controlled mode is active, §4.4);
+- no page-55 re-send, and no keep-alive (there is no current control page to keep alive).
+
+The connect handshake's page 55 and page-70 request for page 54 are the only writes of a warm period. They are
+configuration and a request, not control. In particular, **page 48 at 0 % is not written**. Writing it would make
+`warm` a controlled state with an owner of control, a keep-alive and an active trainer-following machine, which is
+exactly what "connected ≠ controlling" excludes. It would also protect nothing:
+
+- a fresh connection already reports page 48 at 0 % before any control page (Part A, §4.4: echo `FF FF FF 00`);
+- a crank ride normally ends with `Resistance { pct: 0 }` delivered before its links go (§7.9). **The exceptions:**
+  - a forced end whose end mode is not taken within its 500 ms (FM-FIN-02's stalled write);
+  - a disconnect that timed out (#335), where the end mode may or may not have reached the trainer;
+  - a crashed or killed process, which sends nothing.
+
+  In each case the trainer keeps whatever it last applied, and a link is never handed back to the keeper anyway
+  (§5.1.1);
+- whatever another app or an exception above left behind is the trainer's state without crank, the same as with
+  crank closed.
+
+The conclusion does not rest on those endings. Nothing is written while warm, so a warm link never adds resistance or
+torque to anything: it leaves the trainer exactly as it found it. Clearing a leftover state is the job of the next
+ride's own engagement, which is unchanged (§7.5: `Erg { target_w: 0 }` from the first tick until cadence).
+
+Every safety rule of §6 and §7 arms when the session takes the link, exactly as today:
+
+- the engine's first `SetMode` (`Erg { target_w: 0 }` until cadence, then the soft start, §7.5);
+- `Activate` of §4.4.1, because the session receives the link together with its current state, `Ready`, and never
+  infers that state;
+- the reconnect loop behind `RideGate` (§6).
+
+The keeper reads only telemetry while warm (the latest sample per device, for the chips). It drains both event
+streams: the drivers `try_send` into bounded channels, and a full channel would become a fault.
+
+**Cool-down.** A `warm`, `searching`, `connecting` or `handshake` device is released, and becomes `cold`:
+
+- **after `T_cool` = 5 min without a `Likely`**: after `Left`, or on a warm view with no rider input (the throttled
+  refresh above) for 5 min. **The Ready sheet is exempt from the input rule**, but only for the keeper's own links:
+  while the load is in flight or has failed (`Likely { ready: true }`), the links are held without input, because the
+  rider is about to ride. Hiding, the background grace and sleep still apply to those keeper-owned links. Once the
+  load succeeds the links are the session's, and the rules below do not apply;
+- **after the 60 s grace on `Background`**: crank is no longer the frontmost app, also while its window stays
+  visible. A `Likely` within 60 s cancels it, so a quick switch to another app costs no reconnect;
+- **at once on `Release`**, with these reasons:
+  - `Hidden`: the window is minimised or the app is hidden.
+  - `Sleep`: the Mac is about to sleep. `crank-desktop` observes `NSWorkspaceWillSleepNotification`; other platforms
+    are #41.
+  - `Devices`: Settings → Devices is opened. Pairing needs the devices free (`device_pair` connects itself), and a
+    connected NEO does not advertise, so the Devices scan would not list it.
+  - `RiderRelease`: the Devices view's "Release trainer" (#314 point 2). It also **latches**: no automatic warm-up
+    of that device until the rider asks for a ride ("Ride this", Retry) or relaunches the app.
+
+The release is the driver's bounded disconnect (§7.9, #304). A disconnect that timed out leaves the same residual as
+there (#335). An attempt that is still connecting is cancelled, and the cancelled connect disconnects the half-open
+peripheral (#304).
+
+**A loaded ride owns its links (architect decision on #451, 2026-11-03; the owner may override).** When `ride_load`
+succeeds, the links are `riding` and the **session** owns them until one of three things happens: the ride is
+discarded (Cancel on the Ready sheet), it ends, or the app quits. Focus, hiding, the background grace and `T_cool`
+never release a loaded ride. Holding them writes nothing, the same as warm: nothing is armed before Start (the
+ride's first `SetMode`). Two rules bound an **unstarted** loaded ride:
+
+- **Abandoned load.** It is discarded, and its links released, after `T_abandon` = 10 min without Start and without
+  rider input on the Ready sheet (the throttled refresh above). The core runs this timer, not the UI.
+- **Sleep.** `Release(Sleep)` discards it, because a load that sleeps through is stale.
+
+Both go through the same path as Cancel (`ride_end` on a loaded ride, §7.9). A **started** ride follows §6 and §7
+unchanged: it keeps its links through focus changes, hiding and background (sleep during a ride is #51).
+
+**Quit, `Core` drop and crash while warm.** Warm links are the keeper's, so no ride's end mode covers them, and none is
+needed: nothing was written.
+
+- **Quit.** `Core::shutdown` (the quit path, §7.9) releases the keeper's links in parallel with ending any loaded ride.
+  It is an orderly, bounded driver disconnect (`DISCONNECT_TIMEOUT`, 2 s) with **no write** of any kind, inside the 3 s
+  quit cap. An attempt still connecting is cancelled and its half-open peripheral released (#304). The `Exit`
+  backstop runs the same shutdown.
+- **`Core` drop.** Dropping the keeper drops its links, which disconnects them through the drivers' cleanup with no
+  write. On macOS, where the event loop may exit without destructors, process exit releases the radio.
+- **Crash.** A crashed or killed process writes nothing. The OS drops the link, and the NEO stays as it was. While
+  warm, that is the state it was in before crank connected.
+
+**Background grace and the timer values (architect decision on #451, 2026-11-03; the owner may override).** The idle
+timer runs only while crank is frontmost. Going to the background releases after 60 s (above). So `T_cool` never holds
+the NEO against the phone app or check 10's second central for more than that grace. A rider who wants the trainer
+for another app at once uses "Release trainer" or hides crank (`Hidden`); check 10's procedure hides crank. The 60 s
+grace trades the other app's wait of up to a minute against the reconnect that every quick switch would otherwise
+cost. The values for `T_cool`, the grace and the scan cap are recorded as decided, and each is a constant the owner
+can change. For `T_cool`, what remains is weighed below:
+
+- **Reconnect cost.** Going cold costs one reconnect: GATT, the handshake and its fixed 250 ms, plus a scan if the
+  lookup fails (the assumption above). This is estimated at 1–3 s (to be measured, §5.1.6) and shown on the Ready
+  sheet (§5.1.4).
+- **Strap battery.** A connection costs some of the coin cell's life. Bounded at 5 min per idle period, it is small
+  next to a ride.
+- **Rider behaviour.** A rider who glances at History or reads a workout for a few minutes and then rides should not
+  wait.
+
+1 min would reconnect on most such detours; 15 min would hold the strap through an abandoned session. 5 min is a
+starting value: HIL #44 Part B logs the keeper's timings (§5.1.6), and the owner may change it.
+
+#### 5.1.4 `ride_load`, failure UX and status
+
+**`ride_load` uses the keeper.** For each paired device, `ride_load` acts on its phase:
+
+- `warm`: the link is taken. No connect and no wait.
+- `searching`, `connecting` or `handshake`: that attempt is awaited, never a second connect.
+- `cold` or `not_found`: an attempt starts now, in parallel with the other device's.
+
+The trainer is required, as today (`DeviceUnavailable` when it fails). The strap is optional: one that is not
+`warm` once its attempt has ended gives a ride without HR, as today. A strap that is found later joining the running
+ride is not decided here (#450).
+
+So the worst case of a load is one `CONNECT_TIMEOUT` (the longer of two parallel attempts), no longer the sum of two.
+With both devices `warm`, `ride_load` performs no Bluetooth I/O. It must return in under 1 s, the target for "Ride
+this" with warm links.
+
+**Load phases in `ride_status`.** The `loading: bool` of `RideStatusView` becomes `load: Option<LoadProgress>`, with
+`LoadProgress { trainer: LinkPhase, strap: Option<LinkPhase> }` (no `strap` when none is paired). It is updated as
+each phase changes, so a Ready sheet opened over a cold load shows per-device progress (DESIGN §5.4):
+"Trainer: searching… / connecting… / ready", "HR: not found — keeps looking".
+
+**Phases outside a ride.** The chips on Today, Workouts and the Ready sheet read the keeper's phases. `links_open`
+opens one window-scoped `Channel<LinkFrame>`. It follows the window lifecycle rules of the stream channel (ADR-0001
+§4.3): it belongs to the window's label and is dropped on destroy or reload. Each frame is the complete state, the
+phase plus the latest sample per device, so the latest frame wins and no ack or resync is needed.
+`links_intent` returns the same state. `device_links`, which today reports a link only while a ride holds it,
+reports the keeper's phase when none does, so the Devices view shows the live state too.
+
+**Failure UX.** Failures show as quiet chips, never as modal errors or toasts:
+
+- "Trainer: connecting…", "Trainer: ready", "Trainer: not found — is another app using it?" (hedged until #314);
+- the same for "HR".
+
+Retry starts an attempt at once and clears a `RiderRelease` latch. The rider meets an error only when they ask for a
+ride: a trainer that cannot be connected fails `ride_load` with `DeviceUnavailable`, and the Ready sheet shows it with
+Retry (DESIGN §5.4). The visual design is #438.
+
+#### 5.1.5 A trainer held by another app (#314)
+
+A NEO connected to another central does not advertise, so its attempt ends `not_found` after the scan window. It is
+retried on its next advertisement, which appears when the other app lets go. The keeper never tries to take a
+trainer: there is no forced connect and no retry timer. Without #314's typed signal, "held by another app" and
+"asleep or off" look the same, so the chip says "not found" with the hedged hint. When #314 adds the signal, the chip
+names the other app's hold, and nothing else in this section changes. The other direction is §5.1.3: "Release trainer" or
+hiding crank frees the NEO at once, and going to the background frees it after the 60 s grace.
+
+#### 5.1.6 Observability
+
+Every phase change is logged at INFO under the target `crank_core::links`, so a normal launch writes it to `crank.log`
+(AGENTS.md, #411). Each line has `device` (`trainer`/`strap`), `from`, `to`, `ms` (time in the phase being left) and
+`attempt` (per device, from 1). The phases timed are these:
+
+- `resolve`, with `via=lookup|scan` (it measures the handle-reuse assumption of §5.1.2);
+- `gatt` (connect and discovery);
+- `identity` (subscribe, DIS read, verify);
+- `handshake` (page 55 to the page-54 reply);
+- `ready_total`.
+
+Beside the phase lines:
+
+- `intent` lines carry the intent and reason;
+- `cool` lines carry the reason (`idle`, `background`, or a `Release` reason) and `held_s`;
+- `scan` lines carry `mode=continuous|window` and `ms`, so the scan cap's radio time is measurable;
+- `ride_load` logs `trainer=warm|awaited|cold`, the same for `strap`, and its own `ms` from request to answer.
+
+HIL measures warm-up and load latency from these lines (Part B, #44): a warm "Ride this" under 1 s on the NEO, and
+cold warm-up per phase. No timing is derived from the UI.
+
+#### 5.1.7 Implementation sequence (sub-issues of #435, filed when this is accepted)
+
+1. **Parallel connect.** `connect_links` runs the trainer and strap connects concurrently, and the phase log lines of
+   §5.1.6 are added. This gives the cold-path win alone, with no lifecycle. It also **verifies the handle-reuse
+   assumption** (§5.1.2) on the NEO and the strap. It records `via` for a lookup in each of three cases: right after a
+   Devices scan, after that scan stopped, and after a disconnect. Results go to the HIL doc. If the lookup fails, the
+   assumption is reworded and nothing else changes.
+2. **Link keeper.** The keeper's state machine: pure transitions over intent, the clock, link events, pairing and
+   rider-config changes, and load or release. Also `links_intent`, `T_cool`, the background grace, the Ready-sheet
+   exemption, the keeper's inactivity during a ride, `T_abandon` and the sleep discard of an unstarted ride, the scan cap, release on shutdown, the latch, handover to `ride_load` with
+   the link's current state, event draining, and the sim latency model below.
+3. **Contract.** `LoadProgress` in `ride_status`, `links_open` / `LinkFrame`, and the regenerated bindings.
+4. **UI.** Intent reporting (warm views, focus, visibility, throttled input), `crank-desktop`'s sleep observer, the
+   chips, and Ready-sheet progress, styled per #438.
+
+#### 5.1.8 Tests required (acceptance of the sub-issues)
+
+`SimTrainer`/`SimHeart` get a **latency model**: a delay per phase (resolve, GATT, handshake), "never answers", and
+"not advertising". Tests run on paused tokio time.
+
+- **Warm start under 1 s.** Phase latencies are 3 s for the trainer and 2 s for the strap. `Likely`, then advance
+  until both are `warm`; `ride_load` then answers within 1 s of virtual time with zero `connect` calls.
+  `searching` / `connecting` at load awaits the running attempt (connect count unchanged).
+- **Parallel bound.** With latencies a and b, a cold load takes max(a, b) ± one tick, not a + b. With the strap
+  never answering, the load ends at `CONNECT_TIMEOUT` with the trainer linked and no HR, not later.
+- **Idle cool-down disconnects.** After `Left` the devices are still warm at `T_cool` − 1 s and released at `T_cool`
+  (driver disconnect observed, phase `cold`). A `Likely` in between restarts the timer. Every `Release` reason
+  disconnects at once, mid-attempt included (the half-open peripheral is released). The latch blocks `Likely` until
+  Retry or "Ride this".
+- **Background grace.** After `Background` the devices are still warm at 59 s and released at 60 s. A `Likely` at 30 s
+  cancels the release.
+- **The Ready sheet holds.** With a failed load, `Likely { ready: true }` and no input for 30 min of virtual time,
+  the keeper's links stay `warm`.
+- **A loaded ride keeps its links.** With a loaded, unstarted ride, `Hidden`, `Background` past 60 s and `T_cool`
+  past 5 min each leave the links connected, and nothing is written (recording transport: no write after `Ready`).
+- **An abandoned load releases.** A ride loaded but unstarted, with no input, is discarded at `T_abandon` = 10 min
+  (links released, phase `cold`). Input at 9 min restarts the timer.
+- **Sleep discards an unstarted ride.** `Release(Sleep)` with a loaded, unstarted ride discards it and releases its
+  links. With a started ride, the ride and its links are untouched.
+- **`Likely` during a ride warms nothing.** With a ride loaded or active and the strap not linked, `Likely` from any
+  view starts no attempt (connect count unchanged).
+- **Scan cap.** With the trainer never advertising and intent `Likely` for 10 min, the scan is continuous for
+  `SCAN_CONTINUOUS`, then on for `RESOLVE_SCAN` in every `SCAN_PERIOD`. It stops on `Left` / cool-down. An
+  advertisement in a window starts the attempt.
+- **Quit while warm.** `Core::shutdown` with both devices `warm`, and again with one still `connecting`: both are
+  disconnected, the write log has nothing after `Ready`, and shutdown returns within 3 s even when one disconnect
+  hangs (bounded by `DISCONNECT_TIMEOUT`).
+- **Nothing is written while warm.** A recording fake transport under the real FE-C driver is held `warm` for 10 min
+  of virtual time. Its write log holds only the connect's page 55 and the page-70 request for page 54. The first
+  control page is the session's first `SetMode`. At core level, no `TrainerCommand` reaches the control channel
+  before the handover.
+- **Handover.** The engine's following machine activates on the handed-over `Ready` link without a new `Link` event.
+  A link lost while warm makes the load connect cold. A ride's end leaves the phase `cold`, never `warm`. A full
+  event channel never faults a warm link.
+
+#### 5.1.9 Alternatives, consequences, limits
+
+| Alternative | Why rejected |
+|---|---|
+| Connect at launch and hold while the app is open (the old §5 text) | Holds the NEO's only slot and the strap's battery for hours, and blocks other apps and check 10 |
+| No speculation: only a parallel connect with handle reuse at "Ride this" | Still an estimated 1–3 s, plus a scan when the lookup fails, so not under 1 s; the owner asked for speculative connect |
+| Warm with a GATT connection only, handshake at `ride_load` | Leaves up to about 2.5 s on the start path, and a "ready" chip that may name the wrong or a silent unit (§5.1.2) |
+| Write page 48 at 0 % while warm | Makes warm a controlled state, and protects nothing (§5.1.3) |
+| Hand a ride's links back to the keeper after the ride ends | Two owners across the §7.9 end and release machinery; "released means disconnected" is relied on by pairing and quit |
+| Release at once on `Background` (round 1 of this amendment) | Every quick switch to another app would cost a reconnect; replaced by the 60 s grace (architect decision) |
+| An unbounded scan while a device is `not_found` | Hours of radio time for a NEO held by another app; replaced by the scan cap (§5.1.2) |
+
+**Consequences.** A warm "Ride this" does no Bluetooth work. A cold one costs one `CONNECT_TIMEOUT` at worst, not
+two. Before a ride, crank holds the NEO only in these cases: while it is frontmost on a ride-likely view, within 5 min of
+one, for up to 60 s after going to the background, or with a loaded, unstarted ride for up to 10 min. The core gains a
+second owner of links before a ride, with a one-way handover. The UI must report intent faithfully: an intent it
+fails to send costs latency (no warm-up) or the slot (no release), never safety, because nothing is written while
+warm.
+
+**Known limits.**
+
+- The first warm-up after launch scans (#206-3), and later ones may too: handle reuse is an assumption (§5.1.2).
+- Another app waits up to 60 s for the NEO after crank goes to the background, unless the rider uses "Release
+  trainer" or hides crank.
+- A loaded but unstarted ride holds the NEO for up to 10 min, whatever the focus, including while crank is hidden or
+  in the background. It is released on Cancel, on `T_abandon`, on sleep or on quit.
+- A Ready sheet over a failed load holds the keeper's links without input, until crank is hidden, goes to the
+  background, the Mac sleeps, or the rider leaves.
+- A device that returns is seen within about 34 s under the scan cap, or at once with Retry.
+- Until #314, "held by another app" cannot be told from "off".
+- A strap missing at load stays missing for that ride (#450).
+- A disconnect that timed out may leave a peripheral connected (#335).
+- The sleep observer is macOS only (#41).
 
 ## 6. Decision: reconnection and dropout in a running workout
 
@@ -796,7 +1163,7 @@ for those issues.
   a control mode on its own, so there is exactly one owner of control state.
 - **Implementation (#147):** `crank_ble::Reconnecting` / `ReconnectingHr` wrap any driver and keep the
   consumer's channels across losses. The first connect is not retried (its error reaches the UI). The
-  link may be held while the app is open (§5), but the backoff loop is enabled only while a ride is
+  link may be held before a ride (the link keeper, §5.1), but the backoff loop is enabled only while a ride is
   active: the supervisors take an explicit `RideGate` input (wiring from engine/core: #208). Outside a
   ride a loss is surfaced (`Link(Lost)`, stream ends) and normal rediscovery reconnects when the device
   is seen again; a gate that goes inactive during backoff stops the loop. While active, each attempt
