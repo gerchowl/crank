@@ -1,0 +1,338 @@
+{
+  "check": 2,
+  "identity": {
+    "dis_serial_present": true,
+    "firmware": "0.7.4",
+    "id_prefix": "5c67045f",
+    "model": "Neo",
+    "name": "Tacx Neo *****"
+  },
+  "link_dropped_during_run": false,
+  "trials": [
+    {
+      "accepted": true,
+      "label": "msg_4F_resp/request54",
+      "latency_us": 59763,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 31 FF FF FF FF FF B8 01 90",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4F_resp/control49_then_71",
+      "latency_us": 56706,
+      "p71": {
+        "echo": "FF FF B8 01",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 201,
+        "status": 0
+      },
+      "round": 0,
+      "rx": "A4 09 4F 05 47 31 C9 00 FF FF B8 01 E1",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "msg_4F_noresp/request54",
+      "latency_us": 44672,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 31 FF FF FF FF FF E0 01 C8",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4F_noresp/control49_then_71",
+      "latency_us": 38505,
+      "p71": {
+        "echo": "FF FF E0 01",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 204,
+        "status": 0
+      },
+      "round": 0,
+      "rx": "A4 09 4F 05 47 31 CC 00 FF FF E0 01 BC",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "msg_4E_resp/request54",
+      "latency_us": 46671,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4E 05 46 FF FF FF FF 81 36 01 16",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4E 05 31 FF FF FF FF FF 08 02 22",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4E_resp/control49_then_71",
+      "latency_us": 59984,
+      "p71": {
+        "echo": "FF FF 08 02",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 207,
+        "status": 0
+      },
+      "round": 0,
+      "rx": "A4 09 4F 05 47 31 CF 00 FF FF 08 02 54",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": false,
+      "label": "msg_4E_noresp/request54",
+      "latency_us": null,
+      "p71": null,
+      "rx": null,
+      "tx": "A4 09 4E 05 46 FF FF FF FF 81 36 01 16",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4E 05 31 FF FF FF FF FF 30 02 1A",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4E_noresp/control49_then_71",
+      "latency_us": 62429,
+      "p71": {
+        "echo": "FF FF 30 02",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 210,
+        "status": 0
+      },
+      "round": 0,
+      "rx": "A4 09 4F 05 47 31 D2 00 FF FF 30 02 71",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "msg_4F_resp/request54",
+      "latency_us": 37004,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 31 FF FF FF FF FF 58 02 73",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4F_resp/control49_then_71",
+      "latency_us": 50540,
+      "p71": {
+        "echo": "FF FF 58 02",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 213,
+        "status": 0
+      },
+      "round": 1,
+      "rx": "A4 09 4F 05 47 31 D5 00 FF FF 58 02 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "msg_4F_noresp/request54",
+      "latency_us": 44732,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 31 FF FF FF FF FF 80 02 AB",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4F_noresp/control49_then_71",
+      "latency_us": 42807,
+      "p71": {
+        "echo": "FF FF 80 02",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 216,
+        "status": 0
+      },
+      "round": 1,
+      "rx": "A4 09 4F 05 47 31 D8 00 FF FF 80 02 CB",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "msg_4E_resp/request54",
+      "latency_us": 65666,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4E 05 46 FF FF FF FF 81 36 01 16",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4E 05 31 FF FF FF FF FF A8 02 82",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4E_resp/control49_then_71",
+      "latency_us": 56442,
+      "p71": {
+        "echo": "FF FF A8 02",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 219,
+        "status": 0
+      },
+      "round": 1,
+      "rx": "A4 09 4F 05 47 31 DB 00 FF FF A8 02 E0",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "msg_4E_noresp/request54",
+      "latency_us": 42515,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4E 05 46 FF FF FF FF 81 36 01 16",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4E 05 31 FF FF FF FF FF D0 02 FA",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4E_noresp/control49_then_71",
+      "latency_us": 38534,
+      "p71": {
+        "echo": "FF FF D0 02",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 222,
+        "status": 0
+      },
+      "round": 1,
+      "rx": "A4 09 4F 05 47 31 DE 00 FF FF D0 02 9D",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "msg_4F_resp/request54",
+      "latency_us": 67594,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 31 FF FF FF FF FF F8 02 D3",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4F_resp/control49_then_71",
+      "latency_us": 87996,
+      "p71": {
+        "echo": "FF FF F8 02",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 225,
+        "status": 0
+      },
+      "round": 2,
+      "rx": "A4 09 4F 05 47 31 E1 00 FF FF F8 02 8A",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "msg_4F_noresp/request54",
+      "latency_us": 40561,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 31 FF FF FF FF FF 20 03 0A",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4F_noresp/control49_then_71",
+      "latency_us": 48827,
+      "p71": {
+        "echo": "FF FF 20 03",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 228,
+        "status": 0
+      },
+      "round": 2,
+      "rx": "A4 09 4F 05 47 31 E4 00 FF FF 20 03 56",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "msg_4E_resp/request54",
+      "latency_us": 65252,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4E 05 46 FF FF FF FF 81 36 01 16",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4E 05 31 FF FF FF FF FF 48 03 63",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4E_resp/control49_then_71",
+      "latency_us": 58234,
+      "p71": {
+        "echo": "FF FF 48 03",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 231,
+        "status": 0
+      },
+      "round": 2,
+      "rx": "A4 09 4F 05 47 31 E7 00 FF FF 48 03 3D",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "msg_4E_noresp/request54",
+      "latency_us": 44417,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4E 05 46 FF FF FF FF 81 36 01 16",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4E 05 31 FF FF FF FF FF 70 03 5B",
+      "control_write_error": null,
+      "echo_matches_control": true,
+      "label": "msg_4E_noresp/control49_then_71",
+      "latency_us": 62697,
+      "p71": {
+        "echo": "FF FF 70 03",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "sequence": 234,
+        "status": 0
+      },
+      "round": 2,
+      "rx": "A4 09 4F 05 47 31 EA 00 FF FF 70 03 08",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    }
+  ],
+  "what_was_sent": "page 70 request(54) and page 49 target + request(71) under each of msg 0x4F/0x4E x write with/without response, XOR checksum, x3 rounds"
+}

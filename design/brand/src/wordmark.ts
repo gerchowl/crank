@@ -5,10 +5,11 @@
 import { GLYPHS } from "./glyphs.ts";
 import { AXIS, H, layout, n, shear, tAxis, tSlant } from "./geometry.ts";
 import { SLICE_ART } from "./slice.ts";
+import { spin } from "./spin.ts";
 
 export type Paint = { ink: string; accent: string };
 export type Art = { viewBox: readonly [number, number, number, number]; body: string; /** x of the optical centre */ focus?: number };
-export type ConceptId = "slice" | "blur" | "lockup" | "kinetic" | "instrument";
+export type ConceptId = "slice" | "blur" | "lockup" | "kinetic" | "instrument" | "spin";
 
 const DEG = Math.PI / 180;
 
@@ -152,6 +153,8 @@ export const CONCEPTS: Record<ConceptId, { name: string; build: (p: Paint, id: s
   lockup: { name: "C · Mark-as-C", build: lockup },
   kinetic: { name: "D · Kinetic lockup", build: kinetic },
   instrument: { name: "E · Instrument", build: instrument },
+  // F is a launch motion, not a new form: at rest it is A (src/spin.ts, #83).
+  spin: { name: "F · Spin-up", build: spin },
 };
 
 /** The recommended direction (BRAND.md §Recommendation); scripts/export.ts writes it to assets/brand/. */

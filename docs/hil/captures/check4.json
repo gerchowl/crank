@@ -1,0 +1,195 @@
+{
+  "check": 4,
+  "exchanges": [
+    {
+      "label": "send_page55_708mm",
+      "tx": "A4 09 4F 05 37 4C 1D FF 88 0C 46 00 BC",
+      "write_error": null
+    },
+    {
+      "decoded": "Capabilities(FeCapabilities { max_resistance_n: 200, modes: 7 })",
+      "label": "request_page_54_0",
+      "latency_us": 59680,
+      "max_resistance_is_0xFFFF": false,
+      "max_resistance_raw": 200,
+      "modes_byte": 7,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "decoded": "Capabilities(FeCapabilities { max_resistance_n: 200, modes: 7 })",
+      "label": "request_page_54_1",
+      "latency_us": 41394,
+      "max_resistance_is_0xFFFF": false,
+      "max_resistance_raw": 200,
+      "modes_byte": 7,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "decoded": "Capabilities(FeCapabilities { max_resistance_n: 200, modes: 7 })",
+      "label": "request_page_54_2",
+      "latency_us": 35466,
+      "max_resistance_is_0xFFFF": false,
+      "max_resistance_raw": 200,
+      "modes_byte": 7,
+      "p71": null,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "decoded": "Manufacturer(ManufacturerInfo { hardware_revision: 1, manufacturer_id: 89, model: 2800 })",
+      "label": "request_page_80_0",
+      "latency_us": 48977,
+      "p71": null,
+      "rx": "A4 09 4F 05 50 FF FF 01 59 00 F0 0A 15",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 50 01 71",
+      "write_error": null
+    },
+    {
+      "decoded": "Manufacturer(ManufacturerInfo { hardware_revision: 1, manufacturer_id: 89, model: 2800 })",
+      "label": "request_page_80_1",
+      "latency_us": 42674,
+      "p71": null,
+      "rx": "A4 09 4F 05 50 FF FF 01 59 00 F0 0A 15",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 50 01 71",
+      "write_error": null
+    },
+    {
+      "decoded": "Manufacturer(ManufacturerInfo { hardware_revision: 1, manufacturer_id: 89, model: 2800 })",
+      "label": "request_page_80_2",
+      "latency_us": 65249,
+      "p71": null,
+      "rx": "A4 09 4F 05 50 FF FF 01 59 00 F0 0A 15",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 50 01 71",
+      "write_error": null
+    },
+    {
+      "decoded": "Product(ProductInfo { software_revision: 7, supplemental_revision: Some(0), serial: 4294967295 })",
+      "label": "request_page_81_0",
+      "latency_us": 72696,
+      "p71": null,
+      "rx": "A4 09 4F 05 51 FF 00 07 FF FF FF FF 4E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 51 01 70",
+      "write_error": null
+    },
+    {
+      "decoded": "Product(ProductInfo { software_revision: 7, supplemental_revision: Some(0), serial: 4294967295 })",
+      "label": "request_page_81_1",
+      "latency_us": 96968,
+      "p71": null,
+      "rx": "A4 09 4F 05 51 FF 00 07 FF FF FF FF 4E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 51 01 70",
+      "write_error": null
+    },
+    {
+      "decoded": "Product(ProductInfo { software_revision: 7, supplemental_revision: Some(0), serial: 4294967295 })",
+      "label": "request_page_81_2",
+      "latency_us": 66524,
+      "p71": null,
+      "rx": "A4 09 4F 05 51 FF 00 07 FF FF FF FF 4E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 51 01 70",
+      "write_error": null
+    },
+    {
+      "decoded": "UserConfig { rider_kg: Some(75.0), bike_kg: Some(10.0), wheel_m: Some(0.708), gear_ratio: None }",
+      "label": "request_page_55_0",
+      "latency_us": 99759,
+      "p71": null,
+      "rx": "A4 09 4F 05 37 4C 1D FF 88 0C 46 00 BC",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 37 01 16",
+      "wheel_byte_6": 70,
+      "wheel_offset_nibble": 8,
+      "write_error": null
+    },
+    {
+      "decoded": "UserConfig { rider_kg: Some(75.0), bike_kg: Some(10.0), wheel_m: Some(0.708), gear_ratio: None }",
+      "label": "request_page_55_1",
+      "latency_us": 93880,
+      "p71": null,
+      "rx": "A4 09 4F 05 37 4C 1D FF 88 0C 46 00 BC",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 37 01 16",
+      "wheel_byte_6": 70,
+      "wheel_offset_nibble": 8,
+      "write_error": null
+    },
+    {
+      "decoded": "UserConfig { rider_kg: Some(75.0), bike_kg: Some(10.0), wheel_m: Some(0.708), gear_ratio: None }",
+      "label": "request_page_55_2",
+      "latency_us": 43900,
+      "p71": null,
+      "rx": "A4 09 4F 05 37 4C 1D FF 88 0C 46 00 BC",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 37 01 16",
+      "wheel_byte_6": 70,
+      "wheel_offset_nibble": 8,
+      "write_error": null
+    },
+    {
+      "decoded": "GeneralFe(GeneralFe { equipment_type: 25, elapsed_s: 0.0, distance_m: 0, speed_mps: Some(0.0), heart_rate_bpm: None, state: 2, lap_toggle: false, flags: 4 })",
+      "label": "request_page_16_0",
+      "latency_us": 524096,
+      "p71": null,
+      "rx": "A4 09 4E 05 10 19 00 00 00 00 FF 24 34",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 10 01 31",
+      "write_error": null
+    },
+    {
+      "decoded": "Trainer(TrainerData { event_count: 187, cadence_rpm: Some(0), accumulated_power_w: 0, power_w: Some(0), status: 0, target_limit: 0, state: 2, lap_toggle: false })",
+      "label": "request_page_25_0",
+      "latency_us": 199869,
+      "p71": null,
+      "rx": "A4 09 4E 05 19 BB 00 00 00 00 00 20 64",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 19 01 38",
+      "write_error": null
+    }
+  ],
+  "identity": {
+    "dis_serial_present": true,
+    "firmware": "0.7.4",
+    "id_prefix": "5c67045f",
+    "model": "Neo",
+    "name": "Tacx Neo *****"
+  },
+  "link_dropped_during_run": false,
+  "page55_offset_nibble_probe": [
+    {
+      "reported_nibble": 10,
+      "rx": "A4 09 4F 05 37 4C 1D FF 8A 0C 46 00 BE",
+      "sent_nibble": 10,
+      "tx": "A4 09 4F 05 37 4C 1D FF 8A 0C 46 00 BE",
+      "write_error": null
+    },
+    {
+      "reported_nibble": 12,
+      "rx": "A4 09 4F 05 37 4C 1D FF 8C 0C 46 00 B8",
+      "sent_nibble": 12,
+      "tx": "A4 09 4F 05 37 4C 1D FF 8C 0C 46 00 B8",
+      "write_error": null
+    },
+    {
+      "reported_nibble": 14,
+      "rx": "A4 09 4F 05 37 4C 1D FF 8E 0C 46 00 BA",
+      "sent_nibble": 14,
+      "tx": "A4 09 4F 05 37 4C 1D FF 8E 0C 46 00 BA",
+      "write_error": null
+    },
+    {
+      "reported_nibble": 0,
+      "rx": "A4 09 4F 05 37 4C 1D FF 80 0C 46 00 B4",
+      "sent_nibble": 15,
+      "tx": "A4 09 4F 05 37 4C 1D FF 8F 0C 46 00 BB",
+      "write_error": null
+    }
+  ],
+  "reserved": {
+    "page16_byte1_bits_5_to_7_values_seen": [
+      0
+    ]
+  },
+  "what_was_sent": "page 55 (75 kg, 10 kg, 708 mm), then page 70 requests for 54, 80, 81, 55, 16, 25"
+}

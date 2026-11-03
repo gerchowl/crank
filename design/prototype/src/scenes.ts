@@ -5,8 +5,11 @@ import { editor } from "./editor/model";
 import { pathNodes } from "./format";
 import { athleteModel, cappedProposal, freeRide, sceneFixture, type SceneFixture } from "./mock/ext";
 import { rideScreen } from "./persist";
-import { pendingStart, reportSymptomInRide } from "./safety";
+import { pendingStart, reportSymptomInRide, requestStart, safety } from "./safety";
 import { backend, loadRide, navigate, session, type View } from "./session";
+import { openTopic, whyOpen } from "./views/Why";
+import { libraryOpen } from "./views/Workouts";
+import { planWish } from "./mock/wish";
 
 const CP = athleteModel[0]?.value ?? 280;
 
@@ -53,6 +56,8 @@ function startRide(w: Workout = demoWorkout(backend.athlete.ftp)) {
 }
 
 interface Scene { view: View; sub?: string; setup?: () => void }
+/** Today after the check-in and today's red-flag check: the saddle proposal (DESIGN §15.2). */
+const saddle = (fx: SceneFixture, then?: () => void): Scene => ({ view: "today", setup: () => (sceneFixture.set({ ...fx, ready: true }), safety.set((s) => ({ ...s, checkedToday: true })), then?.()) });
 const ride = (setup: () => void): Scene => ({ view: "ride", setup: () => (startRide(), setup()) });
 /** A state the mock cannot produce: ride to a moment, then overlay what the core would send (labelled fixture). */
 const fixture = (setup: () => void, fx: SceneFixture): Scene => ({ view: "ride", setup: () => (startRide(), setup(), sceneFixture.set(fx)) });
@@ -86,6 +91,8 @@ export const scenes: Record<string, Scene> = {
     view: "ride",
     setup: () => (startRide(sprintWorkout()), rideUntil(backend, (s) => labelled(s, "Sprints") && s.phase === "work"), rideFor(backend, 6)),
   },
+  // the last block: "next" marks the ride's end on the road (DESIGN §16.1)
+  "ride-cooldown": ride(() => (rideUntil(backend, (s) => blockOf(s)?.phase === "cooldown"), rideFor(backend, 60))),
   "ride-hr-recovery": ride(() => (rideUntil(backend, (s) => labelled(s, "Recover")), rideFor(backend, 55))),
   "ride-coach-ask": ride(() => (rideUntil(backend, (s) => s.t > 2000 && nudgeIs("pending")()), rideFor(backend, 6))),
   "ride-coach-applied": ride(() => (rideUntil(backend, nudgeIs("auto_applied")), rideFor(backend, 4))),
@@ -109,6 +116,8 @@ export const scenes: Record<string, Scene> = {
   "ride-hr-lost-recovery": ride(() => (rideUntil(backend, (s) => labelled(s, "Recover") && s.hrSensor !== "connected"), rideFor(backend, 1))),
   "ride-paused-long": fixture(() => (atThreshold(), backend.ride.pause()), { facts: { pausedForS: 6 * 60 + 10 } }),
   "ride-reconnected-long": fixture(atThreshold, { facts: { sinceReconnectS: 12, lastGapS: 190 } }),
+  // the widest device pill (§16.1): the trainer's reconnect note with the widest mm:ss gap while HR is lost
+  "ride-reconnected-hr-lost": fixture(atThreshold, { status: { hrSensor: "lost" }, facts: { sinceReconnectS: 12, lastGapS: 3599, hrLost: true } }),
   "ride-paused": fixture(() => (atThreshold(), backend.ride.pause()), { facts: { pausedForS: 42 } }),
   "ride-feel-prompt": fixture(() => (rideUntil(backend, (s) => labelled(s, "Threshold") && s.phase !== "work"), rideFor(backend, 4)), { feelPrompt: true }),
   "ride-screen-restarted": fixture(atThreshold, { screenCrashed: true }),
@@ -118,6 +127,8 @@ export const scenes: Record<string, Scene> = {
   "review-call-open": { view: "review", setup: () => (startRide(), rideUntil(backend, (s) => s.state === "finished", 4000), sceneFixture.set({ openCall: 1 })) },
   history: { view: "history", setup: () => (startRide(), rideUntil(backend, (s) => s.state === "finished", 4000)) },
   workouts: { view: "workouts", setup: () => editor.select(2) },
+  // below 1280 px the library is a drawer over the panes (DESIGN §16.3); at 1440 it is the column, as in `workouts`
+  "workouts-library-drawer": { view: "workouts", setup: () => (editor.select(2), libraryOpen.set(true)) },
   "workouts-ai-diff": { view: "workouts", setup: () => (editor.select(2), editor.requestRewrite("harder")) },
   "settings-devices": { view: "settings", sub: "devices" },
   "settings-coach": { view: "settings", sub: "coach" },
@@ -131,9 +142,36 @@ export const scenes: Record<string, Scene> = {
   "ride-end-dialog": fixture(atThreshold, { endDialog: true }),
   "ride-symptom-stop": ride(() => (atThreshold(), backend.ride.pause(), reportSymptomInRide())),
   "settings-health": { view: "settings", sub: "health", setup: () => sceneFixture.set({ medicalStop: true }) },
+  // training profile, wish matrix, Why?/Background (DESIGN §15)
+  "onboarding-profile": { view: "onboarding", sub: "profile" },
+  "settings-profile": { view: "settings", sub: "profile" },
+  // after the check-in (ready): the saddle proposal, captured as the viewport — what the rider sees from the bike
+  "today-wish-granted": saddle({ wish: { intensity: "vo2max", format: "intervals" } }),
+  "today-wish-deviates": saddle({ wish: { intensity: "vo2max", format: "intervals" }, checkin: { legs: 1, sleep: 2 } }),
+  "today-wish-adapted": saddle({ wish: { intensity: "tempo", format: "steady" }, checkin: { sleep: 2, minutes: 120 } }),
+  "today-wish-capped": saddle({ healthCap: true, wish: { intensity: "threshold", format: "intervals" } }),
+  "today-wish-remote": saddle({ remote: { intensity: "threshold", format: "hills" } }),
+  // the check-in done, no wish: the summary line and the saddle card with the coach's pick (DESIGN §16.2)
+  "today-checked-in": saddle({}),
+  // Edit re-opens the check-in in place; the card returns to its desk form until Done
+  "today-checkin-edit": saddle({ editCheckin: true }),
+  "today-wish-carried": { view: "today", setup: () => sceneFixture.set({ carried: true }) },
+  "today-why": saddle({ wish: { intensity: "vo2max", format: "intervals" }, checkin: { legs: 1, sleep: 2 } }, () => {
+    const r = planWish({ intensity: "vo2max", format: "intervals" }, { legs: 1, sleep: 2, minutes: 45, capped: false, coachPick: { intensity: "vo2max", format: "intervals" } }).reasons[0];
+    whyOpen.set(r ? { id: "R-RDY-02", reason: r } : { id: "R-RDY-02" });
+  }),
+  "workouts-start-capped": { view: "gate", sub: "capped", setup: () => (sceneFixture.set({ healthCap: true }), pendingStart.set({ workout: demoWorkout(CP), from: "workouts" })) },
+  // measured power is fed through the core's cap monitor (stand-in), not overlaid: 312 W for 5 s → an exceedance
+  "ride-cap-exceeded": { view: "ride", setup: () => (sceneFixture.set({ healthCap: true }), startRide(cappedProposal(CP, 45).workout), rideFor(backend, 900), session.get()?.injectPower([[312, 5]])) },
+  "today-stop-and-cap": { view: "today", setup: () => sceneFixture.set({ medicalStop: true, healthCap: true }) },
+  "settings-profile-editing": { view: "settings", sub: "profile", setup: () => sceneFixture.set({ profileDraft: true }) },
+  "settings-background": { view: "settings", sub: "background" },
+  "settings-background-topic": { view: "settings", sub: "background", setup: () => openTopic.set("06") },
 };
 
 export function applyScene(id: string) {
+  // test hook (scenes only): the safety test feeds power traces and starts through the real guard
+  Object.assign(window, { __crank: { session, requestStart, freeRide: () => freeRide(CP) } });
   const sc = scenes[id];
   if (!sc) throw new Error(`unknown scene "${id}" (known: ${Object.keys(scenes).join(", ")})`);
   sc.setup?.();

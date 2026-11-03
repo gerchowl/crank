@@ -9,6 +9,7 @@ import {
   DEFAULT_BINDINGS,
   DEFAULT_RIDE_SCREEN,
   distanceM,
+  keyGlyph,
   persistNotices,
   rideScreen,
   saveBindings,
@@ -30,15 +31,19 @@ import {
 import { play } from "../sound";
 import { navigate, useRoute } from "../session";
 import { useStore } from "../store";
+import { ProfileForm } from "./Profile";
+import { Background } from "./Why";
 
 const SECTIONS = [
   ["devices", "Devices"],
+  ["profile", "Training profile"],
   ["athlete", "Athlete model"],
   ["health", "Health"],
   ["coach", "Coach"],
   ["controls", "Controls & sound"],
   ["ride-screen", "Ride screen"],
   ["appearance", "Appearance"],
+  ["background", "Background"],
 ] as const;
 
 const METRIC_NAME: Record<SlotMetric, string> = { hr: "Heart rate", cadence: "Cadence", wbal_pct: "W′ balance", dfa_a1: "DFA α1", hr_vs_typical: "HR vs usual", power_10s: "Power 10 s", kj: "Work (kJ)" };
@@ -145,6 +150,8 @@ export function Settings() {
           </>
         )}
         {sec === "health" && <HealthForm />}
+        {sec === "profile" && <ProfileForm />}
+        {sec === "background" && <Background />}
         {sec === "athlete" && (
           <>
             <h2>Athlete model</h2>
@@ -239,8 +246,8 @@ const SOUND_LABEL: Record<SoundEvent, [string, () => void]> = {
   applied: ["Change applied / undone", () => play.applied()],
   warning: ["Sensor lost, ERG released", () => play.warning()],
   reconnected: ["Reconnected", () => play.reconnected()],
+  wish: ["Wish answered (granted / changed)", () => play.wish(true)],
 };
-const showKey = (k: string) => (k === " " ? "Space" : k);
 
 function ControlsForm() {
   const saved = useStore(bindings);
@@ -269,7 +276,7 @@ function ControlsForm() {
               <td>{ACTION_LABEL[a]}</td>
               <td>
                 {saved[a].map((k) => (
-                  <kbd key={k}>{showKey(k)}</kbd>
+                  <kbd key={k}>{keyGlyph(k)}</kbd>
                 ))}
               </td>
               <td>

@@ -1,0 +1,53 @@
+# Abandon a release (#428), adopted from devkit's abandon-release.yml: reverse a prepared-but-unpublished
+# release. Deletes the DRAFT release, closes the release PR and deletes release/X.Y.Z. A published release
+# is refused (its tag is permanent): fix forward with the next version. Idempotent; re-dispatch after a
+# partial failure. If the release PR was already merged, main keeps the release commit: revert it by PR.
+name: Abandon Release
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version to abandon (e.g. 0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  abandon:
+    name: Delete draft release, PR and branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write        # draft releases and branch ref
+      pull-requests: write   # close the PR
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Abandon
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$VERSION' is not MAJOR.MINOR.PATCH"; exit 1; }
+          RELEASES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" | jq -s --arg t "$VERSION" 'add // [] | map(select(.tag_name == $t))')
+          if [ "$(jq -r 'any(.[]; .draft | not)' <<<"$RELEASES")" = true ]; then
+            echo "::error::release $VERSION is published; its tag is permanent. Fix forward with the next version"; exit 1
+          fi
+          for id in $(jq -r '.[].id' <<<"$RELEASES"); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+            echo "deleted draft release $id"
+          done
+          PR=$(gh pr list --head "release/$VERSION" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$PR" ]; then
+            gh pr close "$PR" --comment "Release $VERSION abandoned before publication (Abandon Release workflow, #428)."
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/release/$VERSION" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/release/$VERSION"
+          fi
+          echo "release $VERSION abandoned (draft release, PR, branch)"

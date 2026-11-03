@@ -1,0 +1,140 @@
+{
+  "accepted_of_3": {
+    "sum_excl_sync": 3,
+    "wrong": 2,
+    "xor_excl_sync": 3,
+    "xor_incl_sync": 3
+  },
+  "check": 1,
+  "identity": {
+    "dis_serial_present": true,
+    "firmware": "0.7.4",
+    "id_prefix": "5c67045f",
+    "model": "Neo",
+    "name": "Tacx Neo *****"
+  },
+  "link_dropped_during_run": false,
+  "trials": [
+    {
+      "accepted": true,
+      "label": "xor_incl_sync",
+      "latency_us": 62702,
+      "p71": null,
+      "round": 0,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "sum_excl_sync",
+      "latency_us": 87049,
+      "p71": null,
+      "round": 0,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 57",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "xor_excl_sync",
+      "latency_us": 48353,
+      "p71": null,
+      "round": 0,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 B3",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "wrong",
+      "latency_us": 49975,
+      "p71": null,
+      "round": 0,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 E8",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "xor_incl_sync",
+      "latency_us": 45933,
+      "p71": null,
+      "round": 1,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "sum_excl_sync",
+      "latency_us": 44859,
+      "p71": null,
+      "round": 1,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 57",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "xor_excl_sync",
+      "latency_us": 53470,
+      "p71": null,
+      "round": 1,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 B3",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "wrong",
+      "latency_us": 84996,
+      "p71": null,
+      "round": 1,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 E8",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "xor_incl_sync",
+      "latency_us": 84133,
+      "p71": null,
+      "round": 2,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 17",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "sum_excl_sync",
+      "latency_us": 86549,
+      "p71": null,
+      "round": 2,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 57",
+      "write_error": null
+    },
+    {
+      "accepted": true,
+      "label": "xor_excl_sync",
+      "latency_us": 54545,
+      "p71": null,
+      "round": 2,
+      "rx": "A4 09 4F 05 36 FF FF FF FF C8 00 07 1E",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 B3",
+      "write_error": null
+    },
+    {
+      "accepted": false,
+      "label": "wrong",
+      "latency_us": null,
+      "p71": null,
+      "round": 2,
+      "rx": null,
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 36 01 E8",
+      "write_error": null
+    }
+  ],
+  "what_was_sent": "page 70 request for page 54, msg 0x4F, write-with-response, four checksum rules x3 rounds"
+}

@@ -13,9 +13,13 @@ the activity rule and the aggregate function (A1–A6) of §4.4.1 literally, and
   after normalising timestamps.
 * scenarios(): named regressions, one per pre-mortem counterexample so far.
 
-Run: python3 docs/adr/models/trainer_following.py [path/to/0002-ble-trainer.md]   (exit 0 = all
-checks pass; the ADR path defaults to the sibling file); CI runs it as the
-`following-model` flake check, `just model` locally.
+Run: python3 docs/adr/models/trainer_following.py [path/to/0002-ble-trainer.md [fixture.json]]
+(exit 0 = all checks pass; the ADR path defaults to the sibling file; with a fixture path it
+also fails when the committed Rust refinement fixture differs from `--emit-fixture` output);
+CI runs it as the `following-model` flake check, `just model` locally.
+`python3 trainer_following.py --emit-fixture PATH` writes the fixture the Rust implementation
+(`crank-engine::erg::following`, #218) reads: constants, table order, reply rows and verdict
+traces. `just model-fixture` regenerates the committed copy.
 """
 from __future__ import annotations
 
@@ -24,8 +28,12 @@ from collections import deque
 from dataclasses import dataclass, replace
 
 # --- constants (§4.4.1), in seconds; the model uses integer time in `unit` per second ---
-L_S, N_FOLLOW, T_VERIFY_S, T_MISMATCH_S, T_UNKNOWN_S = 2, 3, 2, 2, 5
+L_S, N_FOLLOW, T_VERIFY_S, T_MISMATCH_S = 2, 3, 2, 2
 P_S = {"erg": 1, "track": 2, "wind": 2}  # reply period per component (§4.4.1 echo schedule)
+# §4.4.1 T_unknown(c) = 4·P_c + 1 s: a healthy component may lose three replies in a row (HIL #44 Part A)
+UNK_MULT, UNK_PAD = 4, 1   # T_unknown(c) = UNK_MULT·P_c + UNK_PAD s
+DECIDE_MULT = 3            # T_decide(c) = T_verify + T_mismatch + DECIDE_MULT·P_c
+T_UNKNOWN_S = {c: UNK_MULT * p + UNK_PAD for c, p in P_S.items()}   # erg 5 s, track and wind 9 s
 
 
 @dataclass(frozen=True)
@@ -38,14 +46,18 @@ class K:
     def T_verify(self): return T_VERIFY_S * self.unit
     @property
     def T_mismatch(self): return T_MISMATCH_S * self.unit
-    @property
-    def T_unknown(self): return T_UNKNOWN_S * self.unit
+    def T_unk(self, c): return T_UNKNOWN_S[c] * self.unit
+    def T_spec(self, c):
+        # The ADR's formula T_unknown(c) = 4·P_c + 1 s, derived from P_c independently of the
+        # T_UNKNOWN_S table the machine uses. The monitors and scenarios compare the machine
+        # against this, so a wrong table entry fails behaviourally, not only check_constants.
+        return (UNK_MULT * P_S[c] + UNK_PAD) * self.unit
     def P(self, c): return P_S[c] * self.unit
     def T_decide(self, c):
         # §4.4.1 decision deadline: T_verify + T_mismatch + 3·P_c
         return self.T_decide_p(self.P(c))
     def T_decide_p(self, p):
-        return self.T_verify + self.T_mismatch + 3 * p
+        return self.T_verify + self.T_mismatch + DECIDE_MULT * p
     def V(self, c):
         # §4.4.1 guarantee 4: time from a component's first agreeing reply (replies every P_c)
         # to its verification: P_c · max(N_follow − 1, ⌈T_verify / P_c⌉)
@@ -65,6 +77,7 @@ def components(mode):
 # --- component machine (§4.4.1 table C1–C9) ---
 @dataclass(frozen=True)
 class Comp:
+    name: str = ""                    # component (erg | track | wind): selects T_unknown(c)
     state: str = "unverified"          # unverified | following | not_following | silent
     streak_n: int = 0
     streak_first: int | None = None
@@ -73,8 +86,8 @@ class Comp:
     not_required_since: int | None = None  # None while required
 
 
-def fresh(now):
-    return Comp(last_evidence=now)
+def fresh(now, name):
+    return Comp(name=name, last_evidence=now)
 
 
 # The component table (§4.4.1) in the ADR's row order. TABLE_ORDER is checked against the ADR
@@ -94,7 +107,7 @@ class Row:
 
 
 def _stale(c, now, k):
-    return c.state == "silent" or now - c.last_evidence >= k.T_unknown
+    return c.state == "silent" or now - c.last_evidence >= k.T_unk(c.name)
 
 
 def _reset(c, now, k):
@@ -153,7 +166,7 @@ def comp_disagree(c: Comp, now, k: K) -> Comp:
 
 
 def comp_tick(c: Comp, now, k: K) -> Comp:
-    if c.state != "silent" and now - c.last_evidence >= k.T_unknown:   # C7
+    if c.state != "silent" and now - c.last_evidence >= k.T_unk(c.name):   # C7
         return replace(c, state="silent", streak_n=0, streak_first=None, dis_since=None)
     return c
 
@@ -163,9 +176,9 @@ def comp_stop_required(c: Comp, now) -> Comp:                   # C8
     return replace(c, state=st, streak_n=0, streak_first=None, not_required_since=now)
 
 
-def comp_resume_required(c: Comp | None, now, k: K) -> Comp:    # C9
-    if c is None or c.not_required_since is None or now - c.not_required_since > k.T_unknown:
-        return fresh(now)
+def comp_resume_required(c: Comp | None, now, k: K, name) -> Comp:    # C9
+    if c is None or c.not_required_since is None or now - c.not_required_since > k.T_unk(name):
+        return fresh(now, name)
     gap = now - c.not_required_since
     return replace(c, last_evidence=c.last_evidence + gap, not_required_since=None)
 
@@ -218,7 +231,7 @@ def set_desired(m: Machine, mode, now, k: K) -> Machine:
                 comps[c] = comp_stop_required(comps[c], now)
         for c in new_req:
             if c not in old_req:
-                comps[c] = comp_resume_required(comps.get(c), now, k)
+                comps[c] = comp_resume_required(comps.get(c), now, k, c)
         return _set(new, comps, hist)
     return _activity(new, m, now, k)
 
@@ -226,7 +239,7 @@ def set_desired(m: Machine, mode, now, k: K) -> Machine:
 def _activity(new: Machine, old: Machine, now, k: K) -> Machine:
     want = new.link_ready and new.desired is not None
     if want and not old.active:                                 # Activate
-        comps = {c: fresh(now) for c in components(new.desired)}
+        comps = {c: fresh(now, c) for c in components(new.desired)}
         return _set(replace(new, active=True), comps, [])
     if not want and old.active:                                 # Deactivate
         return replace(new, active=False, comps=(), hist=())
@@ -308,13 +321,13 @@ def normalise(m: Machine, now, k: K) -> Machine:
     comps = {}
     for name, c in m.comps:
         if c.not_required_since is None:
-            nrs, le = None, clamp(c.last_evidence, k.T_unknown + 1)
+            nrs, le = None, clamp(c.last_evidence, k.T_unk(name) + 1)
         else:
             # not required: the silence clock is paused (C9), so keep its required-time age
-            nrs = clamp(c.not_required_since, k.T_unknown + 1)
-            le = nrs - min(c.not_required_since - c.last_evidence, k.T_unknown + 1)
+            nrs = clamp(c.not_required_since, k.T_unk(name) + 1)
+            le = nrs - min(c.not_required_since - c.last_evidence, k.T_unk(name) + 1)
         comps[name] = Comp(
-            state=c.state, streak_n=min(c.streak_n, N_FOLLOW),
+            name=name, state=c.state, streak_n=min(c.streak_n, N_FOLLOW),
             streak_first=clamp(c.streak_first, k.T_verify),
             dis_since=clamp(c.dis_since, k.T_mismatch),
             last_evidence=le, not_required_since=nrs)
@@ -361,8 +374,12 @@ CONFIGS = {
     "sim": (["keep", ("sim", 0, 0), ("sim", 1, 0), ("erg", 0)],
             [None, ("echo", "track", 0), ("echo", "track", 1), ("echo", "wind", 0),
              ("echo", "wind", 1), ("echo", "erg", 0)]),
+    # SIM silence: one SIM mode, the agreeing replies of both components, and silent steps; deep
+    # enough (12 s) to pass T_unknown(c) = 9 s, which the full SIM alphabet cannot reach.
+    "sim-silence": (["keep", ("sim", 0, 0)],
+                    [None, ("echo", "track", 0), ("echo", "wind", 0)]),
 }
-LINK_EVENTS = {"erg": True, "sim": False}
+LINK_EVENTS = {"erg": True, "sim": False, "sim-silence": False}
 
 
 def classify(m_before: Machine, r, now, k: K):
@@ -407,9 +424,9 @@ def check_invariants(m: Machine, mon: Mon, k: K, ctx):
         if cm[c].state == "silent":
             assert agg in ("unknown", "not_following"), ("d", c, ctx)
         # silence is exactly T_unknown of required time without a reply about c
-        assert (cm[c].state == "silent") == (mon_get(mon, c)[5] >= k.T_unknown), ("d-sil", c, ctx)
+        assert (cm[c].state == "silent") == (mon_get(mon, c)[5] >= k.T_spec(c)), ("d-sil", c, ctx)
     if m.active and agg != "unknown":
-        good = all(mon_get(mon, c)[4] and mon_get(mon, c)[5] < k.T_unknown for c in req)
+        good = all(mon_get(mon, c)[4] and mon_get(mon, c)[5] < k.T_spec(c) for c in req)
         if good:
             assert agg == "following", ("c", ctx)
 
@@ -436,7 +453,7 @@ def mon_update(mon: Mon, m_prev: Machine, m_pre: Machine, m_after: Machine, r, n
         a_n, a_age, d_n, d_age, a_ok, sil = mon_get(mon, c) if m_prev.active else (0, None, 0, None, False, 0)
         a_age, d_age = age(a_age, k.T_verify), age(d_age, k.T_mismatch)
         if c in req_prev:
-            sil = min(sil + 1, k.T_unknown)          # required time up to this instant
+            sil = min(sil + 1, k.T_spec(c))          # required time up to this instant
         if c in req_after and c not in req_prev:
             a_n, a_age, a_ok = 0, None, False      # verification never carries over (C8/C9)
             p = cm_pre[c]
@@ -444,7 +461,7 @@ def mon_update(mon: Mon, m_prev: Machine, m_pre: Machine, m_after: Machine, r, n
                                      and p.state == "unverified"):
                 d_n, d_age, sil = 0, None, 0       # fresh component (C1)
         cls = classes.get(c)
-        if cls is not None and sil >= k.T_unknown:
+        if cls is not None and sil >= k.T_spec(c):
             a_n, a_age, a_ok, d_n, d_age = 0, None, False, 0, None   # evidence too old (C2)
         if cls == "A":
             a_n, a_age = (1, 0) if a_n == 0 else (min(a_n + 1, N_FOLLOW), a_age)
@@ -456,7 +473,7 @@ def mon_update(mon: Mon, m_prev: Machine, m_pre: Machine, m_after: Machine, r, n
             sil = 0
             if d_n >= 2 and d_age >= k.T_mismatch:
                 out = replace(out, hit=tuple(sorted(set(out.hit) | {c})))
-        if c in req_after and sil >= k.T_unknown:
+        if c in req_after and sil >= k.T_spec(c):
             a_n, a_age, d_n, d_age, a_ok = 0, None, 0, None, False   # silent (C7)
         if cm[c].state == "following":
             d_n, d_age = 0, None
@@ -476,6 +493,7 @@ def explore(k: K, config: str, fair=False, depth=None, limit=3_000_000):
     seen = {start}
     q = deque([(start, 0)])
     max_undecided = {}
+    silent = set()
     while q:
         (m, mon, parity), level = q.popleft()
         if depth is not None and level >= depth:
@@ -508,12 +526,14 @@ def explore(k: K, config: str, fair=False, depth=None, limit=3_000_000):
                     ctx = (m, mon, link, d, r)
                     check_invariants(m2, mon2, k, ctx)
                     s = (normalise(m2, now, k), replace(mon2, hit=()), (parity + 1) % 2 if fair else 0)
+                    if any(c.state == "silent" for _, c in m2.comps):
+                        silent.add(s)
                     if s not in seen:
                         seen.add(s)
                         if len(seen) > limit:
                             raise RuntimeError("state space exceeds limit")
                         q.append((s, level + 1))
-    return len(seen), max_undecided
+    return len(seen), max_undecided, len(silent)
 
 
 def _fair_reply(m: Machine, link, d, r, parity):
@@ -593,12 +613,13 @@ class CMon:
     gap: int | None = None    # time since c stopped being required (capped T_unknown + 1)
 
 
-def explore_component(k: K, period=None):
+def explore_component(k: K, name="erg", period=None):
     """Free walk (period None): every step may start, stop or resume the requirement and carry
     no reply, an Agree or a Disagree. Fair walk (period P): always required, a reply of either
     class exactly every P steps; checks the decision deadline. Returns (states, max undecided)."""
-    cap_sil, cap_gap = k.T_unknown, k.T_unknown + 1
-    start = (fresh(BASE), True, CMon(), 0, 0)   # comp, required, monitor, phase, undecided age
+    tu = k.T_spec(name)   # monitor side: the ADR formula, not the machine's table
+    cap_sil, cap_gap = tu, tu + 1
+    start = (fresh(BASE, name), True, CMon(), 0, 0)   # comp, required, monitor, phase, undecided age
     seen, q, worst = {start}, deque([start]), 0
     while q:
         c, req, mon, phase, und = q.popleft()
@@ -614,13 +635,13 @@ def explore_component(k: K, period=None):
                 mo = replace(mo, a_age=ages(mo.a_age, k.T_verify), d_age=ages(mo.d_age, k.T_mismatch),
                              gap=ages(mo.gap, cap_gap) if not req else None)
                 if ev == "start":
-                    c2, req2, mo = fresh(now), True, CMon()
+                    c2, req2, mo = fresh(now, name), True, CMon()
                 elif ev == "stop":
                     c2, req2 = comp_stop_required(c2, now), False
                     mo = replace(mo, a_n=0, a_age=None, a_ok=False, gap=0)
                 elif ev == "resume":
-                    fresh_again = mo.gap is not None and mo.gap + 0 > k.T_unknown
-                    c2, req2 = comp_resume_required(c2, now, k), True
+                    fresh_again = mo.gap is not None and mo.gap + 0 > tu
+                    c2, req2 = comp_resume_required(c2, now, k, name), True
                     mo = CMon() if fresh_again else replace(mo, gap=None)
                 fresh_again = ev == "resume" and mo == CMon()
                 # the interval up to this instant counts as required time iff c was required
@@ -630,7 +651,7 @@ def explore_component(k: K, period=None):
                 hit = stale = False
                 pre = c2
                 if r is not None and req2:
-                    if mo.req_sil >= k.T_unknown:      # monitor's view of stale evidence (C2)
+                    if mo.req_sil >= tu:      # monitor's view of stale evidence (C2)
                         stale = True
                         mo = replace(mo, a_n=0, a_age=None, a_ok=False, d_n=0, d_age=None)
                     if r == "A":
@@ -645,7 +666,7 @@ def explore_component(k: K, period=None):
                         mo = replace(mo, a_n=0, a_age=None, a_ok=False, d_n=d_n, d_age=d_age, req_sil=0)
                 if req2:
                     c2 = comp_tick(c2, now, k)
-                if req2 and mo.req_sil >= k.T_unknown:
+                if req2 and mo.req_sil >= tu:
                     mo = replace(mo, a_n=0, a_age=None, a_ok=False, d_n=0, d_age=None)
                 if c2.state == "following":
                     mo = replace(mo, d_n=0, d_age=None)
@@ -665,7 +686,7 @@ def explore_component(k: K, period=None):
                         or c.state == "not_following", ("comp-single-D", ctx)
                 # (d) silence is exactly T_unknown of required time without a reply
                 if req2:
-                    assert (c2.state == "silent") == (mo.req_sil >= k.T_unknown), ("comp-d", ctx)
+                    assert (c2.state == "silent") == (mo.req_sil >= tu), ("comp-d", ctx)
                 # not_following ends only through verification, silence or a fresh start
                 if c.state == "not_following" and c2.state != "not_following":
                     # otherwise only a fresh start (C1: start, or resume after > T_unknown)
@@ -677,7 +698,7 @@ def explore_component(k: K, period=None):
                     und2 = 0 if c2.state in ("following", "not_following") else und + 1
                     worst = max(worst, und2)
                     assert und2 <= k.T_decide_p(period), ("deadline", und2, ctx)
-                n = normalise(Machine(active=True, comps=(("c", c2),)), now, k).comps[0][1]
+                n = normalise(Machine(active=True, comps=((name, c2),)), now, k).comps[0][1]
                 st = (n, req2, mo, (phase + 1) % period if period else 0, und2)
                 if st not in seen:
                     seen.add(st)
@@ -692,7 +713,7 @@ def check_aggregate():
     for n, mode in ((1, ("erg", 0)), (2, ("sim", 0, 0))):
         names = list(components(mode))
         for combo in __import__("itertools").product(states, repeat=n):
-            comps = {nm: Comp(state=st, dis_since=d) for nm, (st, d) in zip(names, combo)}
+            comps = {nm: Comp(name=nm, state=st, dis_since=d) for nm, (st, d) in zip(names, combo)}
             m = _set(Machine(link_ready=True, desired=mode, active=True), comps, [])
             agg = aggregate(m)
             sts = [st for st, _ in combo]
@@ -739,13 +760,19 @@ def check_routing(k: K):
 
 
 # --- named regression scenarios (every pre-mortem counterexample so far) ---
+TRACES = []   # every run() of this process, for the Rust refinement fixture (emit_fixture)
+
+
 def run(events, k: K, until):
     """events: {time: dict(link=..., desired=..., rep=...)}; returns aggregate per instant."""
-    m, out = Machine(), {}
+    m, out, states = Machine(), {}, []
     for t in range(0, until + 1):
         e = events.get(t, {})
         m = step(m, t, k, link=e.get("link"), desired=e.get("desired", "keep"), rep=e.get("rep"))
         out[t] = aggregate(m)
+        states.append((out[t], [f"{c}:{s.state}" for c, s in m.comps if c in components(m.desired)]
+                       if m.active else []))
+    TRACES.append((events, k.unit, until, states))
     return out
 
 
@@ -824,21 +851,22 @@ def scenarios():
     out = run(ev, k, 25)
     t = first(out, "not_following", after=4)
     res["r54_2_sim_wind_only"] = (all(out[s] != "following" for s in range(4, 26))
-                                  and t is not None and t <= 4 + T_UNKNOWN_S)
+                                  and t is not None and t <= 4 + T_UNKNOWN_S["track"])
 
     # #54 r3-1: both SIM components expire while telemetry continues, then correct
     # alternating replies resume: recovery must complete (no cross-component deadlock).
     ev = {0: {"link": "ready", "desired": ("sim", 3, 0)}}
     for s in range(1, 7):
         ev[s] = {"rep": ("echo", "wind" if s % 2 else "track", 0 if s % 2 else 3)}
-    # silence 7..15 (page 71 silent), then alternating correct replies
-    for s in range(16, 30):
+    # silence 7..24 (page 71 silent: longer than T_unknown(c) = 9 s for both components), then
+    # alternating correct replies
+    for s in range(25, 45):
         ev[s] = {"rep": ("echo", "wind" if s % 2 else "track", 0 if s % 2 else 3)}
-    out = run(ev, k, 30)
-    t = first(out, "following", after=16)
-    # exact: track first at 16, wind first at 17 (T_poll later), each verified V = 4 s later
-    res["r54_3_stale_components_recover"] = (out[14] == "unknown"
-                                             and t == 16 + 1 + k.V("track"))
+    out = run(ev, k, 45)
+    t = first(out, "following", after=25)
+    # exact: wind first at 25, track first at 26 (T_poll later), each verified V = 4 s later
+    res["r54_3_stale_components_recover"] = (out[24] == "unknown"
+                                             and t == 25 + 1 + k.V("track"))
 
     # #54 r4 (astra): after silence, wind at 10/12/14 s and track at 11/13/15 s →
     # following exactly at 15 s = first reply + T_poll + V (5 s), not 4 s.
@@ -858,6 +886,18 @@ def scenarios():
     out = run(ev, k, 20)
     res["r54_4_erg_recovery_exact"] = out[9] == "unknown" and first(out, "following") == 10 + k.V("erg")
 
+    # C9 / C1 boundary (§4.4.1): a component required again after exactly T_unknown(c) not
+    # required resumes (its disagreement episode survives: `not_following` is kept); one unit
+    # later it starts fresh (C1: `unverified`, episode gone).
+    base = {0: {"link": "ready", "desired": ("erg", 100)}, 1: {"rep": ("echo", "erg", 99)},
+            3: {"rep": ("echo", "erg", 99)}, 4: {"desired": ("sim", 0, 0)}}
+    back = 4 + T_UNKNOWN_S["erg"]
+    out_at = run({**base, back: {"desired": ("erg", 100)}}, k, back + 1)
+    out_after = run({**base, back + 1: {"desired": ("erg", 100)}}, k, back + 2)
+    res["r54_5_resume_boundary_exact"] = (
+        out_at[back] == "not_following" and out_after[back + 1] == "checking"
+        and out_after[back] != "not_following")
+
     # #54 r3-2: grade changes every second, only lagging track echoes, no wind ever:
     # the missing wind component must surface as not_following.
     ev = {0: {"link": "ready", "desired": ("sim", 0, 0)}}
@@ -866,7 +906,7 @@ def scenarios():
     out = run(ev, k, 30)
     t = first(out, "not_following")
     res["r54_3_lagging_cannot_mask_missing_wind"] = (
-        t is not None and t <= T_UNKNOWN_S and all(v != "following" for v in out.values()))
+        t is not None and t <= T_UNKNOWN_S["wind"] and all(v != "following" for v in out.values()))
 
     # #54 r3-3: repeated transitions must not defeat the verification deadline: a trainer
     # lagging 1 s behind a target that changes every second still verifies.
@@ -889,8 +929,16 @@ def scenarios():
     # silent trainer: checking for T_unknown after activation, then unknown.
     out = run({0: {"link": "ready", "desired": ("erg", 100)}}, k, 12)
     res["silent_trainer_checking_then_unknown"] = (
-        all(out[s] == "checking" for s in range(0, T_UNKNOWN_S))
-        and all(out[s] == "unknown" for s in range(T_UNKNOWN_S, 13)))
+        all(out[s] == "checking" for s in range(0, T_UNKNOWN_S["erg"]))
+        and all(out[s] == "unknown" for s in range(T_UNKNOWN_S["erg"], 13)))
+
+    # SIM silent trainer (guarantee 7): both components need T_unknown(c) = 4·P_c + 1 = 9 s.
+    out = run({0: {"link": "ready", "desired": ("sim", 1, 0)}}, k, 14)
+    sim_silence = UNK_MULT * P_S["track"] + UNK_PAD
+    res["silent_trainer_sim_checking_then_unknown"] = (
+        sim_silence == 9
+        and all(out[s] == "checking" for s in range(0, sim_silence))
+        and all(out[s] == "unknown" for s in range(sim_silence, 14)))
 
     # reconnect mid-ramp: unknown → checking → following.
     ev = ramp(0, 30, lag=0)
@@ -902,6 +950,85 @@ def scenarios():
     res["reconnect_mid_ramp"] = (out[11] == "unknown" and out[13] == "checking"
                                  and first(out, "following", after=13) is not None)
     return res
+
+
+FIXTURE_SEED = 54
+FIXTURE_RANDOM_TRACES = 40
+FIXTURE_STEPS = 72
+
+
+def _random_traces():
+    """Seeded random input sequences over the model's alphabets at 0.25 s resolution (unit 4):
+    link events, every desired change, echo and failure replies, silence."""
+    import random
+    rnd = random.Random(FIXTURE_SEED)
+    modes = [("erg", 0), ("erg", 1), ("sim", 0, 0), ("sim", 1, 0), ("sim", 0, 1)]
+    replies = [("echo", c, v) for c in ("erg", "track", "wind") for v in (0, 1)] \
+        + [("fail", c) for c in ("erg", "track", "wind")]
+    k = K(unit=4)
+    for i in range(FIXTURE_RANDOM_TRACES):
+        ev = {0: {"link": "ready", "desired": rnd.choice(modes)}}
+        # a reply rate that varies per trace: dense, one per second, sparse
+        every = rnd.choice((1, 2, 4, 8))
+        for t in range(1, FIXTURE_STEPS):
+            e = {}
+            if rnd.random() < 0.04:
+                e["link"] = rnd.choice(("lost", "ready"))
+            if rnd.random() < 0.08:
+                e["desired"] = rnd.choice(modes + [None])
+            if t % every == 0 and rnd.random() < 0.9:
+                e["rep"] = rnd.choice(replies)
+            if e:
+                ev[t] = e
+        yield ev, k, FIXTURE_STEPS
+
+
+def emit_fixture():
+    """The shared table for the Rust implementation (crank-engine::erg::following): constants,
+    the component-table row order and reply rows, and verdict traces (every named scenario of
+    this file plus seeded random input sequences). Nothing runs Python at Rust test time; the
+    `following-model` flake check fails when the committed file differs from this output."""
+    import json
+    del TRACES[:]
+    assert all(scenarios().values())
+    for ev, k, until in _random_traces():
+        run(ev, k, until)
+    enc = lambda v: None if v is None else list(v)
+    traces = []
+    for events, unit, until, states in TRACES:
+        steps = []
+        for t in sorted(events):
+            e = events[t]
+            step_ = {"t": t}
+            if "link" in e:
+                step_["link"] = e["link"]
+            if "desired" in e:
+                step_["desired"] = enc(e["desired"])
+            if "rep" in e:
+                step_["rep"] = enc(e["rep"])
+            steps.append(step_)
+        traces.append({"unit": unit, "until": until, "events": steps,
+                       "agg": [a for a, _ in states], "comps": [c for _, c in states]})
+    fx = {
+        "constants": {"L_s": L_S, "N_follow": N_FOLLOW, "T_verify_s": T_VERIFY_S,
+                      "T_mismatch_s": T_MISMATCH_S, "P_s": P_S, "T_unknown_s": T_UNKNOWN_S,
+                      "unknown_mult": UNK_MULT, "unknown_pad_s": UNK_PAD},
+        "table_order": list(TABLE_ORDER),
+        "reply_rows": [{"id": r.id, "on": r.on, "pre": r.pre} for r in REPLY_ROWS],
+        "traces": traces,
+    }
+    # one trace per line: reviewable diffs, still plain JSON
+    dump = lambda v: json.dumps(v, sort_keys=True, separators=(",", ":"))
+    head = dump({k: v for k, v in fx.items() if k != "traces"})
+    lines = ",\n".join(dump(t) for t in traces)
+    return head[:-1] + ',"traces":[\n' + lines + "\n]}\n"
+
+
+def check_fixture(path):
+    """The committed Rust fixture is exactly what this model emits."""
+    committed = open(path, encoding="utf-8").read()
+    assert committed == emit_fixture(), \
+        ("fixture is stale: regenerate with `just model-fixture`", path)
 
 
 def check_table_order(adr_path):
@@ -926,15 +1053,98 @@ def check_table_order(adr_path):
             assert klass == row.on, ("input class", row.id, cell, row.on)
 
 
+def check_constants(adr_path):
+    """The ADR's §4.4.1 numbers and this model's constants are the same (the model does not read
+    the ADR; this fails when either side is edited alone): the constants table, the reply periods
+    P_c, T_unknown(c) = 4·P_c + 1 s, the decision deadlines, the guarantee-1 stuck-component bounds,
+    the SIM recovery bound, the guarantee-7 silence times and the T_unknown(c) rationale."""
+    import re
+    text = open(adr_path, encoding="utf-8").read()
+    section = text[text.index("#### 4.4.1"):text.index("## 5. Decision")]
+
+    def find(pattern, what):
+        m = re.search(pattern, section, flags=re.M)
+        assert m, ("ADR text for " + what + " not found", pattern)
+        return m.groups()
+
+    table = {name: int(v) for name, v in re.findall(
+        r"^\| `(T_poll|L|N_follow|T_verify|T_mismatch)`[^|]*\| (\d+)(?: s)? \|", section, flags=re.M)}
+    model = {"T_poll": P_S["erg"], "L": L_S, "N_follow": N_FOLLOW, "T_verify": T_VERIFY_S,
+             "T_mismatch": T_MISMATCH_S}
+    assert table == model, ("ADR constants table != model constants", table, model)
+    # reply periods P_c (components table)
+    erg_p, sim_p = (int(x) for x in find(r"^\s*\| ERG \| `erg` \(49\) \| (\d+) s \|", "P_erg")
+                    + find(r"^\s*\| SIM and `Free`[^|]*\|[^|]*\| (\d+) s each \|", "P_sim"))
+    assert (erg_p, sim_p) == (P_S["erg"], P_S["track"]) and P_S["track"] == P_S["wind"], ("P_c", erg_p, sim_p)
+    # T_unknown(c) = 4·P_c + 1 s, stated per component kind
+    unk_erg, unk_sim = (int(x) for x in find(
+        r"^\| `T_unknown\(c\)`[^|]*\|[^|]*= (\d+) s \(ERG[^)]*\), (\d+) s \(SIM", "T_unknown(c)"))
+    assert (unk_erg, unk_sim) == (T_UNKNOWN_S["erg"], T_UNKNOWN_S["track"]) and \
+        T_UNKNOWN_S["track"] == T_UNKNOWN_S["wind"], ("T_unknown(c)", unk_erg, unk_sim)
+    assert all(T_UNKNOWN_S[c] == UNK_MULT * P_S[c] + UNK_PAD for c in P_S)
+    # the formulas as written: `4·P_c + 1 s` and `T_verify + T_mismatch + 3·P_c`
+    mult, pad = (int(x) for x in find(r"^\| `T_unknown\(c\)`[^|]*\| `(\d+)·P_c \+ (\d+) s`", "T_unknown formula"))
+    assert (mult, pad) == (UNK_MULT, UNK_PAD), ("T_unknown formula", mult, pad)
+    (dmult,) = find(r"^\| `T_decide\(c\)`[^|]*\| `T_verify \+ T_mismatch \+ (\d+)·P_c`", "T_decide formula")
+    assert int(dmult) == DECIDE_MULT, ("T_decide formula", dmult)
+    # T_decide(c) = T_verify + T_mismatch + 3·P_c
+    k = K()
+    d_erg, d_sim = (int(x) for x in find(
+        r"^\| `T_decide\(c\)`[^|]*\|[^|]*= (\d+) s \(ERG[^)]*\), (\d+) s \(SIM", "T_decide"))
+    assert (d_erg, d_sim) == (k.T_decide("erg"), k.T_decide("track")), ("T_decide", d_erg, d_sim)
+    # guarantee 1: not_following no later than L + 2·P_c + T_mismatch + r
+    g_erg, g_sim = (int(x) for x in find(
+        r"(\d+) s \+ r for ERG, (\d+) s \+ r for a SIM", "guarantee 1"))
+    assert (g_erg, g_sim) == (L_S + 2 * P_S["erg"] + T_MISMATCH_S, L_S + 2 * P_S["track"] + T_MISMATCH_S), \
+        ("guarantee 1", g_erg, g_sim)
+    # guarantee 3: the fair component walks' maxima and bounds, as stated
+    m_erg, m_sim, b_erg, b_sim = (int(x) for x in find(
+        r"measure a maximum of (\d+) s\s+\(`P_c` = 1 s\) and (\d+) s \(`P_c` = 2 s\) against bounds of (\d+) s and (\d+) s", "guarantee 3"))
+    w_erg = explore_component(k, "erg", period=1)[1]
+    w_sim = explore_component(k, "track", period=2)[1]
+    assert (m_erg, m_sim) == (w_erg // k.unit, w_sim // k.unit), ("guarantee 3 measured", m_erg, m_sim, w_erg, w_sim)
+    assert (b_erg, b_sim) == (k.T_decide("erg"), k.T_decide("track")), ("guarantee 3 bounds", b_erg, b_sim)
+    # guarantee 4: SIM aggregate following no later than T_poll + V after the first reply
+    (v_sim,) = find(r"`T_poll \+ 4 s` = \*\*(\d+) s\*\*", "guarantee 4")
+    assert int(v_sim) == P_S["erg"] + k.V("track") == P_S["erg"] + k.V("wind"), ("guarantee 4", v_sim)
+    # guarantee 7: silence is checking for T_unknown(c) after Activate
+    s_erg, s_sim = (int(x) for x in find(
+        r"`checking` for `T_unknown\(c\)` \((\d+) s for ERG[^)]*, (\d+) s for SIM", "guarantee 7"))
+    assert (s_erg, s_sim) == (T_UNKNOWN_S["erg"], T_UNKNOWN_S["track"]), ("guarantee 7", s_erg, s_sim)
+    # guarantee 7, first sentence: the SIM total ("so 9 s in SIM where both components must be silent")
+    (t_sim,) = find(r"so (\d+) s in SIM where both components must be silent", "guarantee 7 SIM total")
+    assert int(t_sim) == T_UNKNOWN_S["track"] == T_UNKNOWN_S["wind"], ("guarantee 7 SIM total", t_sim)
+    # the rationale in the T_unknown(c) row: bold formula and the m, gap arithmetic per component
+    b_mult, b_pad, m_e, gap_e, m_s, gap_s = (int(x) for x in find(
+        r"\*\*(\d+)·P_c \+ (\d+) s:\*\* ERG `m` = (\d+) \(gap (\d+) s\)[^;]*; one SIM component `m` = (\d+) \(gap (\d+) s;",
+        "T_unknown rationale"))
+    assert (b_mult, b_pad) == (UNK_MULT, UNK_PAD), ("rationale formula", b_mult, b_pad)
+    for c, m, gap in (("erg", m_e, gap_e), ("track", m_s, gap_s)):
+        need = -(-T_UNKNOWN_S[c] // P_S[c]) - 1  # m = ceil(T_unknown / P_c) - 1 losses in a row
+        assert (m, gap) == (need, (need + 1) * P_S[c]), ("rationale m, gap", c, m, gap, need)
+    # guarantee 7, second sentence: the fallback shows `checking` for the same times
+    f_erg, f_sim = (int(x) for x in find(
+        r"shows `checking` for the first (\d+) s \(ERG\) or (\d+) s \(SIM\) of every activation", "guarantee 7 fallback"))
+    assert (f_erg, f_sim) == (T_UNKNOWN_S["erg"], T_UNKNOWN_S["track"]), ("guarantee 7 fallback", f_erg, f_sim)
+
+
+SIM_SILENCE_DEPTH = 12  # reduced alphabet, passes T_unknown(c) = 9 s
 SIM_FREE_DEPTH = 6  # every input sequence of length ≤ 6 (137 k states, ~30 s)
 
 
 def main(argv):
     ok = True
     import os
+    if len(argv) == 3 and argv[1] == "--emit-fixture":
+        open(argv[2], "w", encoding="utf-8").write(emit_fixture())
+        print("wrote", argv[2])
+        return 0
+    fixture = argv[2] if len(argv) > 2 else None
     adr = argv[1] if len(argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "0002-ble-trainer.md")
     check_table_order(adr)
     print("table order: ADR §4.4.1 rows == model evaluation order (C1–C9, C2 pre-step), ok")
+    check_constants(adr)
+    print("constants: ADR §4.4.1 == model (table, P_c, T_unknown(c) and T_decide formulas, guarantees 1, 3, 4, 7), ok")
     for name, passed in scenarios().items():
         print(f"scenario {name}: {'ok' if passed else 'FAIL'}")
         ok &= passed
@@ -943,17 +1153,26 @@ def main(argv):
     print("aggregate A1–A6: ok over every component-state combination")
     check_routing(k)
     print("routing R2–R5: ok over every mode pair, history age and reply")
-    n, _ = explore_component(k)
-    print(f"component walk (free, C1–C9 + requirement toggles): {n} states to fixpoint, ok")
+    for name in ("erg", "track"):
+        n, _ = explore_component(k, name)
+        print(f"component walk (free, {name}, C1–C9 + requirement toggles, "
+              f"T_unknown {k.T_unk(name)}s): {n} states to fixpoint, ok")
     for p in (1, 2):
-        n, worst = explore_component(k, period=p)
+        n, worst = explore_component(k, "erg" if p == 1 else "track", period=p)
         print(f"component walk (fair, P={p}s): {n} states to fixpoint, "
               f"max undecided {worst}s <= T_decide {k.T_decide_p(p * k.unit)}s, ok")
     for config, fair, depth in (("erg", False, None), ("erg", True, None),
-                                ("sim", True, None), ("sim", False, SIM_FREE_DEPTH)):
-        n, und = explore(k, config, fair=fair, depth=depth)
+                                ("sim", True, None), ("sim", False, SIM_FREE_DEPTH),
+                                ("sim-silence", False, SIM_SILENCE_DEPTH)):
+        n, und, silent = explore(k, config, fair=fair, depth=depth)
         bound = "fixpoint" if depth is None else f"all sequences of length <= {depth}"
-        print(f"machine walk {config} fair={fair}: {n} states ({bound}), ok; max undecided {und}")
+        print(f"machine walk {config} fair={fair}: {n} states ({bound}), ok; max undecided {und}; "
+              f"{silent} states with a silent component")
+        if config == "sim-silence":
+            assert silent > 0, "SIM silence is not reachable: the walk no longer exercises guarantee 2"
+    if fixture:
+        check_fixture(fixture)
+        print("fixture: committed Rust refinement fixture == model output, ok")
     print("all checks passed" if ok else "SCENARIO FAILURES")
     return 0 if ok else 1
 

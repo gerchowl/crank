@@ -3,6 +3,10 @@
 Status: **proposed** (#24), round 5 — the final design round (after three rounds of astra and opus reviews; items
 still open after this round are filed as issues, not further rounds; the PR body maps every
 finding to its resolution). It drives the M1 UI issues once the reviews accept it.
+**Addendum §15** (#87, round 3): training profile, planner wish, Why?/Background.
+**Amendment §16** (#175, owner-accepted 2026-10-13): layout revisit of Ride, Today and the shell.
+**Amendment §18** (#452, owner-accepted 2026-11-02, #438): design direction A "Telemetry": visual language, grid, ride
+anatomy, 32 px keyboard-first controls, motion, and the enforced design rules.
 Prototype: `design/prototype/` (`pnpm -C design/prototype dev`). Screenshots: `docs/design/screens/`
 (`pnpm -C design/prototype screens`). Where this document conflicts with `spec/UX-SPEC.md` or
 `spec/VIEWS.md`, this document wins; §9 lists every such place. Engine behaviour (pauses, reconnects, ERG
@@ -89,7 +93,7 @@ without wasting sessions, and wants to trust that the plan fits how they feel to
 | Rainbow zone colours (TrainingPeaks, Zwift) | **Keep as opt-in only** | Already decided in THEMES: sequential ramp by default, rainbow behind a toggle, never the only carrier (zone labels are text). |
 | Mandatory FTP/ramp test before training (Zwift, TrainerRoad) | **Change** | Testing tired riders on day 1 is bad advice and bad onboarding. Start with priors ± uncertainty, ride today, refine from rides or an optional assessment week (spec/ONBOARDING.md, P7). |
 | A calendar as the home screen (TrainerRoad, TrainingPeaks) | **Change** | The home question is "what do I ride now?". Home = **Today**: check-in and one proposal. The last days are context under it. |
-| "Regenerate" for a new random plan | **Change** | Random re-rolls teach nothing. Directed alternatives: **Shorter · Easier · Harder · Other type**, each with a reason (planner variants, #15). |
+| "Regenerate" for a new random plan | **Change** | Random re-rolls teach nothing. Directed alternatives: ~~**Shorter** (the time choice) ·~~ superseded by §16.2: the time choice in the check-in · **Easier / Harder** (the wish one row down / up, §15.2) · **Other wish** (the matrix or the remote's wish mode; ~~a button on the card~~ superseded by §16.2: no card button, S / Pause), each answered with the same outcome table and reasons (§15.2; planner variants, #15). |
 | A readiness score as the reason (WHOOP-style, TrainerRoad AI) | **Change** | "Readiness 3.8/5" can't be checked. The reason lists facts the rider can verify: what they answered, the last similar session, recent load, time available (§5.1). |
 | ERG intensity ± (TrainerRoad, Zwift) | **Keep** | A real need (bad day, good day). Fixed-width, shows the rider's own cumulative offset; the coach's change is shown separately, at the target (§5.2). |
 | Coach pop-ups / toasts (SYSTM tips, Zwift messages) | **Change** | Toasts cover data and vanish. The coach has a reserved **lane** on the ride screen (P4, P5) and a decision log in Review. |
@@ -116,7 +120,7 @@ Four places plus two modes. The coach is not a place: it acts in Today (proposal
  │   coach, controls+sound, │
  │   screen, appearance)    │
  └───────────────────────────┘
- First run: Onboarding (7 steps, no rail, resumable) → Today
+ First run: Onboarding (8 steps, no rail, resumable) → Today
 ```
 
 - **Ride is a mode, not a page.** No rail, no navigation; exits only via finish (→ Review) or End ride
@@ -134,7 +138,7 @@ Four places plus two modes. The coach is not a place: it acts in Today (proposal
 1. **Daily ride (the 95 % path):** Today → check-in (pre-filled from the last answer; one tap "Same as
    yesterday", or change what differs) → proposal with reasons → **Start** → Ready check (trainer green → Start)
    → Ride → auto Review → RPE + rate calls → History.
-2. **First run:** Onboarding (7 steps) → "Your starting model" (CP 255 ± 35 W, self-report) → Today with a
+2. **First run:** Onboarding (8 steps) → "Your starting model" (CP 255 ± 35 W, self-report) → Today with a
    conservative proposal (P7).
 3. **Build/edit:** Workouts → pick or new → edit in profile / outline / text → AI on selection → read the
    change summary and before/after → accept (verified, #1) → Ride this.
@@ -156,26 +160,35 @@ keyboard access (`?` lists keys). Issue numbers and fixture notes never appear i
   60 / 90 min chips.
 - **Confirming today.** The answers are pre-filled from the last check-in and labelled so. **Start stays
   disabled until today is confirmed**: one tap on **Same as yesterday**, or changing any answer. Changing any
-  answer re-asks the planner; the proposal shows a pending state in place (no layout shift).
+  answer re-asks the planner; the proposal shows a pending state in place (no layout shift). Once confirmed and the
+  red flags are answered, the check-in collapses to **one summary line** with *Edit* (§16.2).
 - **Proposal card** (the hero): name, duration, what it is for, a profile (P13) with zones, and **why today
   as checkable facts** (bullets: what you answered, the last similar session and when, load over the last 7
-  days vs usual, time available) plus the confidence of the athlete model used. Actions: **Start** (primary,
-  Enter), **Shorter / Easier / Harder / Other** (directed variants, #15), **Edit** (opens the editor on a copy).
+  days vs usual, time available) plus the confidence of the athlete model used. ~~Actions: **Start** (primary,
+  Enter), **Shorter** (time), **Easier / Harder** (= the wish − / +, one outcome table, §15.2), **Edit** (opens the
+  editor on a copy); "Other" is the wish matrix / wish mode (§15.2). After the check-in the proposal becomes the
+  **saddle proposal** (§15.2).~~ superseded by §16.2: **one** proposal card — actions Start ⏎ · − Easier · + Harder ·
+  Ride my wish / Ride the full X; the facts and *Edit a copy* sit behind "Why today: every fact" on the desk card;
+  Shorter is the check-in's time; "Other" is the matrix / wish mode.
   Structured reasons need a planner contract change (#29).
 - **Model card**: CP / W′ / HRmax with the **± at the same size as the value** (secondary ink), and under each
   its provenance and age ("from 9 rides · 2 d ago"); older than 6 weeks → stale styling; what is still
   calibrating (spec/ONBOARDING §4).
-- **Health cap** (injury answer): a status card states the cap (threshold, 100 % of CP, in watts) and where to
-  lift it; the **planner's proposal respects it** (e.g. "Tempo 2×10′ (capped)"), the profile draws the cap line,
+- **Health cap** (injury answer, or the over-45 advisory not yet acknowledged, #195): a status card states the
+  cap (threshold, 100 % of CP, in watts), why, and where to lift it; the **planner's proposal respects it** (e.g. "Tempo 2×10′ (capped)"), the profile draws the cap line,
   and the reasons say so. A medical stop replaces the whole proposal card (§5.8).
-- **Symptom question**: every check-in ends with the red-flag question (no default); Start needs it answered.
+- **Symptom question**: every check-in ends with the red-flag question (no default); Start needs it answered. The
+  check-in also asks the *changes* and *unwell today* questions (§5.8, #194, #196); a yes to unwell replaces the
+  proposal with a rest proposal.
 - **Pre-filled vs confirmed**: yesterday's answers are drawn as dashed outlines until the rider confirms
   ("Same as yesterday") or changes one; confirmed answers are filled.
 - **Last 7 days**: seven day cells (done / rest / today; the number is labelled "TSS") — context, not navigation.
 
 ### 5.2 Ride — *"Am I doing it right, how long, what next?"*
 
-Fixed anatomy at every size (geometry does not change between phases or states; only contents do, P4):
+Fixed anatomy at every size (geometry does not change between phases or states; only contents do, P4).
+~~The round-1 anatomy below~~ superseded by §16.1 (content-sized status-bar groups with one device pill; hero rows
+`row 1 + caption | T1 | band`; "next" pinned on the road; the coach lane a fixed grid row) — kept for reference:
 
 ```
 ┌ status bar: [⏸ Pause] │ 13:25 left │ ERG  you [−] ±0% [+] │ ● NEO │ ● HR │ ?  ─────────────────┐  fixed widths
@@ -192,32 +205,33 @@ Fixed anatomy at every size (geometry does not change between phases or states; 
 └─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Rows 1–5 exist in every template with the same heights; a template that has nothing for a row leaves it
-empty. The side and the coach lane are identical in every phase.
+~~Rows 1–5 exist in every template with the same heights~~ superseded by §16.1: the three hero rows exist in every
+template with the same heights; a template that has nothing for a row leaves it empty. The side and the coach lane
+are identical in every phase.
 
 **Phase templates** (what fills the hero; derived from the current block, P3):
 
-| Phase / block | Row 2 caption | Row 3 (T1) | Row 4 (T2) + sub-line | Why |
+| Phase / block | ~~Row 2~~ superseded by §16.1: Row-1 caption | Row 3 (T1) | Row 4 (T2) + sub-line | Why |
 |---|---|---|---|---|
 | **Warm-up / ERG ramp** | left in block | block countdown | target now + band; sub: "↗ to 210 W" | The target is moving; the rider needs to know it keeps rising and to where. |
 | **Steady work (ERG)** | left in block | block countdown | target + band with actual marker + Δ chip | In ERG the band is a compliance check; cadence (side) is the lever. |
 | **Short on/off (≤ 60 s reps)** | left in rep | countdown | target + band; row 1 shows ON/OFF + rep pips | Reps are counted, not read; pips are glanceable. |
 | **Sprint (free / non-ERG)** | power | **actual power** | **fill bar** of actual vs target (target tick at 100 %) + countdown | The rider steers power; the fill shows "enough?" without a second number to compare. |
 | **HR-guided recovery** (`hr<`) | HR below 118 in | **range or estimate** (P7, below) | "15 bpm to go" + recovery curve with a live dot, axes and the band; sub: "block ends between 2:00 and 4:00" | The question is "when can I go?", with honest uncertainty and the hard limits. |
-| **Cool-down** | left in block | block countdown | target + band; row 5: "ride complete — Review opens automatically" | Signals the end. |
+| **Cool-down** | left in block | block countdown | target + band; ~~row 5: "ride complete — Review opens automatically"~~ superseded by §16.1: the road's "next" label at the ride's end: "ride complete → Review" | Signals the end. |
 
 **Recovery estimate (P7).** The core gives the posterior mean and a 90 % band of "time until HR is below the
 target", clamped to the block's min/max. A clamped value is the block's **rule**, not a prediction, so the
 screen says which event the number is about (core flags, #13; prototype `recoveryRead()`):
 
-| Situation | Row 2 caption | T1 | Row 4 sub-line |
+| Situation | ~~Row 2~~ superseded by §16.1: Row-1 caption | T1 | Row 4 sub-line |
 |---|---|---|---|
 | fit not ready yet | HR below 118 in | "fitting…" | block ends in m:ss–m:ss |
-| HR predicted below target before the minimum | **block ends at its minimum in** | time to the minimum | HR due below 118 before then |
+| HR predicted below target before the minimum | ~~**block ends at its minimum in**~~ superseded by §16.1: **block's minimum in** | time to the minimum | HR due below 118 before then |
 | prediction inside the block's limits, band ≤ 30 s | HR below 118 in | ≈ mean, band "1:01–1:12" under it (the backend's interval, never widened or narrowed for display) | block ends in m:ss–m:ss |
 | band > 30 s | HR below 118 in | the band ("1:40–3:40") at range size (§6.2) | block ends in m:ss–m:ss |
-| band reaches the maximum | HR below 118 in · or at the block maximum | the band | block ends in m:ss–m:ss |
-| HR lost (ADR-0001 §5) | HR lost · block ends at its maximum in | time to the maximum | the chart stops its forecast; the last HR is drawn hollow (stale) |
+| band reaches the maximum | ~~HR below 118 in · or at the block maximum~~ superseded by §16.1: HR < 118 · or block max | the band | block ends in m:ss–m:ss |
+| HR lost (ADR-0001 §5) | ~~HR lost · block ends at its maximum in~~ superseded by §16.1: HR lost · block max in | time to the maximum | the chart stops its forecast; the last HR is drawn hollow (stale) |
 
 All times count **from now** (the sub-line too), so two numbers on screen never use different origins.
 
@@ -255,7 +269,7 @@ target ("90rpm") counts as 85–95 (#13).
 |---|---|---|
 | Coach asks (`pending`) | Tone (§7.3). Lane: verb and the **result in watts** on one line ("Ease off to 245 W?"), the band and % in the grammar line ("lean −3 % · Coach = accept · Keep = keep plan"), one short reason (≤ 24 characters), band word as a small tag, two **equal-weight** buttons, **numeric deadline** ("keeps plan in 24 s"); on the road the affected work blocks get a **thick dashed outline at their proposed height**, on top of any solid (already applied) outline, and a T3 label on the road states it ("proposed −3 % · 1 block") — readable from the saddle, not 13 px chrome | Coach = accept · Keep = keep · silence = keep |
 | Coach applied (`auto_applied`, opt-in) | Tone. Lane: "Eased off −5 %" + reason + "**Back to plan · 11 s**"; applied blocks **solid** outline; the target's sub-line shows "coach −5 %" on the changed blocks | Keep (within the window) = back to plan · Coach does nothing |
-| Trainer lost | Warning tone. Chip ⚠ NEO "lost"; row 4: "**⚠ Trainer lost 0:12**" / "paused 2:47 into block · ride saved" / "reconnecting (try 3)"; an HR-recovery forecast is frozen ("paused · then ends at its maximum in"); actual power, cadence and W′ balance "—"; countdown frozen and dimmed (ADR-0002 §6) | — |
+| Trainer lost | Warning tone. Chip ⚠ NEO "lost"; row 4: "**⚠ Trainer lost 0:12**" / "paused 2:47 into block · ride saved" / "reconnecting (try 3)"; an HR-recovery forecast is frozen (~~"paused · then ends at its maximum in"~~ superseded by §16.1: "paused · block max in"); actual power, cadence and W′ balance "—"; countdown frozen and dimmed (ADR-0002 §6) | — |
 | Trainer lost ≥ 30 s | Row 4 adds what to try ("power-cycle NEO · close Zwift") and **End…**, which opens the End dialog (Keep riding focused); reconnecting continues behind it | End (bindable) → End dialog |
 | Trainer back after ≥ 2 min | The re-entry policy (§6.6) applies: row 4 "↻ Back after 3:10" / "re-warm-up 2:48 · then this interval from its start" | — |
 | Trainer reconnected | Row 4 for the 5 s soft start: "Reconnected · easing in to 253 W" / "workout resumed" (or "pedal to resume" at 0 rpm); then the chip shows "NEO back · 0:14 gap" for 10 s | — |
@@ -286,7 +300,7 @@ A sheet over Today: workout name + duration, **NEO** (FE-C, connected / reconnec
 never the riskier choice — and *Start without HR* with the consequence: "it joins as soon as it's found; until
 then HR-guided recoveries run to their maximum and the coach can't push"), mode (ERG), the health cap if
 active, "starts with 8:00 warm-up". **Start** is enabled when the trainer is connected. It is read from the
-saddle, so it uses the ride tiers (T3+ title, T3 rows, 72 px buttons) and every button shows its bound key or
+saddle, so it uses the ride tiers (T3+ title, T3 rows, ~~72 px buttons~~ superseded by §18.4: 32 px controls) and every button shows its bound key or
 remote button; the usual choice is primary and focused, "Start without HR" never is. A free ride says so.
 
 ### 5.5 Review — *"Did it work, and was the coach right?"*
@@ -344,14 +358,15 @@ suggestion is explained before it is accepted:
 Undo/redo spans all three views; tree ops, undo/redo and DSL ↔ tree sync are unit-tested in production (#9).
 
 ### 5.8 Onboarding (first run)
-Seven steps (spec/ONBOARDING §1): About you · Background · Current numbers · Health check · Devices ·
-Baseline · Your starting model. A mode without the rail (§3); progress persisted after every step, so a
-relaunch shows **"Welcome back — continue at Health check (4 of 7)"**.
+Eight steps (spec/ONBOARDING §1; §15.1 added *Training for*): About you · Background · Current numbers · Health
+check · Training for · Devices · Baseline · Your starting model. A mode without the rail (§3); progress
+persisted after every step, so a relaunch shows **"Welcome back — continue at Health check (4 of 8)"**.
 - Every step states what **Skip** does ("Skipping keeps wide priors: CP ± 60 W, the coach stays conservative").
 - **Current numbers**: value, *what it came from* (ramp test / 20-min test / app estimate / guess) and
   *when* (a date); the uncertainty shown grows with age and source.
-- **Health check** (spec/ONBOARDING §1.5; item list follows the PAR-Q+ and the ACSM 2015 pre-participation
-  screening, knowledge-pack entry #77). Every question starts **not answered**; Continue stays disabled until
+- **Health check** (spec/ONBOARDING §1.5; item list **informed by** the PAR-Q+ and the ACSM 2015
+  pre-participation screening, knowledge-pack entry #77; it is crank's own screen, **not** the PAR-Q+ and never
+  called that, #193). Every question starts **not answered**; Continue stays disabled until
   all are answered, and with any question unanswered crank proposes no plan. Answers and consequences:
 
   | Question | Kind | If "yes" |
@@ -363,6 +378,19 @@ relaunch shows **"Welcome back — continue at Health check (4 of 7)"**.
   | A heart condition a doctor told you to limit exercise for? | **red flag** | medical stop |
   | Medication that changes your heart rate? | HR | HR zones, HR-guided recoveries and HR-vs-usual coaching off; targets by power and feel; no power cap |
   | An injury that limits hard efforts? | cap | cap at threshold (100 % of CP) and no sprints |
+  | Pregnant? (asked of everyone: sex is optional) | medical stop (#196) | medical stop, lifted like any other by a dated clearance; message: consult a health-care practitioner, with the ePARmed-X+ link, not the generic red-flag "see a doctor" copy; not one of the five red flags, so not part of the daily re-check |
+  | Do you regularly do vigorous exercise? (only when age > 45, #195) | advisory | on **no**: an advisory, not a stop: "consult a qualified exercise professional before vigorous or maximal efforts"; the rider acknowledges it, the acknowledgement is logged, and until then the **health cap** applies |
+
+  **The screen's footer** says it is informed by the PAR-Q+ and the ACSM 2015 guidance and is not either, and links
+  to the official **PAR-Q+ / ePARmed-X+** (https://eparmedx.com) for a full screening. The full PAR-Q+ is not
+  shipped: its licence forbids changes and it would duplicate this screen (#193).
+
+  **Over-45 advisory (#195).** Age is the About-you answer. Until the advisory is acknowledged the planner
+  proposes nothing above the health cap (see **Health cap** in §5.1 and §15.2: one cap, one set of numbers and one
+  start guard, whatever raised it) and says why ("Capped until you've read the exercise advice"). Recording the
+  acknowledgement lifts the cap; it can be re-opened in Settings → Health. Evidence grade D (form advice,
+  knowledge-pack entry #77). A cap raised only by this advisory follows every rule of the injury cap, including
+  *medical stop plus cap = no ride at all*.
 
   **Medical stop — a global invariant, not a Today feature.** Any red flag (at onboarding, at a re-check, or a
   symptom reported in a ride) puts the stop on record. **While it is active, no planned or coached ride starts
@@ -376,18 +404,34 @@ relaunch shows **"Welcome back — continue at Health check (4 of 7)"**.
   silent** — there is no capped plan and no one-click override. Riding stays possible only as a **deliberate,
   logged free ride** (no plan, no targets, coach off, flat-road resistance): "Ride without a plan…" opens a
   confirmation that must be ticked ("I understand crank isn't advising this ride, and I'll stop at any symptom").
+  **A medical stop plus a health cap means no ride at all**: the free ride has no targets, so the trainer can't
+  hold the cap; "Ride without a plan…" is not offered and the guard refuses it on every path (the medical-stop
+  gate wins, `today-stop-and-cap`).
   The stop is lifted only by **recording a medical clearance** in Settings → Health — the date of the check (not
   in the future), who cleared the rider, and an explicit statement — and every change is kept in a log.
   **Re-check:** once a day, before the first start, the rider answers **all five red flags** again (the same
   list as above, each yes/no, no default; "Answer all 5" until complete). It is part of the Today check-in, and
   any other start path that comes first (Workouts, Resume, History) shows the same check before the ride
   (`start-recheck`). Any "yes" puts the stop back.
+  **Daily check-in questions beyond the five red flags (#194, #196).** Asked in the same Today check-in, no
+  default, Start needs them answered:
+
+  | Question | Kind | If "yes" |
+  |---|---|---|
+  | Since your last ride: any new or changed medication that affects heart rate, or an injury that limits exercise? (#194) | changes | routes to the impact questions I1 (medication) and I2 (injury) with their effects above; the answer is logged; **any yes also re-asks all five red flags in full** (their answers are cleared and must be given again) |
+  | Unwell today (cold, fever, infection)? (#196) | day state | **no planned or coached ride today** and a **rest proposal**; a free ride stays available only as a logged choice, as under a medical stop (and not when a health cap is active, same rule as stop plus cap); the answer is not carried over and resets the next day |
+
+  Clearance validity (12 months) is unchanged by the changes question. An unwell day is not a medical stop: it needs
+  no clearance and leaves no standing state; the core guard (#81) refuses planned and coached starts on every path
+  for that day, like the stop.
   **During a ride:** a symptom is reported with one deliberate action — the **Report symptom** binding (default
   `!`, bindable to a remote button) or "Stopping because of chest pain, dizziness or feeling unwell" in the End
   dialog. The workout stops at once and the trainer is released (production: ERG to 0 % resistance, workout
   closed, #81), the medical stop is set, and the screen gives the guidance: emergency line, "stop pedalling, sit
   down", the ride is saved (`ride-symptom-stop`, `ride-end-dialog`). Nothing on that screen resumes the ride. Screens `onboarding-health-stop`, `today-medical-stop`,
   `today-free-ride-confirm`, `ready-free-ride`, `ride-free`, `settings-health`.
+  **Settings → Health** also shows the over-45 advisory (acknowledged or not, with *Read it again*) and the
+  "Pregnant?" answer, each editable with the change logged; an unwell answer is today's only (§5.1).
 - **Devices**: pairing shows **live readings** (W, rpm, bpm) so "pedal a few strokes" visibly works.
 - **Baseline**: import / assessment week / passive learning, each with what it costs and how soon it is confident.
 - **Your starting model**: estimates with value ± sd, a relative-uncertainty bar, source, what will narrow
@@ -395,23 +439,28 @@ relaunch shows **"Welcome back — continue at Health check (4 of 7)"**.
 
 ### 5.9 Settings
 Sections: **Devices** (trainer + HR, protocol, status, battery, pair / forget; one-central note),
+**Training profile** (§15.1),
 **Athlete model** (estimates ± source, manual override with provenance "self-report"), **Coach** (autonomy,
 §7.1), **Controls & sound** (the five actions and their bindings with *Learn* for a remote, §7.2; tones and
-volume, §7.3), **Ride screen** (§5.3), **Appearance** (mode dark / light / auto, preset, classic zones).
+volume, §7.3), **Health** (§5.8: clearance record and log, over-45 advisory, pregnancy answer), **Ride screen** (§5.3), **Appearance** (mode dark / light / auto, preset, classic zones), **Background** (§15.3).
 
 ---
 
 ## 6. Ride screen specification
 
 ### 6.1 Grid
-Status bar 64 px (56 px at ≤ 800 px height). Hero and side split 62 / 38. Road ahead 22 % of height
-(min 128 px). Hero rows 1–5 have fixed heights from the type tiers. All regions are fixed by CSS grid with
-`minmax(0, …)`; contents are sized by the visual budget below. **Single-line rows never wrap** (rows 1, 2, 5, slot labels, the
-coach verb, reason and deadline): every string there has a maximum length (coach reason ≤ 24 characters).
+~~Status bar 64 px (56 px at ≤ 800 px height). Hero and side split 62 / 38. Road ahead 22 % of height
+(min 128 px).~~ superseded by §18.2–§18.3: status bar 48 px, traces 8 / metric column 4 of 12 columns, block
+timeline 112 px, key row 44 px. ~~Hero rows 1–5 have fixed heights from the type tiers.~~ superseded by §16.1: hero rows `row 1 (+ caption)
+| T1 (1fr) | band`, row 1 a fixed T3 line + chip room, the band row from the tiers. All regions are fixed by CSS grid with
+`minmax(0, …)`; contents are sized by the visual budget below. **Single-line rows never wrap** (~~rows 1, 2, 5~~ superseded by §16.1: row 1
+with its caption, the road's "next" label (§16.1), slot labels, the
+coach verb, reason and deadline): every string there has a maximum length (coach reason ≤ 24 characters; a
+recovery caption ≤ 27, the idle lane note ≤ 28, §16.1).
 **Banners** in row 4 are one bold line plus at most two short lines, each ≤ 36 characters so they fit on
 one line at 1024. The harness fails on any clipped `[data-fit]` text, including the whole coach lane.
 **Screens read from the saddle** — Ready check, Resume sheet, "ride screen restarted" — use the ride tiers too
-(T3+ titles, T3 text, 72 px buttons) and show the bound key / remote button on every action.
+(T3+ titles, T3 text, ~~72 px buttons~~ superseded by §18.4: 32 px controls) and show the bound key / remote button on every action.
 
 ### 6.2 Visual budget (legibility as visual angle)
 Character height *h* (cap height) at distance *d* subtends θ ≈ *h*/*d*. Ergonomic standards set 16′ of arc
@@ -421,21 +470,34 @@ multiples of that. Reference devices: a 13–15″ laptop at default scaling (�
 
 | Tier | Use | Target | Laptop 1440×900 @ 1.0 m | Tablet 1024×768 @ 0.8 m | Prototype rule |
 |---|---|---|---|---|---|
-| **T1 glance** | countdown, recovery range, sprint power | ≥ 90′ (1.5°) | 182 px | 151 px | `clamp(150px, 21vh, 240px)` → 189 / 161 |
-| **T2 glance** | target, HR, cadence | ≥ 50′ | 101 px | 84 px | `clamp(84px, 11.4vh, 128px)` → 103 / 88 |
-| **T3+ read** | next block, coach verb, banners | ≥ 20′ | 40 px | 34 px | `clamp(34px, 4.5vh, 44px)` → 41 / 35 |
-| **T3 read** | labels, captions, coach reason, deadlines, status-bar values | ≥ 16′ | 32 px | 27 px | `clamp(27px, 3.7vh, 36px)` → 33 / 28 |
-| T1r range | the recovery band when shown as the hero ("1:40–3:40") | ≥ 55′ | 117 px | 100 px | `0.62 × T1` → 117 / 100 |
-| T4 chrome | key hints, axis ticks, band word, road labels — never needed mid-effort | — | 15–18 px | 15–18 px | fixed px |
+| **T1 glance** (superseded by §18.1) | countdown, ~~recovery range, sprint power~~ (#462) | ~~≥ 90′ (1.5°)~~ ≈ 55′ / 67′ | ~~182 px~~ 112 px | ~~151 px~~ 112 px | ~~`clamp(150px, 21vh, 240px)` → 189 / 161~~ ~~`clamp(150px, min(24.5vh, 17.2vw), 260px)` → 220 / 176~~ fixed token |
+| **T2 glance** (superseded by §18.1) | ~~target~~ power, HR, cadence (§18.3) | ~~≥ 50′~~ ≈ 32′ / 38′ | ~~101 px~~ 64 px | ~~84 px~~ 64 px | ~~`clamp(84px, 11.4vh, 128px)` → 103 / 88~~ fixed token |
+| **T3+ read** (superseded by §18.1) | next block, coach verb, banners | ≥ 20′ (20′ / 24′) | 40 px | ~~34 px~~ 40 px | ~~`clamp(34px, 4.5vh, 44px)` → 41 / 35~~ fixed token |
+| **T3 read** (superseded by §18.1) | ~~labels, captions,~~ coach reason, deadlines ~~, status-bar values~~ (the others are T4) | ≥ 16′ (16′ / 19′) | 32 px | ~~27 px~~ 32 px | ~~`clamp(27px, 3.7vh, 36px)` → 33 / 28~~ fixed token |
+| T1r range | the recovery band when shown as the hero ("1:40–3:40") | ≥ 55′ | ~~117 px~~ ~~137 px~~ open: 0.62 × 112 px = 69 px is 34′ (#462) | ~~100 px~~ ~~109 px~~ open (#462) | ~~`0.62 × T1`~~ open (#462) |
+| T4 chrome | ~~key hints, axis ticks, band word, road labels~~ labels, captions, units, status-bar values, key hints, axis ticks — never needed mid-effort | — | ~~15–18 px~~ 12–20 px | ~~15–18 px~~ 12–20 px | ~~fixed px~~ fixed tokens |
 
-Achieved at the prototype's sizes (laptop / tablet): T1 94′ / 96′, T1r 58′ / 59′, T2 51′ / 52′, T3+ 20′ / 21′,
-T3 16.5′ / 16.9′.
-The vh rules only hold for the two reference devices. **Production computes px from the monitor's
+~~Achieved at the prototype's sizes (laptop / tablet): T1 94′ / 96′, T1r 58′ / 59′, then T1 109′ / 105′, T1r 68′ / 65′,
+T2 51′ / 52′, T3+ 20′ / 21′, T3 16.5′ / 16.9′.~~ Superseded by §18.1: the tiers are fixed tokens, so the angles in the
+Target column are the achieved ones at the reference devices (laptop / tablet).
+~~The vh rules only hold for the two reference devices. **Production computes px from the monitor's
 physical size, its scale factor and the rider's distance** (Settings → Ride screen, default 1.0 m) and warns
-when the window is too small to meet T2 (#52). Numbers: tabular, lining figures.
+when the window is too small to meet T2 (#52).~~ Superseded by §18.1: no vh rules; whether the physical display and
+distance still scale the tokens (#52) is open (#462). Numbers: tabular, lining figures.
+**Too-small rule.** ~~The window is too small for T2 when T2 px exceeds **13 %** of its inner height
+(`T2_MAX_HEIGHT_SHARE`, `app/src/typeTiers.ts`). Calibration: the reference devices in their real maximized
+windows (1440×900 less ≈ 50 px of menu and title bars ≈ 850 px: T2 101 px = 11.9 %; 1024×768 ≈ 715 px: T2 84 px
+= 11.7 %) must not warn, and 1200×700 @ 1.0 m (14.4 %) must.~~ Superseded by §18.2: with fixed tokens a height share
+no longer measures anything (64 px is 7.5 % of 850 px and would only reach 13 % below 492 px, under the 768 px
+minimum window). The window is too small when the ride's main row is shorter than the metric column's minimum
+content, **462 px** (§18.2 budget). The main row is the inner height less 236 px (status bar 48, timeline 112, key row
+44, main padding 32). Calibration, same windows as before: 1440×900 ≈ 850 px → main 614 px and 1024×768 ≈ 715 px →
+main 479 px must not warn; 1200×700 ≈ 650 px → main 414 px must. The share constant goes with the ride-screen work
+(#438). The warning (and the unknown-screen-size notice)
+appears in the status bar's reserved slot, never in the page flow (§10 #10); the banner (≤ 36 characters) is T3+ size, the unknown-size notice (≤ 48 characters, "Screen size unknown: text sized to the window.") is T4; both stay on one line at 1024 px, and the slot is one T3+ line tall.
 
 ### 6.3 Colour and contrast
-Tokens and presets from `spec/THEMES.md` (Ocean by default; dark is designed, not inverted). On the ride
+Tokens and presets from `spec/THEMES.md` (~~Ocean by default~~ superseded by §18.1: graphite by default; dark is designed, not inverted). On the ride
 screen colour carries **state**, not decoration, and never alone (P9): the band has ▲/▼, sensors an icon and
 a word, series a dash pattern or a direct label. Minimum contrast: text ≥ 4.5:1 (≥ 3:1 at T2 and above), chart
 marks and UI boundaries ≥ 3:1 against their surface, in both modes (WCAG 2.2 1.4.3 / 1.4.11). The prototype's
@@ -449,7 +511,7 @@ its real background and fails below 3:1 — the token check alone missed an inhe
 ### 6.4 Motion
 Values update at the backend subscription rate (hero 4 Hz, side 2 Hz, road 1 Hz). No animated layout
 transitions. Deadlines and undo windows count down in whole seconds, as numbers ("keeps plan in 24 s",
-"Undo · 11 s").
+"Undo · 11 s"). §18.5 adds: numbers are never tweened, and the traces advance once a second.
 
 ### 6.5 Sensor loss and reconnection (engine policy from ADR-0002 §6, ADR-0001 §5)
 | Event | Engine (decided in the ADRs) | What the rider sees and hears |
@@ -497,7 +559,7 @@ Every control is a native button or input with a visible focus ring; a focused c
 Enter/Space meaning over any ride shortcut (§7.2); dialogs (End ride, keys, Resume) take
 focus, trap Tab, close on Escape (and consume it) and **suspend ride shortcuts while open**; the End ride
 dialog focuses **Keep riding** first, so a Pause / Space press can never end a ride; live regions announce coach calls
-and sensor changes; every chart has a table alternative (P9) and keyboard point inspection is specified in #71; targets ≥ 48 px;
+and sensor changes; every chart has a table alternative (P9) and keyboard point inspection is specified in #71; ~~targets ≥ 48 px~~ superseded by §18.4: controls 32 px, keyboard-first;
 contrast per §6.3.
 
 ---
@@ -523,7 +585,7 @@ contrast per §6.3.
   at 300 W").
 
 ### 7.2 Hands-free input and the decision model (decided)
-Ride input is **seven abstract actions**: **Coach**, **Keep**, **Pause**, **Skip**, **Intensity − / +**, **End**
+Ride input is ~~**seven abstract actions**~~ superseded by §17.6: **nine abstract actions**, **End set** and **Undo** added: **Coach**, **Keep**, **Pause**, **Skip**, **End set**, **Undo**, **Intensity − / +**, **End**
 (always asks first; Keep riding is focused), and **Report symptom** (stops the workout at once — it is a safety
 action, so it is never shared with another binding; §5.8). They work on every ride-time screen, including the restart and
 long-loss states.
@@ -544,14 +606,14 @@ long-loss states.
   nothing**.
 
 **Bindings**: keyboard `Enter` / `Y` (Coach), `N` / `Backspace` (Keep), `Space` (Pause), `S` (Skip), `−` / `+`,
-`Esc` (End), `!` (Report symptom). The lane shows the grammar for its state ("Coach = accept · Keep = keep plan").
+`Esc` (End; the End button shows `Esc`, §18.4), `!` (Report symptom). The lane shows the grammar for its state ("Coach = accept · Keep = keep plan").
 Any HID device can be bound in Settings → Controls with *Learn*, so a remote that sends media keys or arrows
 works without code changes. **Minimum remote grammar: two buttons = Coach + Pause** (Keep then only via
 silence for questions, on screen for "back to plan"); a one-button remote binds Coach only and everything
 else relies on silence being safe and the on-screen buttons. Which remotes send which keys, and whether
 long-press is distinguishable, decides the defaults (owner hardware test, **#53**).
 
-**Fallback without a remote**: on-screen buttons at ≥ 64 px in the lane, equal weight (Accept is not the bright
+**Fallback without a remote**: on-screen buttons ~~at ≥ 64 px~~ superseded by §18.4: at 32 px with their key shown, in the lane, equal weight (Accept is not the bright
 default, because silence means keep), and the safe defaults above.
 
 ### 7.3 Sound
@@ -565,16 +627,21 @@ Settings → Controls & sound and one master volume:
 | Coach change applied / undone | one soft confirmation / one low note |
 | Trainer or HR lost, ERG released | warning (two low notes), repeated every 15 s while it lasts |
 | Reconnected | one confirmation |
+| Wish answered (Today, §15.2) | **granted**: three rising notes · **changed** (adapted, deferred, capped): two short notes and a low one — then the saddle proposal states what changed |
 Sounds never carry information that is not also on screen. The prototype plays them in interactive mode
 (Web Audio); production uses the same table (M1 UI).
 
 ---
 
 ## 8. Window sizes
+The sizes are defined in [`sizes.json`](sizes.json); the table below must list exactly those, in that
+order (the `window-config` check fails otherwise), and `tauri.conf.json` must match the first (default)
+and the smallest (minimum).
+
 | Size | Target | Rules |
 |---|---|---|
 | **1440×900** | laptop/desktop landscape (primary) | as specified |
-| **1024×768** | tablet landscape | same anatomy and rows (no reflow by breakpoint); type from the tiers (§6.2); the status bar keeps every control with its label (Pause keeps its word); Today keeps every word label; the editor stacks the summary under outline + text |
+| **1024×768** | tablet landscape | same anatomy and rows (no reflow by breakpoint); type from the tiers (§6.2); the status bar keeps every control with its label (Pause keeps its word); Today keeps every word label; ~~the editor stacks the summary under outline + text~~ superseded by §16.3: the library is a drawer below 1280 px, so Outline · Text · Summary stay in one row; Today stacks (§16.2) |
 | resize | any between | layout follows the window continuously (CSS, no device setting) (#7) |
 | TV / phone remote | out of v1 scope | VIEWS §4 rules stay for later |
 
@@ -597,6 +664,9 @@ Sounds never carry information that is not also on screen. The prototype plays t
 | VIEWS §4 tablet: strip moves into top bar | different layout at 1024 | same anatomy, scaled (§8) |
 | UX-SPEC §1 "Regenerate" | random re-roll | directed variants (§5.1, #15) |
 | UX-SPEC §4 Review "minimal" | numbers + chart + decisions | intent verdict, two inputs with context, evidence, all numbers, analytics (§5.5) |
+| UX-SPEC defaults "big numbers ≥ 64 px" | 64 px floor for every big number | hero 112 px, secondaries 64 px, fixed tokens (§18.1) |
+| UX-SPEC defaults "big on-screen buttons" | large touch targets mid-ride | 32 px controls with visible keys; remote and keys are primary (§18.4) |
+| ONBOARDING §1.4 Goals | focus incl. weight, time per session, preferred ride types | training profile (§15.1): six foci (weight dropped), weekly budget, formats in the wish vocabulary |
 
 Everything else in UX-SPEC / VIEWS (plot catalogue P01–P24, visual conventions, editor capabilities, the
 non-functional rules) still applies.
@@ -609,13 +679,13 @@ non-functional rules) still applies.
 | #1 | AI rewrite accept loses/misplaces edits | Editor **locks** during pending and diff (banner, all inputs disabled); Accept verifies node id + content hash, else re-requests (§5.7). Prototype: `editor/model.ts` (`lock`, hash check in `accept`). |
 | #2 | Physiology in the UI | P8: every derived number comes from the backend; missing ones are contract additions (#12, #13, #14, #15, #18, #29) stood in by **one** fixture module (`mock/ext.ts`), never computed in a view. |
 | #3 | Per-ride state not reset | One `RideSession` object (status, nudges, compiled, undo windows, sensor gaps, pause time) created on `ride.load` and disposed when the next ride loads (§5.2). Prototype: `session.ts`. |
-| #4 | Unvalidated localStorage | Everything persisted (ride-screen config, theme, sound, bindings, onboarding progress) is parsed by a schema on load; invalid → default + notice; error boundaries at the top and around the ride (§6.6). Prototype: `persist.ts`, `App.tsx`. |
+| #4 | Unvalidated persisted data | Everything persisted (ride-screen config, theme, sound, bindings, onboarding progress) lives in SQLite behind the core (ADR-0001 §6) and is read and written through the core's commands (layouts, settings; #34); the UI parses what the core returns with a schema; invalid → default + notice (#90); Settings forms read a draft, Save validates, and Cancel / Reset never touch the saved state (#90); error boundaries at the top and around the ride (§6.6). In the prototype `persist.ts` (localStorage, read in `App.tsx`) stands in for the core's commands; it is not the production path. |
 | #5 | structuredClone on reactive proxies | React state holds plain immutable values; the only snapshot path is `snapshot()` (production lint rule). Prototype: no clone of state anywhere. |
 | #6 | Finished ride doesn't reach Review | `state: finished` → Review automatically, owned by the ride session (§3, §5.2). |
 | #7 | 1024×768 unusable, layout ignores resize | Fixed anatomy and rows scaled by the tiers (§6.2, §8); strings in reserved rows have maximum lengths (§6.1); the harness renders every scene at 1024×768 and fails on overflow. |
 | #8 | Layout-editor state bugs | Free grid editor dropped; slot config is a transactional draft with per-slot validation (§5.3). |
 | #9 | No unit tests for editor ops | Editor model (tree ops, undo/redo, DSL ↔ tree) is a pure module with tests in production (§5.7); the prototype keeps that module boundary (`editor/model.ts`). |
-| #10 | Ride-screen layout shift | P4: fixed grid and rows, fixed-width controls, tabular numerals, reserved coach lane and band row; states recolour/fill, never re-flow (§5.2, §6.1). |
+| #10 | Ride-screen layout shift | P4: fixed grid and rows, ~~fixed-width controls~~ superseded by §16.1: controls that reserve their widest content, tabular numerals, reserved coach lane (a fixed grid row with reserved button slots and deadline bar) and band row; states recolour/fill, never re-flow (§5.2, §6.1). The harness compares every ride scene's region boxes and fails on any move (§16.4). |
 | #11 | Widget settings seeded from props once | Settings forms read the draft directly; the ride screen reads the saved config live (§5.3). |
 
 ---
@@ -626,7 +696,8 @@ live cursor (#14); planner variants (#15); athlete model, "how did that feel" ta
 revert, short coach reason, coach offset, autonomy + bounds, pause reason / reconnect attempt / gap / soft
 start / ERG released in `RideStatus`, ride library, post-ride RPE, devices with live readings, structured
 planner reasons and rewrite rationale, fit quality, health-cap state, onboarding progress, ride-screen config,
-a non-ERG sprint and long sensor losses in the mock. Engine/ADR: resume (#50), sleep (#51), physical type
+a non-ERG sprint and long sensor losses in the mock; training profile, wish, wish outcome and structured
+reasons with rule IDs (§15.4, #59); live workout edits (§17, #240: `RideStatus.{edit_seq, block_count, undo}`, plan queries, edit commands). Engine/ADR: resume (#50), sleep (#51), physical type
 sizing (#52), remote test (#53).
 
 ## 12. Prototype and screenshots
@@ -636,6 +707,17 @@ sizing (#52), remote test (#53).
   start path is blocked under a stop (only the ticked free ride starts), the re-check asks all five flags with no
   default, and the in-ride symptom action stops the workout and sets the stop. `?stop=1` starts the prototype with
   a stop on record.
+- Start screen (cold start, #62, #138): shown only while the core boots (`?boot=<ms>`, `?boot=fail[:<ms>]`; the
+  mock core is otherwise ready at once, so without them no start screen is shown). Its launch motion is **F · Spin-up**
+  ([BRAND.md](BRAND.md) §F · Spin-up, chosen over A · Slice's letter settle in #131): the app mark spins up into a
+  ring, which opens into the wordmark's C; R A N K come out and one slice cuts the word. It plays once from the
+  first frame and rests on the wordmark whatever the boot does — never gated on readiness, never held (the
+  `?hold` variant is a record in design/brand only), never restarted by "Try again". Ready at any time: the
+  destination is live and focused at once, the start screen is inert and cross-fades out over 200 ms while the
+  motion runs on at 1:1 (no cut at ≤ 150 ms, no rush after it). Reduced motion: no script, the settled
+  wordmark, removed at once. The settled frame is A · Slice's, pixel for pixel. Status line at 1.2 s from boot;
+  a failed boot replaces it with the alert (P6). `pnpm -C design/prototype test:start`
+  drives all of it on a fake clock, including the ring's slit (no hairline before the faces are 1 px apart, #142).
 - Interactive: `pnpm -C design/prototype dev` (real-time mock with sound; `?speed=10` or `60` for a faster
   ride; `?first=1` starts in onboarding).
 - Scenes: `?scene=<id>&theme=dark|light` builds a seeded mock (seed 42) on a virtual clock, advances it to the
@@ -648,7 +730,7 @@ sizing (#52), remote test (#53).
   and metric values the core would send, labelled as such. The mock keeps the block timer running during a
   trainer loss (the ADR freezes it), so consecutive loss/reconnect scenes show a few seconds of drift — a mock
   limit tracked in #78, not the design.
-- Known prototype limits (all tracked): Easier / Harder / Other are disabled (#15); past rides in History
+- Known prototype limits (all tracked): Easier / Harder act on the wish (§15.2), production variants are #15; past rides in History
   cannot be opened (#29); the sprint scene runs in ERG (#29); per-interval stats, intent verdicts, proposal
   reasons, the athlete model, devices and the week strip are fixtures (#12, #18, #29); onboarding answers
   are not persisted except the step reached.
@@ -682,3 +764,1267 @@ Reviewers should judge, with the screenshots open:
 - Which bar remotes to recommend and their default binding (#53).
 - Resume after a process restart needs the ADR-0001 amendment (#50).
 - A referenced knowledge-pack entry for the health screen (#77); the mock's frozen timer on trainer loss (#78).
+
+---
+
+## 15. Addendum (#87): training profile, planner wish, Why? and Background
+
+Status: **proposed**, round 3 (#87; round-1 reviews by astra and opus, the round-2 re-review by opus; resolution in §15.9). It is the design
+gate for the owner requests #85 (training profile), #86 (planner wish) and #84 (help / about / background). It
+extends §1–§14 and changes them only where §15.6 says so. Screens: `docs/design/screens/` (§15.7). The planner
+and the coach behind these screens are #59; §15.4 records the contract fields they need.
+
+### 15.0 Rider jobs and moments
+
+| Moment | The rider's job | What they can give | What they need back |
+|---|---|---|---|
+| **First run** (onboarding) | "Know what I'm training for, without a plan builder." | one choice; optionally an event, a weekly budget, formats | what that choice changes, and how sure crank is about each part |
+| **Life changes** (desk, any time) | "I signed up for a gran fondo / I'm back from a break." | edit the profile in Settings | before → after of what it changes; the next proposal uses it |
+| **Before, at the bike** (kit on, remote in hand) | "I feel like hills today" / "just give me something" | one gesture, or nothing | the wish, the session, one reason and Start — readable from the bike, above the fold |
+| **Before, at the desk** | "What would a long steady ride look like today?" | one click in the matrix, a time choice | the same, with every reason and its *Why?* |
+| **After / any time** | "Why did the coach do that? Should I believe it?" | one tap on *Why?* | the claim, the evidence and its grade, the cut-off and its grade, sources — offline |
+| **Curious** (rare) | "What does crank base its coaching on?" | browsing | the whole evidence base, by topic, with grades |
+
+A wish is for **today's ride**. There is no "plan tomorrow": a wish the planner can't grant today is *deferred*
+with a fixed expiry and is shown again on the day it was moved to (§15.2 lifecycle).
+
+Constraints from §1 hold (glance, distance, hands on the bars, a probabilistic coach). Two more:
+
+8. **A wish is a request, not a command.** The planner combines it with the check-in, the profile, the recent
+   load and the athlete model; it may change it, and then says what it changed and why. **Safety is applied
+   before the wish and never yields to it** (§5.8, #81).
+9. **Evidence strength is part of the claim**, and so is the strength of the *cut-off* crank applies. A C or D
+   rule, or a D cut-off, must look like one wherever it is shown.
+
+### 15.1 Training profile — *"What am I training for?"* (#85)
+
+**What it is.** The planner's **prior** for the mix of sessions and their progression: it shapes the week, it
+does not fix a calendar. Each day the check-in, the wish and the load decide the ride (R-RDY-01 · A).
+
+| Field | Values | Why this shape |
+|---|---|---|
+| **Focus** (one) | Endurance base · Climbing · Racing (crits, road) · Long events (gran fondo, sportive) · Time trial · General fitness & health | One prior is interpretable; several foci dilute each other. Each choice has a one-line description in rider words. |
+| **Event** (optional) | name + date ("39 weeks away") | Orders the blocks; never a taper from fitness/fatigue curves (R-LOAD-01 · B). |
+| **Your week, from now** | days (2–6) · **hours you can ride per week** (h / week) | A **budget**, not a target; each day's time comes from Today. It is *future availability*, unlike Background's "hours in the last 3 months", which pre-fills it in onboarding (one question, not two). |
+| **Formats you enjoy** | the wish matrix's formats: Steady · Intervals · Hills · Race sim · Open ride | One vocabulary for profile and wish; enjoyed formats break ties between equivalent sessions. |
+| **Coming back after 10+ days off** | on/off (+ since) | A temporary modifier, not a goal: a return block with widened uncertainty that ends by itself. **10 days is the athlete model's gap threshold** (spec/ONBOARDING §3) — one number everywhere; the model also detects it itself. |
+
+**"What this changes"** (screens `settings-profile`, `onboarding-profile`) lists the prior one effect per line,
+each with its evidence (*Why?* + grade where a pack rule exists, **D · convention** where it doesn't) and **the
+conditions it needs** ("when: on days with 2 h+ to ride, budget 7 h/week"). **A C-grade line is worded as a
+suggestion, never as a commitment**: "Optional: now and then a quality effort after 2 h or more, fuelled —
+suggested, never scheduled on its own" (R-DUR-01 · C). When the budget or the return status removes the condition,
+the line says so in place ("Not now: … needs 5 h/week or more (yours: 3 h)" / "not during a return block"). While
+editing, the panel shows **before → after** against the saved version: new lines are tagged *new*, lines that
+disappear are struck through as *no longer*. The goal-specific part is labelled convention (#143 for evidence).
+
+**Versions.** Every Save creates a new profile version (*Save as version 4*); proposals record the version they
+were planned with, and Review shows it ("planned with profile v3 · Long events"), so a later edit never rewrites
+why an old ride was planned (§15.4).
+
+**Onboarding** — step 5 of 8, **Training for**, *after* the Health check (a red flag makes goals moot) and before
+Devices. It shows only the focus choice, the effects panel and Back / Skip / Continue in the first viewport at
+1024×768; event, week, formats and "coming back" are behind **"Add an event, your week and formats (optional)"**.
+Continue saves; **Skip** keeps general fitness & health ("a balanced week"). The draft is saved on every change
+(like the step reached, §5.8), separately from the committed answers: relaunching restores the draft on this
+step; Skip discards it.
+
+**Reconciling spec/ONBOARDING.md §1.4 ("Goals")**
+
+| ONBOARDING §1.4 | Now |
+|---|---|
+| event and date (optional) | **Event**, unchanged |
+| focus: endurance / climbing / crits / general fitness / weight | **Focus**, six choices; *crits* → "Racing (crits, road)"; added *long events* and *time trial* (#85); **weight dropped** as a focus (below) |
+| days per week and time per session available | **Your week** (days + hours per week, future); time *per session* is Today's daily time choice |
+| preferred ride types | **Formats you enjoy**, in the wish vocabulary |
+
+**Conventions challenged**
+
+| Convention (where) | Verdict | Reason |
+|---|---|---|
+| Plan builder → fixed calendar to the event (TrainerRoad, TrainingPeaks) | **Change** | A calendar computed months ahead ignores how the rider is; the evidence supports a structure modulated daily (R-RDY-01 · A). |
+| Rider "type" / phenotype labels (Xert, TrainerRoad) | **Drop** | Profiling uses CP, W′, Pmax, durability (R-VLA-01 · B); a label adds no information. |
+| Weight loss as a training goal (ONBOARDING §1.4) | **Drop as a focus** | It doesn't change the session mix differently from general fitness; crank gives no diet, weight-loss or medical advice (the in-ride fuelling target is a training guideline, R-CHO-01 · A). |
+| Taper scheduled from the form curve (CTL/TSB) | **Change** | R-LOAD-01 · B; a lighter final week is labelled convention until #143. |
+| "Return from injury/break" as a plan type | **Change** | A state with an end, not a goal; injury goes through the health check (§5.8). |
+| Hours-per-week budget | **Keep** | The cheapest honest input to the weekly structure. |
+| Several concurrent goals | **Drop for v1** | One focus + one optional event keeps the prior explainable. |
+
+### 15.2 The planner wish — *"I'd like to ride this today"* (#86)
+
+**Three separate choices.** *How long* is Today's **time** (30 min · 45 min · 60 min · 1:30 h · 2 h · 3 h — 2 h and
+3 h reach the profile's long rides); *how hard* and *how structured* are the matrix. Duration is never a format.
+
+- **Intensity of the main effort** (rows, harder upwards): **Easy** (below VT1) · **Tempo** (VT1 to below CP) ·
+  **Threshold** (at CP) · **VO2max** (above CP) · **Sprint** (all-out ≤ 30 s). The row names the main effort, not
+  every minute (a threshold ride still warms up). Anchored on the rider's thresholds (R-GEN-01 · B), never zone
+  numbers; "sweet spot" is a convention (D) inside Tempo.
+- **Format** (columns): **Steady** (one continuous effort, ERG) · **Intervals** (repeats, ERG) · **Hills** (climbs
+  in SIM) · **Race sim** (surges and finales, ERG) · **Open ride** (no targets, the rider sets the power; the coach
+  watches the row as a ceiling — not the medical-stop free ride of §5.8, which is never offered here).
+
+**19 of 25 cells are choices**; the six that describe no session (e.g. *VO2max · Steady*, *Easy · Race sim*) are an
+empty dot, not a disabled button. Each cell is one session family the planner sizes to the time (e.g. *Easy ·
+Intervals* → easy spin with cadence drills; *VO2max · Intervals* → 30/15 sets, R-INT-01 · B).
+
+**At the desk** (before or after the check-in): the full matrix, **one click per wish** (again, or *Let the coach
+pick*, clears it); every reason with its *Why?*; ~~Shorter / Easier / Harder / Edit on the proposal card~~ superseded by §16.2: Easier /
+Harder on the card, every other reason and *Edit a copy* behind "Why today: every fact" (§16.2). The cells
+are plain buttons in reading order (Tab), each with a 48 px target and a spoken label that includes its state
+("Tempo · Intervals: plan", "… : adapted", "… — above your cap").
+
+**At the bike: the saddle proposal.** Once the check-in is confirmed and today's red flags are answered, ~~the
+proposal moves to the top of Today as one card~~ (superseded by §16.2: the one proposal card switches to its saddle
+form in place, beside the matrix at 1440, under the check-in's summary line at 1024) with the ride tiers (§6.2), which the harness **checks inside the
+viewport** at 1440×900 and 1024×768 (scenes `today-wish-*`, viewport captures). ~~The round-2 layout:~~ superseded by
+§16.2 (no *Other wish* button: S / Pause open wish mode, hinted on the card) — kept for reference:
+
+```
+┌ saddle proposal (full width, above the fold) ─────────────────────────────────────┐
+│ ▌Wish VO2max → Tempo · Intervals, 2 steps easier        T3+  (the outcome line)    │
+│  Tempo 2×10′ · 40:00                                    T3+  (the session)          │
+│  Legs dead, sleep short: two signals against hard work today.  [Why? B · good | D cut-off] │ T3
+│  ▁▁▂▂██▂▂██▂▁  (profile, cap line when capped)                                     │
+│  [⏎ Start]  [Ride my wish]  [S Other wish]  [− Easier]  [+ Harder]   72 px class   │
+└────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**One gesture, every cell, from the bars** (the §7.2 actions, same meanings):
+
+| Where | Action | Effect |
+|---|---|---|
+| ~~Saddle proposal~~ superseded by §16.2: the proposal card's saddle form | **Coach** | Start (ignored for 1.5 s after a wish change, §7.2 debounce) |
+| | **Intensity − / +** = **Easier / Harder** | the wish one row down / up from **what is proposed**, within its format (bounded, skipping non-choices) |
+| | **Keep** | back to the coach's pick |
+| | **Skip** or **Pause** | open **wish mode** |
+| Wish mode (sheet, ride tiers) | **− / +** | cursor one row (effort) |
+| | **Skip** | next format (wraps: it is a picker, nothing applies until Coach), nearest intensity |
+| | **Pause** | next choice in reading order (wraps) — a **two-button remote (Coach + Pause) reaches all 19 cells** |
+| | **Coach** | use this wish → re-plan → tone (§7.3) → back to ~~the saddle proposal~~ superseded by §16.2: the card's saddle form |
+| | **Keep** / **End** | cancel; the wish is unchanged |
+
+Wish mode shows the cursor's name at T3+ ("Threshold · Hills"), the matrix with the cursor outlined (outline + the
+name, never colour alone), and the grammar line with the bound keys. Focus sits on the sheet, not on a button,
+so Space steps instead of pressing *Use* (§7.2: focused controls win). **Easier / Harder are the wish's − / +**:
+one mechanism, one outcome table; the former *Other* variant is wish mode. Silence keeps the coach's pick.
+
+**Two marks, one grid.** The wish is outlined ("wish"), the proposal filled ("plan"; "coach" without a wish). A
+granted wish reads **"✓ wish"**; an **adapted** wish reads **"≈ wish"** (same cell, smaller dose) — never ✓.
+
+**How the planner answers** (the outcome line + one reason on the saddle card, all reasons on the desk card):
+
+| Outcome | When | Outcome line | Rider's way out |
+|---|---|---|---|
+| **No wish** | — | "Coach's pick: VO2max · Intervals" | Easier / Harder / ~~Other wish~~ superseded by §16.2: the matrix or wish mode (S / Pause) |
+| **As wished** | nothing argues against it | "✓ Your wish: Threshold · Intervals" (+ a session note with its rule) | Start |
+| **Adapted** | same cell, smaller dose, for a readiness reason | "≈ Wish, shortened: 60 min, not 2 h" · "Sleep short: long continuous efforts are cut first" (R-RDY-03 · A, cut-off D); *Why today* says "Shortened to 60 of your 120 min" | **Ride the full 2 h** (one tap, logged) |
+| **Deferred** | readiness or load argues against hard work | "Wish VO2max → Tempo · Intervals, 2 steps easier" · "Legs dead, sleep short: two signals against hard work today" (R-RDY-02 · B, cut-off D) · "Your wish moves to Thu 15 Oct" | **Ride my wish** (logged) |
+| **Blocked by safety** | medical stop; health cap | stop: **no matrix, no proposal** (§5.8); cap: the cell is not a choice ("cap"), Harder stops at the cap; an API request for it → "⚠ Cap: …" | none — lifted only in Settings → Health |
+| **Unwell today** (§5.8, #196) | the rider answered "Unwell today?" yes | no matrix, no planned or coached ride, a rest proposal | a free ride as a logged choice (not while a health cap is active: stop-plus-cap rule); nothing to lift: the answer resets the next day |
+
+Rules: facts first, then the rule (ID + evidence grade + cut-off grade, *Why?*), never a score. **A deviation needs
+an A/B rule for its direction; its cut-off (how many signals, how many minutes) may be convention (D) and is shown
+as such** — this is how "C/D alone may not deviate" squares with D cut-offs: the evidence says *which way*, the
+convention says *where*, and because the *where* is convention the rider can override it. "Ride my wish" is gated
+like Start (check-in and red flags done), is logged with the reasons shown, keeps the in-ride bounds of §7.1, and
+exists **only for readiness/load deviations, never for safety**. The rider's time choice is an input, never
+adapted for convenience; only a readiness rule shortens it, and then it is overridable.
+
+**The health cap is on actual power, not just targets** (architect decision; §5.8 cap = threshold, 100 % of CP,
+no sprints). Option chosen: **(a) non-ERG formats are unavailable under a cap** — only ERG holds the rider's power,
+so *Hills* (SIM) and *Open ride* (free) are "cap" cells, and so is *Race sim* (its surges are above CP). Rejected:
+(b) an engine-enforced ERG takeover at the cap in SIM/free, because it changes the trainer's mode under effort
+without the rider's action (a surprise at the worst moment, §1 constraint 6), needs new ADR-0002 §7 behaviour for
+a temporary state, and a capped rider loses little by riding ERG for a few weeks. The invariant — **actual power
+above the cap is prevented, or else flagged and logged** — is enforced at three points:
+1. **Plan:** the planner clips the wish space before planning; every delivered block is ERG and **every planned
+   target is ≤ 97 % of the cap** (272 W under a 280 W cap; `test:safety` checks every cell and every "ride my wish").
+   The margin exists so that a threshold session doesn't sit exactly on the cap, where normal ERG ripple would
+   trip the flag below.
+2. **Start:** the single start guard (§5.8, #81) refuses any workout with a target above the cap or a non-ERG
+   block, from every path including Workouts and the free ride ("Above your injury cap" or "Above your cap until you've read the exercise advice", naming the actual cap source: injury answer or over-45 advisory; `workouts-start-capped`);
+   it never edits a workout silently. The medical stop outranks it.
+3. **Ride:** the core clamps every ERG target to the cap (defence in depth) and watches measured power. **An
+   exceedance is power above cap + 3 % (288 W) sustained for 3 s**; one sample at or below that ends it. Why these
+   numbers: with targets ≤ 97 % the flag needs ≥ 6 % (~17 W) over the highest target, well above the few-percent
+   ripple of a trainer holding ERG; 3 s is the window of the 3-s power the rider sees, so a flag never fires on a
+   number the screen hasn't shown, and a single overshoot sample can't trip it. Both are conventions (D) to be
+   checked against measured NEO ripple in the hardware tests (#23). On an exceedance, in the same frame:
+   - **row 1 becomes the status** at the ride tier (T3, warning fill + ⚠ + words): "⚠ 312 W · over your 280 W cap
+     · ease off" — what, how much, what to do, readable at 1 m;
+   - **the gauge shows the same measured power** (band marker pinned high, "▲ 74 W" to the target);
+   - **the coach lane asks a strong `ease_off`** ("Ease off to 231 W? · Above your injury cap", or "… · Above your cap until you've read the exercise advice" when the over-45 advisory is the source), the only verdict
+     allowed while it lasts; the **warning tone** plays;
+   - **a `CapExceeded { at, watts, forS }` entry is logged** with the ride (one per episode; a dip below the
+     threshold ends the episode) and listed in Review.
+   `test:safety` feeds measured power over time and checks both sides: 10 s at 288 W (+2.9 %) and 2.5 s at 300 W
+   raise nothing; 3.5 s at 300 W raises the status, the call and exactly one log entry; a second episode adds a
+   second entry (`ride-cap-exceeded`). Engine requirement: #32; core safety tests: #81.
+
+**Deferred wish lifecycle.** A wish is a record (§15.4) with a stable id, the day it was for, and an **expiry fixed
+at creation (7 days), never renewed**. States: `open` → `fulfilled` (a ride delivering the cell was *completed*) ·
+`overridden` (ridden anyway) · `replaced` (the rider set another wish) · `deferred` (moved to a date by the
+planner; may be deferred again, but not past its expiry) · `expired`. On the day it was moved to, Today shows it
+pre-set in the matrix with "↻ Carried over from Sun 11 Oct: VO2max · Intervals · expires Sun 18 Oct" and *Drop
+it* (`today-wish-carried`); the planner treats it like a fresh wish. **Until the check-in is confirmed nothing reads
+as granted** — the cell says "↻ wish" and the card "↻ Your wish, after your check-in: …", because the answer
+depends on today's check-in. One open wish at a time. Each outcome stores
+the knowledge-pack version its reasons came from, so Review can show the explanation that was shown then.
+
+**Conventions challenged**
+
+| Convention (where) | Verdict | Reason |
+|---|---|---|
+| Browsing a workout library to pick today's ride (Zwift, TrainerRoad) | **Change** on Today, **keep** in Workouts | On Today the rider states the flavour; picking a specific workout stays in Workouts (§5.7), through the same guard. |
+| Zone numbers Z1–Z7 as the intensity choice | **Change** | Words anchored on CP / VT1 (R-GEN-01 · B). |
+| A continuous "level" slider (TrainerRoad levels) | **Change** | A level can't be checked; five named rows can. |
+| Silent adaptation when tired (TrainerRoad Adaptive Training) | **Change** | Shown on the grid, explained with facts, rule and cut-off grades; the rider can ride the wish. |
+| Duration as a workout category ("long ride") | **Change** | Time is its own choice; the matrix says how hard and how structured. |
+| A free-form duration picker | **Drop** | Six time choices cover 30 min–3 h; anything else is Edit (§5.7), not a picker at the bike. |
+| Disabled buttons for impossible combinations | **Drop** | Not drawn as choices at all. |
+| A wish mid-ride | **Drop for v1** | Changes the session's intent under effort; in-ride levers stay ±, Skip, End (§7.2). |
+| "Plan tomorrow" | **Drop** | The wish is about how the rider feels *today*; deferral covers "not today". |
+| "Coach decides" as the default | **Keep** | Silence is safe; the 95 % path of §4 is unchanged. |
+
+### 15.3 Why? and Background — *"Why this, and how sure is it?"* (#84)
+
+**Contextual *Why?*** A button next to any claim that rests on the pack: "Why? **B · good**" and, when crank
+applied a cut-off of its own, "**D · convention** cut-off". The chip always shows letter **and** word; C/D have a
+dashed outline. The visual chip is compact; its hit area is 48 px (§6.7). It opens a **sheet that never hides the
+claim**: at ≥ 1440 px wide it **pushes the page aside** (the page reflows to the left of it; this is not the ride
+screen, P4 doesn't apply); below that it overlays and **repeats the claim verbatim with the rider's facts** at its
+top. The sheet, in order (`today-why`):
+1. **crank told you** — "Legs dead, sleep short: two signals against hard work today." · From: legs: dead · sleep: short
+2. **The evidence** — grade chip + what it means for the rider, then the rule's rationale (verbatim from the pack)
+3. **The cut-off crank applied** — its grade (usually D) and what it is ("two signals"), and why that makes an
+   override legitimate
+4. **What the pack recommends** — the rule text, verbatim and labelled as the pack's, *not* as crank's behaviour
+5. **What crank uses here** — only inputs crank has (its input registry: check-in answers, time, rides, injury
+   answer, profile); anything the pack mentions that crank lacks is named as not used ("heart-rate variability
+   (HRV): crank doesn't measure it"; DFA-α1; lactate)
+6. **Safety comes first** — "Chest pain, fainting, a racing heartbeat with dizziness or unusual breathlessness
+   are not a readiness question: they stop every plan until a doctor clears you." The medical stop (§5.8) is
+   evaluated before any rule in the pack; a rule's own wording ("severe flag → easy/rest") never applies to the
+   red flags.
+7. **Sources** (authors, year, title, journal, DOI link) · "Read the background: <topic> →" · footer: pack date,
+   works offline (source links need a connection), *training guidance for healthy riders, not medical advice*.
+
+Entry points: Today (outcome and reasons), Settings → Training profile (effects), Review (each coach call, with
+the judge rule that fired), the model card (why CP not FTP, why ±; topic 03, R-PD-01), and — once #77 adds the
+screening entry — the health check. **Mid-ride: no *Why?*** (constraint 1); every call's *Why?* is in Review.
+Rider-friendlier wording per rule: #144.
+
+**Background** (Settings → Background; `settings-background`, `settings-background-topic`): the grade legend
+(A–D, plus the pack's qualifiers "A-" and "(observational)"); the 13 topics with their rules counted per grade
+(letter + word); a topic shows *How sure*, **what the research says** (each finding's grade chip, headline,
+number of sources) and **what the pack recommends** (its rules with *Why?*); **How the coach decides** and **Your
+athlete model**, generated from the sources the coach's prompt is built from (#59; not in the prototype, built
+with #84); **About** (version, pack date, not a medical device). It lives in Settings: reference for a rare job.
+
+**Single source of truth.** Nothing from the pack is copied into the UI. At build time the app generates a
+`knowledge` bundle (rules, topics with graded findings, references, the grade policy) and a **pack version**
+(content hash + compiled date) that every planner reason records.
+
+**Build-time check** (fails the build; `pnpm test:knowledge` is its executable form):
+1. every rule parses into all fields, grade A–D, belongs to a topic (section or own `# (NN)` note; `R-GEN-*` may cut across);
+2. every rule citation and every topic-file `[@key]` resolves in `references.bib`;
+3. every reference has a DOI, PMID or OpenAlex ID;
+4. every topic has a title, a how-sure line and at least one graded finding;
+5. every rule ID the UI, the planner or the judge can emit resolves; every reason's **inputs** are in crank's input
+   registry, which names nothing crank can't measure (HRV, α1, lactate); every deviation rests on an **A/B** rule
+   and every cut-off carries a grade.
+
+**Conventions challenged**
+
+| Convention (where) | Verdict | Reason |
+|---|---|---|
+| Help centre / FAQ on a website | **Change** | Offline, in the app, opened from the claim. |
+| Hover tooltips | **Change** | No hover on touch, remote or at 1 m; an explicit *Why?* with a sheet. |
+| A modal that covers what it explains | **Change** | Push aside ≥ 1440; repeat the claim below. |
+| Tips during the ride (SYSTM) | **Drop** | Attention under effort; *Why?* lives in Review. |
+| "Science-backed" without grades | **Drop** | Every claim carries grade and sources; C/D and D cut-offs say so. |
+| Articles written apart from the logic | **Change** | Generated from the pack the coach uses; build-time check. |
+
+### 15.4 Contract fields for the planner and the coach (#59, M2)
+
+Recorded on #59 (round-2 update there). A sketch for the ADR; names follow the contract's style.
+
+```ts
+type Focus = "base" | "climbing" | "racing" | "long_events" | "tt" | "fitness";
+type Intensity = "easy" | "tempo" | "threshold" | "vo2max" | "sprint";       // main effort, anchored on CP / VT1
+type Format = "steady" | "intervals" | "hills" | "race" | "open";           // structure only; never duration
+interface TrainingProfile {
+  version: number;                                   // every Save = new version; proposals record it
+  focus: Focus; event: { name: string; date: string } | null;
+  daysPerWeek: number; hoursPerWeek: number;          // future budget, not target
+  likes: Format[]; returning: { since: string } | null;   // returning = after ≥ 10 days off (model's gap threshold)
+  savedAt: string; source: "onboarding" | "settings";
+}
+interface Cell { intensity: Intensity; format: Format }
+interface WishRecord {
+  id: string; cell: Cell;
+  setAt: string; via: "desk" | "saddle" | "carried";
+  forDate: string;                                   // the day it is for (today, or the date it was deferred to)
+  expiresAt: string;                                 // setAt + 7 d, fixed at creation, never renewed
+  status: "open" | "deferred" | "fulfilled" | "overridden" | "replaced" | "expired";
+  history: { at: string; status: WishRecord["status"]; proposalId: string | null }[];
+}
+type InputId = "legs" | "sleep" | "stress" | "motivation" | "time" | "load7d" | "cap" | "profile" | "history" | "power" | "hr" | "cadence";
+interface Reason {
+  kind: "readiness" | "load" | "safety" | "session" | "profile";
+  text: string;                                      // rider words; the saddle shows the first, ≤ 90 chars
+  facts: { label: string; value: string }[];         // "legs: dead" — what crank saw
+  uses: InputId[];                                   // registry only (§15.3 check 5)
+  ruleIds: string[];                                 // resolve in the knowledge bundle
+  evidenceGrade: "A" | "B" | "C" | "D" | null;       // weakest of ruleIds; deviations need A/B
+  cutoff: { grade: "A" | "B" | "C" | "D"; what: string } | null;   // the threshold crank applied
+}
+interface WishOutcome {
+  wishId: string | null; wish: Cell | null;
+  delivered: Cell; minutes: number;                  // minutes < asked only for an "adapted" readiness reason
+  relation: "no_wish" | "as_wished" | "adapted" | "deferred" | "blocked_by_safety";
+  reasons: Reason[];
+  deferredTo: string | null;                         // ≤ the wish's expiresAt
+  overridable: boolean;                              // readiness/load only; false for any safety reason
+  packVersion: string; profileVersion: number;       // so Review can reproduce what was shown
+}
+// Proposal gains: cell, wishOutcome, reasons: Reason[] (replaces prose, #29), profileVersion.
+// Commands (all through the core's single guard, #81): wish.set(cell | null), wish.drop(id),
+//   proposal.rideAsWished(proposalId) → logged { at, wishId, reasonsShown }; refused unless overridable.
+// Health cap (§15.2, option a):
+//   CapState { active; capW; ergOnly: true; planPct: 97; tolPct: 3; windowS: 3; log: CapExceeded[] }
+//   - the planner clips the wish space and keeps every target ≤ capW × planPct / 100
+//   - ride.start refuses non-ERG blocks or targets > capW (`cap_requires_erg` / `cap_exceeded_target`);
+//     with a medical stop as well, every start including the free ride is refused (§5.8)
+//   - the engine clamps ERG targets to capW and emits CapExceeded { at, watts, forS } once per episode when
+//     measured power > capW × (1 + tolPct / 100) for ≥ windowS; the judge may then only ease_off (#32, #81).
+```
+
+Invariants for the ADR and the golden evals (#59):
+- **Safety first.** Under a medical stop the planner is not called. Under a cap the wish space is clipped before
+  planning; no output has a target above the cap or a non-ERG block; `overridable` is false for any safety reason.
+- **Every deviation has a reason** whose `ruleIds` resolve, whose evidence is A/B, and whose cut-off has a grade.
+- **The wish never raises the load beyond what readiness allows**; a wish above it is deferred, not granted
+  silently; riding it anyway is the rider's logged decision.
+- **Profile, wish and reasons leave the machine only under #59's privacy rules.**
+- Offline (no provider): the rule-based fallback implements the same outcome table with the same reasons.
+
+### 15.5 Glanceability and tone check
+The saddle proposal is the bike-distance read: outcome line and session at T3+, reason at T3, ~~64–72 px~~ superseded by §16.2: 72 px
+(§16.2) buttons with their bound keys, all inside the viewport at both sizes (checked by the harness, which fails otherwise). The
+desk matrix, the profile and the sheet are desk reading. Copy is calm and factual — no streaks, no "crush it", no
+badges. Colour never carries meaning alone: wish = outline + "wish", plan = fill + "plan", adapted = "≈ wish",
+cap = dashed edge + "cap", cursor = outline + its name at T3+, C/D = dashed chip + word.
+
+### 15.6 Changes to §1–§14
+| Where | Change |
+|---|---|
+| §2 "Regenerate" row, §5.1 Today | Shorter = time; Easier / Harder = the wish's − / +; "Other" = wish mode; one outcome table. Time choices add 2 h and 3 h. ~~After the check-in the proposal is the **saddle proposal** at the top.~~ superseded by §16.2: After the check-in the one proposal card takes its saddle form in place. "Why today" lists facts without interpretation. |
+| §5.8 Onboarding | **eight** steps; *Training for* is step 5, after the Health check |
+| §5.8 health cap | the cap is on actual power: ERG only under a cap; the start guard refuses workouts above it; over-cap power in a ride is flagged and logged (§15.2) |
+| §5.9 Settings | sections gain **Training profile** (after Devices) and **Background** (last) |
+| §7.2 | on Today: − / + = Easier / Harder, Keep = coach's pick, Skip / Pause = wish mode (§15.2) |
+| §7.3 | a **Wish answered** row: granted vs changed tones |
+| §9 | ONBOARDING §1.4 "Goals" is superseded by §15.1 |
+| §11 | contract additions: §15.4 (#59, #85, #86; engine cap #32) |
+
+### 15.7 Prototype, screens, tests
+- Scenes (both themes, 1440×900 and 1024×768):
+  - **desk:** `today` (no wish), `today-wish-carried`, `onboarding-profile`, `settings-profile`,
+    `settings-background`, `settings-background-topic`
+  - **saddle**, captured as the viewport (not the full page): `today-wish-granted`, `today-wish-deviates`,
+    `today-wish-adapted`, `today-wish-capped`, `today-wish-remote`, `today-why`
+  - **cap:** `workouts-start-capped`, `ride-cap-exceeded` (measured power fed through the cap monitor),
+    `today-stop-and-cap`
+  - **profile draft:** `settings-profile-editing` (before → after: *new*, *no longer*, "Not now")
+  - `today-wish-long` from round 1 is removed (duration is no longer a format).
+- Intentionally changed: `today`, `today-health-cap`, `today-medical-stop`, `today-free-ride-confirm` (wish card
+  and/or the six time choices in the check-in); `start-handoff-100ms` (Today underneath); every `onboarding-*`
+  (eight steps, new order); every `settings-*` (two sections, the wish sound row); `ride-capped` at 1024 (the cap
+  chip became a component that can also flag over-cap power: 79 px of anti-aliasing, same text).
+  Every other screen is byte-identical; `start-motion-*` frames are restored from the base commit (#127).
+- `src/knowledge.ts` reads `spec/knowledge-pack/` directly (Vite `?raw`); `src/mock/wish.ts` stands in for the
+  planner (labelled). Hills run as ERG targets in the prototype (SIM is not in the mock, #29).
+- `pnpm screens` additionally fails when a saddle element leaves the viewport or falls below its tier.
+- `pnpm test:knowledge` — the §15.3 build-time check; every wish cell compiles at every time choice; reasons use
+  only registered inputs and A/B rules; cut-offs are graded.
+- `pnpm test:safety` adds:
+  - no matrix and no proposal under a medical stop
+  - under the cap, every VO2max, sprint, race-sim, hills and open cell is disabled
+  - under the cap, no cell, override or format delivers a target above the cap or a free block (checked on the delivered workout)
+  - Harder stops at the cap
+  - a workout above the cap is refused at start
+  - every planned target under the cap is ≤ 97 % of it
+  - over-cap power fed over time: within tolerance (+2.9 % for 10 s) and shorter than the window (2.5 s) raise
+    nothing; 3.5 s at 300 W raises the row-1 status, the coach's ease-off and one log entry; the gauge shows the
+    same power; a second episode is a second entry
+  - a medical stop plus a cap: no free-ride offer, and the guard refuses the free ride
+  - Pause alone reaches all 19 cells
+  - Skip changes the format, − reaches Easy, and Coach uses the wish
+  - an adapted wish is "≈ wish" and has a one-tap fix
+  - a deviation cites its rule and cut-off, and the override delivers the wish
+  - Easier = wish −
+
+### 15.8 Review guide (round 2)
+1. **Saddle** (`today-wish-*` viewport captures): wish, session, one reason, actions — readable at 1 m, above the
+   fold at both sizes? Can a two-button remote reach any cell?
+2. **Matrix** (`today`, `today-wish-adapted`, `today-wish-remote`): are effort, structure and duration separate,
+   and is an adaptation never drawn as granted?
+3. **Cap** (`today-wish-capped`, `workouts-start-capped`, `ride-cap-exceeded`): can actual power pass the cap?
+4. **Deferral** (`today-wish-deviates`, `today-wish-carried`): is the lifecycle complete and the promise bounded?
+5. **Why?** (`today-why` at both sizes): is the claim always visible, the pack's recommendation separate from what
+   crank does, the cut-off graded, safety precedence explicit?
+6. **Profile** (`settings-profile`, `onboarding-profile`): is no C line a promise? Before → after clear?
+
+### 15.9 Round-1 findings → resolution
+| Finding | Resolution |
+|---|---|
+| opus B1 · cap not enforced on SIM / open | **Fixed** — option (a), §15.2: non-ERG and race cells locked, start guard, in-ride flag + log, engine clamp (#32), tests (#81) |
+| opus M2 · astra 2 · outcome not readable from the saddle | **Fixed** — saddle proposal at T3/T3+, viewport-checked; wish tones in §7.3 |
+| opus M3 · astra 6 · sheet hides the claim | **Fixed** — push-aside ≥ 1440, claim + facts repeated at the top |
+| opus M4 · "what crank does" overclaims (HRV) | **Fixed** — "What the pack recommends" vs "What crank uses here" (registry), "Not used: HRV …", check 5 |
+| opus M5 · grade overstates the decision | **Fixed** — evidence grade and cut-off grade shown separately; A/B direction + D cut-off rule stated |
+| opus M6 · Easier/Harder vs wish; "Other" | **Fixed** — Easier/Harder = wish ∓, one outcome table; Other = wish mode |
+| opus M7 · astra 5 · deferral / plan tomorrow | **Fixed** — "plan tomorrow" dropped; WishRecord lifecycle, fixed expiry, carry-over on Today, pack version stored |
+| opus M8 · astra 3 · adapted drawn as granted; format mixes duration | **Fixed** — time is separate (2 h, 3 h added), Long → Steady, "≈ wish" + one-tap fix |
+| astra 1 · opus m9 · remote can't reach format / Easy | **Fixed** — wish mode: Skip = format, Pause = every cell; *Easy · Intervals* added |
+| astra 4 · C line presented as commitment | **Fixed** — "Optional … never scheduled on its own", conditions, before → after |
+| opus m10 · "Ride my wish anyway" gating | **Fixed** — gated like Start, logged, readiness/load only |
+| opus m11 · astra 7 · onboarding duplication / gap / order / length | **Fixed** — budget pre-filled from Background (future vs past), one 10-day threshold, step after Health check, details collapsed, draft restore specified |
+| opus m12 · profile Save/Cancel, before→after, unit, D link | **Fixed** — actions under the form, before → after, "h / week"; D line names #143 in this document (rider text never shows issue numbers, §5) |
+| opus m13 · grade chips; "(observational)"; jargon | **Fixed** — letter + word everywhere, qualifiers in the legend; jargon remains #144 |
+| opus m14 · astra 8 · grid role without arrows; contrast; cap copy | **Fixed** — plain buttons with state labels, 48 px targets; cap edge/text/cursor pairs in `contrast.mjs`; one cap sentence everywhere |
+| opus m15 · profile versioning; time non-overridable | **Fixed** — `TrainingProfile.version`, `profileVersion` on proposals; time is never adapted except by a readiness rule (overridable) |
+| astra 3 · custom duration | **Decided against** — six time choices to 3 h; anything else via Edit (no picker at the bike) |
+
+**Round-2 re-review (opus, at `e3cc5e7`) → round 3**
+
+| Finding | Resolution |
+|---|---|
+| r2-1 · over-cap warning is a 14 px chip, not consistent, single sample, "logged" without a log | **Fixed** — row-1 status at T3 with warning fill; gauge and coach `ease_off` agree; `CapMonitor` applies > cap + 3 % for 3 s over a measured-power stream; one `CapExceeded` log entry per episode; trace-driven tests on both sides of the rule |
+| r2-2 · threshold targets the cap exactly → false flags from ERG ripple | **Fixed** — planned targets ≤ 97 % of the cap; flag at cap + 3 % for 3 s (justified in §15.2, checked on hardware in #23); in `CapState` (§15.4); both tested |
+| r2-3 · carried wish shows ✓ before the check-in | **Fixed** — "↻ wish" / "↻ Your wish, after your check-in" until confirmed |
+| r2-4 · "Why today" ignores the adapted minutes | **Fixed** — "Shortened to 60 of your 120 min: …" |
+| r2-5 · "no nutrition advice" vs a carbohydrate target | **Fixed** — "no diet, weight-loss or medical advice"; the cue reads "Fuelling guideline (training, not diet)" with R-CHO-01 · A |
+| r2-6 · no scene for the profile draft | **Fixed** — `settings-profile-editing` |
+| r2-7 · medical stop + cap: free ride | **Fixed** — stop + cap = no ride (§5.8), no offer, guard refuses; tested |
+| r2-8 · "▼2"; 1440 Why? layout | **Fixed** — "2 steps easier"; the outcome line wraps inside the pushed-aside layout (checked in `today-why` at 1440) |
+
+---
+
+## 16. Amendment (#175): layout revisit — Ride, Today, shell
+
+Status: **accepted** by the owner on **2026-10-13** (#175; the wireframe canvas is private to the owner, the issue
+states every decision). Only space, grouping and duplication change: anatomy, the type tiers and their angles
+(§6.2), the safety rules (§5.8, §15.2), colour roles (§6.3) and the window sizes (§8) are unchanged. Text this
+section replaces is struck through where it stood, followed by "superseded by" and the subsection. The UI issues build on it: shell #88,
+Today #94, ride anatomy #96, #97, editor #111, layout shift #10.
+
+### 16.1 Ride
+
+Superseded by §18.3 for the anatomy: the band row becomes the power trace with its target band, the hero and
+side become the trace stack and the metric column. The content rules below (captions, the "next" label, the lane
+rows, no shift) still hold; where they go in A's anatomy is §18.3, and the coach lane's cell is #462.
+
+```
+┌ [❚❚ Pause] 13:25 left  ERG you [−] ±0% [+]  ─────── free ───────  (NEO ● │ HR ●) [?] ┐ groups sized to content
+├──────────────────────── hero (62 %) ───────────────────────┬──── side (38 %) ────────────────┤
+│ row 1  WORK Threshold rep 1/2 ●●○      left in block  ← T3 │ HEART RATE           zone 4    │ auto
+│                                                            │ 164 bpm                         │ auto
+│ T1                0:23                     ← 220 / 176 px  │ CADENCE      ✓ in range 90–95  │
+│                                                            │ 91 rpm  ▕──▓▓|▓──▏             │
+│ band   TARGET 350 W  ▕━━━━▓▓▓|▓▓━━━▏ ▲ 6 W                 ├━━ coach lane (fixed row) ━━━━━━━┤ 3 px rule
+│        sub-line: ↗ to 210 W · coach −5 %                   │ head · reason · [buttons] ·     │ 1fr
+│                                                            │ deadline + bar · grammar        │
+├────────────────────────────────────────────────────────────┴────────────────────────────────┤
+│       now ▏      ▼ next  Easy 0:15 @ 140 W               ← T3+, pinned at the block's start  │
+│ ▁▁▂▂██▂▂██▂▂██▂▁ (near road −2 … +10 min; dashed = proposed, solid = applied)                │
+│ whole ride (thin) · 30:58 ridden · block 36 of 39 · solid = coach applied · −2 … +10 min     │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Decision | What it is | Why |
+|---|---|---|
+| **Status bar groups sized to content** | Left: Pause · time left · mode chip with − / ±% / + (~~**48 × 48 px** targets at both sizes~~ superseded by §18.4: 32 px, §6.7 — ~~the issue's "≥ 44 px" floor raised to the app-wide rule; the 40 px buttons at 1024 are gone~~ no size floor). Right: **one device pill** "NEO ● │ HR ●"; a device expands to its status only on a fault or a reconnect note ("⚠ NEO lost", "↻ NEO back · 0:14 gap"), then `?`. | The old fixed widths summed to 1118 px (932 at 1024) and reserved room for statuses that are almost always "connected". **No layout shift (P4):** every value that changes reserves its widest form — Pause and Resume share one box, the clock reserves `h:mm:ss`, ±% a fixed width, the mode chip its widest word — and the pill is right-aligned, so it grows leftwards into free space and nothing else moves. No group may shrink; the widest pill — the trainer's reconnect note with the widest gap and HR lost ("↻ NEO back · 59:59 gap │ ⚠ HR lost", scene `ride-reconnected-hr-lost`) — fits at 1024 with ≈ 13 px to spare (8 px group gaps at ≤ 1100). |
+| **Hero rows `auto \| 1fr \| band`** | The old row-2 caption moves onto row 1, right-aligned; the old row 5 leaves the hero. Row 1 is a fixed T3 line plus 10 px, so a chip (cadence, cap) never grows it. | Two rows of chrome (≈ 100 px) go to the number the rider reads most. The geometry check (§16.4) found that row 1 grew by 10 px when the cadence chip appeared — a #10 shift in the old anatomy too; the fixed height closes it. |
+| **T1 re-derived** | `clamp(150px, min(24.5vh, 17.2vw), 260px)` → **220 px at 1440×900 (109′), 176 px at 1024×768 (105′)**, was 189 / 161 (94′ / 96′); T1r = 0.62 × T1 → 137 / 109 (68′ / 65′). | The freed rows give row 3 382 px at 1440 and 303 px at 1024, so height no longer bounds T1. At 1024 the hero's width (62 % of the window) bounds the widest T1 strings ("≈ 1:05" with its range, "312 W"), hence the vw term; the two terms meet the accepted 220 / 176. ~~Both stay ≥ 90′ (§6.2);~~ superseded by §18.1: T1 is a fixed 112 px (55′ / 67′); the vh/vw rule still holds only for the reference devices (production computes px from physical size, #52). |
+| **Captions fit row 1** | A caption shares its line with the block's identity, so it is ≤ 27 characters: "block's minimum in", "HR < 118 · or block max", "HR lost · block max in", "paused · block max in" (were 28–41). "min" and "max" never stand alone, so they can't be read as minutes. | The long forms clipped at 1024 ("RECOVER rep 1/3" + caption, 603–781 px in 594 px). The caption still names the event (HR crossing vs the block's rule, P7); the times stay on the row-4 sub-line ("block ends in 2:00–4:00", "HR due below 118 before then"). The T3 tier is unchanged. |
+| **"Next" on the road** | A T3+ label in a label lane above the near road, pinned to its block's start: it begins at the start when it fits, else ends there, so it never straddles the ▼ notch that always marks the start. When neither fits it sheds the word "next", then the watts; only if it still can't, it is right-aligned over the start with a 2 px leader under it from its left edge to the notch. On the last block it marks the ride's end: "ride complete → Review". | The forward look is in one place: the label sits on the block it names, at the time it begins. The label lane costs the near road ≈ 30 px (95 / 77 px tall at 1440 / 1024), the price of not overlaying the profile. The "now" tick stays; the time scale moves to the overview line. |
+| **Coach lane = fixed grid row** | The side column is `auto auto 1fr`; the lane is the 1fr row with a 3 px top rule (border colour by state). Inside, five fixed rows: head (T3+) · reason (T3) · actions (button height) · deadline text + bar · grammar. Idle reserves the button and deadline rows; Detail density's T2 metric spans head–actions and its note takes the deadline row. A band word ("CALIBRATING", "AUTO") ends the head line after a 14 px gutter, never under the headline. | An ask, an applied change or the feel prompt fills rows that already exist, so no state moves any geometry (#10). The deadline bar is drawn in every timed state (ask, undo window, feel save). The idle note is ≤ 28 characters ("last call −3 %: not taken"; the call's time is in Review), which the new `ride-cooldown` scene showed was needed. |
+
+Unchanged: the states of §5.2, the cap status in row 1 (§15.2 — during an exceedance row 1 is the status alone, the
+T1 below it is still the block countdown), Focus keeps the second slot's exact box (now a hidden real slot, so even a
+1 px drift is gone), the road's proposed-change label (T3, on the near road).
+
+### 16.2 Today
+
+```
+1440 (check-in done)                                         1024 (check-in done), stacked
+┌ sleep short · legs heavy · … · 60 min · no red flags  [Edit] ┐  ┌ summary line              [Edit] ┐
+├──────────── proposal card 7fr ───────────┬─ wish matrix 4fr ─┤  ├ proposal card ────────────────────┤
+│ ▌outcome line (6 px edge)          T3+   │ Wish: …           │  │ ▌outcome · session · profile ·    │
+│ Tempo 2×10′ · 40:00                T3+   │ ▢▢■▢▢ (matrix)    │  │ reason + Why? · S / N hints (T3)  │
+│ ▁▂██▂██▂▁ profile                        │                   │  │ [⏎ Start][− Easier][+ Harder][…]  │ 72 px
+│ one reason + Why?                  T3    │                   │  ├ wish matrix ──────────────────────┤
+│ S other wish · N coach's pick      T3    │                   │  ├ Last 7 days ──────────────────────┤
+│ [⏎ Start][− Easier][+ Harder][Ride my wish]  72 px, pinned   │  └ Model ────────────────────────────┘
+├──────────── Last 7 days ─────────────────┼────── Model ──────┤
+```
+
+| Decision | What it is | Why |
+|---|---|---|
+| **Check-in collapses** | Once confirmed (Same as yesterday, or any change) **and** today's red flags answered, the check-in is one summary line: "sleep short · legs heavy · stress some · motivation keen · 60 min · no red flags" + *Edit*. *Edit* re-opens it in place; while open, a change never collapses it mid-edit — **✓ Use these answers** closes it (disabled until the red flags are answered). | After confirming, the check-in is history; one line keeps it checkable without pushing the card down. **Start needs the check-in done and closed**: confirmed (Same as yesterday, or a change, §5.1), today's red flags answered (§5.8), and not open for editing — so Start, and Enter, only ever act on the saddle card the rider can see, above the fold. This is stricter than §5.1 alone (a change used to enable Start while the answers were still open), never looser. "Use these answers" is named differently from the red-flag check's *Done* so the two never read as one action. Under the disabled Start the desk card says what is missing: "Confirm how you feel and answer the health check to start" before the first confirmation, "Answer the health check to start" when only the red flags are left, and "Use these answers to finish editing and enable Start" while a done check-in is re-opened. |
+| **One proposal surface** | The full-width saddle proposal and the desk proposal card are one card with two forms. **Desk** (check-in open): outcome line, session · duration, profile, one reason + *Why?*, actions Start ⏎ · − Easier · + Harder · Ride my wish / Ride the full X; "Why today: every fact" discloses the other reasons (each with *Why?*), the facts and the model's confidence, and *Edit a copy in Workouts*. **Saddle** (check-in done): the same card at T3+ / T3 with ~~**72 px actions**~~ superseded by §18.4: **32 px actions with their keys** pinned to its bottom edge, always above the fold; the same "Why today: every fact" disclosure (desk-size type, collapsed) above the key hints; S (Skip) / Pause open wish mode, Keep returns to the coach's pick, hinted on the card **at T3** ("S other wish · N coach's pick"), above the fold — it is the only saddle cue for wish mode, so it must read at 1 m. The desk card does **not** stretch to the height of the matrix beside it: its actions follow its content, so Start is above the fold at 1440×900 in every desk state (check-in open, injury cap, carried-over note) and no empty band sits under "Why today" (#179). A gap under the desk card is therefore expected whenever the wish column is taller (e.g. a carried-over note under the matrix): "Last 7 days | Model" is one grid row across both columns, and the gap sits below the fold (#189, decided as designed). | Two cards said the same thing twice. Information is kept, not cut: the §5.1 facts, the §15.2 reasons and *Edit a copy* are one click away in both forms, and the first reason's *Why?* is on the card. **Shorter** is dropped from the card because the time is a check-in answer (§15.2: how long is Today's time) — it was a duplicate control. *Other wish* is dropped as a button: the matrix is beside the card at 1440, and wish mode is the bars' path (§15.2). One cursor: − / + on the card, Intensity − / + and the matrix all move the same wish (one outcome table, §15.2). |
+| **1440 layout** | Card 7fr | matrix 4fr, above the fold — the **complete** matrix, in every desk and saddle state. To keep it there with the check-in open: the injury-cap notice shares the date's line (one line at 1440: "⚠ Capped at threshold (100 % of CP, 280 W) · no sprints · ERG only — from your injury answer; lift it in Settings → Health"), and a carried-over wish's note sits under the matrix (the ↻ cell marks the wish itself). Last 7 days and Model in a strip under each column. Under a medical stop there is no matrix (§15.2), so the stop card spans both columns. | The proposal and the wish are the decision; history and the model are context. |
+| **1024 layout** | Stacked: summary line, the card (actions pinned at its bottom), then the matrix, Last 7 days, Model. The layout switches on the page's own width (CSS container query, < 1000 px), so 1440 with the *Why?* sheet pushed aside stacks too and the card keeps its full width. | A 4fr matrix in 912 px is too narrow for its five formats; the card must stay above the fold. |
+
+Above the fold: the saddle card (outcome, session, reason, actions) at both sizes, including `today-why`; the desk
+card's outcome line and session at both sizes, and its actions — Start, the primary action — at 1440×900 (at 1024 the
+open check-in stacks above the card, so its actions may sit below the fold there; `test:safety` checks Start is
+disabled after *Edit*). The open check-in lays its answers and the red-flag check side by side.
+Key glyphs, on every key hint (Today, the ride's `?` list and hints, wish mode, Settings → Controls): Enter ⏎, Backspace
+⌫, Escape "Esc", the space bar "Space"; any other key as typed.
+
+### 16.3 Shell
+
+| Decision | What it is | Why |
+|---|---|---|
+| **Labelled icon rail** | 72 px at every size (the accepted 72–76 px range's lower end): icon over a 12.5 px word, ~~62 px items, ≥ 48 px targets~~ superseded by §18.4: 40 px items with 20 px Lucide icons, never an icon alone. Replaces the 184 px text rail (148 px at ≤ 1100). The page's max width rises from 1240 to 1368 px (= 1440 − rail). | Content width: 1304 px at 1440 (was 1176, +128 — the old max width capped the rail's gain), **912 px at 1024** (was 836). The words stay, so the rail is as findable as before. |
+| **Workouts library drawer** | Below 1280 px the library is a drawer: **☰ Library** in the editor header opens it over the panes and a dimming scrim; its items are ~~≥ 48 px~~ superseded by §18.4: 32 px. While open it is **modal**: focus moves to its first item, Tab and Shift+Tab wrap inside it, and the editor behind it is inert. A pick, ✕, Esc or a click on the scrim closes it, and focus returns to ☰ Library. Growing the window to ≥ 1280 px closes it too — whichever place is showing when the window crosses 1280 px, so it cannot come back as a modal when the window shrinks or when Workouts is opened again. ≥ 1280 px keeps the 200 px column (not modal). | Outline · Text · Summary stay in one row at 1024 (#111), instead of the summary moving under them; the library is used once per edit session, the panes all the time. |
+
+### 16.4 Prototype, screens, checks
+
+- New scenes (both themes, both sizes): `today-checked-in` (summary line + saddle card, no wish), `today-checkin-edit`
+  (the done check-in re-opened: desk card), `ride-cooldown` (the cool-down template; "next" at the ride's end),
+  `workouts-library-drawer` (the drawer at 1024; at 1440 the column, as `workouts`), `ride-reconnected-hr-lost` (the
+  widest device pill).
+- Regenerated: every `ride-*` scene with the ride screen (status bar, hero, lane, road), every Today scene, every
+  railed view (`ready*`, `review*`, `history*`, `workouts*`, `settings-*`, the start gates), `start-handoff-100ms`
+  (Today underneath). Unchanged: `onboarding-*`, `resume`, `resume-stale` (no rail), `ride-screen-restarted`,
+  `ride-symptom-stop` (the ride screen is replaced), `start-*` except the hand-off (`start-motion-*` restored from
+  the base commit, #127).
+- `pnpm screens` additionally fails when:
+  - an above-the-fold element (`[data-above-fold]`: the saddle card, the desk card's outcome and session, the ride's
+    "next" label) leaves the viewport in **any** direction, or a tiered one falls below its tier;
+  - any **ride region moves, appears or disappears**: the set of `[data-geom]` boxes (Pause, clock, intensity, `?`,
+    rows 1/T1/band, both slots, the lane and its five rows, the road's three rows) and each box must equal
+    `ride-threshold`'s at the same size and theme, in every phase template and state (#10).
+  - at 1440, the **complete** Today wish matrix is missing, stacked under the card, or leaves the viewport (every desk
+    and saddle state — a full-page PNG alone does not prove the fold). Exempt: a medical stop (no matrix, §15.2) and
+    the *Why?* sheet open (the page stacks, §16.2);
+  - a status-bar group shrinks: no group may, so the widest device pill (`ride-reconnected-hr-lost`) must fit at
+    1024 as it is (the geometry check catches the `?` moving).
+- `pnpm test:safety` adds the check-in flow: desk card with Start disabled while open; Same as yesterday alone does
+  not collapse it; confirmed + red flags → one summary line and the saddle card; *Edit* re-opens it with the desk
+  card and Start disabled; a change keeps it open; *Use these answers* collapses it with the new answer; the footer
+  under Start names what is missing in each case. It also drives the Workouts library drawer at 1024 **keyboard
+  only**: Enter on ☰ Library opens it with focus inside; Tab / Shift+Tab stay inside, the editor is inert; Esc and
+  Enter on an item close it with focus back on ☰ Library; the scrim closes it too.
+- `pnpm test:layout` (#179) checks Start is inside 1440×900 with no empty band above the desk card's actions in `today`,
+  `today-health-cap`, `today-checkin-edit` and `today-wish-carried`; and that opening the library drawer at 1024,
+  growing the window to 1440 and shrinking it again leaves the drawer closed (crossing 1280 px closes it), also when the crossing happens while another place is showing.
+- `pnpm screens` (here and `design/brand`) is byte-reproducible (#189): Chromium runs with one raster thread and no
+  partial raster, the hand-off frames are pinned to their nominal time (the fake clock's `performance.now()` jitters
+  by 1 ms between runs), and the brand's CSS animations are created paused (they run on the document timeline, so a slow
+  load could finish one before it was set to its frame). Runs on an unchanged tree, also under host load, produce
+  identical files (10 brand, 5 prototype).
+- Not changed here, filed: the lane's buttons (58 / 49 px) are below §7.2's 64 px, and the status bar's fault words
+  are 16 px, below T3 — both pre-date §16 (#177). ~~64 px~~ superseded by §18.4: the lane's buttons are 32 px.
+
+### 16.5 Review guide
+
+1. **Ride** (`ride-threshold`, `ride-hr-recovery`, `ride-coach-ask`, `ride-trainer-lost`, `ride-reconnected`,
+   `ride-cooldown`, at 1024): is "how long, on target, what next" one look? Is "next" readable on the road and on
+   its block? Does any state move anything (the harness says no — does the eye agree)?
+2. **Today** (`today`, `today-checked-in`, `today-checkin-edit`, `today-wish-*`, `today-medical-stop`,
+   `today-health-cap`): one proposal, readable from the bike, nothing duplicated, nothing lost (facts, reasons,
+   *Edit a copy*)?
+3. **Shell** (any railed view at 1024; `workouts`, `workouts-library-drawer`): is the rail as findable, and do the
+   editor panes work in one row?
+
+---
+
+## 17. Amendment (#240): live workout edits
+
+Status: **proposed**; the owner confirmed the proposal and its slot in #240 on **2026-10-14** (proposal "as written", order
+after #218 and #243, before #34). Architect sign-off: pending. This section is the design the engine, core and UI steps
+of #240 build on; it contains no code. It builds on: ADR-0001 §5 (engine commands, ride record, `RideStatus`,
+compiled workout), §4.3 (StreamFrame lanes, the 8 000-byte frame budget), §6 (store tables); ADR-0002 §7 (ERG policy,
+soft start §7.5, compliance and settle §7.8); #243 (laps are per `FlatBlock` as ridden; a skip ends a lap; flags on
+`RideStatus`, bulk data by query); #218 (start guard, in-ride clamp); DESIGN §5.8/§15.2 (health cap), §7.1/§7.2
+(coach bounds, decision model), §16.1 (ride anatomy).
+
+**What the rider gets.** Four edits to the plan *ahead of* or *at* the cursor, each logged: **End set** (finish the
+current loop now), **Skip** / **Restore** (drop an upcoming block, rep or loop; bring it back before it starts),
+**Extend** (+N s on the current block) and **Repeat once** (one more rep of a loop). End set, Extend and Repeat once
+can be undone with **Undo** (§17.2); Skip is reversed by Restore. Today only "skip the current block" exists (#217).
+
+### 17.1 The plan overlay
+
+The compiled workout (`CompiledWorkout.blocks`, crank-domain) is **immutable** for the whole ride and is what the `ride`
+row stores as `compiled_json`. Edits live in an **overlay** held by the engine's `RideSession`.
+
+**Identities** (all derived from `FlatBlock`; nothing is added to the compiler's output):
+
+| Id | Definition | Notes |
+|---|---|---|
+| `BlockId` | `(node_id, path, iteration)` of a `FlatBlock` | the #243 lap key; unique within a compiled workout |
+| `GroupId` | `(path[..d+1], iteration[..d])`: the path of a repeat node and the iteration counters of the repeats *around* it | `d` is the repeat's depth (0 = outermost). A block with `iteration.len() = n` belongs to `n` groups, innermost = `d = n−1`. Relies on `path.len() = iteration.len() + 1`, which the compiler guarantees (`visit` pushes one of each per repeat level); the engine step adds a corpus test for it |
+| `IterationId` | `(GroupId, k)`: every block of the group whose `iteration[d] = k`, nested descendants included | one **rep**: its work block and the rest that follows it. The UI's unit for "Skip rep 4" so no orphan rest is left |
+
+**Overlay value** (a pure function of the edit log, §17.4: `overlay = fold(applied edits, in order, undone ones removed)`):
+
+| Part | Type | Written by |
+|---|---|---|
+| `suppressed` | map `BlockId → { rider, set_ended }` | `suppress`, `end_set` (kind `set_ended`), cleared by `restore` (`rider` only) |
+| `extend_s` | map `BlockId → s` (cumulative) | `extend` |
+| `added` | map `GroupId → n` added iterations | `repeat_once` |
+
+**Effective sequence** and **status** are two separate pure functions in `crank-domain` (`workout::overlay`, next to the
+compiler; no I/O, no clock, so they are shared by engine, core, Review and tests):
+
+```text
+effective(compiled: &CompiledWorkout, overlay: &Overlay) -> Vec<EffectiveBlock>
+block_status(effective: &[EffectiveBlock], cursor: Cursor, ride_log: &[RideEdit]) -> Vec<BlockStatus>
+```
+
+`effective` returns **only the sequence**: each `EffectiveBlock` has its identity (`BlockId`), timing (`start_s`,
+`dur_s`, `extended_s`) and target (`power_from/to`, `phase`), plus provenance: `origin` (`planned | added`) and
+`suppressed` (`None | rider | set_ended`). It knows nothing about the cursor: no done / current / skipped.
+`block_status` derives `done | current | upcoming | suppressed | ended | skipped` from the effective sequence, the
+cursor (the current `BlockId`, or finished) and the ride log, whose `skip` events are the only source of `skipped`.
+The two never share state, so each is tested alone.
+
+How `effective` is built:
+
+1. Start from `compiled.blocks` in order.
+2. For each group with `added = n`, append `n` copies of the group's **last iteration** (all its blocks, nested
+   descendants included) directly after that iteration, with `iteration[d] = count, count+1, …` (new `BlockId`s; the
+   copy keeps the original targets: **no further progression**, so an added rep is never harder than the last one
+   ridden). If `skipLastRest` dropped that iteration's final child, the copy is taken from the previous iteration's
+   final child and **restored** after the existing last iteration, and the added copy drops it again: the result equals
+   compiling the same workout with `count + n` and the progression held. A group with `count = 1` and `skipLastRest`
+   has nothing to copy the rest from: `repeat_once` is refused `no_template`.
+3. Remove every block in `suppressed`.
+4. Add `extend_s` to the block's `dur_s` (never to `dur_range_s`: open-ended blocks cannot be extended).
+5. Recompute `start_s` as the running sum of the remaining expected durations (so the effective sequence tiles
+   `[0, total_s_eff)` like the compiled one); `power_from/to`, `phase`, `node_id`, `path` are untouched.
+
+**Planned versus ridden, one statement.** Every *planned* duration comes from `effective`: `ride_plan.total_s` /
+`total_range_s` and the overview's planned length are sums of its `dur_s` (extensions included, suppressed blocks
+excluded). Every *ridden* quantity comes from the ride log and the cursor through `block_status` and the recorder:
+ridden time, and a lap's `edited_dur_s`, which is the compiled `dur_s` plus the net `extend` rows of the log for that
+block as of the lap's end (§17.4). `effective` is never asked what has been ridden.
+
+Suppressed blocks stay in the returned sequence (the road draws them greyed, §17.6) with their planned duration, and
+contribute 0 s to the timeline; the *ridden* sequence the engine walks is the subsequence with `suppressed = None`.
+`RideStatus.block_index` indexes the ridden sequence (§17.5).
+
+**Invariants** (the property test, §17.7): the ridden sequence minus `added` is a subsequence of the compiled one
+(order kept, no duplicates); an `added` block directly follows a block of its own group's last iteration; no block's
+target, phase or identity is changed; the sequence tiles. **Engine invariant** (tested on engine commands, §17.7):
+no command changes a block *before* the cursor, and the current block changes only by its own `extend` (its duration,
+while it is current), with **one exception**, the undo of an `end_set` (§17.2), which moves the cursor back to the
+interrupted block and returns the group's `set_ended` blocks to the sequence.
+
+### 17.2 Commands
+
+All five are `EngineCmd` variants (plus `UndoEdit`), exposed by the core (#34) as `ride_end_set`, `ride_suppress`,
+`ride_restore`, `ride_extend`, `ride_repeat_once`, `ride_undo_edit`, and queried with `ride_plan` / `ride_edits`
+(§17.5). Every command carries `actor: rider | coach` and `input: key | remote | touch | coach` (for the log only).
+
+**Common preconditions**: a ride is loaded, started and not `finished` (`not_started`, `wrong_state`); the ride is
+**not free** (`free_ride`: a free ride has no plan, so all edits are refused; its lap action is #243's). Edits are
+accepted in `riding` **and** in every `paused(…)` state (§17.3). A command is applied between ticks and takes effect
+from the next tick (the same rule as every detection in ADR-0001 §5). **A refused command changes nothing** (overlay,
+status and log are byte-equal before and after; tested). Codes every command can return: `not_started`, `wrong_state`,
+`free_ride`. **This table is the single list of the engine's refusal codes**: the command-matrix test (§17.7 test 6) is
+generated from it, one case per row and per code. One code is **not** the engine's: `needs_confirmation` is returned
+by the **core** (§17.2 Interactions), before a command reaches the engine, so the engine has no such row.
+
+| Command | Effect | Preconditions (beyond the common ones) | Refusal codes |
+|---|---|---|---|
+| `end_set(group?)` | The current block ends now, every later block of the group (default: the **innermost group of the current block**) becomes `set_ended`, the cursor jumps to the first block after the group | the group has the current block; if `group` is given it is one of the current block's groups | `no_group` (current block is in no repeat), `unknown_group`, `not_current_group`, `stale_proposal` (a coach-origin edit whose target changed since the ask) |
+| `suppress(target)` | `target` ∈ `BlockId` · `IterationId` · `GroupId`: the blocks become `rider`-suppressed; they stay on the road, greyed | every block of the target is **upcoming** (not current, not done); a group is suppressible only if *no* block of it has started | `unknown_block`, `already_started` (current or done; for a group in progress the message says "use End set"), `would_end_ride` (nothing ridable would remain after the cursor; the rider uses End), `removes_rest` (a block-level suppress of a `recovery` block between two un-suppressed `work` blocks; suppress the rep instead), `removes_warmup` (§17.3), `stale_proposal` (as for `end_set`) |
+| `restore(target)` | undo of a `suppress`: `rider`-suppressed blocks of the target are back in the ridden sequence | blocks are `rider`-suppressed and still upcoming | `not_suppressed`, `not_restorable` (`set_ended`, or the block has been passed), `already_started` |
+| `extend(+N s)` | adds N s to the **current** block's expected duration; the block timer's end moves, the target does not | current block is a fixed-time block (`dur_range_s = None`, time end rule); N and the cumulative sum within the table below; the extension must not predict a depleted W′bal (§17.3) | `not_extendable` (`lap`, `kJ`, `hr<` blocks), `extend_step` (N not in the table), `extend_limit` (cumulative), `would_deplete`, `coach_cannot_extend`, `cap_exceeded_target`, `cap_requires_erg` (§17.3 rule 1) |
+| `repeat_once(group)` | `added[group] += 1` | the group has the current block or an upcoming block (it is not finished); `added < 2` (`added < 1` without a CP / W′ model, §17.3 rule 3: the second added rep is refused `repeat_limit`); a copy template exists (§17.1) | `unknown_group`, `group_finished`, `repeat_limit`, `no_template`, `would_deplete`, `coach_cannot_extend`, `cap_exceeded_target`, `cap_requires_erg` |
+| `undo_edit` | removes the **most recent undoable rider-initiated edit** from the fold (§17.2 "Undo scope") | an undoable edit exists | `nothing_to_undo` |
+
+**Extend limits** (a convention (D); owner may override, §17.9). The limit depends on the block's `phase`, because a
+longer rest is the safe edit and a longer interval is not:
+
+| Block `phase` | Allowed N | Cumulative maximum |
+|---|---|---|
+| `work` | 15, 30, 60 s | `min(+120 s, planned dur_s)` |
+| `recovery`, `warmup`, `cooldown` | 30, 60, 120 s | +300 s |
+
+`free` blocks (a `Free` target inside a plan) follow the second row. Without a CP / W′ model on the athlete (§17.3) the
+cumulative maximum on `work` is +60 s.
+
+**Undo.** Undo is **its own action** (§17.6). It reverses **rider-initiated** edits only. **Keep never undoes a rider
+edit; its §7.2 role for coach changes is unchanged** (it answers asks and returns an auto-applied intensity change
+to the plan within 15 s). An explicitly accepted coach change, a rider-confirmed coach structural edit included, is not
+undone by any key (§7.2).
+
+| Edit | Reversed by | On the undo stack until |
+|---|---|---|
+| `end_set` | `undo_edit` | **15 s of session time** after the edit (pausing does not extend it), **or until the block it entered stops being current** (Skip, natural end), whichever is first: only while the entered block is still current can Undo move the cursor back. It re-enters the interrupted block **from its beginning**: a block discontinuity (§17.3 rule 7); the seconds ridden in between stay in the record (their own lap) |
+| `extend` | `undo_edit` (subtracts N) | the block's elapsed time passes the un-extended end, **or the block stops being current** for any reason (`end_set`, Skip, natural end) |
+| `repeat_once` | `undo_edit` | the first block of the added rep starts, or the added rep is `set_ended` |
+| `suppress` | **`restore`** (explicit) | **not on the undo stack and has no undo window**; `restore` is available until the block starts |
+| `restore` | `suppress` | not on the undo stack |
+| `skip` | nothing | not an overlay edit |
+
+- **Undo scope.** `undo_edit` applies to the **most recent rider-initiated edit that is on the stack, not expired and not
+  undone**. An entry that has expired (its window or condition above has passed) **drops off** and never hides an
+  earlier valid one: `extend`, then `repeat_once`, then Undo reverses the `repeat_once`, and a second Undo reverses
+  the `extend` (the block is still current).
+- **An `extend` expires when its block stops being current.** After `extend` then `end_set`, Undo targets the
+  `end_set`; the `extend` is expired, is never rewritten and is not reachable by any later Undo. If the `end_set` is
+  undone, the re-entered block keeps its extension (it is still in the overlay); only its undo is gone. This is what
+  keeps the §17.1 engine invariant to its single exception.
+- **Skip is not on the stack** and does not block undoing an earlier edit (it expires the current block's `extend`,
+  because that block is no longer current).
+- A coach-proposed, rider-confirmed edit is **not** on the stack (see above).
+
+**Interactions.**
+
+- **Manual Skip** (`SkipBlock`, #217) is unchanged and not an overlay edit: it moves the cursor one block, is not
+  undoable (§17.2 Undo) and changes no future block. It **is logged** (kind `skip`, with the skipped `BlockId` as target, §17.4) so planned-versus-done is complete and
+  `block_status` can be rebuilt from the stored log.
+  After an `end_set`, Skip skips the block now current. `end_set` while the current block is the last of the
+  workout finishes the ride exactly as Skip does (#217).
+- **Pause** (`user`, `stopped_pedalling`): edits are accepted: the paused plan is where a rider reads ahead. Workout
+  time and the block timer stay frozen; a cursor move is applied to state only, the new block's target is sent by the
+  resume's soft start (§17.3).
+- **Dropout and reconnect** (`trainer_lost`; HR loss): edits are accepted (state only). A command arriving inside the
+  2 s detection window is applied at the next tick like any other (transitions inside the window stand, ADR-0001 §5).
+  On reconnect the §6/§7.5 sequence runs: the mode is re-issued as 0 W until a pedalling sample, then the soft start
+  goes to the block the *effective* sequence has at the cursor. The §6.6 re-entry policy for long gaps applies to
+  that block.
+- **Coach `replan`** (R-INT-03, rules.md: "end set or convert to threshold"): the judge's `replan` verdict may
+  *propose* a structural edit (`end_set` or `suppress`: **decreases only**). §7.1 stays authoritative: **a structural
+  edit is never auto-applied**, whatever the autonomy setting (auto-apply covers `ease_off` and the intensity part of
+  `replan` only). The proposal is always an ask (deadline; silence keeps the plan; Coach = accept, Keep = keep the
+  plan) and executes, on accept, through the same command with `actor = coach` and `input = coach`. **The core
+  enforces this** like every §7.1 bound, and is the **only** layer that does: before any command reaches the engine
+  it reads the proposal's actor (`coach`) and its confirmation state (the nudge's answer: `accepted` by the rider, as
+  opposed to `auto_applied`), and refuses an unconfirmed coach structural edit with `needs_confirmation`. The engine
+  keeps no second copy of the rule. `extend` and `repeat_once` are **never** coach-initiated (`coach_cannot_extend`: the coach
+  adds no work, §7.1), and no edit is proposed while the health cap is the reason a call is pending (only `ease_off`
+  may be asked, §15.2). A proposal is re-validated when accepted: if a rider edit made it stale (target gone, started
+  or already suppressed) the accept is refused `stale_proposal` and the ask expires "superseded by your edit". Once
+  accepted, the edit is applied and **no key undoes it** (§7.2: an explicitly accepted change is not undone by any
+  key; it is not on the undo stack); the rider still has Skip and Intensity −. A rider edit never changes the
+  intensity offset or the coach's ±% (§7.1); those stay orthogonal and apply to the effective blocks' targets as
+  before.
+
+### 17.3 Safety
+
+An edit **cannot create a target**: `suppress` and `end_set` remove blocks, `extend` keeps the block's target,
+`repeat_once` copies targets that already passed the start guard. The health cap and the soft start are nevertheless
+enforced at *edit time* (so the rider hears "no" before anything happens) and again at the *control point* (defence
+in depth); neither relies on the other.
+
+1. **Cap, at the command** (consistent with #218's start guard, which refuses and never edits silently): after
+   applying a command to a *copy* of the overlay, the engine validates every block of the resulting ridden sequence
+   that is not yet done against the active cap (`cap_w`, ERG only) with the start guard's own function, **on the targets
+   after the rider's ± offset and the coach's change** (the controlled target, ADR-0002 §7 item 1, not the
+   planned one); any target above `cap_w` or a non-ERG block under a cap refuses with `cap_exceeded_target` /
+   `cap_requires_erg`. A **decrease-only edit** (`suppress`, `end_set`, and the undo of `extend` and of `repeat_once`) is **never
+   refused by the cap**: it adds no target and a ride already over the cap is the monitor's business (§15.2), not the edit's.
+   The undo of `end_set` returns blocks to the sequence and is validated like `extend` and `repeat_once`. Validation
+   runs on the whole remaining sequence for those three, so a future change that lets an edit
+   introduce a block (e.g. a template that is not a copy) cannot slip past it. A medical stop (§5.8) has already
+   stopped the ride (`wrong_state`).
+2. **Cap, at the control point**: the controlled target is clamped to `cap_w` as before (§15.2 point 3); an edit never
+   widens what the clamp allows. The `CapMonitor` and `CapExceeded` log are unchanged.
+3. **W′bal** (#243 Q4 flags; CP, W′ and the τ from `RideSetup.athlete`): `extend` and `repeat_once` on `work`
+   blocks are refused `would_deplete` when the predicted W′bal at the end of the extended block, or of the added
+   rep, at its target is < 0 J (the R-WB-01 floor, the same rule as #243's `depleted` flag). With no CP / W′ model
+   the check cannot run; the engine then applies the conservative limits of §17.2 (+60 s cumulative on `work`, one
+   added rep: a second is refused `repeat_limit`) and the refusal text says why. It never silently allows the full limit.
+4. **Warm-up and rest protection** (a convention (D), owner may override): `removes_rest` as in §17.2; and
+   `removes_warmup`: the edit suppresses a `warmup` block **before any `work` block has started** and would leave
+   fewer than 180 s of `warmup` before the first `work` block (the compiler's cooldown convention, `MissingCooldown`).
+   A rider who has already worked is not restricted.
+5. **Entering a block by an edit** (only `end_set`, its undo and Skip move the cursor): the ERG target changes **exactly
+   as at a natural block boundary** (ADR-0002 §7 item 2): while ERG is engaged, the rider is pedalling and no ramp is
+   running, it is one step on the next tick (newest mode wins in the `control` slot, §4.4). It is not a new
+   engagement, so no soft start of its own, as with Skip today. Settle follows **ADR-0002 §7.8 (a) as written**: the
+   first 5 s of the entered block are settle seconds **only when its start target differs from the previous block's
+   end target**; when they are equal nothing is settled.
+5a. **An edit never cuts a soft-start ramp.** If a §7.5 ramp is running (after a reconnect, after ERG re-engagement,
+   or the ride-start ramp of #250) when an edit changes the target, the ramp **continues** under the same per-tick rule
+   (the same step schedule and 1 Hz updates) **toward the new target**; it is neither replaced by a direct step to
+   the new block's target nor restarted. The settle of the new block starts when the ramp ends, as §7.8 (c) does.
+5b. **Entering ERG from `Free` or `Sim` by an edit** (a plan with a `Free` block, then `end_set` or `suppress` of the
+   free block's successor makes an ERG block current) is the ADR-0002 §7.5 item 5 case, exactly as at a natural
+   boundary: a (re-)engagement, so the soft start runs from the current 3 s power.
+6. **Not engaged → soft start, never the target.** When ERG is not engaged at the edit tick (paused, ERG released
+   §7.4, link lost or connecting, no pedalling sample yet) the edit only moves state. The target is sent by the
+   re-engagement rules: 0 W until the first pedalling sample of the epoch, then the §7.5 soft start from the 3 s power
+   to the *then-current* block's target. An edit therefore never sends torque to a rider who is not pedalling.
+7. **Undo of `end_set`** re-enters the interrupted block from its beginning. It is a **block discontinuity**: rules 5,
+   5a and 5b apply as for any block entry, and §7.8 (a) applies as written (5 s settle only when the re-entered
+   block's start target differs from the end target of the block ridden since).
+8. **Rate**: one control write per tick (§4.4) holds however many edits arrive in a tick; edits are applied in
+   arrival order and each is validated against the state the previous one left.
+
+### 17.4 Record and Review
+
+**The log.** Refused commands are *not* logged (a refusal changes no state and is returned to the caller); every
+**applied** edit, `skip` and `undo` is appended to the ride record at command time (its own row, not a 5 s chunk, so a crash loses none). The overlay is always
+`fold(log)`: crash recovery and the #50 resume rebuild it from the table; Review and the planned-versus-done view call
+the same pure function on the stored `compiled_json` and log.
+
+Forward migration sketch (ADR-0001 §6; `crates/crank-store/migrations/NNNN_ride_edit.sql`, next free number,
+forward-only; the exact SQL is the engine step's):
+
+```sql
+CREATE TABLE ride_edit (
+  ride_id       TEXT NOT NULL REFERENCES ride(id),
+  seq           INTEGER NOT NULL,   -- dense, 1-based per ride; RideStatus.edit_seq after this entry
+  at_session_s  REAL NOT NULL,      -- seconds, like lap.start_s and coach_decision.t
+  at_workout_s  REAL NOT NULL,      -- frozen value while paused
+  kind          TEXT NOT NULL CHECK (kind IN
+                  ('end_set','suppress','restore','extend','repeat_once','skip','undo')),
+  actor         TEXT NOT NULL CHECK (actor IN ('rider','coach')),
+  input         TEXT NOT NULL CHECK (input IN ('key','remote','touch','coach')),
+  target_json   TEXT NOT NULL,      -- BlockId | IterationId | GroupId; for skip the skipped BlockId; {"seq": n} for undo
+  param_json    TEXT NOT NULL,      -- {"add_s": 60} for extend, else {}
+  call_id       TEXT NULL REFERENCES coach_decision(call_id),
+  PRIMARY KEY (ride_id, seq)
+);
+ALTER TABLE coach_decision ADD COLUMN proposed_edit_json TEXT NULL;  -- the replan's typed edit
+```
+
+Conventions followed: ids are `TEXT` and foreign keys plain `REFERENCES` like every other child of `ride` in
+`0001_initial.sql` (`ride_chunk`, `lap`, `recovery`, `coach_decision`); the schema uses **no** `ON DELETE CASCADE`
+anywhere, so none is added (a ride is not deleted by this table's rules); times are `REAL` seconds; `STRICT` is not used by `0001_initial.sql`, so it is not used here.
+
+- **Applied or undone**: an undo is its own row (`kind = 'undo'`, `target_json = {"seq": n}`); an edit is *undone*
+  iff such a row exists. The table is append-only. Snapshot test of the resulting schema, as for every migration.
+- `ride.compiled_json` stays the **plan**; the as-ridden sequence is derived. (`ride.workout_json`, "as ridden incl.
+  coach changes", is unchanged: coach intensity changes are not structure.)
+- `lap` gets `iteration` from #243's migration; this section adds no `lap` column. A lap's `stats_json` carries
+  `planned_dur_s` (compiled) and `edited_dur_s` (compiled plus the net `extend` rows of the log as of the lap's end,
+  §17.1 "Planned versus ridden") so a lengthened block reads as such.
+
+**Laps** (#243 rules, one lap per `FlatBlock` as ridden): `end_set`, like a skip, **closes the current lap at the
+edit tick**, and the new current block opens its lap. A suppressed or `set_ended` block never starts, so it has **no
+lap** (no zero-length rows). An added rep's blocks are laps keyed `(node_id, path, iteration = count + j)`. `extend`
+adds no lap and lengthens the current one. Undoing an `end_set` opens a **second** lap with the same key; `idx`
+disambiguates, and Review shows the interrupted one as "interrupted".
+
+**Review** shows planned versus done (§5.5 item 3's plan line, extended):
+
+- The ride chart's dashed *plan* line is the compiled workout; the solid *given target* line follows the effective
+  sequence. Removed blocks are drawn as **outline-only ghosts** labelled "removed by you" / "ended early by you",
+  added reps with a "+" mark, extensions with a notch at the planned end. Never colour alone (§15.5); never hatching
+  (reserved for variable-length blocks, §5.5).
+- The work-interval table lists every planned block, with state `ridden | removed by you | removed by coach |
+  ended early | added`. The *Show as table* alternative carries the same rows plus one row per edit (time, what,
+  who, undone or not).
+- The coach timeline (§5.5 item 3) lists coach edits as calls ("end set early · accepted · applied"; a structural
+  edit is never auto-applied and never undone by a key, §17.2); rider edits are a second, labelled lane, not mixed with calls.
+
+**Compliance and verdicts** (#218, #106, #12): removed blocks are **rider-removed, not failed**.
+
+- "On target" (ADR-0002 §7.8) is a share of ERG *seconds*; a block that never started has none, so it is outside the
+  denominator by construction. An `end_set`-shortened block contributes the seconds ridden.
+- The intent verdict counts reps as `held · not held · removed · ended early`; only `not held` is a failure:
+  "Threshold 2 × 4:00 — 94 % on target · 1 of 4 reps removed by you", "VO2 sets — 12 of 12 reps ridden (3 removed by
+  you)". A part with all reps removed reads "removed by you", with no percentage.
+- R-INT-03 "≥ 2 consecutive failed reps" counts only *ridden* reps, as it does today, so removing reps cannot trigger
+  a `replan`, and a rider-ended set is not a failed set. This needs **no new judge feature**: removed reps simply
+  produce no rep record. Any new judge or athlete-model input (for example telling the judge a set was shortened by
+  the rider) is **not** in this design; it would be filed as its own issue.
+
+### 17.5 Status and stream
+
+Follows #243's precedent: **flags on `RideStatus`, bulk by query**, no new lane.
+
+| `RideStatus` field | Type | Meaning |
+|---|---|---|
+| `edit_seq` | `u32` | number of log entries; changes on every edit, skip and undo. The UI re-queries `ride_plan` when it changes (also covers resync) |
+| `block_count` | `u32` | blocks in the *ridden* sequence ("block 36 of 37") |
+| `undo` | `Option<{ seq: u32, kind: EditKind, expires_session_s: u32 }>` | the rider edit `undo_edit` would reverse now (§17.2 Undo scope; never a coach-confirmed edit) and its window end (a far value for edits whose window is a condition, not time); `None` when nothing is undoable. The UI counts down from `session_s`; no per-second status changes |
+| `block_index` | existing | now an index into the **ridden** sequence *as of `edit_seq`* |
+
+- **The UI never reads `block_index` against a plan of another `edit_seq`.** Between a status with a new `edit_seq`
+  and the arrival of `ride_plan`, it keeps its last render and does not move the cursor (a sub-second state; tested
+  with a delayed query).
+- **Queries** (not stream, not frame-budgeted): `ride_plan() → { edit_seq, blocks: [{ id, start_s, dur_s, extended_s,
+  origin, status, restorable }], total_s, total_range_s }` and `ride_edits() → [RideEdit]` (the log).
+- **Frame budget**: the added fields serialize (camelCase JSON) to at most **128 bytes** in the worst case
+  (`"editSeq":4294967295,"blockCount":4294967295,"undo":{"seq":4294967295,"kind":"repeat_once","expiresSessionS":4294967295}`
+  is 120 bytes; 121 with the joining comma).
+  Status is "on change": an edit emits one status frame; `undo`'s expiry emits one more (`None`). The maximal-status
+  property test of #243 (all flags set) is re-run with these fields set; discrete state still falls back to the
+  fixed resync frame when over 8 000 bytes. No new coalescing class: the latest status already coalesces.
+- **Nudges**: a coach edit proposal is an existing nudge and adds no frame type. The typed edit is **not embedded** in
+  the nudge: it lives in `coach_decision.proposed_edit_json`, keyed by the `call_id` the nudge already carries
+  (§17.4). One source of truth, the nudge size and its 512-byte message cap are unchanged, and the engine reads the
+  edit from the decision on accept. There is therefore no `CoachNudge.proposed_edit` field.
+
+### 17.6 UI
+
+Everything fits the accepted §16.1 ride anatomy: **no region is added, moved or resized** (the `[data-geom]` check
+of §16.4 must hold in every state below). The edit surface is the road (the selection) and the coach lane's five
+fixed rows (what to do with it).
+
+| Surface | Behaviour |
+|---|---|
+| **Road ahead and overview (#98)** | A tap or click on the road **selects** the block under it (the near road's full height is the hit area; where two blocks are < 48 px apart a second tap on the same spot steps to the next block). The selection is drawn as a thick outline plus its name and time in the "next" label lane. In a repeat the selection is the **rep** (`IterationId`: its work and rest together, labelled "rep 4 of 5"); a second step up selects the **loop**. States: **suppressed** = outline-only, no fill, a ✕ glyph and "skipped" in the label (never colour alone); **set ended** = the same, labelled "ended"; **added** = a "+" on the block; **extended** = a notch at the planned end. The overview draws the same states thin, and its text reads "30:58 ridden · block 36 of 37 · 2 skipped". The "proposed/applied" dashed/solid vocabulary of coach changes is unchanged and separate |
+| **Lane, selection state** (no coach call pending; a pending ask always takes the lane, the selection is kept) | head: the selection's name and when ("Rep 4 of 5 · in 2:10"); reason row: effect preview ("removes 4:00 @ 350 W and its 2:00 rest"); actions row, ≥ 64 px each: `◀ ▶` (step the selection), then the **context actions**: current block / its loop → **End set** (`end_set`) and **Extend +1:00** (`extend`); an upcoming rep or block → **Skip** (`suppress`); an upcoming loop → **Skip loop**; a suppressed one → **Restore** (`restore`); a loop in progress → **Repeat once**. Labels are actions (§7.2). The grammar row states the bound keys ("E = end set · S = skip current") |
+| **Lane, edit applied** | the pattern of "coach applied": head "Set ended · 3 reps skipped", reason "next: Easy 0:15 @ 140 W", for a rider edit one **Undo** button (its own action, never Keep), the deadline text "Undo · 12 s" with its bar, grammar "U = undo". For `end_set` the bar and button also disappear **early**, as soon as the block it entered stops being current (Skip, natural end), not only when the 15 s run out (§17.2 Undo scope). For edits whose undo is a condition rather than a time (`extend`, `repeat_once`) the bar is not drawn and the button reads **Undo** until the condition ends. After `suppress` the lane offers **Restore**, not Undo. After a coach-proposed edit the rider accepted the lane states what was done and offers **no Undo** (§7.2) |
+| **Dispatcher (#104)** | two new abstract actions, **End set** and **Undo** (nine actions: **Coach, Keep, Pause, Skip, End set, Undo, Intensity − / +, End, Report symptom**). Default keys `E` and `U`; any HID device can be bound (Learn). **End set** always means `end_set` on the **innermost group of the current block** (never the selection, never an outer group); **the dispatcher owns the second press**: while an `end_set` undo is offered, End set is a **no-op** (the engine takes every `end_set` at face value; the dispatcher does not escalate to an outer group). It joins Coach and Keep in the 1.5 s lane-change debounce (§7.2) and is refused with a spoken-label toast when there is no group ("no set to end"). **Undo** is `undo_edit` (§17.2 scope), also debounced. **Keep never undoes a rider edit**; its §7.2 role for coach changes is unchanged. The remote grammar's minimum is unchanged (two buttons = Coach + Pause): End set is **not reachable on a two-button remote**, which has Skip and the on-screen buttons; the three-button default is decided with #53 |
+| **Sound and tone** | an applied edit plays the soft confirmation; an undo the low note (§7.3); a refusal is a text line in the lane for 4 s ("Not allowed: it would take you over your 280 W cap"), no warning tone (nothing is wrong) |
+| **Saddle safety** | `End set` and `Skip` have no confirm dialog: Undo (15 s for `end_set`, or until the block it entered stops being current, whichever is first) and Restore (a skipped rep, until it starts) are the safety net. Dialogs still suspend ride shortcuts (§6.7); the End *ride* binding is untouched and still asks |
+
+Refusal copy (rider-readable, no codes; one line each): `cap_*` "Above your cap (280 W)"; `would_deplete` "You'd run out
+of reserve (W′ below 0)"; `removes_rest` "Skip the whole rep: this rest is between two hard efforts"; `removes_warmup`
+"Keep at least 3 min of warm-up before the first hard block"; `extend_limit` "Longest you can add here is 2:00";
+`group_finished` "That set is over"; `free_ride` "No plan in a free ride".
+
+New scenes (both themes, both sizes): `ride-edit-select` (a rep selected, End set / Skip), `ride-edit-applied` (End set
+applied: Undo · 12 s), `ride-edit-suppressed` (greyed road and overview, "2 skipped"). `pnpm screens` adds: every edit
+control ≥ 64 px; the §16.4 geometry set equals `ride-threshold`'s in all three; the overview text fits at 1024.
+
+### 17.7 Acceptance criteria for the engine step (#240 step 2)
+
+Each is a test that fails without the change (the PR body shows the pre-change failure once, per repo process).
+
+**Domain, `workout::overlay` (pure):**
+
+1. **Identity.** `path.len() = iteration.len() + 1` for every block of the compile corpus; `GroupId`/`IterationId`
+   derivation round-trips; ids unique.
+2. **Empty overlay is the identity**: `effective(c, ∅)` equals `c.blocks` exactly (`start_s` included), and
+   `block_status` over it with the cursor at block *k* and an empty log is `done` before *k*, `current` at *k*,
+   `upcoming` after. **Purity**: `effective` takes no cursor and no log (a signature test), and returns equal values
+   for equal arguments.
+3. **Property** (proptest over arbitrary workouts × arbitrary valid edit sequences; includes nested repeats,
+   `skipLastRest`, open-ended steps): the effective sequence satisfies every invariant of §17.1: *a valid ordered
+   subsequence of the compiled one, plus added reps only as copies at the end of their group's last iteration*; ids
+   unique; targets, phases and identities unchanged; tiles `[0, total_s_eff)`; extensions within §17.2's limits.
+   **`block_status`** property: `skipped` appears exactly for the `BlockId`s in the log's `skip` rows (the row's
+   `target_json` is the skipped `BlockId`), and `block_status` computed from the log as **stored and reloaded**
+   equals the one computed live; `ended` only for `set_ended` blocks; exactly one `current` while the ride is not
+   finished.
+4. **Algebra**: `restore ∘ suppress`, the undo of `extend` / `repeat_once` / `end_set`, and `suppress`/`restore`/`extend`
+   in any order are consistent (the fold is order-independent for commuting edits; each pair's inverse restores the
+   overlay exactly).
+5. **`repeat_once` golden** (explicit expected values, no compile oracle). For a group `g` of count `c ≥ 2` with
+   children `k0 … km` at depth `d`, with `added[g] = 1`, the effective sequence equals the compiled one with these
+   blocks inserted directly after the last block of iteration `c−1`: (i) without `skipLastRest`: one block per child
+   `ki`, same `node_id` and `path`, `iteration[d] = c`, and the `dur_s`, `power_from/to` and `phase` of the child's
+   block in iteration `c−1`; nested descendants are copied with their inner iterations; (ii) with `skipLastRest`
+   (final child `km` absent from iteration `c−1`): first, **`km` of iteration `c−2` is inserted as `km` of iteration
+   `c−1`** (`iteration[d] = c−1`, its targets) directly after iteration `c−1`'s last block, and then iteration `c`
+   follows with children `k0 … k(m−1)` only. `start_s` is recomputed. The corpus includes nested repeats and
+   `skipLastRest`; `c = 1` with `skipLastRest` asserts `no_template`.
+
+**Engine (`SimTrainer`, `VirtualClock`, existing rig):**
+
+6. **Command matrix**: generated from the §17.2 table: one success case per command row and one case per refusal
+   code listed in it (including `nothing_to_undo`, `stale_proposal`, `repeat_limit` in both its forms, the common codes and the
+   cap and W′bal codes); a refused command leaves overlay, status and log byte-equal.
+7. **`end_set`** mid-rep: lap closed at the edit tick; cursor at the first block after the group; one ERG write on the
+   next tick; the group's later blocks never start (no laps); with the entered block's start target different from
+   the ended block's end target, 5 s of settle are excluded from compliance (and none when they are equal, §7.8 (a)).
+   `undo_edit` at +14.75 s re-enters the block from its start as a block step (rule 7), with the settle only when the
+   targets differ; at +15.25 s the entry has dropped off the stack and `undo_edit` is refused `nothing_to_undo`.
+7a. **Undo scope**: (i) **`extend` then `end_set` → `undo_edit` targets the `end_set`**; the `extend` is expired,
+   is never rewritten, and after the `end_set`'s window passes `undo_edit` is refused `nothing_to_undo`; after undoing
+   the `end_set` the block keeps its extension. (ii) `extend`, `repeat_once`, `undo_edit`, `undo_edit` reverses the
+   `repeat_once` and then the `extend`. (iii) `extend` then Skip: the `extend` is expired. (iv) a `skip` between two
+   edits does not block undoing the earlier one while it is valid; (iv-a) `end_set`, then Skip the entered block,
+   then `undo_edit` → `nothing_to_undo`, and the edits made before the `end_set` are unaffected (an earlier still-valid
+   entry is reachable only if its own condition holds); (iv-b) `end_set`, the entered block ends **naturally**
+   (< 15 s), then `undo_edit` → `nothing_to_undo`. (v) `suppress` is never on the stack (`undo_edit`
+   leaves it, `restore` reverses it). (vi) the engine invariant of §17.1 holds over random command sequences with the
+   `end_set` undo as its only exception.
+7b. **Ramps** (§17.3 rules 5a, 5b), each with the control log asserted write by write: `end_set` **during the
+   ride-start ramp** (#250): the ramp continues, same step schedule, toward the new target, no direct step; `end_set`
+   **during a reconnect ramp**: same; an edit that makes an ERG block current **from a `Free` block**: a soft start from
+   the 3 s power, not a step; the undo of `end_set` (test 7).
+8. **Never torque without pedalling**: with an edit applied while *paused*, *ERG released*, *trainer lost* and
+   *reconnecting*, the control log contains no target write until the re-engagement rules produce one: 0 W until the
+   first pedalling sample, then the soft start to the then-current block's target (extends the #231 scenarios).
+9. **No bypass of the cap or the soft start** (the model test): a proptest drives random edit sequences (rider and coach)
+   interleaved with random link faults, pauses, ERG releases and ± changes against random plans under a random cap.
+   Assertions on every tick: every `Erg` write is ≤ `cap_w`; no `Erg` write carries the block target before a pedalling
+   sample after a re-engagement; **while a §7.5 ramp is running, every write is the ramp's own next step** (a step
+   that jumps to the block target mid-ramp fails it); no non-ERG mode is entered under a cap. Mutation check (each
+   mutation applied once, the named test must fail, shown in the PR): (a) cap check removed from the validator →
+   test 6's `cap_exceeded_target` row; (b) W′bal check removed → the `would_deplete` row; (c) warm-up rule removed →
+   the `removes_warmup` row; (d) **an edit replaces an in-flight ramp with the new block's target** (the "cut the
+   ramp" mutation) → this test and 7b.
+10. **Coach**: a `replan` with a structural `proposed_edit` is **always an ask**, also with auto-apply on (**core**
+    test, §17.7 core list: an `auto_applied` structural edit is refused `needs_confirmation` and no command reaches
+    the engine); accept → applied with `actor = coach`, and **no
+    key undoes it**: `undo_edit` is `nothing_to_undo` and Keep leaves it (§7.2); Keep on the ask keeps the plan; `extend` and `repeat_once` from `actor = coach` refused `coach_cannot_extend`; a
+    stale proposal refuses with `stale_proposal`; a rider edit leaves the intensity offset untouched.
+11. **Free ride**: every edit command refused `free_ride`; state unchanged.
+12. **Record**: the log rows equal the applied commands (kind, actor, input, ticks, target, params; a `skip` row
+    carries the skipped `BlockId`); `fold(log)` reproduces the overlay and `block_status(effective, cursor, log)`
+    reproduces the live statuses after a simulated crash and resume (#50); the schema snapshot matches the migration.
+13. **Laps and verdict inputs** (#243): the lap rows of §17.4 (none for suppressed, closed at `end_set`, the keyed
+    added rep, the second lap after undo); the planned-versus-done rows; suppressed reps are `removed`, never
+    `not held`, and do not count towards "≥ 2 consecutive failed reps".
+14. **Stream**: `edit_seq`, `block_count` and `undo` change only on edits; one status frame per edit; the
+    maximal-status frame (§17.5) is ≤ 8 000 bytes; a coalesced or resync frame loses no plan state (the query
+    returns the same `edit_seq`).
+
+**Core list.** Core (#34) and UI (#98, #104) steps add: command wrappers + bindings regenerated (drift check), `ride_plan` /
+`ride_edits` query tests; the `needs_confirmation` check (a coach structural edit without a rider's accept never
+reaches the engine, whatever the autonomy setting); Vitest + mockIPC for selection, stepping, the three lane states, refusal copy and the
+`End set` and `Undo` dispatcher actions (debounce, focus-wins, Learn; Keep never undoes a rider edit; a second End set press while an `end_set` undo is offered is a no-op); the three scenes above; e2e on the sim
+trainer: End set mid-rep then Undo (and the stack scope with an earlier Extend); Skip a rep and see it greyed; a refused edit under a cap.
+
+### 17.8 Changes to earlier sections
+
+| Where | Change |
+|---|---|
+| §5.5 Review | planned versus done, removed-by-you rows and the edit lane as in §17.4; "On target" and the intent verdict count removed blocks as removed, not failed |
+| §7.1 | a `replan` may propose a structural edit (decreases only); it is **never auto-applied** and the core enforces it (§17.2); no coach `extend` / `repeat_once`. §7.1's auto-apply and bounds are otherwise unchanged |
+| §7.2 | **nine** abstract actions (End set and Undo added, default keys `E`, `U`); both join the 1.5 s debounce; Keep's §7.2 role for coach changes is unchanged and Keep never undoes a rider edit |
+| §11 | contract additions: `RideStatus.{edit_seq, block_count, undo}`, `ride_plan`, `ride_edits`, the six commands, `coach_decision.proposed_edit_json` (§17.4, §17.5) |
+| §16.4 | three new ride scenes; geometry set unchanged |
+| ADR-0001 §5/§6, §4.2 | `EngineCmd` and command list gain the edit commands; `ride_edit` table; `RideStatus` fields (amendment lands with the engine step) |
+| ADR-0002 §7.8 (a) | **not changed.** Edits follow it as written: settle only when the entered block's start target differs from the previous block's end target (§17.3 rule 5) |
+
+**Additions beyond #240's scope**, each declared (the issue's proposal named block-or-group suppression, `end_set`,
+`extend`, `repeat_once`, the road/overview selection, one new dispatcher action, and the log):
+
+| Addition | Why | Where |
+|---|---|---|
+| `IterationId` (suppress / restore a rep with its rest) | a skipped rep must not leave an orphan rest | §17.1, §17.2, §17.6 |
+| coach `proposed_edit` (a `replan` proposes `end_set` / `suppress`) | R-INT-03 names "end set" as the `replan` action; the verdict had no typed form | §17.2 (ask-only) |
+| `coach_decision.proposed_edit_json` column | holds that typed edit by `call_id` (no nudge field) | §17.4 |
+| ◀ ▶ selection stepping in the lane | road blocks can be narrower than the 48 px target floor | §17.6 |
+| **Undo** as a ninth dispatcher action (rider edits only) | the architect separated Undo from Keep (round 2); §7.2's decision model is unchanged (its action list is edited here and declared in this table) | §17.2, §17.6 |
+| `would_deplete` (W′bal check on `extend` / `repeat_once`) | the issue names the health cap and soft start only; extending work is the one edit that can deplete reserve (R-WB-01, #243 Q4) | §17.3 rule 3 |
+| `removes_rest`, `removes_warmup` (protection refusals) | a block-level skip must not make hard efforts adjacent or remove the warm-up before the first hard block | §17.2, §17.3 rule 4 |
+| logging **Skip** into `ride_edit` (kind `skip`) | planned versus done and `block_status` need it; today Skip leaves no trace but a shorter lap | §17.4 |
+| **`end_set` undoable for 15 s after it takes effect** | extends #240's "undoable until it takes effect": an `end_set` takes effect at once, so without this it could not be undone. **Owner may override**, §17.9 | §17.2 |
+
+No new judge or athlete-model feature is added (§17.4).
+### 17.9 Open for the owner (recommended defaults; the owner may override any of these)
+
+Each default is labelled with its source; "convention" means a (D) decision of this design with no external evidence.
+
+1. **Extend limits**: `work` +15 / 30 / 60 s, at most `min(+120 s, planned)`; rests, warm-up, cool-down +30 / 60 / 120 s,
+   at most +300 s (§17.2). *Source: convention* (the W′bal check of §17.3 rule 3 is R-WB-01).
+2. **`repeat_once` limit**: at most 2 added reps per loop. *Source: convention.*
+3. **Undo window of `end_set`**: 15 s of session time; this **extends** #240's "undoable until it takes effect" (§17.8). *Source: §7.1, the coach auto-apply undo window.* **Owner may override** (shorter, longer, or no undo for `end_set`).
+4. **Warm-up protection**: refuse removing warm-up below 180 s before the first hard block (§17.3 rule 4). *Source:
+   convention; the 180 s figure is the compiler's `MissingCooldown` constant.*
+5. **Limits without a CP / W′ model**: `work` extension +60 s cumulative and one added rep (§17.2, §17.3 rule 3).
+   *Source: convention* (half the model-backed `work` limit; `repeat_once` limit 2 halved).
+6. **`removes_rest`**: refuse a block-level skip of a `recovery` block between two un-skipped `work` blocks (§17.2).
+   *Source: convention*; skipping the whole rep is always allowed.
+7. **End set and Undo default keys**: `E` and `U`; on a remote only with ≥ 3 buttons or by Learn. *Source:
+   convention; #53 decides the remote defaults.*
+
+---
+
+## 18. Amendment (#452): design direction A "Telemetry"
+
+Status: **accepted** by the owner on **2026-11-02** (#438, which records every decision; the mockups were reviewed
+there). Reference mockup: [`directions/a-telemetry/`](directions/a-telemetry/README.md), a ride frozen at 1:22 of the
+built-in sensor check, and Workouts ([ride PNG](directions/a-telemetry/a-telemetry.ride.1440x900.png),
+[Workouts PNG](directions/a-telemetry/a-telemetry.workouts.1440x900.png)). The mockup is a reference for the visual
+language, not a spec: where it and this section differ, this section wins (the differences are named below).
+
+**What A changes:** the visual language (§18.1), the grid (§18.2), the ride anatomy (§18.3), control sizes and
+input (§18.4), and motion (§18.5). Text it replaces is struck through where it stood, followed by "superseded by
+§18.x" (§5.4, §6.1, §6.2, §6.3, §6.7, §7.2, §9, §16.1, §16.2, §16.3, §16.4). Any other place in §15–§17 that sizes a
+target at 48, 64 or 72 px (the wish matrix cells and the Why? chip in §15.2, the saddle card in §15.5, road
+selection and lane controls in §17.6) follows §18.4 in the same way.
+
+**What A keeps:** the principles P1–P9 and the jobs (§1), the information architecture and flows (§3, §4), each
+view's content, phase templates, states and copy limits (§5, §15, §17), sensor loss, crashes and the re-entry policy
+(§6.5, §6.6), contrast floors (§6.3), the coach model and decision rules (§7.1, §7.2), sound (§7.3), window sizes
+(§8), and the visual-angle definition of the tiers (§6.2). State banners and the road's coach marks are placed in
+§18.3. The coach lane's cell, the recovery hero's size and whether #52 still scales the tokens are open for the owner
+(**#462**), to be decided before the ride-screen work (#438 step 3) builds them; until then the §5.2 and §16.1 rules
+for their content bind.
+
+### 18.1 Visual language
+
+- **Icons:** [Lucide](https://lucide.dev), stroke 1.5, 16 px (20 px in the rail). No other icon set, no emoji as
+  icons, never an icon without a word or an accessible name.
+- **Type:** Inter for the UI; JetBrains Mono for numbers, with tabular figures and a slashed zero
+  (`font-variant-numeric: tabular-nums slashed-zero`). Every live number uses the number face.
+- **Theme:** graphite, dark-first; light is supported and designed, not inverted (§6.3). One colour per series,
+  the same in its trace, its readout's icon and its label: power `--power`, heart rate `--hr`, cadence `--cad`.
+- **Tokens** (#453 puts them in `theme.css`; values from the mockup):
+
+| Scale | Tokens |
+|---|---|
+| Space (4 px base, 8 px rhythm) | `--space-1` … `--space-6` = 4, 8, 12, 16, 24, 32 px |
+| Radius | `--radius-s` 4, `--radius-m` 6, `--radius-l` 10 px; one elevation (panel on background) |
+| Type | 12, 13, 15, 20 (desk and chrome); 32, 40, 64, 112 px (ride tiers); #453 names them (the mockup uses `--fs-xs` … `--fs-hero` and literal 64 px) |
+| Control height | 32 (default), 40, 48 px (§18.4) |
+| Colour (dark) | `--bg`, `--panel`, `--panel-2`, `--line`, `--line-2`, `--ink`, `--ink-2`, `--ink-3`, `--power`, `--hr`, `--cad`, `--target`, `--band`, `--good`, `--warn`, `--accent` |
+
+**Type tiers (amends §6.2).** The tiers become fixed tokens; their angles at the reference devices (laptop
+1.0 m, tablet 0.8 m) are:
+
+| Tier | Token | Laptop / tablet | Use |
+|---|---|---|---|
+| T1 | 112 px | 55′ / 67′ | the countdown (and, per #462, the recovery range and sprint power) |
+| T2 | 64 px | 32′ / 38′ | power, heart rate, cadence in the metric column |
+| T3+ | 40 px | 20′ / 24′ | the next block, banners, the coach verb |
+| T3 | 32 px | 16′ / 19′ | the coach reason and deadlines |
+| T4 chrome | 12–20 px | — | labels, captions, units, status-bar values, key hints, axis ticks |
+
+Labels and captions move from T3 to chrome because in A a number is identified by its position, its series colour
+and its icon, not by reading its label mid-effort. The mockup draws "next Cool-down 1:00 @ 100 W" at 13 px; that is
+T3+ content, so 40 px wins.
+
+**Colour (amends §6.3).** Graphite replaces Ocean as the default preset; the §6.3 floors are unchanged. Colour never
+carries meaning alone (P9): the power Δ keeps ▲ / ▼ (the mockup shows a bare green "−2"), devices keep an icon and a
+word, traces keep their word label. Two mockup pairs fail the floors and are fixed in #453: white text on `--accent`
+(3.2 : 1, needs 4.5 : 1), and `--line` / `--line-2` (1.2–1.6 : 1) as the only edge of a button (needs 3 : 1,
+WCAG 2.2 1.4.11).
+
+### 18.2 Grid
+
+A 12-column grid with `--space-4` gutters and `--space-5` page padding; every region is a CSS grid cell with
+`minmax(0, …)`, so nothing overflows its column. The ride screen splits **8 / 4** (traces / metric column) and stacks
+four rows: status bar 48 px · main `1fr` · block timeline 112 px · key row 44 px. Workouts splits 7 / 5 (list /
+detail). Same anatomy at 1024 and 1440 (§8); no breakpoint reflows the ride screen.
+
+**Height budget.** The main row is the inner height less 236 px: 614 px at 1440×900 and 479 px at 1024×768 (the §6.2
+calibration windows). The metric column's minimum content must fit the smaller one: the T1 row 184 px (label 16, the
+"next" line at T3+ 48, T1 112, padding 8) plus three T2 rows of 88 px (label 16, T2 64, padding 8) plus the power band
+14 px = **462 px**. Padding above the minimum comes from the 1fr rows, so the column breathes at 1440 and is tight at
+1024. At 1024 the 4-column metric column is ≈ 320 px wide, so the T3+ "next" line holds ≈ 14 characters and sheds per
+§16.1 (the word "next", then the watts).
+
+### 18.3 Ride anatomy
+
+```text
+┌ title · ERG · 1:22 / 3:00 · −1:38 ───────────────────── ⌁ NEO ● · ♡ HR ● · FTP 250 ┐ 48 px status bar
+├──────────── traces (8 col) ─────────────────────────┬──── metric column (4 col) ────┤
+│ POWER · target band ±5 % · 3 s        ▒▒▒▒ ghosted   │ ⏱ WORK · LEFT    next … (T3+) │
+│  ~~~~/‾‾‾‾‾‾ (band = target ± 5 %, dashed target)    │ 0:38                ← T1 112  │
+│                                     │ now            │ ⚡ POWER 3 S   target 200 ▼ 2 │
+│ HEART RATE · bpm                    │                │ 198 W               ← T2 64   │
+│  ______/‾‾                          │                │ ▕──▓|▓──▏ band              │
+│ CADENCE · rpm                       │                │ ♡ HEART RATE  Z2 ↗ +0.9/s     │
+│  ~~~~~~~~~~                         │                │ 134 bpm             ← T2      │
+│                                                      │ ↻ CADENCE    steady 89 rpm    │
+├─ block timeline: blocks by height, done dimmed, now marker, names + watts ───────────┤ 112 px
+└ [❚❚ Pause Space] [⏭ Skip block S] [−5 % −] [+5 % +]   status line   [? ?] [■ End Esc] ┘ 44 px key row
+```
+
+- **Traces replace the band row (amends §16.1).** Power over its target band (2 / 4 of the stack), heart rate
+  and cadence (1 / 4 each) share one x axis: the whole workout, with the planned target drawn ahead of "now",
+  ghosted. The ERG band's rules (§5.2: settle hides Δ, edges not gradients, ▲ / ▼) apply to the trace's band and to
+  the band under the power readout.
+- **Metric column:** the countdown (T1) with its caption and the next block; then power (with its target and Δ, and
+  the band), heart rate (zone, trend) and cadence (state, §5.2). Each readout is a fixed row, so no value moves
+  another (P4). The target is in the power row's sub-line, never over the power value (walkthrough finding).
+- **Block timeline:** the workout's blocks by height, the ridden part dimmed, a "now" marker, block names and watts
+  in the number face. It replaces the road-ahead and overview rows of §16.1. **Coach marks** (§7.1) are drawn on it:
+  a dashed outline at the proposed height for a proposed change, a solid one for an applied change, each with its
+  word label. "Next" stays in the metric column, at T3+.
+- **State banners** (§5.2 States, §6.5: trainer lost, ERG released, reconnected, paused, free ride) sit at the **top
+  of the traces column** at T3+ (one bold line and at most two short lines, §6.1), in a band the column always
+  reserves, so a banner appearing or leaving moves nothing (P4). The traces keep the space below it.
+- Coach marks, "next" and banner placement are architect decisions recorded from #462; the owner may override them.
+- **Key row:** the ride controls (§18.4) and one status line (trainer following, settle, compliance; ADR-0002
+  §4.4.1, §7.8). `?` opens the bindings list.
+
+### 18.4 Controls and input (amends §5.4, §6.7, §7.2)
+
+- **32 px, keyboard-first.** Buttons are 32 px tall by default; 40 px (rail items) and 48 px are the only other
+  heights, and no size is a minimum target anywhere. The 72 px saddle buttons and the 48 px target floor are gone.
+- **Every action shows its key** as a `kbd` hint inside the button: Pause `Space`, Skip block `S`, intensity `−` /
+  `+`, `?`, End `Esc`, Coach `Enter`, Keep `N`, and on Today and the Ready sheet Start `⏎`.
+- **Remote and keys are the primary input on the bike** (§7.2); the on-screen buttons are the desk path and the
+  fallback. The decision model, debounce and focus-wins rules of §7.2 are unchanged.
+- **Bindings unchanged.** The mockup labels End with `E`; §17.6 binds `E` to End set, so End keeps `Esc`. The owner
+  may re-bind (§7.2, Learn).
+- Focus: every control reached by Tab draws a visible focus ring (§6.7), in both themes.
+
+### 18.5 Motion (amends §6.4)
+
+Numbers are never tweened: a value jumps to its new reading. The traces advance once a second (1 Hz), the cursor
+"now" with them. No animated layout transitions (unchanged); deadlines count down in whole seconds (unchanged).
+
+### 18.6 Walkthrough findings on the current UI → resolution
+
+| Finding (#438 walkthrough of `dev`) | Resolved by |
+|---|---|
+| Ride overflows at 1024 and 1440 | the 12-column grid with `minmax(0, …)` (§18.2); rule 6 |
+| Target overlaps the power value | target in the power row's sub-line (§18.3); rule 6 |
+| 58–65 px controls | 32 px controls (§18.4); rules 2, 9 |
+| Today is a placeholder | #438 step 8 (Today), on these tokens |
+| No Ready sheet | #438 step 4 (with #435), §5.4 at 32 px with keys |
+| Tokens are colour-only | space, radius, type and control-height tokens (§18.1, #453); rule 2 |
+
+### 18.7 Design rules, enforced
+
+Each rule is testable and names the check that enforces it. A rule whose check has not landed is still binding in
+review. Rules start as warnings where the current UI fails them and move to errors screen by screen (#460).
+
+1. **Colours are tokens.** No colour literal (hex, `rgb()`, `hsl()`, named) outside `theme.css`, in CSS or in inline
+   styles. Check: stylelint (#454), ESLint (#455); token set and values tested (#453).
+2. **Sizes are tokens.** Spacing, radius, font size and control height come from the §18.1 scales only.
+   Check: stylelint strict-value (#454), ESLint no literal px in inline styles (#455), scale tests (#453).
+3. **No unknown custom property.** Every `var(--…)` resolves to a token defined in `theme.css`. Check: stylelint
+   (#454).
+4. **Icons are Lucide**, stroke 1.5, 16 px (20 px in the rail), each with a word or an accessible name. Check: ESLint
+   (#455) for the import; the harness (#457) for size and name.
+5. **Numbers are tabular.** Every live number renders in the number face with `tabular-nums`. Check: the harness's
+   layout audit reads the computed style of every live-value element (#457).
+6. **Nothing overflows, clips or overlaps** at 1024×768 and 1440×900, in every screen and state fixture; on the ride
+   screen no two readouts' boxes intersect. Check: the layout audit (#457).
+7. **Accessible.** axe reports no serious or critical violation; text meets 4.5 : 1 (3 : 1 at T2 and above), marks
+   and control edges 3 : 1, in both themes. Check: axe in the harness (#457); palette values (#453, #30).
+8. **Focus is visible.** Tab reaches every control on every screen in order, and each draws a focus ring with 3 : 1
+   contrast. Check: the focus test (#458).
+9. **Controls are 32 / 40 / 48 px and show their key.** Every ride and saddle action has a `kbd` hint matching its
+   binding (§18.4). Check: the layout audit (#457).
+10. **No layout shift.** The ride's region boxes are identical across phase templates and states at each size (the
+    §16.4 geometry rule, ported). Check: the layout audit (#457) and the baselines (#459).
+11. **Colour never alone.** Each series and state also carries a word, an icon or ▲ / ▼. Hooks: every trace and
+    readout carries `data-series="power|hr|cad"` and contains a `[data-series-label]` with non-empty text; every state
+    marker (device pill, banner, cadence state, band) carries `data-state` and contains a `[data-state-label]` with
+    non-empty text or one of the glyphs ▲ ▼ ✓ ⚠ ↻; the power Δ (`[data-delta]`) starts with ▲ or ▼ outside the band.
+    Check: the layout audit (#457) on those hooks.
+12. **No tweening.** Live values (`[data-live]`) have no CSS transition or animation. Check: the layout audit (#457)
+    reads computed `transition-duration` and `animation-name` on them.
+13. **Every screen × state has a reviewed baseline.** An unreviewed visual change fails. Check: visual baselines on
+    deterministic fixtures (#459).
+14. **Staged files pass** ESLint, stylelint, Prettier and the type check before a commit. Check: prek hooks (#456).
+15. **Rules only tighten.** A rule at error never goes back to warning, and a screen once clean stays clean. Check:
+    the ratchet (#460).
+16. **Tiers are exact.** The countdown (`[data-tier="t1"]`) renders at 112 px, each readout value
+    (`[data-tier="t2"]`) at 64 px, and T3+ text (`[data-tier="t3plus"]`: next, banners, coach verb) at 40 px; any size
+    from the scale is not enough. Check: computed `font-size` in the layout audit (#457).
+17. **Traces step once a second.** A trace appends one sample per second of session time and never interpolates
+    between samples. The browser harness can't time this reliably, so a Vitest unit test of the trace component
+    checks it, `app/src/ride/Trace.test.tsx` "advances one sample per second and never interpolates", written with the
+    component in the ride-screen work (#438 step 3) and run by `just test`.
+
+### 18.8 Licences
+
+Inter and JetBrains Mono are under the SIL Open Font License 1.1; Lucide is under the ISC licence (portions from
+Feather, MIT). When the app bundles them, each goes into `NOTICE` with its licence text; #453 bundles the fonts and
+icons, so it adds those entries. The reference mockup carries Lucide paths and names that licence in its
+[README](directions/a-telemetry/README.md).
+
+### 18.9 Apple Human Interface Guidelines
+
+crank follows the [Apple HIG](https://developer.apple.com/design/human-interface-guidelines) for accessibility,
+keyboard input, focus and menu-bar conventions on macOS (standard shortcuts, the app and Window menus, full keyboard
+access, VoiceOver names). It does **not** take the HIG's visual language (SF fonts, native materials, system
+controls' look): A's tokens, type and icons win. Where the two disagree on behaviour, the HIG wins unless §7.2's ride
+input rules say otherwise.

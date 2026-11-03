@@ -5,10 +5,12 @@ import { devices, HEALTH_QS, healthConsequences, priorModel, sceneFixture, type 
 import { ONBOARDING_STEPS, onboardingStep, saveOnboardingStep, type OnboardingStep } from "../persist";
 import { navigate, useRoute } from "../session";
 import { useStore } from "../store";
+import { ProfileForm } from "./Profile";
 
 const TITLE: Record<OnboardingStep, string> = {
   about: "About you",
   background: "Background",
+  profile: "Training for",
   numbers: "Current numbers",
   health: "Health check",
   devices: "Devices",
@@ -18,6 +20,7 @@ const TITLE: Record<OnboardingStep, string> = {
 const SKIP: Record<OnboardingStep, string> = {
   about: "Skipping uses population priors: CP ± 60 W, HR max from age unknown → HR zones off until a hard ride.",
   background: "Skipping assumes a beginner: the first week stays easy.",
+  profile: "Skipping uses general fitness & health: a balanced week. Set it any time in Settings.",
   numbers: "Skipping starts CP at 220 ± 60 W: targets stay conservative until rides narrow it.",
   health: "Skipping leaves the questions unanswered: no plan until you answer them.",
   devices: "Skipping: you can pair before the first ride, on the Ready check.",
@@ -95,6 +98,7 @@ export function Onboarding() {
         </div>
       </>
     ),
+    profile: <ProfileForm inOnboarding />,
     numbers: (
       <>
         <h1>Current numbers</h1>

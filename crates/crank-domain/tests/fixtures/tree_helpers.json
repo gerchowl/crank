@@ -1,0 +1,886 @@
+{
+ "schemaVersion": 1,
+ "trees": {
+  "empty": [],
+  "flat": [
+   {
+    "type": "step",
+    "id": "a",
+    "label": "warm",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   },
+   {
+    "type": "step",
+    "id": "b",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  ],
+  "nested": [
+   {
+    "type": "step",
+    "id": "a",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   },
+   {
+    "type": "repeat",
+    "id": "r1",
+    "count": 3,
+    "children": [
+     {
+      "type": "step",
+      "id": "b",
+      "end": {
+       "kind": "time",
+       "s": 60
+      },
+      "target": {
+       "kind": "pct_ftp",
+       "value": 90
+      },
+      "cadence": {
+       "lo": 85,
+       "hi": 95
+      }
+     },
+     {
+      "type": "repeat",
+      "id": "r2",
+      "count": 3,
+      "children": [
+       {
+        "type": "step",
+        "id": "c",
+        "label": "deep",
+        "end": {
+         "kind": "time",
+         "s": 60
+        },
+        "target": {
+         "kind": "pct_ftp",
+         "value": 90
+        },
+        "cadence": {
+         "lo": 85,
+         "hi": 95
+        }
+       },
+       {
+        "type": "step",
+        "id": "d",
+        "end": {
+         "kind": "time",
+         "s": 60
+        },
+        "target": {
+         "kind": "pct_ftp",
+         "value": 90
+        },
+        "cadence": {
+         "lo": 85,
+         "hi": 95
+        }
+       }
+      ],
+      "skipLastRest": true
+     }
+    ],
+    "label": "main",
+    "progression": {
+     "wattsPerRep": 5,
+     "pctPerRep": 1.5
+    }
+   },
+   {
+    "type": "step",
+    "id": "e",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  ],
+  "duplicate_ids": [
+   {
+    "type": "repeat",
+    "id": "x",
+    "count": 3,
+    "children": [
+     {
+      "type": "step",
+      "id": "y",
+      "end": {
+       "kind": "time",
+       "s": 60
+      },
+      "target": {
+       "kind": "pct_ftp",
+       "value": 90
+      },
+      "cadence": {
+       "lo": 85,
+       "hi": 95
+      }
+     },
+     {
+      "type": "step",
+      "id": "x",
+      "end": {
+       "kind": "time",
+       "s": 60
+      },
+      "target": {
+       "kind": "pct_ftp",
+       "value": 90
+      },
+      "cadence": {
+       "lo": 85,
+       "hi": 95
+      }
+     }
+    ]
+   },
+   {
+    "type": "step",
+    "id": "y",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   },
+   {
+    "type": "repeat",
+    "id": "x",
+    "count": 3,
+    "children": [
+     {
+      "type": "step",
+      "id": "z",
+      "end": {
+       "kind": "time",
+       "s": 60
+      },
+      "target": {
+       "kind": "pct_ftp",
+       "value": 90
+      },
+      "cadence": {
+       "lo": 85,
+       "hi": 95
+      }
+     }
+    ]
+   }
+  ],
+  "empty_repeat": [
+   {
+    "type": "repeat",
+    "id": "r",
+    "count": 3,
+    "children": []
+   }
+  ]
+ },
+ "reId": [
+  {
+   "tree": "empty",
+   "output": [],
+   "freshUnique": true
+  },
+  {
+   "tree": "flat",
+   "output": [
+    {
+     "type": "step",
+     "id": "s",
+     "label": "warm",
+     "end": {
+      "kind": "time",
+      "s": 60
+     },
+     "target": {
+      "kind": "pct_ftp",
+      "value": 90
+     },
+     "cadence": {
+      "lo": 85,
+      "hi": 95
+     }
+    },
+    {
+     "type": "step",
+     "id": "s",
+     "end": {
+      "kind": "time",
+      "s": 60
+     },
+     "target": {
+      "kind": "pct_ftp",
+      "value": 90
+     },
+     "cadence": {
+      "lo": 85,
+      "hi": 95
+     }
+    }
+   ],
+   "freshUnique": true
+  },
+  {
+   "tree": "nested",
+   "output": [
+    {
+     "type": "step",
+     "id": "s",
+     "end": {
+      "kind": "time",
+      "s": 60
+     },
+     "target": {
+      "kind": "pct_ftp",
+      "value": 90
+     },
+     "cadence": {
+      "lo": 85,
+      "hi": 95
+     }
+    },
+    {
+     "type": "repeat",
+     "id": "r",
+     "count": 3,
+     "children": [
+      {
+       "type": "step",
+       "id": "s",
+       "end": {
+        "kind": "time",
+        "s": 60
+       },
+       "target": {
+        "kind": "pct_ftp",
+        "value": 90
+       },
+       "cadence": {
+        "lo": 85,
+        "hi": 95
+       }
+      },
+      {
+       "type": "repeat",
+       "id": "r",
+       "count": 3,
+       "children": [
+        {
+         "type": "step",
+         "id": "s",
+         "label": "deep",
+         "end": {
+          "kind": "time",
+          "s": 60
+         },
+         "target": {
+          "kind": "pct_ftp",
+          "value": 90
+         },
+         "cadence": {
+          "lo": 85,
+          "hi": 95
+         }
+        },
+        {
+         "type": "step",
+         "id": "s",
+         "end": {
+          "kind": "time",
+          "s": 60
+         },
+         "target": {
+          "kind": "pct_ftp",
+          "value": 90
+         },
+         "cadence": {
+          "lo": 85,
+          "hi": 95
+         }
+        }
+       ],
+       "skipLastRest": true
+      }
+     ],
+     "label": "main",
+     "progression": {
+      "wattsPerRep": 5,
+      "pctPerRep": 1.5
+     }
+    },
+    {
+     "type": "step",
+     "id": "s",
+     "end": {
+      "kind": "time",
+      "s": 60
+     },
+     "target": {
+      "kind": "pct_ftp",
+      "value": 90
+     },
+     "cadence": {
+      "lo": 85,
+      "hi": 95
+     }
+    }
+   ],
+   "freshUnique": true
+  },
+  {
+   "tree": "duplicate_ids",
+   "output": [
+    {
+     "type": "repeat",
+     "id": "r",
+     "count": 3,
+     "children": [
+      {
+       "type": "step",
+       "id": "s",
+       "end": {
+        "kind": "time",
+        "s": 60
+       },
+       "target": {
+        "kind": "pct_ftp",
+        "value": 90
+       },
+       "cadence": {
+        "lo": 85,
+        "hi": 95
+       }
+      },
+      {
+       "type": "step",
+       "id": "s",
+       "end": {
+        "kind": "time",
+        "s": 60
+       },
+       "target": {
+        "kind": "pct_ftp",
+        "value": 90
+       },
+       "cadence": {
+        "lo": 85,
+        "hi": 95
+       }
+      }
+     ]
+    },
+    {
+     "type": "step",
+     "id": "s",
+     "end": {
+      "kind": "time",
+      "s": 60
+     },
+     "target": {
+      "kind": "pct_ftp",
+      "value": 90
+     },
+     "cadence": {
+      "lo": 85,
+      "hi": 95
+     }
+    },
+    {
+     "type": "repeat",
+     "id": "r",
+     "count": 3,
+     "children": [
+      {
+       "type": "step",
+       "id": "s",
+       "end": {
+        "kind": "time",
+        "s": 60
+       },
+       "target": {
+        "kind": "pct_ftp",
+        "value": 90
+       },
+       "cadence": {
+        "lo": 85,
+        "hi": 95
+       }
+      }
+     ]
+    }
+   ],
+   "freshUnique": true
+  },
+  {
+   "tree": "empty_repeat",
+   "output": [
+    {
+     "type": "repeat",
+     "id": "r",
+     "count": 3,
+     "children": []
+    }
+   ],
+   "freshUnique": true
+  }
+ ],
+ "findNode": [
+  {
+   "tree": "empty",
+   "id": "missing",
+   "output": null
+  },
+  {
+   "tree": "empty",
+   "id": "",
+   "output": null
+  },
+  {
+   "tree": "flat",
+   "id": "a",
+   "output": {
+    "type": "step",
+    "id": "a",
+    "label": "warm",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  },
+  {
+   "tree": "flat",
+   "id": "b",
+   "output": {
+    "type": "step",
+    "id": "b",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  },
+  {
+   "tree": "flat",
+   "id": "missing",
+   "output": null
+  },
+  {
+   "tree": "flat",
+   "id": "",
+   "output": null
+  },
+  {
+   "tree": "nested",
+   "id": "a",
+   "output": {
+    "type": "step",
+    "id": "a",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  },
+  {
+   "tree": "nested",
+   "id": "r1",
+   "output": {
+    "type": "repeat",
+    "id": "r1",
+    "count": 3,
+    "children": [
+     {
+      "type": "step",
+      "id": "b",
+      "end": {
+       "kind": "time",
+       "s": 60
+      },
+      "target": {
+       "kind": "pct_ftp",
+       "value": 90
+      },
+      "cadence": {
+       "lo": 85,
+       "hi": 95
+      }
+     },
+     {
+      "type": "repeat",
+      "id": "r2",
+      "count": 3,
+      "children": [
+       {
+        "type": "step",
+        "id": "c",
+        "label": "deep",
+        "end": {
+         "kind": "time",
+         "s": 60
+        },
+        "target": {
+         "kind": "pct_ftp",
+         "value": 90
+        },
+        "cadence": {
+         "lo": 85,
+         "hi": 95
+        }
+       },
+       {
+        "type": "step",
+        "id": "d",
+        "end": {
+         "kind": "time",
+         "s": 60
+        },
+        "target": {
+         "kind": "pct_ftp",
+         "value": 90
+        },
+        "cadence": {
+         "lo": 85,
+         "hi": 95
+        }
+       }
+      ],
+      "skipLastRest": true
+     }
+    ],
+    "label": "main",
+    "progression": {
+     "wattsPerRep": 5,
+     "pctPerRep": 1.5
+    }
+   }
+  },
+  {
+   "tree": "nested",
+   "id": "b",
+   "output": {
+    "type": "step",
+    "id": "b",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  },
+  {
+   "tree": "nested",
+   "id": "r2",
+   "output": {
+    "type": "repeat",
+    "id": "r2",
+    "count": 3,
+    "children": [
+     {
+      "type": "step",
+      "id": "c",
+      "label": "deep",
+      "end": {
+       "kind": "time",
+       "s": 60
+      },
+      "target": {
+       "kind": "pct_ftp",
+       "value": 90
+      },
+      "cadence": {
+       "lo": 85,
+       "hi": 95
+      }
+     },
+     {
+      "type": "step",
+      "id": "d",
+      "end": {
+       "kind": "time",
+       "s": 60
+      },
+      "target": {
+       "kind": "pct_ftp",
+       "value": 90
+      },
+      "cadence": {
+       "lo": 85,
+       "hi": 95
+      }
+     }
+    ],
+    "skipLastRest": true
+   }
+  },
+  {
+   "tree": "nested",
+   "id": "c",
+   "output": {
+    "type": "step",
+    "id": "c",
+    "label": "deep",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  },
+  {
+   "tree": "nested",
+   "id": "d",
+   "output": {
+    "type": "step",
+    "id": "d",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  },
+  {
+   "tree": "nested",
+   "id": "e",
+   "output": {
+    "type": "step",
+    "id": "e",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  },
+  {
+   "tree": "nested",
+   "id": "missing",
+   "output": null
+  },
+  {
+   "tree": "nested",
+   "id": "",
+   "output": null
+  },
+  {
+   "tree": "duplicate_ids",
+   "id": "x",
+   "output": {
+    "type": "repeat",
+    "id": "x",
+    "count": 3,
+    "children": [
+     {
+      "type": "step",
+      "id": "y",
+      "end": {
+       "kind": "time",
+       "s": 60
+      },
+      "target": {
+       "kind": "pct_ftp",
+       "value": 90
+      },
+      "cadence": {
+       "lo": 85,
+       "hi": 95
+      }
+     },
+     {
+      "type": "step",
+      "id": "x",
+      "end": {
+       "kind": "time",
+       "s": 60
+      },
+      "target": {
+       "kind": "pct_ftp",
+       "value": 90
+      },
+      "cadence": {
+       "lo": 85,
+       "hi": 95
+      }
+     }
+    ]
+   }
+  },
+  {
+   "tree": "duplicate_ids",
+   "id": "y",
+   "output": {
+    "type": "step",
+    "id": "y",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  },
+  {
+   "tree": "duplicate_ids",
+   "id": "z",
+   "output": {
+    "type": "step",
+    "id": "z",
+    "end": {
+     "kind": "time",
+     "s": 60
+    },
+    "target": {
+     "kind": "pct_ftp",
+     "value": 90
+    },
+    "cadence": {
+     "lo": 85,
+     "hi": 95
+    }
+   }
+  },
+  {
+   "tree": "duplicate_ids",
+   "id": "missing",
+   "output": null
+  },
+  {
+   "tree": "duplicate_ids",
+   "id": "",
+   "output": null
+  },
+  {
+   "tree": "empty_repeat",
+   "id": "r",
+   "output": {
+    "type": "repeat",
+    "id": "r",
+    "count": 3,
+    "children": []
+   }
+  },
+  {
+   "tree": "empty_repeat",
+   "id": "missing",
+   "output": null
+  },
+  {
+   "tree": "empty_repeat",
+   "id": "",
+   "output": null
+  }
+ ]
+}

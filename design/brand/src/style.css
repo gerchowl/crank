@@ -43,7 +43,8 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 .start .wm svg { transform: translateX(var(--focus-shift, 0%)); }
 .start[inert] { pointer-events: none; }
 .start .wm { width: min(var(--w), var(--max)); }
-.start[data-concept="slice"] { --w: 52vw; --max: 820px; }
+.start[data-concept="slice"],
+.start[data-concept="spin"] { --w: 52vw; --max: 820px; }
 .start[data-concept="blur"] { --w: 50vw; --max: 800px; }
 .start[data-concept="lockup"] { --w: 36vw; --max: 560px; }
 .start[data-concept="kinetic"] { --w: 44vw; --max: 700px; }

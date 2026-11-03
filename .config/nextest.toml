@@ -1,0 +1,5 @@
+# A hung test must fail, not hang the gate: crank-engine's streams pace on a virtual clock,
+# so a broken `pacing_sleep_until` would wait forever (#252).
+[[profile.default.overrides]]
+filter = 'package(crank-engine)'
+slow-timeout = { period = "60s", terminate-after = 3 }

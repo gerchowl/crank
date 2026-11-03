@@ -13,7 +13,7 @@ with `strong | lean | uncertain` bands) and an LLM planner (Claude API) before a
 ships an MCP server, an integrated CLI and intervals.icu import. Already decided: **Rust core + Tauri v2 +
 React 19 with the React Compiler** (`spec/SPIKE-RESULTS.md`), BLE only, v1 = everything in the spec.
 Owner decisions of 2026-10-13 (folded in here): build with a Nix flake using crane, `nix flake check` as
-the CI gate, anvil's attic as binary cache; a real, locally signed `crank.app` (`nix-tcc` identity) from day 1;
+the CI gate, ~~anvil's attic as binary cache~~ (superseded, Amendment 2026-10-13: GitHub-hosted CI, no attic); a real, locally signed `crank.app` (`nix-tcc` identity) from day 1;
 and the definition of done in §8.1.
 
 The UI spikes ran against `shared/`, a TypeScript mock of the future core (`shared/src/contract.ts`,
@@ -38,17 +38,20 @@ One Cargo workspace (edition 2024, toolchain pinned in `rust-toolchain.toml` by 
 | Crate | Kind | Owns | May depend on |
 |---|---|---|---|
 | `crank-domain` | lib, **pure** (no I/O, no async, no clock) | units, metric catalog and zones, filters, multi-resolution history, W′bal, rMSSD/DFA-α1, HR-recovery fit, histogram/heatmap/MMP, athlete model (`Estimate`), lap stats, workout model + DSL + compiler + deterministic rewrite, `Judge` trait + coach feature/verdict types | `serde`, `thiserror`, `specta` (feature `specta`) |
-| `crank-devices` | lib | `TrainerDriver` / `HeartRateDriver` traits and their types (ADR-0002), `sim` module: simulated rider + trainer + HR strap (port of `sim.ts`) | `crank-domain`, `tokio` (sync, time) |
+| `crank-devices` | lib | `TrainerDriver` / `HeartRateDriver` traits and their types (ADR-0002), `sim` module: simulated rider + trainer + HR strap (port of `sim.ts`) | `crank-domain`, `tokio` (sync, time), `futures-util`, `smallvec`, `thiserror` |
 | `crank-fec` | lib, pure | ANT message framing + FE-C page codec (ADR-0002 §4) | none |
 | `crank-ble` | lib | btleplug discovery, FE-C trainer driver, HRS driver, reconnect, raw-frame capture (ADR-0002) | `crank-devices`, `crank-fec`, `btleplug` |
 | `crank-engine` | lib | ride engine actor: tick clock, ride state machine, metric bus, subscriptions + filter chains, ride record, laps, status, ERG policy, judge hook | `crank-domain`, `crank-devices` |
-| `crank-store` | lib | SQLite schema, migrations, repositories | `crank-domain`, `rusqlite`, `rusqlite_migration` |
+| `crank-store` | lib | SQLite schema, migrations, repositories | `crank-domain`, `rusqlite` (bundled: pinned SQLite engine), `rusqlite_migration` (forward-only schema versions), `serde`/`serde_json` (validated JSON envelopes), `thiserror` (typed store errors) |
 | `crank-coach` | lib | `RulesJudge` (knowledge-pack rules, implements `crank_domain::Judge`), `Planner` trait + Claude API client | `crank-domain`, `reqwest` |
 | `crank-intervals` | lib | intervals.icu client + mapping into domain types | `crank-domain`, `reqwest` |
-| `crank-core` | lib | `Core` facade wiring everything; **the API** (async methods + DTOs); config/data dirs, secrets, ride lock | all of the above |
+| `crank-core` | lib | `Core` facade wiring everything; **the API** (async methods + DTOs); config/data dirs, secrets, ~~ride lock~~ (superseded by §9.4: the lock lives in `crank-store`; core decides when to open as owner) | all of the above |
 | `crank-mcp` | lib | MCP tools over `Core` (`rmcp`) | `crank-core` |
 | `crank-cli` | bin `crank` | `clap` CLI: `ride --sim`, `workout parse/compile/print`, `devices scan`, `import intervals`, `mcp` (stdio server), `devserver` | `crank-core`, `crank-mcp` |
 | `crank-desktop` | bin (Tauri v2) | thin `#[tauri::command]` wrappers over `Core`, bindings export, window/menu | `crank-core`, `tauri`, `tauri-specta` |
+
+`crank-devices` uses `futures-util` for object-safe boxed connection futures and discovery streams,
+`smallvec` for inline HR RR intervals, and `thiserror` for transport-neutral device errors (#43).
 
 Rules:
 
@@ -182,7 +185,7 @@ pub struct StreamFrame {
 pub struct SubSample { pub sub: SubId, pub t: f64, pub v: Option<f64> }  // t = session seconds (§5)
 
 #[tauri::command] #[specta::specta]
-async fn stream_ack(core: State<'_, Core>, stream: StreamId, seq: u64) -> Result<(), ApiError>;
+async fn stream_ack(core: State<'_, Core>, stream: StreamId, seq: u32) -> Result<(), ApiError>;
 ```
 
 **Flow control.** Tauri's `Channel::send` has no consumer backpressure: payloads under 8 KiB of JSON are
@@ -229,13 +232,29 @@ Rates:
 |---|---|---|
 | Engine tick / trainer source | **4 Hz** (250 ms) | FE-C native rate; Tacx recommends 4 Hz in both directions (ADR-0002 §4) |
 | HR source | per notification (~1 Hz), RR per beat | Heart Rate Service |
-| Frame emission | **≤ 10 Hz**, only when something is due | 10 Hz is the maximum display rate; bounds IPC to ≤ 10 messages/s per window regardless of widget count |
+| Frame emission | **≤ 10 Hz**, only when something is due | 10 Hz is the maximum display rate; bounds IPC to ≤ 10 messages/s per window regardless of widget count. One exception: a batch that exceeds the frame budget is split into up to 3 consecutive frames sent at the same instant (unreachable below 8 000 bytes of pending state) |
 | Status heartbeat | 2 Hz while riding, immediately on change | same as mock |
 | Ride record | 1 Hz per-second means | `streams()` and persistence |
 
 At 10× / 60× simulated speed the source rates scale with simulated session time, frame emission does not.
 Ordering guarantee: everything in one frame happened before everything in the next; a status change
 and the samples that follow it can't be reordered, which events could not promise.
+
+**Implementation notes (#219, `crank-engine::stream`).** Conventions the rules above leave open, fixed by code and tests:
+
+- **Layers.** `flow` is a pure per-stream state machine over microsecond monotonic time (ack window, coalescing, resync, byte budget, 10 Hz spacing); `hub` owns subscriptions, filter chains and window cleanup; the engine calls the hub synchronously from `publish` and once per tick, never awaits a consumer, and sends frames with `try_send` on a channel larger than the ack window. A failed send (closed or full) drops the stream, and a closed receiver is reaped on every poll whether or not the stream has anything to send; at most 16 streams are live (`TooManyStreams`, `Conflict`).
+- **Acks are cumulative**: `stream_ack(seq)` acknowledges every frame up to and including `seq`; a `seq` that was never sent is ignored.
+- **Resync flag.** A frame carries `resync: true` iff a pending sample, status or link state was replaced while the window was full (an intermediate state was lost), or the discrete state alone exceeded the budget (bare frame). Replacement before the window fills is ordinary latest-wins and sets nothing.
+- **Status "on change"** compares everything but the clock fields (`session_s`, `workout_s`, `block_elapsed_s`), which advance every tick and ride on the 500 ms heartbeat. The heartbeat runs while a ride is in progress (`riding` or `paused`), not in `idle`/`finished`, and is not offered while the window is full.
+- **Subscription rate** (0.1–10 Hz) is in session time: the chain sees every 4 Hz source sample, a value is offered when `1/rate` of session time has passed since the last offered one. Frame spacing (≥ 100 ms) and the heartbeat are paced on the clock's *unscaled* pacing axis (`Clock::pacing_now`; `VirtualClock` returns timer time), so at 10×/60× the source values advance in session time and frame emission does not (the sentence above). Paused or lost ticks feed `null`, like the record.
+- **Chain caps** (validated on `subscribe`, `InvalidFilter`): ≤ 4 filters, SMA window and EMA τ ≤ 300 s, median n ≤ 256. The spike's longest display filter is 10 s (`shared/src/layouts.ts`); no ADR or DESIGN figure exists, so the caps are 30× that and bound a tick's work at the caps (tested).
+- **Non-finite values are gaps.** NaN/±∞ serialize to `null`, indistinguishable from a gap, and a NaN would poison an EMA for the rest of the ride; per §5 (gaps are null, never interpolated) a non-finite source value enters the chain as a missing sample and a non-finite chain output is delivered as `null`.
+- **Source metrics** are the record's catalogue (`power`, `cadence`, `speed`, `hr`, `workout_s`) and `power_lap` (#243): the mean power of the open lap's record seconds so far, so its last value is the closed lap's `avgPowerW`; it is not recorded. Other derived metrics are not subscribable yet.
+- **Status DTO.** `StreamStatus` is `RideStatus` in wire form; `record_error` is cut to 256 bytes on a character boundary (the full text stays in `RideStatus`).
+- **Trainer-loss fields** (#329): `user_paused`, `trainer_lost_since_s`, `reconnect_attempt`, `soft_start_target_w`, `last_gap_s`, `reconnected_at_s`. The engine knows each; none is inferred in the UI. They are discrete: each changes only at a transition (a loss, a reconnect attempt, the trainer back, the soft start ending, a rider pause), so they count as a status change and go out at once (`same_discrete`), and add no heartbeat churn. "Lost for how long" is deliberately not a field: a ticking counter would change the status every tick, so the loss is a **timestamp on the session clock** (`trainer_lost_since_s`) and the consumer subtracts it from the `session_s` the heartbeat already refreshes. The worst status measures 909 bytes against the 8 000-byte frame budget (tested). They describe the running ride only: a finished ride reports none of them. After the trainer returns while the rider is not pedalling, `state` is still `paused(trainer_lost)` while `trainer_lost_since_s` is `null` and `last_gap_s` is set, so a consumer keys "the trainer is lost" on `trainer_lost_since_s`. `soft_start_target_w` follows the block's target line and can change up to once per tick, for the soft start's 20 ticks at most. `soft_start_target_w` is set only for the soft start after a recovered loss, not for the one every ride begins with (§7.5, #250) nor one owed on resume from a rider pause.
+- **Commanded target** (#324): `commanded`, a typed mode: `{kind: "erg", watts}` | `{kind: "resistance", pct}` | `{kind: "free"}` | `{kind: "sim"}`, or `null`. It is the engine's own `last_sent`, the mode it handed to the trainer driver in the current link epoch, so it is what the policy decided after the soft start, the health cap and rounding, never the plan (the UI shows the plan as the secondary line). Why there is no ERG number is read from flags the status already has, not from more variants: `resistance` with `ergReleased` is a release (§7.4), with `userPaused` a rider pause, and with neither the end mode. It is `null` outside a running ride (loaded, finished), and from a link transition or a silence epoch until the engine re-issues the mode (a lost trainer is told nothing). It is the queued command, not an echo; whether the trainer follows is `trainerFollowing`. **Churn:** it changes at most when the engine sends a mode, and the engine sends at most one per tick. Measured (`the_commanded_target_changes_at_most_once_a_second_on_a_ramp_after_the_soft_start`): on a steady ERG block it is one value; on a ramp block it moves once per second (the plan moves in 1 Hz steps, §7.3), 1 frame/s of ~600 B; the soft start adds at most 8 changes in its first 6 s on a ramp block (at most 4/s, two adjacent ticks at the end of the ramp), and the same after a release or a rider pause. Each change is a status frame under the usual coalescing; the worst status measures 964 bytes against the 8 000-byte budget (tested). It counts as a status change (`same_discrete`).
+- **Live cursor and laps** (#243 part a; decisions in the #243 comments). `block_start_session_s` / `block_start_workout_s` are the session and workout time at which the current block actually began (the ride's start, its predecessor's end or the skip); pauses and dropouts after it move neither, and `block_start_workout_s + block_elapsed_s = workout_s` always; both are `null` exactly when `block_index` is. Laps are not a frame lane: one lap per block as ridden (a free ride is one lap, where the lap/skip action opens the next), served by the `laps` query (`EngineHandle::laps`; the command over it is #243 part c), and the status carries `laps_closed` so a consumer re-queries when it changes (also after a resync). A lap's span is in session time (pauses included); its statistics (mean and normalized power, mean HR and cadence, `paused_s`, per-sensor `gap_s`, compliance) come from its 1 Hz record seconds, so paused and lost seconds are excluded (normalized power drops paused and missing-power seconds and joins the rest end to end, so a 30 s window can span a pause or a gap); a second split by a boundary belongs to the lap of its last riding tick, and the laps' compliance tallies add up to the ride's (tested). All three fields are discrete (`same_discrete`); the worst status measures 1 080 bytes (tested).
+- **Not in this part:** thresholds and flags (#243 part b), the nudges lane (#248).
 
 Rejected: **a channel per subscription** (30 widgets × 10 Hz = 300 IPC messages/s and no cross-widget
 ordering); **events for telemetry** (JSON-only, unordered under load, per the Tauri docs above);
@@ -287,8 +306,13 @@ because invalid drafts are a normal editor state.
   timestamped with `MonoTime` on arrival and assigned to the tick whose window contains the timestamp, not
   to whichever tick runs next; after a stall the missed ticks are replayed in order with their own samples,
   so session time never drifts from monotonic time and late processing changes no values.
-- **Sample holding.** A tick without a new trainer sample holds the last value for up to 1.0 s (4 ticks;
-  page 25 may arrive at only ~2 Hz, ADR-0002 §5), HR for up to 3.0 s; after that the value is `null`.
+- **Sample holding** (per field, #437). Each trainer field holds its last real value until its own bound,
+  then it is `null`: power and cadence (page 25) for up to 1.0 s (4 ticks; page 25 may arrive at only ~2 Hz,
+  ADR-0002 §5), speed (page 16) for up to 6.0 s (24 ticks) but never longer than page 25 itself is held. Speed
+  may be held longer because it drives no control decision (ERG release, soft start and the pauses read power
+  and cadence) and the NEO sends page 16 much less regularly. HR is held for up to 3.0 s. A field the
+  sample's page does not carry leaves the held value; a field the page carries but reports invalid is
+  `null` at once. Details and the measured intervals: implementation notes below.
   Small packet gaps are filled from FE-C accumulated power as an average over the gap, flagged as
   estimated (ADR-0002 §5).
 - **Speed** 10×/60× is only available with the simulated trainer. With a real trainer `setSpeed` returns
@@ -318,6 +342,21 @@ thresholds are initial values verified in HIL session 1 (#44).
 - **Per-ride state reset** (#3): a ride is a `RideSession` value created by `ride_load`; nothing ride-scoped
   lives outside it, so a new workout cannot see the previous ride.
 
+**Implementation notes (#217, `crank-engine` core).** Conventions the rules above leave open, fixed by code and tests:
+
+- A tick is workout time iff nothing paused the ride when it began; every detection (8 missed ticks, 12 zero ticks, link event) takes effect from the next tick. So the 8 missed ticks of the loss window, and the 12 zero ticks of stopped pedalling, stay workout time (no rollback). Hold: a value is usable for the tick it arrived in and the next 4 (trainer) or 12 (HR).
+- **Per-field hold (#437).** A trainer sample is one FE-C page: page 25 carries power and cadence, page 16 speed (ADR-0002 §5); a field the page does not carry is "not in this sample", never zero, while a field the page carries and reports invalid (page 25's cadence `0xFF`, power `0xFFF`) is unknown from that tick on, with no hold, so an invalid cadence counts as 0 for the §7.4 release at once (`crank_devices::Reading`). The samples of a tick are merged field by field in arrival order, and each field keeps its last real value (cadence 0 included) until its own bound: power and cadence 1.0 s (4 ticks, the hold above), speed 6.0 s (24 ticks) but never longer than page 25 itself is held, so no value outlives a stopped page-25 stream. The 6 s comes from the #44 Part A captures: the NEO sends page 16 instead of about one page 25 in four, and the page-16 interval is about 1 s at the median but 5.0–5.5 s at the 99th percentile (`latency.fecap`, `spacing.fecap`; at most 5.97 s outside one 25 s outlier), so a 1.0 s speed hold would blank speed most seconds. The silence rule of §5 and ADR-0002 §6 counts ticks without a **page-25** sample (one with an event count): page 16 alone keeps no trainer alive. An 8-tick silence, like an applied link transition, clears every field's hold. HR is held as before.
+- **Loss-window values.** The trainer hold (1.0 s = 4 ticks) applies first, then the value is `null` for the rest of the window: ticks after the last sample show it for 4 ticks, the remaining ticks of the 8-tick window and everything after are `null`. This is how §5's "null record values" and the hold rule compose.
+- **Link events.** Driver link events carry no timestamp (#232 asks for one). The engine stamps each on receipt and applies it before the tick containing the stamp; samples keep their driver timestamp. Every device link has an event count: a sample is tagged with the count at receipt and is stale, and never enters a hold, once a later link transition has been applied. Every applied transition also clears that device's hold. Resume therefore needs a cadence > 0 sample received after `Ready`. Convention for stalls: a transition the engine learns of only after a stall is applied at the stall's end, so a stalled run and a live run agree on everything that carries a timestamp and can differ only around link transitions inside the stall (closed by #232).
+- Pauses compose: `user`, `trainer_lost` and `stopped_pedalling` are independent flags (reported in that priority: lost, user, stopped), so a rider's pause survives a reconnect. Ticks of a paused ride record `null` for every metric and `workout_s`.
+- After a loss detected by silence (no `Link(Lost)`), the engine re-issues the mode as soon as it detects the loss, because the link is still `Ready`. Control is sent only while the link is `Ready`; resume needs a re-applied mode and cadence > 0 on a tick.
+- **Soft start.** Rule and origin: ADR-0002 §7.5 amendment (#231). It runs only while pedalling trainer values are present after the re-issued mode, from the 3 s power at the tick they start flowing (the window moves with tick time); until then the re-issued mode is 0 W, never the target. It holds its last step while samples are missing and restarts from the then-current power when they return.
+- **No trainer, no ride.** `Start` is rejected with `NoTrainer` / `TrainerNotReady`: DESIGN §5.4 ("Start is enabled when the trainer is connected") and #95 ("Start disabled until trainer: connected"; makes impossible "a ride starting without a connected trainer"). DESIGN §15 has no trainer-less mode; a no-trainer ride is not a mode of the engine.
+- **Shutdown.** When every `EngineHandle` is dropped mid-ride the engine finishes the ride (record closed through `RideRecorder::finish`) and clears the ride-active signal.
+- The engine finishes the ride when the last block completes (or is skipped); a partial last second is not recorded. A skip ends the current block's lap at the skip tick; in a free ride (no blocks) it closes the lap and opens the next, and the ride goes on (#243 Q1). Block duration is `FlatBlock.dur_s` rounded to ticks; open-ended end rules are #224, gap filling from accumulated power is #223.
+- `crank-engine` depends on neither `crank-ble` nor `crank-store`: the ride-active signal is the `RideActivity` trait (core passes `|a| gate.set_active(a)`), the record is the `RideRecorder` trait (core adapts it to `Store`).
+- `VirtualClock::new(speed)` runs `speed`× faster than the tokio timer under it; with `start_paused` tests it is exact and takes no wall time.
+
 Engine sketch:
 
 ```rust
@@ -346,7 +385,7 @@ Schema v1 (#33):
 | Table | Key columns | Notes |
 |---|---|---|
 | `athlete_estimate` | `param, value, sd, source, n, updated_at` | append-only history; current = latest per `param` (ONBOARDING.md §3) |
-| `athlete_profile` | singleton: weight, age, sex, crank length, PAR-Q result | |
+| `athlete_profile` | singleton: weight, age, sex, crank length, health-check result (column `health_check_result`; renamed from `par_q_result` by migration 0003, #210) | |
 | `workout` | `id, name, dsl, tree_json, ftp_at_creation, source, created_at` | `dsl` canonical text; `tree_json` validated on read |
 | `snippet`, `layout` | `id, name, json, updated_at` | validated on read (#4); built-in defaults live in code |
 | `ride` | `id, started_at (UTC), ended_at, state (finished/aborted), workout_json, compiled_json, trainer_device_id, hr_device_id, telemetry_source, summary_json` | snapshot of the workout as ridden, incl. coach changes (#16) |
@@ -365,8 +404,8 @@ Crash safety: the open chunk of each metric is upserted every 5 s, so a crash lo
 ride record. **Recovery runs only in the process that has just acquired `ride.lock`** (§2), before it
 starts or loads a ride: holding the lock proves no other process owns a live ride (the advisory lock is
 released by the kernel when its holder dies), so any `ride` without `ended_at` is closed as `aborted` with
-its data intact and shown in review. Processes that only read or write the store without the lock
-(`crank mcp`, CLI queries) never run recovery and treat an open ride as live.
+its data intact and shown in review. Processes ~~that only read or write the store without the lock~~ (superseded by §9.4: which tables a lock-less process may write)
+without the lock (`crank mcp`, CLI queries) never run recovery and treat an open ride as live.
 
 Rejected: **sqlx** (async API we don't need on a single writer thread; compile-time checked queries need a
 live database or an offline query cache in the build); **an embedded KV store (redb, sled)** (the review and
@@ -392,6 +431,140 @@ on top).
   macOS Keychain (service `io.github.gerchowl.crank`). Keys are never written to SQLite, logs, captures or
   the IPC contract (commands return `has_key: bool`). Debug builds only accept `CRANK_ANTHROPIC_API_KEY` /
   `CRANK_INTERVALS_API_KEY` from the environment; release builds compile that path out.
+
+### 7.1 Amendment 2026-11-02: logs via vigil (#414)
+
+*Amends the **Logging** bullet of §7 (#414 and its owner comment call it "§9"; logging is decided here).
+The raw-frame capture and the #411 HIL contract are unchanged.*
+
+**Context.** #411 shipped `app/src-tauri/src/logging.rs`: a plain-text `crank.log` in Tauri's
+`app_log_dir`, size-rotated at 5 MiB with one previous generation, and fixed filters. That was enough
+for the #44 Part B session, but it is not what §7 specifies (JSON lines, 7 days kept, `CRANK_LOG`,
+spans). The owner decided on 2026-11-02 to adopt [vig-os/vigil](https://github.com/vig-os/vigil)
+instead of building that on `tracing-appender`. #431 (bug reports, ADR-0003) reads vigil's output.
+
+**Decision.** The desktop entry point initialises `vigil::Config::new("crank")` once, holds the
+`Guard` in Tauri state, and shuts it down on exit within the quit budget below. This replaces
+`RotatingFile`. Each §7 requirement maps to a vigil setting as follows:
+
+| §7 requirement | vigil 0.2.0 setting | Deviation |
+|---|---|---|
+| JSON lines | `logs.jsonl`: one OTLP/JSON `LogsData` per line (OTel file-exporter spec) | OTLP envelope, not flat `tracing-subscriber` JSON. Readers must unwrap `resourceLogs[].scopeLogs[].logRecords[]` (ADR-0003 §2.2) |
+| `tracing-appender` daily files, 7 days | `Config::retention(Some(7 days))`, plus `signal_rotation(Logs, max_bytes(8 MiB).max_segments(Some(6)))`, `signal_rotation(Traces, max_bytes(8 MiB).max_segments(Some(2)))` and `max_total_bytes(Some(96 MiB))` | Segments rotate by size, not by day. The 7-day age limit is kept, and the count and byte caps (off by default upstream, vigil#168) bound the directory to under 96 MiB |
+| `<log_dir>` | normal launch: `Config::dir(app_log_dir)` (`~/Library/Logs/io.github.gerchowl.crank/`) | none. The explicit builder value wins over `VIGIL_DIR` and `XDG_STATE_HOME` |
+| `CRANK_LOG` (`EnvFilter`), default `info` | normal launch: `filter_env("CRANK_LOG").default_filter("info")`. Capture mode: see below | none. Without `filter_env`, vigil would read `RUST_LOG` |
+| Spans `ride{id}`, `device{kind,id}`, `coach{call_id}` | Feature `traces`: spans go to `traces.jsonl`, and records inside an entered span carry its `traceId`/`spanId` | **Span fields are not on log records in 0.2.0** (spike below). Correlate by span id. Tracked in #432 |
+| Default `info`, raw frames at TRACE to `.fecap` | unchanged: `.fecap` is written by `crank-ble`, not by vigil | none |
+| — | `version(CARGO_PKG_VERSION)`, `revision(<build commit>)`, the same provenance ADR-0003 §2.6 uses | addition |
+| — | `console(Console::Stderr)` in debug builds only | addition. Its text is not parsed |
+
+**Dependency.** `vigil-telemetry = { git = "https://github.com/vig-os/vigil", tag = "0.2.0",
+default-features = false, features = ["traces"] }`, imported as `vigil` (Apache-2.0). The exact tag
+is pinned because a pre-1.0 minor may break the API, and moving the tag is a deliberate PR.
+`metrics` is off because crank has no metrics consumer, and `audit` is not needed. `deny.toml [sources]`
+gains `allow-git = ["https://github.com/vig-os/vigil"]`. The implementation PR runs the full `deny`
+check (licences, advisories, bans) over vigil's OpenTelemetry tree and fixes or justifies each
+finding there. vigil's MSRV is 1.95, which crank's pinned 1.96 toolchain satisfies.
+
+**#411 HIL contract (kept, tested).** When `CRANK_CAPTURE_DIR=<dir>` is set:
+
+- **Location.** `Config::dir(<dir>)`. The `.fecap` files stay in `<dir>`, separate from
+  `logs.jsonl`/`traces.jsonl`. vigil keeps foreign files when it prunes.
+- **No retention, no caps:** `retention(None)`, `max_total_bytes(None)` and, for both signals,
+  `signal_rotation(_, max_bytes(8 MiB).max_segments(None).retention(None))`. They are set explicitly,
+  so the `VIGIL_*` environment cannot re-enable them. The reason: with the normal-launch
+  limits, a long TRACE session would prune its own early segments, and a reused capture directory
+  would lose an earlier session's logs. A capture directory is evidence the owner curates (#44
+  Part B), so vigil never deletes anything in it; only size rotation (8 MiB segments) remains. The
+  cost is that disk use there is unbounded, which the owner accepts for an explicitly opted-in session.
+- **Filter (architect decision 2026-11-02, the owner may override).** The capture's `crank_ble=trace`
+  always applies, and `CRANK_LOG` adds to it; the app does not exit.
+  - vigil 0.2.0 reads its filter only from one environment variable or `default_filter`, so in capture
+    mode crank resolves the filter itself and passes the result as `default_filter`:
+    `info` (or `CRANK_LOG`'s directives, if it is set and valid), then any directive whose target is
+    `crank_ble` or `crank_ble::…` removed, then `crank_ble=trace` appended, then
+    `crank_desktop::logging=warn`, so the WARN records below survive a `CRANK_LOG` that turns the desktop off.
+  - Removing those directives is what makes "always" true: `EnvFilter` lets the most specific
+    directive win, so `CRANK_LOG=crank_ble::driver=warn` would otherwise lower the capture. Each removed
+    directive is reported in a WARN record. An invalid `CRANK_LOG` is reported the same way, and the
+    capture default is used.
+  - `filter_env` names `CRANK_LOG_CAPTURE_RESERVED`, a variable crank documents as reserved, so vigil
+    cannot override the resolved filter with `CRANK_LOG`. If that variable is set, the app reports it
+    and exits without riding, because vigil would apply it. #432 tracks asking vigil for an explicit
+    filter, which removes the reserved name.
+- **Exits.** The existing "capture dir cannot be opened" exit and the reserved-variable exit call
+  `Guard::shutdown()` first, because `std::process::exit` skips vigil's flush.
+
+The tests that exist today for the filter plan (`crank_ble` at TRACE only with a capture directory)
+move to the vigil configuration unchanged. New tests pin the merge (`CRANK_LOG=warn` and
+`CRANK_LOG=crank_ble::driver=warn` both still enable `crank_ble::driver` at TRACE), the
+`None` retention and caps in capture mode, and the reserved-variable refusal.
+
+**Quit budget (decision; the owner may override).** AGENTS.md's quit path must finish within 3 s,
+because macOS may kill a terminating app a few seconds in. The 3 s are split:
+
+- `Core::shutdown` waits at most **2.5 s** for the devices to be released. That is lowered from 3 s.
+- vigil then gets the rest: `Guard::shutdown_with_timeout(3 s − elapsed)`, measured from the
+  exit request, and nothing once the 3 s are used up (no floor: a floor would break the cap; #414
+  review). Because shutdown is explicit, the guard's Drop does nothing, so its 5 s wait never runs.
+- On a quit that never asked (Dock Quit, logout), the clock starts at `RunEvent::Exit`
+  (`applicationWillTerminate:`), the first event Tauri delivers. It understates the quit by AppKit's
+  own work after `terminate:` plus the wait for the main thread: tao answers no
+  `applicationShouldTerminate:`, crank is not document-based, and crank's main-thread handlers never
+  block, so no crank code runs in that gap.
+- The ride-end flush (below) runs on a blocking thread and is not awaited, holding its own handle,
+  never the lock the quit takes. A quit that finds that flush in flight waits for it within the
+  budget, then shuts down with the rest. If the flush outlasts the budget, vigil is not shut down:
+  the process exits under the flush and loses what it had not written, and the guard's Drop never
+  runs (#414 review).
+- Metrics are off, so the 5 s metrics floor (vigil#112) does not apply.
+- When the bound is hit, the records still queued are lost. That is at most the last ~1 s batch
+  interval: typically the shutdown's own lines. Spans not yet exported are lost from `traces.jsonl`.
+  vigil reports the loss on stderr, which a Finder launch does not have.
+- A quit that gives up on a flush, a crash or a SIGKILL can leave `logs.jsonl` ending in a **partial last
+  line**. Readers (`vigil::rotate::read_since` returns it as a line; squelch's `flatten`, #444, and the bug report,
+  ADR-0003 §2.2) take every complete line and skip the one that does not parse, as squelch already does. crank pins the rule with
+  `read_since`; the squelch reader owns its own test (#444).
+- Because crank also flushes when each ride ends (below), the ride's records are on disk before quit.
+
+**Migration (architect decision 2026-11-02, the owner may override).** The app never deletes the old plain-text `crank.log` or
+`crank.log.1`; they stay in `app_log_dir` next to `logs.jsonl`. AGENTS.md's logging paragraph is
+rewritten in the implementation PR and says the old files can be deleted by hand. Sequencing follows
+#414: implement after the #44 Part B session.
+
+**Spike (2026-11-02, outside the repo, crank's dev shell, vigil tag `0.2.0` @ `64f9b8f`).** A binary
+initialised vigil, emitted two events inside an entered `info_span!("ride", ride_id = 7)` and shut
+down. `cargo run` exited 0 for both builds:
+
+- **Logs-only build.** One `logs.jsonl` line held both records. `attributes` carried only the event
+  fields, `traceId`/`spanId` were empty, and there was no `ride_id`.
+- **Default-features build.** The same records carried a non-empty `spanId`/`traceId`, and
+  `traces.jsonl` held the span. Hence `features = ["traces"]`.
+- **Resource attributes** included `host.name`, which is the machine name. ADR-0003 §2.2 drops them.
+
+**Alternatives.** `tracing-subscriber` JSON with `tracing-appender`, as §7 originally said: rejected
+by the owner in favour of the vig-os shared crate, which brings caps, multi-process-safe rotation and
+an OTLP format Loki reads. Keeping #411's `RotatingFile` and adding JSON: hand-rolled rotation and no
+spans. vigil logs-only: loses span correlation entirely (spike).
+
+**Consequences and known limits.**
+
+- Pre-1.0: a vigil minor may break crank's build. Bumps are reviewed PRs.
+- Open spans at shutdown are not exported (vigil#8 8d), so `RunEvent::Exit` ends the ride and device
+  sessions before `shutdown()`. This affects `traces.jsonl` only. Tracked in #432.
+- **Spans as built (#465).** `ride{id}` is opened by `Core`'s load and held by the session until the reap,
+  which every end, replacing load, discard and quit goes through; `device{kind,id}` is its child, opened as
+  each device connects and held the same way, so the devices close first. The engine and the drivers hold no
+  clone: a wedged engine detached from its session would keep a span open for ever, and vigil exports none still
+  open. Records the core logs inside the span (the ride's release) carry its `traceId`/`spanId`. A quit that
+  times out or fails closes the spans of the session it leaves loaded (`Core::shutdown`). `id` is crank's ride
+  id; a device is named by its role placeholder (`<trainer-id>`, `<strap-id>`, ADR-0003 §2.3), never its name,
+  serial, platform id or the store id that embeds it. `coach{call_id}` has no call site yet (#474).
+- vigil supports Unix targets only (`flock` rotation). Windows (#41) needs vigil support or another
+  backend.
+- Records overflowing the 65 536-record queue are dropped with a stderr warning. A Finder launch has no
+  stderr, so crank calls `Guard::flush()` when a ride ends. If the flush returns a `FlushError`,
+  crank writes its `lost(Signal::Logs)` count as a WARN record.
 
 ## 8. Decision: testing strategy and definition of done
 
@@ -458,6 +631,48 @@ server inside the app ([platform support](https://webdriver.io/docs/desktop-test
   so #35 must record the trade-off and amend this section. Either way `just e2e` and `just screens` keep
   their names and outputs, so §8.1 holds.
 
+#### 8.3.1 Validated setup (#35 part 1, 2026-10-14)
+
+The embedded provider works on sage (macOS 26, aarch64, WKWebView) against the Nix-built
+`crank-desktop-e2e`, launched in the GUI session through the Alacritty wrapper: `just e2e` passes. It
+covers app launch, `$`/`toHaveText`/`toHaveTitle` element queries, a Rust command round trip through
+`window.__TAURI_INTERNALS__.invoke` with a DOM change, and `saveScreenshot` (1440×900 PNG).
+
+Determinism, exactly what is checked: within one launch the spec compares two screenshots of an unchanged
+page byte for byte, and `scripts/e2e.sh` runs the specs in two separate app launches and compares the
+screenshots of launch 1 and launch 2 byte for byte (`cmp`). Both held on sage with no font or animation
+pinning for the shell. No golden hash is recorded, because a hash would change with the macOS version and
+fonts; the comparison across launches on one machine is the guard. It says nothing about other machines.
+
+| Part | Pin |
+|---|---|
+| `tauri-plugin-wdio-webdriver` (cargo feature `e2e`) | `=1.5.0`, with Tauri 2.12.3 |
+| `@wdio/tauri-service` | `1.5.0`, `driverProvider: 'embedded'` |
+| `webdriverio`, `@wdio/cli`, `@wdio/local-runner`, `@wdio/mocha-framework` | `9.31.9` |
+| `@wdio/globals`, `@wdio/spec-reporter` | `9.31.3`, `9.31.2` (the versions the service pins) |
+
+Decisions and findings:
+
+- Only `tauri-plugin-wdio-webdriver` is built in. The service's second plugin `tauri-plugin-wdio` (and its
+  frontend import `@wdio/tauri-plugin`, `withGlobalTauri`) is **not** used: it would put test code into
+  the production frontend bundle, and IPC from specs works through `window.__TAURI_INTERNALS__` anyway.
+  Without it the service's multi-window auto-focus times out for 5 s before every query, so the config
+  issues one explicit WebDriver `switchToWindow` in `before`, which turns the auto-focus off (the shell
+  is single-window). The service-only helpers (`browser.tauri.execute`, `mock`) are unavailable; revisit
+  if a spec needs them.
+- The published plugin crate omits `permissions/autogenerated/reference.md`, so its build script tries to write
+  generated files into the read-only Nix vendor tree; the e2e vendor dir adds that one file (flake
+  `cargoVendorDirE2e`, used by the e2e package only; other builds vendor the crate untouched; upstream report
+  webdriverio/desktop-mobile#730, tracking in `nix/patches/README.md`, #241). The plugin declares no commands, so it needs no capability.
+- The plugin is optional in `crank-desktop`. The `deps-edges` check fails if `crank-desktop`'s production
+  graph reaches any `tauri-plugin-wdio*` crate or enables `e2e`, and fails if the `e2e` feature stops
+  pulling the plugin in. `build-e2e` keeps the package building in CI.
+- A flock pane has no GUI session; `scripts/e2e.sh` hands the run to Alacritty over IPC and reads
+  the log and exit code back from a per-run directory, the exit file written atomically (`CRANK_E2E_DIRECT=1`
+  runs in the current terminal). On Linux the script skips with a message. `nix develop`
+  repoints `TMPDIR`, so the Alacritty socket is looked up in the per-user temp dir.
+- Still open: `--sim --seed --clock virtual` with `debug_advance` (#228) and the `just screens` matrix (#229).
+
 ### 8.4 Hardware-in-the-loop protocol
 
 Test scripts live in `hil/` and run in a terminal that has the Bluetooth grant (on sage: an Alacritty
@@ -499,23 +714,20 @@ agent assumes a hardware result it did not see.
   | `bindings-drift` | runs the bindings export binary and `diff`s its output against the committed `app/src/bindings.ts` |
   | `doctest` | `cargoDocTest` |
   | `doc` | `cargoDoc` with `RUSTDOCFLAGS=-D warnings` (`missing_docs` denied) |
-  | `deny` | `cargoDeny` (bans, licenses, sources) |
+  | `deny` | ~~`cargoDeny` (bans, licenses, sources)~~ `cargoDeny` (advisories, bans, licenses, sources; advisories amended by §9.5) |
   | `deps-edges` | script over `cargo metadata`: forbidden crate edges (§2) and `e2e` feature not in `crank-app` |
   | `app-typecheck`, `app-lint`, `app-test` | frontend derivations: `tsc --noEmit`, ESLint, Vitest |
 
 - **Packages:** `crank-cli`, `crank-desktop`, `crank-desktop-e2e`, `app-dist` (Vite build), `crank-app`
   (the unsigned macOS bundle, `aarch64-darwin` only).
-- **CI:** the fleet runners (#25, anvil vm-runner, `x86_64-linux`) run `nix flake check` on every PR into
+- **CI:** ~~the fleet runners (#25, anvil vm-runner, `x86_64-linux`) run `nix flake check` on every PR into
   `dev`, as the required job. sage runs `nix flake check` for `aarch64-darwin` plus the §8.1 GUI commands
-  before merge. #25's workflow changes from `nix develop -c just check` to `nix flake check`;
-  `just check` is a local alias for it.
-- **Binary cache:** anvil's atticd is a substituter, URL `http://anvil.tail22bd7c.ts.net:8091/fleet`, key
-  `fleet:XhYN63AUcQY42UsuNq5cjrSeDmXMbf1Znx52Qw8kucw=` (g-fleet `lib/fleet-cache.nix`). sage already has it
-  in `/etc/nix/nix.conf` via host configuration (g-fleet's `nixPullCache`). The flake declares
-  **no `nixConfig`**, per the architect's #28 round 2 decision: fleet hosts receive the substituter
-  and key from host config; non-fleet hosts use cache.nixos.org and source. Never use
-  `--accept-flake-config` or change nix.conf for this project. Pushing build results to attic is
-  the runners' job (#25).
+  before merge.~~ **Superseded by the Amendment 2026-10-13 (below):** GitHub-hosted runners run the gate.
+  `just check` is a local alias for `nix flake check`; sage still runs the §8.1 GUI commands.
+- **Binary cache:** ~~anvil's atticd is a substituter~~ **superseded (Amendment 2026-10-13).** The flake
+  declares **no `nixConfig`**, per the architect's #28 round 2 decision: hosts that have a cache get it
+  from host configuration; everyone else uses cache.nixos.org and source. Never use
+  `--accept-flake-config` or change nix.conf for this project.
 
 ### 9.2 Frontend and generated bindings in Nix
 
@@ -541,11 +753,13 @@ agent assumes a hardware result it did not see.
   layout step; Tauri's bundler and `codesign` don't run in the sandbox (the bundler wants to sign, and
   signing needs the login keychain).
 - **`just bundle` (on sage, outside the sandbox):** `nix build .#crank-app`, copy to
-  `~/Applications/crank.app` (writable copy, stable path), then sign inside-out with the self-signed
-  **`nix-tcc`** identity that already exists in sage's login keychain (g-fleet `bin/nix-tcc-cert`, the same
-  identity g-fleet's `tcc-sign.nix` uses so TCC grants survive rebuilds):
-  `codesign --force --sign nix-tcc --identifier io.github.gerchowl.crank.cli Contents/MacOS/crank`, then
-  `codesign --force --sign nix-tcc --identifier io.github.gerchowl.crank crank.app`. It finishes with
+  a writable temp path beside `~/Applications/crank.app`, sign it there inside-out with the self-signed
+  **`nix-tcc`** identity, selected by its SHA-1 (the identity the check below verifies), and swap it atomically
+  into the stable path (`scripts/install-app.sh`; never a window with no app). The identity already exists
+  in sage's login keychain (g-fleet `bin/nix-tcc-cert`, the same identity g-fleet's `tcc-sign.nix` uses so
+  TCC grants survive rebuilds):
+  `codesign --force --sign <SHA-1> --identifier io.github.gerchowl.crank.cli Contents/MacOS/crank`, then
+  `codesign --force --sign <SHA-1> --identifier io.github.gerchowl.crank crank.app`. It finishes with
   `codesign --verify --strict` and asserts that `codesign -d -r-` prints the designated requirement
   `identifier "io.github.gerchowl.crank" and certificate leaf = H"<nix-tcc SHA-1>"`.
 - TCC records a grant against the app's designated requirement (bundle id + signing certificate) rather
@@ -567,6 +781,63 @@ agent assumes a hardware result it did not see.
 - The `crank` CLI on PATH is a symlink to `~/Applications/crank.app/Contents/MacOS/crank`. Run from a
   terminal, its Bluetooth grant belongs to the terminal (TCC responsible process); BLE runs by agents use
   the Alacritty path (ADR-0002 §8).
+
+### 9.4 Amendment 2026-10-13: CI is GitHub-hosted (#122, #166)
+
+*Amends §1, §2, §6 and §9.1. The struck-through text above is kept as history.*
+
+- **CI.** Since #58 the gate is `nix flake check -L` on GitHub-hosted `ubuntu-latest` and `macos-latest`;
+  the `CI Summary` job is required on `dev` and `main`. The fleet runner (anvil vm-runner) was offboarded
+  from this repository because **self-hosted runners must never serve a public repository**: a pull request
+  from a fork would execute untrusted code on a machine inside the owner's network (g-fleet#170).
+  The attic binary cache is not used by this repository either; CI uses the magic Nix cache on hosted
+  runners. No internal hostnames or cache keys are published here; the `public-hygiene` flake check
+  (`scripts/check-public-hygiene.sh`) fails on internal hostnames and absolute home paths in tracked files.
+- **Ride lock (amends §2 item 3).** The ride lock is acquired by `crank-store` (`Store::open_owner`), the
+  narrowest place that can guarantee "recovery only in the lock holder". `crank-core` decides *when* to open
+  the store as owner; it does not implement the lock.
+- **Lock-less writers (amends §6).** A process without the lock may write the non-ride tables (`rating`,
+  `checkin`, `setting`, `plan_item`, …) on its own connection, relying on SQLite WAL locking plus
+  `busy_timeout`. It never writes `ride` or `ride_chunk` and never runs recovery. The current store is
+  strictly read-only for lock-less processes (`StoreError::ReadOnly`) and stays so until the first lock-less
+  writer (MCP/CLI) lands; #166 tracks that implementation.
+
+### 9.5 Amendment 2026-10-13: supply-chain gate (#124)
+
+*Amends §9.1 (`deny` row). Dependency policy is `deny.toml`; this section is the rationale.*
+
+- **RustSec in the gate.** The `deny` check now runs `advisories` in addition to `bans licenses sources`.
+  The Nix sandbox has no network, so the database is the pinned flake input `advisory-db`
+  (`github:rustsec/advisory-db`, `flake = false`), copied into a git checkout at build time and read with
+  `cargo deny --offline`. Advisory updates therefore arrive as ordinary `flake.lock` bumps:
+  `nix flake update advisory-db`, then `nix flake check -L`; a new advisory fails the check in that PR
+  and is fixed or ignored there. `deny.toml` stays the single policy file; Nix only injects the db path.
+- **Policy.** Vulnerabilities, `unmaintained = "all"` and `unsound = "all"` (transitive included) and
+  `yanked = "deny"` all fail. There are no blanket ignores: every `ignore` entry in `deny.toml` carries a
+  reason and a tracking issue. Today that is three Linux-only transitive entries tracked in #180, which
+  must be empty before it closes: `glib` 0.18 (RUSTSEC-2024-0429) is a Linux **runtime** dependency
+  (tauri's gtk3 stack) whose advisory is *unsound*-only (`VariantStrIter`, never called by crank), not a
+  build-time crate; `paste` (RUSTSEC-2024-0436, via specta) and `proc-macro-error`
+  (RUSTSEC-2024-0370, via gtk3-macros/glib-macros) are *unmaintained* proc-macro crates that exist at
+  build time only and are not linked into the app.
+- **Fuzz workspace.** `crates/crank-fec/fuzz` is a separate workspace with its own `Cargo.lock`, so the root
+  `deny` never sees it. The flake check `deny-fuzz` runs `advisories` against that lockfile, offline
+  against the same pinned `advisory-db`, and `advisories.yml` runs `cargo deny --manifest-path` on it
+  live. Only advisories: the fuzz workspace is dev-only and never shipped, so bans/licenses/sources
+  (policy for shipped code) are not applied to it, but a vulnerable dev dependency still fails.
+- **What the sandbox cannot see.** Yanked releases need the crates.io index, so the in-gate run silences
+  `index-failure` (`-A`) and the pin means advisories published after the last bump are invisible to PRs.
+  `.github/workflows/advisories.yml` (#181) runs weekly, on lockfile/`deny.toml` PRs and on demand against
+  the live db and index, outside `CI Summary` so an upstream advisory cannot block unrelated work.
+  An automated "bump the lock and open a PR" job was rejected: PRs opened with `GITHUB_TOKEN` do not
+  trigger the required CI, and a GitHub App for that is not worth it for one input. A red weekly run is
+  the prompt for a manual bump. To make that prompt visible, a failed *scheduled* run opens (or comments
+  on) a single GitHub issue labelled `security` with the run link (`report-failure` job, `issues: write`
+  scoped to that job only, `GITHUB_TOKEN`, GitHub-hosted runner).
+- **Frontend.** `pnpm audit` queries the registry, so it cannot run in the sandbox. Decision: run
+  `pnpm audit --prod` in the same workflow (production dependencies only: dev tooling never ships in the
+  app). Rejected: a pinned offline npm advisory database (no maintained Nix-packaged source) and gating
+  PRs on it (same upstream-blocks-unrelated-work problem as above).
 
 ## 10. Alternatives considered (summary)
 
@@ -621,7 +892,7 @@ agent assumes a hardware result it did not see.
 
 Scaffold (#28) acceptance gains: crate list of §2, pinned specta trio, bindings drift test, dependency-edge
 check, `clippy::unwrap_used` deny outside tests, and the flake of §9.1–9.2 (crane checks, `fetchPnpmDeps`,
-attic substituter via fleet host configuration, no `nixConfig`) with `nix flake check` green.
+no `nixConfig`; the attic substituter was superseded, §9.4) with `nix flake check` green.
 
 ## 13. References
 
@@ -633,7 +904,7 @@ attic substituter via fleet host configuration, no `nixConfig`) with `nix flake 
 - btleplug README (platforms, macOS usage description): https://github.com/deviceplug/btleplug
 - crane API (`buildDepsOnly`, `cargoClippy`, `cargoNextest`, `cargoDocTest`, `cargoDoc`, `cargoDeny`, filesets): https://crane.dev/API.html
 - nixpkgs-unstable (evaluated 2026-10-13): `pnpm_12` = 12.9.0, `fetchPnpmDeps`, `pnpmConfigHook` present
-- g-fleet: `lib/fleet-cache.nix` (attic URL + key), `bin/nix-tcc-cert` and `modules/home/tcc-sign.nix` (stable `nix-tcc` signing for TCC)
+- g-fleet: `bin/nix-tcc-cert` and `modules/home/tcc-sign.nix` (stable `nix-tcc` signing for TCC)
 - crates.io versions as of 2026-10-13: tauri 2.12.3, tauri-specta/specta 2.0.0-rc.25, specta-typescript
   0.0.12, ts-rs 12.0.1, rusqlite 0.40.2, rusqlite_migration 2.6.0, keyring 4.2.0, directories 6.0.0,
   rmcp 3.5.1, btleplug 0.13.5, tauri-plugin-wdio-webdriver 1.5.0

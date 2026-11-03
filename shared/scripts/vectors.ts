@@ -195,7 +195,16 @@ function distributionVectors(): Case[] {
 
 function simulatorVectors(): Case[] {
   const w = workout("30s 50%; 30s 120%; hr<120 5s..30s 40%; 30s free");
-  return [1, 31].map((seed) => {
+  // Harder ride (#67 review): 190 % FTP for 230 s spends > 2.5 W′ (its 90 s recovery then runs on the capped fatigue term) and drives the
+  // intensity EMA past 1.15, reaching the RR generator's anti-correlated and
+  // saturated branches that the 120 s vectors above never enter.
+  const hard = workout("20s 60%; 230s 190%; 90s 40%; 40s 150%");
+  const runs: { w: Workout; seed: number; ticks: number }[] = [
+    { w, seed: 1, ticks: 480 },
+    { w, seed: 31, ticks: 480 },
+    { w: hard, seed: 7, ticks: 1520 },
+  ];
+  return runs.map(({ w, seed, ticks }) => {
     const bus = new MetricBus();
     const events: unknown[] = [];
     const sim = new RideSim(DEFAULT_ATHLETE, seed, bus, {
@@ -210,11 +219,11 @@ function simulatorVectors(): Case[] {
     sim.load(w);
     sim.start();
     const snapshots: unknown[] = [];
-    for (let tick = 0; tick < 480; tick++) {
+    for (let tick = 0; tick < ticks; tick++) {
       sim.step();
       if (tick % 40 === 39) snapshots.push({ status: sim.status(), features: sim.features(), recovery: sim.recoveryState() });
     }
-    return vector(`sim-${seed}`, { workout: w, athlete: DEFAULT_ATHLETE, seed, ticks: 480, dt: SIM_DT, metrics }, { published, snapshots, events });
+    return vector(`sim-${seed}`, { workout: w, athlete: DEFAULT_ATHLETE, seed, ticks, dt: SIM_DT, metrics }, { published, snapshots, events });
   });
 }
 

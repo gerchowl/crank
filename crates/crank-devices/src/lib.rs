@@ -1,1 +1,499 @@
-//! Devices scaffold; see ADR-0001 §2.
+//! Transport-neutral connection factories and events (ADR-0002 §3).
+//! See [`ControlMode::grid_key`] for checked wire-grid projection and
+//! [`TrainerObservation`] for the uncorrelated observations of ADR-0002 §4.4.
+//!
+//! Monotonic timestamps use microseconds from a shared runtime epoch (ADR-0001 §5).
+
+mod control;
+pub mod sim;
+pub use control::*;
+use futures_util::{future::BoxFuture, stream::BoxStream};
+use smallvec::SmallVec;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+use tokio::sync::mpsc;
+
+/// Monotonic microseconds from the runtime epoch; never UTC. See ADR-0002 §3.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MonoTime(pub u64);
+
+/// Injectable runtime epoch and executor clock (ADR-0001 §5).
+pub trait Clock: Send + Sync + 'static {
+    /// Current monotonic time, shared with the engine.
+    fn now(&self) -> MonoTime;
+    /// Suspend until a monotonic deadline.
+    fn sleep_until(&self, at: MonoTime) -> BoxFuture<'static, ()>;
+    /// Monotonic time for pacing what a human or an IPC channel sees (frame spacing,
+    /// heartbeats; ADR-0001 §4.3): unscaled by simulation speed. A clock that runs
+    /// faster than real time (`VirtualClock` at 10×/60×) overrides it; the default is
+    /// [`Clock::now`], right for every clock that is not scaled.
+    fn pacing_now(&self) -> MonoTime {
+        self.now()
+    }
+    /// Suspend until a deadline on the [`Clock::pacing_now`] axis.
+    fn pacing_sleep_until(&self, at: MonoTime) -> BoxFuture<'static, ()> {
+        self.sleep_until(at)
+    }
+}
+
+/// Trainer protocol selected by discovery. See ADR-0002 §3.
+/// Non-exhaustive to support future FTMS additions (#45).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DriverKind {
+    /// ANT FE-C over BLE.
+    FeC,
+    /// Bluetooth Fitness Machine Service.
+    Ftms,
+    /// Deterministic simulator.
+    Sim,
+}
+/// Opaque platform peripheral identity, stable on the current host. See ADR-0002 §3.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceRef(pub String);
+/// Human-readable device identity, populated from DIS or FE-C pages 80–81. See ADR-0002 §3.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceInfo {
+    /// Advertised name.
+    pub name: Option<String>,
+    /// Model identifier.
+    pub model: Option<String>,
+    /// Serial number.
+    pub serial: Option<String>,
+    /// Firmware revision.
+    pub firmware: Option<String>,
+}
+/// Classified discovery result. See ADR-0002 §3.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveredDevice {
+    /// Host-local identity.
+    pub device: DeviceRef,
+    /// Available identity fields.
+    pub info: DeviceInfo,
+    /// Trainer protocol, or None for a heart-rate strap.
+    pub trainer: Option<DriverKind>,
+    /// Whether Heart Rate Service is present.
+    pub heart_rate: bool,
+}
+/// Object-safe trainer connection factory (ADR-0002 §3).
+pub trait TrainerDriver: Send + Sync + 'static {
+    /// Protocol used by this driver.
+    fn kind(&self) -> DriverKind;
+    /// Connect, subscribe and configure rider/capabilities before returning.
+    fn connect(
+        &self,
+        dev: &DeviceRef,
+        rider: RiderConfig,
+    ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>>;
+}
+/// A connection owned by the driver's task. See ADR-0002 §3.
+pub struct TrainerLink {
+    /// Device identity.
+    pub info: DeviceInfo,
+    /// Advertised control capabilities.
+    pub caps: TrainerCaps,
+    /// Commands to the single writer task.
+    pub control: mpsc::Sender<TrainerCommand>,
+    /// Ordered, lossless connection events.
+    pub events: mpsc::Receiver<TrainerEvent>,
+    /// Where every sender of a `SetMode` on this link takes its [`CommandSeq`] from, so that
+    /// a `Delivered` names exactly one command even when several senders share the link (the
+    /// engine and, at a forced end, the core; #345).
+    pub seq: SeqSource,
+}
+/// Identifies one [`TrainerCommand::SetMode`] on a link; its [`TrainerEvent::Delivered`]
+/// carries it back. Unique per [`SeqSource`], increasing in the order they are taken.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CommandSeq(pub u64);
+/// A link's shared source of [`CommandSeq`]s: clones draw from the same counter.
+#[derive(Clone, Debug, Default)]
+pub struct SeqSource(Arc<AtomicU64>);
+impl SeqSource {
+    /// A sequence no earlier call on this source (or a clone of it) returned.
+    #[must_use]
+    pub fn next(&self) -> CommandSeq {
+        CommandSeq(self.0.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+}
+/// Capabilities from FE-C page 54 (ADR-0002 §3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrainerCaps {
+    /// Supports target power.
+    pub erg: bool,
+    /// Supports track and wind simulation.
+    pub sim: bool,
+    /// Supports basic resistance.
+    pub resistance: bool,
+    /// Maximum resistance in newtons, if reported. The FE-C driver maps page 54
+    /// `0xFFFF` to `None`; that meaning is **tentative pending HIL #44** (the NEO
+    /// reports 200 N and never sent `0xFFFF`, Part A; ADR-0002 §4.2).
+    pub max_resistance_n: Option<u16>,
+    /// Maximum target watts representable by the driver.
+    pub max_target_w: u16,
+}
+/// Rider/equipment configuration sent on connection. See ADR-0002 §3.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RiderConfig {
+    /// Rider mass in kilograms.
+    pub rider_kg: f32,
+    /// Bicycle mass in kilograms.
+    pub bike_kg: f32,
+    /// Wheel diameter in metres, despite the historical ADR field name.
+    pub wheel_m: f32,
+}
+/// Engine commands; mode selection and following policy belong to the engine. See ADR-0002 §3.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrainerCommand {
+    /// Replace the desired control mode.
+    SetMode {
+        /// The desired mode.
+        mode: ControlMode,
+        /// This command's sequence, from the link's [`SeqSource`]; echoed by its `Delivered`.
+        seq: CommandSeq,
+    },
+    /// Supply rider configuration (driver-specific connection lifecycle).
+    SetRider(RiderConfig),
+    /// Release the peripheral.
+    Disconnect,
+}
+/// Driver events; delivery and trainer observation are distinct (ADR-0002 §4.4).
+/// Non-exhaustive to support future FTMS additions (#45).
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum TrainerEvent {
+    /// Telemetry at notification arrival time.
+    Sample(TrainerSample),
+    /// One control page's GATT write succeeded; no claim of trainer application.
+    /// Emitted once every control page of `mode` has been written (a SIM pair after its
+    /// second page, not its first); the first page alone never confirms the mode.
+    /// Diagnostic only; delivery is not an engine following input (ADR-0002 §4.4).
+    ///
+    /// It confirms only the `SetMode` whose `seq` it carries, never an equal mode sent
+    /// another time: a `SetMode` that a later one replaced before all its pages were written
+    /// gets no `Delivered` (#345).
+    Delivered {
+        /// Desired mode whose control page reached the peripheral.
+        mode: ControlMode,
+        /// The sequence of the `SetMode` that set `mode`.
+        seq: CommandSeq,
+    },
+    /// Exactly one event per received page 71, and page-25 flags.
+    Observed(TrainerObservation),
+    /// Transport/configuration readiness changed.
+    Link(LinkState),
+    /// A reconnect attempt is starting after a loss (ADR-0002 §6); `attempt`
+    /// counts from 1 per loss. The driver never restores a control mode: the
+    /// engine re-issues `SetMode` on the following `Link(Ready)`.
+    Reconnecting {
+        /// 1-based attempt number within the current loss.
+        attempt: u32,
+    },
+    /// Transport or protocol failure.
+    Fault(DeviceError),
+}
+/// Link readiness, independent of control mode and trainer following. See ADR-0002 §3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkState {
+    /// Establishing transport and configuration.
+    Connecting,
+    /// Transport, rider configuration and capabilities are ready.
+    Ready,
+    /// Transport is lost or released.
+    Lost,
+}
+/// Raw telemetry; the engine unwraps counters and fills gaps (ADR-0002 §5).
+///
+/// A sample is one notification: FE-C page 25 (power, cadence, accumulated power, event
+/// count, status, target limit) or page 16 (speed, distance), never both on a real trainer.
+/// A field the page does not carry is `None` and means "not in this sample", never "zero";
+/// a field the page carries is `None` when the trainer reports it invalid (page 25's cadence
+/// `0xFF`, power `0xFFF`). [`TrainerSample::power`], [`TrainerSample::cadence`] and
+/// [`TrainerSample::speed`] tell the two apart. On a page-16 sample `status` and
+/// `target_limit` are their defaults and carry nothing. The engine holds each field on its
+/// own (#437).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrainerSample {
+    /// Notification arrival time.
+    pub at: MonoTime,
+    /// Instantaneous watts.
+    pub power_w: Option<u16>,
+    /// Cadence in revolutions per minute.
+    pub cadence_rpm: Option<u8>,
+    /// Speed in metres per second.
+    pub speed_mps: Option<f32>,
+    /// Raw page-16 distance counter, wrapping at 256 metres. `Some` exactly on samples that
+    /// carry page-16 data (the counter is a mandatory byte of page 16).
+    pub distance_m: Option<f32>,
+    /// Raw page-25 counter, wrapping at 65536 W.
+    pub accumulated_power_w: Option<u32>,
+    /// Raw page-25 event counter, wrapping at 256. `Some` exactly on samples that carry
+    /// page-25 data (the counter is a mandatory byte of page 25): the engine's 2 s silence
+    /// rule (ADR-0002 §6) counts these samples only.
+    pub event_count: Option<u8>,
+    /// Calibration/configuration flags.
+    pub status: TrainerStatus,
+    /// Reported target-power limitation.
+    pub target_limit: TargetLimit,
+}
+/// One telemetry field of a [`TrainerSample`] (#437).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reading<T> {
+    /// The sample's page does not carry the field: the last value still stands.
+    NotCarried,
+    /// The page carries the field and the trainer reports it invalid: unknown now.
+    Invalid,
+    /// A real value, zero included.
+    Value(T),
+}
+impl<T> Reading<T> {
+    fn of(value: Option<T>, carried: bool) -> Self {
+        match value {
+            Some(v) => Self::Value(v),
+            None if carried => Self::Invalid,
+            None => Self::NotCarried,
+        }
+    }
+}
+impl TrainerSample {
+    /// The sample carries page-25 data (power, cadence): it has an event count.
+    #[must_use]
+    pub fn has_page25(&self) -> bool {
+        self.event_count.is_some()
+    }
+    /// Power: carried by page 25.
+    #[must_use]
+    pub fn power(&self) -> Reading<u16> {
+        Reading::of(self.power_w, self.has_page25())
+    }
+    /// Cadence: carried by page 25.
+    #[must_use]
+    pub fn cadence(&self) -> Reading<u8> {
+        Reading::of(self.cadence_rpm, self.has_page25())
+    }
+    /// Speed: carried by page 16 (it has a distance counter).
+    #[must_use]
+    pub fn speed(&self) -> Reading<f32> {
+        Reading::of(self.speed_mps, self.distance_m.is_some())
+    }
+}
+/// Raw page-25 status nibble (byte 6, high nibble), `0..=15`: bits 0/1/2 report power
+/// calibration, resistance calibration and user configuration required; bit 3 is reserved
+/// and kept as reported. ADR-0002 §3 (page table). Build one from an untrusted byte with
+/// [`TrainerStatus::from_raw`], which keeps only the nibble; the field is private so no
+/// other value exists.
+///
+/// ```compile_fail
+/// let _ = crank_devices::TrainerStatus(0xFF);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrainerStatus(u8);
+impl TrainerStatus {
+    /// The status nibble of `raw`: the high four bits are discarded.
+    #[must_use]
+    pub const fn from_raw(raw: u8) -> Self {
+        Self(raw & 0x0F)
+    }
+    /// The nibble, `0..=15`.
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        self.0
+    }
+}
+/// Reported power limitation, independent of trainer following. See ADR-0002 §3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TargetLimit {
+    /// Target power is attainable.
+    AtTarget,
+    /// Speed is too low.
+    SpeedTooLow,
+    /// Speed is too high.
+    SpeedTooHigh,
+    /// No determination available.
+    Undetermined,
+}
+impl From<u8> for TargetLimit {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::AtTarget,
+            1 => Self::SpeedTooLow,
+            2 => Self::SpeedTooHigh,
+            _ => Self::Undetermined,
+        }
+    }
+}
+/// Trainer-reported state; never an acknowledgement of a particular command. See ADR-0002 §3.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrainerObservation {
+    /// Reply arrival time (ADR-0001 §5).
+    pub at: MonoTime,
+    /// Wire source of this report.
+    pub source: ObservationSource,
+    /// One control page on its integer grid, if present.
+    pub control: Option<ObservedControl>,
+    /// Reported command status, if present.
+    pub status: Option<CommandStatus>,
+    /// Page-25 target flags, if present.
+    pub target_limit: Option<TargetLimit>,
+}
+/// Origin of an uncorrelated trainer observation. See ADR-0002 §3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObservationSource {
+    /// Page-71 control echo.
+    Page71Echo,
+    /// Page-25 target flags.
+    Page25Flags,
+}
+/// Page-71 status, retaining every unknown byte. See ADR-0002 §3.
+/// Exhaustive for engine routing R1–R5 (ADR-0002 §4.4.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandStatus {
+    /// Command reported successful.
+    Pass,
+    /// Command reported failed.
+    Fail,
+    /// Command unsupported.
+    NotSupported,
+    /// Command rejected.
+    Rejected,
+    /// Command pending.
+    Pending,
+    /// Unrecognized status.
+    Other(u8),
+}
+impl From<u8> for CommandStatus {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::Pass,
+            1 => Self::Fail,
+            2 => Self::NotSupported,
+            3 => Self::Rejected,
+            4 => Self::Pending,
+            other => Self::Other(other),
+        }
+    }
+}
+/// Object-safe heart-rate connection factory. See ADR-0002 §3.
+pub trait HeartRateDriver: Send + Sync + 'static {
+    /// Connect and subscribe to heart-rate notifications.
+    fn connect(&self, dev: &DeviceRef) -> BoxFuture<'static, Result<HeartRateLink, DeviceError>>;
+}
+/// Heart-rate connection owned by its driver task. See ADR-0002 §3.
+pub struct HeartRateLink {
+    /// Device identity.
+    pub info: DeviceInfo,
+    /// Ordered events.
+    pub events: mpsc::Receiver<HrEvent>,
+}
+/// Close `events` towards its driver and resolve once the driver has dropped its sender.
+///
+/// A heart-rate strap has no control channel: its driver disconnects when it learns that its
+/// consumer is gone, and holds its sender until the peripheral has actually been handed
+/// back. `recv` cannot tell that moment (after a close it ends as soon as the buffer is
+/// drained), so the sender count does. Polling stands in for a driver-side release signal
+/// (#295); events still buffered are dropped.
+pub async fn release_events<T>(events: &mut mpsc::Receiver<T>) {
+    events.close();
+    while events.sender_strong_count() > 0 {
+        while events.try_recv().is_ok() {}
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+/// Heart-rate driver event. See ADR-0002 §3.
+/// Non-exhaustive so reconnect reporting can grow without breaking matches.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum HrEvent {
+    /// Sensor sample.
+    Sample(HrSample),
+    /// Connection state.
+    Link(LinkState),
+    /// A reconnect attempt is starting after a loss (ADR-0002 §6); 1-based.
+    Reconnecting {
+        /// 1-based attempt number within the current loss.
+        attempt: u32,
+    },
+    /// Transport/protocol failure.
+    Fault(DeviceError),
+}
+/// Heart-rate sample from HRS. See ADR-0002 §3.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HrSample {
+    /// Arrival time.
+    pub at: MonoTime,
+    /// Beats per minute, if valid.
+    pub bpm: Option<u8>,
+    /// RR intervals in milliseconds.
+    pub rr_ms: SmallVec<[u16; 4]>,
+    /// Sensor contact, when supported.
+    pub contact: Option<bool>,
+}
+/// Object-safe, post-filtered discovery stream. See ADR-0002 §3.
+pub trait Discovery: Send + Sync + 'static {
+    /// Scan and classify supported peripherals.
+    fn scan(&self) -> BoxStream<'static, DiscoveredDevice>;
+}
+/// Transport-neutral device failures (ADR-0002 §3).
+/// Non-exhaustive to support future FTMS additions (#45).
+#[derive(thiserror::Error, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeviceError {
+    /// No adapter is available.
+    #[error("adapter unavailable")]
+    AdapterUnavailable,
+    /// OS Bluetooth permission denied.
+    #[error("permission denied")]
+    PermissionDenied,
+    /// Peripheral was not found.
+    #[error("device not found")]
+    NotFound,
+    /// Connection could not be established.
+    #[error("connect failed: {0}")]
+    ConnectFailed(String),
+    /// GATT operation failed.
+    #[error("GATT: {0}")]
+    Gatt(String),
+    /// Invalid framing, page or control input; no codec dependency.
+    #[error("protocol {kind}: {detail}")]
+    Protocol {
+        /// Stable, transport-neutral category.
+        kind: ProtocolErrorKind,
+        /// Diagnostic detail.
+        detail: String,
+    },
+    /// Raw capture failed; this does not mean the peripheral disconnected (#43).
+    #[error("capture: {0}")]
+    Capture(String),
+    /// Connection closed.
+    #[error("disconnected")]
+    Disconnected,
+    /// The driver already has a live link: a second `connect` is refused until the first
+    /// is released.
+    #[error("driver already connected")]
+    AlreadyConnected,
+}
+/// Categories shared by real, simulator and replay drivers. See ADR-0002 §3.
+/// Non-exhaustive to support future FTMS additions (#45).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProtocolErrorKind {
+    /// Malformed transport frame.
+    Framing,
+    /// Invalid checksum.
+    Checksum,
+    /// Unsupported/unexpected page.
+    UnexpectedPage,
+    /// Control input cannot be encoded.
+    Encode,
+}
+impl std::fmt::Display for ProtocolErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Framing => "framing",
+            Self::Checksum => "checksum",
+            Self::UnexpectedPage => "unexpected page",
+            Self::Encode => "encode",
+        })
+    }
+}

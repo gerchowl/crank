@@ -12,8 +12,10 @@
     "windows": [
       {
         "title": "crank",
-        "width": 1000,
-        "height": 700
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 768
       }
     ],
     "security": {

@@ -1,0 +1,74 @@
+name: Advisories
+
+# Live supply-chain checks that cannot run in the Nix sandbox (ADR-0001 §9.5, #181).
+# The flake `deny` check gates RustSec advisories offline against the pinned
+# advisory-db input; this workflow catches what the pin cannot see: advisories
+# published since the last lock bump, yanked crates (crates.io index), and
+# `pnpm audit`. It is not part of `CI Summary`: an upstream advisory must not
+# block unrelated PRs. A red run means: bump advisory-db or fix the dependency.
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths: [Cargo.lock, crates/crank-fec/fuzz/Cargo.lock, pnpm-lock.yaml, deny.toml, deny-fuzz.toml, .github/workflows/advisories.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - run: nix develop -c cargo deny check advisories
+
+  # The fuzz crate is its own workspace (dev-only) with its own lockfile (#185) and its own policy
+  # file without the root ignores (#199). A separate job, so a root failure cannot hide a fuzz-only advisory.
+  cargo-deny-fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - run: nix develop -c cargo deny --manifest-path crates/crank-fec/fuzz/Cargo.toml --config deny-fuzz.toml check advisories
+
+  pnpm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - run: nix develop -c pnpm audit --prod
+
+  # A red scheduled run must not go unnoticed (#185). Only the schedule reports: PR and manual runs
+  # are already visible to whoever triggered them. One open issue is reused so the weekly cron cannot spam.
+  report-failure:
+    if: failure() && github.event_name == 'schedule'
+    needs: [cargo-deny, cargo-deny-fuzz, pnpm-audit]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Scheduled advisories run failed"
+          body="The scheduled Advisories run failed: ${RUN_URL}. Bump advisory-db or fix the dependency (ADR-0001 §9.5)."
+          gh label create security --description "Security and supply-chain findings" --color B60205 --force
+          number=$(gh issue list --label security --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --label security --body "$body"
+          fi

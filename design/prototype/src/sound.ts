@@ -33,6 +33,8 @@ export const play = {
   undone: () => tones("applied", [[392, 0, 0.25]]),
   warning: () => tones("warning", [[330, 0, 0.22], [262, 0.24, 0.3]]),
   reconnected: () => tones("reconnected", [[880, 0, 0.2]]),
+  /** §7.3: the planner answered a wish — granted (three rising notes) or changed (two short + one low) */
+  wish: (granted: boolean) => tones("wish", granted ? [[523, 0, 0.1], [659, 0.1, 0.1], [784, 0.2, 0.22]] : [[659, 0, 0.1], [659, 0.14, 0.1], [440, 0.28, 0.28]]),
 };
 
 /** Fire the §7.3 table from ride state changes. */
