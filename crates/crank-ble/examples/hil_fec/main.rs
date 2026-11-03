@@ -16,6 +16,7 @@ mod cps;
 mod desktop_capture;
 mod frames;
 mod partb;
+mod reuse;
 mod rider;
 mod session;
 #[cfg(test)]
