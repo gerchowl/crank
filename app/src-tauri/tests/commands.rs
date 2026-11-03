@@ -31,6 +31,7 @@ fn app(dir: &std::path::Path) -> tauri::App<MockRuntime> {
         .build(mock_context(noop_assets()))
         .expect("mock app");
     app.manage(core);
+    app.manage(crank_desktop::logging::Logging::default());
     for label in ["main", "other"] {
         // Linux defaults the webview data dir under $HOME, which a build sandbox does not own.
         WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
@@ -148,7 +149,7 @@ async fn a_whole_ride_through_the_commands_streams_frames_and_lands_in_history()
     cmd::stream_unsubscribe(core.clone(), window.clone(), stream, sub)
         .await
         .unwrap();
-    let ended = cmd::ride_end(core.clone()).await.unwrap();
+    let ended = cmd::ride_end(core.clone(), app.state()).await.unwrap();
     assert!(!ended.forced);
     let id = ended.ride_id.expect("a ride");
 
@@ -182,5 +183,5 @@ async fn a_destroyed_window_loses_its_streams() {
         .await
         .unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound);
-    cmd::ride_end(core.clone()).await.unwrap();
+    cmd::ride_end(core.clone(), app.state()).await.unwrap();
 }
