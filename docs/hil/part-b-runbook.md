@@ -153,8 +153,8 @@ hil_fec check11b --out "$OUT"
    trainer unplugged?).
 3. At the cue *the link dropped: pedal again*, pedal easily. The trainer wakes, and the harness reconnects
    within 60 s.
-4. It releases the trainer first, then asks *had the trainer's lights gone out?*: type **`out`**, **`on`**
-   or **`unsure`** and Enter.
+4. It releases the trainer first and checks it is the same trainer (if not, it stops). Then it asks *had
+   the trainer's lights gone out?*: type **`out`**, **`on`** or **`unsure`** and Enter.
 5. It asks again before it applies anything: type **`y`** and Enter, then ride at about 90 rpm through the
    100 W soft start and 20 s. The run releases the trainer and prints the row.
 6. Plug the trainer back in afterwards.
