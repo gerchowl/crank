@@ -670,3 +670,44 @@ fn a_ride_end_flush_that_finishes_in_time_is_waited_for_then_vigil_shut_down() {
         "{budgets:?}"
     );
 }
+
+/// The backstop's clock starts at `Exit`, before the ride end: a ride end that takes real time
+/// (the engine waits for the trainer to deliver the end mode, one to two 250 ms writer ticks at
+/// speed 1) uses up part of the 3 s, and vigil gets only the rest (ADR-0001 §7.1, #466 review).
+#[test]
+fn the_exit_backstop_starts_the_quit_clock_before_a_slow_ride_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let pipeline = Stalling::default();
+    let budgets = pipeline.budgets.clone();
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    app.manage(Logging::new(pipeline));
+    let core = tauri::async_runtime::block_on(async {
+        let core = Core::open(config(dir.path())).expect("core opens");
+        core.device_pair("trainer".into(), DeviceRole::Trainer)
+            .await
+            .expect("pair");
+        core.ride_load(None).await.expect("load");
+        core.ride_start().await.expect("start");
+        // Real time: the core's clock runs at speed 1 here.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        core
+    });
+    app.manage(core);
+    let started = std::time::Instant::now();
+    lifecycle::on_run_event(app.handle(), &RunEvent::Exit, &Arc::new(Quit::default()));
+    let took = started.elapsed();
+    let budgets = budgets.lock().unwrap();
+    assert_eq!(budgets.len(), 1, "{budgets:?}");
+    assert!(
+        took >= Duration::from_millis(100),
+        "the ride end takes measurable time: {took:?}"
+    );
+    // Had the clock started after the ride end, vigil would have had the whole cap.
+    assert!(
+        budgets[0] + took <= lifecycle::QUIT_CAP + Duration::from_millis(50),
+        "the ride end counts against the cap: {:?} after {took:?}",
+        budgets[0]
+    );
+}
