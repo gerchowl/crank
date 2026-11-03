@@ -373,8 +373,10 @@ procedure, or the row is `unknown: <the breach>`:
   guaranteed), `04`, `05` in that order; `06` or `07` may end it after any of them; `05`, `06` and `07`
   exclude each other and end the sequence; never back in time;
 - the drop within 90 s of the stop cue (plus 0.2 s for the 100 ms poll); `05` within 60 s of the drop; `06`
-  not before 60 s;
-- the `y` only after `05`, and no control but the release between `05` and the `y`;
+  at the 60 s bound: not before it, and at most 1 s after it (the procedure's timer fires at the bound);
+- no control but the release (page 48 at 0 %) from the stop cue to the `y`, or to the end of the capture
+  without one: `unknown: <write> at <t> s after the stop cue, before the confirmed resume`;
+- the `y` only after `05` and after the release that follows `05`;
 - after `05`, one page-81 serial on each side of the drop, the same (a redacted capture compares its
   redacted serials, which are alike; the live run compared the real ones).
 
