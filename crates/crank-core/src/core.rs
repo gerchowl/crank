@@ -3689,14 +3689,22 @@ mod tests {
                 Engine::new(core.0.clock.clone(), None, None, Arc::new(|_: bool| {}));
             let mut st = core.0.state.lock().await;
             let session = st.session.as_mut().unwrap();
-            session.task.abort();
+            let mut loaded = std::mem::replace(
+                &mut session.task,
+                EngineTask::Tokio(tokio::spawn(async move {
+                    let _engine = engine;
+                    // after one yield, as an engine reaching a blocking store write
+                    tokio::task::yield_now().await;
+                    std::thread::sleep(Duration::from_secs(4));
+                })),
+            );
+            // #496: the loaded engine is gone before its handle is dropped. An abort does not
+            // stop a poll already under way on another worker; dropped first, the handle let
+            // that poll end the ride itself and its reaper unload it, so End found no ride
+            // (`an_engine_whose_handles_are_all_dropped_unloads_its_ride`).
+            loaded.abort();
+            assert!(loaded.join(Duration::from_secs(5)).await, "aborted");
             session.handle = handle;
-            session.task = EngineTask::Tokio(tokio::spawn(async move {
-                let _engine = engine;
-                // after one yield, as an engine reaching a blocking store write
-                tokio::task::yield_now().await;
-                std::thread::sleep(Duration::from_secs(4));
-            }));
         }
         let t = std::time::Instant::now();
         let (a, b) = tokio::time::timeout(
@@ -3711,6 +3719,45 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
         // the state lock is free, and the next ride loads
         core.ride_load(None).await.unwrap();
+    }
+    /// #496: an engine that sees every handle to it dropped ends its ride itself
+    /// (`Engine::run`): an unstarted ride is unloaded and the ride-active signal dropped, so the
+    /// ride's reaper takes the session and an End finds no ride. A test that swaps a ride's
+    /// engine must therefore end the old engine before it drops the old handle: the reaper
+    /// keys on the ride id, which the swapped session keeps. Here the old engine sees its
+    /// handle dropped first, as it did when it was mid-poll on another worker at the abort.
+    #[tokio::test(start_paused = true)]
+    async fn an_engine_whose_handles_are_all_dropped_unloads_its_ride() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.ride_load(None).await.unwrap();
+        let ride_id = loaded_id(&core).await;
+        let (_unrun, handle) =
+            Engine::new(core.0.clock.clone(), None, None, Arc::new(|_: bool| {}));
+        {
+            let mut st = core.0.state.lock().await;
+            st.session.as_mut().unwrap().handle = handle;
+            // Under the lock, as the swap held it: the old engine ends the ride and the
+            // reaper, woken by the signal, queues on the lock (paused time advances only once
+            // every other task waits).
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            assert!(
+                !*core.0.active.borrow(),
+                "the old engine dropped the signal"
+            );
+            assert_eq!(st.session.as_ref().map(|s| s.ride_id.clone()), ride_id);
+        }
+        // The reaper is ahead of the End in the lock's queue and takes the session first.
+        let end = core.ride_end_outcome().await.unwrap_err();
+        assert_eq!(loaded_id(&core).await, None);
+        assert_eq!(
+            (end.code, end.message.as_str()),
+            (ErrorCode::Conflict, "no ride loaded")
+        );
     }
     /// Wait (real time) until `done`, for at most `limit`.
     async fn until(limit: Duration, done: impl Fn() -> bool) {
