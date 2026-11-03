@@ -17,6 +17,14 @@
 //!
 //! Both paths end in [`RunEvent::Exit`], which then shuts vigil down ([`Logging::shut_down`])
 //! with what [`QUIT_CAP`] left: the ride end may use [`SHUTDOWN_CAP`] of it (ADR-0001 §7.1).
+//!
+//! The quit's clock ([`Quit::start`]) starts at the first exit request, or on the backstop path at
+//! `Exit`, the first event Tauri delivers for a `terminate:`. That understates the quit by
+//! what macOS spends before `applicationWillTerminate:`: tao answers no
+//! `applicationShouldTerminate:` and crank is not document-based, so `terminate:` runs none of
+//! crank's code first. The gap is `AppKit`'s own work plus the wait for the main thread to take
+//! the quit event, which is short because crank's main-thread handlers never block (only
+//! [`on_exit`] does, and it is the handler for this event).
 use crate::logging::{Logging, remaining};
 use crank_core::{Core, Shutdown};
 use std::{
@@ -309,7 +317,7 @@ impl Quit {
             Ordering::SeqCst,
         ) {
             Ok(_) => {
-                self.1.get_or_init(Instant::now);
+                self.start();
                 Decision::Begin
             }
             Err(Self::SHUTTING_DOWN) => Decision::Wait,
@@ -322,6 +330,11 @@ impl Quit {
         self.0.load(Ordering::SeqCst) != Self::DONE
     }
 
+    /// Start the quit's clock, unless it runs already.
+    pub fn start(&self) {
+        self.1.get_or_init(Instant::now);
+    }
+
     /// What [`QUIT_CAP`] has left since the quit started (all of it if none has).
     pub fn remaining(&self) -> Duration {
         remaining(
@@ -332,7 +345,7 @@ impl Quit {
 
     /// End the ride (the engine's end mode), then allow the exit.
     pub async fn shut_down(&self, core: &Core) -> Shutdown {
-        self.1.get_or_init(Instant::now);
+        self.start();
         let outcome = core.shutdown(SHUTDOWN_CAP).await;
         match &outcome {
             Shutdown::Idle | Shutdown::Ended => {}
@@ -413,6 +426,8 @@ pub fn on_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent, quit: &Arc
             }
         }
         RunEvent::Exit => {
+            // The earliest this path can start the clock (module docs).
+            quit.start();
             if let Some(core) = core {
                 on_exit(quit, core.inner());
             }

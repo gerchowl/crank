@@ -52,7 +52,7 @@ only adds to it (its `crank_ble…` directives are dropped with a WARN record); 
 Each trainer connection (reconnects included) writes `<dir>/trainer-<unix secs>-<n>.fecap`, separate from the logs, the `.fecap` format that `hil_fec analyse`
 and `redact` read (`hil_fec analyse --target <dir>/trainer-….fecap --out <dir>`); reconnect timings are the `reconnecting trainer` and
 `trainer reconnect failed` records of `<dir>/logs.jsonl` (`body.stringValue`, with `timeUnixNano`). If that directory cannot be written the app says so and exits instead of riding uncaptured.
-Ending a ride flushes the log; quitting gives vigil what the 3 s quit cap left after the ride end, and records queued past it are lost (at most the last ~1 s batch).
+Ending a ride flushes the log on a blocking thread, without waiting for it; quitting gives vigil what the 3 s quit cap left after the ride end (waiting for an in-flight flush only within that), and records queued past it are lost (at most the last ~1 s batch).
 Everything stays on the machine. A capture holds raw device frames: page 81 carries the trainer serial, and `redact` masks only that;
 the log can carry device names in error text and its resource carries `host.name`. Redact before committing, and do not share either file unreviewed. Streams belong to the calling window's label and are dropped when it is destroyed
 or its page (re)loads (a reload keeps the webview, so the old channel would not fail). **Quitting ends a ride**: an exit request (last window closed, `app.exit`, Cmd+Q, whose menu item replaces the default one, on macOS only and only after it is verified as the built-in Quit, so it calls

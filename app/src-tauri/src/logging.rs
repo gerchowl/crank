@@ -15,8 +15,8 @@
 //! The `ride`, `device` and `coach` spans of §7.1 follow in #465.
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tracing_subscriber::EnvFilter;
 use vigil::{Config, Guard, Signal, rotate::SignalRotation};
@@ -264,35 +264,96 @@ impl LogPlan {
     }
 }
 
-/// The pipeline's [`Guard`] as Tauri state, always managed (empty when logging did not start).
-/// The quit takes it to shut vigil down explicitly, so the guard's Drop (which would wait 5 s) never runs.
+/// What [`Logging`] needs of the pipeline: vigil's [`Guard`], as a trait so a test can stall a flush.
+pub trait Pipeline: Send + Sync + 'static {
+    /// Write queued records now; may block (vigil waits up to 5 s).
+    fn flush(&self);
+    /// Shut down, waiting at most `budget`.
+    fn shut_down(self: Box<Self>, budget: Duration);
+}
+
+impl Pipeline for Guard {
+    fn flush(&self) {
+        flush(self);
+    }
+    fn shut_down(self: Box<Self>, budget: Duration) {
+        // Nothing can log the outcome any more: vigil reports a loss on stderr itself.
+        let _ = self.shutdown_with_timeout(budget);
+    }
+}
+
+type Shared = Arc<Box<dyn Pipeline>>;
+
+/// How often [`Logging::shut_down`] looks whether an in-flight flush has finished.
+const POLL: Duration = Duration::from_millis(5);
+
+/// The pipeline as Tauri state, always managed (empty when logging did not start). The quit
+/// takes it to shut vigil down explicitly, so the guard's Drop (which would wait 5 s) never runs.
+///
+/// The lock is held only to clone or take the handle, never across a flush: a flush runs on its
+/// own clone, so the quit never waits behind the lock (#414 review).
 #[derive(Default)]
-pub struct Logging(Mutex<Option<Guard>>);
+pub struct Logging(Mutex<Option<Shared>>);
 
 impl Logging {
-    /// Hold `guard` until the quit.
+    /// Hold `pipeline` until the quit.
     #[must_use]
-    pub fn new(guard: Guard) -> Self {
-        Self(Mutex::new(Some(guard)))
+    pub fn new(pipeline: impl Pipeline) -> Self {
+        Self(Mutex::new(Some(Arc::new(Box::new(pipeline)))))
     }
-    fn guard(&self) -> std::sync::MutexGuard<'_, Option<Guard>> {
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Shared>> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-    /// [`flush`], unless the pipeline is shut down already.
+    fn handle(&self) -> Option<Shared> {
+        self.slot().clone()
+    }
+    /// [`flush`] on this thread, unless the pipeline is shut down already.
     pub fn flush(&self) {
-        if let Some(guard) = self.guard().as_ref() {
-            flush(guard);
+        if let Some(pipeline) = self.handle() {
+            pipeline.flush();
         }
     }
-    /// Shut vigil down, waiting at most `budget`; later calls do nothing. Records still
-    /// queued when `budget` runs out are lost (vigil says how many on stderr): at most what
-    /// was logged since the last export (~1 s batches) or [`flush`], typically the quit's own lines.
+    /// [`flush`] on a blocking thread, so a stalled disk holds up neither the caller nor a
+    /// runtime worker; `None` when the pipeline is shut down already. A quit that arrives
+    /// meanwhile waits for it only within its own budget ([`Self::shut_down`]).
+    pub fn flush_in_background(&self) -> Option<tauri::async_runtime::JoinHandle<()>> {
+        let pipeline = self.handle()?;
+        Some(tauri::async_runtime::spawn_blocking(move || {
+            pipeline.flush();
+        }))
+    }
+    /// Shut vigil down within `budget`; later calls do nothing. Records still queued when
+    /// `budget` runs out are lost (vigil says how many on stderr): at most what was logged
+    /// since the last export (~1 s batches) or [`flush`], typically the quit's own lines.
+    ///
+    /// A flush in flight (a ride just ended) holds the pipeline: the shutdown waits for it
+    /// until `budget` runs out, then shuts down with what is left. If the flush outlasts the
+    /// budget, vigil is not shut down at all: the flush keeps its thread and the process exits
+    /// under it, losing what that flush had not written yet, and the guard's Drop never runs.
     pub fn shut_down(&self, budget: Duration) {
-        if let Some(guard) = self.guard().take() {
-            // Nothing can log the outcome any more: vigil reports a loss on stderr itself.
-            let _ = guard.shutdown_with_timeout(budget);
+        let deadline = Instant::now() + budget;
+        let Some(mut pipeline) = self.slot().take() else {
+            return;
+        };
+        loop {
+            match Arc::try_unwrap(pipeline) {
+                Ok(owned) => {
+                    return owned.shut_down(deadline.saturating_duration_since(Instant::now()));
+                }
+                Err(shared) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        // The last handle is the flush's: forgetting this one keeps its Drop
+                        // (a 5 s shutdown) from running when that flush returns.
+                        std::mem::forget(shared);
+                        return;
+                    }
+                    pipeline = shared;
+                    std::thread::sleep(left.min(POLL));
+                }
+            }
         }
     }
 }

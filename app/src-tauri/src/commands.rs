@@ -160,8 +160,9 @@ pub async fn ride_end(
     logging: State<'_, Logging>,
 ) -> Result<RideEnded, ApiError> {
     let ended = core.ride_end_outcome().await.map(Into::into);
-    // The ride's records reach the disk now, not only at quit (ADR-0001 §7.1).
-    logging.flush();
+    // The ride's records reach the disk now, not only at quit (ADR-0001 §7.1). Not awaited:
+    // a stalled disk must not hold up the ride's end (vigil waits up to 5 s).
+    drop(logging.flush_in_background());
     ended
 }
 
