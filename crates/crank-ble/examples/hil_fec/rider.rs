@@ -373,7 +373,7 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
             }
         }
         if self.w.now_us().saturating_sub(self.last_sample_us) > SILENCE_US {
-            return Err(Stop::Aborted("no page 25 for 2 s (ADR-0002 §6)".into()));
+            return Err(Stop::Aborted(SILENT.into()));
         }
         let Guard::Descent { from_us } = self.guard else {
             return Ok(false);
@@ -507,6 +507,33 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
             }
         }
     }
+
+    /// Ask `q` inside check 10's window, running the guards and the scan meanwhile, and record the
+    /// answer; it must come by `until`.
+    async fn answer(
+        &mut self,
+        scan: &mut Option<BoxStream<'static, bool>>,
+        until: Instant,
+        q: &crate::check10::Question,
+    ) -> Result<&'static str, Stop> {
+        let op = self.op;
+        let text = q.text;
+        let answer = self
+            .during(scan, until, op.ask(text, q.options))
+            .await
+            .map_err(phone_window)?
+            .ok_or_else(|| {
+                Stop::Aborted(format!(
+                    "no answer to {text:?} within {} s",
+                    crate::check10::ANSWER_WAIT.as_secs()
+                ))
+            })?
+            .ok_or_else(|| {
+                Stop::Aborted(format!("the input closed before an answer to {text:?}"))
+            })?;
+        self.note(&crate::check10::answer_tag(q.key), answer.as_bytes())?;
+        Ok(answer)
+    }
 }
 
 /// #44 check 5: a ride at two ERG targets, 150 W then 200 W at 90 rpm, 30 s each, while the
@@ -624,46 +651,42 @@ async fn check12<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop
     Ok(())
 }
 
-/// #44 check 10: hold the link at the release state, with no rider, while the operator tries to
-/// connect the phone (a second central) and answers [`crate::check10::QUESTIONS`]; a scan beside
-/// the connection records whether the trainer still advertises. The window lasts at least
-/// [`crate::check10::MIN_WINDOW`]; the answers must be in within [`crate::check10::ANSWER_WAIT`].
-async fn check10<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
-    use crate::check10::{
-        ANSWER_WAIT, CLOSE, MIN_WINDOW, OPEN, QUESTIONS, SCAN, WINDOW, answer_tag,
-    };
-    let lost = |e: Stop| match e {
+/// The guard's abort when page 25 stops (ADR-0002 §6).
+const SILENT: &str = "no page 25 for 2 s (ADR-0002 §6)";
+
+/// A guard stop during check 10's phone window, naming the likely cause: the second central.
+fn phone_window(e: Stop) -> Stop {
+    match e {
         Stop::Failed(why) if why == "link dropped" => Stop::Failed(
             "link dropped while the phone was trying to connect (second central)".into(),
         ),
+        Stop::Aborted(why) if why == SILENT => Stop::Aborted(
+            "no page 25 for 2 s while the phone was trying to connect: the second central may have taken the trainer (ADR-0002 §5, §6)".into(),
+        ),
         e => e,
-    };
+    }
+}
+
+/// #44 check 10: hold the link at the release state, with no rider, while the operator tries to
+/// connect the phone (a second central) and answers [`crate::check10::LISTED`], then its
+/// [`crate::check10::follow_up`]; a scan beside the connection records whether the trainer still
+/// advertises. The window lasts at least [`crate::check10::MIN_WINDOW`]; the answers must be in
+/// within [`crate::check10::ANSWER_WAIT`].
+async fn check10<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
+    use crate::check10::{ANSWER_WAIT, CLOSE, LISTED, MIN_WINDOW, OPEN, SCAN, WINDOW, follow_up};
     r.guard = Guard::Sim;
     let start = Instant::now();
     r.note(WINDOW, &[OPEN])?;
     let mut scan = Some(r.w.adverts());
     r.note(SCAN, &[OPEN])?;
     r.cue(Cue::Phone);
-    let op = r.op;
-    for (key, question, options) in QUESTIONS {
-        let answer = r
-            .during(&mut scan, start + ANSWER_WAIT, op.ask(question, options))
-            .await
-            .map_err(lost)?
-            .ok_or_else(|| {
-                Stop::Aborted(format!(
-                    "no answer to {question:?} within {} s",
-                    ANSWER_WAIT.as_secs()
-                ))
-            })?
-            .ok_or_else(|| {
-                Stop::Aborted(format!("the input closed before an answer to {question:?}"))
-            })?;
-        r.note(&answer_tag(key), answer.as_bytes())?;
+    let listed = r.answer(&mut scan, start + ANSWER_WAIT, &LISTED).await?;
+    if let Some(q) = follow_up(listed) {
+        r.answer(&mut scan, start + ANSWER_WAIT, q).await?;
     }
     r.during(&mut scan, start + MIN_WINDOW, std::future::pending::<()>())
         .await
-        .map_err(lost)?;
+        .map_err(phone_window)?;
     if scan.take().is_some() {
         r.note(SCAN, &[CLOSE])?;
     }
@@ -2104,29 +2127,84 @@ mod tests {
         );
     }
 
+    /// Every answer combination, live and offline: the connect question follows only `seen`, and
+    /// only `seen` with a connect outcome gives `accepted` or `refused`.
+    #[tokio::test(start_paused = true)]
+    async fn check10_asks_the_connect_only_after_seen_and_follows_the_answer_table() {
+        let connects = ["connected", "failed", "stuck", "not-tried"];
+        for listed in ["seen", "not-seen", "unsure"] {
+            for connect in connects {
+                let answers: &'static [&'static str] =
+                    Box::leak(vec![listed, connect].into_boxed_slice());
+                let plan = Plan {
+                    answers,
+                    ..Plan::default()
+                };
+                let (sim, report) = run(Procedure::Check10, plan, None).await;
+                assert_eq!(report.procedure, Ok(()), "{listed} {connect}");
+                let asked: Vec<String> = check10_events(&sim)
+                    .into_iter()
+                    .filter_map(|(t, b)| {
+                        t.starts_with("answer-")
+                            .then(|| format!("{t}={}", String::from_utf8_lossy(&b)))
+                    })
+                    .collect();
+                let v = reanalysed(&sim, &report, Procedure::Check10, "check10");
+                let second = v["second_central"].as_str().expect("second central");
+                if listed == "seen" {
+                    assert_eq!(
+                        asked,
+                        [
+                            "answer-listed=seen".to_string(),
+                            format!("answer-connect={connect}")
+                        ]
+                    );
+                    let want = match connect {
+                        "connected" => "accepted: the phone connected while hil_fec held the link",
+                        "failed" => "refused: the phone's connect failed",
+                        "stuck" => "refused: the phone's connect never completed",
+                        _ => "unknown: the phone listed the NEO but did not try to connect",
+                    };
+                    assert_eq!(second, want);
+                } else {
+                    assert_eq!(
+                        asked,
+                        [format!("answer-listed={listed}")],
+                        "no connect question"
+                    );
+                    assert!(
+                        second.starts_with("unknown: the phone did not find the NEO")
+                            || second.starts_with("unknown: the operator was unsure"),
+                        "{listed}: {second}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Advertising, live and offline: "not seen" needs the phone's answer and a working scan over
+    /// the whole window; otherwise it is "unknown" and says what is missing.
     #[tokio::test(start_paused = true)]
     async fn check10_says_what_was_observed_and_unknown_when_nothing_was() {
         let quiet = Plan {
             advertisers: crate::sim::Advertisers::Others,
             ..Plan::default()
         };
-        for (plan, advertising, second) in [
+        for (plan, advertising) in [
             (
                 Plan {
-                    answers: &["unsure", "failed"],
+                    answers: &["unsure"],
                     ..quiet
                 },
                 "unknown: the phone's answer is \"unsure\", and the scan saw no advertisement of the trainer (the scan ran over the whole window, 59 of other peripherals;",
-                "refused: the phone's connect failed",
             ),
             (
                 Plan {
-                    answers: &["unsure", "not-tried"],
+                    answers: &["unsure"],
                     scan_ends_at_us: Some(30 * SEC),
                     ..quiet
                 },
                 "unknown: the phone's answer is \"unsure\", and the scan saw no advertisement of the trainer (the scan ended by itself at 30 s",
-                "unknown: the phone did not try",
             ),
             (
                 Plan {
@@ -2134,23 +2212,36 @@ mod tests {
                     ..quiet
                 },
                 "continues: the phone listed it; the scan saw none (the scan ran over the whole window)",
-                "accepted: the phone connected while hil_fec held the link",
             ),
             (
                 Plan {
-                    answers: &["not-seen", "stuck"],
+                    answers: &["not-seen"],
                     ..quiet
                 },
-                "not seen: the phone did not list it and the scan saw none (the scan ran over the whole window)",
-                "refused: the phone's connect never completed",
+                "not seen: the phone did not list it, and the scan, which ran over the whole window and saw 59 advertisements of other peripherals, saw none of the trainer",
             ),
             (
                 Plan {
-                    answers: &["not-seen", "stuck"],
+                    answers: &["not-seen"],
+                    scan_ends_at_us: Some(30 * SEC),
+                    ..quiet
+                },
+                "unknown: the phone did not list it, but the scan ended by itself at 30 s",
+            ),
+            (
+                Plan {
+                    answers: &["not-seen"],
+                    advertisers: crate::sim::Advertisers::Nobody,
+                    ..quiet
+                },
+                "unknown: the phone did not list it, but the scan ran over the whole window and saw 0 advertisements of other peripherals",
+            ),
+            (
+                Plan {
+                    answers: &["not-seen"],
                     ..Plan::default()
                 },
                 "continues: the scan saw 6",
-                "refused: the phone's connect never completed",
             ),
         ] {
             let (sim, report) = run(Procedure::Check10, plan, None).await;
@@ -2162,7 +2253,6 @@ mod tests {
                     .is_some_and(|a| a.starts_with(advertising)),
                 "{advertising}: {v}"
             );
-            assert_eq!(v["second_central"], json!(second), "{v}");
         }
     }
 
@@ -2195,9 +2285,11 @@ mod tests {
         };
         let (sim, report) = bounded(Procedure::Check10, plan).await;
         let report = report.expect("drive returns");
-        assert!(
-            matches!(&report.procedure, Err(Stop::Aborted(w)) if w.contains("no page 25")),
-            "{report:?}"
+        assert_eq!(
+            report.procedure,
+            Err(Stop::Aborted(
+                "no page 25 for 2 s while the phone was trying to connect: the second central may have taken the trainer (ADR-0002 §5, §6)".into()
+            ))
         );
         let w = writes(&sim);
         assert!(
@@ -2213,6 +2305,7 @@ mod tests {
         for line in ["y", "SEEN maybe", " Not-Seen "] {
             tx.send(line.to_string()).await.expect("send");
         }
+        drop(tx); // a console that skipped the accepted answer would see closed input, not hang
         assert_eq!(
             Console::from_lines(rx).ask("q?", OPTIONS).await,
             Some("not-seen")

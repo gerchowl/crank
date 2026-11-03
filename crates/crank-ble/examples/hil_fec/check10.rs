@@ -33,19 +33,34 @@ pub const ANSWER_WAIT: Duration = Duration::from_mins(3);
 /// Page 25 silent this long inside the window means the link was not held (ADR-0002 §6).
 const LINK_GAP_MAX_US: u64 = 2 * SEC;
 
-/// The typed questions: capture key (tag `answer-<key>`), text, accepted answers.
-pub const QUESTIONS: [(&str, &str, &[&str]); 2] = [
-    (
-        "listed",
-        "Does the phone list the NEO while hil_fec is connected?",
-        &["seen", "not-seen", "unsure"],
-    ),
-    (
-        "connect",
-        "Try to connect the phone to the NEO and give it 30 s. What did the connect do?",
-        &["connected", "failed", "stuck", "not-tried"],
-    ),
-];
+/// One typed question: capture key (tag `answer-<key>`), text, accepted answers.
+pub struct Question {
+    /// The capture key.
+    pub key: &'static str,
+    /// What the operator is asked.
+    pub text: &'static str,
+    /// The answers it accepts.
+    pub options: &'static [&'static str],
+}
+
+/// The first question, always asked.
+pub const LISTED: Question = Question {
+    key: "listed",
+    text: "Does the phone list the NEO while hil_fec is connected?",
+    options: &["seen", "not-seen", "unsure"],
+};
+
+/// The follow-up, asked only when the phone listed the NEO ([`follow_up`]).
+pub const CONNECT: Question = Question {
+    key: "connect",
+    text: "Try to connect the phone to the NEO and give it 30 s. What did the connect do?",
+    options: &["connected", "failed", "stuck", "not-tried"],
+};
+
+/// The question after `listed`: a phone that did not list the NEO had nothing to connect to.
+pub fn follow_up(listed: &str) -> Option<&'static Question> {
+    (listed == "seen").then_some(&CONNECT)
+}
 
 /// The capture tag of a question's answer.
 pub fn answer_tag(key: &str) -> String {
@@ -61,29 +76,111 @@ fn event(notes: &[Note], tag: &str, code: u8) -> Option<u64> {
         .map(|n| n.at_us)
 }
 
-/// The operator's answer to question `key`: `Ok` when it is one of the accepted answers.
-fn answer(notes: &[Note], key: &str) -> Result<String, String> {
-    let tag = answer_tag(key);
-    let text = notes
+/// The recorded answer to `q`, whatever it is.
+fn recorded(notes: &[Note], q: &Question) -> Option<String> {
+    let tag = answer_tag(q.key);
+    notes
         .iter()
         .rev()
         .find(|n| n.tag == tag)
         .map(|n| String::from_utf8_lossy(&n.bytes).into_owned())
-        .ok_or_else(|| "no answer".to_string())?;
-    let accepted = QUESTIONS
-        .iter()
-        .find(|q| q.0 == key)
-        .map_or(&[][..], |q| q.2);
-    if accepted.contains(&text.as_str()) {
+}
+
+/// The operator's answer to `q`: `Ok` when it is one of the accepted answers.
+fn answer(notes: &[Note], q: &Question) -> Result<String, String> {
+    let text = recorded(notes, q).ok_or_else(|| "no answer".to_string())?;
+    if q.options.contains(&text.as_str()) {
         Ok(text)
     } else {
         Err(format!("unrecognised answer {text:?}"))
     }
 }
 
+/// The second-central result: only a phone that listed the NEO can have been accepted or refused.
+fn second_central(notes: &[Note]) -> String {
+    let connect = recorded(notes, &CONNECT);
+    match (answer(notes, &LISTED).as_deref(), connect) {
+        (Ok("seen"), _) => match answer(notes, &CONNECT).as_deref() {
+            Ok("connected") => "accepted: the phone connected while hil_fec held the link".into(),
+            Ok("failed") => "refused: the phone's connect failed".into(),
+            Ok("stuck") => "refused: the phone's connect never completed".into(),
+            Ok(_) => "unknown: the phone listed the NEO but did not try to connect".into(),
+            Err(why) => format!("unknown: {why} to whether the phone connected"),
+        },
+        (Ok(listed), Some(c)) => format!(
+            "unknown: contradictory answers: the phone's listing was {listed:?}, yet a connect answer {c:?} is recorded"
+        ),
+        (Ok("not-seen"), None) => {
+            "unknown: the phone did not find the NEO, so it could not try to connect".into()
+        }
+        (Ok(_), None) => {
+            "unknown: the operator was unsure the phone listed the NEO, so no connect was tried"
+                .into()
+        }
+        (Err(why), _) => format!("unknown: {why} to whether the phone listed the NEO"),
+    }
+}
+
+/// How the parallel scan ran.
+enum Scan {
+    NotStarted,
+    Ended(u64),
+    Whole,
+}
+
+impl Scan {
+    fn text(&self) -> String {
+        match self {
+            Self::NotStarted => "was not started".into(),
+            Self::Ended(at) => format!(
+                "ended by itself at {} s (it failed to start or the adapter stopped it)",
+                round1(secs(*at))
+            ),
+            Self::Whole => "ran over the whole window".into(),
+        }
+    }
+}
+
+/// The advertising result. "Not seen" needs both observations: the phone's, and a scan that ran
+/// over the whole window and saw other peripherals (so it was working) but not the trainer.
+fn advertising(
+    trainer: &[u64],
+    others: usize,
+    scan: &Scan,
+    listed: &Result<String, String>,
+    window: (u64, u64),
+) -> String {
+    let phone = listed.as_ref().map_or_else(Clone::clone, Clone::clone);
+    let scan_text = scan.text();
+    if !trainer.is_empty() {
+        return format!(
+            "continues: the scan saw {} advertisements of the trainer, longest gap {} s; the phone: {phone}",
+            trainer.len(),
+            round1(secs(max_gap(trainer.to_vec(), window.0, window.1)))
+        );
+    }
+    match (listed.as_deref(), scan) {
+        (Ok("seen"), _) => {
+            format!("continues: the phone listed it; the scan saw none (the scan {scan_text})")
+        }
+        (Ok("not-seen"), Scan::Whole) if others > 0 => format!(
+            "not seen: the phone did not list it, and the scan, which ran over the whole window and saw {others} advertisements of other peripherals, saw none of the trainer"
+        ),
+        (Ok("not-seen"), _) => format!(
+            "unknown: the phone did not list it, but the scan {scan_text} and saw {others} advertisements of other peripherals, so it cannot confirm that"
+        ),
+        _ => format!(
+            "unknown: the phone's answer is {}, and the scan saw no advertisement of the trainer (the scan {scan_text}, {others} of other peripherals; a host scan may not report a peripheral it is connected to)",
+            listed
+                .as_ref()
+                .map_or_else(Clone::clone, |a| format!("{a:?}")),
+        ),
+    }
+}
+
 /// The result of check 10 from the capture's records and notes.
 pub fn check10(records: &[Record], notes: &[Note]) -> Value {
-    let method = "window = the check10 open/close events; advertising = the parallel scan's adverts of this trainer inside the window (largest gap with the window's edges) and the operator's 'listed' answer; second central = the 'connect' answer; link held = no page-25 gap > 2 s inside the window";
+    let method = "window = the check10 open/close events; advertising = the parallel scan's adverts of this trainer inside the window (largest gap with the window's edges) and the operator's 'listed' answer, 'not seen' only when both agree; second central = the 'connect' answer, asked only when the phone listed the NEO; link held = no page-25 gap > 2 s inside the window";
     let (Some(from), Some(to)) = (event(notes, WINDOW, OPEN), event(notes, WINDOW, CLOSE)) else {
         return json!({
             "method": method,
@@ -103,45 +200,13 @@ pub fn check10(records: &[Record], notes: &[Note]) -> Value {
     };
     let (trainer, others) = (adverts(1), adverts(0));
     let scan = match (event(notes, SCAN, OPEN), event(notes, SCAN, ENDED)) {
-        (None, _) => "was not started".to_string(),
-        (Some(_), Some(at)) => format!(
-            "ended by itself at {} s (it failed to start or the adapter stopped it)",
-            round1(secs(at))
-        ),
-        (Some(_), None) => "ran over the whole window".to_string(),
+        (None, _) => Scan::NotStarted,
+        (Some(_), Some(at)) => Scan::Ended(at),
+        (Some(_), None) => Scan::Whole,
     };
-    let listed = answer(notes, "listed");
-    let advertising = if trainer.is_empty() {
-        match listed.as_deref() {
-            Ok("seen") => {
-                format!("continues: the phone listed it; the scan saw none (the scan {scan})")
-            }
-            Ok("not-seen") => format!(
-                "not seen: the phone did not list it and the scan saw none (the scan {scan})"
-            ),
-            _ => format!(
-                "unknown: the phone's answer is {}, and the scan saw no advertisement of the trainer (the scan {scan}, {} of other peripherals; a host scan may not report a peripheral it is connected to)",
-                listed
-                    .as_ref()
-                    .map_or_else(Clone::clone, |a| format!("{a:?}")),
-                others.len()
-            ),
-        }
-    } else {
-        format!(
-            "continues: the scan saw {} advertisements of the trainer, longest gap {} s; the phone: {}",
-            trainer.len(),
-            round1(secs(max_gap(trainer.clone(), from, to))),
-            listed.as_ref().map_or_else(Clone::clone, Clone::clone)
-        )
-    };
-    let second_central = match answer(notes, "connect").as_deref() {
-        Ok("connected") => "accepted: the phone connected while hil_fec held the link".to_string(),
-        Ok("failed") => "refused: the phone's connect failed".to_string(),
-        Ok("stuck") => "refused: the phone's connect never completed".to_string(),
-        Ok(_) => "unknown: the phone did not try".to_string(),
-        Err(why) => format!("unknown: {why}"),
-    };
+    let listed = answer(notes, &LISTED);
+    let advertising = advertising(&trainer, others.len(), &scan, &listed, (from, to));
+    let second_central = second_central(notes);
     let page25: Vec<u64> = samples(records).iter().map(|s| s.at_us).collect();
     let link_gap = max_gap(page25, from, to);
     let link = if link_gap > LINK_GAP_MAX_US {
@@ -152,7 +217,7 @@ pub fn check10(records: &[Record], notes: &[Note]) -> Value {
     json!({
         "method": method,
         "window_s": [round1(secs(from)), round1(secs(to))],
-        "scan": scan,
+        "scan": scan.text(),
         "trainer_adverts": trainer.len(),
         "other_adverts": others.len(),
         "phone_listed": listed.unwrap_or_else(|e| e),
@@ -248,7 +313,7 @@ mod tests {
         );
         assert_eq!(
             v["second_central"],
-            json!("unknown: unrecognised answer \"maybe\"")
+            json!("unknown: unrecognised answer \"yes\" to whether the phone listed the NEO")
         );
         assert!(
             v["advertising"].as_str().is_some_and(
@@ -256,8 +321,136 @@ mod tests {
             ),
             "{v}"
         );
+        let v = check10(
+            &page25(80),
+            &window(&[a("listed", "seen"), a("connect", "maybe")]),
+        );
+        assert_eq!(
+            v["second_central"],
+            json!("unknown: unrecognised answer \"maybe\" to whether the phone connected")
+        );
         let v = check10(&page25(80), &window(&[]));
-        assert_eq!(v["second_central"], json!("unknown: no answer"));
+        assert_eq!(
+            v["second_central"],
+            json!("unknown: no answer to whether the phone listed the NEO")
+        );
+    }
+
+    /// Every combination of the two answers: only `seen` with a connect outcome is accepted or
+    /// refused; a connect answer after anything but `seen` is a contradiction, not a result.
+    #[test]
+    fn the_second_central_follows_the_answer_table() {
+        const UNSURE: &str =
+            "unknown: the operator was unsure the phone listed the NEO, so no connect was tried";
+        const NOT_FOUND: &str =
+            "unknown: the phone did not find the NEO, so it could not try to connect";
+        let listed = [
+            Some("seen"),
+            Some("not-seen"),
+            Some("unsure"),
+            Some("yes"),
+            None,
+        ];
+        let connect = [
+            Some("connected"),
+            Some("failed"),
+            Some("stuck"),
+            Some("not-tried"),
+            Some("maybe"),
+            None,
+        ];
+        for l in listed {
+            for c in connect {
+                let mut n = Vec::new();
+                n.extend(l.map(|t| note(&answer_tag("listed"), 20, t.as_bytes())));
+                n.extend(c.map(|t| note(&answer_tag("connect"), 25, t.as_bytes())));
+                let got = check10(&page25(80), &window(&n))["second_central"].clone();
+                let want = match (l, c) {
+                    (Some("seen"), Some("connected")) => {
+                        "accepted: the phone connected while hil_fec held the link".to_string()
+                    }
+                    (Some("seen"), Some("failed")) => "refused: the phone's connect failed".into(),
+                    (Some("seen"), Some("stuck")) => {
+                        "refused: the phone's connect never completed".into()
+                    }
+                    (Some("seen"), Some("not-tried")) => {
+                        "unknown: the phone listed the NEO but did not try to connect".into()
+                    }
+                    (Some("seen"), Some("maybe")) => {
+                        "unknown: unrecognised answer \"maybe\" to whether the phone connected"
+                            .into()
+                    }
+                    (Some("seen"), None) => {
+                        "unknown: no answer to whether the phone connected".into()
+                    }
+                    (Some(l @ ("not-seen" | "unsure")), Some(c)) => format!(
+                        "unknown: contradictory answers: the phone's listing was {l:?}, yet a connect answer {c:?} is recorded"
+                    ),
+                    (Some("not-seen"), None) => NOT_FOUND.into(),
+                    (Some("unsure"), None) => UNSURE.into(),
+                    (Some(l), _) => format!(
+                        "unknown: unrecognised answer {l:?} to whether the phone listed the NEO"
+                    ),
+                    (None, _) => "unknown: no answer to whether the phone listed the NEO".into(),
+                };
+                assert_eq!(got, json!(want), "{l:?} {c:?}");
+            }
+        }
+    }
+
+    /// "Not seen" needs the phone's answer and a scan that ran over the whole window and saw other
+    /// peripherals; a missing, short or blind scan leaves it unknown.
+    #[test]
+    fn advertising_not_seen_needs_both_observations() {
+        let not_seen = note(&answer_tag("listed"), 20, b"not-seen");
+        let others: Vec<Note> = (11..15).map(|s| note(ADV, s, &[0])).collect();
+        let mut whole = vec![not_seen.clone()];
+        whole.extend_from_slice(&others);
+        let v = check10(&page25(80), &window(&whole));
+        assert_eq!(
+            v["advertising"],
+            json!(
+                "not seen: the phone did not list it, and the scan, which ran over the whole window and saw 4 advertisements of other peripherals, saw none of the trainer"
+            )
+        );
+        // Blind: the scan saw nobody at all.
+        let v = check10(&page25(80), &window(std::slice::from_ref(&not_seen)));
+        assert_eq!(
+            v["advertising"],
+            json!(
+                "unknown: the phone did not list it, but the scan ran over the whole window and saw 0 advertisements of other peripherals, so it cannot confirm that"
+            )
+        );
+        // Short: the scan ended at 30 s.
+        let mut short = whole.clone();
+        short.push(note(SCAN, 30, &[ENDED]));
+        assert!(
+            check10(&page25(80), &window(&short))["advertising"]
+                .as_str()
+                .is_some_and(|a| a.starts_with(
+                    "unknown: the phone did not list it, but the scan ended by itself at 30 s"
+                )),
+        );
+        // Missing: no scan was started.
+        let mut missing = vec![note(WINDOW, 10, &[OPEN]), not_seen];
+        missing.extend_from_slice(&others);
+        missing.push(note(WINDOW, 70, &[CLOSE]));
+        let v = check10(&page25(80), &missing);
+        assert!(
+            v["advertising"].as_str().is_some_and(|a| a
+                .starts_with("unknown: the phone did not list it, but the scan was not started")),
+            "{v}"
+        );
+        // A phone that listed it is evidence on its own, scan or not.
+        let seen = [
+            note(WINDOW, 10, &[OPEN]),
+            note(&answer_tag("listed"), 20, b"seen"),
+            note(WINDOW, 70, &[CLOSE]),
+        ];
+        assert_eq!(
+            check10(&page25(80), &seen)["advertising"],
+            json!("continues: the phone listed it; the scan saw none (the scan was not started)")
+        );
     }
 
     #[test]
