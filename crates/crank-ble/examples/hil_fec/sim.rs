@@ -65,6 +65,8 @@ pub struct Plan {
     pub answers: &'static [&'static str],
     /// The operator answers at this capture time (at once when it has passed).
     pub answer_at_us: u64,
+    /// The connect question's answer comes this much later than `answer_at_us`.
+    pub connect_answer_after_us: u32,
 }
 
 /// Who check 10's scan can see while the trainer is connected.
@@ -129,6 +131,7 @@ impl Default for Plan {
             scan_ends_at_us: None,
             answers: &["seen", "stuck"],
             answer_at_us: 20_000_000,
+            connect_answer_after_us: 0,
         }
     }
 }
@@ -591,7 +594,11 @@ impl Operator for Sim {
         self.plan.confirms
     }
     async fn ask(&self, _: &str, options: &'static [&'static str]) -> Option<&'static str> {
-        tokio::time::sleep_until(self.start + Duration::from_micros(self.plan.answer_at_us)).await;
+        let mut at_us = self.plan.answer_at_us;
+        if options == crate::check10::CONNECT.options {
+            at_us += u64::from(self.plan.connect_answer_after_us);
+        }
+        tokio::time::sleep_until(self.start + Duration::from_micros(at_us)).await;
         let given = self.plan.answers.iter().find(|a| options.contains(a))?;
         options.iter().copied().find(|o| o == given)
     }

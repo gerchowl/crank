@@ -121,14 +121,36 @@ fn second_central(notes: &[Note]) -> String {
     }
 }
 
-/// How the parallel scan ran.
+/// How the parallel scan covered the window.
 enum Scan {
     NotStarted,
     Ended(u64),
+    Late(u64),
+    Stopped(u64),
+    Unclosed,
     Whole,
 }
 
 impl Scan {
+    /// The scan's coverage of the window `from..to`: whole only when both stamps are present, it
+    /// opened at or before `from`, closed at or after `to`, and did not end by itself.
+    fn of(notes: &[Note], from: u64, to: u64) -> Self {
+        let Some(opened) = event(notes, SCAN, OPEN) else {
+            return Self::NotStarted;
+        };
+        if let Some(at) = event(notes, SCAN, ENDED) {
+            return Self::Ended(at);
+        }
+        if opened > from {
+            return Self::Late(opened);
+        }
+        match event(notes, SCAN, CLOSE) {
+            None => Self::Unclosed,
+            Some(at) if at < to => Self::Stopped(at),
+            Some(_) => Self::Whole,
+        }
+    }
+
     fn text(&self) -> String {
         match self {
             Self::NotStarted => "was not started".into(),
@@ -136,6 +158,15 @@ impl Scan {
                 "ended by itself at {} s (it failed to start or the adapter stopped it)",
                 round1(secs(*at))
             ),
+            Self::Late(at) => format!(
+                "started at {} s, after the window opened",
+                round1(secs(*at))
+            ),
+            Self::Stopped(at) => format!(
+                "stopped at {} s, before the window closed",
+                round1(secs(*at))
+            ),
+            Self::Unclosed => "has no close line, so its end is unknown".into(),
             Self::Whole => "ran over the whole window".into(),
         }
     }
@@ -199,11 +230,7 @@ pub fn check10(records: &[Record], notes: &[Note]) -> Value {
             .collect()
     };
     let (trainer, others) = (adverts(1), adverts(0));
-    let scan = match (event(notes, SCAN, OPEN), event(notes, SCAN, ENDED)) {
-        (None, _) => Scan::NotStarted,
-        (Some(_), Some(at)) => Scan::Ended(at),
-        (Some(_), None) => Scan::Whole,
-    };
+    let scan = Scan::of(notes, from, to);
     let listed = answer(notes, &LISTED);
     let advertising = advertising(&trainer, others.len(), &scan, &listed, (from, to));
     let second_central = second_central(notes);
@@ -451,6 +478,47 @@ mod tests {
             check10(&page25(80), &seen)["advertising"],
             json!("continues: the phone listed it; the scan saw none (the scan was not started)")
         );
+    }
+
+    /// The scan's stamps must cover the window: a late start, an early stop or a missing close
+    /// leave "not seen" unknown, with the reason.
+    #[test]
+    fn a_scan_counts_as_whole_only_when_its_stamps_cover_the_window() {
+        let not_seen = note(&answer_tag("listed"), 20, b"not-seen");
+        let others = (11..15).map(|s| note(ADV, s, &[0]));
+        let with = |scan: &[Note]| {
+            let mut n = vec![note(WINDOW, 10, &[OPEN]), not_seen.clone()];
+            n.extend(others.clone());
+            n.extend_from_slice(scan);
+            n.push(note(WINDOW, 70, &[CLOSE]));
+            check10(&page25(80), &n)["advertising"].clone()
+        };
+        let unknown = |why: &str| {
+            json!(format!(
+                "unknown: the phone did not list it, but the scan {why} and saw 4 advertisements of other peripherals, so it cannot confirm that"
+            ))
+        };
+        assert_eq!(
+            with(&[note(SCAN, 69, &[OPEN]), note(SCAN, 70, &[CLOSE])]),
+            unknown("started at 69 s, after the window opened")
+        );
+        assert_eq!(
+            with(&[note(SCAN, 10, &[OPEN]), note(SCAN, 12, &[CLOSE])]),
+            unknown("stopped at 12 s, before the window closed")
+        );
+        assert_eq!(
+            with(&[note(SCAN, 10, &[OPEN])]),
+            unknown("has no close line, so its end is unknown")
+        );
+        // Stamps at the window's edges, or beyond them, cover it.
+        for (open, close) in [(10, 70), (9, 71)] {
+            assert!(
+                with(&[note(SCAN, open, &[OPEN]), note(SCAN, close, &[CLOSE])])
+                    .as_str()
+                    .is_some_and(|a| a.starts_with("not seen:")),
+                "{open} {close}"
+            );
+        }
     }
 
     #[test]

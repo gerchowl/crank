@@ -281,8 +281,9 @@ verdict (`advertising`, `second_central` and `verdict` are null otherwise, as fo
 
 **Capture.** The events are tagged comment lines in the `.fecap` (`Capture::record_aux`), so `analyse`
 reproduces the row from the file: `# check10 <us> 01|02` (window opened, closed), `# scan <us> 01|00|02`
-(scan started, ended by itself, stopped by the harness at the window's close), `# adv <us> 01|00` (an
-advertisement of the trainer, of another peripheral) and `# answer-listed|answer-connect <us> <ASCII>`.
+(scan started, ended by itself, stopped by the harness), `# adv <us> 01|00` (an advertisement of the
+trainer, of another peripheral) and `# answer-listed|answer-connect <us> <ASCII>`. The scan opens
+before the window and stops after it, so its stamps bracket the window.
 Readers that skip comments read the file as before. The lines carry no serial; `redact` keeps them.
 
 **Result** (`check10.rs` `check10`), from the window's events only:
@@ -292,11 +293,13 @@ Readers that skip comments read the file as before. The lines carry no serial; `
     least one inside the window. The gap is measured in continuous time, the window's edges included.
   - `continues: the phone listed it; the scan saw none (…)` on the phone's `seen` alone.
   - `not seen: …` only when both observations agree: the phone's `not-seen`, and a scan that ran over
-    the whole window and reported other peripherals (so it was working) but none of the trainer.
-    `not-seen` with a scan that was not started, ended early or reported nobody is `unknown: the phone
-    did not list it, but the scan …, so it cannot confirm that`.
-  - Otherwise `unknown: …`, with the scan's state (ran over the whole window, ended by itself at T s,
-    not started) and how many advertisements of other peripherals it reported. A scan that saw nothing
+    the whole window and reported other peripherals (so it was working) but none of the trainer. The
+    scan ran over the whole window only when both its stamps are present, it opened at or before the
+    window's open, stopped at or after its close and did not end by itself (`check10::Scan::of`).
+    `not-seen` with any other scan (not started, ended by itself, started late, stopped early, no close
+    line) or one that reported nobody is `unknown: the phone did not list it, but the scan …, so it
+    cannot confirm that`.
+  - Otherwise `unknown: …`, with the scan's state (as above) and how many advertisements of other peripherals it reported. A scan that saw nothing
     of the trainer is not evidence that advertising stopped: a host may not report a peripheral it is
     connected to (CoreBluetooth is not documented either way), and a scan that reports other peripherals
     only shows that it was working.
