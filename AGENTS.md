@@ -40,18 +40,24 @@ pinned `advisory-db` input (bump: `nix flake update advisory-db`; ADR-0001 §9.5
 `crank-desktop` wires `crank-core` as Tauri commands (`app/src-tauri/src/commands.rs`, one per facade method; `ApiError` is the only
 error type that crosses) and manages one `Core`. Runtime configuration: `--sim` or `CRANK_SIM=1` (anything but empty, `0`, `false`)
 drives the seeded device simulator instead of Bluetooth; `CRANK_DATA_DIR` sets the directory of `crank.db` and `ride.lock` (default:
-the app-data directory of the bundle identifier). **Logs and raw-frame captures (#411)**: the desktop main (`app/src-tauri/src/logging.rs`,
-never a library crate) installs a file `tracing` subscriber. A normal launch logs INFO to `~/Library/Logs/io.github.gerchowl.crank/crank.log`
-(Tauri's `app_log_dir`; a Finder launch has no stderr) and captures nothing; the file moves to `crank.log.1` at 5 MiB, so the log holds
-at most 10 MiB (plain text and fixed filters for now; ADR-0001's JSON/daily/`CRANK_LOG` logging is #414). With `CRANK_CAPTURE_DIR=<dir>` (the HIL riding session, #44 Part B) `<dir>/crank.log` also records `crank-ble` at TRACE, and
-each trainer connection (reconnects included) writes `<dir>/trainer-<unix secs>-<n>.fecap`, the `.fecap` format that `hil_fec analyse`
-and `redact` read (`hil_fec analyse --target <dir>/trainer-….fecap --out <dir>`; reconnect timings are the `reconnecting trainer` and
-`trainer reconnect failed` lines of `crank.log`). If that directory cannot be opened the app says so and exits instead of riding uncaptured.
+the app-data directory of the bundle identifier). **Logs and raw-frame captures (#411, #414, ADR-0001 §7.1)**: the desktop main (`app/src-tauri/src/logging.rs`,
+never a library crate) installs vigil (`vigil-telemetry`, tag `0.2.0`; tests that start a pipeline need nextest, one per process). Records
+are OTLP/JSON Lines, one `LogsData` per line: `logs.jsonl` (records sit under `resourceLogs[].scopeLogs[].logRecords[]`) and `traces.jsonl`,
+rotated into 8 MiB segments (`logs-<UTC stamp>.jsonl`). A normal launch logs to `~/Library/Logs/io.github.gerchowl.crank/`
+(Tauri's `app_log_dir`; a Finder launch has no stderr) with `CRANK_LOG` as the `EnvFilter` (default `info`), and vigil prunes segments
+older than 7 days, keeps at most 6 log and 2 trace segments and under 96 MiB in all; it captures nothing. The plain-text `crank.log`/`crank.log.1`
+of #411 are never deleted by the app: delete them by hand. With `CRANK_CAPTURE_DIR=<dir>` (the HIL riding session, #44 Part B) the logs go to
+`<dir>` with no retention and no caps (vigil deletes nothing there; disk use is unbounded), `crank_ble` is always at TRACE and `CRANK_LOG`
+only adds to it (its `crank_ble…` directives are dropped with a WARN record); `CRANK_LOG_CAPTURE_RESERVED` is reserved and refuses the capture (#432).
+Each trainer connection (reconnects included) writes `<dir>/trainer-<unix secs>-<n>.fecap`, separate from the logs, the `.fecap` format that `hil_fec analyse`
+and `redact` read (`hil_fec analyse --target <dir>/trainer-….fecap --out <dir>`); reconnect timings are the `reconnecting trainer` and
+`trainer reconnect failed` records of `<dir>/logs.jsonl` (`body.stringValue`, with `timeUnixNano`). If that directory cannot be written the app says so and exits instead of riding uncaptured.
+Ending a ride flushes the log on a blocking thread, without waiting for it; quitting gives vigil what the 3 s quit cap left after the ride end (waiting for an in-flight flush only within that), and records queued past it are lost (at most the last ~1 s batch).
 Everything stays on the machine. A capture holds raw device frames: page 81 carries the trainer serial, and `redact` masks only that;
-the log can carry device names in error text. Redact before committing, and do not share either file unreviewed. Streams belong to the calling window's label and are dropped when it is destroyed
+the log can carry device names in error text and its resource carries `host.name`. Redact before committing, and do not share either file unreviewed. Streams belong to the calling window's label and are dropped when it is destroyed
 or its page (re)loads (a reload keeps the webview, so the old channel would not fail). **Quitting ends a ride**: an exit request (last window closed, `app.exit`, Cmd+Q, whose menu item replaces the default one, on macOS only and only after it is verified as the built-in Quit, so it calls
-`app.exit(0)`; Windows and Linux get no custom menu and quit through the run-event hold-back, #306) is held back, `Core::shutdown` ends the ride (end mode `Resistance{0}`, ADR-0002 §7.9) and waits at most 3 s for the
-devices to be released, then the app exits (`app/src-tauri/src/lifecycle.rs`). Exits that never ask (Dock Quit, logout, system shutdown:
+`app.exit(0)`; Windows and Linux get no custom menu and quit through the run-event hold-back, #306) is held back, `Core::shutdown` ends the ride (end mode `Resistance{0}`, ADR-0002 §7.9) and waits at most 2.5 s for the
+devices to be released, vigil shuts down within what is left of 3 s, then the app exits (`app/src-tauri/src/lifecycle.rs`). Exits that never ask (Dock Quit, logout, system shutdown:
 `NSApp terminate:` gives tao only `applicationWillTerminate:`, hence `RunEvent::Exit` and no `ExitRequested`) hit a backstop that runs
 the same shutdown synchronously on `Exit`; macOS may kill a terminating app a few seconds in, so the cap must stay at or below 3 s.
 `just quit-test` (macOS, GUI session) terminates a real Wry app mid-ride with `NSApp terminate:` and checks the ride was recorded `Finished`.

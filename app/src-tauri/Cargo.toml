@@ -17,8 +17,11 @@ tauri.workspace = true
 tauri-specta.workspace = true
 tauri-plugin-dialog.workspace = true
 tracing = { version = "0.1", default-features = false, features = ["std"] }
-# The file log of the desktop process (#411): `fmt` writes it, `registry` hosts the per-target filter. No ANSI, no env-filter regex.
-tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "registry"] }
+# The desktop log (ADR-0001 §7.1): OTLP/JSON Lines `logs.jsonl` and `traces.jsonl`, size-rotated and capped. The exact
+# tag is pinned (pre-1.0); moving it is a reviewed PR. Its lib is `vigil`. Metrics are off: crank has no metrics consumer.
+vigil-telemetry = { git = "https://github.com/vig-os/vigil", tag = "0.2.0", default-features = false, features = ["traces"] }
+# `EnvFilter` validates `CRANK_LOG` for the capture filter (ADR-0001 §7.1); vigil already builds it with `env-filter`.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "env-filter"] }
 specta.workspace = true
 specta-typescript.workspace = true
 tauri-plugin-wdio-webdriver = { workspace = true, optional = true }

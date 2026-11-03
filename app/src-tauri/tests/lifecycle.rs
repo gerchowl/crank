@@ -5,6 +5,7 @@ use crank_core::{
 use crank_desktop::{
     RuntimeConfig, commands as cmd,
     lifecycle::{self, Decision, ExitApi, Quit, Runner, Wire},
+    logging::{Logging, Pipeline},
     open_core, startup_failure,
 };
 use crank_devices::sim::SimConfig;
@@ -554,4 +555,118 @@ fn an_empty_menu_is_left_alone() {
     let menu = Fake::new(&[]);
     assert!(!replace_quit(&menu, "Quit app").unwrap());
     assert!(menu.0.borrow().is_empty());
+}
+
+// ---- vigil's shutdown on `Exit` (ADR-0001 §7.1, Quit budget) -------------------
+
+/// A pipeline whose flush blocks until `release` is sent, and that records its shutdown budget.
+#[derive(Default)]
+struct Stalling {
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    budgets: Arc<Mutex<Vec<Duration>>>,
+}
+impl Pipeline for Stalling {
+    fn flush(&self) {
+        if let Some(entered) = self.entered.lock().expect("lock").take() {
+            entered.send(()).expect("the test waits");
+        }
+        if let Some(release) = self.release.lock().expect("lock").take() {
+            // A send or the test ending both release it.
+            let _ = release.recv();
+        }
+    }
+    fn shut_down(self: Box<Self>, budget: Duration) {
+        self.budgets.lock().expect("lock").push(budget);
+    }
+}
+
+/// An app with no core, managing `pipeline`; returns its recorded budgets.
+fn with_pipeline(pipeline: Stalling) -> (tauri::App<MockRuntime>, Arc<Mutex<Vec<Duration>>>) {
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let budgets = pipeline.budgets.clone();
+    app.manage(Logging::new(pipeline));
+    (app, budgets)
+}
+
+/// A flush that is stuck until released; `entered` fires once it is under way.
+fn stalling() -> (
+    Stalling,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let pipeline = Stalling {
+        entered: Mutex::new(Some(entered_tx)),
+        release: Mutex::new(Some(release_rx)),
+        ..Stalling::default()
+    };
+    (pipeline, entered, release)
+}
+
+#[test]
+fn an_exit_shuts_vigil_down_once_with_what_the_quit_cap_left() {
+    let (app, budgets) = with_pipeline(Stalling::default());
+    let quit = Arc::new(Quit::default());
+    assert_eq!(quit.request(), Decision::Begin, "the quit's clock starts");
+    let spent = Duration::from_millis(300);
+    std::thread::sleep(spent);
+    lifecycle::on_run_event(app.handle(), &RunEvent::Exit, &quit);
+    lifecycle::on_run_event(app.handle(), &RunEvent::Exit, &quit);
+    let budgets = budgets.lock().unwrap();
+    assert_eq!(budgets.len(), 1, "one shutdown: {budgets:?}");
+    assert!(
+        budgets[0] <= lifecycle::QUIT_CAP.saturating_sub(spent),
+        "what was spent is not given again: {budgets:?}"
+    );
+    assert!(
+        budgets[0] > lifecycle::QUIT_CAP.saturating_sub(spent + Duration::from_secs(1)),
+        "the rest is: {budgets:?}"
+    );
+}
+
+#[test]
+fn a_stalled_ride_end_flush_does_not_hold_the_quit_past_the_cap() {
+    let (pipeline, entered, _release) = stalling();
+    let (app, budgets) = with_pipeline(pipeline);
+    let flushing = app.state::<Logging>().flush_in_background();
+    assert!(flushing.is_some());
+    entered.recv().unwrap();
+    // An `Exit` that never asked: the quit's clock starts here.
+    let started = std::time::Instant::now();
+    lifecycle::on_run_event(app.handle(), &RunEvent::Exit, &Arc::new(Quit::default()));
+    let took = started.elapsed();
+    // Slack for the instants measured outside the handler.
+    assert!(
+        took < lifecycle::QUIT_CAP + Duration::from_millis(100),
+        "quit took {took:?}"
+    );
+    assert!(
+        budgets.lock().unwrap().is_empty(),
+        "the flush outlasted the budget: no shutdown"
+    );
+}
+
+#[test]
+fn a_ride_end_flush_that_finishes_in_time_is_waited_for_then_vigil_shut_down() {
+    let (pipeline, entered, release) = stalling();
+    let (app, budgets) = with_pipeline(pipeline);
+    let _flushing = app.state::<Logging>().flush_in_background();
+    entered.recv().unwrap();
+    let held = Duration::from_millis(200);
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(held);
+        release.send(()).unwrap();
+    });
+    lifecycle::on_run_event(app.handle(), &RunEvent::Exit, &Arc::new(Quit::default()));
+    releaser.join().unwrap();
+    let budgets = budgets.lock().unwrap();
+    assert_eq!(budgets.len(), 1, "{budgets:?}");
+    assert!(
+        budgets[0] <= lifecycle::QUIT_CAP.saturating_sub(held),
+        "{budgets:?}"
+    );
 }
