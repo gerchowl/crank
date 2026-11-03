@@ -4,42 +4,55 @@ import hooks from "eslint-plugin-react-hooks";
 import jsxA11y from "eslint-plugin-jsx-a11y";
 import globals from "globals";
 
-// Design rules (DESIGN §18.7 rules 1, 2 and 4, #455). They look inside `style={{…}}` only: a stylesheet is stylelint's
-// (#454). Computed values (`width: `${ch}ch``, `var(--t3p)`, `...tokens`) pass; a literal colour or px does not.
+// Design rules (DESIGN §18.7 rules 1, 2 and 4, #455). They look inside a `style={{…}}` literal only: a stylesheet is
+// stylelint's (#454), and a style object built elsewhere (`const s = {…}; <div style={s}>`) is invisible to a selector.
+// Computed values (`width: `${ch}ch``, `var(--t3p)`, `...tokens`) pass; a literal colour or px does not.
 const STYLE = "JSXAttribute[name.name='style']";
-// Properties whose value is a colour, and those whose bare number React turns into px.
-const COLOUR_PROPS =
-  "/^(color|background.*|border|border.*Color|outline|outlineColor|fill|stroke|boxShadow|textShadow|caretColor|accentColor|textDecorationColor)$/";
-const PX_PROPS =
-  "/^(width|height|min.*|max.*|margin.*|padding.*|gap|rowGap|columnGap|top|left|right|bottom|inset.*|fontSize|border.*(Width|Radius)|flexBasis|letterSpacing|outlineOffset)$/";
-// A string that is not `var(--token)` or a CSS-wide / paint keyword.
-const NOT_A_TOKEN =
-  "/^(?!(var\\(--[a-z0-9-]+\\)|inherit|initial|unset|currentcolor|transparent|none|auto)$)/i";
-const COLOUR_LITERAL =
-  "/^#[0-9a-f]{3,8}$|^(rgb|hsl|hwb|lab|lch|oklab|oklch|color)a?\\(/i";
-const SVG = "JSXOpeningElement[name.name='svg']";
+const NAMED_COLOURS = [
+  ..."aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow yellowgreen".split(
+    " ",
+  ),
+];
+// A hex colour, a colour function or a named colour anywhere in a string or template text. The look-arounds keep
+// `var(--red)` and `redundant` out. (`transparent`, `currentcolor` and the CSS-wide keywords are not colour literals.)
+const COLOUR_LITERAL = `/(?<![\\w&-])(#[0-9a-f]{3,8}(?![\\w-])|(rgb|hsl|hwb|lab|lch|oklab|oklch|color|color-mix)a?\\(|(${NAMED_COLOURS.join("|")})(?![\\w-]))/i`;
+// Unitless numbers React keeps unitless, plus custom properties (a runtime token such as `--ch`).
+const UNITLESS =
+  "/^(opacity|zIndex|flex|flexGrow|flexShrink|order|fontWeight|lineHeight|aspectRatio|--.*)$/";
+// A number other than 0: React turns it into px on every property outside UNITLESS.
+const NONZERO = "/^[+-]?(?!0*\\.?0*$)[0-9.]/";
+const NOT_UNITLESS = `:not([key.name=${UNITLESS}]):not([key.value=${UNITLESS}])`;
+const SVG_SELECTORS = [
+  "JSXOpeningElement[name.name='svg']",
+  "CallExpression[callee.name='createElement'] > Literal[value='svg']",
+  "CallExpression[callee.property.name='createElement'] > Literal[value='svg']",
+  "JSXAttribute[name.name='dangerouslySetInnerHTML'] Literal[value=/<svg/i]",
+  "JSXAttribute[name.name='dangerouslySetInnerHTML'] TemplateElement[value.raw=/<svg/i]",
+];
 
 const COLOUR_MSG =
   "Colours in inline styles are tokens: use var(--token) (DESIGN §18.7 rule 1).";
 const PX_MSG =
-  "Sizes in inline styles are tokens or computed values, never a literal px (DESIGN §18.7 rule 2).";
+  "Sizes in inline styles are tokens or computed values, never a literal px or bare number (DESIGN §18.7 rule 2).";
+const SVG_MSG =
+  "No raw <svg> outside src/icons/: icons are Lucide (DESIGN §18.7 rule 4). A data graphic needs a reasoned eslint-disable.";
 
 const DESIGN_SYNTAX = [
   [`${STYLE} Literal[value=${COLOUR_LITERAL}]`, COLOUR_MSG],
-  [
-    `${STYLE} Property[key.name=${COLOUR_PROPS}] > Literal[value=${NOT_A_TOKEN}]`,
-    COLOUR_MSG,
-  ],
+  [`${STYLE} TemplateElement[value.raw=${COLOUR_LITERAL}]`, COLOUR_MSG],
   [`${STYLE} Literal[value=/\\d\\s*px/]`, PX_MSG],
-  [`${STYLE} TemplateElement[value.raw=/(^|\\d)px/]`, PX_MSG],
+  [`${STYLE} TemplateElement[value.raw=/(^|\\d)\\s*px/]`, PX_MSG],
+  // `margin: 8`, `margin: -8`, `a ? 8 : 4`; `0` and the UNITLESS properties pass.
+  [`${STYLE} Property${NOT_UNITLESS} > Literal[raw=${NONZERO}]`, PX_MSG],
   [
-    `${STYLE} Property[key.name=${PX_PROPS}] > Literal[raw=/^[1-9]|^0?\\.\\d*[1-9]/]`,
+    `${STYLE} Property${NOT_UNITLESS} > UnaryExpression > Literal[raw=${NONZERO}]`,
     PX_MSG,
   ],
   [
-    SVG,
-    "No raw <svg> outside src/icons/: icons are Lucide (DESIGN §18.7 rule 4). A data graphic needs a reasoned eslint-disable.",
+    `${STYLE} Property${NOT_UNITLESS} > ConditionalExpression > Literal[raw=${NONZERO}]`,
+    PX_MSG,
   ],
+  ...SVG_SELECTORS.map((selector) => [selector, SVG_MSG]),
 ].map(([selector, message]) => ({ selector, message }));
 
 // Any other icon set; lucide-react is the one the app bundles.
@@ -96,7 +109,7 @@ export default ts.config(
     rules: {
       "no-restricted-syntax": [
         "error",
-        ...DESIGN_SYNTAX.filter((r) => r.selector !== SVG),
+        ...DESIGN_SYNTAX.filter((r) => !SVG_SELECTORS.includes(r.selector)),
       ],
     },
   },

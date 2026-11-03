@@ -1976,12 +1976,15 @@ review. Rules start as warnings where the current UI fails them and move to erro
 
 1. **Colours are tokens.** No colour literal (hex, `rgb()`, `hsl()`, named) outside `theme.css`, in CSS or in inline
    styles. Check: stylelint (#454), ESLint (#455); token set and values tested (#453).
+   The ESLint check reads a literal `style={{…}}` only; a style object defined elsewhere is not caught and falls to
+   review and the layout audit (#457).
 2. **Sizes are tokens.** Spacing, radius, font size and control height come from the §18.1 scales only.
    Check: stylelint strict-value (#454), ESLint no literal px in inline styles (#455), scale tests (#453).
 3. **No unknown custom property.** Every `var(--…)` resolves to a token defined in `theme.css`. Check: stylelint
    (#454).
 4. **Icons are Lucide**, stroke 1.5, 16 px (20 px in the rail), each with a word or an accessible name. Check: ESLint
-   (#455) for the import; the harness (#457) for size and name.
+   (#455) for the import; the harness (#457) for size and name. A dynamic tag
+   (`const Tag = "svg"`) cannot be caught by a selector; review covers it.
 5. **Numbers are tabular.** Every live number renders in the number face with `tabular-nums`. Check: the harness's
    layout audit reads the computed style of every live-value element (#457). Render them through `<Num>` (`app/src/Num.tsx`)
    or the `num` class; no lint rule can tell a live number from other text, so #457 is the check.
