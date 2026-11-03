@@ -110,7 +110,7 @@ kbd {
   background: none;
   border-color: transparent;
   padding: var(--space-2) var(--space-1);
-  min-height: var(--control-h-l);
+  min-height: var(--control-h-m);
 }
 .rail .rail-icon {
   font-size: var(--text-l);
@@ -128,6 +128,11 @@ kbd {
 
 main {
   min-width: 0;
+}
+/* #main is focused by code (skip link, start-screen hand-off); keep the page-wide ring off then. Keyboard
+   focus on a control inside it still draws the :focus-visible ring. */
+main:focus:not(:focus-visible) {
+  outline-color: transparent;
 }
 main.mode {
   display: grid;
