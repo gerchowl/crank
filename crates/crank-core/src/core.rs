@@ -43,6 +43,7 @@ use tokio::{
     sync::{Mutex, Notify, watch},
     task::JoinHandle,
 };
+use tracing::Instrument;
 
 /// Longest a connect may take before the command fails, so the UI never waits on a
 /// device indefinitely.
@@ -278,6 +279,9 @@ struct Session {
     /// The engine task or thread: ending it drops the device links.
     task: EngineTask,
     ride_id: String,
+    /// The `ride` and `device` spans (ADR-0001 §7.1), closed when the session is dropped: the
+    /// reap, which every end, discard and quit goes through before vigil's shutdown (vigil#8).
+    spans: RideSpans,
     /// Set once a driver has closed its event stream, i.e. handed the peripheral back
     /// (the same confirmation pairing waits for).
     release: LinkRelease,
@@ -295,6 +299,39 @@ struct Session {
     /// runs on would.
     #[cfg(test)]
     engine_activity: Arc<dyn Fn(bool) + Send + Sync>,
+}
+/// The spans of one ride (ADR-0001 §7.1): `ride{id}` from the load to the end, and
+/// `device{kind,id}` for each connected device, a child of it.
+///
+/// vigil exports a span when it closes, never one still open at shutdown (vigil#8), so the core
+/// holds them here and nothing else: the engine and the drivers get no clone, which a wedged
+/// engine detached from its session would keep open for ever. A span closes when its last
+/// handle drops, so dropping the session (the reap) ends them, devices first.
+///
+/// Attributes are never personal: `id` of the ride is crank's own, and a device is named by its
+/// role placeholder (`<trainer-id>`, `<strap-id>`, ADR-0003 §2.3), never its name, serial,
+/// platform id or the store id that embeds it.
+struct RideSpans {
+    /// Devices first: fields drop in declaration order, so the children close before the parent.
+    devices: Vec<tracing::Span>,
+    ride: tracing::Span,
+}
+impl RideSpans {
+    /// End every span now, though the session lives on (a quit that gave up on the ride).
+    fn close(&mut self) {
+        self.devices.clear();
+        self.ride = tracing::Span::none();
+    }
+    fn new(ride_id: &str) -> Self {
+        Self {
+            devices: Vec::new(),
+            ride: tracing::info_span!("ride", id = ride_id),
+        }
+    }
+    /// Open the `device` span of a device about to connect. Not kept until it is connected.
+    fn device(&self, kind: &'static str, id: &'static str) -> tracing::Span {
+        tracing::info_span!(parent: &self.ride, "device", kind, id)
+    }
 }
 /// How far a forced end has taken a session over from its engine (#331, #344). Each step
 /// works through what the core owns (the relays, its own sender through the trainer's command
@@ -1278,6 +1315,7 @@ impl Core {
 
     async fn connect_links(
         &self,
+        spans: &mut RideSpans,
     ) -> Result<(TrainerLink, Option<HeartRateLink>, [Option<String>; 2]), ApiError> {
         let devices = self.0.store.devices()?;
         let find = |kind: &str| devices.iter().find(|d| d.kind == kind);
@@ -1285,19 +1323,27 @@ impl Core {
             .ok_or_else(|| ApiError::new(ErrorCode::DeviceUnavailable, "no trainer paired"))?;
         let (clock, gate) = (self.0.clock.clone(), self.0.gate.clone());
         let driver = self.0.backend.trainer(clock.clone(), gate.clone()).await?;
+        let span = spans.device("trainer", "<trainer-id>");
         let link = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            driver.connect(&DeviceRef(trainer.platform_id.clone()), RIDER),
+            driver
+                .connect(&DeviceRef(trainer.platform_id.clone()), RIDER)
+                .instrument(span.clone()),
         )
         .await
         .map_err(|_| ApiError::new(ErrorCode::DeviceUnavailable, "trainer connect timed out"))??;
+        spans.devices.push(span);
         let mut hr = None;
         let mut hr_id = None;
         if let Some(strap) = find("hr") {
             let driver = self.0.backend.heart(clock, gate).await?;
-            let connect = driver.connect(&DeviceRef(strap.platform_id.clone()));
+            let span = spans.device("strap", "<strap-id>");
+            let connect = driver
+                .connect(&DeviceRef(strap.platform_id.clone()))
+                .instrument(span.clone());
             match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
                 Ok(Ok(l)) => {
+                    spans.devices.push(span);
                     hr = Some(l);
                     hr_id = Some(strap.id.clone());
                 }
@@ -1326,7 +1372,7 @@ impl Core {
     /// the signal ([`SignalOwner::settable`]), so it cannot raise it with no ride loaded. A
     /// forced reap leaves the clear to its caller, which has cut the engine off first.
     async fn reap(&self, ride_id: &str, force: bool) {
-        let task = {
+        let taken = {
             let mut st = self.0.state.lock().await;
             if st.session.as_ref().is_some_and(|s| s.ride_id == ride_id)
                 && let Some(session) = st.session.take()
@@ -1341,12 +1387,12 @@ impl Core {
                 } else {
                     self.clear_signal(ride_id);
                 }
-                Some(session.task)
+                Some((session.task, session.spans))
             } else {
                 None
             }
         };
-        if let Some(mut task) = task {
+        if let Some((mut task, spans)) = taken {
             let wait = if force {
                 ABORT_JOIN_TIMEOUT
             } else {
@@ -1369,6 +1415,12 @@ impl Core {
                     }
                 }
             }
+            // The ride is over (joined, or detached): its spans end now, before anything shuts
+            // vigil down. The record is inside the ride span, so a reader finds the end by id.
+            spans
+                .ride
+                .in_scope(|| tracing::info!(force, "ride released"));
+            drop(spans);
         }
         self.0.released.notify_waiters();
     }
@@ -1639,18 +1691,34 @@ impl Core {
         ))
     }
     /// Connect the devices, build the engine and load the workout into it.
+    ///
+    /// Everything runs inside the ride's span, which a failed build drops (closed, exported).
     async fn build_session(
         &self,
         workout: Workout,
         compiled: CompiledWorkout,
     ) -> Result<(Session, bool), ApiError> {
-        let (mut trainer, mut hr, [trainer_device_id, hr_device_id]) = self.connect_links().await?;
         let ride_id = format!(
             "ride-{:x}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
         );
+        let spans = RideSpans::new(&ride_id);
+        let span = spans.ride.clone();
+        self.build_session_in(ride_id, spans, workout, compiled)
+            .instrument(span)
+            .await
+    }
+    async fn build_session_in(
+        &self,
+        ride_id: String,
+        mut spans: RideSpans,
+        workout: Workout,
+        compiled: CompiledWorkout,
+    ) -> Result<(Session, bool), ApiError> {
+        let (mut trainer, mut hr, [trainer_device_id, hr_device_id]) =
+            self.connect_links(&mut spans).await?;
         let takeover = Arc::new(watch::channel(Takeover::Engine).0);
         let (hold, release) = relay_links(&ride_id, &mut trainer, hr.as_mut(), &takeover);
         let hr_linked = hr.is_some();
@@ -1733,6 +1801,7 @@ impl Core {
                 streams: BTreeMap::new(),
                 task,
                 ride_id,
+                spans,
                 release,
                 trainer: hold,
                 takeover,
@@ -2008,11 +2077,30 @@ impl Core {
     /// `RELEASE_TIMEOUT`.
     /// The cap bounds a trainer that never answers; it should exceed the engine's 2 s.
     pub async fn shutdown(&self, cap: Duration) -> Shutdown {
-        match tokio::time::timeout(cap, self.end_ride(false)).await {
+        let outcome = match tokio::time::timeout(cap, self.end_ride(false)).await {
             Err(_) => Shutdown::TimedOut,
             Ok(Ok(_)) => Shutdown::Ended,
             Ok(Err(e)) if e.code == ErrorCode::Conflict => Shutdown::Idle,
             Ok(Err(e)) => Shutdown::Failed(e),
+        };
+        if matches!(outcome, Shutdown::TimedOut | Shutdown::Failed(_)) {
+            self.close_spans();
+        }
+        outcome
+    }
+    /// End the spans of a session that outlived its quit, so vigil exports them: it does not
+    /// export a span still open at shutdown (vigil#8). The state lock is free by then (the only
+    /// holder across an await is a `Stop`, bounded by `STOP_TIMEOUT`); if not, say so.
+    fn close_spans(&self) {
+        if let Ok(mut st) = self.0.state.try_lock() {
+            if let Some(session) = st.session.as_mut() {
+                session.spans.ride.in_scope(|| {
+                    tracing::warn!("quit: ride span closed with the ride still loaded");
+                });
+                session.spans.close();
+            }
+        } else {
+            tracing::warn!("quit: the core is busy, the ride span stays open");
         }
     }
     /// The ride's state; durable truth behind `resync` (ADR-0001 §4.3).

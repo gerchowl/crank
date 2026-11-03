@@ -12,7 +12,7 @@
 //!   `.fecap` per trainer connection into it (the format `hil_fec analyse` and `redact` read).
 //!
 //! The plain-text `crank.log` and `crank.log.1` of #411 are never deleted (ADR-0001 §7.1, Migration).
-//! The `ride`, `device` and `coach` spans of §7.1 follow in #465.
+//! The `ride` and `device` spans of §7.1 are the core's (`crank-core`, #465); the `coach` span follows with the first coach call (#474).
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
