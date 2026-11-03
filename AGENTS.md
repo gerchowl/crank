@@ -28,7 +28,7 @@ doctests, app Vitest, and the frozen shared tests. `just model` runs the executa
 that the committed fixture `crates/crank-engine/tests/fixtures/following.json` is its output (the `following-model` flake
 check); `just model-fixture` regenerates it. `crank-engine`'s `refines_the_model` test reads that fixture, so the Rust
 machine, its reply-row table and its constants are tied to the model without running Python at test time (#218). `just lint` runs clippy and
-ESLint/Prettier; `just fmt` formats Rust and app files. `just bindings` exports
+ESLint/stylelint/Prettier (`app/stylelint.config.mjs`: colours and sizes come from `theme.css` tokens, DESIGN §18.7 rules 1 to 3, #454; an exception goes in that file with its reason, never in a stylesheet); `just fmt` formats Rust and app files. `just bindings` exports
 Rust types and command wrappers to `app/src/bindings.ts`; commit that file.
 The drift check must fail after an unexported contract change. The `deps-edges`
 flake check checks all-feature crate boundaries and separately walks the production
