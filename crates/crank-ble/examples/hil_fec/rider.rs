@@ -675,10 +675,11 @@ fn phone_window(e: Stop) -> Stop {
 async fn check10<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
     use crate::check10::{ANSWER_WAIT, CLOSE, LISTED, MIN_WINDOW, OPEN, SCAN, WINDOW, follow_up};
     r.guard = Guard::Sim;
-    let start = Instant::now();
-    r.note(WINDOW, &[OPEN])?;
+    // The scan opens before the window and stops after it, so its stamps cover the window.
     let mut scan = Some(r.w.adverts());
     r.note(SCAN, &[OPEN])?;
+    let start = Instant::now();
+    r.note(WINDOW, &[OPEN])?;
     r.cue(Cue::Phone);
     let listed = r.answer(&mut scan, start + ANSWER_WAIT, &LISTED).await?;
     if let Some(q) = follow_up(listed) {
@@ -687,10 +688,11 @@ async fn check10<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop
     r.during(&mut scan, start + MIN_WINDOW, std::future::pending::<()>())
         .await
         .map_err(phone_window)?;
+    r.note(WINDOW, &[CLOSE])?;
     if scan.take().is_some() {
         r.note(SCAN, &[CLOSE])?;
     }
-    r.note(WINDOW, &[CLOSE])
+    Ok(())
 }
 
 /// The Part B control checks.
@@ -2019,12 +2021,12 @@ mod tests {
         assert_eq!(
             check10_events(&sim),
             [
-                e("check10", &[1]),
                 e("scan", &[1]),
+                e("check10", &[1]),
                 e("answer-listed", b"seen"),
                 e("answer-connect", b"stuck"),
-                e("scan", &[2]),
                 e("check10", &[2]),
+                e("scan", &[2]),
             ]
         );
         // Answered at 20 s; the window still lasts its 60 s.
@@ -2113,6 +2115,25 @@ mod tests {
         };
         let (_, report) = run(Procedure::Check10, plan, None).await;
         assert_eq!(report.procedure, Ok(()));
+        // Both answers fall within 180 s of the window's start: the second question does not get
+        // a fresh 180 s from the first answer.
+        let plan = Plan {
+            answer_at_us: 100 * SEC,
+            connect_answer_after_us: 81_000_000, // at 181 s
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check10, plan, None).await;
+        assert!(
+            matches!(&report.procedure, Err(Stop::Aborted(w)) if w.contains("Try to connect") && w.contains("within 180 s")),
+            "{report:?}"
+        );
+        let w = writes(&sim);
+        let open = event_at(&sim, crate::check10::WINDOW, crate::check10::OPEN);
+        assert!(
+            (open + 180 * SEC..=open + 180 * SEC + 200_000).contains(&w[w.len() - 2].0),
+            "released at {} us, window opened at {open} us",
+            w[w.len() - 2].0
+        );
         let plan = Plan {
             answer_at_us: 181 * SEC,
             ..Plan::default()

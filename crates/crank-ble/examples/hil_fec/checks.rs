@@ -1020,6 +1020,7 @@ mod tests {
         scan_ends_at_us: None,
         answers: &[],
         answer_at_us: 0,
+        connect_answer_after_us: 0,
     };
 
     async fn driven(p: Procedure, plan: Plan) -> (Report, Vec<Record>) {
