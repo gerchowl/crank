@@ -65,6 +65,7 @@ const PAIRS: [string, string, number][] = [
   ["status-good", "surface-1", 4.5],
   ["status-warning", "surface-1", 4.5],
   ["status-critical", "surface-1", 4.5],
+  ["warning-ink", "status-warning", 4.5],
   // DESIGN §18.1 graphite palette (§6.3 floors; rule 7). Text 4.5:1, marks and control edges 3:1 (WCAG 2.2 1.4.11).
   ["ink", "bg", 4.5],
   ["ink", "panel", 4.5],
@@ -172,7 +173,18 @@ describe("scales", () => {
   test("--control-h is 32px, and 40 and 48 are the only other heights", () => {
     const c = px("control-h");
     expect(c["control-h"]).toBe(32);
-    expect(Object.values(c).sort()).toEqual([32, 40, 48]);
+    expect(Object.values(c).sort((a, b) => a - b)).toEqual([32, 40, 48]);
+  });
+  test("every size token, in every block, is a px length", () => {
+    // `px()` reads only the shared `:root` block; this reads every declaration, so a rem or a theme-block size gets caught.
+    const sizes = [
+      ...css.matchAll(
+        /--((?:space|radius|text|tier|control-h)(?:-[\w-]+)?):\s*([^;]+);/g,
+      ),
+    ];
+    expect(sizes.length).toBeGreaterThan(0);
+    for (const [, name, value] of sizes)
+      expect(value, `--${name}`).toMatch(/^\d+px$/);
   });
   test("the fonts are local and swap, with no remote source", () => {
     expect(css).toMatch(/--font-ui:\s*Inter,/);
