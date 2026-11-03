@@ -346,23 +346,40 @@ from the start (check 11a, unplugging while pedalling, comes in #412 part c3).
    The reconnect must reach its first page 25 within **60 s** of the drop (`check11::RECONNECT_WAIT`);
    each phase is stamped (below).
 4. **No silent resume.** The first write after the reconnect is the release (page 48 at 0 %), before
-   anything else. Then the operator answers *When the link dropped, had the trainer's lights gone out?*
-   (`out` / `on` / `unsure`) and must type `y` before ERG is engaged again, by soft start, as at a ride start
-   (ADR-0002 §6 step 2). 20 s at 90 rpm, then the usual release. The guards watch the new link from its first
-   page 25.
+   anything else. Then a page-81 request: the serial must match the one from before the drop
+   (`check11::same_trainer`; the live connect also compares the DIS serials), otherwise the run is aborted,
+   released (`a different trainer answered after the reconnect …`). Then the operator answers *When the
+   link dropped, had the trainer's lights gone out?* (`out` / `on` / `unsure`) and must type `y` (stamped)
+   before ERG is engaged again, by soft start, as at a ride start (ADR-0002 §6 step 2). 20 s at 90 rpm, then
+   the usual release. The guards watch the new link from its first page 25.
 
 **Completed** means the drop was seen and either the trainer came back and held the target for 20 s, or the
 60 s bound ran out: "no reconnect within 60 s" is a result, not a failure (the final release then fails with
-`not connected`, which the summary shows). No `y` after the reconnect, no answer, or a guard stop gives no
-result.
+`not connected`, which the summary shows). A reconnect that fails (the scan ends, the connect fails) fails
+the run with its cause, stamped `07`. No `y` after the reconnect, no answer, another trainer, or a guard stop
+gives no result.
 
-**Capture.** `# check11b <us> 01` is the stop cue (the trainer already released). The link events are
-`# link <us> <code>`: `01` the drop seen, `02` the trainer advertised again, `03` connected (live, the
-adapter's `DeviceConnected` event, so connect and discovery are timed apart), `04` services discovered and
-page 25 subscribed, `05` the first page 25 after the reconnect, `06` the bound ran out. The lights answer is
-`# answer-lights`. Stamps must come once each, in this order and never back in time
-(`frames::stamps`); a duplicate or out-of-order stamp makes the row `unknown: contradictory …`, as it does
-for check 10's window and scan stamps.
+**Capture.** `# check11b <us> 01|02` are the stop cue (the trainer already released) and the operator's `y`
+after the reconnect. The link events are `# link <us> <code>`: `01` the drop seen, `02` the trainer
+advertised again, `03` connected (live, the adapter's `DeviceConnected` event, stamped while the connect runs
+and up to 1 s after, never later, so connect and discovery are timed apart), `04` services discovered and
+page 25 subscribed, `05` the first page 25 after the reconnect, `06` the bound ran out, `07` the reconnect
+failed. The lights answer is `# answer-lights`.
+
+**Validation** (`check11::validate`, the same for the live row and `analyse`). The stamps must follow the
+procedure, or the row is `unknown: <the breach>`:
+
+- the link events as a state machine: `01` first; then `02`, `03` (optional: the adapter's event is not
+  guaranteed), `04`, `05` in that order; `06` or `07` may end it after any of them; `05`, `06` and `07`
+  exclude each other and end the sequence; never back in time;
+- the drop within 90 s of the stop cue (plus 0.2 s for the 100 ms poll); `05` within 60 s of the drop; `06`
+  not before 60 s;
+- the `y` only after `05`, and no control but the release between `05` and the `y`;
+- after `05`, one page-81 serial on each side of the drop, the same (a redacted capture compares its
+  redacted serials, which are alike; the live run compared the real ones).
+
+Duplicate or out-of-order stamps of check 10's window and scan are `unknown: contradictory …` the same way
+(`frames::stamps`).
 
 **Result** (`check11.rs` `check11b`):
 

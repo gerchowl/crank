@@ -70,6 +70,68 @@ pub async fn connect_of(
     false
 }
 
+/// The unit reconnected is the one first connected: their DIS serials differ only for another
+/// unit (a missing one is left to the page-81 check, `check11::same_trainer`).
+pub fn same_unit(first: &DeviceInfo, again: &DeviceInfo) -> Result<()> {
+    match (&first.serial, &again.serial) {
+        (Some(a), Some(b)) if a != b => {
+            Err("a different trainer answered after the reconnect (DIS serials differ)".into())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Aborts its task when dropped, so a watcher never outlives the call that started it.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// A reconnect apart from btleplug: `open` connects, discovers and subscribes; `events` are the
+/// adapter's, as [`connect_of`] reads them. The connect event of `device` is stamped
+/// `# link <us> 03` while `open` runs and up to 1 s after; the watcher is aborted when this returns
+/// or is dropped (a cancelled reconnect), so no stamp lands later. On success the new link's
+/// frames are pumped into `log` and `capture`, in place of the old link's pump in `slot`.
+pub async fn relink(
+    open: impl std::future::Future<
+        Output = std::result::Result<
+            (DeviceInfo, crank_ble::Notifications),
+            crank_devices::DeviceError,
+        >,
+    >,
+    events: impl futures_util::Stream<Item = Option<String>> + Send + Unpin + 'static,
+    device: DeviceRef,
+    clock: &Arc<MonotonicClock>,
+    capture: &Arc<Capture>,
+    log: &Arc<Mutex<Vec<Rx>>>,
+    slot: &Mutex<tokio::task::JoinHandle<Option<String>>>,
+) -> Result<DeviceInfo> {
+    use crate::check11::{CONNECTED, LINK};
+    let (stamp_clock, stamp_capture) = (clock.clone(), capture.clone());
+    let mut watcher = AbortOnDrop(tokio::spawn(async move {
+        if connect_of(events, &device).await {
+            return stamp_capture
+                .record_aux(stamp_clock.now(), LINK, &[CONNECTED])
+                .err();
+        }
+        None
+    }));
+    let opened = open.await;
+    // The connect event is already queued once the link is open; give it 1 s, then stop watching.
+    let recorded = tokio::time::timeout(Duration::from_secs(1), &mut watcher.0).await;
+    drop(watcher);
+    let (info, notifications) = opened?;
+    if let Ok(Ok(Some(e))) = recorded {
+        return Err(format!("capture: {e}").into());
+    }
+    *slot.lock().unwrap_or_else(PoisonError::into_inner) =
+        pump(notifications, log.clone(), capture.clone());
+    Ok(info)
+}
+
 /// Default adapter of the first BLE manager.
 pub async fn adapter() -> Result<Adapter> {
     let manager = Manager::new().await?;
@@ -248,38 +310,27 @@ impl Session {
     }
 
     /// After a drop: connect again, discover and subscribe, and pump the new link's frames into
-    /// the same log and capture. The adapter's connect event for this peripheral is recorded as
-    /// `# link <us> 03` when it comes (`CoreBluetooth` reports it before discovery starts).
+    /// the same log and capture ([`relink`]). A unit whose DIS serial differs from the one first
+    /// connected is refused (its link is up, so the caller's release still reaches it).
     pub async fn reconnect(&self) -> Result<()> {
-        use crate::check11::{CONNECTED, LINK};
         let events = self.adapter.events().await?.map(|e| match e {
             CentralEvent::DeviceConnected(p) => Some(p.to_string()),
             _ => None,
         });
-        let (clock, capture, device) = (
-            self.clock.clone(),
-            self.capture.clone(),
-            self.device.clone(),
-        );
-        let connected = tokio::spawn(async move {
-            if connect_of(events, &device).await {
-                return capture.record_aux(clock.now(), LINK, &[CONNECTED]).err();
-            }
-            None
-        });
-        let opened = self
+        let open = self
             .transport
-            .connect(self.device.clone(), self.clock.clone())
-            .await;
-        // The connect event is already queued once the link is open; wait for it briefly.
-        let recorded = tokio::time::timeout(Duration::from_secs(1), connected).await;
-        let (_, notifications) = opened?;
-        if let Ok(Ok(Some(e))) = recorded {
-            return Err(format!("capture: {e}").into());
-        }
-        *self.pump.lock().unwrap_or_else(PoisonError::into_inner) =
-            pump(notifications, self.log.clone(), self.capture.clone());
-        Ok(())
+            .connect(self.device.clone(), self.clock.clone());
+        let info = relink(
+            open,
+            events,
+            self.device.clone(),
+            &self.clock,
+            &self.capture,
+            &self.log,
+            &self.pump,
+        )
+        .await?;
+        same_unit(&self.info, &info)
     }
 
     /// Number of frames received so far (use as a `since` mark).
@@ -387,10 +438,13 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::{attributed, bounded, connect_of};
+    use super::{Rx, attributed, bounded, connect_of, relink, same_unit};
     use crank_ble::{Advertisement, Advertisements};
+    use crank_ble::{Capture, MonotonicClock};
     use crank_devices::DeviceRef;
+    use crank_devices::{Clock, DeviceInfo, MonoTime};
     use futures_util::{StreamExt, stream::BoxStream};
+    use std::sync::{Arc, Mutex};
 
     /// A scan that reports these devices' advertisements, in order, then ends.
     struct Scan(&'static [&'static str]);
@@ -411,6 +465,155 @@ mod tests {
         let scan = Scan(&["phone", "neo", "watch", "neo-2", "neo", "phone"]);
         let seen: Vec<bool> = attributed(&scan, DeviceRef("neo".into())).collect().await;
         assert_eq!(seen, [false, true, false, false, true, false]);
+    }
+
+    /// What a reconnect feeds: a capture in `dir`, an empty log and the old link's ended pump.
+    struct Parts {
+        clock: Arc<MonotonicClock>,
+        capture: Arc<Capture>,
+        path: std::path::PathBuf,
+        log: Arc<Mutex<Vec<Rx>>>,
+        slot: Mutex<tokio::task::JoinHandle<Option<String>>>,
+    }
+
+    impl Parts {
+        fn new(dir: &tempfile::TempDir) -> Self {
+            let clock = Arc::new(MonotonicClock::default());
+            let path = dir.path().join("check11b.fecap");
+            let capture = Arc::new(Capture::create(&path, clock.now()).expect("capture"));
+            Self {
+                clock,
+                capture,
+                path,
+                log: Arc::new(Mutex::new(Vec::new())),
+                slot: Mutex::new(tokio::spawn(async { None })),
+            }
+        }
+
+        fn link_lines(&self) -> usize {
+            std::fs::read_to_string(&self.path)
+                .expect("read")
+                .lines()
+                .filter(|l| l.starts_with("# link "))
+                .count()
+        }
+
+        async fn relink(
+            &self,
+            open: impl std::future::Future<
+                Output = Result<(DeviceInfo, crank_ble::Notifications), crank_devices::DeviceError>,
+            >,
+            events: BoxStream<'static, Option<String>>,
+        ) -> super::Result<DeviceInfo> {
+            let (clock, capture, log) = (&self.clock, &self.capture, &self.log);
+            relink(
+                open,
+                events,
+                DeviceRef("neo".into()),
+                clock,
+                capture,
+                log,
+                &self.slot,
+            )
+            .await
+        }
+    }
+
+    /// Adapter events sent through the returned channel.
+    fn events() -> (
+        tokio::sync::mpsc::UnboundedSender<Option<String>>,
+        BoxStream<'static, Option<String>>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let stream =
+            futures_util::stream::unfold(
+                rx,
+                |mut rx| async move { rx.recv().await.map(|e| (e, rx)) },
+            );
+        (tx, stream.boxed())
+    }
+
+    /// A link that delivers one page-25 frame.
+    fn opened() -> (DeviceInfo, crank_ble::Notifications) {
+        let frame = vec![0xa4, 9, 0x4e, 5, 25, 0, 90, 0, 0, 100, 0, 0x30, 0];
+        (
+            DeviceInfo::default(),
+            futures_util::stream::iter(vec![Ok((MonoTime(1), frame))]).boxed(),
+        )
+    }
+
+    #[test]
+    fn a_reconnect_to_another_units_serial_is_refused() {
+        let unit = |serial: Option<&str>| DeviceInfo {
+            serial: serial.map(String::from),
+            ..DeviceInfo::default()
+        };
+        assert!(same_unit(&unit(Some("1")), &unit(Some("1"))).is_ok());
+        assert!(same_unit(&unit(Some("1")), &unit(None)).is_ok());
+        assert!(same_unit(&unit(None), &unit(Some("2"))).is_ok());
+        assert_eq!(
+            same_unit(&unit(Some("1")), &unit(Some("2"))).map_err(|e| e.to_string()),
+            Err("a different trainer answered after the reconnect (DIS serials differ)".into())
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reconnect_pumps_the_new_link_and_stamps_only_the_trainers_connect() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let parts = Parts::new(&dir);
+        let (tx, ev) = events();
+        for e in [None, Some("phone"), Some("neo")] {
+            tx.send(e.map(String::from)).expect("send");
+        }
+        parts
+            .relink(async { Ok(opened()) }, ev)
+            .await
+            .expect("relinked");
+        for _ in 0..100 {
+            if !parts.log.lock().expect("log").is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            parts.log.lock().expect("log").len(),
+            1,
+            "the new pump feeds the log"
+        );
+        assert_eq!(parts.link_lines(), 1);
+        // A failed connect installs nothing and stamps nothing without the event.
+        let parts = Parts::new(&tempfile::tempdir().expect("tmp"));
+        let (_tx, ev) = events();
+        let failed = parts
+            .relink(async { Err(crank_devices::DeviceError::NotFound) }, ev)
+            .await;
+        assert!(failed.is_err());
+        assert!(parts.slot.lock().expect("slot").is_finished());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_connect_stamp_lands_after_a_reconnect_returned_or_was_cancelled() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let parts = Parts::new(&dir);
+        let (tx, ev) = events();
+        parts
+            .relink(async { Ok(opened()) }, ev)
+            .await
+            .expect("relinked");
+        tx.send(Some("neo".into())).expect("send");
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert_eq!(parts.link_lines(), 0, "late event after the return");
+        let (tx, ev) = events();
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            parts.relink(std::future::pending(), ev),
+        )
+        .await;
+        assert!(cancelled.is_err());
+        // The send fails or is never read: the watcher is gone with the cancelled call.
+        let _ = tx.send(Some("neo".into()));
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        assert_eq!(parts.link_lines(), 0, "event after the cancel");
     }
 
     #[tokio::test]

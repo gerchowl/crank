@@ -712,41 +712,20 @@ async fn check10<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop
     Ok(())
 }
 
-/// #44 check 11b, the unplugged stop (#412 part c2): ERG at [`crate::check11::TARGET_W`] by soft
-/// start, then the release and the cue to stop until the lights go out. Silence is expected now,
-/// so only the link counts, bounded by [`crate::check11::DROP_WAIT`]. Once it drops, the rider
-/// pedals to wake the trainer and the harness reconnects within
-/// [`crate::check11::RECONNECT_WAIT`], stamping each phase. Control never resumes silently: the
-/// first write after the reconnect is the release, then the operator answers
-/// [`crate::check11::LIGHTS`] and must type `y` before ERG is engaged again by soft start.
-///
-/// Completed means the drop was observed and either the trainer came back and held the target
-/// 20 s, or the reconnect bound ran out (a result: no reconnect).
-async fn check11b<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
+/// Check 11b after the drop: the wake cue, then the trainer back within
+/// [`crate::check11::RECONNECT_WAIT`] (seen in the scan, reconnected, first page 25), each phase
+/// stamped. `Some((drop, mark))` once back (capture time of the drop, the rx mark before the
+/// reconnect); `None` when the bound ran out (stamped 06, the lights asked unguarded: the link is
+/// down); a failed reconnect is stamped 07 and fails the run.
+async fn back_after_drop<W: Wire, O: Operator>(
+    r: &mut Rig<'_, W, O>,
+) -> Result<Option<(u64, usize)>, Stop> {
     use crate::check10::ANSWER_WAIT;
     use crate::check11::{
-        DETECTED, DROP_WAIT, FIRST_PAGE25, GAVE_UP, LIGHTS, LINK, READY, RECONNECT_WAIT, SEEN,
-        STOPPING, TARGET_W, WINDOW,
+        DETECTED, FAILED, FIRST_PAGE25, GAVE_UP, LIGHTS, LINK, READY, RECONNECT_WAIT, SEEN,
     };
-    r.engage(TARGET_W).await?;
-    r.cue(Cue::Cadence(90));
-    r.hold(HOLD).await?;
-    // A stopping rider under ERG is what §7.4 releases: release first, then cue the stop.
-    r.guard = Guard::Sim;
-    r.write(&ControlPage::BasicResistance { pct: 0.0 }).await?;
-    r.note(WINDOW, &[STOPPING])?;
-    r.cue(Cue::LightsOut);
-    let deadline = Instant::now() + DROP_WAIT;
-    while !r.w.dropped() {
-        if Instant::now() >= deadline {
-            return Err(Stop::Aborted(format!(
-                "the link did not drop within {} s of the stop cue (is the trainer unplugged?)",
-                DROP_WAIT.as_secs()
-            )));
-        }
-        sleep(POLL).await;
-    }
     r.note(LINK, &[DETECTED])?;
+    let detected = r.w.now_us();
     r.cue(Cue::Wake);
     let deadline = Instant::now() + RECONNECT_WAIT;
     let mark = r.w.mark();
@@ -775,18 +754,88 @@ async fn check11b<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Sto
         }
         r.note(LINK, &[FIRST_PAGE25])
     };
-    if tokio::time::timeout_at(deadline, back).await.is_err() {
+    let reconnected = tokio::time::timeout_at(deadline, back).await;
+    if let Ok(Err(e)) = reconnected {
+        r.note(LINK, &[FAILED])?;
+        return Err(e);
+    }
+    if reconnected.is_err() {
         r.note(LINK, &[GAVE_UP])?;
         let answer = tokio::time::timeout(ANSWER_WAIT, r.op.ask(LIGHTS.text, LIGHTS.options)).await;
         if let Ok(Some(a)) = answer {
             r.note(&crate::check10::answer_tag(LIGHTS.key), a.as_bytes())?;
         }
-        return Ok(());
+        return Ok(None);
     }
+    Ok(Some((detected, mark)))
+}
+
+/// #44 check 11b, the unplugged stop (#412 part c2): ERG at [`crate::check11::TARGET_W`] by soft
+/// start, then the release and the cue to stop until the lights go out. Silence is expected now,
+/// so only the link counts, bounded by [`crate::check11::DROP_WAIT`]. Once it drops, the rider
+/// pedals to wake the trainer and the harness reconnects within
+/// [`crate::check11::RECONNECT_WAIT`], stamping each phase. Control never resumes silently: the
+/// first write after the reconnect is the release, then the operator answers
+/// [`crate::check11::LIGHTS`] and must type `y` before ERG is engaged again by soft start.
+///
+/// After the release, the trainer's page-81 serial must match the one before the drop
+/// ([`crate::check11::same_trainer`]); a different unit aborts the run (released).
+///
+/// Completed means the drop was observed and either the trainer came back and held the target
+/// 20 s, or the reconnect bound ran out (a result: no reconnect). A failed reconnect (the scan
+/// ended, the connect failed) fails the run, stamped `# link 07`.
+async fn check11b<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
+    use crate::check10::ANSWER_WAIT;
+    use crate::check11::{CONFIRMED, DROP_WAIT, LIGHTS, STOPPING, TARGET_W, WINDOW, same_trainer};
+    r.engage(TARGET_W).await?;
+    r.cue(Cue::Cadence(90));
+    r.hold(HOLD).await?;
+    // A stopping rider under ERG is what §7.4 releases: release first, then cue the stop.
+    r.guard = Guard::Sim;
+    r.write(&ControlPage::BasicResistance { pct: 0.0 }).await?;
+    r.note(WINDOW, &[STOPPING])?;
+    r.cue(Cue::LightsOut);
+    let deadline = Instant::now() + DROP_WAIT;
+    while !r.w.dropped() {
+        if Instant::now() >= deadline {
+            return Err(Stop::Aborted(format!(
+                "the link did not drop within {} s of the stop cue (is the trainer unplugged?)",
+                DROP_WAIT.as_secs()
+            )));
+        }
+        sleep(POLL).await;
+    }
+    let Some((detected, mark)) = back_after_drop(r).await? else {
+        return Ok(());
+    };
+    let w = r.w;
     // From here the guards watch the new link, from its first page 25 (which resets the silence).
     (r.seen, r.low_since) = (mark, None);
     r.recent.clear();
+    let back = r.w.now_us();
     r.write(&ControlPage::BasicResistance { pct: 0.0 }).await?;
+    // The same trainer? Its page-81 serial (a read-only request), against the one before the drop.
+    let asked = r.w.mark();
+    r.write(&ControlPage::Request { page: 81, times: 1 })
+        .await?;
+    let serial = async {
+        while !w
+            .since(asked)
+            .iter()
+            .any(|f| page_of(&f.bytes) == Some(0x51))
+        {
+            sleep(Duration::from_millis(10)).await;
+        }
+    };
+    if r.during(&mut None, Instant::now() + WRITE_WAIT, serial)
+        .await?
+        .is_none()
+    {
+        return Err(Stop::Aborted(
+            "no page-81 serial within 2 s of the reconnect: the trainer is not confirmed".into(),
+        ));
+    }
+    same_trainer(&r.w.records(), detected, back).map_err(Stop::Aborted)?;
     let until = Instant::now() + ANSWER_WAIT;
     r.answer(&mut None, until, &LIGHTS).await?;
     let op = r.op;
@@ -800,7 +849,7 @@ async fn check11b<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Sto
         )
         .await?;
     match confirmed {
-        Some(true) => {}
+        Some(true) => r.note(WINDOW, &[CONFIRMED])?,
         Some(false) => return Err(Stop::Aborted("not confirmed after the reconnect".into())),
         None => {
             return Err(Stop::Aborted(format!(
@@ -2454,12 +2503,11 @@ mod tests {
 
     /// The link stamps `(code, at_us)` of a run.
     fn link_stamps(sim: &Sim) -> Vec<(u8, u64)> {
-        crate::frames::stamps(
-            &sim.notes(),
-            crate::check11::LINK,
-            &crate::check11::LINK_ORDER,
-        )
-        .expect("ordered")
+        sim.notes()
+            .into_iter()
+            .filter(|n| n.tag == crate::check11::LINK)
+            .map(|n| (n.bytes[0], n.at_us))
+            .collect()
     }
 
     #[tokio::test(start_paused = true)]
@@ -2522,6 +2570,11 @@ mod tests {
             .map(|c| c.0)
             .expect("re-engaged");
         assert!(first_erg >= answered, "{first_erg} {answered}");
+        let y = event_at(&sim, crate::check11::WINDOW, crate::check11::CONFIRMED);
+        assert!(
+            (answered..=first_erg).contains(&y),
+            "the y is stamped before any ERG"
+        );
         let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
         assert_eq!(v["cause"], json!("power-off (the lights went out)"));
         let reconnect = v["reconnect"].as_str().expect("reconnect");
@@ -2529,7 +2582,6 @@ mod tests {
             reconnect.contains("connected +4.") && reconnect.contains("discovered +"),
             "{v}"
         );
-        assert_eq!(v["after_reconnect"]["first_write_was_release"], json!(true));
         let held = v["after_reconnect"]["erg_mean_power_w"]
             .as_f64()
             .expect("held");
@@ -2608,6 +2660,60 @@ mod tests {
         );
         assert_eq!(v["after_reconnect"], Value::Null);
         assert_eq!(v["cause"], json!("power-off (the lights went out)"));
+    }
+
+    /// A reconnect that fails (here the scan ends) fails the run with its cause, stamped 07.
+    #[tokio::test(start_paused = true)]
+    async fn check11b_a_failed_reconnect_fails_with_its_cause() {
+        let plan = Plan {
+            answers: &["out"],
+            scan_ends_at_us: Some(1),
+            ..Plan::default()
+        };
+        let (sim, report) = run11b(plan, crate::sim::Dropout::default()).await;
+        assert_eq!(
+            report.procedure,
+            Err(Stop::Failed(
+                "the scan ended before the trainer advertised again".into()
+            ))
+        );
+        assert_eq!(
+            link_stamps(&sim).iter().map(|l| l.0).collect::<Vec<_>>(),
+            [1, 7]
+        );
+        let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
+        assert_eq!(v["verdict"], Value::Null);
+    }
+
+    /// Another unit answering after the reconnect aborts the run, released, before any control.
+    #[tokio::test(start_paused = true)]
+    async fn check11b_another_trainer_after_the_reconnect_aborts_released() {
+        let plan = Plan {
+            answers: &["out"],
+            ..Plan::default()
+        };
+        let d = crate::sim::Dropout {
+            other_trainer: true,
+            ..crate::sim::Dropout::default()
+        };
+        let (sim, report) = run11b(plan, d).await;
+        assert_eq!(
+            report.procedure,
+            Err(Stop::Aborted(
+                "a different trainer answered after the reconnect (page-81 serials differ)".into()
+            ))
+        );
+        assert_released(&sim, &report);
+        let back = crate::frames::stamp(&link_stamps(&sim), crate::check11::FIRST_PAGE25)
+            .expect("reconnected");
+        assert!(
+            controls(&sim.records())
+                .iter()
+                .filter(|(t, _)| *t >= back)
+                .all(|(_, c)| *c == Control::Resistance(0.0))
+        );
+        let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
+        assert_eq!(v["verdict"], Value::Null);
     }
 
     #[tokio::test(start_paused = true)]

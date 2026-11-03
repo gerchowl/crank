@@ -90,6 +90,8 @@ pub struct Dropout {
     pub discover_us: u64,
     /// The answer to the confirmation after the reconnect.
     pub confirms_again: bool,
+    /// After the reconnect, another unit answers (its page-81 serial differs).
+    pub other_trainer: bool,
 }
 
 impl Default for Dropout {
@@ -100,6 +102,7 @@ impl Default for Dropout {
             connect_us: 700_000,
             discover_us: 1_200_000,
             confirms_again: true,
+            other_trainer: false,
         }
     }
 }
@@ -244,6 +247,7 @@ struct State {
     cps: Vec<Cps>,
     notes: Vec<Note>,
     linked: bool,
+    rebooted: bool,
     stopping: bool,
     still_since: Option<u64>,
     confirmations: u8,
@@ -317,6 +321,7 @@ impl Sim {
                 cps: Vec::new(),
                 notes: Vec::new(),
                 linked: true,
+                rebooted: false,
                 stopping: false,
                 still_since: None,
                 confirmations: 0,
@@ -491,7 +496,9 @@ impl Sim {
         }
         while st.serial_replies.first().is_some_and(|due| *due <= now) {
             st.serial_replies.remove(0);
-            let [a, b, c, d] = self.plan.serial.unwrap_or(0xffff_ffff).to_le_bytes();
+            let other = st.rebooted && self.dropout.is_some_and(|d| d.other_trainer);
+            let serial = self.plan.serial.unwrap_or(0xffff_ffff) ^ u32::from(other);
+            let [a, b, c, d] = serial.to_le_bytes();
             emit(
                 st,
                 now,
@@ -578,7 +585,8 @@ impl Wire for Sim {
         self.note(crate::check11::LINK, &[crate::check11::CONNECTED]);
         tokio::time::sleep(Duration::from_micros(d.discover_us)).await;
         self.advance();
-        self.lock().linked = true;
+        let mut s = self.lock();
+        (s.linked, s.rebooted) = (true, true);
         None
     }
     fn adverts(&self) -> BoxStream<'static, bool> {

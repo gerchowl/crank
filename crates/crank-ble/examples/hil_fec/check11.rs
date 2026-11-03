@@ -4,13 +4,14 @@
 //! (ADR-0002 §6).
 //!
 //! The procedure (`rider.rs`) stamps its events into the capture, so `analyse` reproduces the live
-//! row: `# check11b <us> 01` (the stop cue, the trainer already released) and the link events
-//! `# link <us> 01..06` ([`DETECTED`] … [`GAVE_UP`]; [`CONNECTED`] comes from the adapter's
-//! connect event, the others from the procedure), plus the operator's `# answer-lights`.
+//! row: `# check11b <us> 01|02` (the stop cue, the trainer already released; the operator's `y`
+//! after the reconnect) and the link events `# link <us> 01..07` ([`DETECTED`] … [`FAILED`];
+//! [`CONNECTED`] comes from the adapter's connect event, the others from the procedure), plus the
+//! operator's `# answer-lights`. [`validate`] holds them to the procedure's rules, live and offline.
 use crate::{
     check10::{Question, answer},
-    frames::{Note, Record, stamp, stamps},
-    partb::{Control, controls, mean, procedure_end, round1, samples, secs},
+    frames::{Note, Record, page_of, stamp, stamps},
+    partb::{Control, SEC, controls, mean, procedure_end, round1, samples, secs},
 };
 use crank_fec::{Page, decode};
 use serde_json::{Value, json};
@@ -20,6 +21,8 @@ use std::time::Duration;
 pub const WINDOW: &str = "check11b";
 /// The stop cue, given with the trainer released.
 pub const STOPPING: u8 = 1;
+/// The operator's `y` after the reconnect, before any control.
+pub const CONFIRMED: u8 = 2;
 /// Tag of the link events.
 pub const LINK: &str = "link";
 /// The harness saw the link drop.
@@ -34,10 +37,13 @@ pub const READY: u8 = 4;
 pub const FIRST_PAGE25: u8 = 5;
 /// The reconnect bound ran out.
 pub const GAVE_UP: u8 = 6;
-/// The order the link events come in.
-pub const LINK_ORDER: [u8; 6] = [DETECTED, SEEN, CONNECTED, READY, FIRST_PAGE25, GAVE_UP];
+/// The reconnect failed (the scan ended, the connect failed): the run fails.
+pub const FAILED: u8 = 7;
 /// The link must drop within this time of the stop cue.
 pub const DROP_WAIT: Duration = Duration::from_secs(90);
+/// The procedure polls the link every 100 ms while it waits for the drop, so a drop just before
+/// the bound is stamped up to this much after it.
+const POLL_SLACK_US: u64 = 200_000;
 /// The trainer must be back (first page 25) within this time of the drop.
 pub const RECONNECT_WAIT: Duration = Duration::from_mins(1);
 /// The ERG target before the stop and after the reconnect, W.
@@ -58,6 +64,134 @@ fn cause(notes: &[Note]) -> String {
         Ok(_) => "unknown: the operator was unsure about the lights".into(),
         Err(why) => format!("unknown: {why} to whether the lights went out"),
     }
+}
+
+/// The legal link transitions: the drop first; the phases in order, `connected` optional (the
+/// adapter's event is not guaranteed); one end at most: first page 25, gave up or failed.
+fn follows(prev: Option<u8>, code: u8) -> bool {
+    match prev {
+        None => code == DETECTED,
+        Some(DETECTED) => matches!(code, SEEN | GAVE_UP | FAILED),
+        Some(SEEN) => matches!(code, CONNECTED | READY | GAVE_UP | FAILED),
+        Some(CONNECTED) => matches!(code, READY | GAVE_UP | FAILED),
+        Some(READY) => matches!(code, FIRST_PAGE25 | GAVE_UP | FAILED),
+        Some(_) => false,
+    }
+}
+
+/// The page-81 serials (bytes 8-11) of the rx frames in `from..to`, deduplicated.
+fn serials(records: &[Record], from: u64, to: u64) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = records
+        .iter()
+        .filter(|r| r.rx && r.at_us >= from && r.at_us < to && page_of(&r.bytes) == Some(0x51))
+        .filter_map(|r| r.bytes.get(8..12).map(<[u8]>::to_vec))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The trainer after the reconnect (from `back`) is the one before the drop: one page-81 serial on
+/// each side, the same. A redacted capture compares its redacted serials, which `redact` writes
+/// alike on both sides; the live run compared the real ones.
+pub fn same_trainer(records: &[Record], drop: u64, back: u64) -> Result<(), String> {
+    match (
+        &serials(records, 0, drop)[..],
+        &serials(records, back, u64::MAX)[..],
+    ) {
+        ([a], [b]) if a == b => Ok(()),
+        ([_], [_]) => {
+            Err("a different trainer answered after the reconnect (page-81 serials differ)".into())
+        }
+        ([], _) | (_, []) => Err("no page-81 serial on one side of the drop".into()),
+        _ => Err("page-81 serials disagree on one side of the drop".into()),
+    }
+}
+
+/// A run's stamps, held to the procedure's rules.
+struct Run {
+    stop: u64,
+    link: Vec<(u8, u64)>,
+}
+
+/// Check 11b's stamps against the procedure: the link events as a state machine ([`follows`]),
+/// never back in time; the drop within 90 s of the stop cue; the first page 25 within 60 s of
+/// the drop, and "gave up" not before that; the operator's `y` only after the reconnect, no
+/// control but the release between the reconnect and it; the same trainer on both sides. `Err`
+/// names the first breach, which makes the row `unknown`.
+fn validate(records: &[Record], notes: &[Note]) -> Result<Run, String> {
+    let window = stamps(notes, WINDOW, &[STOPPING, CONFIRMED])?;
+    let stop = stamp(&window, STOPPING).ok_or("the capture has no stop cue")?;
+    let mut link: Vec<(u8, u64)> = Vec::new();
+    for n in notes.iter().filter(|n| n.tag == LINK) {
+        let prev = link.last().copied();
+        match n.bytes[..] {
+            [code] if follows(prev.map(|p| p.0), code) && prev.is_none_or(|p| n.at_us >= p.1) => {
+                link.push((code, n.at_us));
+            }
+            _ => {
+                return Err(format!(
+                    "contradictory link stamps: {:02X?} at {} us after {link:02X?}",
+                    n.bytes, n.at_us
+                ));
+            }
+        }
+    }
+    let detected = stamp(&link, DETECTED).ok_or("the capture has no drop")?;
+    let after_s = |at: u64, from: u64| round1(secs(at.saturating_sub(from)));
+    if detected < stop {
+        return Err("contradictory: the drop is stamped before the stop cue".into());
+    }
+    if detected > stop + DROP_WAIT.as_secs() * SEC + POLL_SLACK_US {
+        return Err(format!(
+            "the drop is stamped {} s after the stop cue, past the {} s bound",
+            after_s(detected, stop),
+            DROP_WAIT.as_secs()
+        ));
+    }
+    let bound = detected + RECONNECT_WAIT.as_secs() * SEC;
+    let back = stamp(&link, FIRST_PAGE25);
+    if let Some(at) = back.filter(|at| *at > bound) {
+        return Err(format!(
+            "the first page 25 is stamped {} s after the drop, past the {} s bound",
+            after_s(at, detected),
+            RECONNECT_WAIT.as_secs()
+        ));
+    }
+    if let Some(at) = stamp(&link, GAVE_UP).filter(|at| *at < bound) {
+        return Err(format!(
+            "the reconnect is stamped given up {} s after the drop, before the {} s bound",
+            after_s(at, detected),
+            RECONNECT_WAIT.as_secs()
+        ));
+    }
+    let confirmed = stamp(&window, CONFIRMED);
+    if confirmed.is_some_and(|y| back.is_none_or(|b| y < b)) {
+        return Err(
+            "contradictory: the operator's y is stamped without a reconnect before it".into(),
+        );
+    }
+    if let Some(back) = back {
+        let ctl = controls(records);
+        let first = ctl.iter().find(|(at, _)| *at >= back);
+        if let Some((at, c)) = first.filter(|(_, c)| *c != Control::Resistance(0.0)) {
+            return Err(format!(
+                "the first write after the reconnect was {c:?} ({} s after it), not the release",
+                after_s(*at, back)
+            ));
+        }
+        let early = ctl.into_iter().find(|(at, c)| {
+            *at >= back && confirmed.is_none_or(|y| *at < y) && *c != Control::Resistance(0.0)
+        });
+        if let Some((at, c)) = early {
+            return Err(format!(
+                "{c:?} written {} s after the reconnect, before the operator's y",
+                after_s(at, back)
+            ));
+        }
+        same_trainer(records, detected, back)?;
+    }
+    Ok(Run { stop, link })
 }
 
 /// The FE state code of page 25 as the ANT+ FE profile names it.
@@ -85,6 +219,9 @@ fn reconnect(link: &[(u8, u64)], detected: u64) -> String {
         phase(READY, "discovered"),
     ]
     .join(", ");
+    if stamp(link, FAILED).is_some() {
+        return format!("failed ({phases})");
+    }
     match (stamp(link, FIRST_PAGE25), stamp(link, GAVE_UP)) {
         (Some(at), _) => format!(
             "{} s to the first page 25 ({phases})",
@@ -98,8 +235,8 @@ fn reconnect(link: &[(u8, u64)], detected: u64) -> String {
     }
 }
 
-/// What the trainer did after the reconnect: its first page 25 (sent before any write), whether
-/// the first write was the release, and how the re-engaged ERG target was held.
+/// What the trainer did after the reconnect: its first page 25 (sent before any write) and how the
+/// re-engaged ERG target was held ([`validate`] has made sure the release came first).
 fn after(records: &[Record], first: u64) -> Value {
     let page25 = records
         .iter()
@@ -110,7 +247,6 @@ fn after(records: &[Record], first: u64) -> Value {
         });
     let ctl = controls(records);
     let later: Vec<&(u64, Control)> = ctl.iter().filter(|(at, _)| *at >= first).collect();
-    let released_first = later.first().map(|(_, c)| *c == Control::Resistance(0.0));
     let erg = later
         .iter()
         .rev()
@@ -130,28 +266,19 @@ fn after(records: &[Record], first: u64) -> Value {
         "first_page25_fe_state": page25.map(|t| fe_state(t.state)),
         "first_page25_target_limit": page25.map(|t| t.target_limit),
         "first_page25_power_w": page25.and_then(|t| t.power_w),
-        "first_write_was_release": released_first,
         "erg_mean_power_w": held.map(round1),
     })
 }
 
 /// The result of check 11b from the capture's records and notes.
 pub fn check11b(records: &[Record], notes: &[Note]) -> Value {
-    let method = "drop = the link 01 stamp after the check11b 01 stop cue; trainer ran on = its last page 25 before the drop; reconnect = the link stamps from the drop (seen 02, connected 03, discovered 04, first page 25 05; 06 = the 60 s bound ran out); after = the first page 25 after the reconnect, whether the first write after it was page 48 at 0 %, and the mean power from 5 s after the re-engaged ERG target to the release; cause = the operator's lights answer";
+    let method = "stamps validated first (link events as a state machine, the 90 s and 60 s bounds, the operator's y before any control after the reconnect, the same page-81 serial on both sides), else unknown; drop = the link 01 stamp after the check11b 01 stop cue; trainer ran on = its last page 25 before the drop; reconnect = the link stamps from the drop (seen 02, connected 03, discovered 04, first page 25 05; 06 = the 60 s bound ran out); after = the first page 25 after the reconnect, whether the first write after it was page 48 at 0 %, and the mean power from 5 s after the re-engaged ERG target to the release; cause = the operator's lights answer";
     let unknown = |why: String| json!({ "method": method, "drop": Value::Null, "verdict": format!("unknown: {why}") });
-    let (stop, link) = match (
-        stamps(notes, WINDOW, &[STOPPING]),
-        stamps(notes, LINK, &LINK_ORDER),
-    ) {
-        (Ok(s), Ok(l)) => (stamp(&s, STOPPING), l),
-        (Err(why), _) | (_, Err(why)) => return unknown(why),
+    let Run { stop, link } = match validate(records, notes) {
+        Ok(run) => run,
+        Err(why) => return unknown(why),
     };
-    let (Some(stop), Some(detected)) = (stop, stamp(&link, DETECTED)) else {
-        return unknown("the capture has no stop cue and drop".into());
-    };
-    if detected < stop {
-        return unknown("contradictory: the drop is stamped before the stop cue".into());
-    }
+    let detected = stamp(&link, DETECTED).unwrap_or(stop);
     let ran_on = samples(records)
         .iter()
         .rev()
@@ -169,9 +296,8 @@ pub fn check11b(records: &[Record], notes: &[Note]) -> Value {
         || "no".to_string(),
         |a| {
             format!(
-                "page 25 first at FE state {}; first write the release: {}; ERG {TARGET_W} W held at {} W",
+                "page 25 first at FE state {}; released first; ERG {TARGET_W} W held at {} W",
                 a["first_page25_fe_state"].as_str().unwrap_or("unknown"),
-                a["first_write_was_release"],
                 a["erg_mean_power_w"]
             )
         },
@@ -211,10 +337,26 @@ mod tests {
         n
     }
 
+    /// A page-81 reply at `at_ms` with serial `serial`.
+    fn p81(at_ms: u64, serial: u8) -> Record {
+        let mut f = [0xa4, 9, 0x4e, 5, 0x51, 0xff, 0xff, 1, serial, 0, 0, 0, 0];
+        f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
+        Record {
+            at_us: at_ms * 1000,
+            rx: true,
+            bytes: f.to_vec(),
+        }
+    }
+
+    /// The same trainer's serial before the drop and after a reconnect at `back_ms`.
+    fn trainer(back_ms: u64) -> Vec<Record> {
+        vec![p81(1_000, 7), p81(back_ms + 100, 7)]
+    }
+
     #[test]
     fn the_reconnect_is_measured_phase_by_phase_from_the_drop() {
         let v = check11b(
-            &[],
+            &trainer(46_300),
             &link(&[
                 (1, 40_000),
                 (2, 44_200),
@@ -233,7 +375,7 @@ mod tests {
         );
         // A phase without its stamp is unknown, not guessed.
         let v = check11b(
-            &[],
+            &trainer(46_300),
             &link(&[(1, 40_000), (2, 44_200), (4, 46_100), (5, 46_300)]),
         );
         assert_eq!(
@@ -296,19 +438,150 @@ mod tests {
             (4, 45_000),
             (5, 45_200),
         ]);
+        let notes = [notes, vec![note(WINDOW, 49_000, &[CONFIRMED])]].concat();
         let erg = crank_fec::ControlPage::TargetPower { watts: 100.0 };
         let mut records = vec![p25(45_200, 0), tx(45_300, &RELEASE), tx(50_000, &erg)];
+        records.extend(trainer(45_200));
         // Ramping up in the first 5 s, then 100 W until the release at 70 s.
         records.extend((0..10).map(|k| p25(50_000 + k * 500, 20)));
         records.extend((0..30).map(|k| p25(55_000 + k * 500, 100)));
         records.push(tx(70_000, &RELEASE));
         let a = &check11b(&records, &notes)["after_reconnect"];
-        assert_eq!(a["first_write_was_release"], json!(true));
         assert_eq!(a["erg_mean_power_w"], json!(100.0));
         assert_eq!(a["first_page25_fe_state"], json!("3 (in use)"));
-        records[1] = tx(45_300, &erg);
-        let a = &check11b(&records, &notes)["after_reconnect"];
-        assert_eq!(a["first_write_was_release"], json!(false));
+        // Any control but the release before the operator's y breaks the procedure's rule.
+        for (at, page) in [
+            (45_300, erg),
+            (48_000, erg),
+            (
+                48_000,
+                crank_fec::ControlPage::BasicResistance { pct: 20.0 },
+            ),
+        ] {
+            let mut r = records.clone();
+            r.push(tx(at, &page));
+            let v = check11b(&r, &notes);
+            assert!(
+                v["verdict"].as_str().is_some_and(
+                    |x| x.starts_with("unknown: ") && x.contains("before the operator's y")
+                ),
+                "{page:?}: {v}"
+            );
+        }
+        // No release after the reconnect: the y does not make the ERG the first write.
+        let no_release: Vec<Record> = records
+            .iter()
+            .filter(|r| r.at_us != 45_300_000)
+            .cloned()
+            .collect();
+        let v = check11b(&no_release, &notes);
+        assert!(
+            v["verdict"].as_str().is_some_and(|x| x.starts_with(
+                "unknown: the first write after the reconnect was Erg(100.0) (4.8 s after it), not the release"
+            )),
+            "{v}"
+        );
+        // And without a y at all, the re-engaged ERG has none before it.
+        let v = check11b(&records, &notes[..notes.len() - 1]);
+        assert!(
+            v["verdict"]
+                .as_str()
+                .is_some_and(|x| x.contains("before the operator's y")),
+            "{v}"
+        );
+    }
+
+    /// The review's repros and the other breaches of the procedure's rules: each is `unknown`
+    /// with its reason, never a result.
+    #[test]
+    fn stamps_that_break_the_procedures_rules_give_unknown_with_the_reason() {
+        let ok = link(&[(1, 40_000), (2, 44_000), (4, 45_000), (5, 45_200)]);
+        assert!(
+            check11b(&trainer(45_200), &ok)["verdict"]
+                .as_str()
+                .is_some_and(|v| v.starts_with("dropout ")),
+            "the valid sequence has a result"
+        );
+        for (notes, records, why) in [
+            (
+                link(&[
+                    (1, 40_000),
+                    (2, 44_000),
+                    (3, 44_500),
+                    (4, 45_000),
+                    (5, 45_200),
+                    (6, 100_000),
+                ]),
+                trainer(45_200),
+                "contradictory link stamps",
+            ),
+            (
+                link(&[(1, 40_000), (2, 44_000), (4, 45_000), (5, 200_000)]),
+                trainer(200_000),
+                "the first page 25 is stamped 160 s after the drop, past the 60 s bound",
+            ),
+            (
+                link(&[(1, 40_000), (6, 41_000)]),
+                vec![],
+                "the reconnect is stamped given up 1 s after the drop, before the 60 s bound",
+            ),
+            (
+                link(&[(1, 500_000)]),
+                vec![],
+                "the drop is stamped 470 s after the stop cue, past the 90 s bound",
+            ),
+            (
+                link(&[(1, 40_000), (6, 100_000), (7, 100_100)]),
+                vec![],
+                "contradictory link stamps",
+            ),
+            (link(&[(2, 40_000)]), vec![], "contradictory link stamps"),
+            (
+                [
+                    link(&[(1, 40_000), (6, 100_000)]),
+                    vec![note(WINDOW, 101_000, &[CONFIRMED])],
+                ]
+                .concat(),
+                vec![],
+                "contradictory: the operator's y is stamped without a reconnect before it",
+            ),
+            (
+                ok.clone(),
+                vec![p81(1_000, 7), p81(45_300, 8)],
+                "a different trainer answered after the reconnect (page-81 serials differ)",
+            ),
+            (
+                ok.clone(),
+                vec![p81(1_000, 7)],
+                "no page-81 serial on one side of the drop",
+            ),
+        ] {
+            let v = check11b(&records, &notes);
+            assert!(
+                v["verdict"]
+                    .as_str()
+                    .is_some_and(|x| x.starts_with(&format!("unknown: {why}"))),
+                "{why}: {v}"
+            );
+            assert_eq!(v["drop"], Value::Null);
+        }
+        // The bounds' edges: a drop 90 s after the cue, a reconnect at 60 s, a give-up at 60 s.
+        for (notes, records) in [
+            (link(&[(1, 120_000)]), vec![]),
+            (
+                link(&[(1, 40_000), (2, 90_000), (4, 99_000), (5, 100_000)]),
+                trainer(100_000),
+            ),
+            (link(&[(1, 40_000), (6, 100_000)]), vec![]),
+        ] {
+            let v = check11b(&records, &notes);
+            assert!(
+                v["verdict"]
+                    .as_str()
+                    .is_some_and(|x| x.starts_with("dropout ")),
+                "{notes:?}: {v}"
+            );
+        }
     }
 
     #[test]
@@ -334,10 +607,7 @@ mod tests {
             assert_eq!(v["drop"], Value::Null);
         }
         let v = check11b(&[], &[note(WINDOW, 30_000, &[STOPPING])]);
-        assert_eq!(
-            v["verdict"],
-            json!("unknown: the capture has no stop cue and drop")
-        );
+        assert_eq!(v["verdict"], json!("unknown: the capture has no drop"));
     }
 
     #[test]
