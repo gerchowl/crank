@@ -2,8 +2,9 @@
 
 How to run the Part B pedalling checks of ADR-0002 §9 with `hil_fec`. The owner's step-by-step session
 script (app flow plus these checks) is [part-b-runbook.md](part-b-runbook.md). This covers check 5 (page 25
-against the Cycling Power measurement `2A63`) and the control checks 6, 7, 8, 9 and 12. Checks
-10/11a–c (second central, dropout) follow in their own PR (#412 part c). Results go to a new `docs/hil/<date>-fec.md` in the
+against the Cycling Power measurement `2A63`), the control checks 6, 7, 8, 9 and 12, and check 10
+(a second central while connected; [below](#check-10-a-second-central-while-connected)). Checks 11a–c
+(dropout) follow in their own PRs (#412 parts c2 and c3). Results go to a new `docs/hil/<date>-fec.md` in the
 format of [the Part A results](2026-10-14-fec.md): one "Results at a glance" row per check, which each
 run prints.
 
@@ -62,6 +63,7 @@ check's `.fecap`.
 | 8 | `hil_fec check8 --out DIR` | Easy gear, steady effort; SIM 0 %, 5 %, 5 % with page 55 rider mass 100 kg, 10 % with 75 kg (30 s each); shift down on the steep part | 2.5 min |
 | 9 | `hil_fec check9 --out DIR` | 90 rpm at 250 W ERG, then lower cadence smoothly, about 5 rpm every 10 s, and keep turning until the run ends. Stopping early is safe (the trainer is released) but aborts the run without a result | up to 3 min |
 | 12 | `hil_fec check12 --out DIR` | 90 rpm at 200 W ERG; the harness switches to `Free` (page 50 defaults, page 51 grade 0); after 10 s, cue to 70 rpm for 15 s | 1 min |
+| 10 | `hil_fec check10 --out DIR` | No pedalling. With the phone, try to connect to the NEO while `hil_fec` holds it, then type two answers in the window (below) | 1–3 min |
 
 Each run writes `DIR/<check>.fecap` (both directions, the `.fecap` format) and `DIR/<check>.json` with the
 procedure's outcome, the release, the identity, and `result` (below), and prints the result row.
@@ -80,7 +82,7 @@ hil_fec analyse --target docs/hil/captures/check6.fecap --out docs/hil/captures 
 ```
 
 `analyse` keeps the reply accounting it always wrote and adds `part_b` (the same `result`) for a capture
-named `check5`, `check6`, `check7`, `check8`, `check9` or `check12`, and prints the row again.
+named `check5`, `check6`, `check7`, `check8`, `check9`, `check10` or `check12`, and prints the row again.
 
 | Check | What `result` reports (method text is in the JSON) | ADR-0002 |
 |---|---|---|
@@ -90,6 +92,7 @@ named `check5`, `check6`, `check7`, `check8`, `check9` or `check12`, and prints 
 | 8 | Per SIM state held ≥ 10 s: mean power, page-16 speed and cadence, and the road model at that speed (`v·m·g·(grade + Crr) + cw·(v + wind)²·drafting·v`, m from page 55): the ratio shows whether grade and mass apply | §7.9 (SIM, page 55) |
 | 9 | How the descent ended (`stalled`, `floor`, `departed`), the cadence at which power fell below 90 % and the lowest cadence it was settled at or above 90 % (the two bounds below), power by 5 rpm cadence bin and the lowest bin still followed (≥ 2 samples, ≥ 80 % within ±10 % of 250 W); the verdict: the release comes first, too late, or ambiguous | §7.4 |
 | 12 | Mean power below 80 rpm after `Free` against the ERG target (released = below 90 %: ERG would hold it) and whether page 71 echoed pages 50 and 51 | §7.9 (`Free` sent explicitly) |
+| 10 | Whether a second central (the phone) could connect while `hil_fec` held the link, whether the NEO kept advertising (the scan beside the connection and the operator), and whether `hil_fec`'s link held ([below](#check-10-a-second-central-while-connected)) | §5 (single central) |
 
 Every result also carries `release`: whether page 48 at 0 % was the last control write and whether a
 page-71 reply echoed it.
@@ -240,3 +243,84 @@ notification in the capture), `insufficient: …`. As for every Part B check, on
 verdict (`partb::analyse` nulls it otherwise), and the live row and `hil_fec analyse` on the capture are
 computed by the same function from the same capture. A `disagree` is the ADR's trigger to amend §5 to use
 `2A63`: the owner decides, with the numbers in the JSON.
+
+### Check 10: a second central while connected
+
+ADR-0002 §5 assumes the NEO takes one central at a time: while crank is connected no other app can
+control it. Part A's short session (#44, 2026-10-14) saw the phone still list the NEO while connected,
+and its connect hang at "connecting". `check10` repeats this with a structured, re-analysable record.
+
+**Procedure** (`rider.rs` `check10`). The run connects into the release state (page 48 at 0 %) and,
+after the operator's `y`, writes nothing more: no rider, nothing applied. It then opens a **window**
+and holds the link through it:
+
+- a scan runs beside the connection (`Session::adverts`, the same `BtleplugAdvertisements` scan used to
+  find the trainer) and every advertisement it reports is recorded, flagged as this trainer's or another
+  peripheral's;
+- the cue asks the operator to open the Tacx app on the phone, look for the NEO and try to connect;
+- the questions take a typed answer, re-asked until the answer is one of the accepted words:
+  - *Does the phone list the NEO while hil_fec is connected?* `seen` / `not-seen` / `unsure`
+  - only after `seen` (`check10::follow_up`; a phone that did not list the NEO has nothing to connect
+    to): *Try to connect the phone to the NEO and give it 30 s. What did the connect do?* `connected` /
+    `failed` / `stuck` / `not-tried`
+- the window lasts at least **60 s** from its start, answers or not, so the scan covers a connected
+  stretch (`check10::MIN_WINDOW`), and the answers must be in within **180 s** of its start
+  (`check10::ANSWER_WAIT`); otherwise the run is aborted (`no answer to … within 180 s`), and closed
+  input aborts it too.
+
+While the window is open, the guards run every 100 ms on a fixed tick, whatever the scan delivers: a
+dropped link fails the run (`link dropped while the phone was trying to connect (second central)`),
+page 25 silent for 2 s aborts it (`no page 25 for 2 s while the phone was trying to connect: the second
+central may have taken the trainer`; the idle NEO sends page 25 at about 2.8 Hz, Part A), and the
+trainer is released as on every other path. A run that ends this way gives no verdict. Both messages
+name the phone, since it is the likely cause: a phone that takes the trainer either drops crank's link
+or leaves it up with page 25 stopped.
+
+**Completed** means the window ran to its close with the answers it asked recorded; only then is there a
+verdict (`advertising`, `second_central` and `verdict` are null otherwise, as for every Part B check).
+
+**Capture.** The events are tagged comment lines in the `.fecap` (`Capture::record_aux`), so `analyse`
+reproduces the row from the file: `# check10 <us> 01|02` (window opened, closed), `# scan <us> 01|00|02`
+(scan started, ended by itself, stopped by the harness), `# adv <us> 01|00` (an advertisement of the
+trainer, of another peripheral) and `# answer-listed|answer-connect <us> <ASCII>`. The scan opens
+before the window and stops after it, so its stamps bracket the window.
+Readers that skip comments read the file as before. The lines carry no serial; `redact` keeps them.
+
+**Result** (`check10.rs` `check10`), from the window's events only:
+
+- **advertising while connected:**
+  - `continues: the scan saw N advertisements of the trainer, longest gap X s` when the scan reported at
+    least one inside the window. The gap is measured in continuous time, the window's edges included.
+  - `continues: the phone listed it; the scan saw none (…)` on the phone's `seen` alone.
+  - `not seen: …` only when both observations agree: the phone's `not-seen`, and a scan that ran over
+    the whole window and reported other peripherals (so it was working) but none of the trainer. The
+    scan ran over the whole window only when both its stamps are present, it opened at or before the
+    window's open, stopped at or after its close and did not end by itself (`check10::Scan::of`).
+    `not-seen` with any other scan (not started, ended by itself, started late, stopped early, no close
+    line) or one that reported nobody is `unknown: the phone did not list it, but the scan …, so it
+    cannot confirm that`.
+  - Otherwise `unknown: …`, with the scan's state (as above) and how many advertisements of other peripherals it reported. A scan that saw nothing
+    of the trainer is not evidence that advertising stopped: a host may not report a peripheral it is
+    connected to (CoreBluetooth is not documented either way), and a scan that reports other peripherals
+    only shows that it was working.
+- **second central**, a decision table over the two answers (`check10::second_central`); only a phone
+  that listed the NEO can have been accepted or refused:
+
+  | listed | connect | second central |
+  |---|---|---|
+  | `seen` | `connected` | `accepted: the phone connected while hil_fec held the link` |
+  | `seen` | `failed` | `refused: the phone's connect failed` |
+  | `seen` | `stuck` | `refused: the phone's connect never completed` |
+  | `seen` | `not-tried` | `unknown: the phone listed the NEO but did not try to connect` |
+  | `seen` | missing or unrecognised | `unknown: <reason> to whether the phone connected` |
+  | `not-seen` | not asked | `unknown: the phone did not find the NEO, so it could not try to connect` |
+  | `unsure` | not asked | `unknown: the operator was unsure the phone listed the NEO, so no connect was tried` |
+  | `not-seen` or `unsure` | recorded anyway (an edited capture) | `unknown: contradictory answers: …` |
+  | missing or unrecognised | any | `unknown: <reason> to whether the phone listed the NEO` |
+
+  So `accepted` and `refused` always come with advertising `continues`.
+- **hil_fec link:** `held` when page 25 has no gap above 2 s inside the window (edges included, ADR-0002
+  §6), else `lost (page 25 silent for X s)`.
+
+The row reads `second central …; advertising while connected …; hil_fec link …`. A `connected` answer
+contradicts ADR-0002 §5 and is the trigger to amend it.
