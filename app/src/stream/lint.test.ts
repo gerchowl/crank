@@ -70,7 +70,7 @@ test("the rule is scoped to src/stream", async () => {
 });
 
 // The inline tests above prove the rule's selectors; this one proves the REAL `eslint.config.js` applies exactly that
-// rule to src/stream: same rule and severity after the whole config is resolved (a later block, a changed severity
+// rule to src/stream: same structuredClone rule and severity after the whole config is resolved (a later block, a changed severity
 // or an `ignores` entry would all show here), not ignored, and parsed by the project's typescript-eslint parser.
 // It loads the full config and plugin set, the expensive part the other tests avoid (#319). Measured for this test:
 // 3.9 s on the macOS CI runner, 2.8 s on Linux CI, about 0.9 s locally (cold). That is close to Vitest's 5 s default,
@@ -85,9 +85,12 @@ test("the real eslint.config.js applies the same rule to src/stream", async () =
   const expected = (await eslint.calculateConfigForFile(file)) as {
     rules: Record<string, unknown>;
   };
-  expect(config.rules["no-restricted-syntax"]).toEqual(
-    expected.rules["no-restricted-syntax"],
-  );
+  // src/stream also carries the design rules (#455), ahead of the structuredClone entries: same severity, and the
+  // structuredClone selectors and messages are the list's tail.
+  const real_ = config.rules["no-restricted-syntax"] as unknown[];
+  const want = expected.rules["no-restricted-syntax"] as unknown[];
+  expect(real_[0]).toBe(want[0]);
+  expect(real_.slice(-(want.length - 1))).toEqual(want.slice(1));
   expect(config.languageOptions.parser.meta.name).toBe(
     "typescript-eslint/parser",
   );
