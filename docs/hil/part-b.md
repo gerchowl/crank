@@ -3,8 +3,9 @@
 How to run the Part B pedalling checks of ADR-0002 §9 with `hil_fec`. The owner's step-by-step session
 script (app flow plus these checks) is [part-b-runbook.md](part-b-runbook.md). This covers check 5 (page 25
 against the Cycling Power measurement `2A63`), the control checks 6, 7, 8, 9 and 12, and check 10
-(a second central while connected; [below](#check-10-a-second-central-while-connected)). Checks 11a–c
-(dropout) follow in their own PRs (#412 parts c2 and c3). Results go to a new `docs/hil/<date>-fec.md` in the
+(a second central while connected; [below](#check-10-a-second-central-while-connected)) and check 11b
+(the unplugged stop, a dropout and reconnect; [below](#check-11b-the-unplugged-stop-dropout-and-reconnect)).
+Checks 11a and 11c follow in their own PR (#412 part c3). Results go to a new `docs/hil/<date>-fec.md` in the
 format of [the Part A results](2026-10-14-fec.md): one "Results at a glance" row per check, which each
 run prints.
 
@@ -64,6 +65,7 @@ check's `.fecap`.
 | 9 | `hil_fec check9 --out DIR` | 90 rpm at 250 W ERG, then lower cadence smoothly, about 5 rpm every 10 s, and keep turning until the run ends. Stopping early is safe (the trainer is released) but aborts the run without a result | up to 3 min |
 | 12 | `hil_fec check12 --out DIR` | 90 rpm at 200 W ERG; the harness switches to `Free` (page 50 defaults, page 51 grade 0); after 10 s, cue to 70 rpm for 15 s | 1 min |
 | 10 | `hil_fec check10 --out DIR` | No pedalling. With the phone, try to connect to the NEO while `hil_fec` holds it, then type two answers in the window (below) | 1–3 min |
+| 11b | `hil_fec check11b --out DIR` | Trainer **unplugged**. 90 rpm at ERG 100 W (20 s); released, stop and wait until the lights go out; pedal again to wake it; answer the lights question and type `y`; 90 rpm at 100 W again (20 s) (below) | 2–4 min |
 
 Each run writes `DIR/<check>.fecap` (both directions, the `.fecap` format) and `DIR/<check>.json` with the
 procedure's outcome, the release, the identity, and `result` (below), and prints the result row.
@@ -82,7 +84,7 @@ hil_fec analyse --target docs/hil/captures/check6.fecap --out docs/hil/captures 
 ```
 
 `analyse` keeps the reply accounting it always wrote and adds `part_b` (the same `result`) for a capture
-named `check5`, `check6`, `check7`, `check8`, `check9`, `check10` or `check12`, and prints the row again.
+named `check5`, `check6`, `check7`, `check8`, `check9`, `check10`, `check11b` or `check12`, and prints the row again.
 
 | Check | What `result` reports (method text is in the JSON) | ADR-0002 |
 |---|---|---|
@@ -93,6 +95,7 @@ named `check5`, `check6`, `check7`, `check8`, `check9`, `check10` or `check12`, 
 | 9 | How the descent ended (`stalled`, `floor`, `departed`), the cadence at which power fell below 90 % and the lowest cadence it was settled at or above 90 % (the two bounds below), power by 5 rpm cadence bin and the lowest bin still followed (≥ 2 samples, ≥ 80 % within ±10 % of 250 W); the verdict: the release comes first, too late, or ambiguous | §7.4 |
 | 12 | Mean power below 80 rpm after `Free` against the ERG target (released = below 90 %: ERG would hold it) and whether page 71 echoed pages 50 and 51 | §7.9 (`Free` sent explicitly) |
 | 10 | Whether a second central (the phone) could connect while `hil_fec` held the link, whether the NEO kept advertising (the scan beside the connection and the operator), and whether `hil_fec`'s link held ([below](#check-10-a-second-central-while-connected)) | §5 (single central) |
+| 11b | When the link dropped after the stop cue and how long the trainer ran on; the reconnect phase by phase; what the trainer reported after it, whether the first write was the release, and how the re-engaged ERG target was held; the cause from the lights answer ([below](#check-11b-the-unplugged-stop-dropout-and-reconnect)) | §6 (dropout, reconnect) |
 
 Every result also carries `release`: whether page 48 at 0 % was the last control write and whether a
 page-71 reply echoed it.
@@ -324,3 +327,55 @@ Readers that skip comments read the file as before. The lines carry no serial; `
 
 The row reads `second central …; advertising while connected …; hil_fec link …`. A `connected` answer
 contradicts ADR-0002 §5 and is the trigger to amend it.
+
+### Check 11b: the unplugged stop (dropout and reconnect)
+
+The NEO has no battery. Unplugged, the rider's pedalling powers it, and it shuts down shortly after
+pedalling stops (#44, owner hint). Stopping until the lights go out is therefore the realistic dropout: the
+link drops, and pedalling again brings the trainer back. `check11b` measures that with the trainer unplugged
+from the start (check 11a, unplugging while pedalling, comes in #412 part c3).
+
+**Procedure** (`rider.rs` `check11b`):
+
+1. ERG at **100 W** by soft start, 20 s at 90 rpm, under the usual guards.
+2. The release (page 48 at 0 %), then the cue to stop and wait until the lights go out. A stopping rider under
+   ERG is what the §7.4 rule releases, so the release comes first. From here page-25 silence is expected, so
+   only the link counts: it must drop within **90 s** of the cue (`check11::DROP_WAIT`), otherwise the run is
+   aborted (`the link did not drop within 90 s of the stop cue (is the trainer unplugged?)`).
+3. Once the drop is seen, the cue to pedal again (the trainer needs it to boot), and a scan for the trainer.
+   The reconnect must reach its first page 25 within **60 s** of the drop (`check11::RECONNECT_WAIT`);
+   each phase is stamped (below).
+4. **No silent resume.** The first write after the reconnect is the release (page 48 at 0 %), before
+   anything else. Then the operator answers *When the link dropped, had the trainer's lights gone out?*
+   (`out` / `on` / `unsure`) and must type `y` before ERG is engaged again, by soft start, as at a ride start
+   (ADR-0002 §6 step 2). 20 s at 90 rpm, then the usual release. The guards watch the new link from its first
+   page 25.
+
+**Completed** means the drop was seen and either the trainer came back and held the target for 20 s, or the
+60 s bound ran out: "no reconnect within 60 s" is a result, not a failure (the final release then fails with
+`not connected`, which the summary shows). No `y` after the reconnect, no answer, or a guard stop gives no
+result.
+
+**Capture.** `# check11b <us> 01` is the stop cue (the trainer already released). The link events are
+`# link <us> <code>`: `01` the drop seen, `02` the trainer advertised again, `03` connected (live, the
+adapter's `DeviceConnected` event, so connect and discovery are timed apart), `04` services discovered and
+page 25 subscribed, `05` the first page 25 after the reconnect, `06` the bound ran out. The lights answer is
+`# answer-lights`. Stamps must come once each, in this order and never back in time
+(`frames::stamps`); a duplicate or out-of-order stamp makes the row `unknown: contradictory …`, as it does
+for check 10's window and scan stamps.
+
+**Result** (`check11.rs` `check11b`):
+
+- **drop:** seconds from the stop cue to the drop, and how long after the cue the trainer's last page 25
+  came (how long it ran on, unpowered).
+- **reconnect:** seconds from the drop to the first page 25, with each phase from the drop (seen,
+  connected, discovered); a phase without its stamp is `unknown`. Or `none within 60 s of the drop (…)`.
+- **after the reconnect:** the FE state, target-limit code and power of the trainer's first page 25 (it
+  comes before any write: what the trainer is doing on its own after the power cycle), whether the first
+  write after it was page 48 at 0 % (the no-silent-resume rule), and the mean power from 5 s after the
+  re-engaged target to the release.
+- **cause** (decision table over the lights answer): `out` → `power-off (the lights went out)`; `on` →
+  `unknown: the link dropped with the lights still on, not a power-off`; `unsure` → `unknown: the operator
+  was unsure about the lights`; missing or unrecognised → `unknown` with the reason.
+
+The row reads `dropout <cause>; detected … after the stop cue (…); reconnect …; after it …`.

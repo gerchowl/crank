@@ -70,6 +70,10 @@ pub trait Wire {
     /// A scan running beside the connection: one item per advertisement, `true` for this
     /// trainer's; the stream ends when the scan stops by itself, dropping it stops the scan.
     fn adverts(&self) -> BoxStream<'static, bool>;
+    /// After a drop: connect the trainer again, discover and subscribe, recording the adapter's
+    /// connect event as `# link <us> 03` ([`crate::check11::CONNECTED`]); the error, if any.
+    /// Unbounded: the caller bounds it.
+    fn reconnect(&self) -> impl Future<Output = Option<String>>;
 }
 
 impl Wire for Session {
@@ -114,6 +118,9 @@ impl Wire for Session {
     fn adverts(&self) -> BoxStream<'static, bool> {
         Session::adverts(self)
     }
+    async fn reconnect(&self) -> Option<String> {
+        Session::reconnect(self).await.err().map(|e| e.to_string())
+    }
 }
 
 /// An instruction to the rider; the agent relays it.
@@ -129,6 +136,10 @@ pub enum Cue {
     Steady,
     /// Check 10: stay off the pedals and try the phone as a second central.
     Phone,
+    /// Check 11b: stop pedalling until the unplugged trainer's lights go out.
+    LightsOut,
+    /// Check 11b: the link dropped; pedal to wake the trainer.
+    Wake,
     /// The run is over and the trainer released.
     Stop,
 }
@@ -147,6 +158,8 @@ impl Cue {
                     .into()
             }
             Self::Phone => "stay off the pedals; on your phone open the Tacx app, look for the NEO and try to connect to it, then answer the questions here".into(),
+            Self::LightsOut => "trainer released: stop pedalling and wait until its lights go out (it must be unplugged)".into(),
+            Self::Wake => "the link dropped: pedal again, easy, to wake the trainer; the harness reconnects (60 s at most) and asks before it applies anything".into(),
             Self::Stop => "done: trainer released (0 % resistance), stop pedalling".into(),
         }
     }
@@ -508,8 +521,8 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
         }
     }
 
-    /// Ask `q` inside check 10's window, running the guards and the scan meanwhile, and record the
-    /// answer; it must come by `until`.
+    /// Ask `q`, running the guards and the scan (if any) meanwhile, and record the answer; it must
+    /// come by `until`.
     async fn answer(
         &mut self,
         scan: &mut Option<BoxStream<'static, bool>>,
@@ -520,8 +533,7 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
         let text = q.text;
         let answer = self
             .during(scan, until, op.ask(text, q.options))
-            .await
-            .map_err(phone_window)?
+            .await?
             .ok_or_else(|| {
                 Stop::Aborted(format!(
                     "no answer to {text:?} within {} s",
@@ -681,9 +693,14 @@ async fn check10<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop
     let start = Instant::now();
     r.note(WINDOW, &[OPEN])?;
     r.cue(Cue::Phone);
-    let listed = r.answer(&mut scan, start + ANSWER_WAIT, &LISTED).await?;
+    let listed = r
+        .answer(&mut scan, start + ANSWER_WAIT, &LISTED)
+        .await
+        .map_err(phone_window)?;
     if let Some(q) = follow_up(listed) {
-        r.answer(&mut scan, start + ANSWER_WAIT, q).await?;
+        r.answer(&mut scan, start + ANSWER_WAIT, q)
+            .await
+            .map_err(phone_window)?;
     }
     r.during(&mut scan, start + MIN_WINDOW, std::future::pending::<()>())
         .await
@@ -692,6 +709,109 @@ async fn check10<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop
     if scan.take().is_some() {
         r.note(SCAN, &[CLOSE])?;
     }
+    Ok(())
+}
+
+/// #44 check 11b, the unplugged stop (#412 part c2): ERG at [`crate::check11::TARGET_W`] by soft
+/// start, then the release and the cue to stop until the lights go out. Silence is expected now,
+/// so only the link counts, bounded by [`crate::check11::DROP_WAIT`]. Once it drops, the rider
+/// pedals to wake the trainer and the harness reconnects within
+/// [`crate::check11::RECONNECT_WAIT`], stamping each phase. Control never resumes silently: the
+/// first write after the reconnect is the release, then the operator answers
+/// [`crate::check11::LIGHTS`] and must type `y` before ERG is engaged again by soft start.
+///
+/// Completed means the drop was observed and either the trainer came back and held the target
+/// 20 s, or the reconnect bound ran out (a result: no reconnect).
+async fn check11b<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
+    use crate::check10::ANSWER_WAIT;
+    use crate::check11::{
+        DETECTED, DROP_WAIT, FIRST_PAGE25, GAVE_UP, LIGHTS, LINK, READY, RECONNECT_WAIT, SEEN,
+        STOPPING, TARGET_W, WINDOW,
+    };
+    r.engage(TARGET_W).await?;
+    r.cue(Cue::Cadence(90));
+    r.hold(HOLD).await?;
+    // A stopping rider under ERG is what §7.4 releases: release first, then cue the stop.
+    r.guard = Guard::Sim;
+    r.write(&ControlPage::BasicResistance { pct: 0.0 }).await?;
+    r.note(WINDOW, &[STOPPING])?;
+    r.cue(Cue::LightsOut);
+    let deadline = Instant::now() + DROP_WAIT;
+    while !r.w.dropped() {
+        if Instant::now() >= deadline {
+            return Err(Stop::Aborted(format!(
+                "the link did not drop within {} s of the stop cue (is the trainer unplugged?)",
+                DROP_WAIT.as_secs()
+            )));
+        }
+        sleep(POLL).await;
+    }
+    r.note(LINK, &[DETECTED])?;
+    r.cue(Cue::Wake);
+    let deadline = Instant::now() + RECONNECT_WAIT;
+    let mark = r.w.mark();
+    let w = r.w;
+    let back = async {
+        let mut scan = w.adverts();
+        loop {
+            match scan.next().await {
+                Some(true) => break,
+                Some(false) => {}
+                None => {
+                    return Err(Stop::Failed(
+                        "the scan ended before the trainer advertised again".into(),
+                    ));
+                }
+            }
+        }
+        drop(scan);
+        r.note(LINK, &[SEEN])?;
+        if let Some(e) = w.reconnect().await {
+            return Err(Stop::Failed(format!("reconnect: {e}")));
+        }
+        r.note(LINK, &[READY])?;
+        while !w.since(mark).iter().any(|f| page_of(&f.bytes) == Some(25)) {
+            sleep(Duration::from_millis(10)).await;
+        }
+        r.note(LINK, &[FIRST_PAGE25])
+    };
+    if tokio::time::timeout_at(deadline, back).await.is_err() {
+        r.note(LINK, &[GAVE_UP])?;
+        let answer = tokio::time::timeout(ANSWER_WAIT, r.op.ask(LIGHTS.text, LIGHTS.options)).await;
+        if let Ok(Some(a)) = answer {
+            r.note(&crate::check10::answer_tag(LIGHTS.key), a.as_bytes())?;
+        }
+        return Ok(());
+    }
+    // From here the guards watch the new link, from its first page 25 (which resets the silence).
+    (r.seen, r.low_since) = (mark, None);
+    r.recent.clear();
+    r.write(&ControlPage::BasicResistance { pct: 0.0 }).await?;
+    let until = Instant::now() + ANSWER_WAIT;
+    r.answer(&mut None, until, &LIGHTS).await?;
+    let op = r.op;
+    let confirmed = r
+        .during(
+            &mut None,
+            until,
+            op.confirm(&format!(
+                "reconnected and released (0 %): re-engage ERG at {TARGET_W} W by soft start?"
+            )),
+        )
+        .await?;
+    match confirmed {
+        Some(true) => {}
+        Some(false) => return Err(Stop::Aborted("not confirmed after the reconnect".into())),
+        None => {
+            return Err(Stop::Aborted(format!(
+                "no confirmation within {} s of the reconnect",
+                ANSWER_WAIT.as_secs()
+            )));
+        }
+    }
+    r.engage(TARGET_W).await?;
+    r.cue(Cue::Cadence(90));
+    r.hold(HOLD).await?;
     Ok(())
 }
 
@@ -710,6 +830,8 @@ pub enum Procedure {
     Check9,
     /// #44 check 10.
     Check10,
+    /// #44 check 11b.
+    Check11b,
     /// #44 check 12.
     Check12,
 }
@@ -735,6 +857,9 @@ impl Procedure {
             }
             Self::Check10 => {
                 "page 48 0 %; no rider; holds the link at least 60 s while the operator tries to connect the phone (a second central) and types two answers (within 180 s); a scan beside the connection records the trainer's advertisements; release"
+            }
+            Self::Check11b => {
+                "page 48 0 %; soft start to 100 W; 20 s; page 48 0 %; cue to stop until the lights go out (unplugged); waits up to 90 s for the drop; scans and reconnects (60 s at most); page 48 0 % first; asks about the lights and for y; soft start to 100 W; 20 s; release"
             }
             Self::Check12 => {
                 "page 48 0 %; soft start to 200 W; 15 s; page 50 defaults, request 71, page 51 0 %, request 71; 10 s at 90 rpm, 15 s at 70 rpm; release"
@@ -797,6 +922,7 @@ pub async fn drive<W: Wire, O: Operator>(
             Procedure::Check8 => check8(&mut r).await,
             Procedure::Check9 => check9(&mut r).await,
             Procedure::Check10 => check10(&mut r).await,
+            Procedure::Check11b => check11b(&mut r).await,
             Procedure::Check12 => check12(&mut r).await,
         }
     };
@@ -2316,6 +2442,245 @@ mod tests {
         assert!(
             w[w.len() - 2].0 <= 32_500_000,
             "released 2 s into the silence, {w:?}"
+        );
+    }
+
+    /// Check 11b in the sim with a scripted dropout, driven like `run`.
+    async fn run11b(plan: Plan, d: crate::sim::Dropout) -> (Sim, Report) {
+        let sim = Sim::new(plan).with_dropout(d);
+        let report = drive(&sim, &sim, Procedure::Check11b, std::future::pending()).await;
+        (sim, report)
+    }
+
+    /// The link stamps `(code, at_us)` of a run.
+    fn link_stamps(sim: &Sim) -> Vec<(u8, u64)> {
+        crate::frames::stamps(
+            &sim.notes(),
+            crate::check11::LINK,
+            &crate::check11::LINK_ORDER,
+        )
+        .expect("ordered")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check11b_drops_reconnects_releases_first_and_asks_before_control() {
+        use crate::check11::{DETECTED, FIRST_PAGE25};
+        let plan = Plan {
+            answers: &["out"],
+            ..Plan::default()
+        };
+        let (sim, report) = run11b(plan, crate::sim::Dropout::default()).await;
+        assert_eq!(report.procedure, Ok(()));
+        assert_released(&sim, &report);
+        let link = link_stamps(&sim);
+        assert_eq!(
+            link.iter().map(|l| l.0).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        let at = |code| crate::frames::stamp(&link, code).expect("stamped");
+        // Woken at the drop, it boots 4 s later; connect 0.7 s, discovery 1.2 s.
+        let rel = |code| at(code) - at(DETECTED);
+        assert!((4 * SEC..=4 * SEC + 500_000).contains(&rel(2)), "{link:?}");
+        assert_eq!(rel(3) - rel(2), 700_000, "{link:?}");
+        assert_eq!(rel(4) - rel(3), 1_200_000, "{link:?}");
+        assert!(rel(5) - rel(4) <= 400_000, "{link:?}");
+        // Nothing was written from the stop until the reconnect; then the release first, and
+        // ERG only after the lights answer and the second `y`.
+        let stop = event_at(&sim, crate::check11::WINDOW, crate::check11::STOPPING);
+        // Released before the stop cue (as §7.4 would), after the last ERG target.
+        let before: Vec<(u64, Control)> = controls(&sim.records())
+            .into_iter()
+            .filter(|(t, _)| *t <= stop)
+            .collect();
+        assert_eq!(
+            before.last().map(|c| c.1),
+            Some(Control::Resistance(0.0)),
+            "{before:?}"
+        );
+        assert!(matches!(before[before.len() - 2].1, Control::Erg(w) if (w - 100.0).abs() < 0.5));
+        let after: Vec<(u64, u8)> = writes(&sim)
+            .into_iter()
+            .filter(|(t, _)| *t > stop)
+            .collect();
+        assert!(after[0].0 >= at(FIRST_PAGE25), "{after:?}");
+        assert_eq!(
+            controls(&sim.records())
+                .into_iter()
+                .find(|(t, _)| *t >= at(FIRST_PAGE25))
+                .map(|c| c.1),
+            Some(Control::Resistance(0.0))
+        );
+        let answered = sim
+            .notes()
+            .iter()
+            .find(|n| n.tag == "answer-lights")
+            .expect("answered")
+            .at_us;
+        let first_erg = controls(&sim.records())
+            .into_iter()
+            .find(|(t, c)| *t > stop && matches!(c, Control::Erg(_)))
+            .map(|c| c.0)
+            .expect("re-engaged");
+        assert!(first_erg >= answered, "{first_erg} {answered}");
+        let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
+        assert_eq!(v["cause"], json!("power-off (the lights went out)"));
+        let reconnect = v["reconnect"].as_str().expect("reconnect");
+        assert!(
+            reconnect.contains("connected +4.") && reconnect.contains("discovered +"),
+            "{v}"
+        );
+        assert_eq!(v["after_reconnect"]["first_write_was_release"], json!(true));
+        let held = v["after_reconnect"]["erg_mean_power_w"]
+            .as_f64()
+            .expect("held");
+        assert!((95.0..=105.0).contains(&held), "{v}");
+        assert!(
+            v["line"].as_str().expect("line").starts_with(
+                "| 11b | Dropout: unplugged stop, reconnect | dropout power-off (the lights went out); detected "
+            ),
+            "{v}"
+        );
+    }
+
+    /// The lights answer decides the cause, live and offline.
+    #[tokio::test(start_paused = true)]
+    async fn check11b_the_cause_follows_the_lights_answer() {
+        for (answers, cause) in [
+            (&["out"][..], "power-off (the lights went out)"),
+            (
+                &["on"][..],
+                "unknown: the link dropped with the lights still on, not a power-off",
+            ),
+            (
+                &["unsure"][..],
+                "unknown: the operator was unsure about the lights",
+            ),
+        ] {
+            let plan = Plan {
+                answers,
+                ..Plan::default()
+            };
+            let (sim, report) = run11b(plan, crate::sim::Dropout::default()).await;
+            assert_eq!(report.procedure, Ok(()));
+            let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
+            assert_eq!(v["cause"], json!(cause));
+        }
+        // No answer: the run stops released, with no verdict.
+        let plan = Plan {
+            answers: &[],
+            ..Plan::default()
+        };
+        let (sim, report) = run11b(plan, crate::sim::Dropout::default()).await;
+        assert!(
+            matches!(&report.procedure, Err(Stop::Aborted(w)) if w.starts_with("the input closed before an answer to \"When the link dropped")),
+            "{report:?}"
+        );
+        assert_released(&sim, &report);
+        let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
+        assert_eq!((&v["verdict"], &v["cause"]), (&Value::Null, &Value::Null));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check11b_with_no_reconnect_in_60_s_completes_with_none() {
+        let plan = Plan {
+            answers: &["out"],
+            ..Plan::default()
+        };
+        let d = crate::sim::Dropout {
+            boots_after_us: None,
+            ..crate::sim::Dropout::default()
+        };
+        let (sim, report) = run11b(plan, d).await;
+        assert_eq!(report.procedure, Ok(()));
+        assert_eq!(report.release_error.as_deref(), Some("not connected"));
+        let link = link_stamps(&sim);
+        assert_eq!(link.iter().map(|l| l.0).collect::<Vec<_>>(), [1, 6]);
+        assert!(
+            (60 * SEC..=60 * SEC + 100_000).contains(&(link[1].1 - link[0].1)),
+            "{link:?}"
+        );
+        let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
+        assert_eq!(
+            v["reconnect"],
+            json!(
+                "none within 60 s of the drop (seen unknown, connected unknown, discovered unknown)"
+            )
+        );
+        assert_eq!(v["after_reconnect"], Value::Null);
+        assert_eq!(v["cause"], json!("power-off (the lights went out)"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check11b_without_a_drop_in_90_s_aborts_released_with_no_verdict() {
+        // Plugged in: the trainer never powers off.
+        let (sim, report) = run(Procedure::Check11b, Plan::default(), None).await;
+        assert!(
+            matches!(&report.procedure, Err(Stop::Aborted(w)) if w == "the link did not drop within 90 s of the stop cue (is the trainer unplugged?)"),
+            "{report:?}"
+        );
+        assert_released(&sim, &report);
+        let stop = event_at(&sim, crate::check11::WINDOW, crate::check11::STOPPING);
+        let w = writes(&sim);
+        assert!(
+            (stop + 90 * SEC..=stop + 90 * SEC + 200_000).contains(&w[w.len() - 2].0),
+            "released at {} us, stop cue at {stop} us",
+            w[w.len() - 2].0
+        );
+        let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
+        assert_eq!(v["verdict"], Value::Null, "{v}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check11b_needs_a_second_y_before_any_control_after_the_reconnect() {
+        let plan = Plan {
+            answers: &["out"],
+            ..Plan::default()
+        };
+        let d = crate::sim::Dropout {
+            confirms_again: false,
+            ..crate::sim::Dropout::default()
+        };
+        let (sim, report) = run11b(plan, d).await;
+        assert_eq!(
+            report.procedure,
+            Err(Stop::Aborted("not confirmed after the reconnect".into()))
+        );
+        assert_released(&sim, &report);
+        let back = crate::frames::stamp(&link_stamps(&sim), crate::check11::FIRST_PAGE25)
+            .expect("reconnected");
+        assert!(
+            controls(&sim.records())
+                .iter()
+                .filter(|(t, _)| *t >= back)
+                .all(|(_, c)| *c == Control::Resistance(0.0)),
+            "only the release after the reconnect"
+        );
+        let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
+        assert_eq!(v["verdict"], Value::Null);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn check11b_the_guards_watch_the_new_link() {
+        let plan = Plan {
+            answers: &["out"],
+            ..Plan::default()
+        };
+        let (sim, _) = run11b(plan, crate::sim::Dropout::default()).await;
+        let back = crate::frames::stamp(&link_stamps(&sim), crate::check11::FIRST_PAGE25)
+            .expect("reconnected");
+        // The same run, but the reconnected trainer goes silent 3 s after its first page 25.
+        let silent = back + 3 * SEC;
+        let plan = Plan {
+            silent_from_us: Some(silent),
+            ..plan
+        };
+        let (sim, report) = run11b(plan, crate::sim::Dropout::default()).await;
+        assert_eq!(report.procedure, Err(Stop::Aborted(SILENT.into())));
+        let w = writes(&sim);
+        let released = w[w.len() - 2].0;
+        assert!(
+            (silent..=silent + 2_500_000).contains(&released),
+            "released 2 s into the silence: {released} us, silent from {silent} us"
         );
     }
 
