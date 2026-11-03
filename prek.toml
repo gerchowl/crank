@@ -1,0 +1,48 @@
+# Pre-commit hooks (#456), run by prek (j178/prek, pinned in the flake devShell): `prek install` once per clone.
+# Local hooks only: they use the toolchain `nix develop` and `pnpm install --frozen-lockfile` already provide, so a
+# commit needs no network and no global install. Hooks can be skipped, so CI (`nix flake check`) stays the gate.
+# The app tools run from app/, which is where their configs live; staged paths arrive repo-relative, so strip `app/`.
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "eslint"
+name = "eslint (app)"
+language = "system"
+entry = "bash -c 'cd app && exec pnpm exec eslint --max-warnings 0 \"${@#app/}\"' --"
+files = '^app/.*\.(ts|tsx|js|mjs)$'
+exclude = '^app/src/bindings\.ts$'
+
+[[repos.hooks]]
+id = "stylelint"
+name = "stylelint (app)"
+language = "system"
+entry = "bash -c 'cd app && exec pnpm exec stylelint \"${@#app/}\"' --"
+files = '^app/src/.*\.css$'
+
+[[repos.hooks]]
+id = "prettier"
+name = "prettier --check (app)"
+language = "system"
+entry = "bash -c 'cd app && exec pnpm exec prettier --check \"${@#app/}\"' --"
+# The same scope as `pnpm -C app lint` (src, e2e, index.html and the top-level configs); bindings.ts is .prettierignore'd.
+files = '^app/((src|e2e)/.+\.(ts|tsx|js|mjs|json|css|html|md)|index\.html|[^/]+\.(json|ts|js|mjs))$'
+exclude = '^app/src/bindings\.ts$'
+
+# tsc checks the whole project, never a file list.
+[[repos.hooks]]
+id = "typecheck"
+name = "tsc --noEmit (app)"
+language = "system"
+entry = "pnpm -C app typecheck"
+files = '^app/.*\.(ts|tsx|json)$'
+pass_filenames = false
+
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt --check"
+language = "system"
+entry = "cargo fmt --all --check"
+files = '\.rs$'
+pass_filenames = false
