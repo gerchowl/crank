@@ -14,6 +14,10 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   `<svg>` outside `src/icons/`, no literal colours or px in `style={{}}`, `eslint-plugin-jsx-a11y` recommended; a `<Num>`
   component for live numbers; the Feather MIT text in `NOTICE`
   ([#455](https://github.com/gerchowl/crank/issues/455))
+- Bug-report log tail (no UI yet): vigil's OTLP records flattened for squelch, known trainer and strap names, serials and
+  platform ids replaced in every kept field and spelling (after Unicode normalisation), a field allowlist, and a privacy
+  pinning test. The store keeps the newest 64 device sightings (scanned, attempted or connected; schema 4) for this
+  ([#444](https://github.com/gerchowl/crank/issues/444))
 
 ### Changed
 

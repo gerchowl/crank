@@ -192,6 +192,24 @@ pub struct Device {
     /// UTC Unix seconds at last sighting.
     pub last_seen: i64,
 }
+/// A device identity seen by a scan, a pairing attempt or a connect (ADR-0003 §2.3), kept so the
+/// bug report can replace it in logs after its pairing is forgotten. The newest
+/// [`SEEN_DEVICES_KEPT`] are kept.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeenDevice {
+    /// Device role (`trainer`, `hr`).
+    pub kind: String,
+    /// Platform peripheral id.
+    pub platform_id: String,
+    /// Advertised name, when it was known.
+    pub name: Option<String>,
+    /// DIS serial, when it was read.
+    pub serial: Option<String>,
+    /// UTC Unix seconds at the last sighting.
+    pub last_seen: i64,
+}
+/// How many [`SeenDevice`] rows the store keeps, newest first.
+pub const SEEN_DEVICES_KEPT: u32 = 64;
 /// Two read-only WAL readers and, for an owner, one writer thread.
 /// Drop drains queued work before releasing the writer's advisory lock.
 pub struct Store {
@@ -358,6 +376,63 @@ impl Store {
             };
             tx.commit()?;
             Ok(id)
+        })
+    }
+    /// Record sightings: a known identity gets the newer `last_seen`, then all but the newest
+    /// [`SEEN_DEVICES_KEPT`] rows are dropped.
+    /// # Errors
+    /// Returns read-only, SQL or worker errors.
+    pub fn note_seen_devices(&self, seen: Vec<SeenDevice>) -> Result<(), StoreError> {
+        self.write(move |w| {
+            let tx = w.db.transaction()?;
+            for d in seen {
+                tx.execute(
+                    "INSERT INTO seen_device (kind,platform_id,name,serial,last_seen)
+                     VALUES (?1,?2,?3,?4,?5)
+                     ON CONFLICT DO UPDATE SET last_seen=max(last_seen,excluded.last_seen)",
+                    params![
+                        d.kind,
+                        d.platform_id,
+                        d.name.unwrap_or_default(),
+                        d.serial.unwrap_or_default(),
+                        d.last_seen
+                    ],
+                )?;
+            }
+            tx.execute(
+                "DELETE FROM seen_device WHERE (kind,platform_id,name,serial) NOT IN
+                 (SELECT kind,platform_id,name,serial FROM seen_device
+                  ORDER BY last_seen DESC, kind, platform_id, name, serial LIMIT ?1)",
+                [SEEN_DEVICES_KEPT],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+    /// Every kept sighting, newest first.
+    /// # Errors
+    /// Returns SQL or worker errors.
+    pub fn seen_devices(&self) -> Result<Vec<SeenDevice>, StoreError> {
+        self.read(|db| {
+            Ok(db
+                .prepare(
+                    "SELECT kind,platform_id,name,serial,last_seen FROM seen_device
+                     ORDER BY last_seen DESC, kind, platform_id, name, serial",
+                )?
+                .query_map([], |r| {
+                    let text = |i| {
+                        r.get::<_, String>(i)
+                            .map(|v| Some(v).filter(|v| !v.is_empty()))
+                    };
+                    Ok(SeenDevice {
+                        kind: r.get(0)?,
+                        platform_id: r.get(1)?,
+                        name: text(2)?,
+                        serial: text(3)?,
+                        last_seen: r.get(4)?,
+                    })
+                })?
+                .collect::<Result<_, _>>()?)
         })
     }
     /// Read pairing memory ordered by id.

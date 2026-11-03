@@ -70,6 +70,20 @@ pub struct PairedDevice {
     pub model: Option<String>,
 }
 
+/// A device whose identity the bug report replaces ([`crate::Core::known_devices`], ADR-0003
+/// §2.3). Desktop-side only: it never crosses to the UI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnownDevice {
+    /// Role it was paired or connected in.
+    pub role: DeviceRole,
+    /// Host-local peripheral id (the `CoreBluetooth` UUID on macOS).
+    pub platform_id: String,
+    /// Advertised (local) name.
+    pub name: Option<String>,
+    /// DIS serial.
+    pub serial: Option<String>,
+}
+
 /// One role's pairing and live link (`device_links`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]

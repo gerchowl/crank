@@ -28,6 +28,15 @@ tauri-plugin-wdio-webdriver = { workspace = true, optional = true }
 # The bug-report surface (ADR-0003 §2.1): `Transport::Browser` only, so the core never opens a browser. `serde` is for
 # `squelch::form::github::IssueForm`, which the issue-form sync test parses. Moving the rev is a reviewed PR; crates.io is #433.
 squelch = { git = "https://github.com/gerchowl/squelch", rev = "4f0d0640e4dbf941b87b5cc5dc59e5e60dc86816", default-features = false, features = ["browser", "logs", "serde"] }
+# The report's log mapping (ADR-0003 §2.2–§2.3): OTLP lines parsed as JSON, nanosecond times rendered as RFC 3339, and the
+# pre-scrub's patterns. All three are already in the lockfile (squelch uses `regex` and `serde_json`; `time` comes in through `plist`).
+serde_json.workspace = true
+regex = "1"
+# The known-device needles, matched in linear time whatever their number (ADR-0003 §2.3); already in the lockfile via regex.
+aho-corasick = "1"
+time = { version = "0.3", default-features = false, features = ["std", "formatting", "macros"] }
+# The pre-scrub normalises (NFKC) before its device table, so a no-break space or a full-width letter cannot hide a name.
+unicode-normalization = "0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CGDisplayScreenSize for the window's display (#286); already in the lockfile through tao.
@@ -42,7 +51,6 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["NSD
 crank-ble.workspace = true
 # The mock runtime builds a window and managed state for the command-layer tests.
 tauri = { workspace = true, features = ["test"] }
-serde_json.workspace = true
 tempfile = "3"
 # Parses `.github/ISSUE_TEMPLATE/bug.yml` in the issue-form sync test; squelch's own test uses it (`serde_yaml` is archived).
 serde_yaml_ng = "0.10"

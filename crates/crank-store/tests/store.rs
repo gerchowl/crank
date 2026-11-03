@@ -76,7 +76,7 @@ fn samples(second: u32) -> Vec<Sample> {
 fn migrate_empty_database() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_owner(dir.path()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 3);
+    assert_eq!(store.schema_version().unwrap(), 4);
     let db = Connection::open(dir.path().join("crank.db")).unwrap();
     let tables: Vec<String> = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -101,6 +101,7 @@ fn migrate_empty_database() {
             "ride",
             "ride_chunk",
             "ride_rr",
+            "seen_device",
             "setting",
             "snippet",
             "workout"
@@ -124,7 +125,7 @@ fn migrate_every_released_fixture() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("crank.db"), fixture).unwrap();
         let store = Store::open_owner(dir.path()).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 3);
+        assert_eq!(store.schema_version().unwrap(), 4);
         assert_eq!(
             store
                 .load_json::<SettingJson>(&["fixture"])
@@ -781,7 +782,7 @@ fn read_only_refuses_a_newer_schema() {
         Store::open_read_only(dir.path()),
         Err(StoreError::SchemaTooNew {
             found: 999,
-            supported: 3
+            supported: 4
         })
     ));
 }
@@ -888,5 +889,41 @@ fn rides_lists_newest_first_and_forget_device_unlinks_history() {
         store.rides().unwrap().len(),
         2,
         "history survives the pairing"
+    );
+}
+
+#[test]
+fn seen_devices_keep_the_newest_sightings_and_survive_a_forget() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_owner(dir.path()).unwrap();
+    let seen = |id: String, name: Option<&str>, at| SeenDevice {
+        kind: "trainer".into(),
+        platform_id: id,
+        name: name.map(Into::into),
+        serial: None,
+        last_seen: at,
+    };
+    store
+        .note_seen_devices(vec![seen("neo".into(), Some("Tacx Neo 55624"), 5)])
+        .unwrap();
+    store
+        .note_seen_devices(vec![seen("neo".into(), Some("Tacx Neo 55624"), 3)])
+        .unwrap();
+    assert_eq!(
+        store.seen_devices().unwrap(),
+        [seen("neo".into(), Some("Tacx Neo 55624"), 5)],
+        "one row per identity, the newest sighting kept"
+    );
+    let crowd = (0..i64::from(SEEN_DEVICES_KEPT)).map(|i| seen(format!("d{i}"), None, 10 + i));
+    store.note_seen_devices(crowd.collect()).unwrap();
+    let kept = store.seen_devices().unwrap();
+    assert_eq!(kept.len(), SEEN_DEVICES_KEPT as usize);
+    assert!(
+        kept.iter().all(|d| d.platform_id != "neo"),
+        "the oldest went first"
+    );
+    assert_eq!(
+        kept[0],
+        seen(format!("d{}", SEEN_DEVICES_KEPT - 1), None, 73)
     );
 }
