@@ -10,6 +10,10 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- ESLint design rules in `pnpm -C app lint` (DESIGN §18.7 rules 1, 2, 4 and 7): Lucide-only icons (`lucide-react` 1.62.0), no raw
+  `<svg>` outside `src/icons/`, no literal colours or px in `style={{}}`, `eslint-plugin-jsx-a11y` recommended; a `<Num>`
+  component for live numbers; the Feather MIT text in `NOTICE`
+  ([#455](https://github.com/gerchowl/crank/issues/455))
 - stylelint (17) in `pnpm -C app lint`: token-only colours and sizes, no unknown `var(--…)`, no `outline: none`
   (DESIGN §18.7 rules 1 to 3, [#454](https://github.com/gerchowl/crank/issues/454)); the shell and ride stylesheets
   now use the theme tokens, so a few sizes moved to the nearest token

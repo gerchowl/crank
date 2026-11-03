@@ -41,6 +41,7 @@ export function RideChart({ blocks, totalS, power, workoutS }: Props) {
     .join(" ");
 
   return (
+    // eslint-disable-next-line no-restricted-syntax -- a data graphic, not an icon (DESIGN §18.7 rule 4 is about icons); #438 step 3 replaces it with the Trace component.
     <svg
       className="ride-chart"
       role="img"
