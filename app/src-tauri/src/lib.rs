@@ -112,9 +112,11 @@ pub fn run() -> tauri::Result<()> {
                 let plan =
                     logging::LogPlan::new(config.capture_dir.as_deref(), app.path().app_log_dir()?);
                 // Asked for a capture, the rider must not ride without one unnoticed; the
-                // default log is a courtesy and never stops the app.
-                if let Err(e) = plan.install() {
-                    if plan.capture {
+                // default log is a courtesy and never stops the app. A failed install has
+                // shut its pipeline down already (`process::exit` skips vigil's flush).
+                match plan.install(std::env::var(logging::FILTER_ENV).ok().as_deref()) {
+                    Ok(guard) => app.manage(logging::Logging::new(guard)),
+                    Err(e) if plan.capture => {
                         app.dialog()
                             .message(format!("crank could not open its capture log: {e}"))
                             .kind(MessageDialogKind::Error)
@@ -122,8 +124,11 @@ pub fn run() -> tauri::Result<()> {
                             .blocking_show();
                         std::process::exit(1)
                     }
-                    eprintln!("crank: no log file: {e}");
-                }
+                    Err(e) => {
+                        eprintln!("crank: no log file: {e}");
+                        app.manage(logging::Logging::default())
+                    }
+                };
                 let data_dir = match &config.data_dir {
                     Some(dir) => dir.clone(),
                     None => app.path().app_data_dir()?,
@@ -135,12 +140,15 @@ pub fn run() -> tauri::Result<()> {
                         Ok(())
                     }
                     Err(e) => {
+                        tracing::error!(%e, "the core did not open");
                         app.dialog()
                             .message(startup_failure(&e))
                             .kind(MessageDialogKind::Error)
                             .title("crank")
                             .blocking_show();
-                        // Nothing is running that needs a clean-up: leave now.
+                        // Nothing else is running that needs a clean-up: write the log, leave now.
+                        app.state::<logging::Logging>()
+                            .shut_down(lifecycle::QUIT_CAP);
                         std::process::exit(1)
                     }
                 }

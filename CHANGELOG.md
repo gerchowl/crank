@@ -17,6 +17,10 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Changed
 
+- Desktop logs go through vigil: OTLP/JSON Lines `logs.jsonl` and `traces.jsonl` in the log directory, `CRANK_LOG` filter,
+  7-day retention and size caps; a `CRANK_CAPTURE_DIR` capture keeps everything. The old `crank.log` is left in place
+  ([#414](https://github.com/gerchowl/crank/issues/414))
+
 ### Deprecated
 
 ### Removed
