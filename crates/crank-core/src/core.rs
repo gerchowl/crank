@@ -279,8 +279,10 @@ struct Session {
     /// The engine task or thread: ending it drops the device links.
     task: EngineTask,
     ride_id: String,
-    /// The `ride` and `device` spans (ADR-0001 §7.1), closed when the session is dropped: the
-    /// reap, which every end, discard and quit goes through before vigil's shutdown (vigil#8).
+    /// The `ride` and `device` spans (ADR-0001 §7.1). `reap` closes them the moment it takes the
+    /// session out, so no wait for the engine can leave them open at a quit; a quit that gives up
+    /// before the reap closes them through the session ([`Core::shutdown`]). vigil exports no span
+    /// still open at its shutdown (vigil#8).
     spans: RideSpans,
     /// Set once a driver has closed its event stream, i.e. handed the peripheral back
     /// (the same confirmation pairing waits for).
@@ -306,7 +308,7 @@ struct Session {
 /// vigil exports a span when it closes, never one still open at shutdown (vigil#8), so the core
 /// holds them here and nothing else: the engine and the drivers get no clone, which a wedged
 /// engine detached from its session would keep open for ever. A span closes when its last
-/// handle drops, so dropping the session (the reap) ends them, devices first.
+/// handle drops: `reap` drops them as it takes the session, devices first.
 ///
 /// Attributes are never personal: `id` of the ride is crank's own, and a device is named by its
 /// role placeholder (`<trainer-id>`, `<strap-id>`, ADR-0003 §2.3), never its name, serial,
@@ -1372,7 +1374,7 @@ impl Core {
     /// the signal ([`SignalOwner::settable`]), so it cannot raise it with no ride loaded. A
     /// forced reap leaves the clear to its caller, which has cut the engine off first.
     async fn reap(&self, ride_id: &str, force: bool) {
-        let taken = {
+        let task = {
             let mut st = self.0.state.lock().await;
             if st.session.as_ref().is_some_and(|s| s.ride_id == ride_id)
                 && let Some(session) = st.session.take()
@@ -1387,12 +1389,20 @@ impl Core {
                 } else {
                     self.clear_signal(ride_id);
                 }
-                Some((session.task, session.spans))
+                // The spans end with the session, before the (bounded) waits below: a quit
+                // that gives up during them must not leave them open (vigil#8). The record is
+                // inside the ride span, so a reader finds the release by span id.
+                let mut spans = session.spans;
+                spans
+                    .ride
+                    .in_scope(|| tracing::info!(force, "ride released"));
+                spans.close();
+                Some(session.task)
             } else {
                 None
             }
         };
-        if let Some((mut task, spans)) = taken {
+        if let Some(mut task) = task {
             let wait = if force {
                 ABORT_JOIN_TIMEOUT
             } else {
@@ -1415,12 +1425,6 @@ impl Core {
                     }
                 }
             }
-            // The ride is over (joined, or detached): its spans end now, before anything shuts
-            // vigil down. The record is inside the ride span, so a reader finds the end by id.
-            spans
-                .ride
-                .in_scope(|| tracing::info!(force, "ride released"));
-            drop(spans);
         }
         self.0.released.notify_waiters();
     }
@@ -3136,6 +3140,81 @@ mod tests {
             Shutdown::TimedOut
         );
         assert_eq!(t.elapsed(), Duration::from_millis(500));
+    }
+
+    /// A subscriber that only tracks which spans are open: a span is open from its creation
+    /// until its last handle drops.
+    #[derive(Default)]
+    struct OpenSpans {
+        next: std::sync::atomic::AtomicU64,
+        /// Id → (name, handles).
+        spans: Mutex<std::collections::HashMap<u64, (&'static str, usize)>>,
+    }
+    impl OpenSpans {
+        fn open(&self) -> Vec<&'static str> {
+            let mut names: Vec<_> = self.spans.lock().unwrap().values().map(|v| v.0).collect();
+            names.sort_unstable();
+            names
+        }
+    }
+    /// The handle the subscriber is installed with; the test keeps the `Arc` to look.
+    struct Handle(Arc<OpenSpans>);
+    impl tracing::Subscriber for Handle {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            let id = self.0.next.fetch_add(1, Ordering::SeqCst) + 1;
+            self.0
+                .spans
+                .lock()
+                .unwrap()
+                .insert(id, (attrs.metadata().name(), 1));
+            tracing::span::Id::from_u64(id)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, _: &tracing::Event<'_>) {}
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+        fn clone_span(&self, id: &tracing::span::Id) -> tracing::span::Id {
+            if let Some(v) = self.0.spans.lock().unwrap().get_mut(&id.into_u64()) {
+                v.1 += 1;
+            }
+            id.clone()
+        }
+        fn try_close(&self, id: tracing::span::Id) -> bool {
+            let mut spans = self.0.spans.lock().unwrap();
+            let gone = spans.get_mut(&id.into_u64()).is_some_and(|v| {
+                v.1 -= 1;
+                v.1 == 0
+            });
+            if gone {
+                spans.remove(&id.into_u64());
+            }
+            gone
+        }
+    }
+
+    /// #465: vigil exports no span still open at its shutdown, so every quit outcome must leave
+    /// none: a stuck engine (the quit times out) included.
+    #[tokio::test(start_paused = true)]
+    async fn a_quit_leaves_no_ride_or_device_span_open_even_with_a_stuck_engine() {
+        let tracker = Arc::new(OpenSpans::default());
+        let _default = tracing::subscriber::set_default(Handle(tracker.clone()));
+        // A cap under `STOP_TIMEOUT` gives up before the reap; a longer one is inside the forced
+        // end's waits, after the session is taken.
+        for cap in [Duration::from_millis(500), Duration::from_millis(2500)] {
+            let dir = tempfile::tempdir().unwrap();
+            let radio = fake(vec![], false);
+            let core = riding(&radio, dir.path()).await;
+            assert!(tracker.open().contains(&"ride"), "{:?}", tracker.open());
+            assert!(tracker.open().contains(&"device"));
+            stall_engine(&core);
+            core.shutdown(cap).await;
+            assert_eq!(tracker.open(), Vec::<&str>::new(), "cap {cap:?}");
+            core.0.stall.release();
+        }
     }
 
     #[tokio::test(start_paused = true)]
