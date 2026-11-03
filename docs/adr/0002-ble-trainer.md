@@ -1,8 +1,8 @@
 # ADR-0002: Bluetooth stack and Trainer abstraction (FE-C first)
 
-- **Status:** Proposed, Amended (#54)
+- **Status:** Proposed, Amended (#54, #250, #264, #266, #435)
 - **Date:** 2026-10-13
-- **Issue:** #27 (decides the design questions of #23); amendment #54 (trainer-following state machine, §4.4.1)
+- **Issue:** #27 (decides the design questions of #23); amendment #54 (trainer-following state machine, §4.4.1); amendment #435 (connection lifecycle, §5.1)
 - **Related:** ADR-0001 (crate layout, clock, testing), `spec/TRAINER-BLE.md`
 
 ## 1. Context
@@ -91,11 +91,12 @@ pub enum ControlMode {
 pub struct Wind { pub cw_kg_per_m: f32, pub speed_kmh: f32, pub drafting: f32 }
 pub struct RiderConfig { pub rider_kg: f32, pub bike_kg: f32, pub wheel_m: f32 }
 
-pub enum TrainerCommand { SetMode(ControlMode), SetRider(RiderConfig), Disconnect }
+pub enum TrainerCommand { SetMode { mode: ControlMode, seq: CommandSeq }, SetRider(RiderConfig), Disconnect }
+// `seq` comes from the link's shared `SeqSource` (`TrainerLink::seq`), so every sender's commands are distinct (#345)
 
 pub enum TrainerEvent {
     Sample(TrainerSample),
-    Delivered { mode: ControlMode },            // GATT write-with-response succeeded: bytes reached the peripheral, nothing more
+    Delivered { mode: ControlMode, seq: CommandSeq }, // GATT write-with-response succeeded: bytes reached the peripheral, nothing more; confirms only the SetMode of `seq` (#345)
     Observed(TrainerObservation),               // what the trainer reports it is doing (§4.4); never "ack of command N"
     Link(LinkState),                            // Connecting | Ready | Lost (Ready = transport, rider config, caps done)
     Fault(DeviceError),
@@ -201,6 +202,13 @@ frames as `FrameError::Checksum` (counted in a metric and logged, never passed o
 confirms the NEO accepts XOR-checksummed writes. Writes use message type **`0x4F` (acknowledged data)**,
 as pycycling does against a NEO; HIL check 2 confirms.
 
+**HIL result (#44 Part A, 2026-10-14, `docs/hil/2026-10-14-fec.md`).** The NEO answered a page-70 request
+under all four checksum rules, including a deliberately wrong one: it **does not verify the checksum on
+writes** (11 of 12 requests were answered; the one lost reply is the §4.4 effect, not a rejection). It also accepted
+message type `0x4E` as well as `0x4F`, with and without GATT response; every effect check (page 49 followed by
+the page-71 echo) matched. The decisions above stand: the NEO's own frames always carry XOR including sync,
+and that is what crank sends and verifies. Nothing about the NEO's tolerance is relied on.
+
 ### 4.2 Pages
 
 From trainer (decoded):
@@ -224,7 +232,51 @@ To trainer (encoded):
 | 55 `0x37` | User configuration | 1–2: rider mass, 0.01 kg; 4–5: bike mass, 0.05 kg (12 bit) + wheel diameter offset; 6: wheel diameter, 0.01 m; 7: gear ratio, 0.03 |
 | 70 `0x46` | Request data page | 1–2: `0xFFFF`; 3–4: `0xFF`; 5: transmission count, bit 7 = reply acknowledged; 6: requested page; 7: `0x01` (data page) |
 
-Unused bytes are `0xFF`. Unknown pages decode to `Page::Unknown(u8, [u8; 8])` and are logged at debug.
+Unused bytes are `0xFF`. Unknown pages decode to `Page::Unknown { page, raw }` and are logged at debug.
+
+**Tentative pending HIL #44** (the ANT+ FE profile was not retrievable, §4.1; the items below are codec
+policy, either raw values kept without meaning or a mask or validity rule, no semantics invented). Part A
+results (2026-10-14, NEO fw 0.7.4) are marked; the rest stays tentative:
+
+- Page 16: `equipment_type` is masked with `0x1F` (bits 5–7 reserved). **Part A:** bits 5–7 were 0 in all
+  456 captured page-16 frames (type `0x19`), so the mask never mattered on this NEO; it stays tentative
+  because zero bits do not prove the bits are reserved.
+- Page 54: `max_resistance_n` is the raw `u16`; whether `0xFFFF` means unavailable is undecided and left to
+  the consumer (`crank-ble` currently maps it to `None`, covered by the driver test
+  `page_54_max_resistance_0xffff_is_unavailable_and_other_values_are_kept`). **Part A:** the NEO reports `200` N and modes
+  `0x07` (basic resistance, target power, simulation) in every reply; `0xFFFF` was never seen. Whether
+  `0xFFFF` means unavailable stays tentative.
+- Page 55: wheel offset nibble 0–9 is millimetres and `0xF` means no offset; 10–14 decode to `None` pending
+  confirmation that 10 is not valid. **Part A:** the NEO accepts the corrected layout (708 mm sent as byte 6 =
+  70, nibble 8; read back byte for byte), and stores and reports nibbles 10, 12 and 14 verbatim; it reports a
+  sent `0xF` as `0`. The NEO therefore gives no evidence either way about 10–14, and the decode to `None`
+  stays a codec policy, tentative.
+- Page 70: a count of 0 encodes `0x80` and decodes to `times: 0, acknowledged: true`. **Part A (n = 1 trial
+  per count):** `times` = 1 gave one reply, 3 gave three, and 0 gave five replies within 0.82 s of the
+  request (an immediate pair, then one per ~0.24 s) and then none within the 4 s window. So the NEO
+  repeats a count-0 request a bounded number of times (five in the one trial), which fits "until
+  acknowledged" with a cap; the cap itself is one observation and stays tentative.
+- Requests for a page the NEO does not serve as data (16 and 25, one trial each). **Part A:** it answers
+  with page 71 whose last-page byte is the *requested* page (`0x10`, `0x19`) and status `2` (not
+  supported): `47 10 DD 02 FF FF FF FF`. An unsupported request therefore overwrites page 71's
+  last-page field, so the next poll no longer echoes the last control page (it reads `NotControl`, see
+  rule R1 in §4.4.1, engine routing tracked in #226). Whether a *supported* request (54, 80, 81, 55) also overwrites it is not
+  established by Part A (no request-then-poll capture); crank sends only 54 (at connect, before any
+  poll) and 71.
+- Pages 48/50 endpoints. **Part A (settled):** 100 % (`200`) and page 50 at 1.86 / +127 km/h / 1.0 are
+  applied as numbers (echo `C8` and `BA FE 64`).
+- Pages 49 and 51 endpoints. **Part A (settled, contradicts the earlier "numeric, not sentinels"):** the
+  NEO treats page 49 `0xFFFF` and page 51 Crr `0xFF` as invalid. The echo of `0xFFFF` reads `0x0000` (the
+  previous target is replaced by 0 W); the echo of Crr `0xFF` keeps the previous Crr. **Confirmed by HIL
+  Part A** (`docs/hil/2026-10-14-fec.md`, check 3, "Endpoints"): `encode` rejects both with
+  `EncodeError` (`Field::Watts`, `Field::Crr`), judged on the wire value after rounding, so the largest valid
+  values are 16383.5 W (`0xFFFE`) and Crr 0.0127 (`0xFE`) (#215; these two are inferred from the sentinels,
+  not measured: Part A sent only `0xFFFF` and `0xFF`).
+- Page 49 resolution. **Part A:** the NEO quantises the target to whole watts: 200.25 W is echoed as 200 W
+  and 200.5 W as 201 W, so §7.1's 1 W grid is the real resolution and 0.25 W is wire format only.
+- Pages 54/80/81 layout. **Part A (settled):** page 80 reads hardware revision 1, manufacturer 89
+  (`0x59`, Tacx), model 2800 (`0x0AF0`); page 81 reads supplemental revision 0, main software revision 7 (DIS
+  firmware reads 0.7.4) and a serial; all as the codec decodes them.
 
 ### 4.3 Codec API
 
@@ -234,10 +286,17 @@ pub enum MsgType { Broadcast = 0x4E, Acknowledged = 0x4F }
 pub struct AntFrame { pub msg_type: MsgType, pub channel: u8, pub page: Page }
 
 pub enum Page {
-    GeneralFe(GeneralFe), Trainer(TrainerData), Capabilities(FeCapabilities),
+    GeneralFe(GeneralFe), Trainer(TrainerData),
+    BasicResistance { pct: Option<f32> }, TargetPower { watts: f32 },
+    Wind { cw_kg_per_m: Option<f32>, speed_kmh: Option<f32>, drafting: Option<f32> },
+    Track { grade_pct: Option<f32>, crr: f32 },
+    Capabilities(FeCapabilities),
+    UserConfig { rider_kg: Option<f32>, bike_kg: Option<f32>, wheel_m: Option<f32>, gear_ratio: Option<f32> },
+    Request { page: u8, times: u8, acknowledged: bool, command_type: u8 },
     CommandStatus(CommandStatus), Manufacturer(ManufacturerInfo), Product(ProductInfo),
-    Unknown(u8, [u8; 8]),
+    Unknown { page: u8, raw: [u8; 8] },     // all eight page bytes verbatim
 }
+// Control pages round-trip through decode, so the control variants above are also decoded.
 pub enum ControlPage {
     BasicResistance { pct: f32 }, TargetPower { watts: f32 },
     Wind { cw_kg_per_m: f32, speed_kmh: f32, drafting: f32 },
@@ -245,19 +304,46 @@ pub enum ControlPage {
     UserConfig { rider_kg: f32, bike_kg: f32, wheel_m: f32 },
     Request { page: u8, times: u8 },
 }
+#[non_exhaustive] pub enum Field { Pct, Watts, CwKgPerM, SpeedKmh, Drafting, GradePct, Crr, RiderKg, BikeKg, WheelM, Times }
+pub struct EncodeError { pub field: Field }
 pub fn encode(p: &ControlPage) -> Result<[u8; 13], EncodeError>;   // range-checked, never clamps silently
 pub fn decode(b: &[u8]) -> Result<AntFrame, FrameError>;           // Sync | Length | Checksum | Truncated
 ```
 
-Values that do not fit a page field (target above 16 383.75 W, grade outside ±200 %, Crr above 0.01275,
+Values that do not fit a page field (target at or above 16 383.625 W (rounds to `0xFFFF`), grade outside ±200 %, Crr at or above 0.012725 (rounds to `0xFF`),
 negative masses) are `EncodeError`s; clamping to trainer capabilities is the engine's explicit job (§7).
+`crank-devices` rejects SIM's Crr above `CRR_MAX` = 0.0127 (unit `0xFE`) at the mode boundary (`ControlMode::grid_key`),
+so the same typed error surfaces there and not late from the BLE writer (#237).
 
 ### 4.4 Command pacing and acknowledgement
 
 - **One writer task per connection**, ticking at **4 Hz** (Tacx's rate). It holds coalescing slots,
   not a queue: `control` (latest `ControlMode`), `rider` (page 55), `requests` (FIFO of page-70 requests).
-  Per tick it writes at most one message, priority `control` > `rider` > `requests`. A newer target
+  Per tick it writes at most one message, priority reserved page-71 poll (subject to the SIM-pair exception below) > `control` > `rider` > other `requests`. A newer target
   replaces an unsent older one, so the trainer always gets the latest target and nothing piles up.
+
+**Amendment (#43): reserved poll tick (2026-10-13).** A page-71 request due on the nominal
+1 s grid reserves the next writer tick, even with single-page control pending; it cannot occupy two
+consecutive ticks or defer the same pending value twice. This prevents observation starvation while
+keeping single-page control latency within two ticks. A pending SIM pair (50 then 51) instead runs on
+two consecutive ticks before the poll; that poll may be late by two ticks, with no change to nominal
+due times. Steady SIM alternates keep-alive pages one second apart, polling on the following tick.
+For continuously superseded SIM pairs, finish the current pair then service an overdue poll before
+starting another pair. An in-flight pair finishes its track page with the newest value before a
+coalesced wind update, so a superseding SIM update can be delivered track then wind. A poll already
+deferred by one SIM pair takes the next tick even if a newer pair is pending; polls are never more
+than two ticks late against the nominal grid and never occupy consecutive ticks. Both SIM pages are
+written within two ticks of the desired change, except when the pair's first free tick goes to such
+an already-deferred poll: then completion is within three ticks (0.75 s), never more. ERG, resistance,
+and single-page control remain within two ticks. This bounds observation starvation, which affects
+safety-relevant trainer_following. The extra SIM tick arises under back-to-back changes faster than
+real terrain; the writer's share of `L` is 0.5 s nominal. #44 check 3 measured the age of stale echoes
+including slot/coalescing delay (§4.4.1: at most about 0.8 s against `L` = 2 s).
+Latency is measured per page from the moment it first becomes pending; coalescing replaces the value, not the deadline.
+Rider configuration is written on connection; explicit SetRider on a live connection returns a
+protocol fault and requires a new connection. Reserving polls avoids five-second observation expiry;
+one tick of single-page delay remains inside the control latency budget.
+
 - `ControlMode::Sim` needs two pages (50 then 51). When both change they go out on consecutive ticks.
 - **Keep-alive:** the current control page is re-sent every 2 s even if unchanged. In SIM, pages 50 and 51
   alternate 1 s apart, each followed by the page-71 request (the SIM echo schedule, §4.4.1). Writes are idempotent;
@@ -271,7 +357,8 @@ negative masses) are `EncodeError`s; clamping to trainer capabilities is the eng
   may arrive. Tags in the data bytes wrap and cannot identify a delayed reply either. crank therefore keeps
   two separate, honest signals:
   - **Delivery (transport):** every write uses GATT write-with-response. Success →
-    `TrainerEvent::Delivered { mode }`, meaning the bytes reached the peripheral and nothing more; a GATT
+    `TrainerEvent::Delivered { mode, seq }`, meaning the bytes of the `SetMode` of sequence `seq` reached the
+    peripheral and nothing more (a mode replaced before its last page is never confirmed); a GATT
     error → `Fault(DeviceError::Gatt)`.
   - **Observation (trainer state):** while a controlled mode (ERG, SIM, resistance, `Free`) is active the
     writer requests page 71 every `T_poll` = 1 s through the `requests` slot (fixed cadence, aligned in SIM
@@ -294,6 +381,34 @@ negative masses) are `EncodeError`s; clamping to trainer capabilities is the eng
   latency from a desired change to the first reply echoing it, which calibrate the constants of §4.4.1. **Enhancement, gated on
   #44:** if the check shows that the sequence byte increments verifiably per received control page,
   command-specific correlation may be added later as a new ADR amendment; v1 does not depend on it.
+  **Result (#44 Part A, 2026-10-14):**
+  - *Gate passes.* The NEO answers page 70 → page 71 (request-to-reply p50 0.06 s) and echoes bytes 4–7 of
+    pages 48, 49, 50 and 51 exactly, with status `0` (pass) and the last control page in byte 1. Page 55 is
+    **not** echoed: after a page-55 write byte 1 still names the previous control page. Before any control
+    page, byte 1 is `0x30` and the echo is `FF FF FF 00`, which is a valid resistance echo of 0 %. Callers
+    must therefore not treat that echo as a trainer-following disagreement.
+  - *Sequence byte.* It increments by 1 for each control page (48–51) and for each page-70 request the
+    NEO receives (not for page 55), wrapping at 256. It does increment verifiably, so the gated enhancement
+    is feasible later (a reply whose sequence is exactly 1 above that of a request/control pair proves no
+    other message intervened); v1 stays as decided.
+  - *Lost replies.* A page-70 request for page 71 is sometimes never answered, with the sequence byte
+    showing it was received. Counted by sequence number over the Part A captures
+    (`frames::reply_accounting`, offline test with duplicates and gaps): 5 of 79 requests sent in a row
+    (250/500/1000/2000 ms apart), 4 of 40 requests 0.1–1 s after a control write, and 27 of 344 (7.8 %) of
+    the driver's own 1 s polls; 0 of 12 in check 2 and 3 of 32 in check 3. The loss does not depend on
+    spacing (2/19 at 250 ms, 0/19 at 500 ms, 3/19 at 1000 ms, 0/22 at 2000 ms) or envelope (§4.1). A
+    reply that does arrive does so within 0.12 s (n = 317); a lost one is not answered later. The next
+    poll is the recovery, which is already the design (never one reply). In SIM it costs one reply period
+    (2 s) for the affected component.
+  - *Repeated replies.* Of 397 page-71 frames in the driver run, 80 are `0x4E` (broadcast) copies of a
+    `0x4F` reply with the same sequence and bytes: 66 within 1 ms of the original, the rest up to one
+    4 Hz slot (0.24 s) later. Replies are not always `0x4F`. The driver turns every frame into its own
+    `Observed` event ("one reply, one observation", no deduplication). That is harmless to
+    §4.4.1: a copy carries the same value and sequence, so it can never disagree with its original, and
+    `T_verify` requires the agreeing replies of a verification to be spread over at least 2 s, so a burst
+    of copies cannot verify a component. A copy does count toward `N_follow`, so a verification may rest
+    on two distinct replies at least 2 s apart plus a copy; the sequence byte would allow deduplicating
+    copies exactly, which is the same gated enhancement as above.
 - **Connect sequence:** connect → discover → subscribe `fec2` → read DIS → page 55 (rider config) →
   request page 54 (capabilities) → `TrainerLink` returned with `Link(Ready)` → engine sets the mode. The
   driver never chooses a control mode itself; restoring control is always the engine's `SetMode`.
@@ -337,7 +452,7 @@ and v1 claims nothing beyond these definitions.
 **Components and grid.**
 
 - Values are compared as integers at the wire resolution, never as floats. `ControlMode::grid_key()` in
-  `crank-devices` gives ERG in 0.25 W, grade in 0.01 % (offset as on page 51), Crr in 5×10⁻⁵, resistance in
+  `crank-devices` gives ERG in 0.25 W, grade in signed 0.01 % (without page 51’s offset), Crr in 5×10⁻⁵, resistance in
   0.5 %, and wind in 0.01 kg/m, 1 km/h and 0.01.
 - The engine emits desired modes already on that grid. §7.1 rounds ERG to 1 W, which is exact in 0.25 W.
   Grade, Crr, resistance and wind are rounded to the grid where the engine produces them.
@@ -378,22 +493,23 @@ renew anything.
 | Constant | Value | Source |
 |---|---|---|
 | `T_poll` page-71 request period | 1 s | §4.4. Gives `P_c` above (SIM: alternation) |
-| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Budget: desired change → control write (≤ 2 writer ticks, 0.5 s), plus the trainer applying it, plus the reply latency. **HIL calibration (#44 check 3)**: `L` ≥ p99 of (desired change → arrival of the first reply that echoes it), measured end to end, so slot and coalescing delay are included |
+| `L` lag acceptance: how long after a value stopped being desired an echo of it still agrees | 2 s | Bounds the age of a **stale echo**: an echo of a value that has been superseded by a newer desired value. Budget: the writer delay (≤ 2 ticks (0.5 s) nominal; ≤ 3 ticks (0.75 s) worst case for a SIM pair behind a deferred poll, §4.4) during which polls still read the old value, plus reply latency (≤ 0.12 s). **HIL calibration (#44 check 3, Part A, 2026-10-14, `docs/hil/2026-10-14-fec.md`)**: in the driver run (60 ERG and 30 SIM changes, 397 page-71 frames, about 6 min) 2 echoes were stale after the new value was written, 16 ms and 22 ms after the write (both ERG; none in SIM track), so the age from the desired change is at most 0.75 s + 0.022 s ≈ 0.8 s. `L` = 2 s keeps 1.2 s of margin. (The first-echo latency of a new value, ERG ≤ 2.2 s and SIM ≤ 4.3 s, is **not** what `L` bounds; it is checked against `T_unknown(c)` below.) Reproduce: `hil_fec analyse` |
 | `N_follow` agreeing replies to verify a component | 3 | Design: a single or duplicated reply never decides |
 | `T_verify` minimum span of those replies | 2 s | Design: a burst of delayed replies arriving together never verifies |
 | `T_mismatch` minimum span of a disagreement episode before `not_following` | 2 s | The previous 2 s rule (8 ticks) |
-| `T_unknown` silence: required time without a reply about a component | 5 s | The previous 5 s rule. More than two SIM reply periods. **HIL check (#44 check 3)**: SIM replies alternate as the schedule requires |
+| `T_unknown(c)` silence: required time without a reply about component c | `4·P_c + 1 s` = 5 s (ERG, resistance), 9 s (SIM components) | **Per component (HIL #44 Part A).** A reply gap is `(m + 1)·P_c` after `m` consecutive lost replies; c is `silent` (C7) once the gap reaches `T_unknown(c)`, so `m` = ⌈`T_unknown(c)` / `P_c`⌉ − 1 losses in a row make a healthy component silent and then `not_following` (A3). The NEO never answered 27 of 344 polls (p = 7.8 %, `latency.analysis.json`; check 2: 0 of 12, check 3: 3 of 32 = 9.4 %, spacing: 5 of 79 = 6.3 % in a row and 4 of 40 = 10 % just after a control write). With independent losses a component slot of period `P_c` starts such a run at rate `p^m` per slot, i.e. `3600 / P_c · p^m` per hour. **Flat 5 s:** ERG `m` = 4, 0.14 per hour; one SIM component `m` = 2 (gap 6 s), `p²·1800` = 11 per hour, and a SIM ride has two (track, wind), so 22 per hour: unacceptable. **4·P_c + 1 s:** ERG `m` = 4 (gap 5 s), 0.14 per hour; one SIM component `m` = 4 (gap 10 s; three losses give 8 s and are tolerated), 0.068 per hour, 0.14 per hour per ride. At the highest rate measured after a control write (4 of 40 = 10 %) the new rule gives 0.36 per hour (ERG, or SIM per ride), at the in-a-row rate (5 of 79 = 6.3 %) 0.06. Measured, no component ever exceeded 4.05 s (SIM) or 2.04 s (ERG), and the largest first echo of a changed value was 4.21 s (SIM track) and 2.19 s (ERG). **Independence is assumed, not shown:** the 27 losses of the latency capture were all isolated (no two requests in a row), where independence expects 2.1 adjacent pairs (probability of none 0.12); the spacing capture (`spacing.analysis.json`, 9 of 120 lost) has one adjacent pair (observed 1, expected 0.67); and in the SIM phase no two replies of the same component were lost in a row (135 requests, 0.82 expected, probability of none 0.44). The data neither support nor contradict a burst-free loss process, so Part B counts `silent` episodes on a healthy NEO over a long SIM ride; the rule changes only if they exceed the rate above |
 | `T_decide(c)` decision deadline (derived, not tuned) | `T_verify + T_mismatch + 3·P_c` = 7 s (ERG, resistance), 10 s (SIM components) | Checked by the model's fair walk |
 
-A change to `L`, `T_unknown` or the reply periods is an ADR amendment backed by #44 numbers. The model's
-constants must be changed in the same commit.
+A change to `L`, `T_unknown(c)` or the reply periods is an ADR amendment backed by #44 numbers. The model's
+constants must be changed in the same commit; the model fails when its constants differ from this table
+(`check_constants`).
 
 **Reply routing.** A reply (`TrainerEvent::Observed`) arrives at `t` = `at`. It is routed by the first
 matching rule:
 
 | # | Reply | Effect |
 |---|---|---|
-| R1 | Page-25 flags, `control = None` or `NotControl` (e.g. page 55 was the last page received; it says nothing about any component), status `Pending` or `Other` | Neutral: no effect on anything |
+| R1 | Any of: page-25 flags; `control = None` or `NotControl` (e.g. page 55 or an unsupported request was the last page received; it says nothing about any component), **whatever the status** (an unsupported request gives `NotControl` with status `NotSupported`, #44 Part A); status `Pending` or `Other` | Neutral: no effect on anything |
 | R2 | About a required component c: status `Pass` and the echo equals c's current desired value, or a value c had at some instant in `[t − L, t]` | **Agree** for c |
 | R3 | About a required component c: anything else (other value; status `Fail`, `NotSupported` or `Rejected`, even with an equal echo) | **Disagree** for c |
 | R4 | About a component that is not required but was required at some instant in `[t − L, t]` | Neutral: the trainer still reports the previous mode |
@@ -422,15 +538,15 @@ and the model's ever diverge.
 
 | # | When | Guard | Next state | Actions |
 |---|---|---|---|---|
-| C1 | c starts: `Activate`, or required again after more than `T_unknown` not required | none | `unverified` | `streak` = empty, `dis_since` = none, `last_evidence` = now |
-| C2 | **pre-step** for any Agree/Disagree: c is `silent`, or `t − last_evidence ≥ T_unknown` (evidence too old even if C7 has not run, e.g. c stopped being required at that instant) | none | `unverified`, then continue with C3–C6 | `streak` = empty, `dis_since` = none |
+| C1 | c starts: `Activate`, or required again after more than `T_unknown(c)` not required | none | `unverified` | `streak` = empty, `dis_since` = none, `last_evidence` = now |
+| C2 | **pre-step** for any Agree/Disagree: c is `silent`, or `t − last_evidence ≥ T_unknown(c)` (evidence too old even if C7 has not run, e.g. c stopped being required at that instant) | none | `unverified`, then continue with C3–C6 | `streak` = empty, `dis_since` = none |
 | C3 | Agree | after adding it, `streak` has ≥ `N_follow` replies and `t − streak.first ≥ T_verify` | `following` | add to `streak`, `last_evidence` = t, `dis_since` = none |
 | C4 | Agree | otherwise | unchanged | add to `streak` (first = t if it was empty), `last_evidence` = t |
 | C5 | Disagree | `t − (dis_since or t) ≥ T_mismatch` | `not_following` | `streak` = empty, `last_evidence` = t, `dis_since` = `dis_since` or t |
 | C6 | Disagree | otherwise | `following` → `unverified`; others unchanged | as C5 |
-| C7 | tick, c required and not `silent` | `now − last_evidence ≥ T_unknown` | `silent` | `streak` = empty, `dis_since` = none |
+| C7 | tick, c required and not `silent` | `now − last_evidence ≥ T_unknown(c)` | `silent` | `streak` = empty, `dis_since` = none |
 | C8 | c stops being required | none | `following` → `unverified`; others unchanged | `streak` = empty, `not_required_since` = now. `dis_since` and `not_following` are **kept** |
-| C9 | c required again within `T_unknown` | none | unchanged | `last_evidence` += now − `not_required_since` (silence counts required time only), `not_required_since` = none |
+| C9 | c required again within `T_unknown(c)` | none | unchanged | `last_evidence` += now − `not_required_since` (silence counts required time only), `not_required_since` = none |
 
 Properties of this table:
 
@@ -466,11 +582,11 @@ as an invariant over every reachable state or as a named scenario.
    desired in the last `L`. Then the aggregate is `not_following` no later than `L + 2·P_c + T_mismatch + r`
    after the later of activation and the last instant c desired V: 6 s + r for ERG, 8 s + r for a SIM
    component. Desired changes in between, at any rate, change nothing.
-2. **Missing component.** A required component without a reply for `T_unknown` of required time is
+2. **Missing component.** A required component without a reply for `T_unknown(c)` of required time is
    `silent`. The aggregate is then `not_following` if any sibling is not silent, and `unknown` if all are.
    It is never `following` (A3/A4).
    - Mode toggling cannot restart this clock (C9) unless the component stays unrequired for more than
-     `T_unknown`. Then it is a new requirement and must verify from scratch, so it can still never be
+     `T_unknown(c)`. Then it is a new requirement and must verify from scratch, so it can still never be
      masked as `following`.
    - Lagging replies are not a separate class: an echo of a value desired within `L` is an Agree for its
      own component. It never refreshes another component.
@@ -502,10 +618,11 @@ as an invariant over every reachable state or as a named scenario.
    - One Disagree never produces `not_following`.
 6. **Leaving `not_following`.** A component leaves `not_following` only through its own verification (C3),
    silence (C7) or `Deactivate`. A new target does not end it.
-7. **Silence.** A trainer that sends no reply is `checking` for `T_unknown` (5 s) after each `Activate`, then
-   `unknown` (A2) until a reply arrives or the machine deactivates. A trainer that never answers page 70
-   (the #44 check-3 fallback) therefore shows `checking` for the first 5 s of every activation and
-   `unknown` after that.
+7. **Silence.** A trainer that sends no reply is `checking` for `T_unknown(c)` (5 s for ERG and resistance, 9 s for SIM
+   components, so 9 s in SIM where both components must be silent) after each `Activate`, then `unknown` (A2)
+   until a reply arrives or the machine deactivates. A trainer that never answers page 70 (the #44 check-3
+   fallback) therefore shows `checking` for the first 5 s (ERG) or 9 s (SIM) of every activation and `unknown`
+   after that.
 8. **Repeated rides.** Activity depends only on the link and the desired mode, so a second ride on an open
    connection activates and verifies exactly like the first.
 
@@ -545,7 +662,7 @@ for those issues.
       disagreement, silence or re-requirement, so a single stale reply or a burst never verifies;
     - **(c)** that evidence while the component is required and not silent gives `following`, so
       recovery always completes;
-    - **(d)** `silent` holds exactly after `T_unknown` of required time without a reply, and requirement
+    - **(d)** `silent` holds exactly after `T_unknown(c)` of required time without a reply, and requirement
       toggles cannot restart that clock;
     - a single Disagree never gives `not_following`;
     - `not_following` ends only through verification, silence or a fresh start.
@@ -589,7 +706,7 @@ for those issues.
      latency 0..r), the Rust verdict sequence equals the model's. The model is invoked as a test oracle
      through a fixture file generated by the model, not at run time.
   3. Every guarantee above (1–8) as a property, including transition storms at every tick, ERG ↔ SIM
-     toggles faster than `T_unknown`, and recovery after silence.
+     toggles faster than `T_unknown(c)`, and recovery after silence.
   4. Compliance: exactly the seconds with a `suspect` or `not_following` tick are excluded.
   5. Classification: every desired change gets exactly one class, and the `Transition` set equals the §7.8
      settle triggers.
@@ -604,8 +721,9 @@ for those issues.
   - ERG → free ride with page 51 dropped reaches `not_following` naming `track`.
 - *#43, driver (FE-C):*
   1. **Poll cadence.** For arbitrary command sequences through the 4 Hz writer, a page-70 request for page
-     71 is written every `T_poll` (± one tick) while a controlled mode is active, never otherwise. It is
-     never written more than once per tick and never delays a `control` write.
+     71 is written every `T_poll` (± one tick; −1/+2 ticks with a pending SIM pair) while a controlled
+     mode is active, never otherwise. At most one is written per tick, never on consecutive ticks; a
+     pending single-page control value is deferred at most one tick.
   2. **SIM echo schedule.** In steady SIM, page 50 and page 51 are each written every 2 s, 1 s apart, and
      each is followed by the request on the next free tick. Replies from a faithful fake transport alternate
      between wind and track echoes.
@@ -618,8 +736,10 @@ for those issues.
      `ObservedControl` equals the `grid_key` projection of the mode that produced the page. Page 55 and
      unknown pages give `NotControl(page)`. All status byte values decode, and unknown ones become `Other`.
   6. **Replay.** The #44 check-3 capture, replayed through `ReplayTrainer` into the machine, gives
-     `following` for its steady ERG and SIM segments. Its desired-change → echo latency is below `L`, and
-     each SIM component gets a reply within `T_unknown`.
+     `following` for its steady ERG and SIM segments. Every stale echo in it (an echo of a superseded value) is at
+     most `L` old, measured from the first write of the superseding value plus the writer delay, and the first
+     echo of each changed value arrives within `T_unknown(c)`; each SIM component gets a reply within
+     `T_unknown(c)`.
 
 ## 5. Decision: sensor sources, discovery, pairing memory
 
@@ -646,14 +766,384 @@ for those issues.
   ignored in v1.
 - **Pairing memory** (`device` table, ADR-0001 §6): platform peripheral id (CoreBluetooth UUID on macOS,
   stable per host), advertised name, and DIS serial (2A25) + model. Reconnect tries the stored platform id
-  first (CoreBluetooth can connect a known peripheral without scanning), then a scan matched by name +
-  serial. No BLE bonding: the NEO and standard HR straps work without it (to confirm in #44).
+  first, then a scan matched by name + serial. **#44 Part A:** btleplug resolves only peripherals the central has
+  already seen in the current process (a fresh process with the stored id gave `NotFound`; after a scan the
+  same id resolved), so the id-first path works only after a scan and the scan is the normal path. The id
+  was identical across separate processes. No BLE bonding: connect, subscribe and control writes worked
+  with no pairing prompt (confirmed on the NEO; HR strap still to confirm).
 - **Single central:** while crank is connected, no other app can control the NEO, and while another app
-  (Zwift, Tacx app, a second crank process) is connected, crank cannot. crank therefore connects when the
-  rider enters pre-ride or ride, stays connected while the app is open, and offers "Release trainer" in
-  the devices view. If a remembered trainer is not seen during a scan, the UI says so with the likely
+  (Zwift, Tacx app, a second crank process) is connected, crank cannot. When crank connects, holds and
+  releases the devices is §5.1 (amendment, #435); the devices view offers "Release trainer". If a remembered trainer is not seen during a scan, the UI says so with the likely
   causes (another app connected, trainer asleep or unpowered) while the scan continues. Within crank,
   the ride lock (ADR-0001 §2) prevents two crank processes from competing.
+
+### 5.1 Connection lifecycle and speculative connect (amendment, #435, 2026-11-02)
+
+**Context.** `ride_load` connects the paired devices before it builds the engine (`core.rs` `Core::connect_links`). It
+connects the trainer, then the strap, one after the other, each bounded by `CONNECT_TIMEOUT` (15 s). Each connect
+resolves its peripheral first (`central.rs` `resolve`): a lookup of the adapter's list, then a scan of up to
+`RESOLVE_SCAN` (4 s) when the adapter does not list it, which after launch it never does (#206-3: btleplug resolves only
+peripherals this process has already seen). Then GATT connect, discovery, subscribe, the DIS read, page 55, a fixed
+250 ms wait and the page-54 reply, awaited for up to 2 s (`driver.rs` `FecTrainer`). From code reading, not yet
+measured: about 4–8 s typical and about 30 s worst case, while the UI shows "Loading ride…". The owner's direction on
+#435 is speculative connect: connect while a ride is likely, as a photo uploads while the caption is still being
+written, and let go when it is not. The constraints are those of §5: one central at a time on the NEO (other apps, HIL
+check 10's second central), and the strap's coin cell. This section replaces the "connects when the rider enters
+pre-ride or ride, stays connected while the app is open" of "Single central" above.
+
+#### 5.1.1 States and who owns a link
+
+Each paired device (trainer, strap) has one **link phase**, owned by a new core component, the **link keeper**
+(`crank-core`, beside the session; one per `Core`):
+
+| Phase | Meaning |
+|---|---|
+| `cold` | not connected, no attempt running |
+| `searching` | resolving the peripheral (adapter lookup, then the shared scan) |
+| `connecting` | GATT connect, discovery, subscribe, DIS read and identity check (`Pairing::verify`) |
+| `handshake` | trainer only: page 55 written, page-54 reply awaited |
+| `warm` | `Link(Ready)` reached; the keeper holds the link and drains its events |
+| `not_found` | the last attempt failed (not seen in the scan, connect failed, identity mismatch, timeout); kept until the next attempt |
+| `riding` | the link was handed to a ride's session (§5.1.4); the keeper no longer owns it |
+
+Ownership is one way: **keeper → session**, at `ride_load`. A session never hands a link back. The ride's end
+releases its links exactly as today (end mode, release, disconnect: §7.9, `LinkRelease`), and the phase becomes
+`cold`. If a warm view is shown again, the keeper warms up again from `cold`. All of §6 and §7 stays attached to the
+session and is not touched: reconnect backoff, `RideGate`, end mode, forced end, command gate.
+
+#### 5.1.2 Warm-up: when and how
+
+**Intent.** The UI reports the rider's intent; the core owns every timer and decision. `links_intent(intent)` is a
+facade command (ADR-0001 §4) with `LinkIntent`:
+
+- `Likely`: the window is visible and focused, and it shows a **warm view**: Today, Workouts (list or a selected
+  workout) or the Ready sheet (DESIGN §5.1, §5.4, §5.7). The UI sends it when one of these appears or gains focus,
+  and again on rider input while it is shown, at most once per 30 s. On the Ready sheet, while no ride is loaded
+  (the load is in flight or failed), it is `Likely { ready: true }`, which holds without input (§5.1.3).
+
+**While a ride is loaded or active the keeper is inactive.** It ignores every `Likely`, whatever any window shows,
+and warms up no device. The session owns its links (§5.1.4). A strap that missed the load stays out of that ride
+(#450).
+- `Left`: the window now shows another view (History, Review, Settings other than Devices, Onboarding). This starts
+  the idle timer (§5.1.3).
+- `Background`: crank is no longer the frontmost app while its window stays visible. This starts a 60 s grace
+  timer (§5.1.3); a `Likely` within it cancels it.
+- `Release(reason)`: cool down now (§5.1.3). The reasons are `Hidden`, `Sleep`, `Devices` and `RiderRelease`.
+
+On `Likely` the keeper starts an attempt for every paired device that is `cold` or `not_found`, **trainer and strap in
+parallel** (two tasks, never one after the other). Each attempt is one `connect` of the existing driver, bounded by
+`CONNECT_TIMEOUT`. A device with no pairing has no phase and gets no attempt.
+
+**Handle reuse (an assumption, to be measured).** Both attempts resolve through `resolve`, which looks the
+peripheral up in the adapter's list before it scans. #206-3 showed only that an id resolves after a scan **in the same
+process**. It did not test the lookup after the device was disconnected, or after the scan that saw it stopped, and
+`resolve`'s own documentation (`central.rs` `resolve`) says the adapter lists a peripheral "only while it is
+connected or was seen by a running scan". So the lookup may well fail after a cool-down or once a Devices scan has
+ended, and the attempt then scans. The design assumes nothing beyond that: a failed lookup costs one scan of latency
+(about 0.3 s typical for the NEO, at most `RESOLVE_SCAN`), never safety, because identity is checked after connecting
+either way (`Pairing::verify`). The `via=lookup|scan` field of §5.1.6 measures how often the lookup works, and
+sub-issue 1 (§5.1.7) verifies it on hardware. The NEO advertises about 3.5 times per second (Part A, #206-1: 104–108 advertisements in 30 s), so that scan
+normally ends well inside `RESOLVE_SCAN`. The two attempts share one adapter scan (`central.rs` `RESOLVE_SCAN` notes
+that the scan is shared). No platform id is "connected without a scan" from a previous process: #206-3 showed that
+btleplug cannot do that, and it is not attempted.
+
+**Retries while likely.** A `not_found` device is retried while intent is `Likely`. The trigger is the device's next
+advertisement in the shared scan, not a connect timer, so no connect loops against an absent device. The scan runs
+only while a paired device is `not_found` and intent is `Likely`, and it is **capped**:
+
+- it scans continuously for the first `SCAN_CONTINUOUS` = 30 s after a device becomes `not_found`;
+- then it scans in windows of `RESOLVE_SCAN` (4 s) every `SCAN_PERIOD` = 30 s, a duty cycle of about 13 %;
+- it stops when intent is no longer `Likely`, when every paired device is `warm`, or at cool-down.
+
+**Cost of the cap.** An unbounded scan is a real cost while a NEO is held by another app and a warm view stays open.
+Active scanning keeps the Mac's Bluetooth radio receiving, and every scan response is a request from crank. On a
+MacBook, the radio is shared with Wi-Fi in the 2.4 GHz band and with the other app's connection to the NEO. Its
+power draw is small next to the display, but it is not zero, and it is spent for hours on a device that cannot come.
+The cap keeps detection prompt where it matters: a strap put on, or a NEO the other app just let go of, is seen within
+30 s plus one window, at most about 34 s. A rider who knows the device is back presses Retry, which scans
+continuously again. These values are starting values, measured in Part B (§5.1.6).
+
+A strap that sleeps without skin contact therefore warms up when
+the rider puts it on. A trainer held by another app does not advertise, so it stays `not_found` (§5.1.5).
+
+**What warm-up runs: the full connect, up to `Link(Ready)`.** This includes the DIS identity check, page 55 and the
+page-54 capabilities. It is not a GATT connection alone. Pages 80/81 are not requested, today or here: identity is
+the DIS serial and model (§5). The reasons:
+
+- **Latency.** GATT alone would leave subscribe, page 55, the fixed 250 ms and up to 2 s of page 54 on the ride-start
+  path, which rules out a start under 1 s.
+- **Honesty.** A `warm` chip that says "Trainer: ready" must mean that this is the paired unit (serial checked) and
+  that it answers FE-C (page 54 replied). A GATT connection to a same-named unit, or to a trainer that does not answer,
+  is not ready.
+- **Cost.** Once the GATT connection exists, holding the handshake's result costs nothing more. The NEO's single slot
+  is taken either way, and a subscribed but silent link has no writes (§5.1.3). The strap's HR notifications (about
+  1 Hz) feed the Ready sheet's HR row (DESIGN §5.4), which is wanted.
+
+The rider configuration goes out as page 55 at connect, and `SetRider` on a live link is a protocol fault (§4.4). So
+a change to rider or bike mass, or to wheel size, while the trainer is `warm` makes the keeper reconnect it: release
+it, then warm it up again.
+
+#### 5.1.3 Connected is not controlling; cool-down
+
+**Nothing is written while warm.** After `Link(Ready)` the keeper sends no `TrainerCommand` and the driver writes
+nothing:
+
+- no control page (48–51);
+- no page-70 request (polls run only while a controlled mode is active, §4.4);
+- no page-55 re-send, and no keep-alive (there is no current control page to keep alive).
+
+The connect handshake's page 55 and page-70 request for page 54 are the only writes of a warm period. They are
+configuration and a request, not control. In particular, **page 48 at 0 % is not written**. Writing it would make
+`warm` a controlled state with an owner of control, a keep-alive and an active trainer-following machine, which is
+exactly what "connected ≠ controlling" excludes. It would also protect nothing:
+
+- a fresh connection already reports page 48 at 0 % before any control page (Part A, §4.4: echo `FF FF FF 00`);
+- a crank ride normally ends with `Resistance { pct: 0 }` delivered before its links go (§7.9). **The exceptions:**
+  - a forced end whose end mode is not taken within its 500 ms (FM-FIN-02's stalled write);
+  - a disconnect that timed out (#335), where the end mode may or may not have reached the trainer;
+  - a crashed or killed process, which sends nothing.
+
+  In each case the trainer keeps whatever it last applied, and a link is never handed back to the keeper anyway
+  (§5.1.1);
+- whatever another app or an exception above left behind is the trainer's state without crank, the same as with
+  crank closed.
+
+The conclusion does not rest on those endings. Nothing is written while warm, so a warm link never adds resistance or
+torque to anything: it leaves the trainer exactly as it found it. Clearing a leftover state is the job of the next
+ride's own engagement, which is unchanged (§7.5: `Erg { target_w: 0 }` from the first tick until cadence).
+
+Every safety rule of §6 and §7 arms when the session takes the link, exactly as today:
+
+- the engine's first `SetMode` (`Erg { target_w: 0 }` until cadence, then the soft start, §7.5);
+- `Activate` of §4.4.1, because the session receives the link together with its current state, `Ready`, and never
+  infers that state;
+- the reconnect loop behind `RideGate` (§6).
+
+The keeper reads only telemetry while warm (the latest sample per device, for the chips). It drains both event
+streams: the drivers `try_send` into bounded channels, and a full channel would become a fault.
+
+**Cool-down.** A `warm`, `searching`, `connecting` or `handshake` device is released, and becomes `cold`:
+
+- **after `T_cool` = 5 min without a `Likely`**: after `Left`, or on a warm view with no rider input (the throttled
+  refresh above) for 5 min. **The Ready sheet is exempt from the input rule**, but only for the keeper's own links:
+  while the load is in flight or has failed (`Likely { ready: true }`), the links are held without input, because the
+  rider is about to ride. Hiding, the background grace and sleep still apply to those keeper-owned links. Once the
+  load succeeds the links are the session's, and the rules below do not apply;
+- **after the 60 s grace on `Background`**: crank is no longer the frontmost app, also while its window stays
+  visible. A `Likely` within 60 s cancels it, so a quick switch to another app costs no reconnect;
+- **at once on `Release`**, with these reasons:
+  - `Hidden`: the window is minimised or the app is hidden.
+  - `Sleep`: the Mac is about to sleep. `crank-desktop` observes `NSWorkspaceWillSleepNotification`; other platforms
+    are #41.
+  - `Devices`: Settings → Devices is opened. Pairing needs the devices free (`device_pair` connects itself), and a
+    connected NEO does not advertise, so the Devices scan would not list it.
+  - `RiderRelease`: the Devices view's "Release trainer" (#314 point 2). It also **latches**: no automatic warm-up
+    of that device until the rider asks for a ride ("Ride this", Retry) or relaunches the app.
+
+The release is the driver's bounded disconnect (§7.9, #304). A disconnect that timed out leaves the same residual as
+there (#335). An attempt that is still connecting is cancelled, and the cancelled connect disconnects the half-open
+peripheral (#304).
+
+**A loaded ride owns its links (architect decision on #451, 2026-11-03; the owner may override).** When `ride_load`
+succeeds, the links are `riding` and the **session** owns them until one of three things happens: the ride is
+discarded (Cancel on the Ready sheet), it ends, or the app quits. Focus, hiding, the background grace and `T_cool`
+never release a loaded ride. Holding them writes nothing, the same as warm: nothing is armed before Start (the
+ride's first `SetMode`). Two rules bound an **unstarted** loaded ride:
+
+- **Abandoned load.** It is discarded, and its links released, after `T_abandon` = 10 min without Start and without
+  rider input on the Ready sheet (the throttled refresh above). The core runs this timer, not the UI.
+- **Sleep.** `Release(Sleep)` discards it, because a load that sleeps through is stale.
+
+Both go through the same path as Cancel (`ride_end` on a loaded ride, §7.9). A **started** ride follows §6 and §7
+unchanged: it keeps its links through focus changes, hiding and background (sleep during a ride is #51).
+
+**Quit, `Core` drop and crash while warm.** Warm links are the keeper's, so no ride's end mode covers them, and none is
+needed: nothing was written.
+
+- **Quit.** `Core::shutdown` (the quit path, §7.9) releases the keeper's links in parallel with ending any loaded ride.
+  It is an orderly, bounded driver disconnect (`DISCONNECT_TIMEOUT`, 2 s) with **no write** of any kind, inside the 3 s
+  quit cap. An attempt still connecting is cancelled and its half-open peripheral released (#304). The `Exit`
+  backstop runs the same shutdown.
+- **`Core` drop.** Dropping the keeper drops its links, which disconnects them through the drivers' cleanup with no
+  write. On macOS, where the event loop may exit without destructors, process exit releases the radio.
+- **Crash.** A crashed or killed process writes nothing. The OS drops the link, and the NEO stays as it was. While
+  warm, that is the state it was in before crank connected.
+
+**Background grace and the timer values (architect decision on #451, 2026-11-03; the owner may override).** The idle
+timer runs only while crank is frontmost. Going to the background releases after 60 s (above). So `T_cool` never holds
+the NEO against the phone app or check 10's second central for more than that grace. A rider who wants the trainer
+for another app at once uses "Release trainer" or hides crank (`Hidden`); check 10's procedure hides crank. The 60 s
+grace trades the other app's wait of up to a minute against the reconnect that every quick switch would otherwise
+cost. The values for `T_cool`, the grace and the scan cap are recorded as decided, and each is a constant the owner
+can change. For `T_cool`, what remains is weighed below:
+
+- **Reconnect cost.** Going cold costs one reconnect: GATT, the handshake and its fixed 250 ms, plus a scan if the
+  lookup fails (the assumption above). This is estimated at 1–3 s (to be measured, §5.1.6) and shown on the Ready
+  sheet (§5.1.4).
+- **Strap battery.** A connection costs some of the coin cell's life. Bounded at 5 min per idle period, it is small
+  next to a ride.
+- **Rider behaviour.** A rider who glances at History or reads a workout for a few minutes and then rides should not
+  wait.
+
+1 min would reconnect on most such detours; 15 min would hold the strap through an abandoned session. 5 min is a
+starting value: HIL #44 Part B logs the keeper's timings (§5.1.6), and the owner may change it.
+
+#### 5.1.4 `ride_load`, failure UX and status
+
+**`ride_load` uses the keeper.** For each paired device, `ride_load` acts on its phase:
+
+- `warm`: the link is taken. No connect and no wait.
+- `searching`, `connecting` or `handshake`: that attempt is awaited, never a second connect.
+- `cold` or `not_found`: an attempt starts now, in parallel with the other device's.
+
+The trainer is required, as today (`DeviceUnavailable` when it fails). The strap is optional: one that is not
+`warm` once its attempt has ended gives a ride without HR, as today. A strap that is found later joining the running
+ride is not decided here (#450).
+
+So the worst case of a load is one `CONNECT_TIMEOUT` (the longer of two parallel attempts), no longer the sum of two.
+With both devices `warm`, `ride_load` performs no Bluetooth I/O. It must return in under 1 s, the target for "Ride
+this" with warm links.
+
+**Load phases in `ride_status`.** The `loading: bool` of `RideStatusView` becomes `load: Option<LoadProgress>`, with
+`LoadProgress { trainer: LinkPhase, strap: Option<LinkPhase> }` (no `strap` when none is paired). It is updated as
+each phase changes, so a Ready sheet opened over a cold load shows per-device progress (DESIGN §5.4):
+"Trainer: searching… / connecting… / ready", "HR: not found — keeps looking".
+
+**Phases outside a ride.** The chips on Today, Workouts and the Ready sheet read the keeper's phases. `links_open`
+opens one window-scoped `Channel<LinkFrame>`. It follows the window lifecycle rules of the stream channel (ADR-0001
+§4.3): it belongs to the window's label and is dropped on destroy or reload. Each frame is the complete state, the
+phase plus the latest sample per device, so the latest frame wins and no ack or resync is needed.
+`links_intent` returns the same state. `device_links`, which today reports a link only while a ride holds it,
+reports the keeper's phase when none does, so the Devices view shows the live state too.
+
+**Failure UX.** Failures show as quiet chips, never as modal errors or toasts:
+
+- "Trainer: connecting…", "Trainer: ready", "Trainer: not found — is another app using it?" (hedged until #314);
+- the same for "HR".
+
+Retry starts an attempt at once and clears a `RiderRelease` latch. The rider meets an error only when they ask for a
+ride: a trainer that cannot be connected fails `ride_load` with `DeviceUnavailable`, and the Ready sheet shows it with
+Retry (DESIGN §5.4). The visual design is #438.
+
+#### 5.1.5 A trainer held by another app (#314)
+
+A NEO connected to another central does not advertise, so its attempt ends `not_found` after the scan window. It is
+retried on its next advertisement, which appears when the other app lets go. The keeper never tries to take a
+trainer: there is no forced connect and no retry timer. Without #314's typed signal, "held by another app" and
+"asleep or off" look the same, so the chip says "not found" with the hedged hint. When #314 adds the signal, the chip
+names the other app's hold, and nothing else in this section changes. The other direction is §5.1.3: "Release trainer" or
+hiding crank frees the NEO at once, and going to the background frees it after the 60 s grace.
+
+#### 5.1.6 Observability
+
+Every phase change is logged at INFO under the target `crank_core::links`, so a normal launch writes it to `crank.log`
+(AGENTS.md, #411). Each line has `device` (`trainer`/`strap`), `from`, `to`, `ms` (time in the phase being left) and
+`attempt` (per device, from 1). The phases timed are these:
+
+- `resolve`, with `via=lookup|scan` (it measures the handle-reuse assumption of §5.1.2);
+- `gatt` (connect and discovery);
+- `identity` (subscribe, DIS read, verify);
+- `handshake` (page 55 to the page-54 reply);
+- `ready_total`.
+
+Beside the phase lines:
+
+- `intent` lines carry the intent and reason;
+- `cool` lines carry the reason (`idle`, `background`, or a `Release` reason) and `held_s`;
+- `scan` lines carry `mode=continuous|window` and `ms`, so the scan cap's radio time is measurable;
+- `ride_load` logs `trainer=warm|awaited|cold`, the same for `strap`, and its own `ms` from request to answer.
+
+HIL measures warm-up and load latency from these lines (Part B, #44): a warm "Ride this" under 1 s on the NEO, and
+cold warm-up per phase. No timing is derived from the UI.
+
+#### 5.1.7 Implementation sequence (sub-issues of #435, filed when this is accepted)
+
+1. **Parallel connect.** `connect_links` runs the trainer and strap connects concurrently, and the phase log lines of
+   §5.1.6 are added. This gives the cold-path win alone, with no lifecycle. It also **verifies the handle-reuse
+   assumption** (§5.1.2) on the NEO and the strap. It records `via` for a lookup in each of three cases: right after a
+   Devices scan, after that scan stopped, and after a disconnect. Results go to the HIL doc. If the lookup fails, the
+   assumption is reworded and nothing else changes.
+2. **Link keeper.** The keeper's state machine: pure transitions over intent, the clock, link events, pairing and
+   rider-config changes, and load or release. Also `links_intent`, `T_cool`, the background grace, the Ready-sheet
+   exemption, the keeper's inactivity during a ride, `T_abandon` and the sleep discard of an unstarted ride, the scan cap, release on shutdown, the latch, handover to `ride_load` with
+   the link's current state, event draining, and the sim latency model below.
+3. **Contract.** `LoadProgress` in `ride_status`, `links_open` / `LinkFrame`, and the regenerated bindings.
+4. **UI.** Intent reporting (warm views, focus, visibility, throttled input), `crank-desktop`'s sleep observer, the
+   chips, and Ready-sheet progress, styled per #438.
+
+#### 5.1.8 Tests required (acceptance of the sub-issues)
+
+`SimTrainer`/`SimHeart` get a **latency model**: a delay per phase (resolve, GATT, handshake), "never answers", and
+"not advertising". Tests run on paused tokio time.
+
+- **Warm start under 1 s.** Phase latencies are 3 s for the trainer and 2 s for the strap. `Likely`, then advance
+  until both are `warm`; `ride_load` then answers within 1 s of virtual time with zero `connect` calls.
+  `searching` / `connecting` at load awaits the running attempt (connect count unchanged).
+- **Parallel bound.** With latencies a and b, a cold load takes max(a, b) ± one tick, not a + b. With the strap
+  never answering, the load ends at `CONNECT_TIMEOUT` with the trainer linked and no HR, not later.
+- **Idle cool-down disconnects.** After `Left` the devices are still warm at `T_cool` − 1 s and released at `T_cool`
+  (driver disconnect observed, phase `cold`). A `Likely` in between restarts the timer. Every `Release` reason
+  disconnects at once, mid-attempt included (the half-open peripheral is released). The latch blocks `Likely` until
+  Retry or "Ride this".
+- **Background grace.** After `Background` the devices are still warm at 59 s and released at 60 s. A `Likely` at 30 s
+  cancels the release.
+- **The Ready sheet holds.** With a failed load, `Likely { ready: true }` and no input for 30 min of virtual time,
+  the keeper's links stay `warm`.
+- **A loaded ride keeps its links.** With a loaded, unstarted ride, `Hidden`, `Background` past 60 s and `T_cool`
+  past 5 min each leave the links connected, and nothing is written (recording transport: no write after `Ready`).
+- **An abandoned load releases.** A ride loaded but unstarted, with no input, is discarded at `T_abandon` = 10 min
+  (links released, phase `cold`). Input at 9 min restarts the timer.
+- **Sleep discards an unstarted ride.** `Release(Sleep)` with a loaded, unstarted ride discards it and releases its
+  links. With a started ride, the ride and its links are untouched.
+- **`Likely` during a ride warms nothing.** With a ride loaded or active and the strap not linked, `Likely` from any
+  view starts no attempt (connect count unchanged).
+- **Scan cap.** With the trainer never advertising and intent `Likely` for 10 min, the scan is continuous for
+  `SCAN_CONTINUOUS`, then on for `RESOLVE_SCAN` in every `SCAN_PERIOD`. It stops on `Left` / cool-down. An
+  advertisement in a window starts the attempt.
+- **Quit while warm.** `Core::shutdown` with both devices `warm`, and again with one still `connecting`: both are
+  disconnected, the write log has nothing after `Ready`, and shutdown returns within 3 s even when one disconnect
+  hangs (bounded by `DISCONNECT_TIMEOUT`).
+- **Nothing is written while warm.** A recording fake transport under the real FE-C driver is held `warm` for 10 min
+  of virtual time. Its write log holds only the connect's page 55 and the page-70 request for page 54. The first
+  control page is the session's first `SetMode`. At core level, no `TrainerCommand` reaches the control channel
+  before the handover.
+- **Handover.** The engine's following machine activates on the handed-over `Ready` link without a new `Link` event.
+  A link lost while warm makes the load connect cold. A ride's end leaves the phase `cold`, never `warm`. A full
+  event channel never faults a warm link.
+
+#### 5.1.9 Alternatives, consequences, limits
+
+| Alternative | Why rejected |
+|---|---|
+| Connect at launch and hold while the app is open (the old §5 text) | Holds the NEO's only slot and the strap's battery for hours, and blocks other apps and check 10 |
+| No speculation: only a parallel connect with handle reuse at "Ride this" | Still an estimated 1–3 s, plus a scan when the lookup fails, so not under 1 s; the owner asked for speculative connect |
+| Warm with a GATT connection only, handshake at `ride_load` | Leaves up to about 2.5 s on the start path, and a "ready" chip that may name the wrong or a silent unit (§5.1.2) |
+| Write page 48 at 0 % while warm | Makes warm a controlled state, and protects nothing (§5.1.3) |
+| Hand a ride's links back to the keeper after the ride ends | Two owners across the §7.9 end and release machinery; "released means disconnected" is relied on by pairing and quit |
+| Release at once on `Background` (round 1 of this amendment) | Every quick switch to another app would cost a reconnect; replaced by the 60 s grace (architect decision) |
+| An unbounded scan while a device is `not_found` | Hours of radio time for a NEO held by another app; replaced by the scan cap (§5.1.2) |
+
+**Consequences.** A warm "Ride this" does no Bluetooth work. A cold one costs one `CONNECT_TIMEOUT` at worst, not
+two. Before a ride, crank holds the NEO only in these cases: while it is frontmost on a ride-likely view, within 5 min of
+one, for up to 60 s after going to the background, or with a loaded, unstarted ride for up to 10 min. The core gains a
+second owner of links before a ride, with a one-way handover. The UI must report intent faithfully: an intent it
+fails to send costs latency (no warm-up) or the slot (no release), never safety, because nothing is written while
+warm.
+
+**Known limits.**
+
+- The first warm-up after launch scans (#206-3), and later ones may too: handle reuse is an assumption (§5.1.2).
+- Another app waits up to 60 s for the NEO after crank goes to the background, unless the rider uses "Release
+  trainer" or hides crank.
+- A loaded but unstarted ride holds the NEO for up to 10 min, whatever the focus, including while crank is hidden or
+  in the background. It is released on Cancel, on `T_abandon`, on sleep or on quit.
+- A Ready sheet over a failed load holds the keeper's links without input, until crank is hidden, goes to the
+  background, the Mac sleeps, or the rider leaves.
+- A device that returns is seen within about 34 s under the scan cap, or at once with Retry.
+- Until #314, "held by another app" cannot be told from "off".
+- A strap missing at load stays missing for that ride (#450).
+- A disconnect that timed out may leave a peripheral connected (#335).
+- The sleep observer is macOS only (#41).
 
 ## 6. Decision: reconnection and dropout in a running workout
 
@@ -669,8 +1159,20 @@ for those issues.
   54, then emits `Link(Ready)`; (2) on `Ready` the engine issues `SetMode` with the current mode (in ERG via
   the soft start of §7, because the trainer may have been in its standalone mode while disconnected,
   measured in HIL check 11); this `SetMode` makes the following machine active again (`Activate`, §4.4.1), and
-  observations before it are ignored; (3) the ride resumes when cadence > 0 (ADR-0001 §5). The driver never re-sends
+  observations before it are ignored; (3) the ride resumes when cadence > 0 (ADR-0001 §5). Until the first pedalling sample the re-issued mode is `Erg { target_w: 0 }`, then the soft start of §7.5 runs from the current 3 s power (#231). The driver never re-sends
   a control mode on its own, so there is exactly one owner of control state.
+- **Implementation (#147):** `crank_ble::Reconnecting` / `ReconnectingHr` wrap any driver and keep the
+  consumer's channels across losses. The first connect is not retried (its error reaches the UI). The
+  link may be held before a ride (the link keeper, §5.1), but the backoff loop is enabled only while a ride is
+  active: the supervisors take an explicit `RideGate` input (wiring from engine/core: #208). Outside a
+  ride a loss is surfaced (`Link(Lost)`, stream ends) and normal rediscovery reconnects when the device
+  is seen again; a gate that goes inactive during backoff stops the loop. While active, each attempt
+  waits `backoff(n)` (0.5, 1, 2, 4 s, then 5 s) on the injected clock, emits
+  `TrainerEvent::Reconnecting { attempt }`, and calls the inner `connect` with the original rider
+  config. The loop also ends on `Disconnect` or when the link is dropped. Commands sent while
+  disconnected are discarded, never replayed. A unit that merely shares the advertised name is rejected
+  by `Pairing::verify` after connecting (serial and model, §5). A `device` row is one (peripheral, role)
+  pairing, unique per `(platform_id, kind)`: one peripheral may be both trainer and strap.
 - **HR strap dropout:** same reconnect loop; the ride does not pause; HR metrics are `null`; HR-dependent
   blocks and judge features behave as in ADR-0001 §5.
 - **Packet loss without disconnect:** handled by accumulated power (§5); single missing pages are not a
@@ -698,8 +1200,32 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    `Resistance { pct: 0 }` and show "ERG released, spin up". When cadence ≥ 60 rpm for 2 s → re-engage ERG
    with a soft start: the target ramps from the current 3 s power to the block target over 5 s (1 Hz
    updates). The block timer keeps running (the rider is still riding). Released seconds are excluded
-   from compliance. Thresholds are initial values checked in HIL check 9.
+   from compliance. "Cadence ≥ 60 rpm for 2 s" is judged on the held cadence (ADR-0001 §5: a trainer value is
+   usable for its tick and the next 4), so four real samples and four silent ticks satisfy it (architect ruling,
+   #250 round 2). Thresholds are initial values checked in HIL check 9.
 5. **Soft start** is also used when ERG is (re-)engaged after a reconnect or after leaving `free`/`sim`.
+   **Ride start and user pause (amendment, #250 / #264, 2026-10-14).** A ride start is treated as a
+   reconnect: on the NEO, ERG at the target torque with a stopped flywheel is the low-cadence hazard of §7.4
+   (the rider pushes off against the full target at near-zero cadence). So the engine holds `Erg { target_w: 0 }`
+   from the first tick until the first sample with cadence > 0, then runs this soft start from the 3 s power.
+   A first block that is `free` or `sim` sends no ERG and is unchanged; the soft start is then owed at the
+   next ERG block (the paragraph below). A block change inside a running soft start continues the ramp at its progress towards the new target (DESIGN §17.3). Resuming from a **user pause** is the same engagement: while paused the
+   engine commands `Resistance { pct: 0 }` (DESIGN §5.2 "Paused (user)": "the trainer is at 0 % resistance"),
+   and the resume owes the soft start with the 0 W hold until cadence. A release in force at the pause
+   stays in force after the resume until §7.4 leaves it (60 rpm for 2 s). Stopped pedalling (auto-pause, ADR-0001 §5)
+   needs nothing of its own: cadence 0 for 3 s is past the 2 s release of §7.4, which already commands
+   `Resistance { pct: 0 }`.
+   **Origin and 0 W (amendment, #231).** The origin is the 3 s power (12 ticks, pruned by tick time, so
+   nothing older than 3 s counts) at the tick the first trainer sample with cadence > 0 of the new link
+   epoch arrives. After `Link(Ready)`, or after a loss detected by silence, until that sample the engine
+   re-issues the mode as `Erg { target_w: 0 }`, never the block target: no torque is applied to a rider
+   who is not pedalling (§7.4). Once samples flow the ramp runs from that origin to the target in five
+   1 Hz steps; it holds its last step while samples are missing and restarts from the then-current 3 s
+   power when they return. Pre-loss power is never an origin: all soft-start state (3 s window, flow start,
+   origin) is reset on every **applied** link transition and on every 8-tick silence, also one that
+   starts while already paused. Every applied transition away from `Ready` (`Lost` or `Connecting`) makes
+   the next engagement a soft start, so `Connecting` → `Ready` without a `Lost` is covered. If the new epoch has cadence > 0 but no power value, the
+   origin is 0 W (the ramp never jumps to the target).
 6. **Trainer target-limit flags** (page 25: speed too low / too high) are shown in the ride status;
    they do not change the target by themselves.
 7. **HR-target steps** (`140bpm` in the DSL): the engine steers the ERG target with a bounded integral
@@ -713,7 +1239,9 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    *settle* seconds. Settle is triggered only by **discontinuities**, never by continuous target updates:
    (a) the first 5 s of each block whose start target differs from the previous block's end target (the
    mock's per-block settle); (b) a manual ± or coach change: 5 s; (c) an ERG (re-)engagement: the soft
-   start's 5 s plus 5 s. These are the `Transition` class of §4.4.1, which only settle uses (the
+   start's 5 s plus 5 s (**amended, #250 / #264, 2026-10-14:** a ride start and a resume from a user pause are
+   (re-)engagements, §7.5; the first block has no previous block for (a), but its start is an engagement under (c):
+   the 0 W hold, then 10 s from the first pedalling sample are settle). These are the `Transition` class of §4.4.1, which only settle uses (the
    trainer-following machine ignores the class). Within `ramp` blocks and HR-steered steps the target moves continuously
    (`Continuous`) and is compared second by second with no settle. Released (§7.4) and paused seconds are
    excluded, and so is every second with a `suspect` or `not_following` tick (§4.4.1). Compliance consumes
@@ -725,6 +1253,136 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    **sent explicitly** as flat-road SIM (page 50 defaults, page 51 grade 0 %), never as "send nothing": an
    FE-C trainer keeps its last control page, so silence after ERG could leave the ERG target active.
    HIL check 12 (#44) confirms that ERG → `Free` releases the target on the NEO.
+   **Ride end (amendment, #266, 2026-10-14; end mode revised 2026-10-14, round 2).** The same reasoning
+   applies when the ride ends: after a natural finish, `Stop` or the loss of every handle, the engine sends
+   `Resistance { pct: 0 }`, not `Free`: the same single-page mode as the user pause (DESIGN §5.2) and the §7.4
+   release, an unambiguous non-torque state that one page-71 echo verifies, independent of HIL check 12.
+   (`Free` is the two SIM pages 50 and 51; the trainer is not out of ERG before both are written.) It does so
+   before it clears the ride-active signal (`RideGate`). **What the gate waits for:** the signal stays up until
+   the driver reports `Delivered { Resistance { 0 }, seq }` for the end mode's own sequence (the mode's only
+   page written), the link leaves `Ready` (seen while no ride is running), or 2 s (eight writer ticks) pass,
+   whichever is first; a `Delivered` of any other command does not release it, not even one of an earlier,
+   equal `Resistance { 0 }` (a pause's, #345): correlation is by sequence, never by value.
+   `Delivered { mode }` means every control page of `mode` has been written, for every multi-page mode.
+   The end mode is always sent, also when the last command is already `Resistance { pct: 0 }`: that command
+   (a pause, a release) may still be queued and unwritten. **A `Load` does not cancel it (amendment, #279,
+   2026-10-14):** a previous ride's end mode stays owed across `Load`, `Start` and the unload of a loaded ride;
+   the ride-active signal is cleared by that delivery (or by link loss while no ride is running, or by the
+   2 s deadline), not by the unload, and the engine awaits it on shutdown. While it is owed, a newly started
+   ride sends nothing, so its own engagement rules (§7.5: `Erg { 0 }` until cadence, then the soft start)
+   begin only after page 48 has been written and no torque can overtake or coalesce away the end mode.
+   Silence at the end would leave the last `Erg { target_w }` applied at 0 rpm.
+
+   **Link loss while a new ride runs (active-ride exception, #288).** A link event that arrives while the
+   new ride is running is queued in tick order like any other trainer event and does not settle the owed
+   end mode; only the delivery or the 2 s deadline does. That is the safe direction: the signal stays up
+   for at most 2 s longer. The behaviour is kept and the text aligned to it.
+
+   **Residual (FM-FIN-02).** If a GATT write stalls for more than 2 s, the deadline releases the
+   hold-back and the new ride's first ERG page can replace the still-queued page 48, so 48 is never
+   written. The deadline exception allows this: a trainer that stalls this long is not taking writes
+   reliably.
+
+   **App quit is a ride end (amendment, #34, 2026-10-28).** The desktop process does not exit on the
+   first quit request (Cmd+Q, last window closed): it holds the exit back, calls `Core::shutdown`, which ends
+   the loaded ride like `ride_end` (so the engine sends the end mode above) and waits until the devices are
+   released, at most 3 s (above the 2 s deadline), then exits. It cannot rely on dropping `Core`: on macOS the
+   event loop ends the process without running destructors, so the "loss of every handle" path never runs and
+   ERG could stay applied (S1). A trainer that never confirms costs the cap, not a hang.
+   **"Released" means disconnected, also for a cancelled connect (#304).** A reconnect supervisor that is
+   shut down mid-connect (service discovery, subscribe) disconnects the half-open peripheral, bounded
+   (2 s), before it drops its event stream; the driver arms that cleanup before the transport connects,
+   and every driver disconnect is bounded, so a hung platform disconnect neither hangs the release nor
+   keeps the driver's admission held.
+   The bound has a cost, and it bounds the **wait**, not the uncertainty: after a disconnect that timed out
+   (`DISCONNECT_TIMEOUT`, 2 s; plus 1 s for the supervisor's wait on a cancelled connect) "released" is
+   signalled while the peripheral **may still be connected**, and nothing retries, so it can stay connected
+   indefinitely. The visible consequence: the NEO (or the strap) may still show as connected, and another
+   central (a phone app) may find it busy, until the peripheral drops the link itself or the process exits
+   (process exit releases the radio, which is why the quit path does not wait). Whether our own next
+   connect to it works is unverified until hardware (HIL #44). We accept this: a platform disconnect that
+   hangs is not something the app can fix, and the alternative is a ride end or a pairing that hangs with
+   it. A best-effort re-disconnect at the next connect and at quit is tracked in #335, not done here.
+   This holds on every path that drops a link, a ride end the engine cannot carry out (#331) included: the
+   end mode that path sends itself comes before the link is dropped, and the disconnect after it is bounded
+   in the same way.
+   After the 2 s our own admission lock is free (no `AlreadyConnected` from us); the outcome of a subsequent
+   connect is up to btleplug/CoreBluetooth, and a failure surfaces as `ConnectFailed`.
+   **A ride end the engine cannot carry out (#331).** `ride_end` bounds its `Stop` (1 s, below the 3 s
+   quit cap; the replacing `ride_load` and `discard` too). **Threading (#344):** the application runs each
+   ride's engine on its own OS thread with its own current-thread tokio runtime (`EngineHost::Thread`,
+   `crates/crank-core/src/core.rs`), so
+   an engine blocked in synchronous code (a store write) holds only that thread: the core's runtime, its
+   workers and its timer, on which every deadline below runs, stay free. (On the core's runtime a blocked
+   engine held a worker and with it the timer: the deadlines did not fire, End took as long as the stall.)
+   The in-runtime host (`EngineHost::Task`) is for tests on paused time only. Recorder writes stay on the
+   engine's thread; the core's own store call below runs on the blocking pool. An engine that does not
+   answer, or whose task is gone, is ended by force, in this order. (1) The engine is **cut off**: the
+   relays between the drivers and the engine stop passing events to it, and its ride-active signal is
+   ignored from then on, and the trainer's **command gate** drops its commands (below). (2) **The end mode is
+   the core's**: it has its own sender through that gate, independent of the engine, and sends `Resistance{0}`
+   itself, with a sequence of its own, waiting for the `Delivered` of that sequence for at
+   most 500 ms (about two writer ticks; with the 1 s `Stop` bound, the abort and the record close it keeps a
+   forced end at about 2.25 s worst case, inside the quit cap), before the link is dropped; a driver that
+   returns on a closed control channel writes no end mode itself. (3) **The core releases the devices**
+   through what it owns, not by dropping the engine's links (which an engine wedged on its thread still
+   holds): both relays stop and close the drivers' event streams (a closed stream makes the trainer's
+   driver return and the strap's disconnect), and the trainer is sent `Disconnect` on the core's control
+   sender. (4) The engine is aborted (a task is aborted; a thread is signalled and drops the engine at its
+   next await) and given 250 ms to end; an engine blocked in synchronous code cannot be interrupted and is
+   detached, never awaited. (5) The ride's record is closed as **aborted** (the seconds persisted so far
+   are kept, there is no summary, as for a ride closed by crash recovery), on the blocking pool and waited
+   for at most 500 ms; if the engine finished the ride after all (a late `Stop`), that record wins and the
+   end is reported as an ordinary one. (6) The ride-active signal is cleared, **if it is still this ride's**:
+   the signal (the command gate and `active`) is one per core and belongs to the engine built last, which takes
+   it over before its `Load` raises it (the check and the clear hold the same lock); a forced end that runs late (an End and a replacing
+   load both force the same stuck ride, and the load's finishes first and builds the newer ride) clears neither
+   the newer ride's signal nor its last-end record (`Core::clear_signal`, `signal_of`, #370). A load that
+   builds no session (its `Load` unanswered or refused, or the load cancelled meanwhile) cuts its engine off and
+   gives the claim back, clearing the signal (`SignalClaim`). So no load, failed or not, leaves it up. The
+   engine sets the signal only while it is not cut off **and** its ride owns the signal (`ride_activity`, under
+   both locks), so an engine that was reaped without a forced end (it dropped the signal itself) and is still
+   ending, or detached, cannot drop or raise a newer ride's signal (#392). Nor can it raise the signal before a
+   newer claim: the reaper's reap (not forced) clears the signal for its ride as it takes the session out, under
+   the same lock, and from then on that ride's engine cannot set it (`Core::reap`, `SignalOwner`, #399), so P2
+   after a normal End does not rest on the engine never calling `set_active(true)` again. That reap does not cut
+   the engine off, which would drop the engine's own end mode still queued in the command gate. `settle`'s forced reap (an engine that
+   answered `Stop` but never dropped the signal within `REAP_TIMEOUT`) clears the signal the same way, and cuts
+   the engine off before it reaps, as a forced end does, so an engine it detaches cannot raise the signal after the
+   clear (#392). One way remains for it to stay up with no ride loaded: a forced end or `settle`'s forced reap
+   whose future is dropped between its `reap` and its clear. In the app only `shutdown` drops it (its cap is a
+   `timeout` on the end), and the process exits right after; the Tauri commands run to completion. The next
+   load's claim takes the signal over from it. A `settle` dropped between its cut-off and its `reap` leaves the
+   ride loaded, its engine cut off and the signal up: the signal still has its owner, a loaded ride, so no load is
+   needed to clear it, and the next End or load settles that ride again (its engine can no longer drop the signal, so
+   that `settle` reaps it by force after `REAP_TIMEOUT` and clears it, #399). The drivers' release is
+   awaited (`RELEASE_TIMEOUT`, 3 s, `core.rs`), and a new ride can be loaded at once. A detached engine that wakes later changes
+   nothing: its record writes are refused by the store (`ride is not live`), so the ride stays aborted, and
+   its ride-active signal no longer reaches the core, so the next ride's is not touched. **The command gate
+   (#345):** the engine's control sender does not reach the driver directly but through a relay the core
+   owns; from the cut-off on, every engine command (one sent after it, or one queued before it and not yet
+   forwarded, or one waiting on a full driver channel) is dropped and logged with the ride id, never
+   forwarded (`Takeover` and the command relay `gate_commands`, `core.rs`), while the core's own sender is never blocked. One task forwards both senders and reads the
+   cut-off after taking each engine command, and the core raises the cut-off before it sends: nothing of the
+   engine's can follow the core's end mode. A stale `Delivered` of an earlier `Resistance{0}` does not confirm
+   the core's (sequence correlation, above). The residual is FM-FIN-02's stalled
+   write: if the trainer does not take the end mode within the 500 ms the core gives up on it and the link
+   is dropped. `ride_end` reports `{rideId, forced}` (`RideEnded`, `crates/crank-core/src/dto.rs`; `forced` is true
+   when the core closed the record without the engine's `Stop` confirming; if a late `Stop` finishes the record
+   first, the core has taken over but reports `forced: false`, `core.rs` `end_ride` / `force_end`; a repeat End
+   after a forced end answers `forced: true` again from `last_forced`); the id is returned either way. **The UI keys
+   the forced-end note on `forced`, never on the recorded outcome (#346):** an `aborted` record is also what crash
+   recovery writes, and a late `Stop` that finishes the ride after all is reported `forced: false`. The fact is on
+   the answer only, not in the stored `RideRecord`, so the ride screen hands it to the summary for the window
+   (`app/src/ride/forcedEnds.ts`; a reload loses it, the record does not carry it). Quitting inherits the bound. **No request waits on the
+   engine under the state lock (#351):** End takes that lock, so a request holding it while a wedged engine
+   does not answer would hold End. The three `Stop`s above (`end_ride`, the replacing `ride_load`, `discard`) are the only engine requests made under it, by
+   design (no `ride_start` may reach the engine first), and are bounded by `STOP_TIMEOUT`. Every other
+   request (`Load`, start/pause/resume/skip, and the stream requests: open, subscribe, unsubscribe, ack,
+   snapshot, a window's close) is sent without the lock and waited for at most 1 s (`REQUEST_TIMEOUT`, the bounded wait in `core.rs`); the
+   caller then gets the typed `engine_unresponsive` (outcome unknown, the request may still apply). The
+   ride view says the engine is not answering and offers End; nothing is retried. A `Load` the new engine
+   does not take releases the devices it was built with, as a forced end does. FMEA row FM-FIN-05.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 
@@ -761,7 +1419,7 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
     relies on it), whether its sequence byte advances (the gated enhancement of §4.4), and the
     distribution of the latency from a desired change, through the writer's slot delay and the control write,
     to the first reply echoing it (end to end). It also checks that SIM replies alternate between pages 50
-    and 51, which gives the SIM reply periods behind `T_unknown`. These calibrate the constants of §4.4.1.
+    and 51, which gives the SIM reply periods behind `T_unknown(c)`. These calibrate the constants of §4.4.1.
   - Check 10 (single central) needs a second central device; done with the owner's phone in the same
     sitting.
   - Results go to `docs/hil/<date>-fec.md`; any contradiction with this ADR amends it before #43 merges.

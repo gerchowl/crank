@@ -1,0 +1,307 @@
+{
+  "check": 3,
+  "identity": {
+    "dis_serial_present": true,
+    "firmware": "0.7.4",
+    "id_prefix": "5c67045f",
+    "model": "Neo",
+    "name": "Tacx Neo *****"
+  },
+  "link_dropped_during_run": false,
+  "page70_transmission_count": [
+    {
+      "page54_replies_in_4s": 1,
+      "times": 1,
+      "write_error": null
+    },
+    {
+      "page54_replies_in_4s": 5,
+      "times": 0,
+      "write_error": null
+    },
+    {
+      "page54_replies_in_4s": 3,
+      "times": 3,
+      "write_error": null
+    }
+  ],
+  "sequence_per_bare_request": [
+    25,
+    null,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32
+  ],
+  "sequence_per_control_write": [
+    9,
+    11,
+    13,
+    15,
+    17,
+    19,
+    22,
+    24
+  ],
+  "steps": [
+    {
+      "label": "idle_request71_0",
+      "latency_us": 59402,
+      "p71": {
+        "echo": "FF FF FF 00",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 48,
+        "sequence": 236,
+        "status": 0
+      },
+      "rx": "A4 09 4F 05 47 30 EC 00 FF FF FF 00 83",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "label": "idle_request71_1",
+      "latency_us": 47486,
+      "p71": {
+        "echo": "FF FF FF 00",
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 48,
+        "sequence": 237,
+        "status": 0
+      },
+      "rx": "A4 09 4F 05 47 30 ED 00 FF FF FF 00 82",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 31 FF FF FF FF FF 90 01 B8",
+      "control_write_error": null,
+      "label": "erg_100W",
+      "latency_us": 59194,
+      "p71": {
+        "echo": "FF FF 90 01",
+        "echo_equals_control_bytes_4_7": true,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "last_page_is_control_page": true,
+        "sequence": 242,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 31 F2 00 FF FF 90 01 F2",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 31 FF FF FF FF FF 21 03 0B",
+      "control_write_error": null,
+      "label": "erg_200_25W",
+      "latency_us": 52677,
+      "p71": {
+        "echo": "FF FF 20 03",
+        "echo_equals_control_bytes_4_7": false,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "last_page_is_control_page": true,
+        "sequence": 244,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 31 F4 00 FF FF 20 03 46",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 31 FF FF FF FF FF 22 03 08",
+      "control_write_error": null,
+      "label": "erg_200_5W",
+      "latency_us": 55438,
+      "p71": {
+        "echo": "FF FF 24 03",
+        "echo_equals_control_bytes_4_7": false,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "last_page_is_control_page": true,
+        "sequence": 246,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 31 F6 00 FF FF 24 03 40",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 33 FF FF FF FF 20 4E 50 EA",
+      "control_write_error": null,
+      "label": "track_0pct_crr0.004",
+      "latency_us": 53206,
+      "p71": {
+        "echo": "FF 20 4E 50",
+        "echo_equals_control_bytes_4_7": true,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 51,
+        "last_page_is_control_page": true,
+        "sequence": 248,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 33 F8 00 FF 20 4E 50 AA",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 33 FF FF FF FF 14 50 50 C0",
+      "control_write_error": null,
+      "label": "track_5pct_crr0.004",
+      "latency_us": 51758,
+      "p71": {
+        "echo": "FF 14 50 50",
+        "echo_equals_control_bytes_4_7": true,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 51,
+        "last_page_is_control_page": true,
+        "sequence": 250,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 33 FA 00 FF 14 50 50 82",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 33 FF FF FF FF 20 4E FF 45",
+      "control_write_error": null,
+      "label": "track_crr_0xFF",
+      "latency_us": 61780,
+      "p71": {
+        "echo": "FF 20 4E 50",
+        "echo_equals_control_bytes_4_7": false,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 51,
+        "last_page_is_control_page": true,
+        "sequence": 252,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 33 FC 00 FF 20 4E 50 AE",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 32 FF FF FF FF 33 7F 64 FD",
+      "control_write_error": null,
+      "label": "wind_default",
+      "latency_us": 53337,
+      "p71": {
+        "echo": "FF 33 7F 64",
+        "echo_equals_control_bytes_4_7": true,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 50,
+        "last_page_is_control_page": true,
+        "sequence": 254,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 32 FE 00 FF 33 7F 64 BB",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 32 FF FF FF FF BA FE 64 F5",
+      "control_write_error": null,
+      "label": "wind_max_1.86_+127_1.0",
+      "latency_us": 58241,
+      "p71": {
+        "echo": "FF BA FE 64",
+        "echo_equals_control_bytes_4_7": true,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 50,
+        "last_page_is_control_page": true,
+        "sequence": 255,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 32 FF 00 FF BA FE 64 B2",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 30 FF FF FF FF FF FF 64 B3",
+      "control_write_error": null,
+      "label": "resistance_50pct",
+      "latency_us": 60950,
+      "p71": {
+        "echo": "FF FF FF 64",
+        "echo_equals_control_bytes_4_7": true,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 48,
+        "last_page_is_control_page": true,
+        "sequence": 1,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 30 01 00 FF FF FF 64 0A",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 30 FF FF FF FF FF FF C8 1F",
+      "control_write_error": null,
+      "label": "resistance_100pct_0xC8",
+      "latency_us": 59336,
+      "p71": {
+        "echo": "FF FF FF C8",
+        "echo_equals_control_bytes_4_7": true,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 48,
+        "last_page_is_control_page": true,
+        "sequence": 3,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 30 03 00 FF FF FF C8 A4",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 37 4C 1D FF 88 0C 46 00 BC",
+      "control_write_error": null,
+      "label": "user_config_75kg_10kg_708mm",
+      "latency_us": 67271,
+      "p71": {
+        "echo": "FF FF FF C8",
+        "echo_equals_control_bytes_4_7": false,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 48,
+        "last_page_is_control_page": false,
+        "sequence": 5,
+        "status": 0
+      },
+      "request_retried_after_no_reply": true,
+      "rx": "A4 09 4F 05 47 30 05 00 FF FF FF C8 A2",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    },
+    {
+      "control_tx": "A4 09 4F 05 31 FF FF FF FF FF FF FF 29",
+      "control_write_error": null,
+      "label": "erg_16383_75W_0xFFFF",
+      "latency_us": 82279,
+      "p71": {
+        "echo": "FF FF 00 00",
+        "echo_equals_control_bytes_4_7": false,
+        "echo_equals_sent_bytes_4_7": false,
+        "last_page": 49,
+        "last_page_is_control_page": true,
+        "sequence": 7,
+        "status": 0
+      },
+      "request_retried_after_no_reply": false,
+      "rx": "A4 09 4F 05 47 31 07 00 FF FF 00 00 96",
+      "tx": "A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+      "write_error": null
+    }
+  ],
+  "what_was_sent": "page 70 request(71); page 70 times 1/0/3; pages 49/51/50/48/55 at nominal and endpoint values each followed by request(71); 8 alternating page-49 writes; 8 bare requests"
+}

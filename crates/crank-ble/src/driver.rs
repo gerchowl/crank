@@ -1,0 +1,413 @@
+//! Connection lifecycle and a single paced writer (ADR-0002 §§4.4, 6).
+use crate::{
+    Capture,
+    pacing::{Pacer, request},
+    telemetry::receive,
+};
+use crank_devices::{
+    Clock, DeviceError, DeviceInfo, DeviceRef, DriverKind, LinkState, MonoTime, ProtocolErrorKind,
+    RiderConfig, TrainerCaps, TrainerCommand, TrainerDriver, TrainerEvent, TrainerLink,
+};
+use crank_fec::{ControlPage, Page, decode, encode};
+use futures_util::{StreamExt, future::BoxFuture, stream::BoxStream};
+use std::{sync::Arc, time::Duration};
+use tokio::sync::mpsc;
+
+/// Tokio monotonic clock; clone the same epoch into every driver and engine.
+#[derive(Clone)]
+pub struct MonotonicClock(tokio::time::Instant);
+impl Default for MonotonicClock {
+    fn default() -> Self {
+        Self(tokio::time::Instant::now())
+    }
+}
+impl Clock for MonotonicClock {
+    fn now(&self) -> MonoTime {
+        MonoTime(u64::try_from(self.0.elapsed().as_micros()).unwrap_or(u64::MAX))
+    }
+    fn sleep_until(&self, at: MonoTime) -> BoxFuture<'static, ()> {
+        let deadline = self.0 + Duration::from_micros(at.0);
+        Box::pin(tokio::time::sleep_until(deadline))
+    }
+}
+/// Timestamped, complete GATT notification payloads, preserving arrival order.
+pub type Notifications = BoxStream<'static, Result<(MonoTime, Vec<u8>), DeviceError>>;
+/// Injectable FE-C transport; connect must subscribe before returning.
+pub trait FecTransport: Send + Sync + 'static {
+    /// Connect, discover, subscribe fec2, and read identity.
+    fn connect(
+        &self,
+        dev: DeviceRef,
+        clock: Arc<dyn Clock>,
+    ) -> BoxFuture<'static, Result<(DeviceInfo, Notifications), DeviceError>>;
+    /// Write one complete frame to fec3 with response.
+    fn write(&self, bytes: [u8; 13]) -> BoxFuture<'static, Result<(), DeviceError>>;
+    /// Release the peripheral.
+    fn disconnect(&self) -> BoxFuture<'static, Result<(), DeviceError>>;
+}
+/// Tracks the cleanups of cancelled connects, so that whoever cancelled one (a reconnect
+/// supervisor shutting down) can wait until the peripheral has really been disconnected,
+/// bounded, before it reports the link as released (ADR-0002 §7.9: "released" means
+/// disconnected). Share one between a driver and the supervisor that cancels its connects.
+#[derive(Clone)]
+pub struct ConnectCleanup(Arc<tokio::sync::watch::Sender<usize>>);
+impl Default for ConnectCleanup {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::watch::channel(0).0))
+    }
+}
+impl ConnectCleanup {
+    /// A new, idle tracker.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub(crate) fn begin(&self) -> CleanupToken {
+        self.0.send_modify(|n| *n += 1);
+        CleanupToken(self.0.clone())
+    }
+    /// Resolves once no cancelled connect is still being cleaned up. Bounded: a cleanup
+    /// is itself bounded (2 s), and this gives up shortly after it.
+    pub async fn settled(&self) {
+        let mut rx = self.0.subscribe();
+        let _ = tokio::time::timeout(
+            DISCONNECT_TIMEOUT + Duration::from_secs(1),
+            rx.wait_for(|n| *n == 0),
+        )
+        .await;
+    }
+}
+/// One cleanup in flight; ends when dropped.
+pub(crate) struct CleanupToken(Arc<tokio::sync::watch::Sender<usize>>);
+impl Drop for CleanupToken {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n = n.saturating_sub(1));
+    }
+}
+/// Disconnects a half-open peripheral if setup is cancelled; shared with the HRS driver.
+/// Armed before the transport's `connect`, because a cancellation during its
+/// `discover_services`/`subscribe` leaves the peripheral connected. The disconnect is
+/// bounded, and the admission guard is held until it ends and then freed.
+pub(crate) struct ConnectGuard(
+    pub(crate) Option<Cleanup>,
+    pub(crate) Option<tokio::sync::OwnedMutexGuard<()>>,
+    pub(crate) tokio::runtime::Handle,
+    pub(crate) Option<CleanupToken>,
+);
+pub(crate) type Cleanup = Box<dyn FnOnce() -> BoxFuture<'static, Result<(), DeviceError>> + Send>;
+impl Drop for ConnectGuard {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.0.take() {
+            let (guard, token) = (self.1.take(), self.3.take());
+            self.2.spawn(async move {
+                let (_guard, _token) = (guard, token);
+                if let Err(error) = disconnect_bounded(cleanup()).await {
+                    tracing::warn!(%error, "cancelled connection cleanup failed");
+                }
+            });
+        }
+    }
+}
+/// FE-C trainer factory. Supply a separate transport for each live connection.
+/// Cancelled setup retains admission until peripheral cleanup finishes.
+/// Reconnection is a separate wrapper, [`crate::Reconnecting`] (ADR-0002 §6).
+pub struct FecTrainer {
+    transport: Arc<dyn FecTransport>,
+    clock: Arc<dyn Clock>,
+    capture: Option<Arc<Capture>>,
+    connecting: Arc<tokio::sync::Mutex<()>>,
+    cleanup: ConnectCleanup,
+}
+impl FecTrainer {
+    /// Build a driver over btleplug, a test fake, or replay.
+    pub fn new(transport: Arc<dyn FecTransport>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            transport,
+            clock,
+            capture: None,
+            connecting: Arc::default(),
+            cleanup: ConnectCleanup::default(),
+        }
+    }
+    /// Report the cleanups of cancelled connects to `cleanup` (see [`ConnectCleanup`]).
+    #[must_use]
+    pub fn with_cleanup(mut self, cleanup: ConnectCleanup) -> Self {
+        self.cleanup = cleanup;
+        self
+    }
+    /// Whether a capture is attached.
+    #[cfg(test)]
+    pub(crate) fn has_capture(&self) -> bool {
+        self.capture.is_some()
+    }
+    /// Attach a TRACE capture. Diagnostic failures emit Fault and never stop BLE.
+    #[must_use]
+    pub fn with_capture(mut self, capture: Arc<Capture>) -> Self {
+        self.capture = Some(capture);
+        self
+    }
+}
+impl TrainerDriver for FecTrainer {
+    fn kind(&self) -> DriverKind {
+        DriverKind::FeC
+    }
+    fn connect(
+        &self,
+        dev: &DeviceRef,
+        rider: RiderConfig,
+    ) -> BoxFuture<'static, Result<TrainerLink, DeviceError>> {
+        let (transport, clock, capture, guard, dev, tracker) = (
+            self.transport.clone(),
+            self.clock.clone(),
+            self.capture.clone(),
+            self.connecting.clone(),
+            dev.clone(),
+            self.cleanup.clone(),
+        );
+        Box::pin(async move {
+            let guard = guard
+                .try_lock_owned()
+                .map_err(|_| DeviceError::AlreadyConnected)?;
+            let config = encode(&ControlPage::UserConfig {
+                rider_kg: rider.rider_kg,
+                bike_kg: rider.bike_kg,
+                wheel_m: rider.wheel_m,
+            })
+            .map_err(|e| crate::protocol(e, ProtocolErrorKind::Encode))?;
+            // Armed before the connect: dropped during its service discovery or subscribe,
+            // the peripheral is still connected and must be disconnected.
+            let release = transport.clone();
+            let mut cleanup = ConnectGuard(
+                Some(Box::new(move || release.disconnect())),
+                Some(guard),
+                tokio::runtime::Handle::current(),
+                Some(tracker.begin()),
+            );
+            let (info, mut notifications) = match transport.connect(dev, clock.clone()).await {
+                Ok(connected) => connected,
+                Err(error) => {
+                    // The transport cleans up after its own failure.
+                    cleanup.0 = None;
+                    return Err(error);
+                }
+            };
+            let (events, receiver) = mpsc::channel(256);
+            let (commands, control) = mpsc::channel(64);
+            let result = async {
+                emit(&events, TrainerEvent::Link(LinkState::Connecting)).await?;
+                write(&transport, &clock, capture.as_ref(), config, &events).await?;
+                clock.sleep_until(MonoTime(clock.now().0 + 250_000)).await;
+                write(&transport, &clock, capture.as_ref(), request(54)?, &events).await?;
+                let deadline = MonoTime(clock.now().0 + 2_000_000);
+                loop {
+                    tokio::select! {
+                        record = notifications.next() => {
+                            let (at, bytes) = record.ok_or(DeviceError::Disconnected)??;
+                            if let Err(error) = record_capture(capture.as_ref(), at, true, &bytes) {
+                                events.try_send(TrainerEvent::Fault(error)).map_err(|e| DeviceError::Gatt(e.to_string()))?;
+                            }
+                            if let Ok(frame) = decode(&bytes)
+                                && let Page::Capabilities(p) = frame.page {
+                                    // 0xFFFF as "unavailable" is tentative pending HIL #44: the NEO reports 200 N
+                                    // and never sent it (Part A, ADR-0002 §4.2).
+                                    break Ok(TrainerCaps { erg: p.modes & 2 != 0, sim: p.modes & 4 != 0,
+                                        resistance: p.modes & 1 != 0, max_resistance_n: (p.max_resistance_n != 0xffff).then_some(p.max_resistance_n), max_target_w: 16383 });
+                                }
+                            for event in receive(at, &bytes) { events.try_send(event).map_err(|e| DeviceError::Gatt(e.to_string()))?; }
+                        }
+                        () = clock.sleep_until(deadline) => break Err(crate::protocol("page 54 timed out", ProtocolErrorKind::UnexpectedPage)),
+                    }
+                }
+            }.await;
+            let caps = match result {
+                Ok(caps) => caps,
+                Err(error) => {
+                    let disconnected = disconnect_bounded(transport.disconnect()).await;
+                    cleanup.0 = None;
+                    return Err(disconnected.err().map_or(error.clone(), |other| {
+                        DeviceError::ConnectFailed(format!("{error}; disconnect failed: {other}"))
+                    }));
+                }
+            };
+            emit(&events, TrainerEvent::Link(LinkState::Ready)).await?;
+            let guard = cleanup.1.take();
+            cleanup.0 = None;
+            let writer_transport = transport.clone();
+            tokio::spawn(async move {
+                let _guard = guard;
+                let mut reader = tokio::spawn(read(notifications, events.clone(), capture.clone()));
+                let result = tokio::select! {
+                    result = run(control, events.clone(), transport.clone(), clock, capture) => result,
+                    result = &mut reader => result.map_err(|e| DeviceError::Gatt(e.to_string())),
+                };
+                if !reader.is_finished() {
+                    reader.abort();
+                    let _ = reader.await;
+                }
+                if let Err(error) = result {
+                    let _ = emit(&events, TrainerEvent::Fault(error)).await;
+                }
+                if let Err(error) = disconnect_bounded(writer_transport.disconnect()).await {
+                    let _ = emit(&events, TrainerEvent::Fault(error)).await;
+                }
+                let _ = emit(&events, TrainerEvent::Link(LinkState::Lost)).await;
+            });
+            Ok(TrainerLink {
+                info,
+                caps,
+                control: commands,
+                events: receiver,
+                seq: crank_devices::SeqSource::default(),
+            })
+        })
+    }
+}
+/// Longest a transport may take to disconnect before the driver gives up on it and ends its
+/// stream anyway: a platform disconnect (btleplug) can hang, and the consumer's end of the
+/// stream, which means "released", must not hang with it.
+pub(crate) const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// `disconnect`, bounded by [`DISCONNECT_TIMEOUT`].
+pub(crate) async fn disconnect_bounded(
+    disconnect: BoxFuture<'static, Result<(), DeviceError>>,
+) -> Result<(), DeviceError> {
+    tokio::time::timeout(DISCONNECT_TIMEOUT, disconnect)
+        .await
+        .unwrap_or_else(|_| Err(DeviceError::Gatt("disconnect timed out".into())))
+}
+async fn emit(events: &mpsc::Sender<TrainerEvent>, event: TrainerEvent) -> Result<(), DeviceError> {
+    events
+        .send(event)
+        .await
+        .map_err(|_| DeviceError::Disconnected)
+}
+fn record_capture(
+    capture: Option<&Arc<Capture>>,
+    at: MonoTime,
+    rx: bool,
+    bytes: &[u8],
+) -> Result<(), DeviceError> {
+    if tracing::enabled!(tracing::Level::TRACE)
+        && let Some(capture) = capture
+    {
+        capture.record(at, rx, bytes).map_err(|e| {
+            capture.warn_failed(&e);
+            DeviceError::Capture(e.to_string())
+        })?;
+    }
+    Ok(())
+}
+async fn write(
+    transport: &Arc<dyn FecTransport>,
+    clock: &Arc<dyn Clock>,
+    capture: Option<&Arc<Capture>>,
+    bytes: [u8; 13],
+    events: &mpsc::Sender<TrainerEvent>,
+) -> Result<(), DeviceError> {
+    if let Err(error) = record_capture(capture, clock.now(), false, &bytes) {
+        emit(events, TrainerEvent::Fault(error)).await?;
+    }
+    transport.write(bytes).await
+}
+async fn read(
+    mut notifications: Notifications,
+    events: mpsc::Sender<TrainerEvent>,
+    capture: Option<Arc<Capture>>,
+) {
+    while let Some(record) = notifications.next().await {
+        match record {
+            Ok((at, bytes)) => {
+                if let Err(e) = record_capture(capture.as_ref(), at, true, &bytes) {
+                    let _ = emit(&events, TrainerEvent::Fault(e)).await;
+                }
+                for event in receive(at, &bytes) {
+                    if emit(&events, event).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                let _ = emit(&events, TrainerEvent::Fault(error)).await;
+                break;
+            }
+        }
+    }
+}
+async fn run(
+    mut commands: mpsc::Receiver<TrainerCommand>,
+    events: mpsc::Sender<TrainerEvent>,
+    transport: Arc<dyn FecTransport>,
+    clock: Arc<dyn Clock>,
+    capture: Option<Arc<Capture>>,
+) -> Result<(), DeviceError> {
+    let mut pacer = Pacer::default();
+    // The sequence of the `SetMode` that set `pacer.mode`: a `Delivered` reports only what
+    // was written, so a mode replaced before its last page is never confirmed (#345).
+    let mut seq = None;
+    let mut tick = 0;
+    let start = clock.now().0;
+    let mut last_write = start;
+    let mut next = start + 250_000;
+    loop {
+        clock.sleep_until(MonoTime(next)).await;
+        let mut now = clock.now().0;
+        if now < next {
+            // An always-early clock still busy-loops, but yields cooperatively.
+            // Such a misbehaving clock is a test or fault condition, not a real clock.
+            tokio::task::yield_now().await;
+            continue;
+        }
+        while now.saturating_sub(last_write) < 250_000 {
+            clock
+                .sleep_until(MonoTime(last_write.saturating_add(250_000)))
+                .await;
+            now = clock.now().0;
+            tokio::task::yield_now().await;
+        }
+        tick = tick.max(
+            now.saturating_sub(start)
+                .saturating_div(250_000)
+                .saturating_sub(1),
+        );
+        next += 250_000;
+        next = next.max(start.saturating_add((tick + 2).saturating_mul(250_000)));
+        for _ in 0..commands.len() {
+            let Ok(command) = commands.try_recv() else {
+                break;
+            };
+            match command {
+                TrainerCommand::SetMode { mode, seq: next } => match pacer.set(mode, tick) {
+                    Ok(()) => seq = Some(next),
+                    Err(error) => emit(&events, TrainerEvent::Fault(error)).await?,
+                },
+                TrainerCommand::SetRider(_) => {
+                    emit(
+                        &events,
+                        TrainerEvent::Fault(crate::protocol(
+                            "rider changes require a new connection (#43)",
+                            ProtocolErrorKind::UnexpectedPage,
+                        )),
+                    )
+                    .await?;
+                }
+                TrainerCommand::Disconnect => return Ok(()),
+            }
+        }
+        if commands.is_closed() || events.is_closed() {
+            return Ok(());
+        }
+        if let Some(frame) = pacer.tick(tick)? {
+            last_write = clock.now().0;
+            write(&transport, &clock, capture.as_ref(), frame, &events).await?;
+            // `Delivered { mode, seq }` means every page of the mode is on the trainer: a SIM
+            // pair is delivered by its second page, not its first (#250 round 2). Page 70
+            // is the data-page request, not a control page.
+            if frame[4] != 70
+                && pacer.delivered()
+                && let (Some(mode), Some(seq)) = (pacer.mode, seq)
+            {
+                emit(&events, TrainerEvent::Delivered { mode, seq }).await?;
+            }
+        }
+        tick += 1;
+    }
+}

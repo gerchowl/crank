@@ -1,6 +1,7 @@
 {
   "name": "@crank/design-prototype",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "Hi-fi UX prototype for docs/design/DESIGN.md (design artifact, not the production UI)",
   "scripts": {
@@ -9,7 +10,9 @@
     "typecheck": "tsc -b",
     "screens": "node scripts/screens.mjs",
     "test:safety": "node scripts/safety.test.mjs",
-    "test:start": "node scripts/start.test.mjs"
+    "test:start": "node scripts/start.test.mjs",
+    "test:knowledge": "node scripts/knowledge.test.mjs",
+    "test:layout": "node scripts/layout.test.mjs"
   },
   "dependencies": {
     "@crank/shared": "workspace:*",

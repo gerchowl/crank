@@ -2,7 +2,10 @@
 
 Companion to `UX-SPEC.md`. Defines **every screen (V-xx), panel and plot type (P-xx)**, what
 data each binds to, and wireframes. Data comes from the backend (`shared/` mock → Rust core);
-plots never compute physiology themselves.
+plots never compute physiology themselves. "Contract" in the tables below means the ADR-0001 §4
+bindings (frozen spike reference: `shared/src/contract.ts`; see UX-SPEC "Contract status"): live
+metrics arrive on the window's `StreamFrame` channel (ADR-0001 §4.3), every other data source is an
+**async query** (§4.2), and all time axes use **session seconds** with gaps for pauses and dropouts (§5).
 
 ---
 
@@ -36,11 +39,11 @@ plots never compute physiology themselves.
 
 | ID | Plot | Data (contract) | Encoding | Interactions | Used in |
 |---|---|---|---|---|---|
-| **P01** | Big number tile | `subscribe(metric)` | value large, unit small, optional zone chip, Δ to target as diverging chip | tap → cycle smoothing | V3 |
-| **P02** | Number + sparkline | `subscribe` + short buffer | number + 60–300 s line | — | V3 |
+| **P01** | Big number tile | `subscribe(metric)` (stream sub) | value large, unit small, optional zone chip, Δ to target as diverging chip | tap → cycle smoothing | V3 |
+| **P02** | Number + sparkline | `subscribe` (stream sub) + short buffer | number + 60–300 s line | — | V3 |
 | **P03** | Target band bar | value, target, zone bands | horizontal bar, target band shaded, marker = value | — | V3 |
-| **P04** | **Log-time stacked panels** | `history()` per metric | per panel: mean line + min/max envelope; target dashed in the power panel; shared log/fisheye x (1 s…2 h) | crosshair across panels, span picker | V3, V5 |
-| **P05** | Linear time stacked panels | full-ride streams | power, HR, cadence, (DFA-α1), W'bal panels; workout profile as background bands; coach events as markers | brush-zoom, select interval → stats | V5 |
+| **P04** | **Log-time stacked panels** | async `history()` per metric (session s, null gaps) | per panel: mean line + min/max envelope; target dashed in the power panel; shared log/fisheye x (1 s…2 h) | crosshair across panels, span picker | V3, V5 |
+| **P05** | Linear time stacked panels | async `streams()` (session s, null gaps) | power, HR, cadence, (DFA-α1), W'bal panels; workout profile as background bands; coach events as markers | brush-zoom, select interval → stats | V5 |
 | **P06** | Time-in-bin histogram | `histogram()` | bars per bin, zone-ramp fill, "typical" as outline step line | bin width picker | V3 Nerd, V5, V6 |
 | **P07** | 2D heatmap | `heatmap(x,y)` | sequential cell fill = seconds; zone gridlines | cell hover; x/y picker (power×HR, power×cadence) | V3 Nerd, V5 |
 | **P08** | **Quadrant analysis** | AEPF × CPV (needs crank length) | density cells, quadrant lines at FTP-force / median CPV, % per quadrant labels | toggle points/density | V5, V6 |

@@ -4,6 +4,15 @@
 // (ride scenes: any overflow — the ride screen must fit the window, #7), and on any [data-fit]
 // element whose text is clipped (reserved rows never wrap or cut text, DESIGN §6.1). Runs the
 // contrast check first (DESIGN §6.3), and checks every rendered chart mark's composited contrast.
+// Saddle scenes (Today after the check-in, §15.2) are captured as the viewport, not the full page, and fail
+// when the wish, the session, its reason or the actions leave the viewport or fall below their type tier.
+// Above-the-fold elements ([data-above-fold]: the saddle card, the desk card's outcome and session, the ride's "next"
+// label on the road, DESIGN §16; at 1440 also the desk card's actions, Start included) fail when they leave the viewport in either direction; at
+// 1440 the complete Today wish matrix beside the card must exist and be inside the viewport too (§16.2; medical stop and
+// the Why? sheet are the exemptions). Ride geometry is fixed (P4,
+// #10): every [data-geom] box (status-bar groups, hero rows, side slots, the coach lane and its reserved rows, the road
+// rows) must exist and match ride-threshold at the same size, in every phase and state.
+// `SCENES=a,b pnpm screens` renders only those scenes (development; keeps the other PNGs and skips the start screen).
 // Also renders the cold-start screen (start-*.png: frames of the launch motion, reduced motion, slow boot,
 // hand-off, boot failure; BRAND.md §Start screen) on the fake clock of scripts/start-page.mjs.
 import { execFileSync } from "node:child_process";
@@ -11,7 +20,7 @@ import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { chromium } from "playwright";
-import { freezeMotion, openStart } from "./start-page.mjs";
+import { openStart, paintAt } from "./start-page.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const out = fileURLToPath(new URL("../../../docs/design/screens/", import.meta.url));
@@ -20,28 +29,39 @@ const SIZES = [
   [1024, 768],
 ];
 const THEMES = ["dark", "light"];
+// Byte-identical captures (#189): with Chromium's defaults the same page rasterises to one of two PNGs, run to run
+// (1-level anti-aliasing noise on rounded corners of sticky/fixed layers in a full-page capture, found by hashing
+// 12 captures of one scene: 75/25). Partial raster re-uses damaged tiles from earlier frames and multi-threaded
+// raster orders them by thread timing; one raster thread without partial raster paints every tile from scratch.
+const RASTER_ARGS = ["--disable-gpu", "--disable-partial-raster", "--num-raster-threads=1"];
 
 execFileSync(process.execPath, [fileURLToPath(new URL("./contrast.mjs", import.meta.url))], { stdio: "inherit" });
 mkdirSync(out, { recursive: true });
-for (const f of readdirSync(out)) if (f.endsWith(".png")) rmSync(out + f);
+const only = process.env.SCENES ? new Set(process.env.SCENES.split(",")) : null;
+if (!only) for (const f of readdirSync(out)) if (f.endsWith(".png")) rmSync(out + f);
 
 const server = await createServer({ root, logLevel: "warn", server: { port: 0 } });
 await server.listen();
 const base = server.resolvedUrls?.local[0];
 if (!base) throw new Error("vite did not report a local URL");
-const browser = await chromium.launch();
+const browser = await chromium.launch({ args: RASTER_ARGS });
 const failures = [];
 
 try {
   const lister = await browser.newPage();
   await lister.goto(`${base}?list-scenes=1`);
-  const ids = JSON.parse((await lister.locator("body").getAttribute("data-scenes")) ?? "[]");
+  // ride-threshold first: it is the geometry reference for every other ride scene
+  const ids = JSON.parse((await lister.locator("body").getAttribute("data-scenes")) ?? "[]")
+    .filter((id) => !only || only.has(id))
+    .sort((a, b) => (b === "ride-threshold") - (a === "ride-threshold"));
   await lister.close();
   if (!ids.length) throw new Error("no scenes listed");
 
   for (const [width, height] of SIZES) {
     const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, reducedMotion: "reduce" });
     for (const theme of THEMES) {
+      /** the first ride scene's [data-geom] boxes at this size and theme: every other ride scene must match them */
+      let geomRef = null;
       for (const id of ids) {
         const name = `${id}.${width}x${height}.${theme}`;
         const page = await ctx.newPage();
@@ -59,11 +79,63 @@ try {
           sw: document.documentElement.scrollWidth,
           sh: document.documentElement.scrollHeight,
           ride: !!document.querySelector(".ride"),
+          // the saddle proposal (DESIGN §15.2): wish, session, one reason and the actions inside the viewport, at T3+
+          saddle: !!document.querySelector("[data-saddle]"),
+          belowFold: [...document.querySelectorAll("[data-above-fold]")]
+            .filter((el) => {
+              // "wide": the desk card's actions, required above the fold at 1440 only (§16.2; at 1024 the open check-in stacks above)
+              if (el.getAttribute("data-above-fold") === "wide" && innerWidth < 1440) return false;
+              const r = el.getBoundingClientRect();
+              return r.bottom > innerHeight || r.top < 0 || r.left < 0 || r.right > innerWidth;
+            })
+            .map((el) => {
+              const r = el.getBoundingClientRect();
+              return `"${el.textContent?.trim().slice(0, 40)}" (${Math.round(r.left)},${Math.round(r.top)}–${Math.round(r.right)},${Math.round(r.bottom)} in ${innerWidth}×${innerHeight})`;
+            }),
+          // Today at 1440 (DESIGN §16.2): the COMPLETE wish matrix is beside the card (not stacked) and above the fold,
+          // in every desk and saddle state (the cap notice and a carried note included). Exempt: a medical stop (no
+          // matrix, §15.2) and the Why? sheet open (the page stacks, §16.2). A missing matrix or a stacked layout fails.
+          matrixFold: (() => {
+            if (innerWidth < 1440 || !document.querySelector(".today")) return null;
+            if (document.querySelector(".medical-stop, .why-sheet")) return null;
+            const mx = document.querySelector(".today .wish .matrix")?.getBoundingClientRect();
+            const card = document.querySelector(".today .today-card")?.getBoundingClientRect();
+            if (!mx) return "no wish matrix on Today";
+            if (!card) return "no proposal card on Today";
+            if (mx.left < card.right) return `wish matrix is stacked under the card (${Math.round(mx.left)},${Math.round(mx.top)})`;
+            return mx.bottom > innerHeight || mx.top < 0 ? `wish matrix ${Math.round(mx.top)}–${Math.round(mx.bottom)} in ${innerWidth}×${innerHeight}` : null;
+          })(),
+          geom: [...document.querySelectorAll(".ride [data-geom]")].map((el, i, all) => {
+            const r = el.getBoundingClientRect();
+            const name = el.getAttribute("data-geom");
+            const n = all.slice(0, i).filter((e) => e.getAttribute("data-geom") === name).length;
+            return [`${name}#${n}`, [r.left, r.top, r.width, r.height].map((v) => Math.round(v * 2) / 2)];
+          }),
+          small: [...document.querySelectorAll("[data-tier]")]
+            .filter((el) => {
+              const t3 = Math.min(36, Math.max(27, 0.037 * innerHeight));
+              const min = el.getAttribute("data-tier") === "t3plus" ? Math.min(44, Math.max(34, 0.045 * innerHeight)) : t3;
+              return parseFloat(getComputedStyle(el).fontSize) < min - 0.5;
+            })
+            .map((el) => `"${el.textContent?.trim().slice(0, 40)}" ${getComputedStyle(el).fontSize}`),
           clipped: [...document.querySelectorAll("[data-fit]")]
             .filter((el) => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1)
             .map((el) => `"${el.textContent?.trim().slice(0, 50)}" (${el.scrollWidth}×${el.scrollHeight} in ${el.clientWidth}×${el.clientHeight})`),
         }));
         for (const c of m.clipped) failures.push(`${name}: clipped text ${c}`);
+        for (const c of m.belowFold) failures.push(`${name}: above-the-fold element outside the viewport ${c}`);
+        if (m.matrixFold) failures.push(`${name}: the complete wish matrix must be above the fold beside the card — ${m.matrixFold}`);
+        if (m.ride && m.geom.length) {
+          if (!geomRef) geomRef = { id, boxes: new Map(m.geom) };
+          const keys = new Set(m.geom.map(([k]) => k));
+          for (const k of geomRef.boxes.keys()) if (!keys.has(k)) failures.push(`${name}: ride region missing — ${k} (present in ${geomRef.id})`);
+          for (const [k, box] of m.geom) {
+            const ref = geomRef.boxes.get(k);
+            if (!ref) failures.push(`${name}: ride region not in ${geomRef.id} — ${k}`);
+            else if (ref.some((v, i) => Math.abs(v - box[i]) > 0.5)) failures.push(`${name}: ride geometry moved — ${k} at ${box.join(",")} vs ${ref.join(",")} in ${geomRef.id}`);
+          }
+        }
+        for (const c of m.small) failures.push(`${name}: saddle text below its tier ${c}`);
         // rendered chart marks: effective stroke (opacity inherited from every ancestor) composited over
         // the real background must reach 3:1 (DESIGN §6.3, WCAG 1.4.11) — token checks alone miss this
         const weak = await page.evaluate(() => {
@@ -100,14 +172,14 @@ try {
         for (const w of weak) failures.push(`${name}: chart mark below 3:1 — ${w}`);
         if (m.sw > width) failures.push(`${name}: horizontal overflow (${m.sw} > ${width})`);
         if (m.ride && m.sh > height) failures.push(`${name}: ride screen overflows vertically (${m.sh} > ${height})`);
-        await page.screenshot({ path: `${out}${name}.png`, fullPage: !m.ride, animations: "disabled" });
+        await page.screenshot({ path: `${out}${name}.png`, fullPage: !m.ride && !m.saddle, animations: "disabled" });
         console.log(`  ${name}.png`);
         await page.close();
       }
     }
     await ctx.close();
   }
-  await startScreens();
+  if (!only) await startScreens();
 } finally {
   await browser.close();
   await server.close();
@@ -115,17 +187,21 @@ try {
 
 /** The cold-start screen, every state at each size and theme (BRAND.md §Start screen; checks in start.test.mjs). */
 async function startScreens() {
-  const MOTION_FRAMES = [0, 300, 750, 1200]; // ms into the launch motion; 1200 = the budget, all at rest
+  // ms into F's launch motion: spin-up, the ring closed and gliding, the word out and the slice running, at rest
+  const MOTION_FRAMES = [0, 300, 450, 600, 750, 900, 1080];
   const STATES = [
-    ...MOTION_FRAMES.map((t) => ({ id: `start-motion-${String(t).padStart(4, "0")}ms`, query: "boot=5000", async prepare(page) { await freezeMotion(page, t); } })),
+    ...MOTION_FRAMES.map((t) => ({ id: `start-motion-${String(t).padStart(4, "0")}ms`, query: "boot=5000", async prepare(page) { await paintAt(page, t); } })),
     { id: "start-reduced-motion", query: "boot=5000", reducedMotion: "reduce", async prepare() {} },
     { id: "start-slow-boot", query: "boot=5000", reducedMotion: "reduce", async prepare(page) { await page.clock.runFor(1250); } },
     {
       id: "start-handoff-100ms",
       query: "boot=600",
       async prepare(page) {
-        await page.clock.runFor(600); // the core is ready: destination live underneath, start screen frozen and fading
-        await freezeMotion(page, 600);
+        await page.clock.runFor(600); // the core is ready: destination live underneath, F running on under the fade
+        // the page's own rAF driver paints t = 591 or 592 ms (the fake clock's performance.now() starts at 0 or 1, #189).
+        // F runs on 1:1 under the fade, so 100 ms into it the app shows t = 700 (as design/brand's spin.handoff-100ms):
+        // paint that exact frame, as the motion frames do
+        await paintAt(page, 700);
         await page.evaluate(() => {
           const fade = document.getAnimations().find((a) => a.effect?.target?.classList.contains("start"));
           fade.currentTime = 100;

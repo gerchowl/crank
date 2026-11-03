@@ -1,4 +1,4 @@
-/* Start screen (docs/design/BRAND.md §Colour, §Start screen, §Motion). Linked from index.html, not imported
+/* Start screen (docs/design/BRAND.md §Colour, §Start screen, §F · Spin-up). Linked from index.html, not imported
    by the app, so the pre-paint window background below is render-blocking. Brand roles are --start-*: they
    are the mark's graphite + brass, deliberately not the app's THEMES tokens (the rider's theme is not
    loaded yet), and must not shadow --accent. */
@@ -16,10 +16,6 @@
 }
 /* The web analogue of the native window background (#28): equal to the start screen, so no flash. */
 :root[data-start] { background: var(--start-bg); }
-
-:root {
-  --start-settle: cubic-bezier(0.16, 1, 0.3, 1);
-}
 
 .start {
   position: fixed;
@@ -56,15 +52,9 @@
 .start-retry:hover { border-color: var(--start-ink); }
 .start-retry:focus-visible { outline: 3px solid var(--start-accent); outline-offset: 2px; }
 
-/* Launch motion: every keyframe states only `from`; the resting state is the element's own style, so
-   reduced motion (animation: none) is the final frame. Budget ≤ 1.2 s (letters end 700 ms, lines 930 ms). */
-.start .wm-l, .start .wm-speed { transform-box: fill-box; }
-.start .wm-l { animation: start-settle 520ms var(--start-settle) calc(var(--i) * 45ms) backwards; }
-/* Lines are revealed by a clip (not scaleX), so the 50° chamfer never changes angle mid-draw. */
-.start .wm-speed { animation: start-reveal 700ms var(--start-settle) 150ms backwards; }
-.start .wm-speed.s1 { animation-delay: 230ms; }
-@keyframes start-settle { from { opacity: 0; transform: translateX(-60px); } }
-@keyframes start-reveal { from { clip-path: inset(0 0 0 100%); } }
+/* Launch motion: F · Spin-up is script-driven (src/StartScreen.tsx paints frame(t) onto the SVG), not CSS. The
+   markup at rest is the settled wordmark, so reduced motion (no script) is the final frame. Only the status
+   line fades in by CSS. */
 @keyframes start-fade { from { opacity: 0; } }
 
 @media (prefers-reduced-motion: reduce) {

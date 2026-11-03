@@ -1,0 +1,22 @@
+{
+  "neo_found": true,
+  "peripherals_seen": 1,
+  "scan_secs": 30,
+  "supported": [
+    {
+      "advertised_services": [
+        "00001818-0000-1000-8000-00805f9b34fb",
+        "00001816-0000-1000-8000-00805f9b34fb",
+        "0000180a-0000-1000-8000-00805f9b34fb",
+        "6e40fec1-b5a3-f393-e0a9-e50e24dcca9e"
+      ],
+      "adverts": 104,
+      "id_prefix": "5c67045f",
+      "name": "Tacx Neo *****",
+      "supported_services": [
+        "fec1",
+        "cps"
+      ]
+    }
+  ]
+}

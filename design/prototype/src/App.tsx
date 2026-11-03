@@ -1,4 +1,5 @@
-// Shell: four places + the ride mode (DESIGN §3), a top-level error boundary (#4).
+// Shell: four places + the ride mode (DESIGN §3), a top-level error boundary (#4). The rail is a labelled
+// icon rail at every size (DESIGN §16.3): icon over its word, never an icon alone.
 import { Component, useCallback, useEffect, useState, type ReactNode } from "react";
 import { boot } from "./boot";
 import { StartScreen } from "./StartScreen";
@@ -13,6 +14,7 @@ import { Ready, Today } from "./views/Today";
 import { Resume } from "./views/Resume";
 import { Gate } from "./views/Gate";
 import { Workouts } from "./views/Workouts";
+import { WhySheet, whyOpen } from "./views/Why";
 
 const PLACES: [View, string, string][] = [
   ["today", "Today", "◉"],
@@ -90,6 +92,7 @@ export function App({ forcedTheme }: { forcedTheme: "dark" | "light" | null }) {
 
 function Destination() {
   const r = useRoute();
+  const why = useStore(whyOpen);
   const place = r.view === "ready" ? "today" : r.view === "review" ? "history" : r.view;
   if (r.view === "ride") return <Ride />;
   // Onboarding and the Resume sheet are modes: no rail, so there is nowhere half-set-up to wander (§3).
@@ -103,13 +106,15 @@ function Destination() {
       </main>
     );
   return (
-    <div className="shell">
+    <div className="shell" data-why={why ? "" : undefined}>
       <nav className="rail" aria-label="Places">
         <span className="brand">crank</span>
         {PLACES.map(([v, label, icon]) => (
           <button key={v} className={place === v ? "on" : ""} aria-current={place === v ? "page" : undefined} onClick={() => navigate(v)}>
-            <span aria-hidden>{icon}</span>
-            {label}
+            <span className="rail-icon" aria-hidden>
+              {icon}
+            </span>
+            <span className="rail-label">{label}</span>
           </button>
         ))}
       </nav>
@@ -118,6 +123,7 @@ function Destination() {
           <Screen view={r.view} />
         </ErrorBoundary>
       </main>
+      <WhySheet />
     </div>
   );
 }
