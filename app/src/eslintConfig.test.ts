@@ -1,8 +1,18 @@
 import { ESLint } from "eslint";
-import { expect, test } from "vitest";
+import { beforeAll, expect, test } from "vitest";
 
 // Each rule of DESIGN §18.7 rules 1, 2, 4 and 7 that eslint.config.js enforces must fail on a violation (#455).
 const eslint = new ESLint({ cwd: new URL("..", import.meta.url).pathname });
+// The first lintText loads the flat config, typescript-eslint and the plugins: a one-time cold start (not type-aware;
+// the config sets no parserOptions.project). On a slow CI runner it exceeded the 5 s per-test default and failed
+// whichever case ran first (run 41710634533). Pay it once here, so every case below reuses the warm instance.
+// Measured cold: about 0.6 s locally (M-series, idle); a loaded CI runner took over 5 s. The 60 s hook limit is about
+// 100x the local figure, so a hang still fails.
+beforeAll(async () => {
+  await eslint.lintText("export const warm = 1;\n", {
+    filePath: "src/warm.tsx",
+  });
+}, 60_000);
 const lint = async (code: string, file = "src/x.tsx") => {
   const [r] = await eslint.lintText(code, { filePath: file });
   return r!.messages.map((m) => m.ruleId);
