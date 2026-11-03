@@ -507,6 +507,16 @@ because macOS may kill a terminating app a few seconds in. The 3 s are split:
 - vigil then gets the rest: `Guard::shutdown_with_timeout(3 s − elapsed)`, measured from the
   exit request, and nothing once the 3 s are used up (no floor: a floor would break the cap; #414
   review). Because shutdown is explicit, the guard's Drop does nothing, so its 5 s wait never runs.
+- On a quit that never asked (Dock Quit, logout), the clock starts at `RunEvent::Exit`
+  (`applicationWillTerminate:`), the first event Tauri delivers. It understates the quit by AppKit's
+  own work after `terminate:` plus the wait for the main thread: tao answers no
+  `applicationShouldTerminate:`, crank is not document-based, and crank's main-thread handlers never
+  block, so no crank code runs in that gap.
+- The ride-end flush (below) runs on a blocking thread and is not awaited, holding its own handle,
+  never the lock the quit takes. A quit that finds that flush in flight waits for it within the
+  budget, then shuts down with the rest. If the flush outlasts the budget, vigil is not shut down:
+  the process exits under the flush and loses what it had not written, and the guard's Drop never
+  runs (#414 review).
 - Metrics are off, so the 5 s metrics floor (vigil#112) does not apply.
 - When the bound is hit, the records still queued are lost. That is at most the last ~1 s batch
   interval: typically the shutdown's own lines. Spans not yet exported are lost from `traces.jsonl`.
