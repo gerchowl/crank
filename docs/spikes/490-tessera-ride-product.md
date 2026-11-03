@@ -29,8 +29,8 @@ Byte-exact round-trip and querying work well: both pass (sections 4 and 5).
   #745 and #750. alpha.4 has no `StreamWriter::push_table`, so the spike uses `dev`.
 - **Crates used:** `tessera-core` and `tessera-io` only (no `tessera-ingest`, no `cloud`), with crank's
   `crank-fec` (frame decoding) and `crank-domain` (the real DSL parser and compiler) as path dependencies.
-  The scratch crate lives outside the repo (`/private/tmp/claude-502/spike-490/`). Its source is in the
-  [appendix](#appendix-a-spike-code).
+  The scratch crate lives outside the repo (`<scratch>/spike-490/`). Its source is in the
+  [appendix](#appendix-a-spike-code); the helper scripts are in [appendix C](#appendix-c-helper-scripts).
 - **Input:** the owner's ride capture of 2026-11-03: 1,261 frames (948 rx, 313 tx, all 13 B) over
   197.7 s, 64,950 B of text. Every number here is derived from it; the capture itself (which holds the
   trainer serial in page 81) is not committed.
@@ -894,7 +894,7 @@ fn main() -> R<()> {
 #!/bin/bash
 # Kill -9 a writer mid-ride, then recover + seal + verify.
 B=$CARGO_TARGET_DIR/release/ride490
-W=/private/tmp/claude-502/spike-490/work
+W=<scratch>/spike-490/work
 S=$W/crash-stage-$1
 $B crash-child $S > $W/crash-child-$1.log 2>&1 &
 pid=$!
@@ -947,4 +947,93 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", back.len());
     Ok(())
 }
+```
+
+## Appendix C: helper scripts
+
+Not committed as files; reproduced here so every number can be re-run (#491). `<scratch>` is the scratch directory and `<crank checkout>` a crank worktree.
+
+`build-fp.sh` (run as `heavy build-fp.sh`; baseline and footprint release builds, sizes, `otool -L`). The stripped sizes in section 6 come from `strip -o <c>.full <c>.bin` afterwards (exit 0):
+
+```sh
+#!/bin/bash
+S=<scratch>/spike-490
+for c in baseline footprint; do
+  cd $S/$c
+  export CARGO_TARGET_DIR=$CARGO_TARGET_DIR-$c
+  start=$(date +%s)
+  cargo +1.96.0 build --release 2>&1 | tail -2
+  echo "$c BUILD_EXIT=${PIPESTATUS[0]} WALL_S=$(( $(date +%s) - start )) JOBS=$CARGO_BUILD_JOBS"
+  bin=$CARGO_TARGET_DIR/release/${c}490
+  cp $bin $S/work/$c.bin; strip -x $S/work/$c.bin -o $S/work/$c.stripped
+  ls -l $bin $S/work/$c.stripped | awk '{print $5, $9}'
+  otool -L $bin
+done
+```
+
+Lock comparison (the 271 / 156 / 525 counts of section 6):
+
+```sh
+# run in <scratch>/spike-490 after:
+#   (cd footprint && cargo +1.96.0 tree -e normal --prefix none | sed 's/ (\*)//; s/ (proc-macro)//' | sort -u > ../logs/fp-tree.txt)
+python3 - <<'PY'
+import re
+lock=open('<crank checkout>/Cargo.lock').read()
+pk=set(re.findall(r'name = "([^"]+)"\nversion = "([^"]+)"',lock))
+names={n for n,_ in pk}
+fp=[l.split()[:2] for l in open('logs/fp-tree.txt') if l.strip()]
+fp=[(n,v.lstrip('v')) for n,v in fp if n!='footprint490']
+new_name=[n for n,v in fp if n not in names]
+new_ver=[f"{n} {v}" for n,v in fp if n in names and (n,v) not in pk]
+print("tessera-io normal deps:",len(fp),"| names not in crank lock:",len(new_name),"| same name, other version:",len(new_ver))
+print("crank lock packages:",len(pk))
+PY
+# printed: tessera-io normal deps: 271 | names not in crank lock: 156 | same name, other version: 12
+#          crank lock packages: 525          (exit 0)
+```
+
+One-hour loop (section 2):
+
+```sh
+# synthetic one-hour ride: the capture looped 18 times, each copy shifted by its span + 0.3 s
+python3 - "$C" > hour.fecap <<'PY'
+import sys
+L=open(sys.argv[1]).read().splitlines(True)
+hdr=[l for l in L if l.startswith('#')]; rec=[l for l in L if not l.startswith('#')]
+span=max(int(l.split()[0]) for l in rec)+300000
+sys.stdout.write(''.join(hdr))
+for k in range(18):
+    for l in rec:
+        t,rest=l.split(' ',1); sys.stdout.write(f"{int(t)+k*span} {rest}")
+PY
+wc -lc hour.fecap                                     # 22699 lines (1 header), 1196033 B
+nix shell nixpkgs#zstd -c zstd -19 -q -c hour.fecap | wc -c   # 99153
+```
+
+Redaction cross-check (section 4):
+
+```sh
+# independent implementation of hil_fec's redact_frame rule, compared with the redacted product's round-trip
+python3 - "$C" > py-red.fecap <<'PY'
+import sys
+for line in open(sys.argv[1]):
+    f=line.split()
+    if f and f[0].isdigit() and f[1] in('rx','tx'):
+        b=[int(x,16) for x in f[2:]]
+        if len(b)==13 and b[0]==0xa4 and b[4]==0x51:
+            b[8:12]=[0xff]*4; x=0
+            for v in b[:12]: x^=v
+            b[12]=x
+        line=f"{f[0]} {f[1]} "+" ".join(f"{v:02X}" for v in b)+"\n"
+    sys.stdout.write(line)
+PY
+cmp py-red.fecap back-red.fecap                       # exit 0
+```
+
+Licence and source check (section 6; the reported run used `nix develop -c cargo deny --manifest-path footprint/Cargo.toml --config deny.toml check licenses sources` directly, exit 12; this wrapper filtered too much):
+
+```sh
+#!/bin/bash
+cd <crank checkout>
+nix develop --cores 2 --max-jobs 1 -c bash -c 'cargo deny --version; cargo deny --manifest-path <scratch>/spike-490/footprint/Cargo.toml check licenses sources bans --config deny.toml 2>&1 | grep -E "^(error|warning)\[|rejected|^ *= |licenses|sources|bans" | grep -v "multiple-versions\|duplicate" | head -60; echo "DENY_EXIT=${PIPESTATUS[0]}"'
 ```
