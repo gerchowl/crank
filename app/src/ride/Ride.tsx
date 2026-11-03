@@ -10,7 +10,7 @@
 // dispatcher, the rest of the failure states (#100), the Review/summary
 // (#106: a finished ride routes to History with the ride id until it exists) and the phone layout.
 // A window reload loses the session; the core keeps the ride loaded, and picking it up again is the Resume sheet (#259).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./ride.css";
 import { commands } from "../bindings";
 import type {
@@ -20,6 +20,7 @@ import type {
   StreamStatus,
   WorkoutBlock,
 } from "../bindings";
+import { Num } from "../Num";
 import { navigate } from "../router";
 import {
   StreamProvider,
@@ -202,23 +203,19 @@ function Tile({
     <div className="tile" data-tile={id}>
       <span className="tile-label">{label}</span>
       <span className="tile-row">
-        <span
-          className="tile-value num"
-          data-slot={id}
-          style={{ width: `${ch}ch` }}
-        >
+        <Num className="tile-value" data-slot={id} style={{ width: `${ch}ch` }}>
           {value ?? "—"}
-        </span>
+        </Num>
         <span className="tile-unit">{unit}</span>
       </span>
       {sub && (
-        <span
-          className="tile-sub num"
+        <Num
+          className="tile-sub"
           data-slot={sub.id}
           style={{ width: `${sub.ch}ch` }}
         >
           {sub.text}
-        </span>
+        </Num>
       )}
     </div>
   );
@@ -269,6 +266,11 @@ function Screen({ session }: { session: RideSession }) {
   const end = useCommand(commands.rideEnd);
   const [refusal, setRefusal] = useState<ApiError | null>(null);
   const [confirming, setConfirming] = useState<"end" | "skip" | null>(null);
+  const keepRiding = useRef<HTMLButtonElement>(null);
+  // The safe answer holds focus while the dialog is open (WAI-ARIA alertdialog), as autoFocus did.
+  useEffect(() => {
+    if (confirming) keepRiding.current?.focus();
+  }, [confirming]);
   // Guards against a second tap before the core has answered in its status (no timers): Start until the ride leaves
   // `idle`, Skip until the block index has moved past the one that was skipped.
   const [startSent, setStartSent] = useState(false);
@@ -600,6 +602,7 @@ function Screen({ session }: { session: RideSession }) {
 
       {confirming && (
         <div className="scrim">
+          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the WAI-ARIA dialog pattern closes on Escape from inside; the rule keys on element names, not roles, so it cannot allow a role=alertdialog. */}
           <div
             role="alertdialog"
             aria-modal="true"
@@ -617,7 +620,7 @@ function Screen({ session }: { session: RideSession }) {
                   ? "The ride has not started; it will be unloaded."
                   : "The ride is saved up to now and cannot be resumed."}
             </p>
-            <button autoFocus onClick={() => setConfirming(null)}>
+            <button ref={keepRiding} onClick={() => setConfirming(null)}>
               Keep riding
             </button>
             <button
