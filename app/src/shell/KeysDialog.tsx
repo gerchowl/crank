@@ -42,6 +42,7 @@ export function KeysDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="keys-scrim">
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the WAI-ARIA dialog pattern traps Tab inside; the rule keys on element names, not roles, so it cannot allow a role=dialog div. */}
       <div
         ref={box}
         className="keys-dialog"

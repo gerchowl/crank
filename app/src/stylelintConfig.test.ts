@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import stylelint from "stylelint";
-import { expect, test } from "vitest";
+import { beforeAll, expect, test } from "vitest";
 import { FALLBACK_TOKENS } from "./typeTiers";
 
 // stylelint.config.mjs lists the custom properties that useTypeTiers sets at runtime (no stylesheet declares
@@ -25,6 +25,13 @@ const lintCss = async (decl: string, file = "src/x.css") => {
   });
   return results[0]!.warnings.map((w) => w.rule);
 };
+
+// The first lint loads stylelint.config.mjs and its plugins: a one-time cold start that can pass the 5 s per-test
+// default on a slow runner. Pay it once here (#455), so the cases below reuse the warm instance.
+// Measured cold: about 50 ms locally.
+beforeAll(async () => {
+  await lintCss("margin: 0");
+}, 60_000);
 
 test.each([
   "color: #fff",
