@@ -12,6 +12,8 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 - Release workflow adopted from devkit: `prepare-release`, `release` and `abandon-release`
   ([#428](https://github.com/gerchowl/crank/issues/428))
+- Direction A design tokens in `theme.css` (space, radius, type, control height, graphite palette in both themes)
+  and locally bundled Inter and JetBrains Mono ([#453](https://github.com/gerchowl/crank/issues/453))
 
 ### Changed
 
