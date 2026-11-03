@@ -482,7 +482,8 @@ finding there. vigil's MSRV is 1.95, which crank's pinned 1.96 toolchain satisfi
   - vigil 0.2.0 reads its filter only from one environment variable or `default_filter`, so in capture
     mode crank resolves the filter itself and passes the result as `default_filter`:
     `info` (or `CRANK_LOG`'s directives, if it is set and valid), then any directive whose target is
-    `crank_ble` or `crank_ble::…` removed, then `crank_ble=trace` appended.
+    `crank_ble` or `crank_ble::…` removed, then `crank_ble=trace` appended, then
+    `crank_desktop::logging=warn`, so the WARN records below survive a `CRANK_LOG` that turns the desktop off.
   - Removing those directives is what makes "always" true: `EnvFilter` lets the most specific
     directive win, so `CRANK_LOG=crank_ble::driver=warn` would otherwise lower the capture. Each removed
     directive is reported in a WARN record. An invalid `CRANK_LOG` is reported the same way, and the
@@ -503,15 +504,16 @@ move to the vigil configuration unchanged. New tests pin the merge (`CRANK_LOG=w
 because macOS may kill a terminating app a few seconds in. The 3 s are split:
 
 - `Core::shutdown` waits at most **2.5 s** for the devices to be released. That is lowered from 3 s.
-- vigil then gets the rest: `Guard::shutdown_with_timeout(3 s − elapsed)`, at least 0.5 s.
-  Because shutdown is explicit, the guard's Drop does nothing, so its 5 s wait never runs.
+- vigil then gets the rest: `Guard::shutdown_with_timeout(3 s − elapsed)`, measured from the
+  exit request, and nothing once the 3 s are used up (no floor: a floor would break the cap; #414
+  review). Because shutdown is explicit, the guard's Drop does nothing, so its 5 s wait never runs.
 - Metrics are off, so the 5 s metrics floor (vigil#112) does not apply.
 - When the bound is hit, the records still queued are lost. That is at most the last ~1 s batch
   interval: typically the shutdown's own lines. Spans not yet exported are lost from `traces.jsonl`.
   vigil reports the loss on stderr, which a Finder launch does not have.
 - Because crank also flushes when each ride ends (below), the ride's records are on disk before quit.
 
-**Migration (architect decision 2026-11-02).** The app never deletes the old plain-text `crank.log` or
+**Migration (architect decision 2026-11-02, the owner may override).** The app never deletes the old plain-text `crank.log` or
 `crank.log.1`; they stay in `app_log_dir` next to `logs.jsonl`. AGENTS.md's logging paragraph is
 rewritten in the implementation PR and says the old files can be deleted by hand. Sequencing follows
 #414: implement after the #44 Part B session.

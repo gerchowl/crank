@@ -555,3 +555,23 @@ fn an_empty_menu_is_left_alone() {
     assert!(!replace_quit(&menu, "Quit app").unwrap());
     assert!(menu.0.borrow().is_empty());
 }
+
+#[test]
+fn vigil_gets_what_the_ride_end_left_of_the_quit_cap() {
+    // The ride end's cap stays above the engine's 2 s end deadline and leaves vigil a share.
+    assert!(lifecycle::SHUTDOWN_CAP > Duration::from_secs(2));
+    assert!(lifecycle::SHUTDOWN_CAP < lifecycle::QUIT_CAP);
+    let quit = Quit::default();
+    assert_eq!(
+        quit.remaining(),
+        lifecycle::QUIT_CAP,
+        "no quit yet: all of it"
+    );
+    assert_eq!(quit.request(), Decision::Begin);
+    let left = quit.remaining();
+    assert!(
+        left < lifecycle::QUIT_CAP,
+        "the clock runs from the exit request"
+    );
+    assert!(left + lifecycle::SHUTDOWN_CAP > lifecycle::QUIT_CAP);
+}
