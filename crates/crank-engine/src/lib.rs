@@ -48,6 +48,8 @@ pub use ticks::{SessionTicks, WorkoutTicks};
 #[cfg(test)]
 mod erg_tests;
 #[cfg(test)]
+mod hold_tests;
+#[cfg(test)]
 mod lap_tests;
 #[cfg(test)]
 mod tests;

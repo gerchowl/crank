@@ -306,8 +306,13 @@ because invalid drafts are a normal editor state.
   timestamped with `MonoTime` on arrival and assigned to the tick whose window contains the timestamp, not
   to whichever tick runs next; after a stall the missed ticks are replayed in order with their own samples,
   so session time never drifts from monotonic time and late processing changes no values.
-- **Sample holding.** A tick without a new trainer sample holds the last value for up to 1.0 s (4 ticks;
-  page 25 may arrive at only ~2 Hz, ADR-0002 §5), HR for up to 3.0 s; after that the value is `null`.
+- **Sample holding** (per field, #437). Each trainer field holds its last real value until its own bound,
+  then it is `null`: power and cadence (page 25) for up to 1.0 s (4 ticks; page 25 may arrive at only ~2 Hz,
+  ADR-0002 §5), speed (page 16) for up to 6.0 s (24 ticks) but never longer than page 25 itself is held. Speed
+  may be held longer because it drives no control decision (ERG release, soft start and the pauses read power
+  and cadence) and the NEO sends page 16 much less regularly. HR is held for up to 3.0 s. A field the
+  sample's page does not carry leaves the held value; a field the page carries but reports invalid is
+  `null` at once. Details and the measured intervals: implementation notes below.
   Small packet gaps are filled from FE-C accumulated power as an average over the gap, flagged as
   estimated (ADR-0002 §5).
 - **Speed** 10×/60× is only available with the simulated trainer. With a real trainer `setSpeed` returns
@@ -340,6 +345,7 @@ thresholds are initial values verified in HIL session 1 (#44).
 **Implementation notes (#217, `crank-engine` core).** Conventions the rules above leave open, fixed by code and tests:
 
 - A tick is workout time iff nothing paused the ride when it began; every detection (8 missed ticks, 12 zero ticks, link event) takes effect from the next tick. So the 8 missed ticks of the loss window, and the 12 zero ticks of stopped pedalling, stay workout time (no rollback). Hold: a value is usable for the tick it arrived in and the next 4 (trainer) or 12 (HR).
+- **Per-field hold (#437).** A trainer sample is one FE-C page: page 25 carries power and cadence, page 16 speed (ADR-0002 §5); a field the page does not carry is "not in this sample", never zero, while a field the page carries and reports invalid (page 25's cadence `0xFF`, power `0xFFF`) is unknown from that tick on, with no hold, so an invalid cadence counts as 0 for the §7.4 release at once (`crank_devices::Reading`). The samples of a tick are merged field by field in arrival order, and each field keeps its last real value (cadence 0 included) until its own bound: power and cadence 1.0 s (4 ticks, the hold above), speed 6.0 s (24 ticks) but never longer than page 25 itself is held, so no value outlives a stopped page-25 stream. The 6 s comes from the #44 Part A captures: the NEO sends page 16 instead of about one page 25 in four, and the page-16 interval is about 1 s at the median but 5.0–5.5 s at the 99th percentile (`latency.fecap`, `spacing.fecap`; at most 5.97 s outside one 25 s outlier), so a 1.0 s speed hold would blank speed most seconds. The silence rule of §5 and ADR-0002 §6 counts ticks without a **page-25** sample (one with an event count): page 16 alone keeps no trainer alive. An 8-tick silence, like an applied link transition, clears every field's hold. HR is held as before.
 - **Loss-window values.** The trainer hold (1.0 s = 4 ticks) applies first, then the value is `null` for the rest of the window: ticks after the last sample show it for 4 ticks, the remaining ticks of the 8-tick window and everything after are `null`. This is how §5's "null record values" and the hold rule compose.
 - **Link events.** Driver link events carry no timestamp (#232 asks for one). The engine stamps each on receipt and applies it before the tick containing the stamp; samples keep their driver timestamp. Every device link has an event count: a sample is tagged with the count at receipt and is stale, and never enters a hold, once a later link transition has been applied. Every applied transition also clears that device's hold. Resume therefore needs a cadence > 0 sample received after `Ready`. Convention for stalls: a transition the engine learns of only after a stall is applied at the stall's end, so a stalled run and a live run agree on everything that carries a timestamp and can differ only around link transitions inside the stall (closed by #232).
 - Pauses compose: `user`, `trainer_lost` and `stopped_pedalling` are independent flags (reported in that priority: lost, user, stopped), so a rider's pause survives a reconnect. Ticks of a paused ride record `null` for every metric and `workout_s`.

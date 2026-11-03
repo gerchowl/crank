@@ -9,11 +9,11 @@ use crate::stream::{
     LinkDevice, MetricId, StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts,
 };
 use crate::ticks::{
-    HR_HOLD_TICKS, Hold, LOSS_TICKS, STOPPED_TICKS, SessionTicks, TICKS_PER_SECOND,
-    TRAINER_HOLD_TICKS, TickWindow, WorkoutTicks, ticks_to_seconds,
+    HR_HOLD_TICKS, Hold, LOSS_TICKS, SPEED_HOLD_TICKS, STOPPED_TICKS, SessionTicks,
+    TICKS_PER_SECOND, TRAINER_HOLD_TICKS, TickWindow, WorkoutTicks, ticks_to_seconds,
 };
 use crank_devices::{
-    Clock, CommandSeq, ControlMode, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime,
+    Clock, CommandSeq, ControlMode, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime, Reading,
     SeqSource, TrainerCommand, TrainerEvent, TrainerLink, TrainerObservation, TrainerSample,
 };
 use crank_domain::workout::{FlatBlock, Phase as BlockPhase};
@@ -372,11 +372,62 @@ impl Pauses {
         }
     }
 }
+/// The trainer values of one tick, each fresh or held on its own.
 #[derive(Clone, Copy, Debug)]
 struct TrainerValues {
     power: Option<u16>,
     cadence: Option<u8>,
     speed: Option<f32>,
+}
+/// The trainer hold, one per field (#437). A sample carries one FE-C page, so a field it does
+/// not carry leaves that field's last real value in place; a real value, cadence 0 included,
+/// replaces it; a field the page carries but reports invalid is unknown from that tick on, with
+/// no hold (an invalid cadence counts as 0 for the release, ADR-0002 §7.4). Each field expires on its own bound: power and cadence after
+/// [`TRAINER_HOLD_TICKS`], speed after [`SPEED_HOLD_TICKS`] but never later than page 25
+/// itself, so no held value outlives a stopped page-25 stream.
+struct TrainerHold {
+    /// The tick of the last page-25 sample.
+    page25: Hold<()>,
+    power: Hold<u16>,
+    cadence: Hold<u8>,
+    speed: Hold<f32>,
+}
+impl TrainerHold {
+    fn new() -> Self {
+        Self {
+            page25: Hold::new(TRAINER_HOLD_TICKS),
+            power: Hold::new(TRAINER_HOLD_TICKS),
+            cadence: Hold::new(TRAINER_HOLD_TICKS),
+            speed: Hold::new(SPEED_HOLD_TICKS),
+        }
+    }
+    /// Take in the fields a sample of tick `k` carries.
+    fn push(&mut self, k: u64, t: &TrainerSample) {
+        fn take<T: Copy>(hold: &mut Hold<T>, k: u64, r: Reading<T>) {
+            match r {
+                Reading::Value(v) => hold.push(k, v),
+                Reading::Invalid => hold.clear(),
+                Reading::NotCarried => {}
+            }
+        }
+        if t.has_page25() {
+            self.page25.push(k, ());
+        }
+        take(&mut self.power, k, t.power());
+        take(&mut self.cadence, k, t.cadence());
+        take(&mut self.speed, k, t.speed());
+    }
+    fn get(&self, k: u64) -> TrainerValues {
+        TrainerValues {
+            power: self.power.get(k),
+            cadence: self.cadence.get(k),
+            speed: self.speed.get(k).filter(|_| self.page25.get(k).is_some()),
+        }
+    }
+    /// Forget every field: the link or the stream it was sampled on is gone.
+    fn clear(&mut self) {
+        *self = Self::new();
+    }
 }
 /// Link transitions seen on one device link, in channel order.
 ///
@@ -419,9 +470,10 @@ struct Session {
     recorder: Box<dyn RideRecorder>,
     window: TickWindow,
     next_tick: u64,
-    pending_trainer: BTreeMap<u64, (u64, TrainerSample)>,
+    /// The samples of each tick in arrival order, each with its link tag.
+    pending_trainer: BTreeMap<u64, Vec<(u64, TrainerSample)>>,
     pending_hr: BTreeMap<u64, (u64, HrSample)>,
-    trainer: Hold<TrainerValues>,
+    trainer: TrainerHold,
     hr: Hold<f64>,
     recent_power: VecDeque<(u64, f64)>,
     missed: u32,
@@ -549,8 +601,8 @@ impl Session {
     }
     /// Stopped pedalling (ADR-0001 §5): cadence and power 0 for 3 s on riding ticks pauses the
     /// ride; cadence > 0 on any tick ends it.
-    fn track_stopped(&mut self, riding: bool, trainer: Option<TrainerValues>) {
-        if trainer.is_some_and(|t| t.power == Some(0) && t.cadence == Some(0)) {
+    fn track_stopped(&mut self, riding: bool, trainer: TrainerValues) {
+        if trainer.power == Some(0) && trainer.cadence == Some(0) {
             self.zero_run = self.zero_run.saturating_add(1);
         } else {
             self.zero_run = 0;
@@ -558,7 +610,7 @@ impl Session {
         if riding && self.zero_run >= STOPPED_TICKS {
             self.pauses.stopped = true;
         }
-        if self.pauses.stopped && trainer.and_then(|t| t.cadence).is_some_and(|c| c > 0) {
+        if self.pauses.stopped && trainer.cadence.is_some_and(|c| c > 0) {
             self.pauses.stopped = false;
             self.zero_run = 0;
         }
@@ -641,7 +693,7 @@ pub struct Engine {
     hr_link: Option<LinkState>,
     cmds: mpsc::Receiver<Request>,
     stream_reqs: Option<mpsc::Receiver<StreamReq>>,
-    hub: Hub,
+    pub(crate) hub: Hub,
     pub(crate) status: watch::Sender<RideStatus>,
     trainer_log: LinkLog,
     hr_log: LinkLog,
@@ -916,7 +968,7 @@ impl Engine {
                 if let Some(s) = self.session.as_mut().filter(|_| active) {
                     match s.window.tick_of(sample.at) {
                         Some(k) if k >= s.next_tick => {
-                            s.pending_trainer.insert(k, (tag, sample));
+                            s.pending_trainer.entry(k).or_default().push((tag, sample));
                         }
                         Some(_) => s.late += 1,
                         None => {}
@@ -1063,23 +1115,29 @@ impl Engine {
         while s.recent_power.front().is_some_and(|(at, _)| k - at >= 12) {
             s.recent_power.pop_front();
         }
-        match s.pending_trainer.remove(&k) {
-            Some((tag, t)) if tag >= self.trainer_log.applied => {
-                s.missed = 0;
-                s.trainer.push(
-                    k,
-                    TrainerValues {
-                        power: t.power_w,
-                        cadence: t.cadence_rpm,
-                        speed: t.speed_mps,
-                    },
-                );
-                if let Some(p) = t.power_w {
-                    s.recent_power.push_back((k, f64::from(p)));
-                }
+        // Every sample of the tick, merged field by field in arrival order (#437). Only a
+        // page-25 sample ends a silence (ADR-0002 §6): page 16 carries no power or cadence.
+        let (mut page25, mut power) = (false, None);
+        for (tag, t) in s.pending_trainer.remove(&k).unwrap_or_default() {
+            // sampled before a link transition that has since been applied: never held
+            if tag < self.trainer_log.applied {
+                continue;
             }
-            // none, or sampled before a link transition that has since been applied
-            _ => s.missed = s.missed.saturating_add(1),
+            page25 |= t.has_page25();
+            power = match t.power() {
+                Reading::Value(p) => Some(p),
+                Reading::Invalid => None,
+                Reading::NotCarried => power,
+            };
+            s.trainer.push(k, &t);
+        }
+        if page25 {
+            s.missed = 0;
+        } else {
+            s.missed = s.missed.saturating_add(1);
+        }
+        if let Some(p) = power {
+            s.recent_power.push_back((k, f64::from(p)));
         }
         if let Some((_, h)) = s
             .pending_hr
@@ -1092,7 +1150,7 @@ impl Engine {
         let (trainer, hr) = (s.trainer.get(k), s.hr.get(k));
         // Samples are flowing while a pedalling trainer value is present. The soft start
         // runs only then and restarts, from the current 3 s power, whenever they return.
-        s.track_flow(k, trainer.and_then(|t| t.cadence).is_some_and(|c| c > 0));
+        s.track_flow(k, trainer.cadence.is_some_and(|c| c > 0));
         // The tick is workout time iff nothing paused the ride when it began; a loss
         // detected on this tick takes effect on the next (no rollback, ADR-0001 §5).
         let riding = s.pauses.reason().is_none();
@@ -1101,15 +1159,9 @@ impl Engine {
             s.ride_ticks += 1;
             s.block_elapsed += 1;
             s.acc.riding = true;
-            s.acc
-                .power
-                .add(trainer.and_then(|t| t.power).map(f64::from));
-            s.acc
-                .cadence
-                .add(trainer.and_then(|t| t.cadence).map(f64::from));
-            s.acc
-                .speed
-                .add(trainer.and_then(|t| t.speed).map(f64::from));
+            s.acc.power.add(trainer.power.map(f64::from));
+            s.acc.cadence.add(trainer.cadence.map(f64::from));
+            s.acc.speed.add(trainer.speed.map(f64::from));
             s.acc.hr.add(hr);
         }
         let second_closed = s.clock_ticks % TICKS_PER_SECOND == 0;
@@ -1137,9 +1189,11 @@ impl Engine {
             s.link_epoch += 1;
             s.reset_control();
             s.reset_soft_start();
+            // nothing sampled before a silence is held across it (#437: speed outlives 2 s)
+            s.trainer.clear();
         }
         s.recover_if_back(self.trainer_link == Some(LinkState::Ready));
-        let cadence = trainer.and_then(|t| t.cadence);
+        let cadence = trainer.cadence;
         s.track_stopped(riding, trainer);
         if finished {
             // The finishing tick is a ride tick: account it (no command is sent).
@@ -1164,14 +1218,14 @@ impl Engine {
         &mut self,
         s: &Session,
         riding: bool,
-        trainer: Option<TrainerValues>,
+        trainer: TrainerValues,
         hr: Option<f64>,
     ) {
         let values = if riding {
             [
-                trainer.and_then(|t| t.power).map(f64::from),
-                trainer.and_then(|t| t.cadence).map(f64::from),
-                trainer.and_then(|t| t.speed).map(f64::from),
+                trainer.power.map(f64::from),
+                trainer.cadence.map(f64::from),
+                trainer.speed.map(f64::from),
                 hr,
                 Some(ticks_to_seconds(s.ride_ticks)),
                 s.laps.live_power(),
@@ -1219,7 +1273,7 @@ impl Engine {
             link_epoch: s.link_epoch,
             flow_start: s.flow_start,
             power_3s_w: s.power_3s(),
-            cadence_rpm: s.trainer.get(k).and_then(|t| t.cadence),
+            cadence_rpm: s.trainer.get(k).cadence,
             last_sent: s.last_sent,
             riding: s.pauses.reason().is_none(),
             user_paused: s.pauses.user,
@@ -1355,7 +1409,7 @@ impl Engine {
                     next_tick: 0,
                     pending_trainer: BTreeMap::new(),
                     pending_hr: BTreeMap::new(),
-                    trainer: Hold::new(TRAINER_HOLD_TICKS),
+                    trainer: TrainerHold::new(),
                     hr: Hold::new(HR_HOLD_TICKS),
                     recent_power: VecDeque::new(),
                     missed: 0,

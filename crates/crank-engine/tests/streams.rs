@@ -369,6 +369,30 @@ async fn paused_ticks_publish_null() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn the_default_simulator_interleaves_pages_and_power_and_cadence_never_blank() {
+    // #437: the default simulator sends page 16 (speed only) on one tick in five, as the NEO
+    // does; the engine holds each field on its own, so no raw tick of a ride is null.
+    let (h, _) = launch(600.0).await;
+    let (id, rx) = h.open_stream(None).await.expect("open");
+    let raw = SubscribeOpts {
+        rate_hz: 4.0,
+        filters: vec![],
+    };
+    for m in [MetricId::Power, MetricId::Cadence] {
+        h.stream_subscribe(id, m, raw.clone())
+            .await
+            .expect("subscribe");
+    }
+    let frames = consume(h.clone(), id, rx);
+    sleep(Duration::from_secs(30)).await;
+    let log = frames.lock().expect("test mutex");
+    let values: Vec<_> = log.iter().flat_map(|(_, f)| f.samples.iter()).collect();
+    assert!(values.len() >= 200, "4 Hz, two metrics: {}", values.len());
+    let gaps: Vec<_> = values.iter().filter(|s| s.v.is_none()).collect();
+    assert!(gaps.is_empty(), "null ticks while riding: {gaps:?}");
+}
+
+#[tokio::test(start_paused = true)]
 async fn power_lap_streams_the_open_laps_mean_and_ends_on_the_laps_average() {
     let (h, _) = launch(20.0).await;
     let (id, _rx) = h.open_stream(None).await.expect("open");
