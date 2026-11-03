@@ -1983,7 +1983,8 @@ review. Rules start as warnings where the current UI fails them and move to erro
 4. **Icons are Lucide**, stroke 1.5, 16 px (20 px in the rail), each with a word or an accessible name. Check: ESLint
    (#455) for the import; the harness (#457) for size and name.
 5. **Numbers are tabular.** Every live number renders in the number face with `tabular-nums`. Check: the harness's
-   layout audit reads the computed style of every live-value element (#457).
+   layout audit reads the computed style of every live-value element (#457). Render them through `<Num>` (`app/src/Num.tsx`)
+   or the `num` class; no lint rule can tell a live number from other text, so #457 is the check.
 6. **Nothing overflows, clips or overlaps** at 1024×768 and 1440×900, in every screen and state fixture; on the ride
    screen no two readouts' boxes intersect. Check: the layout audit (#457).
 7. **Accessible.** axe reports no serious or critical violation; text meets 4.5 : 1 (3 : 1 at T2 and above), marks
