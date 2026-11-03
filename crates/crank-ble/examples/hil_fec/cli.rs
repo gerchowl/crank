@@ -49,7 +49,7 @@ pub enum Check {
 }
 
 impl Check {
-    const ALL: [(&'static str, Self); 18] = [
+    const ALL: [(&'static str, Self); 19] = [
         ("scan", Self::Scan),
         ("known", Self::Known),
         ("idle", Self::Idle),
