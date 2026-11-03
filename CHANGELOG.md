@@ -14,6 +14,21 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   `<svg>` outside `src/icons/`, no literal colours or px in `style={{}}`, `eslint-plugin-jsx-a11y` recommended; a `<Num>`
   component for live numbers; the Feather MIT text in `NOTICE`
   ([#455](https://github.com/gerchowl/crank/issues/455))
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [0.1.0](https://github.com/gerchowl/crank/releases/tag/0.1.0) - 2026-11-03
+
+### Added
+
 - stylelint (17) in `pnpm -C app lint`: token-only colours and sizes, no unknown `var(--…)`, no `outline: none`
   (DESIGN §18.7 rules 1 to 3, [#454](https://github.com/gerchowl/crank/issues/454)); the shell and ride stylesheets
   now use the theme tokens, so a few sizes moved to the nearest token
@@ -30,13 +45,8 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   7-day retention and size caps; a `CRANK_CAPTURE_DIR` capture keeps everything. The old `crank.log` is left in place
   ([#414](https://github.com/gerchowl/crank/issues/414))
 
-### Deprecated
-
-### Removed
-
 ### Fixed
 
 - Devices: a nearby device that is already paired shows "Paired as trainer/strap" with Forget instead of "Pair as"
   for that role ([#436](https://github.com/gerchowl/crank/issues/436))
 
-### Security
