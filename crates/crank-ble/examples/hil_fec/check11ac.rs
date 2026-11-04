@@ -634,6 +634,60 @@ mod tests {
         );
     }
 
+    /// Each 11a evidence floor on its own, the early release, and a real drop's capture shape.
+    #[test]
+    fn check11a_each_evidence_floor_holds_on_its_own() {
+        let (r, n) = ride11a((100, 0, 0));
+        let release_at = |ms: u64| -> Vec<Record> {
+            let mut v: Vec<Record> = r.iter().filter(|x| x.at_us < ms * 1000).cloned().collect();
+            v.push(tx(ms, &RELEASE));
+            v
+        };
+        let with_drop = |at: u64| [n.clone(), vec![note(LINK, at, &[DETECTED])]].concat();
+        // Each floor on its own: 29 samples before; 78 samples but over 19.5 s; 25.5 s but 26
+        // samples; a mid-window release (the silence guard's) ends the after window at 50 s.
+        let mut few_before = r.clone();
+        few_before.retain(|x| !(x.rx && x.at_us == 15_000_000));
+        let mut dense = release_at(55_500);
+        dense.extend((0..39).map(|k| p25(36_250 + k * 500, 90, 100, 0, 0)));
+        let mut sparse = r.clone();
+        sparse.retain(|x| !(x.rx && x.at_us >= 36_000_000 && x.at_us % 1_000_000 != 0));
+        let mut early_release = r.clone();
+        early_release.push(tx(50_000, &RELEASE));
+        for (records, why) in [
+            (
+                few_before,
+                "29 page-25 samples in the 15 s before the cue (at least 30)",
+            ),
+            (
+                dense,
+                "78 page-25 samples over 19.5 s after the unplug (at least 40 over 20 s)",
+            ),
+            (
+                sparse,
+                "26 page-25 samples over 25.5 s after the unplug (at least 40 over 20 s)",
+            ),
+            (
+                early_release,
+                "28 page-25 samples over 14 s after the unplug (at least 40 over 20 s)",
+            ),
+        ] {
+            assert_eq!(
+                verdict(&check11a(&records, &n)),
+                format!("unknown: {why}"),
+                "{why}"
+            );
+        }
+        // A real drop's capture still holds the release tx after the drop (tx frames are recorded
+        // even when the write fails): only trainer frames count against the drop.
+        let mut dropped: Vec<Record> = r.iter().filter(|x| x.at_us < 40_000_000).cloned().collect();
+        dropped.push(tx(41_000, &RELEASE));
+        assert!(
+            verdict(&check11a(&dropped, &with_drop(40_000)))
+                .starts_with("link dropped 10 s after the unplug cue")
+        );
+    }
+
     /// The 80 % boundary of "honoured" is inclusive.
     #[test]
     fn honoured_from_80_percent_within_10_percent() {
