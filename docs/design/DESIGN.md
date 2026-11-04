@@ -1993,7 +1993,7 @@ review. Rules start as warnings where the current UI fails them and move to erro
 7. **Accessible.** axe reports no serious or critical violation; text meets 4.5 : 1 (3 : 1 at T2 and above), marks
    and control edges 3 : 1, in both themes. Check: axe in the harness (#457); palette values (#453, #30).
 8. **Focus is visible.** Tab reaches every control on every screen in order, and each draws a focus ring with 3 : 1
-   contrast. Check: the focus test (#458).
+   contrast. Check: the focus walk in the harness (#458, `app/e2e/design/focus.ts`).
 9. **Controls are 32 / 40 / 48 px and show their key.** Every ride and saddle action has a `kbd` hint matching its
    binding (§18.4). Check: the layout audit (#457).
 10. **No layout shift.** The ride's region boxes are identical across phase templates and states at each size (the
