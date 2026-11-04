@@ -442,14 +442,12 @@
     "axe.color-contrast": 1,
     "button.height": 7,
     "button.inconsistentHeight": 1,
-    "layout.overflowParent": 1,
     "spacing.offScale": 3,
     "type.offScale": 1
   },
   "workouts-selected@1024x768-light": {
     "button.height": 7,
     "button.inconsistentHeight": 1,
-    "layout.overflowParent": 1,
     "spacing.offScale": 3,
     "type.offScale": 1
   },
@@ -460,7 +458,6 @@
     "button.height": 7,
     "button.inconsistentHeight": 1,
     "layout.measureTooLong": 10,
-    "layout.overflowParent": 1,
     "spacing.offScale": 3,
     "type.offScale": 1
   },
@@ -469,30 +466,25 @@
     "button.height": 7,
     "button.inconsistentHeight": 1,
     "layout.measureTooLong": 10,
-    "layout.overflowParent": 1,
     "spacing.offScale": 3,
     "type.offScale": 1
   },
   "workouts@1024x768-dark": {
     "button.height": 6,
-    "button.inconsistentHeight": 1,
-    "layout.overflowParent": 1
+    "button.inconsistentHeight": 1
   },
   "workouts@1024x768-light": {
     "button.height": 6,
-    "button.inconsistentHeight": 1,
-    "layout.overflowParent": 1
+    "button.inconsistentHeight": 1
   },
   "workouts@1440x900-dark": {
     "button.fullWidth": 2,
     "button.height": 6,
-    "button.inconsistentHeight": 1,
-    "layout.overflowParent": 1
+    "button.inconsistentHeight": 1
   },
   "workouts@1440x900-light": {
     "button.fullWidth": 2,
     "button.height": 6,
-    "button.inconsistentHeight": 1,
-    "layout.overflowParent": 1
+    "button.inconsistentHeight": 1
   }
 }
