@@ -1,7 +1,7 @@
 # ADR-0003: In-app bug reports with squelch
 
 - **Status:** Proposed
-- **Date:** 2026-11-02
+- **Date:** 2026-11-02; amended 2026-11-04 (#508: structured fields only, §2.2, §2.3, §2.7, §3, §5)
 - **Issue:** #431
 - **Related:** ADR-0001 §7.1 (logs via vigil, #414), §4.4 (`ApiError`), #428 (releases), #256, #433
 
@@ -59,7 +59,7 @@ squelch records (mapped): 2
 The output shows three more things. `addr` was masked, by squelch's field rule. The home path was
 masked. `serial` survived **verbatim** once it was allowlisted, which is why §2.3 exists.
 
-**Spike 3** ran the mapping as specified below, including the known-device replacement (§2.3), on
+**Spike 3** ran the first mapping, including the known-device replacement of the rejected scrub (§3), on
 vigil output plus a hand-made edge line. Exit code 0. Its output:
 
 ```text
@@ -79,64 +79,83 @@ Two findings changed the mapping:
   to `<host>`, so the scope name is mapped to `module`.
 - squelch drops a record that has no timestamp key, so a missing time is written as `unknown`.
 
-**Mapping** (`crank-desktop::report::flatten`, pure and unit-tested). For each line of `logs.jsonl`,
-then the rotated `logs-<stamp>.jsonl` segments newest first until the tail is full:
+**Amendment 2026-11-04 (#508, owner decision).** A report carries only allowlisted structured fields,
+never free-text log messages. The mapping below is the amended one: the body and every free-text
+attribute are dropped, not scrubbed (§2.3), and the history of the scrub that was tried instead is in §3.
+
+**Mapping** (`crank-desktop::report::flatten` reads, `report::allowlist` reduces; pure and unit-tested).
+The tail is selected **first**: lines are parsed from the end of `logs.jsonl`, then of the rotated
+`logs-<stamp>.jsonl` segments newest first, only until it is full, and only its records are processed.
 
 | OTLP/JSON | Flat key | Rule |
 |---|---|---|
 | `resourceLogs[].resource.attributes` | — | **dropped**. They hold `host.name` (the machine name), `process.pid` and `service.instance.id`. Version and commit come from provenance (§2.6) |
 | `scopeLogs[].scope.name` | `module` | the crate or module path. Not `target`, which squelch masks as a host field |
 | `logRecords[].timeUnixNano` (else `observedTimeUnixNano`) | `timestamp` | decimal-string nanoseconds rendered as RFC 3339 UTC with milliseconds (`time` 0.3, `formatting`, already in `Cargo.lock`). `"0"`, missing or unparsable in both gives `unknown`, so the record is kept and visibly has no time |
-| `severityText` | `level` | as is. If it is empty or missing, use `severityNumber`: 1–4 `TRACE`, 5–8 `DEBUG`, 9–12 `INFO`, 13–16 `WARN`, 17–24 `ERROR`. Otherwise no `level`, and squelch's `INFO` default applies |
-| `body.stringValue` | `message` | non-string bodies are dropped |
-| `attributes[]` `{key, value}` | `key` | `stringValue`, `intValue`, `doubleValue` or `boolValue` as a string. `arrayValue`, `kvlistValue` and `bytesValue` are dropped. A key that collides with `timestamp`, `level`, `message` or `module` becomes `attr.<key>`, so an event field cannot overwrite the record's own |
-| `traceId`, `spanId`, `eventName`, `flags` | — | dropped. `eventName` holds the source path |
+| `severityText` | `level` | when it is `TRACE`, `DEBUG`, `INFO`, `WARN` or `ERROR`. Otherwise use `severityNumber`: 1–4 `TRACE`, 5–8 `DEBUG`, 9–12 `INFO`, 13–16 `WARN`, 17–24 `ERROR`. Otherwise no `level`, and squelch's `INFO` default applies |
+| `body.stringValue` | — | **never included.** It only selects `event` when it is exactly a registered name (§2.3) |
+| attribute `event`, else the body | `event` | a stable event name from `report::allowlist::EVENTS`, else the literal `log` (§2.3) |
+| `attributes[]` `{key, value}` | `key` | only the typed allowlist and the identifier keys of §2.3; every other attribute (`message`, `error`, `e`, `err`, `raw`, `?Debug` values) is dropped. `arrayValue`, `kvlistValue` and `bytesValue` are dropped |
+| `traceId`, `spanId`, `eventName`, `flags` | — | dropped. `eventName` holds the call site's source path, which is absolute for a dependency (a home directory) |
 
-Each flat record then goes through crank's pre-scrub (§2.3) and is serialized as one flat JSON line.
-The joined lines go to `Redactor::records(&flat, Some("logs.jsonl"))` with crank's allowlist. The tail
-holds the last **200** records (architect decision 2026-11-02, the owner may override), so the report
-never needs the whole file. A line that fails to parse
-is skipped, never guessed at, which is squelch's own rule.
+Each record is serialized as one flat JSON line. The joined lines go to
+`Redactor::records(&flat, Some("logs.jsonl"))` with `report::allowlisted` (squelch's allowlist replaced by
+the keys a record can have). The tail holds the last **200** records (architect decision 2026-11-02, the
+owner may override). A line that fails to parse is skipped, never guessed at, which is squelch's own rule.
+**Fail closed:** `report::diagnostics` returns an error, and the caller sends no report, when squelch
+keeps fewer records than it was given; the caller sends none either when `Core::known_devices` fails.
 
 ### 2.3 Privacy
 
 - **Never attached:** `.fecap` captures, ride data (the database and exports) and the profile. The report
   reads only `app_log_dir/logs*.jsonl`. It does not read `traces.jsonl`, the capture directory or
   `data_dir`.
-- **Pre-scrub** (`crank-desktop::report::scrub`). It runs on every string value **before** squelch, because
-  squelch cannot take custom rules (#433):
-  - **Serials.** The FE-C page 81 serial and the DIS Serial Number String (`0x2A25`) are replaced by `<serial>`.
-    In a field, the rule is by name: `serial`, `serial_number`, `sn`. In free text, it applies after the
-    words `serial`, `S/N` or `SN`.
-  - **BLE addresses** `XX:XX:XX:XX:XX:XX` (either separator, either case) are replaced by `<ble-addr>`.
-  - **Platform ids.** Hyphenated UUIDs, which is what CoreBluetooth gives as `PeripheralId` and what `platform_id`
-    stores, are replaced by `<ble-id>`. The GATT service and characteristic UUIDs crank uses (FE-C, DIS, Cycling Power) are on a keep-list, because
-    they identify a protocol, not a device.
-  - **Known devices, in every kept field.** `report_preview` asks the core for every remembered and
-    currently connected device, and builds a replacement table from each one's name and local name,
-    serial and platform id:
-    - The placeholder is named after the device's role: `<trainer>`, `<strap>`, `<sensor>`, with `-serial` and
-      `-id` variants such as `<trainer-id>`.
-    - The table is applied, longest needle first and ignoring case, to **every** string that survives into
-      a record: `message`, `error` and every allowlisted field.
-    - This closes the free-text leak: AGENTS.md notes that error text carries device names, a name such
-      as `Tacx Neo 55624` embeds the serial, and §5 keeps bare digit runs. Spike 3 shows
-      `connect to Tacx Neo 55624 (<uuid>) failed` arriving as `connect to <trainer> (<trainer-id>) failed`.
-    - The `name` and `local_name` fields are always replaced, by the matching role placeholder or else
-      by `<device-name>`, which also covers a device the store has not remembered.
-- **Field allowlist** (`Redactor::allow_fields`). It applies in addition to squelch's scrubbed defaults:
-  `module`, `event`, `kind`, `page`, `result`, `connected`, `takeover`, `taken`, `last`, `discarded`,
-  `command`, `st`, `dir`, `path`, `ride_id`, `db_id`. These are the field names crank logs today (a
-  survey of the `tracing` calls in `crates/` and `app/src-tauri/`, 2026-11-02). `dir` and `path` still go through squelch's home-path rule. `raw`
-  (unknown FE-C page bytes) is **not** allowlisted. A new log field is absent from reports until it is
-  added here deliberately.
-- **Pinning test** (`crank-desktop/tests/report_privacy.rs`). It uses a fixture `logs.jsonl`, built from a real
-  `CRANK_CAPTURE_DIR` session log and then hand-salted with a NEO serial, a DIS serial, a BLE address, a
-  CoreBluetooth UUID, a home path and `host.name`. It also contains an `error` message with the
-  paired trainer's name with its serial (`Tacx Neo 55624`) and its BLE id, and a strap's name. The
-  test's known-device table holds those devices. It asserts that none of these appear in
-  `report.preview()`, and that the strings a triager needs survive: `crank_ble`, `trainer reconnect failed`,
-  `page=25`, and a GATT UUID from the keep-list.
+- **Structured fields only** (`crank-desktop::report::allowlist`, #508). A record is `timestamp`, `level`,
+  `module`, `event` and the fields below. Free text never reaches a report: the OTLP body (the message,
+  values interpolated) and every free-text attribute (`message`, `error` and `e` Display strings, `?Debug`
+  values such as `command` and `raw`) are **dropped, not scrubbed**. An error reaches a report only as its
+  kind or variant name in a separate field (`kind`); otherwise it is dropped. Nothing searches inside a
+  value: there is no pattern scrub of free text (§3).
+- **Typed allowlist** (`ALLOWED`). A value of another OTLP type, or a string outside the field's closed
+  vocabulary, is dropped. A new field is absent from reports until it is added here deliberately.
+
+  | Field | Type |
+  |---|---|
+  | `page`, `attempt`, `ms`, `lost`, `watts`, `rpm` | integer or finite double |
+  | `force`, `connected`, `takeover`, `taken` | bool |
+  | `device` | `trainer`, `strap` |
+  | `from`, `to` | the connect phases `resolve`, `gatt`, `identity`, `handshake`, `ready`, `not_found` |
+  | `via` | `lookup`, `scan` |
+  | `kind` | the variant names of `ProtocolErrorKind` and vigil's `FlushErrorKind` |
+  | `characteristic` | the GATT UUIDs crank uses (FE-C, FTMS, Cycling Power, Heart Rate, DIS): a protocol, not a device |
+  | `ride_id` | `ride-` and lowercase hex (the ride's start time) |
+
+- **Identifier fields, redacted by key** (`IDENTIFIERS`). Whatever the value, the field is kept only as a
+  placeholder: `name`, `local_name`, `device_name` → `<device-name>`; `serial`, `serial_number`, `sn` →
+  `<serial>`; `address`, `addr`, `mac` → `<ble-addr>`; `id`, `peripheral_id`, `platform_id`, `device_id`,
+  `db_id` (the store's `<kind>:<platform id>`) → `<ble-id>`; `path`, `dir`, `file` → `<path>`. A value
+  that is **wholly** a known device's name, serial or platform id (whitespace folded, case ignored) gets
+  that device's role instead: `<trainer>` or `<strap>`. `report_preview` asks `Core::known_devices` (the
+  remembered pairings). Known-device matching never searches inside a value, and a device missing from
+  it costs only the role, never privacy.
+- **Event names** (`EVENTS`). `event` is an explicit `event` attribute when it is a registered name, else
+  the body when it is exactly a registered name, else the literal `log`. The registry holds crank's
+  literal log messages (a survey of the `tracing` calls, 2026-11-04; a test keeps each one in the source)
+  and will hold #509's event names. vigil 0.2.0 writes the formatted message, not its template, so the
+  template of a message with interpolated values cannot be derived reliably, and an unregistered
+  `event` value could be anything. **Triage cost:** until call sites log typed fields and an `event`
+  (#509), records of interpolated messages and of other crates show `event=log`: triage sees module,
+  level, time and the typed fields, never the interpolated values.
+- **`module`** is the scope name, the `tracing` target: a module path fixed at compile time.
+- **Pinning test** (`crank-desktop/tests/report_privacy.rs`). Its fixture `logs.jsonl` is built from vigil
+  output of crank's logging pipeline and hand-salted with device names, serials, BLE addresses,
+  CoreBluetooth UUIDs, a home path and `host.name`. The test also salts every leak spelling that #482's
+  review rounds found (URL-encoded, byte-array and mixed-separator addresses, UUIDs next to `_`, serial-label
+  variants, decimal and byte forms of serials, NFKC and zero-width variants of known names), one at a
+  time, into the body, `error`, `e`, `err`, `message`, `event`, `severityText` and every field a record can
+  keep, as a string and as an integer. It asserts that no run of four or more letters or digits of any
+  spelling reaches `Report::preview()`, and that what a triager needs survives: module, level, event names,
+  `page`, `watts`, `rpm`, the role placeholders and a FE-C GATT UUID in `characteristic`.
 
 ### 2.4 The UI surface
 
@@ -195,8 +214,9 @@ can rely on it. The destination is set explicitly as `gerchowl/crank`, not taken
 1. The squelch dependency (`browser`, `logs`, `serde`), the `serde_yaml_ng` dev-dependency and `deny.toml`
    (§2.1).
 2. `bug.yml`, the field-id constants and the sync test (§2.5).
-3. `flatten`, `scrub`, the core query for known devices, the allowlist and the privacy pinning test
-   (§2.2–2.3). Needs #414 merged.
+3. `flatten`, the core query for known devices, the typed allowlist with identifier keys and event names,
+   and the privacy pinning test (§2.2–2.3; #444, amended by #508: structured fields only). Needs #414 merged.
+   The call sites' conversion to typed fields and `event` names is #509.
 4. The `build.rs` provenance (§2.6), shared with vigil's `revision`.
 5. The `report_preview` and `report_open` commands, the bindings, and the Settings dialog with preview and
    Copy log, plus a mock that models every refusal (§2.4).
@@ -212,6 +232,8 @@ can rely on it. The destination is set explicitly as `gerchowl/crank`, not taken
 | Relying on squelch alone for redaction | No serial, BLE address or UUID rule. The spike shows `serial=1234567` surviving |
 | `GhCli`, `Endpoint` or `Mailto` routes | The form's `required` checks are skipped, and these routes need a credential or have no review step. The owner chose `Browser` only |
 | Attaching `.fecap` or the ride database | It is the most identifying data crank has (serials, power, schedule), and maintainers can ask for a capture explicitly |
+| Scrubbing free text: pattern rules for serials, BLE addresses and UUIDs plus a known-device substring table over `message` and `error` (#444's first design, PR #482) | Rejected 2026-11-04 by the owner (#508). PR #482 used all three fix rounds, and every falsify round found new leak spellings: serial-label variants (`serial no. X`, `Some("X")`), no-break and zero-width spaces, URL-encoded names and addresses, byte-array and big-endian serial forms, mixed-separator, Cisco and bare addresses, UUIDs next to `_`. The fixes over-redacted in turn (short serials inside numbers, timestamps). Enumerating spellings cannot be made safe |
+| A rider opt-in to include the raw text | A rider cannot review 200 records for identifiers, so the consent would not be informed, and the issue form is public. A maintainer who needs the text asks for the log, which the rider can review and attach themselves |
 | `tauri-plugin-clipboard-manager` for Copy log | It is a new plugin and capability, and the webview clipboard on a user click is enough |
 
 ## 4. Consequences
@@ -224,12 +246,13 @@ can rely on it. The destination is set explicitly as `gerchowl/crank`, not taken
 
 ## 5. Known limits
 
-- Encoded secrets, and hosts outside squelch's suffix list, pass through. The same goes for non-English free
-  text, where squelch's position anchors do not apply. These are squelch's documented limits.
-- The pre-scrub's free-text serial rule needs a cue word. A bare digit run in a message is kept,
-  because masking every number would destroy watts, cadence and page numbers. The serials and names
-  of known devices are replaced anyway (§2.3). The residue is a device crank never remembered or
-  connected, such as a nearby trainer seen in a scan, whose name appears in free text without a cue.
+- A report has no free text, so the interpolated values of today's messages (error causes, device
+  states) are not in it until #509 logs them as typed fields (§2.3, triage cost).
+- The privacy of `event` and of the typed fields rests on their registries: a name added to `EVENTS` or
+  a word added to a vocabulary must be a constant, never a value from a device or the machine. Review of
+  `report/allowlist.rs` is the guard.
+- A number in an integer field is kept as it is. A call site that logs a serial under a field such as
+  `page` would leak it; serials belong under the identifier keys.
 - The 200-record tail may miss the cause of a long-past failure. A user can attach a longer log
   themselves.
 - Span context (`ride{id}`) is not in the tail until vigil puts span fields on log records (#432).
