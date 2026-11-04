@@ -11,6 +11,7 @@
 //! the device serial; commit only the output of `redact`.
 mod check10;
 mod check11;
+mod check11ac;
 mod checks;
 mod cli;
 mod cps;

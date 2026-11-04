@@ -56,6 +56,19 @@ pub fn attributed(
         .boxed()
 }
 
+/// A scan of `source` for FE-C trainers: each advertisement with the FE-C service, as its device
+/// (check 11c waits on it for the cold trainer). It ends when the scan stops by itself.
+pub fn fec_trainers(
+    source: &impl Advertisements,
+) -> futures_util::stream::BoxStream<'static, DeviceRef> {
+    source
+        .advertisements()
+        .filter_map(|ad| {
+            std::future::ready(ad.services.contains(&FEC_SERVICE).then_some(ad.device))
+        })
+        .boxed()
+}
+
 /// Resolves `true` once `events` (the adapter's events: a connected peripheral's id, `None` for
 /// any other kind) reports `device` connected, `false` when they end first.
 pub async fn connect_of(
@@ -253,10 +266,29 @@ impl Session {
         capture_path: &Path,
     ) -> Result<Self> {
         let clock = Arc::new(MonotonicClock::default());
-        let peripheral = adv.peripheral(&device).await?;
-        let transport = BtleplugTransport::new(peripheral.clone(), adapter.clone());
         let started = clock.now();
         let capture = Arc::new(Capture::create(capture_path, started)?);
+        Self::open_on(
+            adv,
+            adapter,
+            device,
+            capture_path,
+            (clock, started, capture),
+        )
+        .await
+    }
+
+    /// [`Session::open`] on a capture that is already recording (check 11c stamps its start cue
+    /// and the trainer's first advertisement before the link exists).
+    pub async fn open_on(
+        adv: &BtleplugAdvertisements,
+        adapter: Adapter,
+        device: DeviceRef,
+        capture_path: &Path,
+        (clock, started, capture): (Arc<MonotonicClock>, MonoTime, Arc<Capture>),
+    ) -> Result<Self> {
+        let peripheral = adv.peripheral(&device).await?;
+        let transport = BtleplugTransport::new(peripheral.clone(), adapter.clone());
         let (info, notifications) = transport.connect(device.clone(), clock.clone()).await?;
         let log = Arc::new(Mutex::new(Vec::new()));
         let pump = Mutex::new(pump(notifications, log.clone(), capture.clone()));
