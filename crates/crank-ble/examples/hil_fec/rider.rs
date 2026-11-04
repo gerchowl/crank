@@ -3140,8 +3140,16 @@ mod tests {
         let (sim, report) = run(Procedure::Check11a, plan, None).await;
         assert_eq!(report.procedure, Ok(()));
         assert_eq!(report.release_error.as_deref(), Some("not connected"));
-        assert!(sim.cue_at(Cue::Silent).is_some());
+        let silent = sim.cue_at(Cue::Silent).expect("silence cue");
         assert!(stamp_of(&sim, LINK, DETECTED).is_some_and(|at| at >= 50 * SEC));
+        // The guard's release went out at the silence stop, before the wait for the drop.
+        assert!(
+            writes(&sim)
+                .iter()
+                .any(|(at, p)| *p == 48 && (45 * SEC..=silent).contains(at)),
+            "{:?}",
+            writes(&sim)
+        );
         assert_eq!(sim.cues().last(), Some(&Cue::StopUnconfirmed));
         let v = reanalysed(&sim, &report, Procedure::Check11a, "check11a");
         assert!(
