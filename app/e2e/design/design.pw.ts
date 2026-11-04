@@ -176,6 +176,47 @@ test("an injected 48 px button fails the gate", async ({ page }, info) => {
   expect(failed).toContain("button.padding");
 });
 
+// The rail's words sit inside their buttons with room to spare (#506, DESIGN §16.3): the layout audit's 2 px
+// `layout.overflowParent` allowance let "Workouts" (600 weight, the current place) spill 2 px each side and still pass.
+// The margin is `--space-1` on each side of the widest word, measured on the bundled Inter after `settled()`.
+const RAIL_LABEL_MARGIN = 4;
+for (const place of ["Today", "Workouts", "History", "Settings"])
+  test(`the rail word ${place} has ${RAIL_LABEL_MARGIN} px inside its button at 600 weight`, async ({
+    page,
+  }) => {
+    const s =
+      SCENARIOS.find((x) => x.name === "devices-denied") ?? SCENARIOS[0];
+    await open(page, s);
+    const m = await page.evaluate((name) => {
+      const button = [
+        ...document.querySelectorAll<HTMLElement>(".rail button"),
+      ].find(
+        (b) => b.querySelector(".rail-label")?.textContent?.trim() === name,
+      );
+      const label = button?.querySelector<HTMLElement>(".rail-label");
+      if (!button || !label) return null;
+      // The current place is 600 weight; measure every word at that widest weight.
+      const was = button.style.fontWeight;
+      button.style.fontWeight = "600";
+      const range = document.createRange();
+      range.selectNodeContents(label);
+      const t = range.getBoundingClientRect();
+      const b = button.getBoundingClientRect();
+      button.style.fontWeight = was;
+      return {
+        left: t.left - b.left,
+        right: b.right - t.right,
+        width: t.width,
+        button: b.width,
+      };
+    }, place);
+    expect(m, `${place} is in the rail`).not.toBeNull();
+    expect(
+      Math.min(m!.left, m!.right),
+      `${place} (${m!.width.toFixed(2)} px) in a ${m!.button.toFixed(2)} px button`,
+    ).toBeGreaterThanOrEqual(RAIL_LABEL_MARGIN);
+  });
+
 // Axe's half of the gate: an image with no text alternative is a first `axe.image-alt` violation (WCAG 1.1.1).
 test("an injected unlabelled image fails the gate", async ({ page }, info) => {
   test.skip(updating, "measures against the committed baseline");

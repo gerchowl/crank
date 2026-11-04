@@ -83,14 +83,14 @@ kbd {
 
 .shell {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 76px minmax(0, 1fr);
   min-height: 100%;
 }
 .rail {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-4) var(--space-2);
+  padding: var(--space-4) var(--space-1);
   background: var(--surface-1);
   border-right: 1px solid var(--border);
 }
@@ -117,7 +117,7 @@ kbd {
   line-height: 1;
 }
 .rail .rail-label {
-  font-size: var(--text-s);
+  font-size: var(--text-xs);
   line-height: 1.1;
   white-space: nowrap;
 }
@@ -140,10 +140,10 @@ main.mode {
   min-height: 100%;
 }
 .page {
-  /* Side padding runs 20 px at 1024 to 32 px at 1440 on the viewport, with no breakpoint: content is 912 px at
-     1024 and 1304 px at 1440 (§16.3). 2.885vw - 9.5px = 20 at 1024, 32 at 1440. */
+  /* Side padding runs 20 px at 1024 to 32 px at 1440 on the viewport, with no breakpoint: content is 908 px at
+     1024 and 1300 px at 1440 (§16.3). 2.885vw - 9.5px = 20 at 1024, 32 at 1440. */
   padding: var(--space-6) var(--page-gutter);
-  max-width: 1368px; /* 1440 minus the 72 px rail */
+  max-width: 1364px; /* 1440 minus the 76 px rail */
   width: 100%;
 }
 .page-head {

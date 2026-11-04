@@ -21,6 +21,8 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Changed
 
+- Rail: 76 px wide with 12 px words (`--text-xs`) and `--space-1` side padding, so "Workouts" at 600 weight keeps 5.6 px inside its button (it spilled 2.75 px); content is 908 px at 1024 and 1300 px at 1440. The design suite asserts ≥ 4 px per rail word; DESIGN §6.1, §16.2, §16.3, §17.6 and §18.2 follow (#506, #467)
+
 ### Deprecated
 
 ### Removed
