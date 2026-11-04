@@ -113,7 +113,16 @@ commit it only with the change that moved a count, and say why in the PR. The br
 (`playwright-driver.browsers`, the devShell's `PLAYWRIGHT_BROWSERS_PATH`); `@playwright/test` is pinned to the same version
 and the flake asserts it. Chromium stands in for the app's WKWebView: the WebdriverIO specs (`just e2e`) still test the
 real app. The `app-e2e-design` flake check runs the harness on x86_64-linux only. The audit reads one fixture at a time; rule 10's
-cross-state comparison of the ride's region boxes is #498. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
+cross-state comparison of the ride's region boxes is #498. **Focus walk (#458, rule 8):** after the audit, each fixture
+is tabbed from the document start until focus is back on the first stop, then Shift+Tabbed back, then its skip link is
+used (`app/e2e/design/focus.ts`, the key presses and rules; `focus-audit.js`, the in-page reads). Its rules share the
+baseline: `focus.ring` (a stop whose focused `outline`, or `box-shadow`, is unchanged, under 2 px, off screen or under
+3 : 1 against the background it is drawn on), `focus.order` (a step against the reading order: rows top to bottom, then
+left to right, a later column may start higher, 4 px tolerance; Shift+Tab not the exact reverse; the skip link not first,
+not onto `#main`, or the next Tab not `#main`'s first control) and `focus.trap` (focus lost to `body` other than once at
+the document's edge, a stop that is no control, a cycle that never closes). Every screen passes all three today, so none
+is in the baseline and a first violation fails; each failure prints the offending stops (`<selector>: <why>`, or
+`<from> -> <to>: against reading order`). Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
 
 Citing Rust from app/ (comments, docs, test backends): always `<name>.rs <symbol>` with an optional ` (~N)` line hint directly after
 the symbol, e.g. ``core.rs `Core::end_ride` (~1742)``; the symbol is an identifier path (`A::b`), in backticks or not. Never a bare

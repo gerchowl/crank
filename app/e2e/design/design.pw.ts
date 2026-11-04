@@ -1,5 +1,6 @@
-// The design harness (#457): opens each fixture (scenarios.ts), settles it, and counts the layout audit's and axe's
-// violations per rule against the committed baseline (baseline.ts). DESIGN §18.7 names the rules.
+// The design harness (#457): opens each fixture (scenarios.ts), settles it, and counts the layout audit's, axe's and the
+// focus walk's (focus.ts, #458) violations per rule against the committed baseline (baseline.ts). DESIGN §18.7 names
+// the rules.
 import { join } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
@@ -12,6 +13,7 @@ import {
   writeBaseline,
   type Counts,
 } from "./baseline";
+import { focusWalk, inOrder, ORDER_TOLERANCE } from "./focus";
 import { SCENARIOS, type Scenario } from "./scenarios";
 import WarningsReporter, { WARNING } from "./warnings";
 
@@ -61,7 +63,12 @@ const keyOf = (s: Scenario, project: string) => `${s.name}@${project}`;
 for (const s of SCENARIOS)
   test(s.name, async ({ page }, info) => {
     await open(page, s);
-    const { counts, worst } = await measure(page);
+    const audit = await measure(page);
+    // After the audit: the walk moves focus, and its skip-link check moves it into `#main`.
+    const focus = await focusWalk(page);
+    expect(focus.stops, "the focus walk reached a control").toBeGreaterThan(0);
+    const counts = { ...audit.counts, ...focus.counts };
+    const worst = { ...audit.worst, ...focus.worst };
     const key = keyOf(s, info.project.name);
     if (updating) return writeBaseline(key, counts);
     const { failures, warnings } = compare(baseline[key] ?? {}, counts);
@@ -109,6 +116,64 @@ test("an injected unlabelled image fails the gate", async ({ page }, info) => {
   });
   const { failures } = compare(base, (await measure(page)).counts);
   expect(failures).toContain("axe.image-alt: 1 > baseline 0");
+});
+
+// The focus walk's half (#458): a control whose ring is removed (`outline: none`, nothing in its place) is one more
+// `focus.ring` violation than the baseline allows.
+test("an injected control without a focus ring fails the gate", async ({
+  page,
+}, info) => {
+  test.skip(updating, "measures against the committed baseline");
+  const s = SCENARIOS[0];
+  const base = baseline[keyOf(s, info.project.name)] ?? {};
+  await open(page, s);
+  await page.evaluate(() => {
+    const b = document.createElement("button");
+    b.textContent = "Injected";
+    b.style.outline = "none";
+    document.querySelector("main")?.append(b);
+  });
+  const { failures } = compare(base, (await focusWalk(page)).counts);
+  expect(failures.map((f) => f.split(":")[0])).toContain("focus.ring");
+});
+
+// A control last in the DOM but drawn top left, over the rail, is reached after the rail's last item and sits above
+// it in the same column: one more `focus.order` violation than the baseline allows.
+test("an injected control out of DOM order fails the gate", async ({
+  page,
+}, info) => {
+  test.skip(updating, "measures against the committed baseline");
+  const s = SCENARIOS[0];
+  const base = baseline[keyOf(s, info.project.name)] ?? {};
+  await open(page, s);
+  await page.evaluate(() => {
+    const b = document.createElement("button");
+    b.textContent = "Injected";
+    b.style.position = "fixed";
+    b.style.left = "8px";
+    b.style.top = "8px";
+    document.querySelector("main")?.append(b);
+  });
+  const { failures } = compare(base, (await focusWalk(page)).counts);
+  expect(failures.map((f) => f.split(":")[0])).toContain("focus.order");
+});
+
+// The reading order (focus.ts): along a row, down to the next row from anywhere, up only into a later column.
+test("the focus order follows rows, then columns", () => {
+  const box = (left: number, top: number, w = 80, h = 32) => ({
+    left,
+    top,
+    right: left + w,
+    bottom: top + h,
+  });
+  const a = box(100, 100);
+  expect(inOrder(a, box(200, 104))).toBe(true); // same row, right
+  expect(inOrder(a, box(100 - ORDER_TOLERANCE, 100))).toBe(true); // same row, within the tolerance
+  expect(inOrder(a, box(20, 100))).toBe(false); // same row, left
+  expect(inOrder(a, box(0, 200))).toBe(true); // next row, from its start
+  expect(inOrder(a, box(180, 0))).toBe(true); // a later column, from its top
+  expect(inOrder(a, box(120, 0))).toBe(false); // up the same column
+  expect(inOrder(a, box(0, 0))).toBe(false); // up and back left
 });
 
 // Every baseline key is a fixture × project of this run; update mode drops the rest (a renamed or deleted scenario).
