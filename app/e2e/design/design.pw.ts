@@ -5,12 +5,15 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
   compare,
+  orphans,
+  pruneBaseline,
   readBaseline,
   updating,
   writeBaseline,
   type Counts,
 } from "./baseline";
 import { SCENARIOS, type Scenario } from "./scenarios";
+import WarningsReporter, { WARNING } from "./warnings";
 
 const AUDIT = join(import.meta.dirname, "layout-audit.js");
 /** Direction A's allowances (§18.4): the rail's items are 40 px; every other control is `--control-h`. */
@@ -63,7 +66,7 @@ for (const s of SCENARIOS)
     if (updating) return writeBaseline(key, counts);
     const { failures, warnings } = compare(baseline[key] ?? {}, counts);
     for (const w of warnings)
-      info.annotations.push({ type: "warning", description: w });
+      info.annotations.push({ type: WARNING, description: w });
     const detail = failures.map(
       (f) => `${f}\n    ${(worst[f.split(":")[0]] ?? []).join("\n    ")}`,
     );
@@ -90,4 +93,57 @@ test("an injected 48 px button fails the gate", async ({ page }, info) => {
   const failed = failures.map((f) => f.split(":")[0]);
   expect(failed).toContain("button.height");
   expect(failed).toContain("button.padding");
+});
+
+// Axe's half of the gate: an image with no text alternative is a first `axe.image-alt` violation (WCAG 1.1.1).
+test("an injected unlabelled image fails the gate", async ({ page }, info) => {
+  test.skip(updating, "measures against the committed baseline");
+  const s = SCENARIOS[0];
+  const base = baseline[keyOf(s, info.project.name)] ?? {};
+  expect(base["axe.image-alt"], "axe.image-alt passes today").toBeUndefined();
+  await open(page, s);
+  await page.evaluate(() => {
+    const img = document.createElement("img");
+    img.src = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
+    document.querySelector("main")?.append(img);
+  });
+  const { failures } = compare(base, (await measure(page)).counts);
+  expect(failures).toContain("axe.image-alt: 1 > baseline 0");
+});
+
+// Every baseline key is a fixture × project of this run; update mode drops the rest (a renamed or deleted scenario).
+test("the baseline has no orphan keys", () => {
+  const info = test.info();
+  const expected = new Set(
+    info.config.projects.flatMap((p) => SCENARIOS.map((s) => keyOf(s, p.name))),
+  );
+  if (updating) return void pruneBaseline(expected);
+  expect(orphans(readBaseline(), expected)).toEqual([]);
+});
+
+// A count under its baseline is a printed line (the reporter, as Playwright runs it), so the slack is lowered rather
+// than left for a regression.
+test("an improved count prints a warning line", () => {
+  const { failures, warnings } = compare(
+    { "button.height": 3, "axe.color-contrast": 1 },
+    { "button.height": 2 },
+  );
+  expect(failures).toEqual([]);
+  const printed: string[] = [];
+  const reporter = new WarningsReporter({ print: (l) => printed.push(l) });
+  reporter.onTestEnd(
+    { titlePath: () => ["", "1024x768-dark", "design.pw.ts", "ride-paused"] },
+    {
+      annotations: warnings.map((description) => ({
+        type: WARNING,
+        description,
+      })),
+    },
+  );
+  reporter.onEnd();
+  expect(printed).toEqual([
+    "design baseline warnings (2):",
+    "design warning: [1024x768-dark] ride-paused: axe.color-contrast: 0 < baseline 1: lower it",
+    "design warning: [1024x768-dark] ride-paused: button.height: 2 < baseline 3: lower it",
+  ]);
 });

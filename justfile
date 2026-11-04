@@ -134,7 +134,14 @@ quit-test:
 # The design harness (#457, DESIGN §18.7): every fixture × 1024/1440 × dark/light, layout audit + axe, against
 # app/e2e/design/baseline.json. `just design update` rewrites the baseline (review the diff before committing).
 design mode="check":
-    CRANK_DESIGN_BASELINE={{ if mode == "update" { "update" } else { "" } }} pnpm -C app exec playwright test
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{mode}}" in
+      check) baseline= ;;
+      update) baseline=update ;;
+      *) echo "just design: mode is check or update, not '{{mode}}'" >&2; exit 2 ;;
+    esac
+    CRANK_DESIGN_BASELINE=$baseline pnpm -C app exec playwright test
 
 screens:
     @echo 'BLOCKED: screenshot matrix awaits the UI waves (#229)'; exit 1
