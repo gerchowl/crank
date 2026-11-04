@@ -9,3 +9,7 @@ allowBuilds:
   # WDIO's optional browser drivers download binaries on install; the harness drives the app itself (#35).
   edgedriver: false
   geckodriver: false
+overrides:
+  # The design harness (#457): one Playwright, the release nixpkgs' playwright-driver.browsers is built for (the flake
+  # asserts @playwright/test matches it); @axe-core/playwright's open peer range would otherwise pull a newer core.
+  playwright-core: 1.63.0
