@@ -14,6 +14,10 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   `<svg>` outside `src/icons/`, no literal colours or px in `style={{}}`, `eslint-plugin-jsx-a11y` recommended; a `<Num>`
   component for live numbers; the Feather MIT text in `NOTICE`
   ([#455](https://github.com/gerchowl/crank/issues/455))
+- Bug-report log tail (no UI yet): the last 200 of vigil's OTLP records, each reduced to its timestamp, level, module,
+  event name and typed allowlisted fields; messages and error text are never included, and identifier fields (names,
+  serials, addresses, ids, paths) become placeholders by key; a privacy pinning test salts every leak spelling of #482
+  ([#508](https://github.com/gerchowl/crank/issues/508))
 
 ### Changed
 

@@ -522,9 +522,9 @@ because macOS may kill a terminating app a few seconds in. The 3 s are split:
   interval: typically the shutdown's own lines. Spans not yet exported are lost from `traces.jsonl`.
   vigil reports the loss on stderr, which a Finder launch does not have.
 - A quit that gives up on a flush, a crash or a SIGKILL can leave `logs.jsonl` ending in a **partial last
-  line**. Readers (`vigil::rotate::read_since` returns it as a line; squelch's `flatten`, #444, and the bug report,
-  ADR-0003 §2.2) take every complete line and skip the one that does not parse, as squelch already does. crank pins the rule with
-  `read_since`; the squelch reader owns its own test (#444).
+  line**. Readers (`vigil::rotate::read_since` returns it as a line; the bug report's `flatten`, ADR-0003 §2.2) take every
+  complete line and skip the one that does not parse, as squelch already does. crank pins the rule with `read_since`
+  (`tests/logging.rs`) and with `flatten` (`report::flatten` tests, and the partial last line of the privacy fixture).
 - Because crank also flushes when each ride ends (below), the ride's records are on disk before quit.
 
 **Migration (architect decision 2026-11-02, the owner may override).** The app never deletes the old plain-text `crank.log` or
