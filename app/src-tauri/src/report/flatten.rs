@@ -15,7 +15,8 @@ pub struct Otlp {
     pub timestamp: String,
     /// `severityText` when it is a `tracing` level name, else the `severityNumber` range's name.
     pub level: Option<&'static str>,
-    /// The scope name: the `tracing` target, a compile-time module path.
+    /// The scope name: the `tracing` target, `module_path!()` unless a call site sets one, and a
+    /// runtime string for a record bridged from the `log` crate.
     pub module: Option<String>,
     /// `body.stringValue`: the formatted message, values interpolated.
     pub body: Option<String>,

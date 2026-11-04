@@ -1,6 +1,7 @@
 //! What a report record may carry (ADR-0003 §2.3, #508): structured fields only.
 //!
-//! A record is `timestamp`, `level`, `module`, `event` and the attributes this module names.
+//! A record is `timestamp`, `level`, `module` (when it passes [`module`]), `event` and the
+//! attributes this module names.
 //! Free text never reaches a report: the OTLP body (the formatted message) and every attribute
 //! not named here (`message`, `error`, `e`, `err`, `?Debug` values) are dropped, not scrubbed,
 //! because a pattern scrub of free text cannot be made safe (#482 found a new leak spelling in
@@ -20,7 +21,8 @@
 //!   (#509), such records show `event=log`, and no interpolated value reaches the report.
 use super::flatten::{Otlp, Scalar};
 use crank_core::{DeviceRole, KnownDevice};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
 
 /// One report record as flat key → string pairs, the JSON object squelch reads.
 pub type Flat = BTreeMap<String, String>;
@@ -194,6 +196,43 @@ pub const EVENTS: [&str; 40] = [
     "unknown FE-C page",
 ];
 
+/// The longest `module` kept, in bytes. crank's longest module path is under 40 bytes and a
+/// dependency's rarely passes 60; 128 keeps every real one and bounds what one field can carry.
+pub const MODULE_MAX: usize = 128;
+
+/// Library names of crank's dependencies that differ from their package name, which is all
+/// `Cargo.lock` records: `vigil-telemetry`'s lib is `vigil`.
+const LIB_NAMES: [&str; 1] = ["vigil"];
+
+/// The crate names of crank's build, from `Cargo.lock` (`-` written `_`, as in a module path),
+/// and [`LIB_NAMES`].
+static CRATES: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"))
+        .lines()
+        .filter_map(|line| line.strip_prefix("name = \"")?.strip_suffix('"'))
+        .map(|name| name.replace('-', "_"))
+        .chain(LIB_NAMES.map(String::from))
+        .collect()
+});
+
+/// Whether a scope name may be kept as `module`: a Rust module path (`[A-Za-z0-9_]+` segments
+/// joined by `::`) of at most [`MODULE_MAX`] bytes whose first segment is a crate of crank's build.
+/// A `tracing` target is `module_path!()` unless a call site sets one, but a record bridged from
+/// the `log` crate (`tracing-log`) carries a runtime `&str` target, so the shape alone is no
+/// guarantee: `TacxNeo` or `C47D4F12345B` is a valid path. The crate root is a closed vocabulary
+/// that cannot hold a device's or the machine's name. Anything else is dropped, never trimmed.
+#[must_use]
+pub fn module(target: &str) -> bool {
+    let segment =
+        |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    target.len() <= MODULE_MAX
+        && target.split("::").all(segment)
+        && target
+            .split("::")
+            .next()
+            .is_some_and(|root| CRATES.contains(root))
+}
+
 /// The keys a report record can have, as squelch's allowlist must name them: without squelch's
 /// scrubbed fields (`addr`, `address`), which it always reads, and whose value it masks once more
 /// as a host name (`<ble-addr>` renders as `<<host>>`).
@@ -213,7 +252,7 @@ pub fn record(record: Otlp, known: &[KnownDevice]) -> Flat {
     if let Some(level) = record.level {
         out.insert("level".into(), level.into());
     }
-    if let Some(module) = record.module {
+    if let Some(module) = record.module.filter(|m| module(m)) {
         out.insert("module".into(), module);
     }
     let named = |s: &Scalar| match s {
@@ -397,6 +436,40 @@ mod tests {
         assert_eq!(field("db_id", s("trainer:3F2504E0")), "<ble-id>");
         assert_eq!(field("path", s("hrm")), "<path>", "a path has no role");
         assert_eq!(field("dir", Scalar::Bool(true)), "<path>");
+    }
+
+    #[test]
+    fn module_is_kept_only_as_a_path_of_a_crate_of_the_build() {
+        for kept in ["crank_ble", "crank_core::links", "vigil", "tauri::app"] {
+            assert!(module(kept), "{kept}");
+        }
+        let long = format!("crank_ble::{}", "a".repeat(MODULE_MAX));
+        for dropped in [
+            "",
+            "Tacx Neo 55624",
+            "crank_ble C4:7D:4F:12:34:56",
+            "crank_ble::C4:7D:4F:12:34:56",
+            "rider@example.com",
+            "crank_ble::r\u{e9}seau",
+            "crank_ble::",
+            "::crank_ble",
+            "TacxNeo",
+            "C47D4F12345B",
+            "serial7788984",
+            &long,
+        ] {
+            assert!(!module(dropped), "{dropped:?}");
+        }
+        let with = |name: &str| {
+            let mut r = otlp(None, vec![]);
+            r.module = Some(name.into());
+            record(r, &[]).get("module").cloned()
+        };
+        assert_eq!(
+            with("crank_core::core").as_deref(),
+            Some("crank_core::core")
+        );
+        assert_eq!(with("Tacx Neo 55624"), None, "dropped, not scrubbed");
     }
 
     #[test]

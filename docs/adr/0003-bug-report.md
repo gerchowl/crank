@@ -84,13 +84,15 @@ never free-text log messages. The mapping below is the amended one: the body and
 attribute are dropped, not scrubbed (§2.3), and the history of the scrub that was tried instead is in §3.
 
 **Mapping** (`crank-desktop::report::flatten` reads, `report::allowlist` reduces; pure and unit-tested).
-The tail is selected **first**: lines are parsed from the end of `logs.jsonl`, then of the rotated
-`logs-<stamp>.jsonl` segments newest first, only until it is full, and only its records are processed.
+The tail is selected **first**: `report::diagnostics` parses the lines of one log segment from its end,
+only until the tail is full, and processes only those records. It reads one segment: walking on into the
+rotated `logs-<stamp>.jsonl` segments, newest first, when `logs.jsonl` holds fewer than 200 records is the
+job of the `report_preview` command (#446), which reads the files.
 
 | OTLP/JSON | Flat key | Rule |
 |---|---|---|
 | `resourceLogs[].resource.attributes` | — | **dropped**. They hold `host.name` (the machine name), `process.pid` and `service.instance.id`. Version and commit come from provenance (§2.6) |
-| `scopeLogs[].scope.name` | `module` | the crate or module path. Not `target`, which squelch masks as a host field |
+| `scopeLogs[].scope.name` | `module` | kept only when it is a module path of a crate of crank's build (§2.3), else dropped. Not `target`, which squelch masks as a host field |
 | `logRecords[].timeUnixNano` (else `observedTimeUnixNano`) | `timestamp` | decimal-string nanoseconds rendered as RFC 3339 UTC with milliseconds (`time` 0.3, `formatting`, already in `Cargo.lock`). `"0"`, missing or unparsable in both gives `unknown`, so the record is kept and visibly has no time |
 | `severityText` | `level` | when it is `TRACE`, `DEBUG`, `INFO`, `WARN` or `ERROR`. Otherwise use `severityNumber`: 1–4 `TRACE`, 5–8 `DEBUG`, 9–12 `INFO`, 13–16 `WARN`, 17–24 `ERROR`. Otherwise no `level`, and squelch's `INFO` default applies |
 | `body.stringValue` | — | **never included.** It only selects `event` when it is exactly a registered name (§2.3) |
@@ -135,8 +137,8 @@ keeps fewer records than it was given; the caller sends none either when `Core::
   `<serial>`; `address`, `addr`, `mac` → `<ble-addr>`; `id`, `peripheral_id`, `platform_id`, `device_id`,
   `db_id` (the store's `<kind>:<platform id>`) → `<ble-id>`; `path`, `dir`, `file` → `<path>`. A value
   that is **wholly** a known device's name, serial or platform id (whitespace folded, case ignored) gets
-  that device's role instead: `<trainer>` or `<strap>`. `report_preview` asks `Core::known_devices` (the
-  remembered pairings). Known-device matching never searches inside a value, and a device missing from
+  that device's role instead: `<trainer>` or `<strap>`. The `report_preview` command (#446) will pass
+  `Core::known_devices` (the remembered pairings). Known-device matching never searches inside a value, and a device missing from
   it costs only the role, never privacy.
 - **Event names** (`EVENTS`). `event` is an explicit `event` attribute when it is a registered name, else
   the body when it is exactly a registered name, else the literal `log`. The registry holds crank's
@@ -146,14 +148,21 @@ keeps fewer records than it was given; the caller sends none either when `Core::
   `event` value could be anything. **Triage cost:** until call sites log typed fields and an `event`
   (#509), records of interpolated messages and of other crates show `event=log`: triage sees module,
   level, time and the typed fields, never the interpolated values.
-- **`module`** is the scope name, the `tracing` target: a module path fixed at compile time.
+- **`module`** is the scope name, the `tracing` target. It is not always fixed at compile time: a call site
+  can set a target, and a record bridged from the `log` crate (`tracing-log` is in crank-desktop's tree)
+  carries a runtime `&str` target. So `module` is typed like every other kept field
+  (`report::allowlist::module`): `[A-Za-z0-9_]+` segments joined by `::`, at most 128 bytes (crank's
+  longest module path is under 40, a dependency's rarely over 60), and a first segment that is a crate of
+  crank's build (the package names of `Cargo.lock`, `-` as `_`, plus lib names that differ: `vigil`). The
+  shape alone is no guarantee, since `TacxNeo` or `C47D4F12345B` is a valid path; the crate root is a closed
+  vocabulary. Anything else is **dropped**, not scrubbed or trimmed (#512 review).
 - **Pinning test** (`crank-desktop/tests/report_privacy.rs`). Its fixture `logs.jsonl` is built from vigil
   output of crank's logging pipeline and hand-salted with device names, serials, BLE addresses,
   CoreBluetooth UUIDs, a home path and `host.name`. The test also salts every leak spelling that #482's
   review rounds found (URL-encoded, byte-array and mixed-separator addresses, UUIDs next to `_`, serial-label
   variants, decimal and byte forms of serials, NFKC and zero-width variants of known names), one at a
-  time, into the body, `error`, `e`, `err`, `message`, `event`, `severityText` and every field a record can
-  keep, as a string and as an integer. It asserts that no run of four or more letters or digits of any
+  time, into the body, `error`, `e`, `err`, `message`, `event`, `severityText`, the scope name and every
+  field a record can keep, as a string and as an integer. It asserts that no run of four or more letters or digits of any
   spelling reaches `Report::preview()`, and that what a triager needs survives: module, level, event names,
   `page`, `watts`, `rpm`, the role placeholders and a FE-C GATT UUID in `characteristic`.
 
@@ -251,6 +260,9 @@ can rely on it. The destination is set explicitly as `gerchowl/crank`, not taken
 - The privacy of `event` and of the typed fields rests on their registries: a name added to `EVENTS` or
   a word added to a vocabulary must be a constant, never a value from a device or the machine. Review of
   `report/allowlist.rs` is the guard.
+- A runtime target that starts with a real crate name (`crank_ble::<name>`) keeps its later segments when they
+  are path-shaped; only a target built from a value at run time can do that, and crank's own are
+  `module_path!()`.
 - A number in an integer field is kept as it is. A call site that logs a serial under a field such as
   `page` would leak it; serials belong under the identifier keys.
 - The 200-record tail may miss the cause of a long-past failure. A user can attach a longer log

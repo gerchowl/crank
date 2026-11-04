@@ -112,7 +112,8 @@ const LEAKS: &[&str] = &[
     // Unknown devices' names.
     "KICKR CORE 1A2B",
     "Wahoo TICKR 77AB",
-    // The machine.
+    // The machine, and the #512 falsifier's scope name.
+    "Tacx Neo 55624 C4:7D:4F:12:34:56 rider@example.com",
     "riders-mbp.local",
     "/home/rider/captures/trainer.fecap",
 ];
@@ -130,7 +131,8 @@ fn needles(leak: &str) -> Vec<String> {
 }
 
 /// One OTLP line with `value` in the body, in the free-text fields, in `event`, in every field a
-/// record can keep (as a string, and as an integer where it is one), and in `severityText`.
+/// record can keep (as a string, and as an integer where it is one), in `severityText`, and as
+/// the scope name, which becomes `module` (a `log`-bridge target is a runtime string).
 fn salted(value: &str) -> String {
     let attr =
         |key: &str, value: serde_json::Value| serde_json::json!({"key": key, "value": value});
@@ -160,8 +162,10 @@ fn salted(value: &str) -> String {
             records.push(record("ride released", vec![attr(key, int)]));
         }
     }
-    serde_json::json!({"resourceLogs": [{"scopeLogs": [{"scope": {"name": "crank_ble"},
-        "logRecords": records}]}]})
+    let in_scope = vec![record("ride released", vec![])];
+    serde_json::json!({"resourceLogs": [{"scopeLogs": [
+        {"scope": {"name": "crank_ble"}, "logRecords": records},
+        {"scope": {"name": value}, "logRecords": in_scope}]}]})
     .to_string()
 }
 
