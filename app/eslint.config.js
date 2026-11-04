@@ -76,6 +76,11 @@ export default ts.config(
     },
   },
   {
+    // The design harness (#457): the spec and config run in Node; the audit and the fixture run in the page.
+    files: ["e2e/design/**/*.{js,ts,tsx}", "playwright.config.ts"],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
+  },
+  {
     files: ["src/**/*.{ts,tsx}"],
     languageOptions: { globals: globals.browser },
     plugins: { "react-hooks": hooks },
