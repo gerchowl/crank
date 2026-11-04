@@ -127,7 +127,21 @@ left to right, a later column may start higher, 4 px tolerance; Shift+Tab not th
 not onto `#main`, or the next Tab not `#main`'s first control) and `focus.trap` (focus lost to `body` other than once at
 the document's edge, a stop that is no control, a cycle that never closes). Every screen passes all three today, so none
 is in the baseline and a first violation fails; each failure prints the offending stops (`<selector>: <why>`, or
-`<from> -> <to>: against reading order`). Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
+`<from> -> <to>: against reading order`). **Visual baselines (#459):** on Linux each fixture × project is also compared
+with its committed PNG, `app/e2e/design/screenshots/linux/<project>/<fixture>.png` (`toHaveScreenshot` after `settled()`,
+Playwright's default per-pixel threshold and no `maxDiffPixels`: a missing PNG or one pixel past the threshold fails,
+`updateSnapshots: "none"`). Determinism: no animation, transition or caret (`toHaveScreenshot`'s `animations: "disabled"`,
+`caret: "hide"`, plus the fixture's CSS reset), only the bundled fonts (the sandbox has none other), `Date` frozen at
+2026-11-02T08:00Z (`page.clock.setFixedTime`; timers still run), `Math.random` seeded (mulberry32; no fixture draws from
+it today, every fixture is static data), UTC and en-US. The `app-e2e-design` check on x86_64-linux runs them; the 20× loop
+of that check (#459) had zero diffs. macOS skips them (another font rasteriser and compositor draw other pixels) and
+prints `design skipped (N): <reason>` after the run. `just design update` renders them afresh from the flake's
+x86_64-linux `design-screenshots` package (it needs an x86_64-linux host or remote builder; never render them on macOS)
+into an empty directory, so a renamed fixture leaves no PNG behind; a PNG that is no Linux fixture × project fails.
+**A changed baseline PNG needs the reviewer's sign-off:** commit PNGs only with the change that moved them, say why in
+the PR, and the reviewer looks at each changed image (the check's failure prints the pixel count; Playwright's
+`e2e-out/design` holds the expected/actual/diff images of a local Linux run). The PNGs are about 3.2 MB for 16 fixtures
+× 4 projects. Screenshots of the real app will go to `docs/design/screens/` as ADR-0001 §8 specifies.
 
 Citing Rust from app/ (comments, docs, test backends): always `<name>.rs <symbol>` with an optional ` (~N)` line hint directly after
 the symbol, e.g. ``core.rs `Core::end_ride` (~1742)``; the symbol is an identifier path (`A::b`), in backticks or not. Never a bare

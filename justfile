@@ -132,7 +132,9 @@ quit-test:
     cargo run -p crank-desktop --example quit_check
 
 # The design harness (#457, DESIGN §18.7): every fixture × 1024/1440 × dark/light, layout audit + axe, against
-# app/e2e/design/baseline.json. `just design update` rewrites the baseline (review the diff before committing).
+# app/e2e/design/baseline.json, and on Linux the visual baselines (#459). `just design update` rewrites the baseline,
+# then the PNGs of app/e2e/design/screenshots/linux/ from the x86_64-linux `design-screenshots` package (it needs an
+# x86_64-linux host or remote builder; the PNGs are never rendered on macOS). Review the diff before committing.
 design mode="check":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -142,6 +144,12 @@ design mode="check":
       *) echo "just design: mode is check or update, not '{{mode}}'" >&2; exit 2 ;;
     esac
     CRANK_DESIGN_BASELINE=$baseline pnpm -C app exec playwright test
+    [ "{{mode}}" = update ] || exit 0
+    shots=$(nix build --no-link --print-out-paths .#packages.x86_64-linux.design-screenshots)
+    rm -rf app/e2e/design/screenshots/linux
+    mkdir -p app/e2e/design/screenshots
+    cp -r "$shots" app/e2e/design/screenshots/linux
+    chmod -R u+w app/e2e/design/screenshots/linux
 
 screens:
     @echo 'BLOCKED: screenshot matrix awaits the UI waves (#229)'; exit 1
