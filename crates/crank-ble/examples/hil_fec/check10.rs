@@ -8,7 +8,7 @@
 //! of another peripheral) and `# answer-<key> <us> <ASCII>` (the operator's typed answers).
 use crate::{
     cps::max_gap,
-    frames::{Note, Record},
+    frames::{Note, Record, stamp, stamps},
     partb::{SEC, round1, samples, secs},
 };
 use serde_json::{Value, json};
@@ -67,15 +67,6 @@ pub fn answer_tag(key: &str) -> String {
     format!("answer-{key}")
 }
 
-/// The last event of `tag` with payload `code`.
-fn event(notes: &[Note], tag: &str, code: u8) -> Option<u64> {
-    notes
-        .iter()
-        .rev()
-        .find(|n| n.tag == tag && n.bytes == [code])
-        .map(|n| n.at_us)
-}
-
 /// The recorded answer to `q`, whatever it is.
 fn recorded(notes: &[Note], q: &Question) -> Option<String> {
     let tag = answer_tag(q.key);
@@ -87,7 +78,7 @@ fn recorded(notes: &[Note], q: &Question) -> Option<String> {
 }
 
 /// The operator's answer to `q`: `Ok` when it is one of the accepted answers.
-fn answer(notes: &[Note], q: &Question) -> Result<String, String> {
+pub(crate) fn answer(notes: &[Note], q: &Question) -> Result<String, String> {
     let text = recorded(notes, q).ok_or_else(|| "no answer".to_string())?;
     if q.options.contains(&text.as_str()) {
         Ok(text)
@@ -123,6 +114,7 @@ fn second_central(notes: &[Note]) -> String {
 
 /// How the parallel scan covered the window.
 enum Scan {
+    Contradictory(String),
     NotStarted,
     Ended(u64),
     Late(u64),
@@ -135,16 +127,20 @@ impl Scan {
     /// The scan's coverage of the window `from..to`: whole only when both stamps are present, it
     /// opened at or before `from`, closed at or after `to`, and did not end by itself.
     fn of(notes: &[Note], from: u64, to: u64) -> Self {
-        let Some(opened) = event(notes, SCAN, OPEN) else {
+        let scan = match stamps(notes, SCAN, &[OPEN, ENDED, CLOSE]) {
+            Ok(s) => s,
+            Err(why) => return Self::Contradictory(why),
+        };
+        let Some(opened) = stamp(&scan, OPEN) else {
             return Self::NotStarted;
         };
-        if let Some(at) = event(notes, SCAN, ENDED) {
+        if let Some(at) = stamp(&scan, ENDED) {
             return Self::Ended(at);
         }
         if opened > from {
             return Self::Late(opened);
         }
-        match event(notes, SCAN, CLOSE) {
+        match stamp(&scan, CLOSE) {
             None => Self::Unclosed,
             Some(at) if at < to => Self::Stopped(at),
             Some(_) => Self::Whole,
@@ -153,6 +149,7 @@ impl Scan {
 
     fn text(&self) -> String {
         match self {
+            Self::Contradictory(why) => format!("is unknown: {why}"),
             Self::NotStarted => "was not started".into(),
             Self::Ended(at) => format!(
                 "ended by itself at {} s (it failed to start or the adapter stopped it)",
@@ -212,14 +209,23 @@ fn advertising(
 /// The result of check 10 from the capture's records and notes.
 pub fn check10(records: &[Record], notes: &[Note]) -> Value {
     let method = "window = the check10 open/close events; advertising = the parallel scan's adverts of this trainer inside the window (largest gap with the window's edges) and the operator's 'listed' answer, 'not seen' only when both agree; second central = the 'connect' answer, asked only when the phone listed the NEO; link held = no page-25 gap > 2 s inside the window";
-    let (Some(from), Some(to)) = (event(notes, WINDOW, OPEN), event(notes, WINDOW, CLOSE)) else {
-        return json!({
-            "method": method,
-            "window_s": Value::Null,
-            "advertising": Value::Null,
-            "second_central": Value::Null,
-            "verdict": "unknown: the capture has no complete check 10 window",
-        });
+    let window = stamps(notes, WINDOW, &[OPEN, CLOSE]).and_then(|w| {
+        match (stamp(&w, OPEN), stamp(&w, CLOSE)) {
+            (Some(from), Some(to)) => Ok((from, to)),
+            _ => Err("the capture has no complete check 10 window".into()),
+        }
+    });
+    let (from, to) = match window {
+        Ok(w) => w,
+        Err(why) => {
+            return json!({
+                "method": method,
+                "window_s": Value::Null,
+                "advertising": Value::Null,
+                "second_central": Value::Null,
+                "verdict": format!("unknown: {why}"),
+            });
+        }
     };
     let inside = |at: u64| at >= from && at < to;
     let adverts = |mine: u8| -> Vec<u64> {
@@ -519,6 +525,57 @@ mod tests {
                 "{open} {close}"
             );
         }
+    }
+
+    /// Duplicate or out-of-order stamps are a contradiction, whichever comes last in the file.
+    #[test]
+    fn duplicate_or_out_of_order_stamps_are_contradictory() {
+        let not_seen = note(&answer_tag("listed"), 20, b"not-seen");
+        let others = (11..15).map(|s| note(ADV, s, &[0]));
+        let with = |scan: &[Note]| {
+            let mut n = vec![note(WINDOW, 10, &[OPEN]), not_seen.clone()];
+            n.extend(others.clone());
+            n.extend_from_slice(scan);
+            n.push(note(WINDOW, 70, &[CLOSE]));
+            check10(&page25(80), &n)["advertising"].clone()
+        };
+        for scan in [
+            vec![
+                note(SCAN, 5, &[OPEN]),
+                note(SCAN, 30, &[CLOSE]),
+                note(SCAN, 75, &[CLOSE]),
+            ],
+            vec![note(SCAN, 75, &[CLOSE]), note(SCAN, 5, &[OPEN])],
+            vec![
+                note(SCAN, 5, &[OPEN]),
+                note(SCAN, 5, &[OPEN]),
+                note(SCAN, 75, &[CLOSE]),
+            ],
+            vec![note(SCAN, 5, &[OPEN]), note(SCAN, 4, &[CLOSE])],
+        ] {
+            let a = with(&scan);
+            assert!(
+                a.as_str().is_some_and(|a| a.starts_with(
+                    "unknown: the phone did not list it, but the scan is unknown: contradictory scan stamps"
+                )),
+                "{scan:?}: {a}"
+            );
+        }
+        let v = check10(
+            &page25(80),
+            &[
+                note(WINDOW, 10, &[OPEN]),
+                note(WINDOW, 70, &[CLOSE]),
+                note(WINDOW, 72, &[CLOSE]),
+            ],
+        );
+        assert!(
+            v["verdict"]
+                .as_str()
+                .is_some_and(|x| x.starts_with("unknown: contradictory check10 stamps")),
+            "{v}"
+        );
+        assert_eq!(v["advertising"], Value::Null);
     }
 
     #[test]
