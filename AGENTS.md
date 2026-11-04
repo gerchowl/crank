@@ -18,6 +18,8 @@ Pre-commit (#456): run `prek install --allow-missing-config` once per clone (pre
 shared `.git/hooks`, so every worktree and branch runs it; the flag lets a branch without `prek.toml` still commit. `prek.toml` runs ESLint, stylelint and
 Prettier on staged app files, `tsc --noEmit`, and `cargo fmt --check` on staged Rust, all offline from the devShell
 toolchain. Hooks can be skipped, so CI stays the gate; `prek run --all-files` runs them on everything.
+The generated hook calls prek by its `/nix/store` path (falling back to PATH), so commit from the devShell, or re-run
+`prek install --allow-missing-config` after a prek bump: after a GC a commit outside `nix develop` fails with "prek: not found".
 Inner loop (#371): `just test-changed [base=origin/dev]` runs nextest and doctests only for the workspace crates that
 `git diff base...HEAD` (plus the working tree and untracked files) touches and their reverse dependencies
 (`scripts/test-changed.py`, from `cargo metadata`; its mapping is tested by `scripts/test-test-changed.py`, the
@@ -94,8 +96,24 @@ hardened runtime or App Sandbox (library validation rejects the unsigned nix-sto
 distribution signing is #47). The bundle must not depend on the Nix store at runtime (#413): the `crank-app` derivation points the Darwin stdenv's libiconv load command at the system `/usr/lib/libiconv.2.dylib` (`install_name_tool`, then an ad-hoc re-sign, all before `just bundle` signs), and the `bundle-no-nix-store` flake check (aarch64-darwin, `scripts/check-bundle-no-nix-store.sh <crank.app>`, also runnable by hand on an installed app) fails if `otool` shows `/nix/store` in a load command or rpath of any Mach-O in the bundle. A new native dependency must be linked from the system or bundled under Contents/Frameworks, never left on a store path. `just e2e` (`scripts/e2e.sh`, ADR-0001 §8.3.1) builds `.#crank-desktop-e2e` and runs the WebdriverIO specs of
 `app/e2e/` (in sim mode, scratch data dir per launch) in the GUI session through Alacritty IPC (`CRANK_E2E_DIRECT=1` from a GUI terminal); output goes to the
 gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and compares screenshots across them; on Linux it skips with a message.
-`just screens` awaits the UI waves (#229) and fails explicitly until then. Playwright browsers are excluded from the devShell until #35
-provides the harness. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
+`just screens` awaits the UI waves (#229) and fails explicitly until then.
+**Design harness (#457, DESIGN §18.7):** `just design` (= `pnpm -C app exec playwright test`, in the devShell) opens every
+fixture of `app/e2e/design/scenarios.ts` at 1024×768 and 1440×900 in both themes, injects `app/e2e/design/layout-audit.js`
+(reads the `theme.css` scales; controls are exactly `--control-h` except the rail's `--control-h-m`) and runs
+`@axe-core/playwright` (WCAG 2.2 A/AA). `app/e2e/design/index.html?scenario=<name>` is its own Vite root
+(`app/e2e/design/vite.config.ts`), never part of the app build; it mounts the real `AppRoot` on the mockIPC backends
+(`rideBackend.ts`, `devicesBackend.ts`, `workoutsBackend.ts`, `historyBackend.ts`; a new screen state is a scenario entry
+plus its setup in `fixture.tsx`). Every rule starts as a warning: `app/e2e/design/baseline.json` holds the per-fixture,
+per-project count of each audit and axe rule, a count above it fails, a rule absent from it fails on its first violation,
+and #460 ratchets the counts down. Each rule still above zero, and each count now under its baseline ("lower it"), is
+printed after the run as a `design warning:` line (`app/e2e/design/warnings.ts`; the list reporter drops annotations).
+A baseline key that is no fixture × project of the run fails. `just design update` rewrites the baseline from the current
+counts and prunes such keys (one worker); any other mode than `check`/`update` is refused;
+commit it only with the change that moved a count, and say why in the PR. The browser is Chromium from nixpkgs
+(`playwright-driver.browsers`, the devShell's `PLAYWRIGHT_BROWSERS_PATH`); `@playwright/test` is pinned to the same version
+and the flake asserts it. Chromium stands in for the app's WKWebView: the WebdriverIO specs (`just e2e`) still test the
+real app. The `app-e2e-design` flake check runs the harness on x86_64-linux only. The audit reads one fixture at a time; rule 10's
+cross-state comparison of the ride's region boxes is #498. Screenshots will go to `docs/design/screens/` as ADR-0001 §8 specifies.
 
 Citing Rust from app/ (comments, docs, test backends): always `<name>.rs <symbol>` with an optional ` (~N)` line hint directly after
 the symbol, e.g. ``core.rs `Core::end_ride` (~1742)``; the symbol is an identifier path (`A::b`), in backticks or not. Never a bare

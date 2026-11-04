@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
     "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p e2e/design",
     "lint": "eslint . && stylelint \"src/**/*.css\" && prettier --check src e2e index.html *.json *.ts *.js *.mjs",
     "fmt": "prettier --write src e2e index.html *.json *.ts *.js *.mjs",
     "test": "vitest run"
@@ -18,11 +18,14 @@
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
     "@eslint/js": "^9.0.0",
+    "@playwright/test": "1.63.0",
     "@tauri-apps/cli": "^2.10.0",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.8",
+    "@types/node": "26.6.5",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.0",
