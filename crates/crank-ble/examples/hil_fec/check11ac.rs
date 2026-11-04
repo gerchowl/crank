@@ -620,6 +620,37 @@ mod tests {
                 "{why}: {v}"
             );
         }
+        // The first write must be the release; the target in force must be ERG 100 W; nothing is
+        // written inside a judged window.
+        let mut first = r.clone();
+        first.insert(0, tx(10_400, &ERG));
+        assert!(
+            verdict(&check11c(&first, &n))
+                .starts_with("unknown: the first write was Erg(100.0) at 10.4 s, not the release")
+        );
+        let mut other = r.clone();
+        other.push(tx(26_000, &ControlPage::TargetPower { watts: 80.0 }));
+        assert!(
+            verdict(&check11c(&other, &n)).contains(
+                "at 60 rpm unknown: the target in force was Some(Erg(80.0)), not ERG 100 W"
+            )
+        );
+        let mut inside = r.clone();
+        inside.push(tx(40_000, &ControlPage::TargetPower { watts: 120.0 }));
+        assert!(
+            verdict(&check11c(&inside, &n))
+                .contains("at 60 rpm unknown: Erg(120.0) written at 40 s, inside the window")
+        );
+    }
+
+    #[test]
+    fn check11c_the_bounds_edges_with_the_stamping_slack_are_valid() {
+        let (r, n) = ride11c((60, 100, 0));
+        let with = |i: usize, x: Note| {
+            let mut m = n.clone();
+            m[i] = x;
+            m
+        };
         // The bounds' edges, with the stamping slack, are valid.
         // (With the advert at 60.5 s, the frames are those after it.)
         let late: Vec<Record> = r
@@ -645,26 +676,5 @@ mod tests {
                 "{notes:?}"
             );
         }
-        // The first write must be the release; the target in force must be ERG 100 W; nothing is
-        // written inside a judged window.
-        let mut first = r.clone();
-        first.insert(0, tx(10_400, &ERG));
-        assert!(
-            verdict(&check11c(&first, &n))
-                .starts_with("unknown: the first write was Erg(100.0) at 10.4 s, not the release")
-        );
-        let mut other = r.clone();
-        other.push(tx(26_000, &ControlPage::TargetPower { watts: 80.0 }));
-        assert!(
-            verdict(&check11c(&other, &n)).contains(
-                "at 60 rpm unknown: the target in force was Some(Erg(80.0)), not ERG 100 W"
-            )
-        );
-        let mut inside = r.clone();
-        inside.push(tx(40_000, &ControlPage::TargetPower { watts: 120.0 }));
-        assert!(
-            verdict(&check11c(&inside, &n))
-                .contains("at 60 rpm unknown: Erg(120.0) written at 40 s, inside the window")
-        );
     }
 }
