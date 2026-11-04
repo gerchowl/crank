@@ -187,6 +187,16 @@ const frame = () => new Promise((r) => requestAnimationFrame(r));
   },
 };
 
+// Determinism for the visual baselines (#459): no motion at all (reduced motion already stops the one fade, this
+// stops any later one) and no caret, so a screenshot never catches a frame mid-change.
+const still = document.createElement("style");
+still.textContent = `*, *::before, *::after {
+  animation: none !important;
+  transition: none !important;
+  caret-color: transparent !important;
+}`;
+document.head.append(still);
+
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing app root");
 createRoot(root).render(

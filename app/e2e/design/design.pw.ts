@@ -1,7 +1,8 @@
 // The design harness (#457): opens each fixture (scenarios.ts), settles it, and counts the layout audit's, axe's and the
 // focus walk's (focus.ts, #458) violations per rule against the committed baseline (baseline.ts). DESIGN §18.7 names
-// the rules.
-import { join } from "node:path";
+// the rules. On Linux it also compares each settled fixture with its committed screenshot (#459).
+import { readdirSync } from "node:fs";
+import { join, relative } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
@@ -35,7 +36,22 @@ declare global {
   }
 }
 
+/** The fixtures' wall clock (`Date`): a ride date or a "today" renders the same on every run. Timers still run. */
+const FROZEN = new Date("2026-11-02T08:00:00Z");
+
 async function open(page: Page, s: Scenario) {
+  await page.clock.setFixedTime(FROZEN);
+  // No fixture draws from `Math.random` today (each is static data, scenarios.ts); one that does gets the same
+  // sequence every run (mulberry32, fixed seed).
+  await page.addInitScript(() => {
+    let seed = 459;
+    Math.random = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  });
   await page.goto(`/?scenario=${s.name}`);
   for (const name of s.clicks ?? [])
     await page.getByRole("button", { name }).first().click();
@@ -79,6 +95,64 @@ for (const s of SCENARIOS)
     );
     expect(detail, `${key} regressed`).toEqual([]);
   });
+
+// Visual baselines (#459): each fixture × project against its committed PNG (playwright.config.ts names the path and
+// the comparison). Linux only: the PNGs are rendered by the `app-e2e-design` check's Chromium on x86_64-linux, and
+// another platform's font rasteriser and compositor draw different pixels, so a comparison there could only fail.
+const SCREENSHOTS = join(import.meta.dirname, "screenshots");
+const LINUX_ONLY =
+  "visual baselines run on Linux only (the app-e2e-design check); this platform renders other pixels";
+const linux = process.platform === "linux";
+/** `--update-snapshots=all`: the run rewrites every PNG (`just design update`, via the flake's `design-screenshots`). */
+const rewriting = () => test.info().config.updateSnapshots === "all";
+
+for (const s of SCENARIOS)
+  test(`${s.name} screenshot`, async ({ page }) => {
+    test.skip(!linux, LINUX_ONLY);
+    test.skip(
+      updating,
+      "the counts' update run; the PNGs come from design-screenshots",
+    );
+    await open(page, s);
+    await expect(page).toHaveScreenshot(`${s.name}.png`);
+  });
+
+// The screenshot gate catches what it is for: a 1 px border on the rail differs from the committed PNG.
+test("an injected 1 px rail border fails the screenshot", async ({ page }) => {
+  test.skip(!linux, LINUX_ONLY);
+  test.skip(updating || rewriting(), "compares against the committed PNG");
+  const s = SCENARIOS[0];
+  await open(page, s);
+  await page.evaluate(() => {
+    const rail = document.querySelector<HTMLElement>(".rail");
+    if (!rail) throw new Error("no .rail on the first fixture");
+    rail.style.border = "1px solid red";
+  });
+  await expect(
+    expect(page).toHaveScreenshot(`${s.name}.png`, { timeout: 2000 }),
+  ).rejects.toThrow(/pixels .* are different/);
+});
+
+// Every committed PNG is a Linux fixture × project of this run, on every platform: a renamed or deleted fixture
+// leaves none behind (the update path renders into an empty directory). A missing one fails its own screenshot test.
+test("the screenshots have no orphans", () => {
+  const expected = new Set(
+    test
+      .info()
+      .config.projects.flatMap((p) =>
+        SCENARIOS.map((s) => join("linux", p.name, `${s.name}.png`)),
+      ),
+  );
+  let found: string[] = [];
+  try {
+    found = readdirSync(SCREENSHOTS, { recursive: true, withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => relative(SCREENSHOTS, join(e.parentPath, e.name)));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  expect(found.filter((f) => !expected.has(f))).toEqual([]);
+});
 
 // The gate catches what it is for. No screen passes `button.height` today (rail 56 px, ride 65 px, section nav 40 px),
 // so a 48 px button shows two ways: over the baseline of a rule that is still a warning (`button.height`), and, with
@@ -241,4 +315,17 @@ test("an improved count prints a warning line", () => {
     "design warning: [1024x768-dark] ride-paused: axe.color-contrast: 0 < baseline 1: lower it",
     "design warning: [1024x768-dark] ride-paused: button.height: 2 < baseline 3: lower it",
   ]);
+});
+
+// A platform that skips the visual baselines says so: one line per reason, with its count.
+test("skipped tests print their reason", () => {
+  const printed: string[] = [];
+  const reporter = new WarningsReporter({ print: (l) => printed.push(l) });
+  const t = { titlePath: () => ["", "1024x768-dark", "design.pw.ts", "today"] };
+  const skip = { type: "skip", description: LINUX_ONLY };
+  reporter.onTestEnd(t, { annotations: [skip] });
+  reporter.onTestEnd(t, { annotations: [skip] });
+  reporter.onTestEnd(t, { annotations: [{ type: "skip" }] });
+  reporter.onEnd();
+  expect(printed).toEqual([`design skipped (2): ${LINUX_ONLY}`]);
 });
