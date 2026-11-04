@@ -161,7 +161,12 @@ hil_fec check11a --out "$OUT"
    and Enter, within 3 min. Keep riding at about 90 rpm for 30 s more; the run releases the trainer and prints
    the row.
 4. Leave the trainer **unplugged** for check 11b. If the link drops after the unplug, that is the finding: the
-   run stops, still answer the question if it is asked, and say so to the architect.
+   run stops, still answer the question if it is asked, and say so to the architect. If the trainer only goes
+   silent, the cue *the trainer went silent* comes; keep pedalling easily while the harness waits up to 32 s for
+   the link to drop.
+5. Read the last line. *done: trainer released* means the release was confirmed. *done, but the release was NOT
+   confirmed* (expected after a drop: the link is down) means the trainer may still hold 100 W: stop pedalling.
+   It is unplugged, so it shuts down once you stop; wait until its lights go out before the next run.
 
 ### Check 11b: the unplugged stop (pedalling)
 

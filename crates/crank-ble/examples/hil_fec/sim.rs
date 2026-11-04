@@ -429,7 +429,9 @@ impl Sim {
     fn step(&self, st: &mut State) {
         let now = st.at;
         let dt = STEP_US as f64 / 1e6;
-        let silent = self.plan.silent_from_us.is_some_and(|x| now >= x);
+        // A dropped link delivers nothing more, whatever the trainer does.
+        let silent = self.plan.silent_from_us.is_some_and(|x| now >= x)
+            || self.plan.drop_at_us.is_some_and(|x| now >= x);
         if self.plan.stop_at_us.is_some_and(|x| now >= x) {
             st.goal = 0.0;
         } else if let Some(goal) = st
@@ -702,8 +704,8 @@ impl Operator for Sim {
             Cue::Descend if !matches!(self.plan.descent, Pattern::Hold) => {
                 s.descend_from = Some(at_us);
             }
-            Cue::Descend | Cue::Phone | Cue::Unplug => {}
-            Cue::Stop => (s.goal, s.descend_from) = (0.0, None),
+            Cue::Descend | Cue::Phone | Cue::Unplug | Cue::Silent => {}
+            Cue::Stop | Cue::StopUnconfirmed => (s.goal, s.descend_from) = (0.0, None),
             Cue::LightsOut => (s.goal, s.stopping) = (0.0, true),
             Cue::Wake => {
                 (s.goal, s.stopping) = (60.0, false);

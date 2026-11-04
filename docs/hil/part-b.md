@@ -82,7 +82,8 @@ procedure gives a result: for any other outcome, or a capture without that line,
 `no result: procedure …` and `held`/`released`/`verdict` are null. A capture with a **malformed control
 write** (a tx page 48–51 or 55 with a field at its "invalid" value, or a bad checksum) gives no result
 either, whatever its outcome: the harness encodes only valid fields, so that write is not its procedure's.
-The row reads `no result: malformed control write (page N at t s)` and `invalid` names it. `partb::controls`
+The row reads `no result: malformed control write (page N at t s)` and `invalid` names it. A tx record that is
+not a 13-byte ANT frame at all counts the same (`Control::NotAFrame`, `not an ANT frame`). `partb::controls`
 lists such a write as `Control::Malformed(page)`: it is never the release, and it ends an ERG hold (checks 5,
 6 and 9).
 
@@ -424,12 +425,29 @@ from the cue to the release.
 - **A drop is the finding**, not a failure: it is stamped `# link <us> 01`, the question is asked (unguarded,
   the link is down) if it is still unanswered, and the run completes. Its release then fails with
   `not connected`, as in 11b; the trainer, if it is still powered, holds 100 W until the rider stops.
-- Page 25 silent for 2 s with the link up aborts: `no page 25 for 2 s after the unplug cue, with the link still
-  up`.
+- Page 25 silent for 2 s is the guard's stop, but a powered-off trainer goes silent before its link is reported
+  down: the link drops only when the BLE supervision timeout runs out, at most **32 s** (the Core Specification's
+  bound on `connSupervisionTimeout`, Vol 6 Part B §4.5.2; Apple's guideline ranges have differed between
+  releases). So the harness sends the release at once (bounded, as every release), cues *the trainer went
+  silent* and waits up to 32 s for the drop: a drop is the
+  finding as above; no drop aborts with `no page 25 after the unplug cue, and the link did not drop within 32 s
+  (the BLE supervision-timeout maximum)`.
+- The final cue says whether the release was confirmed: `done: trainer released` or `done, but the release was
+  NOT confirmed: the trainer may still hold its target …` (every check; after an 11a or 11b drop it is the
+  expected one).
 
-**Validation** (`check11ac::check11a`, live and offline): the unplug cue once; at most one `link 01`, not before
-the cue; the answer after the cue; no control write (any page 48–51 or 55) from 15 s before the cue to the
-release; else `unknown: <the breach>`. **Unplugged** is a decision table: `unplugged` → a result; `cannot` →
+**Validation** (`check11ac::check11a`, live and offline), else `unknown: <the breach>`:
+
+- the unplug cue once; at most one `link 01`, not before the cue, and no trainer frame after it (a drop is only
+  a drop when the frames end there; tx frames are recorded even when the write fails, so only rx counts);
+- the answer after the cue;
+- no control write but a release (any other page 48–51 or 55, or any tx record that is no ANT frame) from 15 s
+  before the cue to the final release, and ERG 100 W in force (the last write before that); the after window
+  ends at the first release after the cue (the silence guard's comes early);
+- evidence, from check 5's floor of 2 page-25 samples a second: at least 30 samples in the 15 s before the cue;
+  without a drop, the answer before the release and at least 40 samples over at least 20 s after it (the
+  procedure rides 30 s after the answer, 25 s once the first 5 s are left out; 5 s of slack for the answer's and
+  the release's timing). **Unplugged** is a decision table: `unplugged` → a result; `cannot` →
 `unknown: the operator could not unplug the trainer`; missing or unrecognised → `unknown` with the reason.
 
 **Result:** the link (`no link drop in X s unplugged` or `link dropped X s after the unplug cue`) and two
