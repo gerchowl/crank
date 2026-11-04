@@ -231,6 +231,40 @@ pub fn parse_notes(text: &str) -> Vec<Note> {
         .collect()
 }
 
+/// The one-byte event stamps tagged `tag`, in file order, as `(code, at_us)`. Each code may
+/// appear at most once and only in the order of `order`, and the times may not go back; a
+/// duplicate, out-of-order or unknown stamp is an `Err` naming it, which the caller reports as
+/// `unknown: contradictory`, never as a result.
+pub fn stamps(notes: &[Note], tag: &str, order: &[u8]) -> Result<Vec<(u8, u64)>, String> {
+    let rank = |code: u8| order.iter().position(|c| *c == code);
+    let mut out: Vec<(u8, u64)> = Vec::new();
+    for n in notes.iter().filter(|n| n.tag == tag) {
+        let contradiction = || {
+            format!(
+                "contradictory {tag} stamps: {:02X?} at {} us after {:02X?}",
+                n.bytes, n.at_us, out
+            )
+        };
+        let [code] = n.bytes[..] else {
+            return Err(contradiction());
+        };
+        let fits = rank(code).is_some_and(|r| {
+            out.last()
+                .is_none_or(|&(p, at)| rank(p).is_some_and(|q| r > q) && n.at_us >= at)
+        });
+        if !fits {
+            return Err(contradiction());
+        }
+        out.push((code, n.at_us));
+    }
+    Ok(out)
+}
+
+/// When `code` was stamped, if it was.
+pub fn stamp(stamps: &[(u8, u64)], code: u8) -> Option<u64> {
+    stamps.iter().find(|s| s.0 == code).map(|s| s.1)
+}
+
 /// Per-page arrival statistics over rx records (idle notification pattern).
 pub fn page_rates(records: &[Record]) -> Value {
     let mut by_page: BTreeMap<u8, Vec<u64>> = BTreeMap::new();
@@ -747,6 +781,34 @@ mod tests {
             ]
         );
         assert_eq!(parse_capture(text).len(), 1, "frames read as before");
+    }
+
+    #[test]
+    fn stamps_come_once_each_in_order_and_never_back_in_time() {
+        let n = |tag: &str, at_us: u64, bytes: &[u8]| Note {
+            tag: tag.into(),
+            at_us,
+            bytes: bytes.to_vec(),
+        };
+        let order = [1, 2, 3];
+        // Other tags are ignored; equal times are fine; codes may be skipped.
+        let ok = [n("x", 1, &[1]), n("y", 0, &[9]), n("x", 1, &[3])];
+        assert_eq!(stamps(&ok, "x", &order), Ok(vec![(1, 1), (3, 1)]));
+        assert_eq!(stamp(&[(1, 1), (3, 1)], 3), Some(1));
+        assert_eq!(stamps(&[], "x", &order), Ok(vec![]));
+        for bad in [
+            vec![n("x", 1, &[1]), n("x", 2, &[1])],
+            vec![n("x", 1, &[2]), n("x", 2, &[1])],
+            vec![n("x", 2, &[1]), n("x", 1, &[2])],
+            vec![n("x", 1, &[7])],
+            vec![n("x", 1, &[1, 2])],
+            vec![n("x", 1, &[])],
+        ] {
+            assert!(
+                stamps(&bad, "x", &order).is_err_and(|e| e.starts_with("contradictory x stamps")),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
