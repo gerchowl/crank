@@ -760,6 +760,11 @@ mod tests {
                 "Erg(100.0) written at 50 s, between the silence guard's release and the drop",
             ),
             (
+                guarded(SILENCE_US, vec![p25(46_500, 90, 100, 0, 0)]),
+                drop_at(50_000),
+                "the release before the drop, at 46.5 s, is not the silence guard's: page 25 came 0 s before it (the guard waits 2 s)",
+            ),
+            (
                 r.clone(),
                 drop_at(70_000),
                 "contradictory: the drop is stamped after the closing release",
@@ -771,9 +776,16 @@ mod tests {
                 "{why}"
             );
         }
-        // The edges that are valid: the guard's release exactly 2 s after the last page 25, a
-        // write at the drop's own µs (after its stamp), a drop at the closing release's µs.
+        // The edges that are valid: the guard's release exactly 2 s after the last page 25 (other
+        // pages may come), a write at the drop's own µs (after its stamp), a drop at the closing
+        // release's µs.
+        let page71 = rx(46_000, [0xa4, 9, 0x4e, 5, 0x47, 48, 0, 0, 0, 0, 0, 0, 0]);
         for (records, notes, link) in [
+            (
+                guarded(SILENCE_US, vec![page71]),
+                drop_at(50_000),
+                "link dropped 20 s",
+            ),
             (
                 guarded(SILENCE_US, vec![]),
                 drop_at(50_000),
