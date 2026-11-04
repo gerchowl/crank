@@ -27,8 +27,8 @@ pub enum Outcome {
     Done(PathBuf),
     /// Precondition missing; the owner must act.
     Blocked(String),
-    /// A Part B procedure stopped early (guard, signal, failure); the trainer was released
-    /// and the summary is at this path.
+    /// A Part B procedure stopped early (guard, signal, failure): why, with whether the release
+    /// was confirmed ([`rider::stopped`]); the summary is at this path.
     Stopped(PathBuf, String),
 }
 
@@ -139,7 +139,7 @@ async fn ride(
     if let Some(line) = summary["result"]["line"].as_str() {
         println!("{line}");
     }
-    (summary, report.procedure.err().map(|e| format!("{e:?}")))
+    (summary, rider::stopped(&report))
 }
 
 fn unix_now() -> u64 {
@@ -194,7 +194,11 @@ async fn cold(
             drop(capture);
             let summary =
                 procedure_summary(p, args.check.name(), &report, &capture_path, unix_now());
-            (summary, report.procedure.err().map(|e| format!("{e:?}")))
+            let why = report
+                .procedure
+                .err()
+                .map(|e| format!("{e:?} (nothing was written to the trainer)"));
+            (summary, why)
         }
     };
     let path = write_summary(&args.out, args.check, &summary)?;
