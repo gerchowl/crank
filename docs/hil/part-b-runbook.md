@@ -97,8 +97,10 @@ Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10, 11a, 11b and 11c), w
 | 12 | `hil_fec check12 --out "$OUT"` | 90 rpm at 200 W; it switches to Free; at the cue go to 70 rpm | 1 min |
 
 - Each run waits until you type **`y`** (or `yes`) and Enter in its window. Anything else aborts.
-- Follow the on-screen cues. A run that stops early prints `STOPPED: … (trainer released)` and exits with
-  status 4: that is safe, but it gives no result.
+- Follow the on-screen cues. A run that stops early exits with status 4 and gives no result. Read its last line:
+  `STOPPED: … (trainer released)` means the release was confirmed. `STOPPED: … (release NOT confirmed: …)` means
+  the trainer may still hold its target: stop pedalling; if it still resists, unplug it and wait until its lights
+  go out.
 - Each run refuses to overwrite its own `.fecap` (`File::create_new`): re-run a stopped check into a **new**
   `--out` directory. For a stopped check 9 that directory has no `check6.fecap`, so first re-run check 6 into
   it, or copy `check6.fecap` over from the old one (valid for the same trainer within 2 h, `SESSION_BOUND_S`).
@@ -163,7 +165,7 @@ hil_fec check11a --out "$OUT"
 4. Leave the trainer **unplugged** for check 11b. If the link drops after the unplug, that is the finding: the
    run stops, still answer the question if it is asked, and say so to the architect. If the trainer only goes
    silent, the cue *the trainer went silent* comes; keep pedalling easily while the harness waits up to 32 s for
-   the link to drop.
+   the link to drop. If that cue says *the release was NOT confirmed*, stop pedalling instead.
 5. Read the last line. *done: trainer released* means the release was confirmed. *done, but the release was NOT
    confirmed* (expected after a drop: the link is down) means the trainer may still hold 100 W: stop pedalling.
    It is unplugged, so it shuts down once you stop; wait until its lights go out before the next run.

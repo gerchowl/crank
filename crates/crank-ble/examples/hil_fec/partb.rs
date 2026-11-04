@@ -225,14 +225,17 @@ pub(crate) fn share_within(p: &[f64], target: f64, tol: f64) -> Option<f64> {
 
 /// End of the procedure: the release write (page 48 0 %), or the last record.
 pub(crate) fn procedure_end(records: &[Record], ctl: &[(u64, Control)]) -> u64 {
+    released_at(ctl).unwrap_or_else(|| records.iter().map(|r| r.at_us).max().unwrap_or(0))
+}
+
+/// The run's closing release: the last page 48 at 0 %, after some other write. `None` in a
+/// capture cut off before it.
+pub(crate) fn released_at(ctl: &[(u64, Control)]) -> Option<u64> {
     ctl.iter()
         .rev()
         .find(|(_, c)| *c == Control::Resistance(0.0))
         .filter(|(at, _)| ctl.iter().any(|(b, _)| b < at))
-        .map_or_else(
-            || records.iter().map(|r| r.at_us).max().unwrap_or(0),
-            |(at, _)| *at,
-        )
+        .map(|(at, _)| *at)
 }
 
 /// The release at the end of a capture: page 48 0 % written after the last other control
@@ -996,6 +999,18 @@ fn malformed(records: &[Record]) -> Option<String> {
     })
 }
 
+/// A capture without its closing release: every run writes the release last (recorded before it
+/// is written, a failed one too), so a capture whose last control write is not a release, or is
+/// the opening one, was cut off before the run's end and gives no result, as a live run without
+/// its end would not.
+fn cut_off(records: &[Record]) -> Option<String> {
+    let ctl = controls(records);
+    match ctl.last() {
+        Some((_, Control::Resistance(x))) if *x == 0.0 && ctl.len() > 1 => None,
+        _ => Some("the capture is cut off: no release write ends it".into()),
+    }
+}
+
 /// Part B analysis by capture stem (`check5` …), `None` for other captures. `outcome` is how
 /// the procedure ended (the capture's outcome line); without `completed` there is no verdict.
 /// `lag` is check 6 of the same capture set ([`PowerLag::beside`]), which check 9 needs; `cps`
@@ -1022,7 +1037,7 @@ pub fn analyse(
         "check12" => check12(records),
         _ => return None,
     };
-    let malformed = malformed(records);
+    let malformed = malformed(records).or_else(|| cut_off(records));
     let completed = outcome == Some(COMPLETED) && malformed.is_none();
     v["procedure"] = json!(outcome.unwrap_or("unknown: the capture has no outcome line"));
     v["completed"] = json!(completed);
@@ -1216,6 +1231,39 @@ mod tests {
         }
         f.bytes[12] = f.bytes[..12].iter().fold(0, |x, v| x ^ v);
         f
+    }
+
+    /// Every run ends on its release: a capture whose last control write is not page 48 at 0 %, or
+    /// whose only one is the opening release, was cut off and gives no result, whatever its
+    /// outcome line says.
+    #[test]
+    fn a_capture_cut_off_before_its_closing_release_gives_no_result() {
+        let free = ControlPage::BasicResistance { pct: 0.0 };
+        let erg = ControlPage::TargetPower { watts: 150.0 };
+        let p = |n: u64| (2..n).map(|k| p25(k * SEC / 2, 90, 150));
+        let none = PowerLag::NotMeasured("test".into());
+        let cut = "the capture is cut off: no release write ends it";
+        for (ride, invalid) in [
+            (
+                [
+                    vec![tx(0, &free), tx(SEC, &erg)],
+                    p(120).collect(),
+                    vec![tx(60 * SEC, &free)],
+                ]
+                .concat(),
+                None,
+            ),
+            (
+                [vec![tx(0, &free), tx(SEC, &erg)], p(120).collect()].concat(),
+                Some(cut),
+            ),
+            ([vec![tx(0, &free)], p(120).collect()].concat(), Some(cut)),
+            (p(120).collect(), Some(cut)),
+        ] {
+            let v = analyse("check7", &ride, &[], &[], Some(COMPLETED), &none).expect("stem");
+            assert_eq!(v["invalid"].as_str(), invalid, "{v}");
+            assert_eq!(v["completed"], json!(invalid.is_none()));
+        }
     }
 
     /// A malformed control page is a control write: it is never the release, it ends an ERG hold,

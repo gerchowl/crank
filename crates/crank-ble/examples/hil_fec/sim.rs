@@ -650,15 +650,16 @@ impl Sim {
     fn record_tx(&self, frame: [u8; 13]) -> bool {
         self.advance();
         let mut s = self.lock();
-        if self.plan.drop_at_us.is_some_and(|x| s.at >= x) || !s.linked {
-            return false;
-        }
+        // As `Session::send`: the frame is recorded before the write, a failed one too.
         let at = s.at;
         s.records.push(Record {
             at_us: at,
             rx: false,
             bytes: frame.to_vec(),
         });
+        if self.plan.drop_at_us.is_some_and(|x| s.at >= x) || !s.linked {
+            return false;
+        }
         match decode(&frame).map(|f| f.page) {
             Ok(Page::TargetPower { watts }) => s.applied = Applied::Erg(f64::from(watts)),
             Ok(Page::BasicResistance { pct }) => {
@@ -705,7 +706,9 @@ impl Operator for Sim {
                 s.descend_from = Some(at_us);
             }
             Cue::Descend | Cue::Phone | Cue::Unplug | Cue::Silent => {}
-            Cue::Stop | Cue::StopUnconfirmed => (s.goal, s.descend_from) = (0.0, None),
+            Cue::Stop | Cue::StopUnconfirmed | Cue::SilentUnconfirmed => {
+                (s.goal, s.descend_from) = (0.0, None);
+            }
             Cue::LightsOut => (s.goal, s.stopping) = (0.0, true),
             Cue::Wake => {
                 (s.goal, s.stopping) = (60.0, false);

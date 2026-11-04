@@ -44,10 +44,7 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(checks::Outcome::Stopped(path, why)) => {
-            println!(
-                "STOPPED: {why} (trainer released); wrote {}",
-                path.display()
-            );
+            println!("STOPPED: {why}; wrote {}", path.display());
             ExitCode::from(4)
         }
         Ok(checks::Outcome::Blocked(why)) => {

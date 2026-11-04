@@ -30,8 +30,11 @@ The checks drive a real trainer under a rider, so every subcommand (`crates/cran
   capture shows whether the trainer took it, then disconnects. Each of these two writes is bounded at
   2 s, so a stuck link cannot hold the exit.
 
-A run that stops early prints `STOPPED: <why> (trainer released)` and exits with status 4; its capture and
-summary are still written and analysable, but give no result (below).
+A run that stops early prints `STOPPED: <why> (trainer released)` when its release was confirmed, else
+`STOPPED: <why> (release NOT confirmed: <error>; the trainer may still hold its target. Stop pedalling; …)`
+(`rider::stopped`, from the release's actual outcome, as the final cue), and exits with status 4; a check 11c that
+stops before the link wrote nothing (`… (nothing was written to the trainer)`). Its capture and summary are still
+written and analysable, but give no result (below).
 
 ## Running
 
@@ -85,7 +88,10 @@ either, whatever its outcome: the harness encodes only valid fields, so that wri
 The row reads `no result: malformed control write (page N at t s)` and `invalid` names it. A tx record that is
 not a 13-byte ANT frame at all counts the same (`Control::NotAFrame`, `not an ANT frame`). `partb::controls`
 lists such a write as `Control::Malformed(page)`: it is never the release, and it ends an ERG hold (checks 5,
-6 and 9).
+6 and 9). A capture **cut off** before its end gives no result the same way: every run writes the release last
+(recorded before the write, a failed one too), so a capture whose last control write is not page 48 at 0 %, or
+is the opening release, reads `no result: the capture is cut off: no release write ends it` (`partb::cut_off`),
+offline as live.
 
 ```text
 hil_fec redact  --target RAW/check6.fecap --out docs/hil/captures
@@ -429,7 +435,9 @@ from the cue to the release.
   down: the link drops only when the BLE supervision timeout runs out, at most **32 s** (the Core Specification's
   bound on `connSupervisionTimeout`, Vol 6 Part B §4.5.2; Apple's guideline ranges have differed between
   releases). So the harness sends the release at once (bounded, as every release), cues *the trainer went
-  silent* and waits up to 32 s for the drop: a drop is the
+  silent* (or, when that release failed or hung, *the trainer went silent and the release was NOT confirmed*,
+  with the instruction to stop pedalling, and the error is added to the abort reason) and waits up to 32 s for
+  the drop: a drop is the
   finding as above; no drop aborts with `no page 25 after the unplug cue, and the link did not drop within 32 s
   (the BLE supervision-timeout maximum)`.
 - The final cue says whether the release was confirmed: `done: trainer released` or `done, but the release was
@@ -438,12 +446,15 @@ from the cue to the release.
 
 **Validation** (`check11ac::check11a`, live and offline), else `unknown: <the breach>`:
 
-- the unplug cue once; at most one `link 01`, not before the cue, and no trainer frame after it (a drop is only
-  a drop when the frames end there; tx frames are recorded even when the write fails, so only rx counts);
+- the unplug cue once; at most one `link 01`, not before the cue, and no trainer frame at or after its µs (a drop
+  is only a drop when the frames end there, and the stamp is written when the drop is reported, after the last
+  frame; tx frames are recorded even when the write fails, so only rx counts);
 - the answer after the cue;
-- no control write but a release (any other page 48–51 or 55, or any tx record that is no ANT frame) from 15 s
-  before the cue to the final release, and ERG 100 W in force (the last write before that); the after window
-  ends at the first release after the cue (the silence guard's comes early);
+- ERG 100 W in force: the last write before the before window (15 s before the cue);
+- no control write at all from that window's start to the first release, and that release after the cue: a
+  release at or before the cue (its µs included) changes the target the before window is read under. The after
+  window ends at that release (the silence guard's comes early). No release after the window start means the
+  capture is cut off: `unknown`, as a live run always records its release;
 - evidence, from check 5's floor of 2 page-25 samples a second: at least 30 samples in the 15 s before the cue;
   without a drop, the answer before the release and at least 40 samples over at least 20 s after it (the
   procedure rides 30 s after the answer, 25 s once the first 5 s are left out; 5 s of slack for the answer's and
@@ -474,7 +485,8 @@ count from the cue, so they include the moment the cue takes to reach the rider.
 
 **Validation** (`check11ac::check11c`, live and offline): the start cue, then `02` within 60 s of it and `04`
 within 30 s of `02` (each plus 0.5 s for the stamp), once each and in order, nothing else on `link`; the cues
-in order; no frame before the advertisement; the first control write the release; else `unknown: <the breach>`.
+in order; no frame before the advertisement; the first control write the release, and a release ends the run (none:
+the capture is cut off); else `unknown: <the breach>`.
 
 **Result:**
 
