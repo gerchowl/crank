@@ -158,6 +158,36 @@ test("an injected control out of DOM order fails the gate", async ({
   expect(failures.map((f) => f.split(":")[0])).toContain("focus.order");
 });
 
+// The audit measures the real fonts (#504): with every font response held back, `settled()` still resolves only once
+// each bundled face (theme.css: Inter 400/600, JetBrains Mono 400/700) is loaded, never on the fallback font.
+test("the fixture settles on the bundled fonts", async ({ page }) => {
+  let release = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  await page.route("**/*.woff2", async (route) => {
+    await held;
+    await route.continue();
+  });
+  await page.goto(`/?scenario=${SCENARIOS[0].name}`);
+  await expect(page.locator(SCENARIOS[0].ready).first()).toBeVisible();
+  // The faces as they are the moment `settled()` resolves.
+  const faces = page.evaluate(() =>
+    window.__fixture
+      .settled()
+      .then(() =>
+        [...document.fonts].map((f) => `${f.family} ${f.weight}: ${f.status}`),
+      ),
+  );
+  // Text is on screen, in the fallback font, while the faces are still on the wire.
+  expect(await page.evaluate(() => document.fonts.status)).toBe("loading");
+  release();
+  expect((await faces).sort()).toEqual([
+    "Inter 400: loaded",
+    "Inter 600: loaded",
+    "JetBrains Mono 400: loaded",
+    "JetBrains Mono 700: loaded",
+  ]);
+});
+
 // The reading order (focus.ts): along a row, down to the next row from anywhere, up only into a later column.
 test("the focus order follows rows, then columns", () => {
   const box = (left: number, top: number, w = 80, h = 32) => ({
