@@ -31,7 +31,7 @@ pub const MAX_ERG_W: u16 = 250;
 pub const MAX_GRADE_PCT: f32 = 10.0;
 const SEC: u64 = 1_000_000;
 /// No page 25 for this long while riding stops the run (ADR-0002 §6: 8 ticks).
-const SILENCE_US: u64 = 2 * SEC;
+pub(crate) const SILENCE_US: u64 = 2 * SEC;
 /// The rider must start pedalling within this time.
 const START_WAIT: Duration = Duration::from_mins(2);
 /// Bound on the release write: a stalled GATT write must not hold the exit (ADR-0002 §7.9's 2 s).
@@ -1201,6 +1201,28 @@ pub fn stopped(report: &Report) -> Option<String> {
     Some(match &report.release_error {
         None => format!("{why} (trainer released)"),
         Some(e) => format!("{why} (release NOT confirmed: {e}; {UNCONFIRMED})"),
+    })
+}
+
+/// How a driven run ends for the operator ([`crate::checks::Outcome`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ending {
+    /// Completed, the release confirmed.
+    Released,
+    /// Completed, but the release was not confirmed (after a drop, as expected): its error and
+    /// the rider instruction.
+    Unconfirmed(String),
+    /// Stopped early: [`stopped`]'s line.
+    Stopped(String),
+}
+
+/// The ending of a driven run, from its procedure and its release's actual outcome.
+pub fn ending(report: &Report) -> Ending {
+    if let Some(line) = stopped(report) {
+        return Ending::Stopped(line);
+    }
+    report.release_error.as_ref().map_or(Ending::Released, |e| {
+        Ending::Unconfirmed(format!("{e}; {UNCONFIRMED}"))
     })
 }
 
@@ -3255,6 +3277,40 @@ mod tests {
         };
         let (_, report) = run(Procedure::Check11a, plan, None).await;
         assert_eq!(stopped(&report), None);
+    }
+
+    /// A completed run whose release was not confirmed (an 11a drop) ends `Unconfirmed`, with
+    /// the rider instruction; a confirmed one `Released`; a stopped one `Stopped`.
+    #[tokio::test(start_paused = true)]
+    async fn a_completed_run_with_an_unconfirmed_release_says_so() {
+        let dropped = Plan {
+            answers: &["unplugged"],
+            drop_at_us: Some(45 * SEC),
+            ..Plan::default()
+        };
+        let (_, report) = run(Procedure::Check11a, dropped, None).await;
+        assert_eq!(report.procedure, Ok(()));
+        assert_eq!(
+            ending(&report),
+            Ending::Unconfirmed(format!("not connected; {UNCONFIRMED}"))
+        );
+        let plan = Plan {
+            answers: &["unplugged"],
+            ..Plan::default()
+        };
+        let (_, report) = run(Procedure::Check11a, plan, None).await;
+        assert_eq!(ending(&report), Ending::Released);
+        let cannot = Plan {
+            answers: &["cannot"],
+            ..Plan::default()
+        };
+        let (_, report) = run(Procedure::Check11a, cannot, None).await;
+        assert_eq!(
+            ending(&report),
+            Ending::Stopped(
+                "Aborted(\"the trainer could not be unplugged\") (trainer released)".into()
+            )
+        );
     }
 
     /// Check 11c's cold start on the sim: one FE-C advert 3 s after the cue, a 1 s connect.
