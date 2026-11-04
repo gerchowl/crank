@@ -108,6 +108,7 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             | Check::Check8
             | Check::Check9
             | Check::Check10
+            | Check::Check11b
             | Check::Check12
             | Check::Reuse => {
                 unreachable!()
