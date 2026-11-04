@@ -171,8 +171,14 @@ internals().invoke = (cmd, args) => {
 };
 const frame = () => new Promise((r) => requestAnimationFrame(r));
 (window as unknown as { __fixture: unknown }).__fixture = {
-  /** Resolves when two frames in a row saw no answer in flight beyond the scenario's held ones. */
+  /**
+   * Resolves once every bundled font face (theme.css) is loaded, then two frames in a row saw no answer in flight
+   * beyond the scenario's held ones. The faces are `font-display: swap` and fetched only when text first needs
+   * them, so without the load a slow fetch left the audit measuring the fallback font (#504). A face that fails
+   * to load rejects, and the test with it.
+   */
   async settled() {
+    await Promise.all([...document.fonts].map((f) => f.load()));
     const held = "held" in scenario ? scenario.held : 0;
     for (let quiet = 0; quiet < 2;) {
       await frame();
