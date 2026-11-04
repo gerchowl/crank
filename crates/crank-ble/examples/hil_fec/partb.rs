@@ -130,39 +130,49 @@ pub enum Control {
     Track(f64, f64),
     /// Page 55 (rider kg, bike kg).
     User(f64, f64),
+    /// A control page (this number) with a field that does not decode, or a bad checksum: still
+    /// a write the trainer may act on, never the release.
+    Malformed(u8),
 }
 
-/// Control writes `(at_us, control)` in write order (pages 48–51 and 55).
+/// Control writes `(at_us, control)` in write order: every tx page 48–51 and 55, whatever its
+/// fields ([`Control::Malformed`]).
 pub fn controls(records: &[Record]) -> Vec<(u64, Control)> {
     let mut out: Vec<(u64, Control)> = records
         .iter()
         .filter(|r| !r.rx)
         .filter_map(|r| {
-            let c = match decode(&r.bytes).ok()?.page {
-                Page::BasicResistance { pct } => Control::Resistance(f64::from(pct?)),
-                Page::TargetPower { watts } => Control::Erg(f64::from(watts)),
-                Page::Wind {
-                    cw_kg_per_m,
-                    speed_kmh,
-                    drafting,
-                } => Control::Wind(
-                    f64::from(cw_kg_per_m?),
-                    f64::from(speed_kmh?),
-                    f64::from(drafting?),
-                ),
-                Page::Track { grade_pct, crr } => {
-                    Control::Track(f64::from(grade_pct?), f64::from(crr))
-                }
-                Page::UserConfig {
-                    rider_kg, bike_kg, ..
-                } => Control::User(f64::from(rider_kg?), f64::from(bike_kg?)),
-                _ => return None,
-            };
-            Some((r.at_us, c))
+            let page = page_of(&r.bytes).filter(|p| matches!(p, 48..=51 | 55))?;
+            Some((
+                r.at_us,
+                control(&r.bytes).unwrap_or(Control::Malformed(page)),
+            ))
         })
         .collect();
     out.sort_by_key(|c| c.0);
     out
+}
+
+/// The control a frame writes, when every field decodes.
+fn control(bytes: &[u8]) -> Option<Control> {
+    Some(match decode(bytes).ok()?.page {
+        Page::BasicResistance { pct } => Control::Resistance(f64::from(pct?)),
+        Page::TargetPower { watts } => Control::Erg(f64::from(watts)),
+        Page::Wind {
+            cw_kg_per_m,
+            speed_kmh,
+            drafting,
+        } => Control::Wind(
+            f64::from(cw_kg_per_m?),
+            f64::from(speed_kmh?),
+            f64::from(drafting?),
+        ),
+        Page::Track { grade_pct, crr } => Control::Track(f64::from(grade_pct?), f64::from(crr)),
+        Page::UserConfig {
+            rider_kg, bike_kg, ..
+        } => Control::User(f64::from(rider_kg?), f64::from(bike_kg?)),
+        _ => return None,
+    })
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -198,7 +208,7 @@ pub(crate) fn round1(x: f64) -> f64 {
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn share_within(p: &[f64], target: f64, tol: f64) -> Option<f64> {
+pub(crate) fn share_within(p: &[f64], target: f64, tol: f64) -> Option<f64> {
     (!p.is_empty()).then(|| {
         p.iter()
             .filter(|x| (*x - target).abs() <= target * tol)
@@ -449,7 +459,7 @@ pub fn check8(records: &[Record]) -> Value {
             Control::Track(g, crr) => (st.grade, st.crr) = (g, crr),
             Control::Wind(cw, w, d) => (st.cw, st.wind_kmh, st.drafting) = (cw, w, d),
             Control::User(r, b) => st.mass = r + b,
-            Control::Erg(_) | Control::Resistance(_) => continue,
+            Control::Erg(_) | Control::Resistance(_) | Control::Malformed(_) => continue,
         }
         let next = ctl.get(i + 1).map_or(end, |n| n.0.min(end));
         if st.grade.is_nan() || st.mass.is_nan() || next.saturating_sub(*at) < HOLD_MIN {
@@ -959,6 +969,18 @@ pub fn check12(records: &[Record]) -> Value {
     })
 }
 
+/// The first malformed control write, named: the harness encodes only valid fields, so such a
+/// write is not its procedure's, and no check gives a result from that capture.
+fn malformed(records: &[Record]) -> Option<String> {
+    controls(records).into_iter().find_map(|(at, c)| match c {
+        Control::Malformed(page) => Some(format!(
+            "malformed control write (page {page} at {} s)",
+            round1(secs(at))
+        )),
+        _ => None,
+    })
+}
+
 /// Part B analysis by capture stem (`check5` …), `None` for other captures. `outcome` is how
 /// the procedure ended (the capture's outcome line); without `completed` there is no verdict.
 /// `lag` is check 6 of the same capture set ([`PowerLag::beside`]), which check 9 needs; `cps`
@@ -979,13 +1001,17 @@ pub fn analyse(
         "check8" => check8(records),
         "check9" => check9(records, lag),
         "check10" => crate::check10::check10(records, notes),
+        "check11a" => crate::check11ac::check11a(records, notes),
         "check11b" => crate::check11::check11b(records, notes),
+        "check11c" => crate::check11ac::check11c(records, notes),
         "check12" => check12(records),
         _ => return None,
     };
-    let completed = outcome == Some(COMPLETED);
+    let malformed = malformed(records);
+    let completed = outcome == Some(COMPLETED) && malformed.is_none();
     v["procedure"] = json!(outcome.unwrap_or("unknown: the capture has no outcome line"));
     v["completed"] = json!(completed);
+    v["invalid"] = json!(malformed);
     if !completed {
         for verdict in [
             "held",
@@ -997,6 +1023,12 @@ pub fn analyse(
             "cause",
             "reconnect",
             "after_reconnect",
+            "link",
+            "before",
+            "after",
+            "times",
+            "low_cadence",
+            "normal_cadence",
         ] {
             if v.get(verdict).is_some() {
                 v[verdict] = Value::Null;
@@ -1017,6 +1049,8 @@ pub fn line(stem: &str, v: &Value) -> String {
     let (n, what, result, adr) = cells(stem, v);
     let result = if v["completed"] == json!(true) {
         result
+    } else if let Some(why) = v["invalid"].as_str() {
+        format!("no result: {why}")
     } else {
         format!(
             "no result: procedure {}",
@@ -1107,7 +1141,7 @@ fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'static
             ("8", "SIM page 51 at 0/5/10 %; page 55 mass", segs, "§7.9")
         }
         "check10" => crate::check10::cells(v),
-        "check11b" => crate::check11::cells(v),
+        "check11a" | "check11b" | "check11c" => crate::check11ac::cells(stem, v),
         "check9" => (
             "9",
             "Low cadence at 250 W ERG",
@@ -1157,6 +1191,81 @@ mod tests {
             rx: true,
             bytes: f.to_vec(),
         }
+    }
+
+    /// A control page with a field set to its "invalid" value (checksum fixed).
+    fn invalid(at_us: u64, page: &ControlPage, field: [usize; 2]) -> Record {
+        let mut f = tx(at_us, page);
+        for i in field {
+            f.bytes[i] = 0xff;
+        }
+        f.bytes[12] = f.bytes[..12].iter().fold(0, |x, v| x ^ v);
+        f
+    }
+
+    /// A malformed control page is a control write: it is never the release, it ends an ERG hold,
+    /// and no check (here 7 and 12) gives a result from a capture that has one.
+    #[test]
+    fn a_malformed_control_write_counts_and_no_check_gives_a_result_beside_it() {
+        let grade = |at| {
+            invalid(
+                at,
+                &ControlPage::Track {
+                    grade_pct: 5.0,
+                    crr: 0.004,
+                },
+                [9, 10],
+            )
+        };
+        let rider = |at| {
+            let user = ControlPage::UserConfig {
+                rider_kg: 75.0,
+                bike_kg: 10.0,
+                wheel_m: 0.708,
+            };
+            invalid(at, &user, [5, 6])
+        };
+        let free = ControlPage::BasicResistance { pct: 0.0 };
+        let mut ride = vec![
+            tx(0, &free),
+            tx(SEC, &ControlPage::TargetPower { watts: 150.0 }),
+        ];
+        ride.extend((2..120).map(|k| p25(k * SEC / 2, 90, 150)));
+        ride.push(tx(60 * SEC, &free));
+        let none = PowerLag::NotMeasured("test".into());
+        let run =
+            |r: &[Record], stem| analyse(stem, r, &[], &[], Some(COMPLETED), &none).expect("stem");
+        assert_eq!(run(&ride, "check7")["completed"], json!(true));
+        assert_eq!(
+            run(&ride, "check7")["release"]["page48_0pct_last"],
+            json!(true)
+        );
+        for (bad, page) in [(grade(30 * SEC), 51), (rider(30 * SEC), 55)] {
+            let mut r = ride.clone();
+            r.push(bad.clone());
+            assert_eq!(controls(&r)[2], (30 * SEC, Control::Malformed(page)));
+            let holds = erg_holds(&controls(&r), procedure_end(&r, &controls(&r)));
+            assert_eq!(
+                holds[0].1.end,
+                30 * SEC,
+                "the malformed write ends the hold"
+            );
+            for stem in ["check7", "check12"] {
+                let v = run(&r, stem);
+                assert_eq!(v["completed"], json!(false), "{stem}: {v}");
+                assert_eq!(
+                    v["line"].as_str().map(|l| l.contains(&format!(
+                        "no result: malformed control write (page {page} at 30 s)"
+                    ))),
+                    Some(true),
+                    "{stem}: {v}"
+                );
+            }
+        }
+        // After the final release, it makes the run not released.
+        let mut late = ride.clone();
+        late.push(grade(61 * SEC));
+        assert_eq!(release(&late)["page48_0pct_last"], json!(false));
     }
 
     #[test]

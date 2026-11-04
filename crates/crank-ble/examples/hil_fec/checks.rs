@@ -6,14 +6,14 @@ use crate::{
         parse_capture, parse_cps, parse_notes, redact_capture, redact_frame, redact_name,
         request_latencies, with_page_byte,
     },
-    partb, rider,
+    partb, rider, session,
     session::{Exchange, Result, Session, adapter, find_trainer, scan},
 };
 use crank_ble::{
     BtleplugAdvertisements, CPS_SERVICE, FEC_SERVICE, FTMS_SERVICE, FecTrainer, HRS_SERVICE,
 };
 use crank_devices::{
-    ControlMode, DeviceRef, ObservationSource, ObservedControl, RiderConfig, TrainerCommand,
+    Clock, ControlMode, DeviceRef, ObservationSource, ObservedControl, RiderConfig, TrainerCommand,
     TrainerDriver, TrainerEvent, Wind,
 };
 use crank_fec::{ControlPage, Page, decode};
@@ -49,6 +49,9 @@ pub async fn run(args: &Args) -> Result<Outcome> {
     }
     let adapter = adapter().await?;
     let adv = BtleplugAdvertisements::new(adapter.clone());
+    if args.check == Check::Check11c {
+        return cold(args, &adv, adapter).await;
+    }
     let Some((device, _)) = find_trainer(&adv, args.scan_secs).await else {
         return Ok(Outcome::Blocked(BLOCKED_NO_NEO.into()));
     };
@@ -71,22 +74,8 @@ pub async fn run(args: &Args) -> Result<Outcome> {
                 format!("check 5 needs Cycling Power 2A63 on the NEO: {e}{released}").into(),
             );
         }
-        let report = rider::drive(&s, &rider::Console::new(), p, rider::signals()).await;
-        let identity = identity(&s);
-        let dropped = s.pump_ended();
-        s.close().await;
-        let finished = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        // Read the capture only now that nothing writes it: the row is then exactly what
-        // `analyse` reads from the file later.
-        let mut summary = procedure_summary(p, args.check.name(), &report, &capture_path, finished);
-        summary["identity"] = identity;
-        summary["link_dropped_during_run"] = json!(dropped);
-        if let Some(line) = summary["result"]["line"].as_str() {
-            println!("{line}");
-        }
-        stopped = report.procedure.err().map(|e| format!("{e:?}"));
+        let (summary, why) = ride(args, p, s, &rider::Console::new()).await;
+        stopped = why;
         summary
     } else {
         let s = Session::open(&adv, adapter, device, &capture_path).await?;
@@ -108,7 +97,9 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             | Check::Check8
             | Check::Check9
             | Check::Check10
+            | Check::Check11a
             | Check::Check11b
+            | Check::Check11c
             | Check::Check12
             | Check::Reuse => {
                 unreachable!()
@@ -119,6 +110,92 @@ pub async fn run(args: &Args) -> Result<Outcome> {
         let mut summary = summary;
         summary["link_dropped_during_run"] = json!(ended);
         summary
+    };
+    let path = write_summary(&args.out, args.check, &summary)?;
+    Ok(match stopped {
+        None => Outcome::Done(path),
+        Some(why) => Outcome::Stopped(path, why),
+    })
+}
+
+/// Drive procedure `p` on `s`, close the link and summarise the run from its capture; the
+/// summary and, if the procedure stopped early, why.
+async fn ride(
+    args: &Args,
+    p: rider::Procedure,
+    s: Session,
+    op: &rider::Console,
+) -> (Value, Option<String>) {
+    let report = rider::drive(&s, op, p, rider::signals()).await;
+    let identity = identity(&s);
+    let dropped = s.pump_ended();
+    let capture_path = s.capture_path.clone();
+    s.close().await;
+    // Read the capture only now that nothing writes it: the row is then exactly what
+    // `analyse` reads from the file later.
+    let mut summary = procedure_summary(p, args.check.name(), &report, &capture_path, unix_now());
+    summary["identity"] = identity;
+    summary["link_dropped_during_run"] = json!(dropped);
+    if let Some(line) = summary["result"]["line"].as_str() {
+        println!("{line}");
+    }
+    (summary, report.procedure.err().map(|e| format!("{e:?}")))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Check 11c: the capture records from before the link ([`rider::cold_start`]: the start cue,
+/// the trainer's first FE-C advertisement), then the connect and the procedure as for the other
+/// checks. A cold start that stops before the link has written nothing, so it releases nothing.
+async fn cold(
+    args: &Args,
+    adv: &BtleplugAdvertisements,
+    adapter: btleplug::platform::Adapter,
+) -> Result<Outcome> {
+    use crank_ble::MonotonicClock;
+    std::fs::create_dir_all(&args.out)?;
+    let capture_path = args.out.join(format!("{}.fecap", args.check.name()));
+    let clock = Arc::new(MonotonicClock::default());
+    let started = clock.now();
+    let capture = Arc::new(crank_ble::Capture::create(&capture_path, started)?);
+    let op = rider::Console::new();
+    let opened = rider::cold_start(
+        &op,
+        || clock.now().0.saturating_sub(started.0),
+        |tag, bytes| {
+            capture
+                .record_aux(clock.now(), tag, bytes)
+                .err()
+                .map(|e| e.to_string())
+        },
+        session::fec_trainers(adv),
+        |device| {
+            let parts = (clock.clone(), started, capture.clone());
+            async {
+                Session::open_on(adv, adapter, device, &capture_path, parts)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        },
+    )
+    .await;
+    let p = rider::Procedure::Check11c;
+    let (summary, stopped) = match opened {
+        Ok(s) => ride(args, p, s, &op).await,
+        Err(stop) => {
+            let report = rider::Report {
+                procedure: Err(stop),
+                release_error: Some("not connected: nothing was written".into()),
+            };
+            drop(capture);
+            let summary =
+                procedure_summary(p, args.check.name(), &report, &capture_path, unix_now());
+            (summary, report.procedure.err().map(|e| format!("{e:?}")))
+        }
     };
     let path = write_summary(&args.out, args.check, &summary)?;
     Ok(match stopped {

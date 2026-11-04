@@ -332,6 +332,19 @@ impl Sim {
         }
     }
 
+    /// Check 11c's cold trainer: no link and no frames until [`Sim::link_up`].
+    pub fn cold(plan: Plan) -> Self {
+        let sim = Self::new(plan);
+        sim.lock().linked = false;
+        sim
+    }
+
+    /// The cold start's connect: the link is up, and frames flow, from now.
+    pub fn link_up(&self) {
+        self.advance();
+        self.lock().linked = true;
+    }
+
     /// The same simulator with check 11b's dropout scripted.
     pub fn with_dropout(mut self, d: Dropout) -> Self {
         self.dropout = Some(d);
@@ -684,12 +697,12 @@ impl Operator for Sim {
             return;
         }
         match cue {
-            Cue::Start | Cue::Steady => s.goal = s.goal.max(90.0),
+            Cue::Start | Cue::Steady | Cue::ColdStart => s.goal = s.goal.max(90.0),
             Cue::Cadence(rpm) => (s.goal, s.descend_from) = (f64::from(rpm), None),
             Cue::Descend if !matches!(self.plan.descent, Pattern::Hold) => {
                 s.descend_from = Some(at_us);
             }
-            Cue::Descend | Cue::Phone => {}
+            Cue::Descend | Cue::Phone | Cue::Unplug => {}
             Cue::Stop => (s.goal, s.descend_from) = (0.0, None),
             Cue::LightsOut => (s.goal, s.stopping) = (0.0, true),
             Cue::Wake => {
