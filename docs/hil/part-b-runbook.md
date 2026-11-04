@@ -101,6 +101,11 @@ Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10, 11a, 11b and 11c), w
   `STOPPED: … (trainer released)` means the release was confirmed. `STOPPED: … (release NOT confirmed: …)` means
   the trainer may still hold its target: stop pedalling; if it still resists, unplug it and wait until its lights
   go out.
+- A run that completes but whose release was not confirmed (expected after an 11a or 11b drop: the link is down)
+  ends on `DONE, but the release was NOT confirmed: …` with the same instruction, and exits with status 5; its
+  result stands.
+- Exit status: 0 done, 1 error, 2 bad arguments, 3 blocked (the owner must act), 4 stopped early (no result),
+  5 completed with the release NOT confirmed.
 - Each run refuses to overwrite its own `.fecap` (`File::create_new`): re-run a stopped check into a **new**
   `--out` directory. For a stopped check 9 that directory has no `check6.fecap`, so first re-run check 6 into
   it, or copy `check6.fecap` over from the old one (valid for the same trainer within 2 h, `SESSION_BOUND_S`).

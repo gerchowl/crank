@@ -34,7 +34,9 @@ A run that stops early prints `STOPPED: <why> (trainer released)` when its relea
 `STOPPED: <why> (release NOT confirmed: <error>; the trainer may still hold its target. Stop pedalling; …)`
 (`rider::stopped`, from the release's actual outcome, as the final cue), and exits with status 4; a check 11c that
 stops before the link wrote nothing (`… (nothing was written to the trainer)`). Its capture and summary are still
-written and analysable, but give no result (below).
+written and analysable, but give no result (below). A run that completes with its release NOT confirmed (after
+an 11a or 11b drop) ends on `DONE, but the release was NOT confirmed: <error>; …` and exits with status 5
+(`checks::Outcome::lines`; the exit codes are in `main.rs`).
 
 ## Running
 
@@ -449,7 +451,10 @@ from the cue to the release.
 - the unplug cue once; at most one `link 01`, not before the cue, and no trainer frame at or after its µs (a drop
   is only a drop when the frames end there, and the stamp is written when the drop is reported, after the last
   frame; tx frames are recorded even when the write fails, so only rx counts);
-- the answer after the cue;
+- one answer, after the cue (two recorded answers are contradictory);
+- with a drop: the drop at or before the closing release (a drop stamped after it is contradictory); a release
+  before the drop only as the silence guard's: at least `rider::SILENCE_US` (2 s, the live guard's constant)
+  after the last page-25 frame, and no control write from it to the drop (a write at the drop's µs is after it);
 - ERG 100 W in force: the last write before the before window (15 s before the cue);
 - no control write at all from that window's start to the first release, and that release after the cue: a
   release at or before the cue (its µs included) changes the target the before window is read under. The after

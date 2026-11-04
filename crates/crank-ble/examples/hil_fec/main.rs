@@ -9,6 +9,11 @@
 //! Each subcommand writes `<check>.fecap` (raw frames, both directions, the
 //! `crank-ble` capture format) and `<check>.json` into `--out`. Raw captures carry
 //! the device serial; commit only the output of `redact`.
+//!
+//! Exit status: 0 done; 1 error; 2 bad arguments; 3 blocked (the owner must act); 4 a Part B
+//! procedure stopped early (no result; the `STOPPED:` line says whether the release was
+//! confirmed); 5 a Part B procedure completed but its release was NOT confirmed (the last line
+//! says so, with what the rider does; expected after an 11a or 11b drop).
 mod check10;
 mod check11;
 mod check11ac;
@@ -39,17 +44,12 @@ async fn main() -> ExitCode {
         }
     };
     match checks::run(&args).await {
-        Ok(checks::Outcome::Done(path)) => {
-            println!("wrote {}", path.display());
-            ExitCode::SUCCESS
-        }
-        Ok(checks::Outcome::Stopped(path, why)) => {
-            println!("STOPPED: {why}; wrote {}", path.display());
-            ExitCode::from(4)
-        }
-        Ok(checks::Outcome::Blocked(why)) => {
-            println!("BLOCKED: {why}");
-            ExitCode::from(3)
+        Ok(outcome) => {
+            let (lines, status) = outcome.lines();
+            for line in lines {
+                println!("{line}");
+            }
+            ExitCode::from(status)
         }
         Err(e) => {
             eprintln!("error: {e}");

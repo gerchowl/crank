@@ -30,6 +30,40 @@ pub enum Outcome {
     /// A Part B procedure stopped early (guard, signal, failure): why, with whether the release
     /// was confirmed ([`rider::stopped`]); the summary is at this path.
     Stopped(PathBuf, String),
+    /// A Part B procedure completed but its release was not confirmed (e.g. after a drop): the
+    /// error and the rider instruction; the summary is at this path.
+    Unconfirmed(PathBuf, String),
+}
+
+impl Outcome {
+    /// The outcome of a Part B run whose summary is at `path`.
+    fn of(path: PathBuf, ending: rider::Ending) -> Self {
+        match ending {
+            rider::Ending::Released => Self::Done(path),
+            rider::Ending::Stopped(why) => Self::Stopped(path, why),
+            rider::Ending::Unconfirmed(why) => Self::Unconfirmed(path, why),
+        }
+    }
+
+    /// The lines `hil_fec` prints, the last one the operator reads, and its exit status:
+    /// 0 done, 3 blocked, 4 stopped early (no result), 5 completed with the release NOT
+    /// confirmed (`main.rs` adds 1 for an error and 2 for bad arguments).
+    pub fn lines(&self) -> (Vec<String>, u8) {
+        match self {
+            Self::Done(path) => (vec![format!("wrote {}", path.display())], 0),
+            Self::Blocked(why) => (vec![format!("BLOCKED: {why}")], 3),
+            Self::Stopped(path, why) => {
+                (vec![format!("STOPPED: {why}; wrote {}", path.display())], 4)
+            }
+            Self::Unconfirmed(path, why) => (
+                vec![
+                    format!("wrote {}", path.display()),
+                    format!("DONE, but the release was NOT confirmed: {why}"),
+                ],
+                5,
+            ),
+        }
+    }
 }
 
 const BLOCKED_NO_NEO: &str = "NEO not advertising — owner: power the trainer (mains plugged in) and keep the phone/Tacx app disconnected";
@@ -57,7 +91,7 @@ pub async fn run(args: &Args) -> Result<Outcome> {
     };
     std::fs::create_dir_all(&args.out)?;
     let capture_path = args.out.join(format!("{}.fecap", args.check.name()));
-    let mut stopped = None;
+    let mut ending = rider::Ending::Released;
     let summary = if args.check == Check::Latency {
         latency(args, &adv, adapter, device, &capture_path).await?
     } else if let Some(p) = args.check.procedure() {
@@ -74,8 +108,8 @@ pub async fn run(args: &Args) -> Result<Outcome> {
                 format!("check 5 needs Cycling Power 2A63 on the NEO: {e}{released}").into(),
             );
         }
-        let (summary, why) = ride(args, p, s, &rider::Console::new()).await;
-        stopped = why;
+        let (summary, e) = ride(args, p, s, &rider::Console::new()).await;
+        ending = e;
         summary
     } else {
         let s = Session::open(&adv, adapter, device, &capture_path).await?;
@@ -112,20 +146,17 @@ pub async fn run(args: &Args) -> Result<Outcome> {
         summary
     };
     let path = write_summary(&args.out, args.check, &summary)?;
-    Ok(match stopped {
-        None => Outcome::Done(path),
-        Some(why) => Outcome::Stopped(path, why),
-    })
+    Ok(Outcome::of(path, ending))
 }
 
 /// Drive procedure `p` on `s`, close the link and summarise the run from its capture; the
-/// summary and, if the procedure stopped early, why.
+/// summary and how the run ended ([`rider::ending`]).
 async fn ride(
     args: &Args,
     p: rider::Procedure,
     s: Session,
     op: &rider::Console,
-) -> (Value, Option<String>) {
+) -> (Value, rider::Ending) {
     let report = rider::drive(&s, op, p, rider::signals()).await;
     let identity = identity(&s);
     let dropped = s.pump_ended();
@@ -139,7 +170,7 @@ async fn ride(
     if let Some(line) = summary["result"]["line"].as_str() {
         println!("{line}");
     }
-    (summary, rider::stopped(&report))
+    (summary, rider::ending(&report))
 }
 
 fn unix_now() -> u64 {
@@ -184,7 +215,7 @@ async fn cold(
     )
     .await;
     let p = rider::Procedure::Check11c;
-    let (summary, stopped) = match opened {
+    let (summary, ending) = match opened {
         Ok(s) => ride(args, p, s, &op).await,
         Err(stop) => {
             let report = rider::Report {
@@ -194,18 +225,14 @@ async fn cold(
             drop(capture);
             let summary =
                 procedure_summary(p, args.check.name(), &report, &capture_path, unix_now());
-            let why = report
-                .procedure
-                .err()
-                .map(|e| format!("{e:?} (nothing was written to the trainer)"));
-            (summary, why)
+            let why = report.procedure.err().map_or_else(String::new, |e| {
+                format!("{e:?} (nothing was written to the trainer)")
+            });
+            (summary, rider::Ending::Stopped(why))
         }
     };
     let path = write_summary(&args.out, args.check, &summary)?;
-    Ok(match stopped {
-        None => Outcome::Done(path),
-        Some(why) => Outcome::Stopped(path, why),
-    })
+    Ok(Outcome::of(path, ending))
 }
 
 /// The summary of a finished procedure whose link is closed and whose capture is at
@@ -1033,6 +1060,44 @@ fn latency_summary(c: &Calibration<'_>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The last line `hil_fec` prints and its exit status: a completed run whose release was not
+    /// confirmed ends on that, with the rider instruction, and a non-zero status.
+    #[test]
+    fn the_last_line_and_the_exit_status_follow_the_release() {
+        let path = PathBuf::from("out/check11a.json");
+        let unconfirmed = format!("not connected; {}", rider::UNCONFIRMED);
+        for (outcome, last, status) in [
+            (
+                Outcome::Done(path.clone()),
+                "wrote out/check11a.json".to_string(),
+                0,
+            ),
+            (
+                Outcome::Unconfirmed(path.clone(), unconfirmed.clone()),
+                format!("DONE, but the release was NOT confirmed: {unconfirmed}"),
+                5,
+            ),
+            (
+                Outcome::Stopped(path, "Aborted(\"x\") (trainer released)".into()),
+                "STOPPED: Aborted(\"x\") (trainer released); wrote out/check11a.json".into(),
+                4,
+            ),
+            (Outcome::Blocked("y".into()), "BLOCKED: y".into(), 3),
+        ] {
+            let (lines, code) = outcome.lines();
+            assert_eq!((lines.last(), code), (Some(&last), status));
+        }
+        assert_eq!(
+            Outcome::of(
+                PathBuf::from("p"),
+                rider::Ending::Unconfirmed(unconfirmed.clone())
+            )
+            .lines()
+            .1,
+            5
+        );
+    }
 
     /// The two settled-invalid endpoints (#215) are still sent to the NEO: the codec now
     /// refuses them, so the cases patch the largest valid frame to the sentinel bytes.
