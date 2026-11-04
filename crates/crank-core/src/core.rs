@@ -12,8 +12,8 @@
 //! loaded ride's engine and to a window label; they end with the ride.
 use crate::backend::{Backend, DeviceMode};
 use crate::dto::{
-    CoreInfo, DeviceLinkInfo, DeviceRole, PairedDevice, RideLoaded, RideOutcome, RideRecord,
-    RideStatusView, RideSummary, ScannedDevice, WorkoutDetail, WorkoutSummary,
+    CoreInfo, DeviceLinkInfo, DeviceRole, KnownDevice, PairedDevice, RideLoaded, RideOutcome,
+    RideRecord, RideStatusView, RideSummary, ScannedDevice, WorkoutDetail, WorkoutSummary,
 };
 use crate::error::{ApiError, ErrorCode};
 use crate::library::Library;
@@ -1292,6 +1292,33 @@ impl Core {
                 link: live
                     .and_then(|(t, h)| if role == DeviceRole::Trainer { t } else { h })
                     .map(Into::into),
+            })
+            .collect())
+    }
+
+    /// The remembered pairings, for the bug report (ADR-0003 §2.3). They only pick the role
+    /// placeholder (`<trainer>`, `<strap>`) of an identifier field whose whole value is one of
+    /// theirs: the report redacts identifier fields by key whether or not a device is known, so a
+    /// device missing here (scanned, forgotten) costs the role, never privacy.
+    ///
+    /// # Errors
+    /// `Storage`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn known_devices(&self) -> Result<Vec<KnownDevice>, ApiError> {
+        Ok(self
+            .0
+            .store
+            .devices()?
+            .into_iter()
+            .filter_map(paired)
+            .map(|d| KnownDevice {
+                role: d.role,
+                platform_id: d.id,
+                name: d.name,
+                serial: d.serial,
             })
             .collect())
     }
@@ -2726,6 +2753,31 @@ mod tests {
         let mut told = second.remembered.lock().unwrap().clone();
         told.sort();
         assert_eq!(told, ["hrm", "neo"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn known_devices_are_the_remembered_pairings_with_their_roles() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open(dir.path(), &fake(vec![], false));
+        let neo = core
+            .device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        core.device_pair("hrm".into(), DeviceRole::HeartRate)
+            .await
+            .unwrap();
+        let mut known = core.known_devices().await.unwrap();
+        known.sort_by(|a, b| a.platform_id.cmp(&b.platform_id));
+        assert_eq!(
+            known
+                .iter()
+                .map(|d| (d.role, d.platform_id.as_str()))
+                .collect::<Vec<_>>(),
+            [(DeviceRole::HeartRate, "hrm"), (DeviceRole::Trainer, "neo")]
+        );
+        assert_eq!((&known[1].name, &known[1].serial), (&neo.name, &neo.serial));
+        core.device_forget(DeviceRole::Trainer).await.unwrap();
+        assert_eq!(core.known_devices().await.unwrap().len(), 1, "forgotten");
     }
 
     #[tokio::test(start_paused = true)]
