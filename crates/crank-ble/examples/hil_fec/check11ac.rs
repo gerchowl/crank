@@ -139,7 +139,8 @@ pub fn check11a(records: &[Record], notes: &[Note]) -> Value {
             "inside the compared windows",
         )?;
         let before = window(records, cue.saturating_sub(BEFORE_US), cue);
-        let after = window(records, at + SETTLE_US, drop.unwrap_or(end).min(end));
+        // No frame comes after a drop, so the window ends at the release or the last record.
+        let after = window(records, at + SETTLE_US, end);
         let link = drop.map_or_else(
             || {
                 format!(
@@ -500,6 +501,8 @@ mod tests {
             tx(10_500, &RELEASE),
             tx(15_000, &ControlPage::TargetPower { watts: 0.0 }),
             tx(15_300, &ControlPage::Request { page: 71, times: 1 }),
+            // A page 71 still naming the release comes first; only the one naming page 49 echoes ERG.
+            rx(15_200, [0xa4, 9, 0x4e, 5, 0x47, 48, 0, 0, 0, 0, 0, 0, 0]),
             rx(15_400, [0xa4, 9, 0x4e, 5, 0x47, 49, 1, 0, 0, 0, 0, 0, 0]),
             tx(25_000, &ERG),
         ];
@@ -586,6 +589,10 @@ mod tests {
                 ]
                 .concat(),
                 "contradictory: a frame is recorded at 10.2 s, before the trainer advertised",
+            ),
+            (
+                with(0, note(WINDOW_C, 9_000, &[COLD])),
+                "contradictory: the advertisement is stamped before the start cue",
             ),
             (
                 with(2, note(LINK, 38_600, &[READY])),
