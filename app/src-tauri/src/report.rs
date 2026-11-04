@@ -47,7 +47,8 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// The last [`TAIL`] records of `jsonl` (one segment of vigil's log), selected before anything
+/// The last [`TAIL`] records of `jsonl` (one segment of vigil's log; walking on into the rotated
+/// segments when it holds fewer is the `report_preview` command's job, #446), selected before anything
 /// else is done to them, reduced by [`allowlist::record`] with `known` (`Core::known_devices`; a
 /// caller that cannot read them sends no report), then read by `redactor` as `logs.jsonl`.
 ///
