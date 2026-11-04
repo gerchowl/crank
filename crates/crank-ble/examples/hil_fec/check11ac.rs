@@ -28,6 +28,19 @@ pub const AFTER: Duration = Duration::from_secs(30);
 const BEFORE_US: u64 = 15 * SEC;
 /// A window's first part, after a cue or the unplug, is left out.
 const SETTLE_US: u64 = 5 * SEC;
+/// The evidence 11a needs, from check 5's floor of 2 page-25 samples a second. Before: the
+/// 15 s window at that rate (30 samples). After, for "no drop": the procedure rides
+/// [`AFTER`] (30 s) after the answer, 25 s once [`SETTLE_US`] is left out; at least 20 s of it
+/// (5 s of slack for the answer's and the release's own timing), at least 40 samples.
+const MIN_BEFORE_SAMPLES: u64 = 30;
+const MIN_AFTER_US: u64 = 20 * SEC;
+const MIN_AFTER_SAMPLES: u64 = 40;
+/// A link whose peer has gone is reported down only when the supervision timeout runs out. The
+/// Bluetooth Core Specification bounds `connSupervisionTimeout` at 100 ms to 32 s (Vol 6, Part B,
+/// §4.5.2), so a powered-off trainer's link is down at most this long after its last packet;
+/// Apple's guideline ranges for the value have differed between releases, the Core bound is the
+/// one every link meets.
+pub const SUPERVISION_MAX: Duration = Duration::from_secs(32);
 
 /// The operator's confirmation that the plug is out; only `unplugged` makes 11a a result.
 pub const UNPLUGGED: Question = Question {
@@ -92,9 +105,18 @@ fn window(records: &[Record], from: u64, to: u64) -> Value {
     })
 }
 
-/// The first control write in `from..to`, as an error naming it.
-fn quiet(ctl: &[(u64, Control)], from: u64, to: u64, inside: &str) -> Result<(), String> {
-    match ctl.iter().find(|(at, _)| *at >= from && *at < to) {
+/// The first control write in `from..to` (`releases`: page 48 at 0 % too), as an error naming it.
+fn quiet(
+    ctl: &[(u64, Control)],
+    (from, to): (u64, u64),
+    releases: bool,
+    inside: &str,
+) -> Result<(), String> {
+    let counted = |c: &Control| releases || *c != Control::Resistance(0.0);
+    match ctl
+        .iter()
+        .find(|(at, c)| *at >= from && *at < to && counted(c))
+    {
         Some((at, c)) => Err(format!(
             "{c:?} written at {} s, {inside}",
             round1(secs(*at))
@@ -111,7 +133,7 @@ fn answered_at(notes: &[Note], q: &Question) -> Option<u64> {
 
 /// The result of check 11a from the capture's records and notes.
 pub fn check11a(records: &[Record], notes: &[Note]) -> Value {
-    let method = "stamps validated first (the unplug cue once, at most one drop after it, no control write from 15 s before the cue to the release), else unknown; unplugged = the operator's answer (decision table); drop = a link 01 stamp after the cue; before = page 25 in the 15 s up to the cue; after = page 25 from 5 s after the answer to the release; each: FE states, target-limit codes, status bits, mean power and share within ±10 % of the ERG target";
+    let method = "stamps validated first (the unplug cue once, at most one drop after it and no trainer frame after the drop, no control write but a release from 15 s before the cue to the release, ERG 100 W in force; the after window ends at the first release; at least 30 page-25 samples before; without a drop the answer before the release and at least 40 samples over 20 s after), else unknown; unplugged = the operator's answer (decision table); drop = a link 01 stamp after the cue; before = page 25 in the 15 s up to the cue; after = page 25 from 5 s after the answer to the release; each: FE states, target-limit codes, status bits, mean power and share within ±10 % of the ERG target";
     let unknown = |why: String| json!({ "method": method, "verdict": format!("unknown: {why}") });
     let run = || -> Result<Value, String> {
         let cue = stamp(&stamps(notes, WINDOW_A, &[UNPLUG])?, UNPLUG)
@@ -132,15 +154,51 @@ pub fn check11a(records: &[Record], notes: &[Note]) -> Value {
         }
         let ctl = controls(records);
         let end = procedure_end(records, &ctl);
-        quiet(
-            &ctl,
-            cue.saturating_sub(BEFORE_US),
-            end,
-            "inside the compared windows",
-        )?;
-        let before = window(records, cue.saturating_sub(BEFORE_US), cue);
-        // No frame comes after a drop, so the window ends at the release or the last record.
+        let from = cue.saturating_sub(BEFORE_US);
+        // A release may come early (the silence guard's), and ends the after window.
+        quiet(&ctl, (from, end), false, "inside the compared windows")?;
+        let end = ctl
+            .iter()
+            .find(|(t, c)| *t > cue && *c == Control::Resistance(0.0))
+            .map_or(end, |(t, _)| *t);
+        // The target in force through both windows: the last write before them.
+        let target = ctl.iter().rev().find(|(t, _)| *t < from).map(|(_, c)| *c);
+        if target != Some(Control::Erg(f64::from(TARGET_W))) {
+            return Err(format!(
+                "the target in force was {target:?}, not ERG {TARGET_W} W"
+            ));
+        }
+        if let Some(d) = drop
+            && let Some(r) = records.iter().find(|r| r.rx && r.at_us > d)
+        {
+            return Err(format!(
+                "contradictory: the trainer still sent a frame {} s after the stamped drop",
+                round1(secs(r.at_us - d))
+            ));
+        }
+        let before = window(records, from, cue);
         let after = window(records, at + SETTLE_US, end);
+        let count = |w: &Value| w["samples"].as_u64().unwrap_or(0);
+        if count(&before) < MIN_BEFORE_SAMPLES {
+            return Err(format!(
+                "{} page-25 samples in the 15 s before the cue (at least {MIN_BEFORE_SAMPLES})",
+                count(&before)
+            ));
+        }
+        if drop.is_none() {
+            if at >= end {
+                return Err("the unplug is answered at or after the release".into());
+            }
+            let span = end.saturating_sub(at + SETTLE_US);
+            if span < MIN_AFTER_US || count(&after) < MIN_AFTER_SAMPLES {
+                return Err(format!(
+                    "{} page-25 samples over {} s after the unplug (at least {MIN_AFTER_SAMPLES} over {} s)",
+                    count(&after),
+                    round1(secs(span)),
+                    MIN_AFTER_US / SEC
+                ));
+            }
+        }
         let link = drop.map_or_else(
             || {
                 format!(
@@ -257,7 +315,7 @@ pub fn check11c(records: &[Record], notes: &[Note]) -> Value {
             // The procedure writes, then stamps the cue: a write at the cue's own µs came first.
             let target = ctl.iter().rev().find(|(t, _)| *t <= at).map(|(_, c)| *c);
             let w = window(records, at + SETTLE_US, to);
-            let verdict = match quiet(&ctl, at + 1, to, "inside the window") {
+            let verdict = match quiet(&ctl, (at + 1, to), true, "inside the window") {
                 Err(why) => format!("unknown: {why}"),
                 Ok(()) if target != Some(Control::Erg(f64::from(TARGET_W))) => {
                     format!("unknown: the target in force was {target:?}, not ERG {TARGET_W} W")
@@ -490,6 +548,115 @@ mod tests {
                 verdict(&check11a(&r, &base.1)),
                 format!("unknown: {why}, inside the compared windows")
             );
+        }
+    }
+
+    /// The c3 review's 11a repros: no ERG in force, empty or late evidence, frames after a drop.
+    /// Each was a full row before; each is `unknown` with its reason now.
+    #[test]
+    fn check11a_needs_erg_in_force_enough_evidence_and_a_drop_the_frames_end_at() {
+        let (r, n) = ride11a((100, 0, 0));
+        let without = |page: u8| -> Vec<Record> {
+            r.iter()
+                .filter(|x| x.rx || page_of(&x.bytes) != Some(page))
+                .cloned()
+                .collect()
+        };
+        let mut resistance = without(49);
+        resistance.push(tx(5_000, &ControlPage::BasicResistance { pct: 30.0 }));
+        let release_at = |ms: u64| -> Vec<Record> {
+            let mut v: Vec<Record> = r.iter().filter(|x| x.at_us < ms * 1000).cloned().collect();
+            v.push(tx(ms, &RELEASE));
+            v
+        };
+        let late_answer = [
+            n[..1].to_vec(),
+            vec![note(&answer_tag("unplugged"), 62_000, b"unplugged")],
+        ]
+        .concat();
+        let with_drop = |at: u64| [n.clone(), vec![note(LINK, at, &[DETECTED])]].concat();
+        let silent: Vec<Record> = r.iter().filter(|x| !x.rx).cloned().collect();
+        for (records, notes, why) in [
+            (
+                without(49),
+                n.clone(),
+                "the target in force was Some(Resistance(0.0)), not ERG 100 W",
+            ),
+            (
+                resistance,
+                n.clone(),
+                "the target in force was Some(Resistance(30.0)), not ERG 100 W",
+            ),
+            (
+                vec![],
+                n.clone(),
+                "the target in force was None, not ERG 100 W",
+            ),
+            (
+                silent,
+                n.clone(),
+                "0 page-25 samples in the 15 s before the cue (at least 30)",
+            ),
+            (
+                r.clone(),
+                late_answer,
+                "the unplug is answered at or after the release",
+            ),
+            (
+                release_at(45_000),
+                n.clone(),
+                "18 page-25 samples over 9 s after the unplug (at least 40 over 20 s)",
+            ),
+            (
+                release_at(55_500),
+                n.clone(),
+                "39 page-25 samples over 19.5 s after the unplug (at least 40 over 20 s)",
+            ),
+            (
+                r.clone(),
+                with_drop(40_000),
+                "contradictory: the trainer still sent a frame 0.5 s after the stamped drop",
+            ),
+        ] {
+            let v = check11a(&records, &notes);
+            assert_eq!(verdict(&v), format!("unknown: {why}"), "{why}");
+        }
+        // The floors' edges hold: 30 samples before (the ride's own), 40 samples over 20 s after,
+        // and a drop at the cue's own microsecond.
+        assert!(
+            verdict(&check11a(&release_at(56_000), &n))
+                .starts_with("no link drop in 25 s unplugged")
+        );
+        let early: Vec<Record> = r.iter().filter(|x| x.at_us < 30_000_000).cloned().collect();
+        assert!(
+            verdict(&check11a(&early, &with_drop(30_000)))
+                .starts_with("link dropped 0 s after the unplug cue")
+        );
+    }
+
+    /// The 80 % boundary of "honoured" is inclusive.
+    #[test]
+    fn honoured_from_80_percent_within_10_percent() {
+        let w = |share: f64| json!({"samples": 40, "mean_cadence_rpm": 60.0, "within_10pct": share, "mean_power_w": 95.0, "target_limits": [0]});
+        assert_eq!(honoured(&w(80.0), 60), "honoured (mean 95.0 W)");
+        assert!(honoured(&w(79.9), 60).starts_with("not honoured, not_following"));
+    }
+
+    /// A run that did not complete has no 11a or 11c result fields, only `unknown` reasons.
+    #[test]
+    fn a_stopped_11a_or_11c_run_carries_no_result_fields() {
+        let none = crate::partb::PowerLag::NotMeasured("test".into());
+        let (r, n) = ride11a((100, 0, 0));
+        let v = crate::partb::analyse("check11a", &r, &[], &n, Some("aborted: x"), &none)
+            .expect("stem");
+        for key in ["verdict", "link", "before", "after"] {
+            assert_eq!(v[key], Value::Null, "{key}: {v}");
+        }
+        let (r, n) = ride11c((60, 100, 0));
+        let v = crate::partb::analyse("check11c", &r, &[], &n, Some("aborted: x"), &none)
+            .expect("stem");
+        for key in ["verdict", "times", "low_cadence", "normal_cadence"] {
+            assert_eq!(v[key], Value::Null, "{key}: {v}");
         }
     }
 

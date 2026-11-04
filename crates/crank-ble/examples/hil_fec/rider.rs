@@ -146,6 +146,10 @@ pub enum Cue {
     ColdStart,
     /// The run is over and the trainer released.
     Stop,
+    /// The run is over but the release was not confirmed (e.g. the link is down).
+    StopUnconfirmed,
+    /// Check 11a: page 25 went silent; the harness waits for the link to drop.
+    Silent,
 }
 
 impl Cue {
@@ -167,6 +171,8 @@ impl Cue {
             Self::Unplug => "keep pedalling at about 90 rpm and pull the trainer's mains plug now, then answer here".into(),
             Self::ColdStart => "start pedalling the unplugged trainer now, easy, about 90 rpm; the harness waits for it to advertise (60 s at most), connects, and asks before it applies anything".into(),
             Self::Stop => "done: trainer released (0 % resistance), stop pedalling".into(),
+            Self::StopUnconfirmed => "done, but the release was NOT confirmed: the trainer may still hold its target. Stop pedalling; if it still resists, unplug it and wait until its lights go out (runbook)".into(),
+            Self::Silent => format!("the trainer went silent: pedal easily; the harness waits up to {} s for the link to drop", crate::check11ac::SUPERVISION_MAX.as_secs()),
         }
     }
 }
@@ -878,11 +884,14 @@ async fn check11b<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Sto
 ///
 /// Expected: no drop. A drop is the finding, not a failure: it is stamped `# link 01`, the answer
 /// is asked unguarded if it is still missing, and the run completes (its release then fails with
-/// the link down, as in 11b). A page-25 silence with the link up aborts, naming the unplug.
+/// the link down, as in 11b). Page 25 silent for 2 s is the guard's stop: the release goes out at
+/// once, but a powered-off trainer goes silent before its link is reported down, so the harness
+/// then waits up to [`crate::check11ac::SUPERVISION_MAX`] for the drop, and only then aborts,
+/// naming the unplug.
 async fn check11a<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
-    use crate::check10::{ANSWER_WAIT, answer_tag};
-    use crate::check11::{DETECTED, LINK, TARGET_W};
-    use crate::check11ac::{AFTER, UNPLUG, UNPLUGGED, WINDOW_A};
+    use crate::check10::ANSWER_WAIT;
+    use crate::check11::TARGET_W;
+    use crate::check11ac::{AFTER, SUPERVISION_MAX, UNPLUG, UNPLUGGED, WINDOW_A};
     r.engage(TARGET_W).await?;
     r.cue(Cue::Cadence(90));
     r.hold(HOLD).await?;
@@ -898,22 +907,49 @@ async fn check11a<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Sto
     };
     match ridden {
         Err(Stop::Failed(why)) if why == DROPPED => {
-            r.note(LINK, &[DETECTED])?;
-            if answered.is_err() {
-                let op = r.op;
-                let a =
-                    tokio::time::timeout(ANSWER_WAIT, op.ask(UNPLUGGED.text, UNPLUGGED.options));
-                if let Ok(Some(a)) = a.await {
-                    r.note(&answer_tag(UNPLUGGED.key), a.as_bytes())?;
-                }
-            }
-            Ok(())
+            dropped_after_unplug(r, answered.is_err()).await
         }
-        Err(Stop::Aborted(why)) if why == SILENT => Err(Stop::Aborted(
-            "no page 25 for 2 s after the unplug cue, with the link still up".into(),
-        )),
+        Err(Stop::Aborted(why)) if why == SILENT => {
+            // The guard's release first (bounded): a silent trainer that is still linked gets it
+            // now. Then, since a powered-off trainer's link is only reported dropped when the
+            // supervision timeout runs out, which no BLE link sets above SUPERVISION_MAX, wait
+            // that long before calling the silence a live link's.
+            let _ = release(r.w).await;
+            r.cue(Cue::Silent);
+            let until = Instant::now() + SUPERVISION_MAX;
+            while !r.w.dropped() && Instant::now() < until {
+                sleep(POLL).await;
+            }
+            if r.w.dropped() {
+                return dropped_after_unplug(r, answered.is_err()).await;
+            }
+            Err(Stop::Aborted(format!(
+                "no page 25 after the unplug cue, and the link did not drop within {} s (the BLE supervision-timeout maximum)",
+                SUPERVISION_MAX.as_secs()
+            )))
+        }
         other => other,
     }
+}
+
+/// Check 11a's drop, the finding: stamped `# link 01`, and the unplug question asked unguarded
+/// (the link is down) if `unanswered`; the run completes.
+async fn dropped_after_unplug<W: Wire, O: Operator>(
+    r: &mut Rig<'_, W, O>,
+    unanswered: bool,
+) -> Result<(), Stop> {
+    use crate::check10::{ANSWER_WAIT, answer_tag};
+    use crate::check11::{DETECTED, LINK};
+    use crate::check11ac::UNPLUGGED;
+    r.note(LINK, &[DETECTED])?;
+    if unanswered {
+        let op = r.op;
+        let a = tokio::time::timeout(ANSWER_WAIT, op.ask(UNPLUGGED.text, UNPLUGGED.options));
+        if let Ok(Some(a)) = a.await {
+            r.note(&answer_tag(UNPLUGGED.key), a.as_bytes())?;
+        }
+    }
+    Ok(())
 }
 
 /// Check 11c before the link: the operator confirms the trainer is unplugged and off, then the
@@ -1132,7 +1168,12 @@ pub async fn drive<W: Wire, O: Operator>(
         let _ = tokio::time::timeout(RELEASE_WAIT, w.send(f)).await;
         sleep(Duration::from_millis(700)).await;
     }
-    op.cue(w.now_us(), Cue::Stop);
+    let stop = if release_error.is_none() {
+        Cue::Stop
+    } else {
+        Cue::StopUnconfirmed
+    };
+    op.cue(w.now_us(), stop);
     Report {
         procedure,
         release_error,
@@ -1256,6 +1297,7 @@ mod tests {
             Control::Track(grade, crr) => (51, vec![grade, crr]),
             Control::User(rider, bike) => (55, vec![rider, bike]),
             Control::Malformed(page) => (page, vec![]),
+            Control::NotAFrame => (0, vec![]),
         }
     }
 
@@ -2137,7 +2179,7 @@ mod tests {
             Some("not connected"),
             "the release write was attempted"
         );
-        assert_eq!(sim.cues().last(), Some(&Cue::Stop));
+        assert_eq!(sim.cues().last(), Some(&Cue::StopUnconfirmed));
     }
 
     #[tokio::test(start_paused = true)]
@@ -2236,7 +2278,7 @@ mod tests {
             "released 2 s after the stuck write"
         );
         assert!(sim.now_us() <= at + 8 * SEC, "the exit is bounded too");
-        assert_eq!(sim.cues().last(), Some(&Cue::Stop));
+        assert_eq!(sim.cues().last(), Some(&Cue::StopUnconfirmed));
     }
 
     #[tokio::test(start_paused = true)]
@@ -3037,6 +3079,7 @@ mod tests {
             let (sim, report) = run(Procedure::Check11a, plan, None).await;
             assert_eq!(report.procedure, Ok(()), "drop at {drop_at_us}");
             assert_eq!(report.release_error.as_deref(), Some("not connected"));
+            assert_eq!(sim.cues().last(), Some(&Cue::StopUnconfirmed));
             assert!(stamp_of(&sim, LINK, DETECTED).is_some_and(|at| at >= drop_at_us));
             let v = reanalysed(&sim, &report, Procedure::Check11a, "check11a");
             assert!(
@@ -3069,12 +3112,43 @@ mod tests {
         assert_eq!(
             report.procedure,
             Err(Stop::Aborted(
-                "no page 25 for 2 s after the unplug cue, with the link still up".into()
+                "no page 25 after the unplug cue, and the link did not drop within 32 s (the BLE supervision-timeout maximum)".into()
             ))
         );
+        // It waited the whole bound after the silence stop, then released.
+        let silent = sim.cue_at(Cue::Silent).expect("silence cue");
+        assert!(silent >= 42 * SEC, "{silent}");
+        assert!(release_at(&sim) >= silent + 32 * SEC);
+        assert_eq!(sim.cues().last(), Some(&Cue::Stop));
         assert_eq!(
             reanalysed(&sim, &report, Procedure::Check11a, "check11a")["verdict"],
             Value::Null
+        );
+    }
+
+    /// A powered-off trainer goes silent before its link is reported down: the drop 3 s after the
+    /// silence stop is still the finding, and the rider is told the release was not confirmed.
+    #[tokio::test(start_paused = true)]
+    async fn check11a_a_drop_after_the_silence_stop_is_still_the_finding() {
+        use crate::check11::{DETECTED, LINK};
+        let plan = Plan {
+            answers: &["unplugged"],
+            silent_from_us: Some(45 * SEC),
+            drop_at_us: Some(50 * SEC),
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check11a, plan, None).await;
+        assert_eq!(report.procedure, Ok(()));
+        assert_eq!(report.release_error.as_deref(), Some("not connected"));
+        assert!(sim.cue_at(Cue::Silent).is_some());
+        assert!(stamp_of(&sim, LINK, DETECTED).is_some_and(|at| at >= 50 * SEC));
+        assert_eq!(sim.cues().last(), Some(&Cue::StopUnconfirmed));
+        let v = reanalysed(&sim, &report, Procedure::Check11a, "check11a");
+        assert!(
+            v["verdict"]
+                .as_str()
+                .is_some_and(|x| x.starts_with("link dropped ")),
+            "{v}"
         );
     }
 

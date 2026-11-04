@@ -133,16 +133,22 @@ pub enum Control {
     /// A control page (this number) with a field that does not decode, or a bad checksum: still
     /// a write the trainer may act on, never the release.
     Malformed(u8),
+    /// A tx record that is not a 13-byte ANT frame (sync 0xA4): what the trainer makes of it is
+    /// unknown, so it counts as a malformed control write too.
+    NotAFrame,
 }
 
 /// Control writes `(at_us, control)` in write order: every tx page 48–51 and 55, whatever its
-/// fields ([`Control::Malformed`]).
+/// fields ([`Control::Malformed`]), and every tx record that is no ANT frame ([`Control::NotAFrame`]).
 pub fn controls(records: &[Record]) -> Vec<(u64, Control)> {
     let mut out: Vec<(u64, Control)> = records
         .iter()
         .filter(|r| !r.rx)
         .filter_map(|r| {
-            let page = page_of(&r.bytes).filter(|p| matches!(p, 48..=51 | 55))?;
+            let Some(page) = page_of(&r.bytes) else {
+                return Some((r.at_us, Control::NotAFrame));
+            };
+            let page = Some(page).filter(|p| matches!(p, 48..=51 | 55))?;
             Some((
                 r.at_us,
                 control(&r.bytes).unwrap_or(Control::Malformed(page)),
@@ -459,7 +465,12 @@ pub fn check8(records: &[Record]) -> Value {
             Control::Track(g, crr) => (st.grade, st.crr) = (g, crr),
             Control::Wind(cw, w, d) => (st.cw, st.wind_kmh, st.drafting) = (cw, w, d),
             Control::User(r, b) => st.mass = r + b,
-            Control::Erg(_) | Control::Resistance(_) | Control::Malformed(_) => continue,
+            Control::Erg(_)
+            | Control::Resistance(_)
+            | Control::Malformed(_)
+            | Control::NotAFrame => {
+                continue;
+            }
         }
         let next = ctl.get(i + 1).map_or(end, |n| n.0.min(end));
         if st.grade.is_nan() || st.mass.is_nan() || next.saturating_sub(*at) < HOLD_MIN {
@@ -977,6 +988,10 @@ fn malformed(records: &[Record]) -> Option<String> {
             "malformed control write (page {page} at {} s)",
             round1(secs(at))
         )),
+        Control::NotAFrame => Some(format!(
+            "malformed control write (not an ANT frame, at {} s)",
+            round1(secs(at))
+        )),
         _ => None,
     })
 }
@@ -1261,6 +1276,27 @@ mod tests {
                     "{stem}: {v}"
                 );
             }
+        }
+        // A tx record that is no ANT frame (short, or without the 0xA4 sync) counts the same.
+        for bytes in [vec![0xa4, 9, 0x4f], {
+            let mut f = tx(0, &free).bytes;
+            f[0] = 0;
+            f
+        }] {
+            let mut r = ride.clone();
+            r.push(Record {
+                at_us: 30 * SEC,
+                rx: false,
+                bytes,
+            });
+            assert_eq!(controls(&r)[2], (30 * SEC, Control::NotAFrame));
+            let v = run(&r, "check7");
+            assert_eq!(v["completed"], json!(false), "{v}");
+            assert!(
+                v["line"].as_str().is_some_and(|l| l
+                    .contains("no result: malformed control write (not an ANT frame, at 30 s)")),
+                "{v}"
+            );
         }
         // After the final release, it makes the run not released.
         let mut late = ride.clone();
