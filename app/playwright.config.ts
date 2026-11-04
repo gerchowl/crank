@@ -17,7 +17,8 @@ export default defineConfig({
   outputDir: "e2e-out/design",
   forbidOnly: true,
   workers: update ? 1 : undefined,
-  reporter: [["list"]],
+  // The list reporter drops annotations: e2e/design/warnings.ts prints the baseline's warnings after the run.
+  reporter: [["list"], ["./e2e/design/warnings.ts"]],
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,
     // The start screen hands off at once; fixtures render the same in every zone.

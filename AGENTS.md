@@ -105,7 +105,10 @@ fixture of `app/e2e/design/scenarios.ts` at 1024×768 and 1440×900 in both them
 (`rideBackend.ts`, `devicesBackend.ts`, `workoutsBackend.ts`, `historyBackend.ts`; a new screen state is a scenario entry
 plus its setup in `fixture.tsx`). Every rule starts as a warning: `app/e2e/design/baseline.json` holds the per-fixture,
 per-project count of each audit and axe rule, a count above it fails, a rule absent from it fails on its first violation,
-and #460 ratchets the counts down. `just design update` rewrites the baseline from the current counts (one worker);
+and #460 ratchets the counts down. Each rule still above zero, and each count now under its baseline ("lower it"), is
+printed after the run as a `design warning:` line (`app/e2e/design/warnings.ts`; the list reporter drops annotations).
+A baseline key that is no fixture × project of the run fails. `just design update` rewrites the baseline from the current
+counts and prunes such keys (one worker); any other mode than `check`/`update` is refused;
 commit it only with the change that moved a count, and say why in the PR. The browser is Chromium from nixpkgs
 (`playwright-driver.browsers`, the devShell's `PLAYWRIGHT_BROWSERS_PATH`); `@playwright/test` is pinned to the same version
 and the flake asserts it. Chromium stands in for the app's WKWebView: the WebdriverIO specs (`just e2e`) still test the
