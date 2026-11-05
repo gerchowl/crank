@@ -119,6 +119,22 @@ named `check5`, `check6`, `check7`, `check8`, `check9`, `check10`, `check11b` or
 Every result also carries `release`: whether page 48 at 0 % was the last control write and whether a
 page-71 reply echoed it.
 
+### Known limits (#516)
+
+The offline `analyse` validates each check's evidence separately. A capture built or edited by hand can still
+fool it into a full row. A live run cannot produce any of these captures:
+
+- **B1:** a control write stamped at the silence guard's release µs is checked by neither window. File order
+  decides the tie.
+- **B2:** records out of time order. `parse_capture` does not sort them, so the 11a silence check reads the last
+  page 25 in file order.
+- **B3:** with a drop, an unplug answer after the closing release is not rejected.
+- **N1:** the 11a silence boundary is 1 µs looser than the live guard. The analyser accepts a release exactly
+  `SILENCE_US` after the last page 25; the live guard needs strictly more.
+
+Until gerchowl/crank#516 lands (one validated, time-ordered capture timeline that every check reads), results
+come only from **unedited live captures**. #516 blocks the live Part B session (#44).
+
 ### Check 9: what counts as a stall
 
 Check 9 measures the trainer: down to which cadence the NEO's ERG holds 250 W while the rider follows
