@@ -21,6 +21,11 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Changed
 
+- CI and releases (ADR-0001 §9.6): the required PR gate is Linux only; macOS runs on `release/*` branches, nightly on
+  `dev` and on request. Release candidates `X.Y.Z-rc.N` (bundle version `X·1000000 + Y·10000 + Z·100 + N`, final
+  `… + 99`) are cut into `dev` and published as GitHub pre-releases with the zip, its `.sha256` and a build-provenance
+  attestation (`.sigstore.json`); final releases wait for Developer ID signing (#426)
+  ([#485](https://github.com/gerchowl/crank/issues/485))
 - Rail: 76 px wide with 12 px words (`--text-xs`) and `--space-1` side padding, so "Workouts" at 600 weight keeps 5.6 px inside its button (it spilled 2.75 px); content is 908 px at 1024 and 1300 px at 1440. The design suite asserts ≥ 4 px per rail word; DESIGN §6.1, §16.2, §16.3, §17.6 and §18.2 follow (#506, #467)
 
 ### Deprecated

@@ -1,18 +1,25 @@
-# Tag-and-release step (#428): after the owner merges release/X.Y.Z into main, build crank.app on a macOS
-# runner and draft the GitHub release with crank-X.Y.Z-aarch64-darwin.zip and its SHA-256. The owner publishes
-# the draft (that creates the X.Y.Z tag). Unsigned and not notarized until #47 / #426. No secrets.
+# Release (#428, #485, ADR-0001 §9.6). On the owner's merge of a release PR: release/X.Y.Z-rc.N into dev
+# publishes the GitHub pre-release X.Y.Z-rc.N; release/X.Y.Z into main would release X.Y.Z, which stays
+# refused until Developer ID signing and notarization land (#47, #426). Every build runs the full macOS gate,
+# then ships crank-<version>-aarch64-darwin.zip, its .sha256 and the .sigstore.json bundle of its
+# build-provenance attestation (asset names: RELEASING.md). A manual dispatch is a dry run on its ref: same
+# gate, zip, checksum and attestation, uploaded as a workflow artifact; no tag, no release. Unsigned
+# (ad-hoc only) and not notarized. GITHUB_TOKEN only, no secrets.
 name: Release
 
 on:  # yamllint disable-line rule:truthy
   push:
-    branches: [main]
+    branches: [dev, main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Rehearse this version (X.Y.Z or X.Y.Z-rc.N): bump it in the runner before building. Empty: the version of the ref'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
-
-concurrency:
-  group: release
-  cancel-in-progress: false
 
 jobs:
   detect:
@@ -23,37 +30,65 @@ jobs:
       pull-requests: read
     outputs:
       version: ${{ steps.detect.outputs.version }}
+      kind: ${{ steps.detect.outputs.kind }}
+      publish: ${{ steps.detect.outputs.publish }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Find the merged release PR
+      - name: Find the merged release PR, or plan the dry run
         id: detect
         env:
           GH_TOKEN: ${{ github.token }}
+          REHEARSE: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          VERSION=$(python3 -I scripts/release-version.py check | sed -E 's/^version sources agree: ([0-9.]+) .*/\1/')
-          HEADS=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[].head.ref')
+          VERSION=$(python3 -I scripts/release-version.py version)
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            [ -z "$REHEARSE" ] || VERSION=$REHEARSE
+            python3 -I scripts/release-version.py parse "$VERSION" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "dry run of $VERSION on $GITHUB_REF_NAME@$GITHUB_SHA"; exit 0
+          fi
+          KIND=$(python3 -I scripts/release-version.py parse "$VERSION" | sed -n 's/^kind=//p')
+          # A candidate is merged into dev, a final release into main.
+          case "$KIND/$GITHUB_REF_NAME" in rc/dev|final/main) ;; *)
+            echo "$GITHUB_REF_NAME@$GITHUB_SHA carries $VERSION ($KIND): nothing to release from this branch"; exit 0 ;;
+          esac
+          HEADS=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[] | select(.merged_at != null) | .head.ref')
           if ! grep -qx "release/$VERSION" <<<"$HEADS"; then
-            echo "main@$GITHUB_SHA is not the merge of release/$VERSION: nothing to release"; exit 0
+            echo "$GITHUB_REF_NAME@$GITHUB_SHA is not the merge of release/$VERSION: nothing to release"; exit 0
           fi
           # `gh release view` cannot resolve a draft by tag, so list.
           if gh api --paginate "repos/$GITHUB_REPOSITORY/releases" | jq -s -e --arg t "$VERSION" 'add // [] | any(.[]; .tag_name == $t)' >/dev/null; then
             echo "a release for $VERSION already exists"; exit 0
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$KIND" = final ]; then
+            echo "::error::$VERSION is a final release: final releases need Developer ID signing and notarization (#47, #426), and this workflow has neither. Publish release candidates until #426 lands (RELEASING.md)"
+            exit 1
+          fi
+          python3 -I scripts/release-version.py parse "$VERSION" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build crank.app and draft the release
+    name: macOS gate, build, attest${{ needs.detect.outputs.publish == 'true' && ' and publish' || ' (dry run)' }}
     needs: detect
     if: needs.detect.outputs.version != ''
     runs-on: macos-latest   # Apple Silicon, like CI's macos job
-    timeout-minutes: 90
+    timeout-minutes: 150
+    # Its own group per version (#439): the release group of Prepare and Abandon Release keeps one pending run,
+    # so a push queued behind it could have cancelled a release build.
+    concurrency:
+      group: release-build-${{ needs.detect.outputs.version }}-${{ needs.detect.outputs.publish }}
+      cancel-in-progress: false
     permissions:
-      contents: write
+      contents: write        # create the tag and the pre-release
+      id-token: write        # Sigstore signing of the attestation
+      attestations: write    # store the attestation in the repository
     env:
       VERSION: ${{ needs.detect.outputs.version }}
+      REHEARSE: ${{ inputs.version }}
+      ZIP: crank-${{ needs.detect.outputs.version }}-aarch64-darwin.zip
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,35 +96,62 @@ jobs:
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+      - name: Bump to the rehearsed version (dry run only)
+        if: ${{ inputs.version != '' }}
+        run: |
+          set -euo pipefail
+          python3 -I scripts/release-version.py bump "$REHEARSE"
+          nix develop -c cargo update --workspace
+          git diff --stat
+      - name: Full macOS gate
+        run: nix flake check -L
       - name: Build and package crank.app
         run: |
           set -euo pipefail
           nix build -L .#crank-app
-          ZIP="crank-$VERSION-aarch64-darwin.zip"
+          PLIST=result/crank.app/Contents/Info.plist
+          eval "$(python3 -I scripts/release-version.py parse "$VERSION" | grep -E '^(short|bundle)=')"
+          [ "$(plutil -extract CFBundleShortVersionString raw "$PLIST")" = "$short" ]
+          [ "$(plutil -extract CFBundleVersion raw "$PLIST")" = "$bundle" ]
           ditto -c -k --keepParent result/crank.app "$ZIP"
           shasum -a 256 "$ZIP" > "$ZIP.sha256"
-          cat "$ZIP.sha256"
+          shasum -a 256 -c "$ZIP.sha256"
           { python3 -I scripts/release-version.py notes "$VERSION"; sed "s/@VERSION@/$VERSION/g" .github/release-notes-footer.md; } > notes.md
-      - name: Draft the release
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ env.ZIP }}
+      - name: Verify the attestation as a test Mac will
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         run: |
           set -euo pipefail
-          gh release create "$VERSION" --draft --target "$GITHUB_SHA" --title "crank $VERSION" \
-            --notes-file notes.md "crank-$VERSION-aarch64-darwin.zip" "crank-$VERSION-aarch64-darwin.zip.sha256"
-
-  sync-dev:
-    name: Open the main to dev sync PR
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Open the PR
+          cp "$BUNDLE" "$ZIP.sigstore.json"
+          gh attestation verify "$ZIP" -R "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref "$GITHUB_REF" --deny-self-hosted-runners
+          gh attestation verify "$ZIP" -R "$GITHUB_REPOSITORY" --bundle "$ZIP.sigstore.json"
+      - name: Upload the build (dry run)
+        if: needs.detect.outputs.publish != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crank-${{ env.VERSION }}-dry-run
+          path: |
+            ${{ env.ZIP }}
+            ${{ env.ZIP }}.sha256
+            ${{ env.ZIP }}.sigstore.json
+            notes.md
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish the pre-release
+        if: needs.detect.outputs.publish == 'true' && needs.detect.outputs.kind == 'rc'
         run: |
           set -euo pipefail
-          if ! gh pr create --repo "$GITHUB_REPOSITORY" --base dev --head main --title "chore: sync main into dev" \
-            --body "Carries the release commit (version bump, frozen changelog) back to dev. Merge with a merge commit. Prepare Release refuses to run while dev is behind main."; then
-            echo "::warning::could not open the sync PR (open one from main into dev by hand, RELEASING.md)"
-          fi
+          gh release create "$VERSION" --prerelease --target "$GITHUB_SHA" --title "crank $VERSION" \
+            --notes-file notes.md "$ZIP" "$ZIP.sha256" "$ZIP.sigstore.json"
+      - name: Delete the merged release branch
+        if: needs.detect.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          # Prepare Release allows one release/* branch at a time; this one is merged and tagged.
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/release/$VERSION"
