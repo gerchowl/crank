@@ -325,7 +325,10 @@ impl Keeper {
     /// What a load and its ride report.
     fn ride_input(&mut self, now: MonoTime, input: Input<'_>) {
         match input {
-            Input::Refused if self.ride == Ride::Handed => self.free(Phase::Warm),
+            Input::Refused if self.ride == Ride::Handed => {
+                self.free(Phase::Warm);
+                self.resume_waiting();
+            }
             Input::Loaded(id) if self.ride == Ride::Handed => {
                 self.ride = Ride::Loaded {
                     id,
@@ -347,9 +350,21 @@ impl Keeper {
             }
             Input::Released if self.ride != Ride::Free => {
                 self.free(Phase::Cold);
-                self.intent = Intent::None;
+                if self.waiting {
+                    self.resume_waiting();
+                } else {
+                    self.intent = Intent::None;
+                }
             }
             _ => {}
+        }
+    }
+    /// A load that came while the links were still handed out (its predecessor's release or
+    /// return not yet reported) gets them now.
+    fn resume_waiting(&mut self) {
+        if self.waiting {
+            self.warm_up(true);
+            self.settle();
         }
     }
     /// The keeper is active again; the devices handed over are in `phase`.
@@ -488,17 +503,21 @@ impl Keeper {
         }
     }
     /// A load wants the links. Only one load runs at a time (the core's `loading` flag): one
-    /// that comes while another waits replaces it, which was cancelled.
+    /// that comes while another waits replaces it, which was cancelled. One that comes while
+    /// the links are still handed to a load that has ended (its release or their return is
+    /// reported on another channel, so it may come later) waits for them.
     fn acquire(&mut self, now: MonoTime) {
-        if self.ride != Ride::Free || self.shut {
+        if matches!(self.ride, Ride::Loaded { .. }) || self.shut {
             self.out.push(Effect::FailLoad);
             return;
         }
         self.latched = false;
         self.refresh(now);
         self.waiting = true;
-        self.warm_up(true);
-        self.settle();
+        if self.ride == Ride::Free {
+            self.warm_up(true);
+            self.settle();
+        }
     }
     /// Answer a waiting load once the trainer has settled: hand over when it is `warm` and the
     /// strap has settled too, fail it when the trainer is not to be had.

@@ -1023,6 +1023,8 @@ Details of the implementation (#469):
   that linked beside it stays the keeper's, `warm`, under the rules of §5.1.3 (the Ready sheet holds it).
 - A load is a `Likely` (it keeps a standing `ready`, and starts `T_cool` otherwise) and clears the latch.
 - A cancelled load that never took its links gives them back to the keeper, `warm`.
+- A load that comes while the links are still handed to a load that has ended (its release or their return not yet
+  reported to the keeper) waits for them; it never fails on that.
 - The `device{kind,id}` span of a ride (ADR-0001 §7.1) opens at the handover; a warm-up's attempt runs before any ride
   exists.
 - Pairing, forgetting and the Devices scan release the keeper's links first, as `Release(Devices)` does, whether or
