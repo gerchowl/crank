@@ -12,6 +12,9 @@ spike worktrees, or terminate processes you did not start.
 
 Releases (owner only; agents never push or merge `main`) follow [RELEASING.md](RELEASING.md); keep `## Unreleased` in
 [CHANGELOG.md](CHANGELOG.md) current and bump no version by hand (`scripts/release-version.py`, the `release-versions` flake check, #428).
+PR CI is Linux only; macOS runs post-merge on every push to `dev` (ADR-0001 §9.6). Before merging into `dev`, look at
+`dev`'s latest macOS run: a red one needs a `bug` issue first (a runner failure, #480, is re-run once and noted on its PR;
+RELEASING.md "Triage"). Merging a `release/*-rc.*` PR publishes a pre-release: leave release PRs to the owner.
 
 Run everything in `nix develop`; first run `pnpm install --frozen-lockfile`.
 Pre-commit (#456): run `prek install --allow-missing-config` once per clone (prek is pinned in the devShell). The hook lives in the
