@@ -1275,6 +1275,23 @@ wanted.engine = "position frozen while paused; speed 0 at resume"
 wanted.ui = "no jump"
 
 [[row]]
+id = "FM-ROUTE-11"
+phase = "paused"
+severity = "S1"
+failure_mode = "Reconnect on a climb re-applies the route grade at once"
+cause = "the reconnect re-issues Sim at the grade of the position instead of slewing from 0 %"
+fault_plan = "SimFault::Dropout on a 10 % route section, then the link returns and the rider pedals"
+detection = "slew monitor from the Ready tick"
+guard = "ADR-0005 §2.7.3; ADR-0002 §6"
+status = "missing"
+test = "missing"
+issue = 523
+note = "the engine test comes with the ride-mode issue of ADR-0005 §6"
+wanted.trainer = "nothing while not Ready; on Ready Sim with the grade slewed from 0 % at 1 %/s"
+wanted.engine = "trainer_lost while lost: position frozen; on resume model (a) from rest"
+wanted.ui = "reconnected banner; no grade jump"
+
+[[row]]
 id = "FM-FIN-01"
 phase = "finishing"
 severity = "S3"
