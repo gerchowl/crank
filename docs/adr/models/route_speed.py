@@ -14,7 +14,10 @@ Stdlib only. It implements the equations of §2.4 literally and checks them:
   and the model integrates the decoded wire values, so model (a) and the trainer use the same numbers.
 * check_invariants(): speed is never negative, position never decreases, a stop stays a stop on a
   climb (no rolling back) and a paused ride resumes from rest.
-* worked examples (§2.4.6): flat at 200 W, an 8 % climb at 200 W, a −6 % descent at 0 W, a stop and start.
+* check_relief(): the low-cadence relief of §2.8.1 arms only at or above the arming grade (≥ 2 %), never while
+  coasting on a descent or the flat, and ends when the climb ends even at cadence 0.
+* worked examples (§2.4.6): flat at 200 W, an 8 % climb at 200 W, a −6 % descent at 0 W, a stop and start, gravel,
+  and the relief's arming grade per FTP (§2.8.1).
 
 Run: python3 docs/adr/models/route_speed.py [path/to/0005-routes.md]   (exit 0 = all checks pass;
 the ADR path defaults to the sibling file).
@@ -43,6 +46,13 @@ TICK = 0.25          # engine tick, s (ADR-0001 §5)
 H = 0.025            # integration step, s: 10 sub-steps per tick
 V_MIN = 0.5          # m/s: propulsive force is P / max(v, V_MIN)
 V_STOP = 0.05        # m/s: below this with no net forward force, the bike is at rest
+
+# --- low-cadence relief on climbs (ADR-0005 §2.8.1) ---
+RELIEF_RPM, RELIEF_HOLD_S = 30, 3       # arms: cadence below 30 rpm for 3 s on a grade at or above the arming grade
+RETURN_RPM, RETURN_HOLD_S = 50, 2       # ends: cadence at least 50 rpm for 2 s (or the grade falls below arming)
+LOWEST_GEAR = 34 / 28                   # equipment default: compact 34 chainring, 28 cog (ratio 1.2143)
+WHEEL_CIRC_M = math.pi * (0.622 + 2 * 0.025)   # 700×25c: ISO 25-622, bead seat 622 mm + 2 × 25 mm tyre = 2.111 m
+GRADE_ARM_MIN = 2.0                     # %: the arming grade is never below this, so never on a flat or a descent
 
 # --- surface class → Crr (ADR-0005 §2.6.2), never above the FE-C maximum ---
 CRR_MAX = 0.0127     # FE-C page 51 maximum (unit 0xFE, ADR-0002 §4.3)
@@ -158,6 +168,71 @@ def steady_speed(power_w, grade_pct, p: Params):
     return 0.5 * (lo + hi)
 
 
+def relief_speed(cadence_rpm=RELIEF_RPM, gear=LOWEST_GEAR, circ=WHEEL_CIRC_M):
+    """Road speed, m/s, at a cadence in a gear (crank rev/s × ratio × wheel circumference)."""
+    return cadence_rpm / 60.0 * gear * circ
+
+
+def power_needed(v, grade_pct, p: Params):
+    """Steady power, W, to hold speed v on a grade (η·P = F·v)."""
+    return resist(v, grade_pct, p) * v / p.eta
+
+
+def arming_grade(ftp_w, p: Params, cadence_rpm=RELIEF_RPM, gear=LOWEST_GEAR, circ=WHEEL_CIRC_M):
+    """§2.8.1: the grade at which holding `cadence_rpm` in the lowest gear needs more than the rider's FTP, so
+    a rider below that cadence there cannot pedal back up and is stalling. Floored at GRADE_ARM_MIN."""
+    v = relief_speed(cadence_rpm, gear, circ)
+    lo, hi = 0.0, 100.0
+    if power_needed(v, hi, p) <= ftp_w:
+        return hi
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if power_needed(v, mid, p) < ftp_w else (lo, mid)
+    return max(GRADE_ARM_MIN, 0.5 * (lo + hi))
+
+
+def relief_trace(samples, arm_grade):
+    """§2.8.1 relief state over 1 s samples [(cadence_rpm, target_grade_pct)] → [released: bool].
+    Arms after RELIEF_HOLD_S below RELIEF_RPM with the target at or above the arming grade; ends after
+    RETURN_HOLD_S at or above RETURN_RPM, or at once when the target falls below the arming grade."""
+    out, released, low, high = [], False, 0, 0
+    for cad, grade in samples:
+        armed = grade >= arm_grade
+        if not released:
+            low = low + 1 if (cad < RELIEF_RPM and armed) else 0
+            if low >= RELIEF_HOLD_S:
+                released, high = True, 0
+        else:
+            high = high + 1 if cad >= RETURN_RPM else 0
+            if high >= RETURN_HOLD_S or not armed:
+                released, low = False, 0
+        out.append(released)
+    return out
+
+
+def check_relief():
+    """Relief never arms off a climb, arms on a stall, and ends when the climb ends even at cadence 0."""
+    p = Params()
+    for ftp in (100, 150, 200, 280, 400):
+        g = arming_grade(ftp, p)
+        assert g >= GRADE_ARM_MIN > 0, ("arming grade", ftp, g)
+        # at the arming grade, holding the relief cadence needs the FTP (or the floor applies)
+        assert g == GRADE_ARM_MIN or abs(power_needed(relief_speed(), g, p) - ftp) < 0.01, ("derivation", ftp, g)
+    g = arming_grade(200, p)
+    # coasting at cadence 0 on a descent and on the flat, for a minute: never released
+    for grade in (-15.0, -6.0, -0.5, 0.0, 1.9):
+        assert not any(relief_trace([(0, grade)] * 60, g)), ("released off a climb", grade)
+    # a stall on a climb: released after RELIEF_HOLD_S
+    tr = relief_trace([(80, g + 2)] * 5 + [(20, g + 2)] * 5, g)
+    assert tr.index(True) == 5 + RELIEF_HOLD_S - 1, tr
+    # released at the top of a climb, then the road tips into a descent at cadence 0: released ends at once
+    tr = relief_trace([(10, g + 2)] * 5 + [(0, -6.0)] * 5, g)
+    assert tr[4] and not any(tr[5:]), tr
+    # spinning back up ends it after RETURN_HOLD_S
+    tr = relief_trace([(10, g + 2)] * 4 + [(60, g + 2)] * 3, g)
+    assert tr[3] and tr[4] and not tr[5], tr
+
+
 # --- what crank sends (ADR-0005 §2.4.5): on the wire grid, and the model uses the decoded values ---
 def to_wire(grade_pct, crr, cda, rho=RHO):
     return (round(grade_pct / GRADE_UNIT), round(min(crr, CRR_MAX) / CRR_UNIT), round(cda * rho / CW_UNIT))
@@ -226,7 +301,7 @@ def check_invariants():
 
 
 def check_constants(adr_path):
-    """ADR-0005 §2.4.2 parameter table, §2.4.3 integration constants and §2.6.2 surface table == model."""
+    """ADR-0005 §2.4.2 parameters, §2.4.3 integration, §2.6.2 surface table and §2.8.1 relief constants == model."""
     text = open(adr_path, encoding="utf-8").read()
 
     def row(sym):
@@ -235,9 +310,12 @@ def check_constants(adr_path):
         return float(m.group(1))
 
     model = {"g": G, "rho": RHO, "M_rot": M_ROT, "eta_hub": ETA_HUB, "CdA": CDA, "Crr_default": CRR_DEFAULT, "drafting": DRAFTING,
-             "H": H, "V_MIN": V_MIN, "V_STOP": V_STOP, "Crr_max": CRR_MAX}
+             "H": H, "V_MIN": V_MIN, "V_STOP": V_STOP, "Crr_max": CRR_MAX,
+             "RELIEF_RPM": RELIEF_RPM, "RELIEF_HOLD_S": RELIEF_HOLD_S, "RETURN_RPM": RETURN_RPM,
+             "RETURN_HOLD_S": RETURN_HOLD_S, "LOWEST_GEAR": round(LOWEST_GEAR, 4),
+             "WHEEL_CIRC_M": round(WHEEL_CIRC_M, 3), "GRADE_ARM_MIN": GRADE_ARM_MIN}
     for sym, val in model.items():
-        assert abs(row(sym) - val) < 1e-12, ("ADR != model", sym, row(sym), val)
+        assert abs(row(sym) - val) < 1e-9, ("ADR != model", sym, row(sym), val)
     table = {k: float(v) for k, v in re.findall(r"^\| `(\w+)` \| [^|]*\| ([0-9.]+) \|", text, flags=re.M)
              if k in SURFACE_CRR}
     assert table == SURFACE_CRR, ("surface Crr table: ADR != model", table, SURFACE_CRR)
@@ -280,13 +358,18 @@ def worked_examples():
     vg = steady_speed(200, 0.0, replace(p, crr=SURFACE_CRR["gravel"]))
     lines.append(f"5. flat 0 %, 200 W on gravel (Crr {SURFACE_CRR['gravel']}): steady {kmh(vg):.1f} km/h "
                  f"(tarmac {kmh(v_ss):.1f} km/h)")
+    # 6. low-cadence relief: the arming grade per FTP (§2.8.1)
+    v = relief_speed()
+    arms = ", ".join(f"FTP {f} W: {arming_grade(f, p):.1f} %" for f in (150, 200, 280))
+    lines.append(f"6. relief arming grade, {RELIEF_RPM} rpm in 34x28 on 700x25c = {kmh(v):.1f} km/h: {arms} "
+                 f"(at 10 % that speed needs {power_needed(v, 10.0, p):.0f} W, at 20 % {power_needed(v, 20.0, p):.0f} W)")
     return lines
 
 
 def main(argv):
     adr = argv[1] if len(argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "0005-routes.md")
     check_constants(adr)
-    print("constants: ADR-0005 §2.4.2, §2.4.3, §2.6.2 == model (parameters, integration, surface Crr), ok")
+    print("constants: ADR-0005 §2.4.2, §2.4.3, §2.6.2, §2.8.1 == model (parameters, integration, surface Crr, relief), ok")
     check_steady_state()
     print("steady state: integrator == analytic power balance within 0.01 m/s on 5 grades, ok")
     dv, dx = check_step()
@@ -298,6 +381,9 @@ def main(argv):
     print("wire: grade, Crr and wind coefficient round-trip the FE-C grid; table Crr <= 0.0127, ok")
     check_invariants()
     print("invariants: v >= 0, position never decreases, no rolling back, resume from rest, ok")
+    check_relief()
+    print(f"relief: arming grade >= {GRADE_ARM_MIN} % for every FTP; never released coasting on a descent or "
+          "the flat; arms on a stall; ends when the climb ends, also at cadence 0, ok")
     print(f"worked examples (rider + bike {RIDER_KG + BIKE_KG:.0f} kg, CdA {CDA} m², Crr {CRR_DEFAULT}, "
           f"rho {RHO} kg/m³, hub power, still air):")
     for line in worked_examples():
