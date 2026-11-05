@@ -40,7 +40,8 @@ Facts this design rests on:
   descents when it is on mains power (DC Rainmaker's in-depth review, 2015, and trainer guide, 2019). The rider's
   freehub decouples the pedals, so the motor never turns the cranks.
 - **Privacy.** Route coordinates can reveal a home. crank keeps everything on the machine (ADR-0001 §7,
-  ADR-0003). An OSM lookup is the first feature that sends ride-related data to a third party.
+  ADR-0003). A per-route OSM lookup would be the first feature to send ride-related data to a third party, which
+  is why surface comes from a downloaded regional extract instead (§2.6.1, owner input of 2026-11-05).
 
 ## 2. Decision
 
@@ -67,8 +68,8 @@ pub struct RoutePoint {
 pub struct RouteSegment { pub start_m: f64, pub end_m: f64, pub label: Option<String>, pub grade: SegmentGrade, pub surface: Option<Surface> }
 pub enum SegmentGrade { FromPoints, Constant { pct: f64 }, Ramp { from_pct: f64, to_pct: f64 } }
 pub enum Surface { SmoothPaved, RoughPaved, Gravel, Grass, Sand, Cobbles }   // §2.6.2
-pub struct SurfaceProvenance { pub osm: Option<OsmLookup>, pub from_file: bool }
-pub struct OsmLookup { pub endpoint: String, pub fetched_at: UtcTime, pub trim_m: f64, pub matched_share: f32 }
+pub struct SurfaceProvenance { pub osm: Option<OsmMatch>, pub from_file: bool }
+pub struct OsmMatch { pub region: String, pub extract_at: UtcTime, pub matched_at: UtcTime, pub matched_share: f32 }
 ```
 
 The ride does not read points directly. `Route::profile(&RouteSettings) -> Profile` resamples and smooths
@@ -91,7 +92,8 @@ ride ridden on it: `ride.route_json` carries what the ride needs to show itself.
 ### 2.2 Import
 
 One import call per file: `Core::route_import(bytes, file_name, options) -> RouteImportOutcome`, where `options`
-holds the OSM opt-in and its trim (§2.6.1). The outcome is the route plus an **import report**, which the UI
+holds the track index of a multi-track file (§2.2.1); surface matching against the local index needs no option
+(§2.6.1). The outcome is the route plus an **import report**, which the UI
 shows before the route is saved: points kept, points dropped and why, gaps filled, elevation kind, distance,
 ascent, and the surface sources. Nothing is dropped or filled silently.
 
@@ -467,33 +469,89 @@ new Part B check measures it:
 - **The rider's choice** is the setting `route.speed_source = model | trainer`, default **model** (§5, Q4). It is
   fixed per ride, recorded in `ride.speed_source`, and both speeds are recorded when available (§2.7.5).
 
-### 2.6 OpenStreetMap surface (opt-in)
+### 2.6 OpenStreetMap surface, from a local regional extract
 
-#### 2.6.1 Privacy decisions
+#### 2.6.1 Decision: a local surface index per region
 
-| Decision | What crank does |
+Surface comes from OpenStreetMap **without the route ever leaving the machine**. The rider downloads a whole
+region once, crank keeps a compact surface index of it, and every route is matched against that index locally.
+
+- **Choosing a region (once).** Settings → Map data lists the regions of Geofabrik's download server (its
+  `index-v1-nogeom.json`, 0.5 MB, fetched when the list is opened), for example a country or a state. The rider
+  picks one or more. crank downloads `<region>-latest.osm.pbf` over HTTPS and checks it against Geofabrik's
+  published `.md5`.
+- **What the network sees:** the region's name and the rider's IP address, in a request every rider of that region
+  makes for the same bytes. Never a route, a point, a time stamp or a file name. Downloads happen only when the
+  rider starts one in Settings, never during a ride and never on their own. The downloader is in `crank-core`; the
+  index builder and matcher are a new pure crate, `crank-osm`. The `deps-edges` check fails if `crank-engine` or
+  `crank-domain` reaches either, or `reqwest` (ADR-0001 §2 rule 1).
+- **Building the index** (`crank-osm`, reading the PBF with `osmpbf` 0.3.8, MIT OR Apache-2.0):
+  - one streaming pass keeps the ways with a ridable `highway` value and their `surface`, `tracktype` and
+    `smoothness` tags, reduced to a surface class (§2.6.2) and a highway code;
+  - a second pass resolves only those ways' node coordinates;
+  - the result is stored in crank-store as `surface_region` (Geofabrik id, name, extract time from the PBF
+    header, md5, built_at, way count) and `surface_way` (region, class, highway code, geometry as zigzag-varint
+    deltas of 1e-7° coordinates), with a 0.01° grid table from cell to ways for matching.
+  - Non-ridable values are not kept: `motorway`, `motorway_link`, `construction`, `proposed`, `abandoned`,
+    `steps`, `elevator`, `platform`, `raceway`, `bus_guideway`, `busway`, `corridor`, `escape` and `via_ferrata`.
+  - The downloaded `.pbf` is deleted once the index is built. Only the index is kept.
+- **Lookup.** `route_import` matches every route that a stored region covers (§2.6.3). No opt-in is needed,
+  because nothing leaves the machine. The report says "surface: OpenStreetMap, <region> extract of <date>, <n> %
+  matched". `route_resurface(id)` re-matches a stored route, for example after a refresh. Points outside every
+  stored region fall back as below, and the report names the gap and offers to add the region.
+- **Fallback, offline or outside every region:** the surface from the file if present, else the default class
+  `smooth_paved` (Crr 0.004). The ride only ever reads the surface stored in the route.
+- **Update cadence and staleness.** Geofabrik normally updates its extracts every day. crank never refreshes on
+  its own. Map data shows each region's extract date and marks a region older than 180 days as outdated; refreshing
+  downloads it again and rebuilds the index. A route keeps the surface it was matched with, and its provenance
+  records the region and extract date, so a stale match is visible rather than silent. Road surfaces change
+  slowly (resurfacing, new gravel), so a season-old extract is still mostly right; 180 days is that rationale.
+- **Attribution and licence (ODbL 1.0).** The extracts are "created by OpenStreetMap contributors", licensed under
+  ODbL 1.0 (Geofabrik). The index is a derivative database used on the owner's machine. ODbL's share-alike applies
+  only to a derivative database that is publicly used (ODbL §4.4), and crank never shares the index. Wherever
+  OSM-derived surface is shown (Map data, import report, route library, ride summary) crank shows "Surface data ©
+  OpenStreetMap contributors", linked to https://www.openstreetmap.org/copyright (OSMF attribution guidelines). An
+  export that carries surface data (GPX/FIT) carries the same attribution and the ODbL notice.
+- **A later use, not decided here:** the same index holds road geometry, so a later ADR could draw a route map
+  from it with no tile server. This ADR adds no map (§2.6.4) and defers nothing to that idea.
+
+**Costs, measured on 2026-11-05.**
+
+Download sizes (Geofabrik `Content-Length` of `<region>-latest.osm.pbf`):
+
+| Region | PBF |
 |---|---|
-| **Opt-in, per route** | The import dialog has "Look up road surface on OpenStreetMap", **off by default**, never remembered as on. Next to it: "Sends parts of this route's coordinates to `<endpoint>`, a third-party server, which also sees your IP address. The start and end of the route are not sent." |
-| **At import time only, never during a ride** | The lookup runs inside `route_import`, before the route is saved, and nowhere else. To look up again, re-import the original (`route.original`). The engine has no network path: the OSM client lives in a new crate `crank-osm` that only `crank-core`'s import service depends on. The `deps-edges` check fails if `crank-engine` or `crank-domain` reaches `crank-osm` or `reqwest` (ADR-0001 §2 rule 1) |
-| **Trim start and end** | No point within `trim_m` (straight-line distance) of the route's first or last point is sent: default **1 000 m**, setting 0–5 000 m. Measured as a radius, not along the route, so a loop that starts and ends at home, or passes it again mid-route, never sends a point near it. Trimmed points take their surface from the file, else the default (offline fallback, below). A cell (next row) may still contain the start when the route crosses that cell farther than `trim_m` from it; the server then learns that the corridor passes the cell, not where in it the route starts |
-| **What is sent** | Only bounding boxes of the grid cells (web-Mercator zoom-14 tiles: 2.4 km at the equator, 1.7 km at 45°N) that the untrimmed route crosses, as one Overpass query per batch of at most 16 cells. Never the route line, time stamps, names or the file. The server learns a corridor at cell resolution, not the path |
-| **What is fetched** | `way[highway]` in those cells, with tags `highway`, `surface`, `tracktype` and `smoothness`, and their geometry (`out tags geom`). Matching happens on the machine (§2.6.3) |
-| **Endpoint** | Default `https://overpass-api.de/api/interpreter`, a public instance; the rider can set another (a self-hosted Overpass) in Settings. Usage-policy compliance below |
-| **Cache** | The result is stored in the route (`RoutePoint::surface`, `SurfaceProvenance::osm`: endpoint, time, trim, matched share). A route never queries twice; the ride reads only the stored surface |
-| **Offline fallback** | Surface from the file if present, else the default class `smooth_paved` (Crr 0.004). A failed lookup (no network, HTTP 429/504, timeout) completes the import with that fallback, and the report says why ("surface: from file / default; lookup failed: server busy (429)") |
-| **Attribution (ODbL)** | Wherever OSM-derived surface is shown (import report, route library, ride summary, any export), crank shows "Surface data © OpenStreetMap contributors", linked to https://www.openstreetmap.org/copyright (OSMF attribution guidelines). Stored routes are a derived database kept on the owner's machine. Exporting surface data (GPX/FIT export) carries the same attribution and ODbL notice |
+| Luxembourg | 48 MB |
+| Slovenia | 314 MB |
+| Switzerland | 550 MB |
+| Austria | 815 MB |
+| Bavaria | 857 MB |
+| California | 1 335 MB |
+| Netherlands | 1 410 MB |
+| Great Britain | 2 197 MB |
+| Germany | 4 876 MB |
+| France | 5 110 MB |
 
-**Usage policy.** The Overpass commons guideline is about 10 000 requests and under 1 GB per day per user;
-over-quota requests get HTTP 429, and resource overruns get 504. All of an app's users count together towards
-that. crank:
+Processing Slovenia (314 MB, extract of 2026-11-04) on sage (Mac Studio, Apple silicon):
 
-- sends one query at a time, with `[timeout:60]` and `[maxsize:67108864]` (64 MiB per batch);
-- sends at most 16 batches (256 cells, roughly 400–600 km of route) per import. A longer route is looked up only
-  for its first 16 batches, and the report says how much was matched;
-- sends a `User-Agent` naming the app and its repository (`crank/<version> (+https://github.com/gerchowl/crank)`),
-  with no user identifier;
-- does **no automatic retry** after 429 or 504. The import completes with the fallback, the report says the
-  server was busy, and the rider may re-import later.
+| Step | Measured | Notes |
+|---|---|---|
+| Download | 314 MB in 21 s | md5 matches Geofabrik's `.md5` |
+| Filter to `highway` ways and their nodes (`osmium tags-filter`, 1.18.0) | 1.8 s wall, 10.2 s CPU, 2.3 GB peak memory | 53 MB filtered PBF |
+| Resolve way geometry (`osmium export`, linestrings) | 3.9 s wall, 0.37 GB peak memory | 499 263 ridable ways (10 201 non-ridable dropped), 6 952 101 nodes, 13.9 nodes per way |
+| Tags | — | 34 % of the ways carry `surface` (asphalt 106 k, gravel 19 k, unpaved 10 k, ground 8 k, compacted 5 k); 72 k carry `tracktype`, 19 k `smoothness`; the other 66 % take the highway defaults of §2.6.2 |
+| **Index size** (crank's format, computed from those ways) | **≈ 35 MB**: 32.3 MB of geometry (zigzag-varint deltas of 1e-7°) + 2.6 MB of grid (637 936 cell-way pairs over 24 944 cells of 0.01°, 4 B each) | A tenth of the PBF |
+
+osmium stands in for crank's builder here because it is a native PBF reader. Its 2.3 GB peak comes from holding every
+node location of the extract. crank's two passes hold only the 7 M needed node ids and coordinates (about 16 B each,
+≈ 110 MB for Slovenia), and the R6 acceptance pins the builder's peak memory on its fixture.
+
+Measurement script and raw output: the PR of this ADR (#523).
+
+Filtering and the index are both linear in the PBF's size, so a region's figure is Slovenia's scaled by its PBF
+size: about 60 MB of index for Switzerland, 95 MB for Bavaria and 540 MB for Germany. These are estimates, not
+measurements; the mix of road types varies by region. The download is the dominant cost and happens once per
+region and refresh.
 
 #### 2.6.2 Surface → Crr
 
@@ -520,14 +578,13 @@ Surface classes, their OSM tags and Crr (checked against `route_speed.py`):
 
 #### 2.6.3 Matching
 
-- Each 10 m node takes the nearest fetched way segment within 20 m (a GPS track is within a few metres of the
+- Each 10 m node takes the nearest indexed way segment within 20 m (a GPS track is within a few metres of the
   road, and a 20 m limit avoids snapping to a parallel road beyond that).
 - When two ways are within 2 m of the same distance, the node keeps the previous node's way, so a junction
   does not flicker.
 - A surface run shorter than 50 m between two equal classes is absorbed into them. A short bridge or a mapping
   gap then does not change the Crr for 2 s.
-- Unmatched nodes fall back as in §2.6.1. `matched_share` (the share of untrimmed nodes matched) is stored and
-  shown.
+- Unmatched nodes fall back as in §2.6.1. `matched_share` (the share of nodes matched) is stored and shown.
 
 #### 2.6.4 Map display: decided out of scope
 
@@ -536,6 +593,18 @@ attribution. The ride shows the elevation profile with a position marker and a s
 library may draw the route's outline from its own coordinates, as a plain SVG line with no tiles; that is local
 data, no network.
 
+#### 2.6.5 Rejected for privacy: what a per-route lookup cannot hide
+
+The owner's options of 2026-11-05 (random sampling, other providers, a local copy) and the per-route lookup that
+the first draft proposed, judged by **what the provider can learn about the route**:
+
+| Alternative | Why rejected |
+|---|---|
+| **Random sampling of the route across several requests** | Every sampled point still lies on the route. The requests come from one IP within a short time, so the provider can join them back into the route. Decoy points help only when they are numerous, and then they load a volunteer-run service against its usage policy |
+| **Other providers** (another Overpass instance, a commercial API) | Changes whom we trust, not what we disclose: the route still leaves the machine |
+| **Caching tiles or cells along the route** | Fetching the tiles that cover the route's bounding box or corridor still traces the route at tile resolution (zoom 14 is 2.4 km at the equator, 1.7 km at 45°N). Only a uniform download of a whole region hides the route, which is the extract above |
+| **Per-route Overpass lookup** (the first draft: cells of the corridor, start and end trimmed, opt-in per route) | It still discloses a corridor of the route and the IP. It is **not offered**, not even as a fallback: the extract covers the same need with no disclosure, and a route outside every stored region falls back to the file or the default, and the report offers the missing region |
+
 ### 2.7 Ride integration
 
 #### 2.7.1 A route ride is a plan the engine runs
@@ -543,7 +612,7 @@ data, no network.
 `EngineCmd::Load` takes a `RidePlan`: `Workout(Workout)` (today's) or `Route(RouteRide)`. `RouteRide` holds:
 
 - the `Profile` of §2.1;
-- the `RouteSettings` (scales, cap, trim as imported);
+- the `RouteSettings` (scales, cap);
 - the speed source and the model parameters (masses, CdA).
 
 A route ride is **SIM from start to end**. It has no blocks, no ERG targets and no compliance: ADR-0002 §7.8
@@ -644,10 +713,10 @@ case, unchanged.
 | R3 store | `put_route`/`get_route` bit-exact (f64 NaN included) by property test; the migration is forward-only; deleting a route keeps its rides readable |
 | R4 elevation → grade | A refinement fixture `route_grade.json` emitted by `route_grade.py` (smoothed profile of every fixture segment, the pipeline trace of the 0 → 25 % step); the Rust `Profile` and pipeline match it within 1e-9; the flake check `route-grade-model` runs the model |
 | R5 speed model | A refinement fixture `route_speed.json` from `route_speed.py` (the worked examples' per-tick traces); the Rust integrator matches within 1e-9 m/s; the flake check `route-speed-model` runs the model; both models are also run by `just model` |
-| R6 OSM opt-in | No network call without the opt-in (a mock transport that fails the test on any request). The trim is honoured: no point within `trim_m` of the start or end contributes a cell, loop and pass-by cases included. 429, 504 and timeout each complete the import with the fallback and the reason. A cached route never queries. `deps-edges` fails when `crank-engine` depends on `crank-osm`. Attribution is present in the import report and the summary DTO |
+| R6 local surface index | No network call outside the Map data download, and none from `route_import`, `route_resurface` or a ride (a mock transport that fails the test on any other request). The md5 is checked and a mismatch refuses the region. A filtered fixture extract (a few km², committed under the size limit) builds an index whose way count, classes and matched surfaces are pinned. The `.pbf` is deleted after the build, and the builder's peak memory on the fixture is pinned (it holds only the kept ways' nodes, §2.6.1). A route outside every region falls back and names the gap. A stale region (> 180 days) is marked. `deps-edges` fails when `crank-engine` or `crank-domain` depends on `crank-osm` or `reqwest`. Attribution is present in Map data, the import report and the summary DTO |
 | R7 ride mode | `crank-engine` scenarios with `SimTrainer`: the slew bound on every emitted grade; the cap; start, pause, reconnect and release slew from 0 %; the low-cadence relief engages and ends at the thresholds; the end of the route sends the end mode; coasting a descent does not auto-pause; a stop at the bottom of a climb does; source (b)'s distance across the 256 rollover and a 12 s gap (estimated); a trainer without speed refuses (b) at load with the notice; "a grade changing every second stays `following`". FMEA rows FM-ROUTE-01..10 flip to `guarded` |
 | R8 HIL check 13 | §2.4.7 runs in the owner's Part B session; results in `docs/hil/<date>-fec.md`; a failed pass criterion amends this ADR |
-| R9 UI | The DESIGN amendment first; then Vitest + mockIPC for the import dialog (opt-in off by default, the disclosure text, the report), the library, and the ride template; design-harness fixtures for the route ride states; the mocks model every refusal of `route_import` and `ride_load` for routes |
+| R9 UI | The DESIGN amendment first; then Vitest + mockIPC for the import dialog and its report, Map data (region list, download progress, extract date, outdated mark, attribution), the library, and the ride template; design-harness fixtures for the route ride states; the mocks model every refusal of `route_import` and `ride_load` for routes |
 
 ## 3. Alternatives considered
 
@@ -656,8 +725,8 @@ case, unchanged.
 | Send the surface Crr above 0.0127 as extra grade (Crr − 0.0127 ≈ a grade offset) | It turns surface into slope, which the grade cap, the slew and the shown grade would then have to explain; indoors the difference above 0.0127 is not a safety or training matter. Both sides use the capped value instead |
 | Model (a) uses the scaled grade | Then a 50 % difficulty would shorten every climb's time, and (a) would be (b) with extra steps. The convention is feel only |
 | Air density from route elevation (ρ falls about 18 % at 2 000 m) | Page 50 would change continuously, adding a wind write to most grade changes and churn to the `wind` component, for a realism gain indoors that the rider never feels at the pedals. ρ stays the ISA constant |
-| Query Overpass with the route line (`around:` a polyline) | One query and less data, but it sends the exact path. Cells of 1.7–2.4 km send a corridor, which reveals less |
-| Look up surface during a ride, or on every load | Network during a ride (the owner's rule), repeated disclosure, and offline rides would differ from online ones |
+| Query Overpass with the route line (`around:` a polyline) | It sends the exact path. The per-route alternatives are in §2.6.5 |
+| Match surface during a ride, or on every load | The match is stored with the route, so a ride reads a fixed surface and is the same offline; a refresh re-matches only when the rider asks (`route_resurface`) |
 | Elevation from a terrain model (DEM) when the file has none | Another third-party call with the whole route. Riding flat with a label is honest and needs no network |
 | Savitzky–Golay or a moving average for smoothing | A moving average ripples, and Savitzky–Golay keeps short spikes (it preserves peaks by design). Both depend on the sample spacing unless resampled first; the Gaussian over 10 m samples depends on distance only |
 | Kalman filtering elevation with time stamps | Routes from planners have no time stamps, and one rule should serve every source |
@@ -671,8 +740,9 @@ case, unchanged.
 
 - Routes are a second kind of ride plan. The engine, store, contract and UI each gain a route path, and the
   ERG-only rules (compliance, soft start, ERG release) stay as they are, because a route is SIM throughout.
-- crank makes its first third-party network call carrying ride-related data. It is opt-in per route, at import
-  only, trimmed and coarsened, and kept out of the engine by a crate boundary.
+- crank downloads public OSM extracts, but sends no route anywhere: the network sees only which region the rider
+  chose. The price is disk and a one-off download per region (§2.6.1: from 48 MB for Luxembourg to 5.1 GB for
+  France), and surfaces as old as the extract.
 - Two executable models (`route_speed.py`, `route_grade.py`) join `trainer_following.py`. Their refinement
   fixtures tie the Rust code to them (R4, R5).
 - Model (a) and the trainer use the same inputs, so check 13 tests both the trainer and crank's model. A
@@ -689,12 +759,12 @@ Each has a recommendation, which this ADR implements unless the owner decides ot
 |---|---|---|---|---|
 | Q1 | Grade cap | −15 % to +20 % | Roads steeper than 20 % over 100 m ride as 20 % | +25 % (the NEO's maximum): more stall exposure at low cadence |
 | Q2 | Difficulty defaults | 100 % overall, 100 % on descents | A weak day on a hilly route is the road's difficulty until the rider lowers it | 50 % overall by default (common in other apps): the route no longer feels like itself unless changed |
-| Q3 | OSM trim | 1 000 m at both ends, plus every point within 1 km of the start | The first and last km use the file's surface or tarmac | 0 m: more surface, and the cells around home are queried |
+| Q3 | When a region's extract counts as outdated | 180 days, shown in Map data; refresh only on the rider's request | Surfaces up to half a year old | 30 days: a 5 GB France download monthly for little change |
 | Q4 | Default speed source | (a) crank's model | Speed differs from what the trainer would report until check 13 calibrates | (b) the trainer: no surface effect on speed unless sent as Crr, and nothing on trainers without speed |
 | Q5 | Cobbles' Crr | 0.0127 (the FE-C ceiling) | Unmeasured; may be harder than real cobbles on wide tyres | 0.008 (FE-C "rough road", sourced): cobbles feel like rough tarmac |
 | Q6 | SIM low-cadence relief thresholds | 30 rpm for 3 s, back at 50 rpm for 2 s | A rider grinding at 25 rpm on a 15 % wall gets released | ERG's 40/60 rpm: interrupts legitimate grinding at 40 rpm |
 | Q7 | ERG blocks inside a route (a structured workout on a route) | Not in v1 | A route ride has no targets | A combined plan: compliance, soft start and SIM↔ERG switching inside one ride; a design of its own |
-| Q8 | Overpass endpoint default | The public `overpass-api.de` | Its operator sees the rider's IP and the cell corridor | No default (the rider must set an endpoint): OSM surface is unusable for most riders |
+| Q8 | Per-route Overpass lookup as a fallback for routes outside every stored region | Not offered (§2.6.5) | Such a route rides on the file's surface or tarmac until the rider adds its region | An opt-in per-route lookup: discloses the route's corridor and the IP to a volunteer-run service |
 
 ## 6. Implementation issues (to file when this ADR is accepted; not filed yet)
 
@@ -707,10 +777,10 @@ In order. Each issue cites the section it builds and the acceptance of §2.9.
 | R3 | Route store and `route_import` / `route_list` / `route_get` / `route_delete` commands (ADR-0005 §2.1, §2.2) | migration, `route` table, `ride` columns, bit-exact round trip, `Core` facade + Tauri commands + bindings | R1 |
 | R4 | Elevation → grade profile and the send pipeline (ADR-0005 §2.3) | resampling, Gaussian smoothing, cap, scaling, slew/grid/period as pure functions; `route_grade.json` refinement fixture; flake check `route-grade-model` | R1 |
 | R5 | Speed model (a) (ADR-0005 §2.4) | integrator in `crank-domain`, `steady_speed`; `route_speed.json` refinement fixture; flake check `route-speed-model`; `just model` runs all three models | R4 |
-| R6 | OSM surface lookup, opt-in at import (ADR-0005 §2.6) | `crank-osm` (cells, Overpass client, matching, surface mapping), trim, cache, fallback, attribution, `deps-edges` rule | R3, R4 |
+| R6 | Local OSM surface index: region download, index build, matching (ADR-0005 §2.6) | Geofabrik region list and download with md5 check (`crank-core`); `crank-osm` (PBF filter over `osmpbf`, surface classes, index, matching); `surface_region`/`surface_way` tables; `route_resurface`; fallback, attribution, `deps-edges` rule | R3, R4 |
 | R7 | Route ride mode in the engine (ADR-0005 §2.5, §2.7, §2.8) | `RidePlan::Route`, position, SIM emission, start/pause/relief/end, `stopped_pedalling` amendment, source (b) with `TrainerCaps::speed`, recording, status fields; FMEA rows to `guarded` | R4, R5 (R6 optional: surfaces default without it) |
 | R8 | HIL check 13: speed model against trainer speed (ADR-0005 §2.4.7) | `hil_fec check13` and its analysis; added to `docs/hil/part-b.md` and the owner's runbook | R5, #524, #516 |
-| R9 | Route UI: import dialog with OSM consent, route library, route ride screen (ADR-0005 §2.6.1, §2.7.6) | DESIGN amendment first, then the screens and design-harness fixtures | R3, R6, R7 |
+| R9 | Route UI: import dialog, Map data settings, route library, route ride screen (ADR-0005 §2.6.1, §2.7.6) | DESIGN amendment first, then the screens and design-harness fixtures | R3, R6, R7 |
 | R10 | Route rides in FIT export (ADR-0005 §2.7.5) | the `virtual_activity` fields, position opt-in, ODbL notice in the export | #257, R7 |
 
 ## 7. References
@@ -741,10 +811,13 @@ Checked 2026-11-05.
 - DC Rainmaker, Tacx NEO in-depth review (2015-09-18): 25 % maximum, descent simulation to −5 %.
   https://www.dcrainmaker.com/2015/09/trainer-everything-wanted.html ; trainer recommendations (2019): the NEO drives
   the flywheel on descents when on mains power.
-- Overpass API commons and usage policy. https://dev.overpass-api.de/overpass-doc/en/preface/commons.html ;
-  https://wiki.openstreetmap.org/wiki/Overpass_API
+- Geofabrik download server: extracts "normally updated every day", ODbL 1.0, per-region `.osm.pbf` and `.md5`,
+  `index-v1-nogeom.json`. https://download.geofabrik.de/ (sizes read from `Content-Length` on 2026-11-05)
+- `osmpbf` 0.3.8 (MIT OR Apache-2.0). https://crates.io/crates/osmpbf
+- Overpass API commons and usage policy (§2.6.5, the rejected per-route lookup).
+  https://dev.overpass-api.de/overpass-doc/en/preface/commons.html
 - OpenStreetMap copyright and licence. https://www.openstreetmap.org/copyright ; OSMF attribution guidelines,
-  https://osmfoundation.org/wiki/Licence/Attribution_Guidelines ; ODbL 1.0, https://opendatacommons.org/licenses/odbl/1-0/
+  https://osmfoundation.org/wiki/Licence/Attribution_Guidelines ; ODbL 1.0 (§4.4 share-alike on public use), https://opendatacommons.org/licenses/odbl/1-0/
 - OSM wiki, `Key:surface`, `Key:smoothness`, `Key:tracktype`. https://wiki.openstreetmap.org/wiki/Key:surface
 - gpxpy test files (Apache-2.0), commit 056cdfc34677f85b0185abffb855d2de01520da7: `korita-zbevnica.gpx`,
   `cerknicko-jezero.gpx`. https://github.com/tkrajina/gpxpy/tree/dev/test_files
