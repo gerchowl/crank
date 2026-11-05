@@ -3,9 +3,10 @@
 How to run the Part B pedalling checks of ADR-0002 §9 with `hil_fec`. The owner's step-by-step session
 script (app flow plus these checks) is [part-b-runbook.md](part-b-runbook.md). This covers check 5 (page 25
 against the Cycling Power measurement `2A63`), the control checks 6, 7, 8, 9 and 12, and check 10
-(a second central while connected; [below](#check-10-a-second-central-while-connected)) and check 11b
-(the unplugged stop, a dropout and reconnect; [below](#check-11b-the-unplugged-stop-dropout-and-reconnect)).
-Checks 11a and 11c follow in their own PR (#412 part c3). Results go to a new `docs/hil/<date>-fec.md` in the
+(a second central while connected; [below](#check-10-a-second-central-while-connected)) and checks 11a–c
+with the trainer unplugged ([11a](#check-11a-unplug-while-pedalling),
+[11b](#check-11b-the-unplugged-stop-dropout-and-reconnect), [11c](#check-11c-the-unplugged-cold-start)).
+Results go to a new `docs/hil/<date>-fec.md` in the
 format of [the Part A results](2026-10-14-fec.md): one "Results at a glance" row per check, which each
 run prints.
 
@@ -29,8 +30,13 @@ The checks drive a real trainer under a rider, so every subcommand (`crates/cran
   capture shows whether the trainer took it, then disconnects. Each of these two writes is bounded at
   2 s, so a stuck link cannot hold the exit.
 
-A run that stops early prints `STOPPED: <why> (trainer released)` and exits with status 4; its capture and
-summary are still written and analysable, but give no result (below).
+A run that stops early prints `STOPPED: <why> (trainer released)` when its release was confirmed, else
+`STOPPED: <why> (release NOT confirmed: <error>; the trainer may still hold its target. Stop pedalling; …)`
+(`rider::stopped`, from the release's actual outcome, as the final cue), and exits with status 4; a check 11c that
+stops before the link wrote nothing (`… (nothing was written to the trainer)`). Its capture and summary are still
+written and analysable, but give no result (below). A run that completes with its release NOT confirmed (after
+an 11a or 11b drop) ends on `DONE, but the release was NOT confirmed: <error>; …` and exits with status 5
+(`checks::Outcome::lines`; the exit codes are in `main.rs`).
 
 ## Running
 
@@ -65,7 +71,9 @@ check's `.fecap`.
 | 9 | `hil_fec check9 --out DIR` | 90 rpm at 250 W ERG, then lower cadence smoothly, about 5 rpm every 10 s, and keep turning until the run ends. Stopping early is safe (the trainer is released) but aborts the run without a result | up to 3 min |
 | 12 | `hil_fec check12 --out DIR` | 90 rpm at 200 W ERG; the harness switches to `Free` (page 50 defaults, page 51 grade 0); after 10 s, cue to 70 rpm for 15 s | 1 min |
 | 10 | `hil_fec check10 --out DIR` | No pedalling. With the phone, try to connect to the NEO while `hil_fec` holds it, then type two answers in the window (below) | 1–3 min |
+| 11a | `hil_fec check11a --out DIR` | Trainer **plugged in**. 90 rpm at ERG 100 W (20 s); at the cue pull the mains plug and keep pedalling; answer `unplugged`; 30 s more (below) | 1.5 min |
 | 11b | `hil_fec check11b --out DIR` | Trainer **unplugged**. 90 rpm at ERG 100 W (20 s); released, stop and wait until the lights go out; pedal again to wake it; answer the lights question and type `y`; 90 rpm at 100 W again (20 s) (below) | 2–4 min |
+| 11c | `hil_fec check11c --out DIR` | Trainer **unplugged and off**. Type `y`, then at the cue start pedalling; the harness connects once it advertises; type `y`; soft start to 100 W, 20 s at 60 rpm, 20 s at 90 rpm (below) | 2 min |
 
 Each run writes `DIR/<check>.fecap` (both directions, the `.fecap` format) and `DIR/<check>.json` with the
 procedure's outcome, the release, the identity, and `result` (below), and prints the result row.
@@ -76,7 +84,16 @@ procedure's outcome, the release, the identity, and `result` (below), and prints
 After the link is closed, `hil_fec` appends the procedure's outcome as the capture's last line,
 `# hil_fec procedure: completed` (or `aborted: …`, `interrupted: …`, `failed: …`). Only a completed
 procedure gives a result: for any other outcome, or a capture without that line, the row reads
-`no result: procedure …` and `held`/`released`/`verdict` are null.
+`no result: procedure …` and `held`/`released`/`verdict` are null. A capture with a **malformed control
+write** (a tx page 48–51 or 55 with a field at its "invalid" value, or a bad checksum) gives no result
+either, whatever its outcome: the harness encodes only valid fields, so that write is not its procedure's.
+The row reads `no result: malformed control write (page N at t s)` and `invalid` names it. A tx record that is
+not a 13-byte ANT frame at all counts the same (`Control::NotAFrame`, `not an ANT frame`). `partb::controls`
+lists such a write as `Control::Malformed(page)`: it is never the release, and it ends an ERG hold (checks 5,
+6 and 9). A capture **cut off** before its end gives no result the same way: every run writes the release last
+(recorded before the write, a failed one too), so a capture whose last control write is not page 48 at 0 %, or
+is the opening release, reads `no result: the capture is cut off: no release write ends it` (`partb::cut_off`),
+offline as live.
 
 ```text
 hil_fec redact  --target RAW/check6.fecap --out docs/hil/captures
@@ -96,9 +113,27 @@ named `check5`, `check6`, `check7`, `check8`, `check9`, `check10`, `check11b` or
 | 12 | Mean power below 80 rpm after `Free` against the ERG target (released = below 90 %: ERG would hold it) and whether page 71 echoed pages 50 and 51 | §7.9 (`Free` sent explicitly) |
 | 10 | Whether a second central (the phone) could connect while `hil_fec` held the link, whether the NEO kept advertising (the scan beside the connection and the operator), and whether `hil_fec`'s link held ([below](#check-10-a-second-central-while-connected)) | §5 (single central) |
 | 11b | When the link dropped after the stop cue and how long the trainer ran on; the reconnect phase by phase; what the trainer reported after it, whether the first write was the release, and how the re-engaged ERG target was held; the cause from the lights answer ([below](#check-11b-the-unplugged-stop-dropout-and-reconnect)) | §6 (dropout, reconnect) |
+| 11a | Whether the link dropped after the unplug; page 25 before and after it (FE states, target-limit codes, status bits, mean power) ([below](#check-11a-unplug-while-pedalling)) | §6 |
+| 11c | Seconds from the start cue to the advertisement, the connect, the first page 25 and the first ERG echo; whether ERG 100 W is honoured at 60 and at 90 rpm ([below](#check-11c-the-unplugged-cold-start)) | §7.5 (FM-START-07) |
 
 Every result also carries `release`: whether page 48 at 0 % was the last control write and whether a
 page-71 reply echoed it.
+
+### Known limits (#516)
+
+The offline `analyse` validates each check's evidence separately. A capture built or edited by hand can still
+fool it into a full row. A live run cannot produce any of these captures:
+
+- **B1:** a control write stamped at the silence guard's release µs is checked by neither window. File order
+  decides the tie.
+- **B2:** records out of time order. `parse_capture` does not sort them, so the 11a silence check reads the last
+  page 25 in file order.
+- **B3:** with a drop, an unplug answer after the closing release is not rejected.
+- **N1:** the 11a silence boundary is 1 µs looser than the live guard. The analyser accepts a release exactly
+  `SILENCE_US` after the last page 25; the live guard needs strictly more.
+
+Until gerchowl/crank#516 lands (one validated, time-ordered capture timeline that every check reads), results
+come only from **unedited live captures**. #516 blocks the live Part B session (#44).
 
 ### Check 9: what counts as a stall
 
@@ -333,7 +368,7 @@ contradicts ADR-0002 §5 and is the trigger to amend it.
 The NEO has no battery. Unplugged, the rider's pedalling powers it, and it shuts down shortly after
 pedalling stops (#44, owner hint). Stopping until the lights go out is therefore the realistic dropout: the
 link drops, and pedalling again brings the trainer back. `check11b` measures that with the trainer unplugged
-from the start (check 11a, unplugging while pedalling, comes in #412 part c3).
+from the start ([check 11a](#check-11a-unplug-while-pedalling) unplugs it while pedalling).
 
 **Procedure** (`rider.rs` `check11b`):
 
@@ -374,8 +409,9 @@ procedure, or the row is `unknown: <the breach>`:
   exclude each other and end the sequence; never back in time;
 - the drop within 90 s of the stop cue (plus 0.2 s for the 100 ms poll); `05` within 60 s of the drop; `06`
   at the 60 s bound: not before it, and at most 1 s after it (the procedure's timer fires at the bound);
-- no control but the release (page 48 at 0 %) from the stop cue to the `y`, or to the end of the capture
-  without one: `unknown: <write> at <t> s after the stop cue, before the confirmed resume`;
+- no control write but the release from the stop cue to the `y`, or to the end of the capture without one:
+  `unknown: <write> at <t> s after the stop cue, before the confirmed resume`. Every tx page 48–51 and 55
+  counts, a malformed one too (`Malformed(51)`); only page 48 at exactly 0 % is the release;
 - the `y` only after `05` and after the release that follows `05`;
 - after `05`, one page-81 serial on each side of the drop, the same (a redacted capture compares its
   redacted serials, which are alike; the live run compared the real ones).
@@ -398,3 +434,90 @@ Duplicate or out-of-order stamps of check 10's window and scan are `unknown: con
   was unsure about the lights`; missing or unrecognised → `unknown` with the reason.
 
 The row reads `dropout <cause>; detected … after the stop cue (…); reconnect …; after it …`.
+
+### Check 11a: unplug while pedalling
+
+Pulling the plug while the flywheel turns should keep the trainer, and its link, alive on the rider's power
+(#44). `check11a` records whether it does and what page 25 says about it.
+
+**Procedure** (`rider.rs` `check11a`): ERG at **100 W** by soft start and 20 s at 90 rpm under the usual guards;
+the cue to pull the plug while pedalling on (stamped `# check11a <us> 01`); the question *Is the trainer's mains
+plug out now?* (`unplugged`, `cannot`; within 3 min, the guards running, the answer stamped
+`# answer-unplugged`); 30 s more at 100 W; the release. `cannot` aborts the run, released. Nothing is written
+from the cue to the release.
+
+- **A drop is the finding**, not a failure: it is stamped `# link <us> 01`, the question is asked (unguarded,
+  the link is down) if it is still unanswered, and the run completes. Its release then fails with
+  `not connected`, as in 11b; the trainer, if it is still powered, holds 100 W until the rider stops.
+- Page 25 silent for 2 s is the guard's stop, but a powered-off trainer goes silent before its link is reported
+  down: the link drops only when the BLE supervision timeout runs out, at most **32 s** (the Core Specification's
+  bound on `connSupervisionTimeout`, Vol 6 Part B §4.5.2; Apple's guideline ranges have differed between
+  releases). So the harness sends the release at once (bounded, as every release), cues *the trainer went
+  silent* (or, when that release failed or hung, *the trainer went silent and the release was NOT confirmed*,
+  with the instruction to stop pedalling, and the error is added to the abort reason) and waits up to 32 s for
+  the drop: a drop is the
+  finding as above; no drop aborts with `no page 25 after the unplug cue, and the link did not drop within 32 s
+  (the BLE supervision-timeout maximum)`.
+- The final cue says whether the release was confirmed: `done: trainer released` or `done, but the release was
+  NOT confirmed: the trainer may still hold its target …` (every check; after an 11a or 11b drop it is the
+  expected one).
+
+**Validation** (`check11ac::check11a`, live and offline), else `unknown: <the breach>`:
+
+- the unplug cue once; at most one `link 01`, not before the cue, and no trainer frame at or after its µs (a drop
+  is only a drop when the frames end there, and the stamp is written when the drop is reported, after the last
+  frame; tx frames are recorded even when the write fails, so only rx counts);
+- one answer, after the cue (two recorded answers are contradictory);
+- with a drop: the drop at or before the closing release (a drop stamped after it is contradictory); a release
+  before the drop only as the silence guard's: at least `rider::SILENCE_US` (2 s, the live guard's constant)
+  after the last page-25 frame, and no control write from it to the drop (a write at the drop's µs is after it);
+- ERG 100 W in force: the last write before the before window (15 s before the cue);
+- no control write at all from that window's start to the first release, and that release after the cue: a
+  release at or before the cue (its µs included) changes the target the before window is read under. The after
+  window ends at that release (the silence guard's comes early). No release after the window start means the
+  capture is cut off: `unknown`, as a live run always records its release;
+- evidence, from check 5's floor of 2 page-25 samples a second: at least 30 samples in the 15 s before the cue;
+  without a drop, the answer before the release and at least 40 samples over at least 20 s after it (the
+  procedure rides 30 s after the answer, 25 s once the first 5 s are left out; 5 s of slack for the answer's and
+  the release's timing). **Unplugged** is a decision table: `unplugged` → a result; `cannot` →
+`unknown: the operator could not unplug the trainer`; missing or unrecognised → `unknown` with the reason.
+
+**Result:** the link (`no link drop in X s unplugged` or `link dropped X s after the unplug cue`) and two
+windows of page 25: **before**, the 15 s up to the cue; **after**, from 5 s after the answer to the release
+(or the drop). Each gives its sample count, the FE states, target-limit codes and status bits seen, the mean
+power and its share within ±10 % of the target, and the mean cadence. The row reads `<link>; page 25 before →
+after: FE states …, target limits …, status bits …, mean power … W (ERG 100 W)`.
+
+### Check 11c: the unplugged cold start
+
+Unplugged and off, the NEO powers up only when the rider pedals. `check11c` times the cold start from the cue
+to the first ERG echo, and asks whether ERG targets are honoured at low cadence; if they are not, the following
+machine should report `not_following`, not a fault (#44, FMEA FM-START-07, Q7).
+
+**Procedure.** Before the link (`rider.rs` `cold_start`; `checks.rs` opens the capture first): the operator
+confirms the trainer is unplugged and off; the start cue (stamped `# check11c <us> 01`); a scan for an FE-C
+advertisement, at most **60 s** (`# link <us> 02` when seen); the connect, at most **30 s** (`# link <us> 04`
+when connected, discovered and subscribed). Nothing can be written before the link, so a bound that runs out
+aborts (`# link 06`), and a scan that ends or a connect that fails fails the run (`# link 07`); nothing is
+released because nothing was applied. Then as every run: the release, the page-81 request, the operator's
+`y`; then `check11c`: page 49 at 0 W and a page-70 request for page 71 (its echo), the soft start to **100 W**,
+the cue to **60 rpm** (stamped `02`) and 20 s, the cue to **90 rpm** (`03`) and 20 s, the release. The times
+count from the cue, so they include the moment the cue takes to reach the rider.
+
+**Validation** (`check11ac::check11c`, live and offline): the start cue, then `02` within 60 s of it and `04`
+within 30 s of `02` (each plus 0.5 s for the stamp), once each and in order, nothing else on `link`; the cues
+in order; no frame before the advertisement; the first control write the release, and a release ends the run (none:
+the capture is cut off); else `unknown: <the breach>`.
+
+**Result:**
+
+- **times:** from the start cue, `advertising`, `connected`, the first page 25, and the first ERG echo (the
+  first page 71 naming page 49 after the first page-49 write), with the echo's delay after its write.
+- **60 rpm / 90 rpm** (decision table), page 25 from 5 s after each cue to the next cue or the release. A write
+  inside the window, or a target in force other than ERG 100 W, → `unknown`; fewer than 10 samples, no
+  cadence, or a mean cadence more than 10 rpm from the cue → `unknown`; at least 80 % within ±10 % of 100 W →
+  `honoured`; otherwise `not honoured, not_following` with the mean power, the share and the target-limit codes
+  seen.
+
+The row reads `from the start cue: advertising +… s, connected +… s, first page 25 +… s, first ERG echo +… s
+(… s after its page 49); ERG 100 W at 60 rpm …, at 90 rpm …` (`no ERG echo (…)` when none came).
