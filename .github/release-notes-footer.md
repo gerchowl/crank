@@ -1,11 +1,21 @@
 
 ## Install
 
-Download `crank-@VERSION@-aarch64-darwin.zip` (Apple Silicon), check it against `crank-@VERSION@-aarch64-darwin.zip.sha256`
-(`shasum -a 256 -c crank-@VERSION@-aarch64-darwin.zip.sha256`), unzip it and move `crank.app` to `/Applications`.
+Assets of this release (Apple Silicon, macOS 13 or later):
+
+* `crank-@VERSION@-aarch64-darwin.zip`: `crank.app`
+* `crank-@VERSION@-aarch64-darwin.zip.sha256`: its SHA-256
+* `crank-@VERSION@-aarch64-darwin.zip.sigstore.json`: its build-provenance attestation
+
+Verify, unzip and move `crank.app` to `/Applications`:
+
+```sh
+shasum -a 256 -c crank-@VERSION@-aarch64-darwin.zip.sha256
+gh attestation verify crank-@VERSION@-aarch64-darwin.zip -R gerchowl/crank
+```
 
 **This build is not signed with a Developer ID and not notarized** (signing is tracked in #47 and #426), so Gatekeeper
-quarantines the download. Clear the flag once, before the first launch:
+refuses to open a zip downloaded with a browser. Clear the quarantine flag once, before the first launch:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/crank.app

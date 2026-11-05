@@ -1,40 +1,73 @@
 name: CI
 
-on:
+on:  # yamllint disable-line rule:truthy
   pull_request:
     branches: [dev, main]
   push:
     branches: [dev, main]
-  # prepare-release.yml dispatches CI on release/X.Y.Z: a push made with GITHUB_TOKEN starts no
+  # prepare-release.yml dispatches CI on release/<version>: a push made with GITHUB_TOKEN starts no
   # workflow, and the release PR needs `CI Summary` on its head (RELEASING.md).
   workflow_dispatch:
+    inputs:
+      macos:
+        description: 'Also run the macOS gate (it always runs on release/* branches)'
+        required: false
+        default: false
+        type: boolean
+  # The nightly macOS gate on dev (ADR-0001 §9.6). Schedules run from the default branch (main), so this
+  # takes effect once it has been released there; the jobs check out dev.
+  schedule:
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   cancel-in-progress: true
 
-# GitHub-hosted runners (the repo is public; no self-hosted runners, #25).
-# Both platforms run the locked flake gate, including shared/ tests (#28, #57).
-# macOS bundle assembly/signing awaits #37; BLE hardware is checked on sage.
+# GitHub-hosted runners (the repo is public; no self-hosted runners, #25). Both platforms run the locked
+# flake gate (#28, #57). The required gate on PRs is Linux; macOS runs on release candidates, release PRs,
+# the nightly and on request (ADR-0001 §9.6, #480). BLE hardware is checked on sage.
 jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      macos: ${{ steps.plan.outputs.macos }}
+      ref: ${{ steps.plan.outputs.ref }}
+    steps:
+      - id: plan
+        env:
+          MACOS: >-
+            ${{ github.event_name == 'schedule'
+            || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/'))
+            || (github.event_name == 'workflow_dispatch' && (inputs.macos || startsWith(github.ref, 'refs/heads/release/'))) }}
+          REF: ${{ github.event_name == 'schedule' && 'dev' || '' }}
+        run: |
+          echo "macos=$MACOS ref=${REF:-(event default)}"
+          { echo "macos=$MACOS"; echo "ref=$REF"; } >> "$GITHUB_OUTPUT"
+
   linux:
+    needs: plan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.ref }}
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
       - run: nix flake check -L
 
   macos:
+    needs: plan
+    if: needs.plan.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.plan.outputs.ref }}
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
@@ -43,13 +76,19 @@ jobs:
   ci-summary:
     name: CI Summary
     if: always()
-    needs: [linux, macos]
+    needs: [plan, linux, macos]
     runs-on: ubuntu-latest
     steps:
-      - name: Require linux and macos to have succeeded
+      - name: Require linux, and macos where it is wanted
         env:
           LINUX: ${{ needs.linux.result }}
           MACOS: ${{ needs.macos.result }}
+          MACOS_WANTED: ${{ needs.plan.outputs.macos }}
         run: |
-          echo "linux=$LINUX macos=$MACOS"
-          [ "$LINUX" = success ] && [ "$MACOS" = success ]
+          echo "linux=$LINUX macos=$MACOS macos wanted=$MACOS_WANTED"
+          [ "$LINUX" = success ] || exit 1
+          if [ "$MACOS_WANTED" = true ]; then
+            [ "$MACOS" = success ]
+          else
+            [ "$MACOS" = skipped ]
+          fi
