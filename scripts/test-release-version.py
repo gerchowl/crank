@@ -47,7 +47,8 @@ class Parse(unittest.TestCase):
 
     def test_malformed_versions_are_refused(self):
         for text in ("", "1.2", "1.2.3.4", "v1.2.3", "01.2.3", "1.02.3", "1.2.3 ", "1.2.3-rc", "1.2.3-rc.0", "1.2.3-rc.01",
-                     "1.2.3-RC.1", "1.2.3-beta.1", "1.2.3-rc.1.1", "1.2.3+build.5", "1.100.0", "1.2.100", "1.2.3-rc.99"):
+                     "1.2.3-RC.1", "1.2.3-beta.1", "1.2.3-rc.1.1", "1.2.3+build.5", "1.100.0", "1.2.100", "1.2.3-rc.99",
+                     "0.1.1\u0663", "\u0660.1.0", "0.1.0-rc.\u0661", "0.1.0\n", "0.1.0-rc.1\n", "\n0.1.0"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 rv.parse(text)
 
@@ -117,7 +118,7 @@ class ReleaseVersion(unittest.TestCase):
         self.assertIn("<key>CFBundleVersion</key><string>20099</string>", (self.root / "app/src-tauri/Info.plist").read_text())
 
     def test_bad_version_is_refused(self):
-        for bad in ("1.2", "1.2.3-rc.0", "1.2.3-beta.1", "1.100.0"):
+        for bad in ("1.2", "1.2.3-rc.0", "1.2.3-beta.1", "1.100.0", "0.1.1\u0663", "0.2.0\n"):
             with self.subTest(bad=bad):
                 self.assertNotEqual(run(self.root, "bump", bad)[0], 0)
                 self.assertEqual(run(self.root, "version")[1], "0.1.0\n")

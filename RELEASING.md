@@ -72,7 +72,10 @@ The attestation is also stored in the repository's attestations, so `gh attestat
 workflow is `gerchowl/crank/.github/workflows/release.yml`, its subject the zip's SHA-256, its source ref
 `refs/heads/dev` for a candidate (`refs/heads/main` for a final release) and its runner GitHub-hosted. An installer
 should pin all of these (`--signer-workflow`, `--source-ref`, `--deny-self-hosted-runners`), so that a dry-run
-attestation from another branch never vouches for a download. GitHub's
+attestation from another branch never vouches for a download. The pins do not tell a dry run **dispatched on `dev`**
+from a real release: both are `release.yml` on `refs/heads/dev`. The attestation proves where bytes were built, not that
+they were released, so an installer must consume only the assets of a published release (`gh release download`), never
+a workflow artifact. GitHub's
 `/releases/latest` ignores pre-releases: to find the newest build, list releases (`gh release list -R gerchowl/crank
 --limit 1 --json tagName,isPrerelease`, or `GET /repos/gerchowl/crank/releases?per_page=1`).
 
@@ -108,16 +111,25 @@ The release notes carry the same steps (`.github/release-notes-footer.md`).
 its verification, uploaded as the workflow artifact `crank-<version>-dry-run` (14 days). It creates no tag and no
 release. The optional `version` input rehearses another version (for example `0.2.0-rc.1`): the runner bumps the sources
 to it before building, so the rc mapping is exercised in a real bundle. The attestation of a dry run is real (it is in the
-repository's attestations and the public Sigstore log) but names the branch it ran on.
+repository's attestations and the public Sigstore log) and names the branch it ran on; a dry run on `dev` names `dev`,
+like a release (see Assets: only release assets are installable).
 
 ## CI and the macOS gate
 
 `CI Summary` (required on `dev` and `main`) requires the `linux` job; it requires the `macos` job only where it runs: on
-`release/*` branches (their PRs and the CI run Prepare Release dispatches), on the nightly schedule (`dev`, 03:17 UTC; a
-schedule runs from the default branch, so it starts once this reaches `main`), and on a manual CI dispatch with `macos`.
-macOS-only code (CoreBluetooth via `btleplug`, `crank-desktop`'s macOS lifecycle and display code, the `crank-app`
-bundle and its `bundle-no-nix-store` and `install-app` checks) is therefore checked nightly and per candidate, not per
-PR: a red nightly must be fixed before the next candidate (ADR-0001 §9.6).
+`release/*` branches (their PRs and the CI run Prepare Release dispatches), **post-merge on every push to `dev`**, and on
+a manual CI dispatch with `macos`. A post-merge run never gates a PR (about 41 min of hosted macOS time per merge; no
+billed minutes on a public repo, ADR-0001 §9.6). macOS-only code (CoreBluetooth via `btleplug`, `crank-desktop`'s macOS
+lifecycle and display code, the `crank-app` bundle and its `bundle-no-nix-store` and `install-app` checks) is therefore
+checked after each merge and per candidate, not per PR.
+
+**Triage of a red post-merge macOS run on `dev`** (anyone, agents included):
+
+1. If the job failed for the runner (not acquired, cancelled with `runner=null`, #480), re-run it **once** and note
+   the re-run with its link on the merged PR. A second runner failure is handled as below.
+2. Otherwise file a `bug` issue (`gh issue create -R gerchowl/crank --label bug`) with the run link and the merged PR
+   **before the next merge into `dev`**, and fix it by an ordinary PR. No release candidate is cut while `dev`'s
+   latest macOS run is red.
 
 ## Repository settings the flow relies on (owner)
 

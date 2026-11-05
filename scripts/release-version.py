@@ -30,7 +30,8 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-rc\.([1-9]\d*))?$")
+# ASCII digits only, matched whole: `\d` would take any Unicode digit and `$` a trailing newline.
+VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-rc\.([1-9][0-9]*))?")
 FINAL_BUILD = 99  # the B of a final release; rc numbers stay below it
 CARGO = re.compile(r'(\[workspace\.package\][^\[]*?^version\s*=\s*")([^"]+)(")', re.M | re.S)
 PLIST_SHORT = re.compile(r"(<key>CFBundleShortVersionString</key><string>)([^<]+)(</string>)")
@@ -66,7 +67,7 @@ class Version(NamedTuple):
 
 def parse(text):
     """Parse `X.Y.Z` or `X.Y.Z-rc.N`; raise ValueError for anything the bundle mapping cannot carry."""
-    m = VERSION.match(text)
+    m = VERSION.fullmatch(text)
     if not m:
         raise ValueError(f"'{text}' is not X.Y.Z or X.Y.Z-rc.N")
     major, minor, patch = (int(g) for g in m.group(1, 2, 3))

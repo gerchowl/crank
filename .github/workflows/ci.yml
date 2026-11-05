@@ -14,39 +14,36 @@ on:  # yamllint disable-line rule:truthy
         required: false
         default: false
         type: boolean
-  # The nightly macOS gate on dev (ADR-0001 §9.6). Schedules run from the default branch (main), so this
-  # takes effect once it has been released there; the jobs check out dev.
-  schedule:
-    - cron: '17 3 * * *'
 
 permissions:
   contents: read
 
+# A PR's new head supersedes its old run. A push to dev is not cancelled by the next one (that would starve
+# the post-merge macOS run on a busy day); GitHub still collapses queued runs to the latest.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # GitHub-hosted runners (the repo is public; no self-hosted runners, #25). Both platforms run the locked
 # flake gate (#28, #57). The required gate on PRs is Linux; macOS runs on release candidates, release PRs,
-# the nightly and on request (ADR-0001 §9.6, #480). BLE hardware is checked on sage.
+# after every merge into dev (post-merge, never gating a PR) and on request (ADR-0001 §9.6, #480). A red
+# post-merge macOS run on dev is triaged per RELEASING.md. BLE hardware is checked on sage.
 jobs:
   plan:
     name: Plan
     runs-on: ubuntu-latest
     outputs:
       macos: ${{ steps.plan.outputs.macos }}
-      ref: ${{ steps.plan.outputs.ref }}
     steps:
       - id: plan
         env:
           MACOS: >-
-            ${{ github.event_name == 'schedule'
+            ${{ (github.event_name == 'push' && github.ref == 'refs/heads/dev')
             || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/'))
             || (github.event_name == 'workflow_dispatch' && (inputs.macos || startsWith(github.ref, 'refs/heads/release/'))) }}
-          REF: ${{ github.event_name == 'schedule' && 'dev' || '' }}
         run: |
-          echo "macos=$MACOS ref=${REF:-(event default)}"
-          { echo "macos=$MACOS"; echo "ref=$REF"; } >> "$GITHUB_OUTPUT"
+          echo "macos=$MACOS"
+          echo "macos=$MACOS" >> "$GITHUB_OUTPUT"
 
   linux:
     needs: plan
@@ -54,7 +51,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.plan.outputs.ref }}
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
@@ -67,7 +63,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.plan.outputs.ref }}
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
