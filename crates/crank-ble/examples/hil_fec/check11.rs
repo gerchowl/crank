@@ -526,6 +526,79 @@ mod tests {
         );
     }
 
+    /// The c2 review's last two gaps: an ERG write at exactly the `y` stamp is no release before
+    /// it; and a control page whose field does not decode (page 51 grade 0xFFFF, page 55 rider
+    /// 0xFFFF) is still a control write, never the release.
+    #[test]
+    fn a_write_at_the_y_or_a_malformed_control_page_before_it_gives_unknown() {
+        let notes = [
+            link(&[(1, 40_000), (2, 44_000), (4, 45_000), (5, 45_200)]),
+            vec![note(WINDOW, 49_000, &[CONFIRMED])],
+        ]
+        .concat();
+        let erg = crank_fec::ControlPage::TargetPower { watts: 100.0 };
+        let mut at_y = trainer(45_200);
+        at_y.push(tx(49_000, &erg));
+        assert_eq!(
+            check11b(&at_y, &notes)["verdict"],
+            json!(
+                "unknown: contradictory: the operator's y is stamped before the release after the reconnect"
+            )
+        );
+        // An encoded page with one field set to its "invalid" value, checksum fixed.
+        let invalid = |at_ms: u64, page: &crank_fec::ControlPage, field: [usize; 2]| {
+            let mut f = tx(at_ms, page);
+            for i in field {
+                f.bytes[i] = 0xff;
+            }
+            f.bytes[12] = f.bytes[..12].iter().fold(0, |x, v| x ^ v);
+            f
+        };
+        let track = crank_fec::ControlPage::Track {
+            grade_pct: 5.0,
+            crr: 0.004,
+        };
+        let user = crank_fec::ControlPage::UserConfig {
+            rider_kg: 75.0,
+            bike_kg: 10.0,
+            wheel_m: 0.708,
+        };
+        let grade = invalid(42_000, &track, [9, 10]);
+        let rider = invalid(46_000, &user, [5, 6]);
+        let mut good = vec![tx(45_300, &RELEASE), tx(50_000, &erg)];
+        good.extend(trainer(45_200));
+        for (bad, why) in [
+            (grade, "Malformed(51) at 12 s"),
+            (rider, "Malformed(55) at 16 s"),
+        ] {
+            let mut r = good.clone();
+            r.push(bad);
+            assert_eq!(
+                check11b(&r, &notes)["verdict"],
+                json!(format!(
+                    "unknown: {why} after the stop cue, before the confirmed resume"
+                ))
+            );
+        }
+        // Only page 48 at exactly 0 % is the release: 0.5 % is a control write.
+        let mut half = good.clone();
+        half.push(tx(
+            46_000,
+            &crank_fec::ControlPage::BasicResistance { pct: 0.5 },
+        ));
+        assert_eq!(
+            check11b(&half, &notes)["verdict"],
+            json!(
+                "unknown: Resistance(0.5) at 16 s after the stop cue, before the confirmed resume"
+            )
+        );
+        assert!(
+            check11b(&good, &notes)["verdict"]
+                .as_str()
+                .is_some_and(|v| v.starts_with("dropout "))
+        );
+    }
+
     /// The row is `unknown: <why…>`, with no result.
     fn unknown_with(records: &[Record], notes: &[Note], why: &str) {
         let v = check11b(records, notes);
