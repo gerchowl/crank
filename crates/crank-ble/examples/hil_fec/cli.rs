@@ -42,8 +42,12 @@ pub enum Check {
     Check9,
     /// Check 10: a second central while connected (operator with a phone).
     Check10,
+    /// Check 11a: unplug while pedalling (rider).
+    Check11a,
     /// Check 11b: dropout, the unplugged stop, and the reconnect (rider).
     Check11b,
+    /// Check 11c: the unplugged cold start, then the connect (rider).
+    Check11c,
     /// Check 12: ERG 200 W → `Free` release (rider).
     Check12,
     /// Handle reuse: adapter lookup or scan, per connect (#468, ADR-0002 §5.1.2).
@@ -51,7 +55,7 @@ pub enum Check {
 }
 
 impl Check {
-    const ALL: [(&'static str, Self); 20] = [
+    const ALL: [(&'static str, Self); 22] = [
         ("scan", Self::Scan),
         ("known", Self::Known),
         ("idle", Self::Idle),
@@ -69,7 +73,9 @@ impl Check {
         ("check8", Self::Check8),
         ("check9", Self::Check9),
         ("check10", Self::Check10),
+        ("check11a", Self::Check11a),
         ("check11b", Self::Check11b),
+        ("check11c", Self::Check11c),
         ("check12", Self::Check12),
         ("reuse", Self::Reuse),
     ];
@@ -83,7 +89,9 @@ impl Check {
             Self::Check8 => Some(Procedure::Check8),
             Self::Check9 => Some(Procedure::Check9),
             Self::Check10 => Some(Procedure::Check10),
+            Self::Check11a => Some(Procedure::Check11a),
             Self::Check11b => Some(Procedure::Check11b),
+            Self::Check11c => Some(Procedure::Check11c),
             Self::Check12 => Some(Procedure::Check12),
             _ => None,
         }
@@ -113,7 +121,7 @@ pub struct Args {
 }
 
 /// Usage text.
-pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check5|check6|check7|check8|check9|check10|check11b|check12|reuse> \
+pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check5|check6|check7|check8|check9|check10|check11a|check11b|check11c|check12|reuse> \
 [--out DIR] [--scan-secs N] [--idle-secs N] [--target ID_OR_PATH]";
 
 fn number(flag: &str, text: &str) -> Result<u64, String> {
@@ -196,7 +204,9 @@ mod tests {
             ("check8", Procedure::Check8),
             ("check9", Procedure::Check9),
             ("check10", Procedure::Check10),
+            ("check11a", Procedure::Check11a),
             ("check11b", Procedure::Check11b),
+            ("check11c", Procedure::Check11c),
             ("check12", Procedure::Check12),
         ] {
             let a = parse(args(&[name, "--out", "/x"]), Path::new("/o")).expect("parses");
