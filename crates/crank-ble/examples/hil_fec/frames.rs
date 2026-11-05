@@ -478,7 +478,8 @@ pub fn reply_accounting(records: &[Record]) -> ReplyAccounting {
             if let Some(b) = base {
                 let c = (seq + 256 - b % 256) % 256;
                 // Candidate indices congruent to `c` (mod 256) within the last 256 writes.
-                let j = counted - (counted + 256 - c % 256) % 256;
+                // 0 (no candidate) when the sequence names a write before the capture's first.
+                let j = counted.saturating_sub((counted + 256 - c % 256) % 256);
                 if j > 0 && answered_at.contains_key(&j) && answered_when.get(&j) == Some(&counted)
                 {
                     hit = Some(None); // repeat of a reply, no write since

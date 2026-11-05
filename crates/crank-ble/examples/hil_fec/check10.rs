@@ -10,7 +10,7 @@ use crate::{
     cps::max_gap,
     frames::{Note, Stamp, stamp, stamp_of, stamps},
     partb::{SEC, round1, samples, secs},
-    timeline::{Grammar, Timeline},
+    timeline::{Grammar, Step, Timeline},
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -34,11 +34,15 @@ pub const ANSWER_WAIT: Duration = Duration::from_mins(3);
 /// Page 25 silent this long inside the window means the link was not held (ADR-0002 §6).
 const LINK_GAP_MAX_US: u64 = 2 * SEC;
 
-/// Check 10's stamped events ([`Timeline::grammar`]).
-const GRAMMAR: Grammar = Grammar {
-    cue: (WINDOW, OPEN),
+/// Check 10's event grammar ([`Timeline::grammar`]): the window opens and closes once, the
+/// listed answer and the optional connect answer inside it, between the opening and the closing
+/// release.
+pub(crate) const GRAMMAR: Grammar = Grammar {
+    tag: Some(WINDOW),
     answers: &[LISTED.key, CONNECT.key],
-    drop: false,
+    ignored: &[SCAN, ADV],
+    shape: "^Rf*1f*af*(?:bf*)?2f*Rf*$",
+    programs: &[&[Step::Release, Step::Release]],
 };
 
 /// One typed question: capture key (tag `answer-<key>`), text, accepted answers.
@@ -218,13 +222,24 @@ fn advertising(
 pub fn check10(tl: &Timeline) -> Value {
     let method = "window = the check10 open/close events; advertising = the parallel scan's adverts of this trainer inside the window (largest gap with the window's edges) and the operator's 'listed' answer, 'not seen' only when both agree; second central = the 'connect' answer, asked only when the phone listed the NEO; link held = no page-25 gap > 2 s inside the window";
     let (records, notes) = (tl.records(), tl.notes());
-    let window = tl.grammar(&GRAMMAR).and_then(|()| {
-        let w = stamps(notes, WINDOW, &[OPEN, CLOSE])?;
+    let window = stamps(notes, WINDOW, &[OPEN, CLOSE]).and_then(|w| {
         match (stamp_of(&w, OPEN), stamp_of(&w, CLOSE)) {
             (Some(from), Some(to)) => Ok((from, to)),
             _ => Err("the capture has no complete check 10 window".into()),
         }
     });
+    // The procedure asks the connect question exactly when the phone listed the NEO; a completed
+    // run with the one and not the other did not run it.
+    let window =
+        window.and_then(
+            |w| match (answer(notes, &LISTED).as_deref(), recorded(notes, &CONNECT)) {
+                (Ok("seen"), None) => Err(
+                    "contradictory: the phone listed the NEO, yet no connect answer is recorded"
+                        .into(),
+                ),
+                _ => Ok(w),
+            },
+        );
     let (from, to) = match window {
         Ok(w) => w,
         Err(why) => {
@@ -431,8 +446,19 @@ mod tests {
                         "unknown: unrecognised answer \"maybe\" to whether the phone connected"
                             .into()
                     }
+                    // The procedure asks the connect question after `seen`: none is no run of it.
                     (Some("seen"), None) => {
-                        "unknown: no answer to whether the phone connected".into()
+                        let v = check10(&page25(80), &window(&n));
+                        assert_eq!(
+                            (&v["second_central"], &v["verdict"]),
+                            (
+                                &Value::Null,
+                                &json!(
+                                    "unknown: contradictory: the phone listed the NEO, yet no connect answer is recorded"
+                                )
+                            )
+                        );
+                        continue;
                     }
                     (Some(l @ ("not-seen" | "unsure")), Some(c)) => format!(
                         "unknown: contradictory answers: the phone's listing was {l:?}, yet a connect answer {c:?} is recorded"
@@ -496,6 +522,7 @@ mod tests {
         let seen = [
             note(WINDOW, 10, &[OPEN]),
             note(&answer_tag("listed"), 20, b"seen"),
+            note(&answer_tag("connect"), 25, b"failed"),
             note(WINDOW, 70, &[CLOSE]),
         ];
         assert_eq!(
@@ -584,7 +611,7 @@ mod tests {
             ],
             vec![
                 note(SCAN, 5, &[OPEN]),
-                note(SCAN, 5, &[OPEN]),
+                note(SCAN, 6, &[OPEN]),
                 note(SCAN, 75, &[CLOSE]),
             ],
             vec![note(SCAN, 5, &[OPEN]), note(SCAN, 4, &[CLOSE])],
@@ -597,6 +624,11 @@ mod tests {
                 "{scan:?}: {a}"
             );
         }
+        // The same stamp twice at its µs is no timeline at all, nor is one out of time order.
+        assert_eq!(
+            Timeline::parse("# scan 5000000 01\n# scan 5000000 01\n").err(),
+            Some("contradictory: line 2 repeats line 1".into())
+        );
         // Out of time order in the file, the capture is no timeline at all.
         assert_eq!(
             Timeline::parse("# scan 75000000 02\n# scan 5000000 01\n").err(),

@@ -47,7 +47,13 @@ const RELEASE_WAIT: Duration = Duration::from_secs(2);
 pub const WRITE_WAIT: Duration = Duration::from_secs(2);
 /// Check 7's target: the page-49 write the silent window starts from.
 pub const CHECK7_W: u16 = 150;
+/// Check 12's ERG target before `Free`, W.
+pub const CHECK12_W: u16 = 200;
 const HOLD: Duration = Duration::from_secs(20);
+/// The soft start's 1 Hz steps (ADR-0002 §7.5): it writes one more target than this.
+pub const SOFT_START_STEPS: u64 = SOFT_START_TICKS / TICKS_PER_SECOND;
+/// Check 6's ERG targets, W: the soft start to the first, then a step to each next one.
+pub const CHECK6_W: [u16; 5] = [100, 150, 250, 100, 200];
 /// Check 5's two ERG targets, W.
 pub const CHECK5_W: [u16; 2] = [150, 200];
 /// How long check 5 holds each target.
@@ -480,7 +486,7 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
         };
         self.guard = Guard::Erg;
         self.low_since = None;
-        let steps = SOFT_START_TICKS / TICKS_PER_SECOND;
+        let steps = SOFT_START_STEPS;
         for k in 0..=steps {
             #[allow(clippy::cast_precision_loss)]
             let w = origin + (f64::from(target) - origin) * (k as f64 / steps as f64);
@@ -600,11 +606,11 @@ async fn check5<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop>
 
 /// #44 check 6: ERG steps 100→150→250→100 W at 90 rpm, then cadence 90→60→90 at 200 W.
 async fn check6<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
-    r.engage(100).await?;
+    r.engage(CHECK6_W[0]).await?;
     r.cue(Cue::Cadence(90));
     r.hold(HOLD).await?;
-    for w in [150, 250, 100, 200] {
-        r.erg(w).await?;
+    for w in &CHECK6_W[1..] {
+        r.erg(*w).await?;
         r.hold(HOLD).await?;
     }
     for rpm in [60, 90] {
@@ -674,7 +680,7 @@ async fn check9<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop>
 
 /// #44 check 12: ERG 200 W, then `Free` (page 50 defaults, page 51 grade 0), then 70 rpm.
 async fn check12<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
-    r.engage(200).await?;
+    r.engage(CHECK12_W).await?;
     r.cue(Cue::Cadence(90));
     r.hold(Duration::from_secs(15)).await?;
     r.write(&ControlPage::Wind {
@@ -3470,68 +3476,307 @@ mod tests {
                 .is_none_or(|x| !x.starts_with("unknown"))
     }
 
-    /// #516 property: reordering the lines of a valid capture, or moving one line's stamp out of
-    /// its place, never turns `unknown` into a full row nor changes a full row. A mutation that
-    /// keeps the file in time order (equal stamps swapped, a stamp moved within its neighbours')
-    /// is another valid capture and is counted, not judged.
+    /// The stamp of a capture line, if it has one.
+    fn stamp_of_line(l: &str) -> Option<u64> {
+        let t = l
+            .strip_prefix("# ")
+            .map_or(l, |r| r.split_once(' ').map_or("", |x| x.1));
+        t.split_whitespace().next()?.parse().ok()
+    }
+
+    /// Capture line `l` stamped `at` instead.
+    fn restamp(l: &str, at: u64) -> String {
+        if let Some(rest) = l.strip_prefix("# ") {
+            let mut f = rest.splitn(3, ' ');
+            let (tag, _, tail) = (f.next().unwrap_or(""), f.next(), f.next().unwrap_or(""));
+            format!("# {tag} {at} {tail}")
+        } else {
+            let tail = l.split_once(' ').map_or("", |x| x.1);
+            format!("{at} {tail}")
+        }
+    }
+
+    /// An event of the grammars: a control write (pages 48–51, 55) or a stamp (not `cps`, `adv`,
+    /// `scan`). Frames, requests and those notes are records whose loss or jitter a real capture
+    /// also shows.
+    fn is_event(l: &str) -> bool {
+        if let Some(rest) = l.strip_prefix("# ") {
+            let tag = rest.split(' ').next().unwrap_or("");
+            return stamp_of_line(l).is_some() && !matches!(tag, "cps" | "adv" | "scan");
+        }
+        crate::frames::parse_capture(l)
+            .first()
+            .is_some_and(|r| !r.rx && matches!(page_of(&r.bytes), Some(48..=51 | 55)))
+    }
+
+    fn row(stem: &str, text: &str) -> Value {
+        analyse(stem, text, outcome_in(text).as_deref(), &MEASURED).expect("stem")
+    }
+
+    /// #516 round 2 blocker 2: a record repeated at its µs is no timeline, so check 6 can never
+    /// lose a step to it; and a check 6 missing one of the procedure's steps measures no lag, never
+    /// the slowest of the steps left.
     #[tokio::test(start_paused = true)]
-    async fn reordered_or_restamped_captures_never_gain_or_change_a_full_row() {
+    async fn a_repeated_record_or_a_missing_step_never_improves_the_power_lag() {
+        let plan = Plan {
+            power_tau_s: 0.95,
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check6, plan, None).await;
+        let text = fecap(&sim, &report);
+        let honest = PowerLag::of_check6(Some(&text));
+        assert!(matches!(honest, PowerLag::TooSlow(_)), "{honest:?}");
+        let lines: Vec<&str> = text.lines().collect();
+        let targets: Vec<usize> = (0..lines.len())
+            .filter(|i| lines[*i].contains(" tx A4 09 4F 05 31 "))
+            .collect();
+        for &i in &targets[targets.len() - 4..] {
+            let mut dup = lines.clone();
+            dup.insert(i, lines[i]);
+            let mut gone = lines.clone();
+            gone.remove(i);
+            for (what, m) in [("repeated", dup), ("deleted", gone)] {
+                let t = m.join("\n") + "\n";
+                let lag = PowerLag::of_check6(Some(&t));
+                assert!(
+                    matches!(lag, PowerLag::NotMeasured(_)),
+                    "{what} line {i}: {lag:?}"
+                );
+                assert_eq!(
+                    row("check6", &t)["completed"],
+                    json!(false),
+                    "{what} line {i}"
+                );
+            }
+        }
+    }
+
+    /// #516 round 2 blockers 3 and 4: an 11b drop stamped right after the stop cue with the
+    /// trainer's frames after it, and an 11c connect stamped after that check's own writes and
+    /// cue, each in time order; neither is a full row.
+    #[tokio::test(start_paused = true)]
+    async fn an_in_order_drop_or_connect_out_of_its_place_is_no_full_row() {
+        let captures = valid_captures().await;
+        let text = |stem: &str| {
+            captures
+                .iter()
+                .find(|c| c.0 == stem)
+                .map(|c| c.1.clone())
+                .expect("capture")
+        };
+        // Move the line starting `what` to just after the line starting `after`, at its stamp.
+        let moved = |text: &str, what: &str, after: &str| {
+            let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+            let from = lines
+                .iter()
+                .position(|l| l.starts_with(what))
+                .expect("what");
+            let line = lines.remove(from);
+            let to = lines
+                .iter()
+                .position(|l| l.starts_with(after))
+                .expect("after");
+            let at = stamp_of_line(&lines[to]).expect("stamped");
+            lines.insert(to + 1, restamp(&line, at));
+            lines.join("\n") + "\n"
+        };
+        let b11 = text("check11b");
+        assert!(full(&row("check11b", &b11)));
+        let forged = moved(&b11, "# link ", "# check11b ");
+        assert!(
+            crate::timeline::Timeline::parse(&forged).is_ok(),
+            "in time order"
+        );
+        let v = row("check11b", &forged);
+        assert!(!full(&v), "{v}");
+        let c11 = text("check11c");
+        assert!(full(&row("check11c", &c11)));
+        let n = c11
+            .lines()
+            .find(|l| l.starts_with("# link ") && l.ends_with(" 04"))
+            .expect("connect stamp");
+        let cue = c11
+            .lines()
+            .find(|l| l.starts_with("# check11c ") && l.ends_with(" 02"))
+            .expect("low cue");
+        let forged = moved(&c11, n, cue);
+        assert!(
+            crate::timeline::Timeline::parse(&forged).is_ok(),
+            "in time order"
+        );
+        let v = row("check11c", &forged);
+        assert!(!full(&v), "{v}");
+    }
+
+    /// #516 round 2: malformed input is no result, never a panic. Each tx line of the 11c capture
+    /// left out, through the reply accounting `analyse` writes and through the Part B row.
+    #[tokio::test(start_paused = true)]
+    async fn a_missing_line_never_panics_the_analysis() {
+        let (_, text) = valid_captures()
+            .await
+            .into_iter()
+            .find(|c| c.0 == "check11c")
+            .expect("11c");
+        let lines: Vec<&str> = text.lines().collect();
+        for i in (0..lines.len()).filter(|i| lines[*i].contains(" tx ")) {
+            let mut m = lines.clone();
+            m.remove(i);
+            let t = m.join("\n") + "\n";
+            let _ = crate::frames::analysis(&crate::frames::parse_capture(&t));
+            let _ = row("check11c", &t);
+        }
+    }
+
+    /// Mutant `k` of a capture's `lines` (see the property test): its family and lines, `None` when
+    /// the draw is no mutation of its family.
+    fn mutant(
+        k: u32,
+        stem: &str,
+        lines: &[String],
+        stamped: &[usize],
+        events: &[usize],
+        next: &mut impl FnMut(usize) -> usize,
+    ) -> Option<(&'static str, Vec<String>)> {
+        let mut m = lines.to_vec();
+        let max = lines
+            .iter()
+            .filter_map(|l| stamp_of_line(l))
+            .max()
+            .unwrap_or(0);
+        let tag = stem.strip_prefix("check1").map_or("check11a", |_| stem);
+        let (key, said) = match stem {
+            "check10" => ("listed", "seen"),
+            "check11b" => ("lights", "out"),
+            _ => ("unplugged", "unplugged"),
+        };
+        let family = match k % 6 {
+            0 => {
+                let (i, j) = (stamped[next(stamped.len())], stamped[next(stamped.len())]);
+                m.swap(i, j);
+                "swap"
+            }
+            1 => {
+                let i = stamped[next(stamped.len())];
+                let to =
+                    u64::try_from(next(usize::try_from(max + 1).expect("small"))).expect("small");
+                m[i] = restamp(&lines[i], to);
+                "restamp"
+            }
+            2 => {
+                let i = stamped[next(stamped.len())];
+                m.insert(i, lines[i].clone());
+                "repeat"
+            }
+            3 => {
+                let i = stamped[next(stamped.len())] + 1;
+                let at = stamp_of_line(&lines[i - 1]).expect("stamped");
+                let extra = match next(4) {
+                    0 => format!("# {tag} {at} 01"),
+                    1 => format!(
+                        "# answer-{key} {at} {}",
+                        crate::frames::hex(said.as_bytes())
+                    ),
+                    2 => format!("{at} tx A4 09 4F 05 30 FF FF FF FF FF FF 00 D7"),
+                    _ => format!("# link {at} 0{}", 1 + next(7)),
+                };
+                m.insert(i, extra);
+                "insert"
+            }
+            4 => {
+                // Not the adapter's connect event (`# link 03`): the procedure does not always get
+                // one, so a capture without it is another honest capture.
+                let i = events[next(events.len())];
+                if m[i].starts_with("# link ") && m[i].ends_with(" 03") {
+                    return None;
+                }
+                m.remove(i);
+                "delete"
+            }
+            _ => {
+                let (e, to) = (next(events.len()), next(events.len()));
+                // Not 11a's answer across the drop: the procedure asks it after the drop when it
+                // is still missing, so that is another honest capture.
+                let crosses_drop = events[e.min(to)..=e.max(to)]
+                    .iter()
+                    .any(|i| m[*i].starts_with("# link ") && m[*i].ends_with(" 01"));
+                let answer = m[events[e]].starts_with("# answer-");
+                if e == to || (stem == "check11a" && answer && crosses_drop) {
+                    return None;
+                }
+                // Past at least one other event: just after event `to` when moving on, just
+                // before it when moving back; stamped as the stamped line it follows.
+                let line = m.remove(events[e]);
+                let at = events[to];
+                let stamp = m[..at].iter().rev().find_map(|l| stamp_of_line(l));
+                m.insert(at, restamp(&line, stamp.unwrap_or(0)));
+                "move"
+            }
+        };
+        Some((family, m))
+    }
+
+    /// #516 property: no change to a valid capture gives a full row it did not have, nor changes a
+    /// full row. Out of order (two lines swapped, or one stamp moved anywhere) and in order: a
+    /// record repeated at its µs, an extra cue, answer, release or link stamp inserted (never a full
+    /// row); an event deleted, or moved past another event and restamped between its new
+    /// neighbours (never a gained or changed full row). Every honest capture is a full row, and
+    /// every mutant is also read as a stopped run, where no check may panic.
+    #[tokio::test(start_paused = true)]
+    async fn mutated_captures_never_gain_or_change_a_full_row() {
         let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
         let mut next = move |n: usize| {
             seed ^= seed << 13;
             seed ^= seed >> 7;
             seed ^= seed << 17;
-            usize::try_from(seed % u64::try_from(n).expect("small")).expect("small")
+            usize::try_from(seed % u64::try_from(n.max(1)).expect("small")).expect("small")
         };
-        let stamp_of_line = |l: &str| -> Option<u64> {
-            let t = l
-                .strip_prefix("# ")
-                .map_or(l, |r| r.split_once(' ').map_or("", |x| x.1));
-            t.split_whitespace().next()?.parse().ok()
-        };
-        let (mut judged, mut in_order, mut fulls) = (0, 0, 0);
+        let mut counts = std::collections::BTreeMap::<&str, (usize, usize)>::new();
+        let mut bad: Vec<String> = Vec::new();
         for (stem, text) in valid_captures().await {
-            let base = analyse(stem, &text, outcome_in(&text).as_deref(), &MEASURED).expect("stem");
-            fulls += usize::from(full(&base));
-            let lines: Vec<&str> = text.lines().collect();
+            let base = row(stem, &text);
+            assert!(
+                full(&base),
+                "{stem}: the honest capture is a full row: {base}"
+            );
+            let lines: Vec<String> = text.lines().map(str::to_string).collect();
             let stamped: Vec<usize> = (0..lines.len())
-                .filter(|i| stamp_of_line(lines[*i]).is_some())
+                .filter(|i| stamp_of_line(&lines[*i]).is_some())
                 .collect();
-            let max = lines
-                .iter()
-                .filter_map(|l| stamp_of_line(l))
-                .max()
-                .unwrap_or(0);
-            for k in 0..400_u32 {
-                let mut m: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
-                let i = stamped[next(stamped.len())];
-                if k % 2 == 0 {
-                    let j = stamped[next(stamped.len())];
-                    m.swap(i, j);
-                } else {
-                    let at = stamp_of_line(lines[i]).expect("stamped");
-                    let to = u64::try_from(next(usize::try_from(max + 1).expect("small")))
-                        .expect("small");
-                    m[i] = lines[i].replacen(&at.to_string(), &to.to_string(), 1);
-                }
-                let text = m.join("\n") + "\n";
-                if crate::timeline::Timeline::parse(&text).is_ok() {
-                    in_order += 1;
+            let events: Vec<usize> = (0..lines.len()).filter(|i| is_event(&lines[*i])).collect();
+            for k in 0..600_u32 {
+                let Some((family, m)) = mutant(k, stem, &lines, &stamped, &events, &mut next)
+                else {
                     continue;
+                };
+                let t = m.join("\n") + "\n";
+                let v = row(stem, &t);
+                let _ = analyse(stem, &t, Some("aborted: x"), &MEASURED);
+                let c = counts.entry(family).or_default();
+                c.0 += 1;
+                c.1 += usize::from(crate::timeline::Timeline::parse(&t).is_ok());
+                let in_order = crate::timeline::Timeline::parse(&t).is_ok();
+                if matches!(family, "swap" | "restamp") && in_order {
+                    // Equal stamps swapped, or a stamp moved within its neighbours': another
+                    // valid capture, counted, not judged.
+                } else if matches!(family, "swap" | "restamp" | "repeat" | "insert") {
+                    if full(&v) {
+                        bad.push(format!("{stem} {family} k={k}: {}", v["line"]));
+                    }
+                } else if full(&v) && v != base {
+                    bad.push(format!(
+                        "{stem} {family} k={k}: {}\n  was {}",
+                        v["line"], base["line"]
+                    ));
                 }
-                judged += 1;
-                let v =
-                    analyse(stem, &text, outcome_in(&text).as_deref(), &MEASURED).expect("stem");
-                assert!(
-                    !full(&v),
-                    "{stem}: a full row from an out-of-order capture: {v}"
-                );
-                assert!(!full(&v) || (full(&base) && v == base), "{stem}: {v}");
             }
         }
-        println!(
-            "property: {fulls} full baselines, {judged} mutants judged, {in_order} still in time order"
+        println!("property (family: mutants, still in time order): {counts:?}");
+        assert!(
+            bad.is_empty(),
+            "{} breaches:\n{}",
+            bad.len(),
+            bad.join("\n")
         );
-        assert!(fulls >= 10 && judged > 3000, "{fulls} {judged}");
+        assert!(counts.values().all(|c| c.0 >= 900), "{counts:?}");
     }
 }

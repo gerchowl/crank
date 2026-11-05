@@ -120,8 +120,8 @@ Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10, 11a, 11b and 11c), w
 ### Capture integrity (#516)
 
 `hil_fec analyse` reads a capture as one timeline: the file order is the order the run wrote it, the stamps must
-not go back, lines with the same µs count in file order, and each check's cue, answers, drop and closing
-release must come in the procedure's order. A capture that breaks any of this reads `no result: contradictory: …`
+not go back, no record appears twice, lines with the same µs count in file order, and each check's events and
+control writes must be exactly its procedure's (cue, answers, connect, drop, releases, targets). A capture that breaks any of this reads `no result: contradictory: …`
 or `unknown: contradictory: …`, never a full row (`part-b.md`, Capture integrity). Still commit only the output of
 `redact`, and do not edit a `.fecap` by hand: an edited capture gives no result or a different one.
 

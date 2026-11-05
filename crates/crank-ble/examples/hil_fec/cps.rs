@@ -262,6 +262,21 @@ fn compare_window(
     }
 }
 
+/// Check 5's event grammar ([`Timeline::grammar`]): ERG targets only (the `# cps` lines are
+/// records, not events).
+pub(crate) const GRAMMAR: crate::timeline::Grammar = crate::timeline::Grammar {
+    tag: None,
+    answers: &[],
+    ignored: &[],
+    shape: crate::timeline::ERG_ONLY,
+    programs: &[&[
+        crate::timeline::Step::Release,
+        crate::timeline::Step::SoftStart(crate::rider::CHECK5_W[0]),
+        crate::timeline::Step::Erg(crate::rider::CHECK5_W[1]),
+        crate::timeline::Step::Release,
+    ]],
+};
+
 /// Check 5: page-25 rate, and page-25 against CPS power and cadence over the settled holds.
 pub fn check5(tl: &Timeline) -> Value {
     let (records, cps) = (tl.records(), tl.cps());
@@ -303,7 +318,7 @@ pub fn check5(tl: &Timeline) -> Value {
     let max_gap_s = times.windows(2).map(|w| secs(w[1] - w[0])).reduce(f64::max);
 
     let verdict = verdict(&parsed, rate_hz, &windows, (outside, max_abs, cadence_max));
-    json!({
+    let mut v = json!({
         "method": "both streams are stamped on arrival by the same process clock, so no offset is estimated; settled windows = each page-49 target held >= 10 s, after its first 10 s (power is steady under ERG, so the residual jitter of the two notification streams is not mistaken for disagreement); coverage, in continuous time: every ERG target of the procedure needs its window (>= 10 s); inside it neither stream may be silent for more than 2 s (page 25, power and cadence each) / 3 s (2A63), window edges included, and the crank-revolution pairs lying wholly inside the window must leave no stretch of it uncovered by more than 3 s, else the verdict names the target and is insufficient; more than 10 % malformed 2A63 notifications is insufficient; power: for each whole second of a window with at least one sample of each stream, mean page-25 power minus mean 2A63 power, which must be within ±1 W (ADR-0002 §5) in every compared second; cadence: per window, mean page-25 cadence against 2A63 crank revolutions over crank event time (differences modulo 2^16, event time in 1/1024 s), within ±1 rpm; page 25 must arrive at >= 2 Hz",
         "tolerances": {
             "power_w": POWER_TOL_W, "cadence_rpm": CADENCE_TOL_RPM, "page25_min_hz": RATE_MIN_HZ,
@@ -339,7 +354,16 @@ pub fn check5(tl: &Timeline) -> Value {
         "cadence_windows": windows.iter().filter_map(|w| w.cadence).map(|(a, b)| json!({"page25_rpm": round1(a), "cps_rpm": round1(b)})).collect::<Vec<_>>(),
         "max_abs_cadence_diff_rpm": windows.iter().any(|w| w.cadence.is_some()).then_some(round1(cadence_max)),
         "verdict": verdict,
-    })
+    });
+    // Fail closed: the windows are the procedure's targets, each once, in order, or no result.
+    let targets: Vec<f64> = spans.iter().map(|s| s.0).collect();
+    let want = crate::rider::CHECK5_W.map(f64::from);
+    if targets != want {
+        v["error"] = json!(format!(
+            "the held ERG targets are {targets:?}, not the procedure's {want:?}"
+        ));
+    }
+    v
 }
 
 /// The verdict: `insufficient` unless every target is covered, in continuous time, by both streams
@@ -726,8 +750,18 @@ mod tests {
             .to_string()
     }
 
+    /// Page-25 frames on `times`, each with the next event count (byte 5) as the trainer sends
+    /// them, so no two are the same record.
     fn fe_of(times: &[u64]) -> Vec<Record> {
-        times.iter().map(|t| fe_frame(*t, false)).collect()
+        (0_u8..)
+            .zip(times)
+            .map(|(count, t)| {
+                let mut r = fe_frame(*t, false);
+                r.bytes[5] = count;
+                r.bytes[12] = r.bytes[..12].iter().fold(0, |x, v| x ^ v);
+                r
+            })
+            .collect()
     }
 
     fn cps_of(times: &[u64]) -> Vec<Cps> {

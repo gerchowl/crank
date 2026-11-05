@@ -12,7 +12,7 @@ use crate::{
     check10::{Question, answer},
     frames::{Note, Record, Stamp, page_of, stamp, stamp_of, stamps},
     partb::{Control, SEC, controls, mean, procedure_end, round1, samples, secs, writes},
-    timeline::{Grammar, Timeline},
+    timeline::{Grammar, Step, Timeline},
 };
 use crank_fec::{Page, decode};
 use serde_json::{Value, json};
@@ -53,11 +53,31 @@ const GIVE_UP_SLACK_US: u64 = 1_000_000;
 /// The ERG target before the stop and after the reconnect, W.
 pub const TARGET_W: u16 = 100;
 
-/// Check 11b's stamped events ([`Timeline::grammar`]).
-const GRAMMAR: Grammar = Grammar {
-    cue: (WINDOW, STOPPING),
+/// Check 11b's event grammar ([`Timeline::grammar`]): ERG by soft start, the release, the stop
+/// cue, the drop with no trainer frame until the reconnect is discovered; then either the first
+/// page 25, the release, the lights answer, the `y` and ERG again by soft start, or the bound
+/// running out and the lights answer; the closing release last.
+pub(crate) const GRAMMAR: Grammar = Grammar {
+    tag: Some(WINDOW),
     answers: &[LIGHTS.key],
-    drop: true,
+    ignored: &[],
+    shape: "^Rf*(?:Ef*)+Rf*1f*d(?:vk?nf*pRf*af*2f*(?:Ef*)+Rf*|(?:v(?:k?nf*)?)?gf*a?f*Rf*)$",
+    programs: &[
+        &[
+            Step::Release,
+            Step::SoftStart(TARGET_W),
+            Step::Release,
+            Step::Release,
+            Step::SoftStart(TARGET_W),
+            Step::Release,
+        ],
+        &[
+            Step::Release,
+            Step::SoftStart(TARGET_W),
+            Step::Release,
+            Step::Release,
+        ],
+    ],
 };
 
 /// The operator's observation, asked once the link is back (or the bound ran out).
@@ -131,7 +151,6 @@ struct Run {
 /// from the stop cue to the operator's `y`; the `y` only after the reconnect and its release; the
 /// same trainer on both sides. `Err` names the first breach, which makes the row `unknown`.
 fn validate(tl: &Timeline) -> Result<Run, String> {
-    tl.grammar(&GRAMMAR)?;
     let (records, notes) = (tl.records(), tl.notes());
     let window = stamps(notes, WINDOW, &[STOPPING, CONFIRMED])?;
     let stop = stamp_of(&window, STOPPING).ok_or("the capture has no stop cue")?;
@@ -153,7 +172,12 @@ fn validate(tl: &Timeline) -> Result<Run, String> {
             }
         }
     }
-    let detected = stamp(&link, DETECTED).ok_or("the capture has no drop")?;
+    let drop = stamp_of(&link, DETECTED).ok_or("the capture has no drop")?;
+    // The grammar holds a completed run to this; the check reads any capture, so it holds too.
+    if drop.seq < stop.seq {
+        return Err("contradictory: the drop is stamped before the stop cue".into());
+    }
+    let detected = drop.at_us;
     let after_s = |at: u64, from: u64| round1(secs(at.saturating_sub(from)));
     if detected > stop.at_us + DROP_WAIT.as_secs() * SEC + POLL_SLACK_US {
         return Err(format!(

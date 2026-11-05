@@ -7,7 +7,7 @@
 //! "no result" and no verdict.
 use crate::{
     frames::{Record, page_of, parse_capture},
-    timeline::Timeline,
+    timeline::{ERG_ONLY, Grammar, Step, Timeline},
 };
 use crank_engine::erg::policy::{REENGAGE_RPM, RELEASE_RPM};
 use crank_fec::{Page, decode};
@@ -375,6 +375,23 @@ fn erg_steps(records: &[Record], s: &[Sample]) -> Vec<(f64, Hold, Option<u64>)> 
         .collect()
 }
 
+/// Fail closed: `Err` unless `steps` are exactly the procedure's ([`crate::rider::CHECK6_W`]), so
+/// a missing or extra step never leaves the others to stand for the run.
+fn procedure_steps(steps: &[(f64, Hold, Option<u64>)]) -> Result<(), String> {
+    let want: Vec<(f64, f64)> = crate::rider::CHECK6_W
+        .windows(2)
+        .map(|w| (f64::from(w[0]), f64::from(w[1])))
+        .collect();
+    let got: Vec<(f64, f64)> = steps.iter().map(|(f, h, _)| (*f, h.watts)).collect();
+    if got == want {
+        Ok(())
+    } else {
+        Err(format!(
+            "the ERG steps are {got:?}, not the procedure's {want:?}"
+        ))
+    }
+}
+
 /// Check 6: ERG step response (t90) and cadence steps at a held target.
 pub fn check6(tl: &Timeline) -> Value {
     let records = tl.records();
@@ -382,7 +399,9 @@ pub fn check6(tl: &Timeline) -> Value {
     let ctl = controls(records);
     let holds = erg_holds(&ctl, procedure_end(records, &ctl));
     let mut steps = Vec::new();
-    for (from_w, h, t) in erg_steps(records, &s) {
+    let erg = erg_steps(records, &s);
+    for (from_w, h, t) in &erg {
+        let (from_w, h, t) = (*from_w, *h, *t);
         steps.push(json!({
             "from_w": from_w, "to_w": h.watts, "t90_s": t.map(|t| round1(secs(t))),
             "mean_power_last_10s_w": mean(powers(&s, h.end.saturating_sub(10 * SEC), h.end)).map(round1),
@@ -406,11 +425,15 @@ pub fn check6(tl: &Timeline) -> Value {
             }));
         }
     }
-    json!({
+    let mut v = json!({
         "method": "holds = page-49 writes kept >= 10 s; a step is a hold following a hold; t90 = write to the first page-25 sample past 90 % of the step; cadence steps = page-25 cadence crossing 75 rpm inside a hold, settled = first instant from which power stays within ±5 % for 3 s",
         "steps": steps,
         "cadence_steps": cadence_steps,
-    })
+    });
+    if let Err(why) = procedure_steps(&erg) {
+        v["error"] = json!(why);
+    }
+    v
 }
 
 /// Check 7: the procedure's target over the stretch from its write to the next write.
@@ -596,11 +619,14 @@ impl PowerLag {
             Some(o) if o == COMPLETED => match Timeline::parse(text) {
                 Ok(tl) => {
                     let s = samples(tl.records());
-                    let t90s: Vec<Option<u64>> = erg_steps(tl.records(), &s)
-                        .iter()
-                        .map(|(_, _, t)| *t)
-                        .collect();
-                    Self::of_steps(&t90s)
+                    let steps = erg_steps(tl.records(), &s);
+                    match procedure_steps(&steps) {
+                        Ok(()) => {
+                            let t90s: Vec<Option<u64>> = steps.iter().map(|(_, _, t)| *t).collect();
+                            Self::of_steps(&t90s)
+                        }
+                        Err(why) => Self::NotMeasured(format!("check 6: {why}")),
+                    }
                 }
                 Err(why) => Self::NotMeasured(format!("check 6: {why}")),
             },
@@ -1015,6 +1041,80 @@ pub fn check12(tl: &Timeline) -> Value {
     })
 }
 
+/// Check 6's event grammar ([`Timeline::grammar`]): ERG targets only, the soft start to the first
+/// of [`crate::rider::CHECK6_W`], then each next one.
+const GRAMMAR_6: Grammar = Grammar {
+    tag: None,
+    answers: &[],
+    ignored: &[],
+    shape: ERG_ONLY,
+    programs: &[&[
+        Step::Release,
+        Step::SoftStart(crate::rider::CHECK6_W[0]),
+        Step::Erg(crate::rider::CHECK6_W[1]),
+        Step::Erg(crate::rider::CHECK6_W[2]),
+        Step::Erg(crate::rider::CHECK6_W[3]),
+        Step::Erg(crate::rider::CHECK6_W[4]),
+        Step::Release,
+    ]],
+};
+/// Check 7's: the soft start to its target, nothing more.
+const GRAMMAR_7: Grammar = Grammar {
+    tag: None,
+    answers: &[],
+    ignored: &[],
+    shape: ERG_ONLY,
+    programs: &[&[
+        Step::Release,
+        Step::SoftStart(crate::rider::CHECK7_W),
+        Step::Release,
+    ]],
+};
+/// Check 9's: the soft start to 250 W, nothing more.
+const GRAMMAR_9: Grammar = Grammar {
+    tag: None,
+    answers: &[],
+    ignored: &[],
+    shape: ERG_ONLY,
+    programs: &[&[
+        Step::Release,
+        Step::SoftStart(crate::rider::MAX_ERG_W),
+        Step::Release,
+    ]],
+};
+/// Check 8's: SIM states (pages 50, 51, 55) only, as `rider.rs` `check8` writes them.
+const GRAMMAR_8: Grammar = Grammar {
+    tag: None,
+    answers: &[],
+    ignored: &[],
+    shape: "^Rf*(?:Sf*)+Rf*$",
+    programs: &[&[
+        Step::Release,
+        Step::User(75),
+        Step::Wind,
+        Step::Track(0),
+        Step::Track(5),
+        Step::User(100),
+        Step::User(75),
+        Step::Track(10),
+        Step::Release,
+    ]],
+};
+/// Check 12's: the soft start to 200 W, then `Free` (page 50 defaults, page 51 at 0 %).
+const GRAMMAR_12: Grammar = Grammar {
+    tag: None,
+    answers: &[],
+    ignored: &[],
+    shape: "^Rf*(?:Ef*)+(?:Sf*)+Rf*$",
+    programs: &[&[
+        Step::Release,
+        Step::SoftStart(crate::rider::CHECK12_W),
+        Step::Wind,
+        Step::Track(0),
+        Step::Release,
+    ]],
+};
+
 /// The first malformed control write, named: the harness encodes only valid fields, so such a
 /// write is not its procedure's, and no check gives a result from that capture.
 fn malformed(records: &[Record]) -> Option<String> {
@@ -1041,31 +1141,74 @@ fn cut_off(tl: &Timeline) -> Option<String> {
         .then(|| "the capture is cut off: no release write ends it".into())
 }
 
+/// A Part B check of a timeline.
+type Check = fn(&Timeline, &PowerLag) -> Value;
+
+/// An `unknown` result.
+fn unknown(why: &String) -> Value {
+    json!({ "verdict": format!("unknown: {why}") })
+}
+
+/// The check's value of `tl`, and why it gives no result if it gives none: a malformed write or a
+/// cut-off capture; for a run that claims to have `completed`, a breach of its `grammar` (then the
+/// check does not read it) or the check's own `error` (what its procedure writes is not there).
+fn result_of(
+    tl: &Timeline,
+    check: Check,
+    grammar: &Grammar,
+    completed: bool,
+    lag: &PowerLag,
+) -> (Value, Option<String>) {
+    if let Some(why) = malformed(tl.records()).or_else(|| cut_off(tl)) {
+        return (check(tl, lag), Some(why));
+    }
+    if completed && let Err(why) = tl.grammar(grammar) {
+        return (unknown(&why), Some(why));
+    }
+    let v = check(tl, lag);
+    let error = v["error"]
+        .as_str()
+        .filter(|_| completed)
+        .map(str::to_string);
+    (v, error)
+}
+
 /// Part B analysis by capture stem (`check5` …) of a capture's text, `None` for other captures.
 /// `outcome` is how the procedure ended (the capture's outcome line); without `completed` there
 /// is no verdict. `lag` is check 6 of the same capture set ([`PowerLag::beside`]), which check 9
 /// needs. The text is read once into a [`Timeline`]; one that is not in time order is no result,
 /// and no check reads it.
 pub fn analyse(stem: &str, text: &str, outcome: Option<&str>, lag: &PowerLag) -> Option<Value> {
-    let check: fn(&Timeline, &PowerLag) -> Value = match stem {
-        "check5" => |tl, _| crate::cps::check5(tl),
-        "check6" => |tl, _| check6(tl),
-        "check7" => |tl, _| check7(tl),
-        "check8" => |tl, _| check8(tl),
-        "check9" => check9,
-        "check10" => |tl, _| crate::check10::check10(tl),
-        "check11a" => |tl, _| crate::check11ac::check11a(tl),
-        "check11b" => |tl, _| crate::check11::check11b(tl),
-        "check11c" => |tl, _| crate::check11ac::check11c(tl),
-        "check12" => |tl, _| check12(tl),
+    let (check, grammar): (Check, &Grammar) = match stem {
+        "check5" => (|tl, _| crate::cps::check5(tl), &crate::cps::GRAMMAR),
+        "check6" => (|tl, _| check6(tl), &GRAMMAR_6),
+        "check7" => (|tl, _| check7(tl), &GRAMMAR_7),
+        "check8" => (|tl, _| check8(tl), &GRAMMAR_8),
+        "check9" => (check9, &GRAMMAR_9),
+        "check10" => (
+            |tl, _| crate::check10::check10(tl),
+            &crate::check10::GRAMMAR,
+        ),
+        "check11a" => (
+            |tl, _| crate::check11ac::check11a(tl),
+            &crate::check11ac::GRAMMAR_A,
+        ),
+        "check11b" => (
+            |tl, _| crate::check11::check11b(tl),
+            &crate::check11::GRAMMAR,
+        ),
+        "check11c" => (
+            |tl, _| crate::check11ac::check11c(tl),
+            &crate::check11ac::GRAMMAR_C,
+        ),
+        "check12" => (|tl, _| check12(tl), &GRAMMAR_12),
         _ => return None,
     };
+    // A capture that claims a completed run is held to the check's grammar before the check reads
+    // it; a run that did not complete gives no result anyway.
     let (mut v, invalid) = match Timeline::parse(text) {
-        Ok(tl) => (
-            check(&tl, lag),
-            malformed(tl.records()).or_else(|| cut_off(&tl)),
-        ),
-        Err(why) => (json!({ "verdict": format!("unknown: {why}") }), Some(why)),
+        Err(why) => (unknown(&why), Some(why)),
+        Ok(tl) => result_of(&tl, check, grammar, outcome == Some(COMPLETED), lag),
     };
     let malformed = invalid;
     let completed = outcome == Some(COMPLETED) && malformed.is_none();
@@ -1253,6 +1396,19 @@ mod tests {
         }
     }
 
+    /// `Rig::engage` from 0 W to `target` W as the soft start writes it, its last write at `end_us`.
+    fn soft_start(end_us: u64, target: f32) -> Vec<Record> {
+        let erg = |watts| ControlPage::TargetPower { watts };
+        let mut v = vec![tx(end_us - 600_000, &erg(0.0))];
+        v.extend((0..=5_u8).map(|k| {
+            tx(
+                end_us - u64::from(5 - k) * 100_000,
+                &erg(target * f32::from(k) / 5.0),
+            )
+        }));
+        v
+    }
+
     /// A control page with a field set to its "invalid" value (checksum fixed).
     fn invalid(at_us: u64, page: &ControlPage, field: [usize; 2]) -> Record {
         let mut f = tx(at_us, page);
@@ -1269,14 +1425,14 @@ mod tests {
     #[test]
     fn a_capture_cut_off_before_its_closing_release_gives_no_result() {
         let free = ControlPage::BasicResistance { pct: 0.0 };
-        let erg = ControlPage::TargetPower { watts: 150.0 };
         let p = |n: u64| (2..n).map(|k| p25(k * SEC / 2, 90, 150));
         let none = PowerLag::NotMeasured("test".into());
         let cut = "the capture is cut off: no release write ends it";
         for (ride, invalid) in [
             (
                 [
-                    vec![tx(0, &free), tx(SEC, &erg)],
+                    vec![tx(0, &free)],
+                    soft_start(SEC, 150.0),
                     p(120).collect(),
                     vec![tx(60 * SEC, &free)],
                 ]
@@ -1284,7 +1440,7 @@ mod tests {
                 None,
             ),
             (
-                [vec![tx(0, &free), tx(SEC, &erg)], p(120).collect()].concat(),
+                [vec![tx(0, &free)], soft_start(SEC, 150.0), p(120).collect()].concat(),
                 Some(cut),
             ),
             ([vec![tx(0, &free)], p(120).collect()].concat(), Some(cut)),
@@ -1320,10 +1476,8 @@ mod tests {
             invalid(at, &user, [5, 6])
         };
         let free = ControlPage::BasicResistance { pct: 0.0 };
-        let mut ride = vec![
-            tx(0, &free),
-            tx(SEC, &ControlPage::TargetPower { watts: 150.0 }),
-        ];
+        let mut ride = vec![tx(0, &free)];
+        ride.extend(soft_start(SEC, 150.0));
         ride.extend((2..120).map(|k| p25(k * SEC / 2, 90, 150)));
         ride.push(tx(60 * SEC, &free));
         let none = PowerLag::NotMeasured("test".into());
@@ -1340,10 +1494,10 @@ mod tests {
             let mut r = ride.clone();
             r.push(bad.clone());
             r.sort_by_key(|x| x.at_us);
-            assert_eq!(controls(&r)[2], (30 * SEC, Control::Malformed(page)));
+            assert_eq!(controls(&r)[8], (30 * SEC, Control::Malformed(page)));
             let holds = erg_holds(&controls(&r), procedure_end(&r, &controls(&r)));
             assert_eq!(
-                holds[0].1.end,
+                holds.last().expect("the 150 W hold").1.end,
                 30 * SEC,
                 "the malformed write ends the hold"
             );
@@ -1372,7 +1526,7 @@ mod tests {
                 bytes,
             });
             r.sort_by_key(|x| x.at_us);
-            assert_eq!(controls(&r)[2], (30 * SEC, Control::NotAFrame));
+            assert_eq!(controls(&r)[8], (30 * SEC, Control::NotAFrame));
             let v = run(&r, "check7");
             assert_eq!(v["completed"], json!(false), "{v}");
             assert!(

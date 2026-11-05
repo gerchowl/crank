@@ -132,11 +132,28 @@ page-71 reply echoed it.
   µs is after the release, a frame after a drop stamp at its µs is after the drop. Windows bounded by events
   (a cue, an answer, a release, a drop, a write) are positions on the timeline; only windows that start a
   duration after an event (the 5 s left out after a cue, the 15 s before it) are measured in µs.
-- **Each check's events follow a grammar** (`Timeline::grammar`; 10, 11a, 11b and 11c): its cue at most once
-  (no cue at all is that check's own "no cue", no result); each question answered at most once, after the cue and
-  before the closing release; each `# link 01` drop after the cue and not after the closing release. Every run
-  writes one closing release, the last control write (else `the capture is cut off`). Anything else is
-  `unknown: contradictory: <rule>`.
+- **No record twice.** A record identical to another of the same µs (same kind, same bytes) is
+  `contradictory: line N repeats line M`: the writer appends each record once.
+- **Each check's events follow its grammar** (`Timeline::grammar`, one `Grammar` per check, applied by `analyse`
+  to a capture whose outcome is `completed`, before the check reads it). The grammar names the events the check
+  may contain, in one token each (control writes by kind, the check's own stamps, `# link` stamps, its questions'
+  answers; any other stamp fits no grammar), and two rules over them:
+  - *shape*: the order and number of the events, relative to the cue, the answers, the connect, the drop and the
+    closing release (e.g. 11a: the unplug cue once, then the answer and the closing release, or the drop with the
+    answer before or after it, a release before it only directly before the drop, no trainer frame after it,
+    the closing release last; 11b: no trainer frame from the drop until the reconnect is discovered; 11c: the
+    advertisement and the connect before any write or cue);
+  - *program*: the exact control writes the procedure makes, in order, with the soft start as ERG 0 W and six
+    1 Hz writes on a line to its target (`Step`, the procedure's constants `CHECK5_W`, `CHECK6_W`, `CHECK7_W`,
+    `CHECK12_W`, `MAX_ERG_W`, `TARGET_W`), one program per way the procedure can end.
+
+  A breach is no result: `contradictory: control write N (…) is not the procedure's`, or `contradictory: the events
+  do not follow the procedure (<shape>): <tokens>`. A run that did not complete gives no result anyway; its
+  checks still read any timeline without failing.
+- **Fail closed.** A derived result that misses part of the procedure gives no result rather than a result from
+  the rest: check 6 needs exactly the procedure's four ERG steps (else no result, and check 9's power lag is not
+  measured), check 5 exactly its held targets, check 10 a connect answer whenever the phone listed the NEO; any
+  check that cannot find what its procedure writes (its `error`) gives no result.
 - **One silence threshold.** The silence guard stops a run when strictly more than `SILENCE_US` (2 s) passed
   without page 25 (`rider::silent`); `analyse` accepts a release before an 11a drop as the guard's only on that same
   condition, from the last page 25 before it in the timeline.
