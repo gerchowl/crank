@@ -117,18 +117,13 @@ Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10, 11a, 11b and 11c), w
   250 W and a falling cadence it gets hard: keep turning until the run ends.
 - Each run prints one results row. Send them all, or just the `$OUT` folder name.
 
-### Known limits (#516)
+### Capture integrity (#516)
 
-The offline `hil_fec analyse` can be fooled by a hand-built or hand-edited capture, which a live run cannot
-produce:
-
-- **B1:** a write at the silence guard's release µs.
-- **B2:** records out of time order.
-- **B3:** an unplug answer after the closing release.
-- **N1:** the 2 s silence boundary is 1 µs looser than the live guard.
-
-So until gerchowl/crank#516 lands, take results only from **unedited live captures**, and never edit a `.fecap`
-before `analyse`. #516 must land before the live Part B session (#44); see `part-b.md`, Known limits.
+`hil_fec analyse` reads a capture as one timeline: the file order is the order the run wrote it, the stamps must
+not go back, lines with the same µs count in file order, and each check's cue, answers, drop and closing
+release must come in the procedure's order. A capture that breaks any of this reads `no result: contradictory: …`
+or `unknown: contradictory: …`, never a full row (`part-b.md`, Capture integrity). Still commit only the output of
+`redact`, and do not edit a `.fecap` by hand: an edited capture gives no result or a different one.
 
 ### Check 10: the phone as a second central (no pedalling)
 

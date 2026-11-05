@@ -127,7 +127,7 @@ pub async fn relink(
     let mut watcher = AbortOnDrop(tokio::spawn(async move {
         if connect_of(events, &device).await {
             return stamp_capture
-                .record_aux(stamp_clock.now(), LINK, &[CONNECTED])
+                .record_aux_now(&*stamp_clock, LINK, &[CONNECTED])
                 .err();
         }
         None
@@ -141,7 +141,7 @@ pub async fn relink(
         return Err(format!("capture: {e}").into());
     }
     *slot.lock().unwrap_or_else(PoisonError::into_inner) =
-        pump(notifications, log.clone(), capture.clone());
+        pump(notifications, log.clone(), capture.clone(), clock.clone());
     Ok(info)
 }
 
@@ -219,19 +219,23 @@ pub struct Session {
     pump: Mutex<tokio::task::JoinHandle<Option<String>>>,
 }
 
-/// Record each notification in `capture` and keep it in `log`; ends with the link.
+/// Record each notification in `capture` and keep it in `log`; ends with the link. A frame is
+/// stamped when it is appended ([`Capture::record_now`]), and `log` keeps that stamp, so the
+/// capture's file order is its time order (#516) and the live guards see the times `analyse` reads.
 fn pump(
     mut notifications: crank_ble::Notifications,
     log: Arc<Mutex<Vec<Rx>>>,
     capture: Arc<Capture>,
+    clock: Arc<MonotonicClock>,
 ) -> tokio::task::JoinHandle<Option<String>> {
     tokio::spawn(async move {
         while let Some(item) = notifications.next().await {
             match item {
-                Ok((at, bytes)) => {
-                    if let Err(e) = capture.record(at, true, &bytes) {
-                        return Some(format!("capture: {e}"));
-                    }
+                Ok((_ingress, bytes)) => {
+                    let at = match capture.record_now(&*clock, true, &bytes) {
+                        Ok(at) => at,
+                        Err(e) => return Some(format!("capture: {e}")),
+                    };
                     log.lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .push(Rx { at, bytes });
@@ -291,7 +295,12 @@ impl Session {
         let transport = BtleplugTransport::new(peripheral.clone(), adapter.clone());
         let (info, notifications) = transport.connect(device.clone(), clock.clone()).await?;
         let log = Arc::new(Mutex::new(Vec::new()));
-        let pump = Mutex::new(pump(notifications, log.clone(), capture.clone()));
+        let pump = Mutex::new(pump(
+            notifications,
+            log.clone(),
+            capture.clone(),
+            clock.clone(),
+        ));
         Ok(Self {
             transport,
             clock,
@@ -327,7 +336,7 @@ impl Session {
                 if n.uuid != CPS_MEASUREMENT {
                     continue;
                 }
-                if let Err(e) = capture.record_aux(clock.now(), "cps", &n.value) {
+                if let Err(e) = capture.record_aux_now(&*clock, "cps", &n.value) {
                     return Some(format!("capture: {e}"));
                 }
             }
@@ -418,12 +427,13 @@ impl Session {
         }
     }
 
-    /// Record and write one frame; returns the host-side stamp and any write error.
+    /// Record and write one frame; returns the host-side stamp (taken as it is recorded,
+    /// [`Capture::record_now`]) and any write error.
     pub async fn send(&self, frame: [u8; 13], with_response: bool) -> (MonoTime, Option<String>) {
-        let at = self.clock.now();
-        if let Err(e) = self.capture.record(at, false, &frame) {
-            return (at, Some(format!("capture: {e}")));
-        }
+        let at = match self.capture.record_now(&*self.clock, false, &frame) {
+            Ok(at) => at,
+            Err(e) => return (self.clock.now(), Some(format!("capture: {e}"))),
+        };
         let result = if with_response {
             FecTransport::write(&self.transport, frame).await
         } else {

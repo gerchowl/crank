@@ -159,21 +159,22 @@ pub struct Record {
 
 /// Parse `.fecap` text, skipping comments, blanks and malformed lines.
 pub fn parse_capture(text: &str) -> Vec<Record> {
-    text.lines()
-        .filter_map(|line| {
-            let mut f = line.split_whitespace();
-            let at_us = f.next()?.parse().ok()?;
-            let rx = match f.next()? {
-                "rx" => true,
-                "tx" => false,
-                _ => return None,
-            };
-            let bytes = f
-                .map(|h| u8::from_str_radix(h, 16).ok())
-                .collect::<Option<_>>()?;
-            Some(Record { at_us, rx, bytes })
-        })
-        .collect()
+    text.lines().filter_map(frame_line).collect()
+}
+
+/// The frame record of one `.fecap` line, if it is one.
+pub(crate) fn frame_line(line: &str) -> Option<Record> {
+    let mut f = line.split_whitespace();
+    let at_us = f.next()?.parse().ok()?;
+    let rx = match f.next()? {
+        "rx" => true,
+        "tx" => false,
+        _ => return None,
+    };
+    let bytes = f
+        .map(|h| u8::from_str_radix(h, 16).ok())
+        .collect::<Option<_>>()?;
+    Some(Record { at_us, rx, bytes })
 }
 
 /// Tag of the comment line that carries one Cycling Power measurement (2A63) notification:
@@ -191,16 +192,17 @@ pub struct Cps {
 
 /// The Cycling Power notifications of `.fecap` text, in file order; malformed lines are skipped.
 pub fn parse_cps(text: &str) -> Vec<Cps> {
-    text.lines()
-        .filter_map(|line| {
-            let mut f = line.strip_prefix(CPS_TAG)?.split_whitespace();
-            let at_us = f.next()?.parse().ok()?;
-            let bytes = f
-                .map(|h| u8::from_str_radix(h, 16).ok())
-                .collect::<Option<_>>()?;
-            Some(Cps { at_us, bytes })
-        })
-        .collect()
+    text.lines().filter_map(cps_line).collect()
+}
+
+/// The Cycling Power notification of one `.fecap` line, if it is one.
+pub(crate) fn cps_line(line: &str) -> Option<Cps> {
+    let mut f = line.strip_prefix(CPS_TAG)?.split_whitespace();
+    let at_us = f.next()?.parse().ok()?;
+    let bytes = f
+        .map(|h| u8::from_str_radix(h, 16).ok())
+        .collect::<Option<_>>()?;
+    Some(Cps { at_us, bytes })
 }
 
 /// One tagged comment line of a capture, `# <tag> <elapsed_us> <hex bytes>` (`Capture::record_aux`):
@@ -213,36 +215,52 @@ pub struct Note {
     pub at_us: u64,
     /// The payload.
     pub bytes: Vec<u8>,
+    /// Its place among the frames: the number of frame records before it in the file. A frame
+    /// at index `i` of the capture's frames is after this note exactly when `i >= before`.
+    pub before: usize,
 }
 
-/// The tagged comment lines of `.fecap` text, in file order. Other comments (the header, the
-/// outcome and finished lines, a `redact` header) have no number after the tag and are skipped.
-pub fn parse_notes(text: &str) -> Vec<Note> {
-    text.lines()
-        .filter_map(|line| {
-            let mut f = line.strip_prefix("# ")?.split_whitespace();
-            let tag = f.next()?.to_string();
-            let at_us = f.next()?.parse().ok()?;
-            let bytes = f
-                .map(|h| u8::from_str_radix(h, 16).ok())
-                .collect::<Option<_>>()?;
-            Some(Note { tag, at_us, bytes })
-        })
-        .collect()
+/// The tagged comment line `line`, if it is one, placed after `before` frames.
+pub(crate) fn note_line(line: &str, before: usize) -> Option<Note> {
+    let mut f = line.strip_prefix("# ")?.split_whitespace();
+    let tag = f.next()?.to_string();
+    let at_us = f.next()?.parse().ok()?;
+    let bytes = f
+        .map(|h| u8::from_str_radix(h, 16).ok())
+        .collect::<Option<_>>()?;
+    Some(Note {
+        tag,
+        at_us,
+        bytes,
+        before,
+    })
 }
 
-/// The one-byte event stamps tagged `tag`, in file order, as `(code, at_us)`. Each code may
-/// appear at most once and only in the order of `order`, and the times may not go back; a
-/// duplicate, out-of-order or unknown stamp is an `Err` naming it, which the caller reports as
-/// `unknown: contradictory`, never as a result.
-pub fn stamps(notes: &[Note], tag: &str, order: &[u8]) -> Result<Vec<(u8, u64)>, String> {
+/// One event stamp: a one-byte note of a stamp tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    /// The event code.
+    pub code: u8,
+    /// When it was stamped, µs from capture start.
+    pub at_us: u64,
+    /// Its note's index among the notes (file order).
+    pub seq: usize,
+    /// Its note's [`Note::before`].
+    pub before: usize,
+}
+
+/// The one-byte event stamps tagged `tag`, in file order. Each code may appear at most once and
+/// only in the order of `order`; a duplicate, out-of-order or unknown stamp is an `Err` naming
+/// it, which the caller reports as `unknown: contradictory`, never as a result.
+pub fn stamps(notes: &[Note], tag: &str, order: &[u8]) -> Result<Vec<Stamp>, String> {
     let rank = |code: u8| order.iter().position(|c| *c == code);
-    let mut out: Vec<(u8, u64)> = Vec::new();
-    for n in notes.iter().filter(|n| n.tag == tag) {
+    let mut out: Vec<Stamp> = Vec::new();
+    for (seq, n) in notes.iter().enumerate().filter(|(_, n)| n.tag == tag) {
         let contradiction = || {
+            let codes: Vec<u8> = out.iter().map(|s| s.code).collect();
             format!(
-                "contradictory {tag} stamps: {:02X?} at {} us after {:02X?}",
-                n.bytes, n.at_us, out
+                "contradictory {tag} stamps: {:02X?} at {} us after {codes:02X?}",
+                n.bytes, n.at_us
             )
         };
         let [code] = n.bytes[..] else {
@@ -250,19 +268,29 @@ pub fn stamps(notes: &[Note], tag: &str, order: &[u8]) -> Result<Vec<(u8, u64)>,
         };
         let fits = rank(code).is_some_and(|r| {
             out.last()
-                .is_none_or(|&(p, at)| rank(p).is_some_and(|q| r > q) && n.at_us >= at)
+                .is_none_or(|p| rank(p.code).is_some_and(|q| r > q))
         });
         if !fits {
             return Err(contradiction());
         }
-        out.push((code, n.at_us));
+        out.push(Stamp {
+            code,
+            at_us: n.at_us,
+            seq,
+            before: n.before,
+        });
     }
     Ok(out)
 }
 
+/// The stamp of `code`, if it was stamped.
+pub fn stamp_of(stamps: &[Stamp], code: u8) -> Option<Stamp> {
+    stamps.iter().find(|s| s.code == code).copied()
+}
+
 /// When `code` was stamped, if it was.
-pub fn stamp(stamps: &[(u8, u64)], code: u8) -> Option<u64> {
-    stamps.iter().find(|s| s.0 == code).map(|s| s.1)
+pub fn stamp(stamps: &[Stamp], code: u8) -> Option<u64> {
+    stamp_of(stamps, code).map(|s| s.at_us)
 }
 
 /// Per-page arrival statistics over rx records (idle notification pattern).
@@ -767,7 +795,8 @@ mod tests {
                     # see: 0A 0B\n\
                     # hil_fec procedure: completed\n\
                     # hil_fec finished: 1700000000\n";
-        let n = parse_notes(text);
+        let tl = crate::timeline::Timeline::parse(text).expect("in order");
+        let n = tl.notes();
         let got: Vec<(&str, u64, &[u8])> = n
             .iter()
             .map(|n| (n.tag.as_str(), n.at_us, &n.bytes[..]))
@@ -784,22 +813,30 @@ mod tests {
     }
 
     #[test]
-    fn stamps_come_once_each_in_order_and_never_back_in_time() {
+    fn stamps_come_once_each_and_in_order() {
         let n = |tag: &str, at_us: u64, bytes: &[u8]| Note {
             tag: tag.into(),
             at_us,
             bytes: bytes.to_vec(),
+            before: usize::try_from(at_us).expect("small"),
         };
         let order = [1, 2, 3];
-        // Other tags are ignored; equal times are fine; codes may be skipped.
+        // Other tags are ignored; equal times are fine; codes may be skipped. Time order is the
+        // timeline's (`Timeline::parse`).
         let ok = [n("x", 1, &[1]), n("y", 0, &[9]), n("x", 1, &[3])];
-        assert_eq!(stamps(&ok, "x", &order), Ok(vec![(1, 1), (3, 1)]));
-        assert_eq!(stamp(&[(1, 1), (3, 1)], 3), Some(1));
+        let st = |code, seq| Stamp {
+            code,
+            at_us: 1,
+            seq,
+            before: 1,
+        };
+        assert_eq!(stamps(&ok, "x", &order), Ok(vec![st(1, 0), st(3, 2)]));
+        assert_eq!(stamp(&[st(1, 0), st(3, 2)], 3), Some(1));
+        assert_eq!(stamp_of(&[st(1, 0), st(3, 2)], 2), None);
         assert_eq!(stamps(&[], "x", &order), Ok(vec![]));
         for bad in [
             vec![n("x", 1, &[1]), n("x", 2, &[1])],
             vec![n("x", 1, &[2]), n("x", 2, &[1])],
-            vec![n("x", 2, &[1]), n("x", 1, &[2])],
             vec![n("x", 1, &[7])],
             vec![n("x", 1, &[1, 2])],
             vec![n("x", 1, &[])],

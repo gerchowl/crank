@@ -7,7 +7,7 @@
 //! rider moves cadence towards the last cue at 30 rpm/s; after `Descend` towards [`Pattern`].
 //! A scan beside the connection (check 10) reports the trainer and another peripheral in turn.
 use crate::{
-    frames::{Cps, Note, Record, page_of},
+    frames::{CPS_TAG, Cps, Note, Record, hex, page_of},
     rider::{Cue, Operator, Wire},
 };
 use crank_fec::{Page, decode};
@@ -246,6 +246,8 @@ struct State {
     crank_event_us: u64,
     cps: Vec<Cps>,
     notes: Vec<Note>,
+    /// Every record, cps line and note as the capture file holds it, in the order written.
+    lines: Vec<String>,
     linked: bool,
     rebooted: bool,
     stopping: bool,
@@ -270,6 +272,7 @@ fn emit(s: &mut State, at_us: u64, f: [u8; 13]) {
         rx: true,
         bytes: f.to_vec(),
     };
+    s.lines.push(format!("{at_us} rx {}", hex(&r.bytes)));
     s.records.push(r.clone());
     s.rx.push(r);
 }
@@ -320,6 +323,7 @@ impl Sim {
                 crank_event_us: 0,
                 cps: Vec::new(),
                 notes: Vec::new(),
+                lines: Vec::new(),
                 linked: true,
                 rebooted: false,
                 stopping: false,
@@ -400,6 +404,7 @@ impl Sim {
             bytes.extend(revs.to_le_bytes());
             bytes.extend(time.to_le_bytes());
         }
+        st.lines.push(format!("{CPS_TAG}{now} {}", hex(&bytes)));
         st.cps.push(Cps { at_us: now, bytes });
     }
 
@@ -578,10 +583,13 @@ impl Wire for Sim {
         self.advance();
         let mut s = self.lock();
         let at_us = s.at;
+        let before = s.records.len();
+        s.lines.push(format!("# {tag} {at_us} {}", hex(bytes)));
         s.notes.push(Note {
             tag: tag.into(),
             at_us,
             bytes: bytes.to_vec(),
+            before,
         });
         None
     }
@@ -646,12 +654,22 @@ impl Sim {
         self.lock().notes.clone()
     }
 
+    /// The capture so far as `hil_fec` writes it: every line in the order it was written.
+    pub fn text(&self) -> String {
+        self.lock().lines.iter().fold(String::new(), |mut t, l| {
+            t.push_str(l);
+            t.push('\n');
+            t
+        })
+    }
+
     /// Record and apply a write; `true` when it will never be acknowledged.
     fn record_tx(&self, frame: [u8; 13]) -> bool {
         self.advance();
         let mut s = self.lock();
         // As `Session::send`: the frame is recorded before the write, a failed one too.
         let at = s.at;
+        s.lines.push(format!("{at} tx {}", hex(&frame)));
         s.records.push(Record {
             at_us: at,
             rx: false,

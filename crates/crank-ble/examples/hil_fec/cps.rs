@@ -5,8 +5,9 @@
 //! the `# cps` comment lines ([`crate::frames::CPS_TAG`]) that the live run wrote beside them.
 //! `docs/hil/part-b.md` states the method and the reasoning behind every tolerance.
 use crate::{
-    frames::{Cps, Record},
+    frames::Cps,
     partb::{SEC, SETTLE, Sample, controls, erg_holds, mean, procedure_end, round1, samples, secs},
+    timeline::Timeline,
 };
 use serde_json::{Value, json};
 
@@ -90,13 +91,11 @@ struct Parsed {
 
 /// Decode the notifications and pair consecutive crank events. Both counters wrap at 65 536,
 /// so differences are taken modulo 2^16; a notification without a new crank event (same event
-/// time) adds a power reading only.
+/// time) adds a power reading only. `cps` is in time order (a [`Timeline`]'s).
 fn parse(cps: &[Cps]) -> Parsed {
-    let mut sorted: Vec<&Cps> = cps.iter().collect();
-    sorted.sort_by_key(|c| c.at_us);
     let mut out = Parsed::default();
     let mut prev: Option<(u64, u16, u16)> = None;
-    for c in sorted {
+    for c in cps {
         let Some(m) = decode(&c.bytes) else {
             out.malformed += 1;
             continue;
@@ -169,9 +168,9 @@ impl Window {
     }
 }
 
-/// Longest stretch of `[from, to)` without a timestamp in `times`, the window's edges included.
-pub(crate) fn max_gap(mut times: Vec<u64>, from: u64, to: u64) -> u64 {
-    times.sort_unstable();
+/// Longest stretch of `[from, to)` without a timestamp in `times` (in time order), the window's
+/// edges included.
+pub(crate) fn max_gap(times: Vec<u64>, from: u64, to: u64) -> u64 {
     let mut prev = from;
     let mut gap = 0;
     for t in times.into_iter().filter(|t| in_window(*t, from, to)) {
@@ -183,11 +182,10 @@ pub(crate) fn max_gap(mut times: Vec<u64>, from: u64, to: u64) -> u64 {
 
 /// Longest stretch of `[from, to)` not covered by a pair lying wholly inside it: the cadence of
 /// a window may only come from revolutions counted between two notifications of the window.
+/// `pairs` are in time order, as [`parse`] makes them.
 fn crank_gap(pairs: &[&Pair], from: u64, to: u64) -> u64 {
-    let mut sorted: Vec<&&Pair> = pairs.iter().collect();
-    sorted.sort_by_key(|p| p.from_us);
     let (mut prev, mut gap) = (from, 0);
-    for p in sorted {
+    for p in pairs {
         gap = gap.max(p.from_us.saturating_sub(prev));
         prev = prev.max(p.at_us);
     }
@@ -265,7 +263,8 @@ fn compare_window(
 }
 
 /// Check 5: page-25 rate, and page-25 against CPS power and cadence over the settled holds.
-pub fn check5(records: &[Record], cps: &[Cps]) -> Value {
+pub fn check5(tl: &Timeline) -> Value {
+    let (records, cps) = (tl.records(), tl.cps());
     let s = samples(records);
     let ctl = controls(records);
     let parsed = parse(cps);
@@ -457,6 +456,7 @@ pub fn result(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frames::Record;
 
     fn cps(at_us: u64, power: i16, revs: u16, time: u16) -> Cps {
         let mut bytes = vec![0x20, 0x00];
@@ -565,17 +565,20 @@ mod tests {
     #[test]
     fn page_25_slower_than_2_hz_disagrees_even_when_the_power_matches() {
         let (records, cps) = ride(1_000_000, 0, 60);
-        let v = check5(&records, &cps);
+        let v = check5(&Timeline::of_parts(&records, &cps, &[]));
         let verdict = v["verdict"].as_str().expect("verdict");
         assert!(verdict.starts_with("disagree: page 25 rate 1.0 Hz"), "{v}");
         let (records, cps) = ride(500_000, 0, 60);
-        assert_eq!(check5(&records, &cps)["verdict"], "agree");
+        assert_eq!(
+            check5(&Timeline::of_parts(&records, &cps, &[]))["verdict"],
+            "agree"
+        );
     }
 
     #[test]
     fn too_short_a_ride_has_no_verdict() {
         let (records, cps) = ride(250_000, 0, 25);
-        let v = check5(&records, &cps);
+        let v = check5(&Timeline::of_parts(&records, &cps, &[]));
         assert!(
             v["verdict"]
                 .as_str()
@@ -600,7 +603,8 @@ mod tests {
                 })
                 .collect()
         };
-        let verdict = |rpm| check5(&records, &at_rpm(rpm))["verdict"].clone();
+        let verdict =
+            |rpm| check5(&Timeline::of_parts(&records, &at_rpm(rpm), &[]))["verdict"].clone();
         assert_eq!(verdict(90.0), "agree");
         assert_eq!(verdict(89.2), "agree", "within 1 rpm");
         let off = verdict(75.0);
@@ -636,7 +640,7 @@ mod tests {
         records[0].bytes = encode(&ControlPage::TargetPower { watts: 0.0 })
             .expect("encodes")
             .to_vec();
-        let v = check5(&records, &cps);
+        let v = check5(&Timeline::of_parts(&records, &cps, &[]));
         assert_eq!(v["windows"].as_array().map(Vec::len), Some(1), "{v}");
         assert!(
             v["verdict"]
@@ -716,7 +720,7 @@ mod tests {
     fn verdict_of(fe: Vec<Record>, cp: &[Cps]) -> String {
         let mut records = vec![erg(0, 150.0), erg(30 * SEC, 200.0)];
         records.extend(fe);
-        check5(&records, cp)["verdict"]
+        check5(&Timeline::of_parts(&records, cp, &[]))["verdict"]
             .as_str()
             .expect("verdict")
             .to_string()

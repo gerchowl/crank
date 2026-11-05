@@ -101,7 +101,7 @@ hil_fec analyse --target docs/hil/captures/check6.fecap --out docs/hil/captures 
 ```
 
 `analyse` keeps the reply accounting it always wrote and adds `part_b` (the same `result`) for a capture
-named `check5`, `check6`, `check7`, `check8`, `check9`, `check10`, `check11b` or `check12`, and prints the row again.
+named `check5`, `check6`, `check7`, `check8`, `check9`, `check10`, `check11a`, `check11b`, `check11c` or `check12`, and prints the row again.
 
 | Check | What `result` reports (method text is in the JSON) | ADR-0002 |
 |---|---|---|
@@ -119,21 +119,27 @@ named `check5`, `check6`, `check7`, `check8`, `check9`, `check10`, `check11b` or
 Every result also carries `release`: whether page 48 at 0 % was the last control write and whether a
 page-71 reply echoed it.
 
-### Known limits (#516)
+### Capture integrity (#516)
 
-The offline `analyse` validates each check's evidence separately. A capture built or edited by hand can still
-fool it into a full row. A live run cannot produce any of these captures:
+`analyse` (and the live summary, which reads the same file) reads a capture once into one timeline
+(`timeline.rs`, `Timeline::parse`) and every Part B check reads only that timeline:
 
-- **B1:** a control write stamped at the silence guard's release µs is checked by neither window. File order
-  decides the tie.
-- **B2:** records out of time order. `parse_capture` does not sort them, so the 11a silence check reads the last
-  page 25 in file order.
-- **B3:** with a drop, an unplug answer after the closing release is not rejected.
-- **N1:** the 11a silence boundary is 1 µs looser than the live guard. The analyser accepts a release exactly
-  `SILENCE_US` after the last page 25; the live guard needs strictly more.
-
-Until gerchowl/crank#516 lands (one validated, time-ordered capture timeline that every check reads), results
-come only from **unedited live captures**. #516 blocks the live Part B session (#44).
+- **File order is time order.** A live capture has one writer, which takes each line's stamp and appends the
+  line under one lock (`Capture::record_now` and `record_aux_now`: rx frames when the pump appends them, tx
+  writes, `# link`, cue, answer and `# cps` lines). Stamps must not go back in file order; a capture whose stamps
+  do is no result, `contradictory: records out of time order (line N)`, and no check runs on it.
+- **Ties are ordered by the file.** Lines with the same µs happened in file order: a write after a release at its
+  µs is after the release, a frame after a drop stamp at its µs is after the drop. Windows bounded by events
+  (a cue, an answer, a release, a drop, a write) are positions on the timeline; only windows that start a
+  duration after an event (the 5 s left out after a cue, the 15 s before it) are measured in µs.
+- **Each check's events follow a grammar** (`Timeline::grammar`; 10, 11a, 11b and 11c): its cue at most once
+  (no cue at all is that check's own "no cue", no result); each question answered at most once, after the cue and
+  before the closing release; each `# link 01` drop after the cue and not after the closing release. Every run
+  writes one closing release, the last control write (else `the capture is cut off`). Anything else is
+  `unknown: contradictory: <rule>`.
+- **One silence threshold.** The silence guard stops a run when strictly more than `SILENCE_US` (2 s) passed
+  without page 25 (`rider::silent`); `analyse` accepts a release before an 11a drop as the guard's only on that same
+  condition, from the last page 25 before it in the timeline.
 
 ### Check 9: what counts as a stall
 

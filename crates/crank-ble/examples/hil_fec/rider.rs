@@ -10,7 +10,7 @@
 //! (completion, a guard, an error, a panic, SIGINT/SIGTERM/SIGHUP) the trainer is
 //! released with page 48 at 0 %, the ride-end mode of §7.9, before the link is closed.
 use crate::{
-    frames::{Cps, Note, Record, page_of},
+    frames::{Cps, Record, page_of},
     partb::{Descent, STALL_FLOOR_RPM, Sample},
     session::Session,
 };
@@ -32,6 +32,13 @@ pub const MAX_GRADE_PCT: f32 = 10.0;
 const SEC: u64 = 1_000_000;
 /// No page 25 for this long while riding stops the run (ADR-0002 §6: 8 ticks).
 pub(crate) const SILENCE_US: u64 = 2 * SEC;
+
+/// The silence guard's condition, at `now_us` with the last page 25 at `last_us`: strictly more
+/// than [`SILENCE_US`] without one. The live guard and `analyse` (a release before an 11a drop is
+/// the guard's only if this held when it was written) share it, so they agree at the edge (#516).
+pub(crate) fn silent(last_us: u64, now_us: u64) -> bool {
+    now_us.saturating_sub(last_us) > SILENCE_US
+}
 /// The rider must start pedalling within this time.
 const START_WAIT: Duration = Duration::from_mins(2);
 /// Bound on the release write: a stalled GATT write must not hold the exit (ADR-0002 §7.9's 2 s).
@@ -111,7 +118,7 @@ impl Wire for Session {
     }
     fn note(&self, tag: &str, bytes: &[u8]) -> Option<String> {
         self.capture
-            .record_aux(crank_devices::Clock::now(&*self.clock), tag, bytes)
+            .record_aux_now(&*self.clock, tag, bytes)
             .err()
             .map(|e| e.to_string())
     }
@@ -404,7 +411,7 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
                 Guard::Descent { .. } | Guard::Sim => {}
             }
         }
-        if self.w.now_us().saturating_sub(self.last_sample_us) > SILENCE_US {
+        if silent(self.last_sample_us, self.w.now_us()) {
             return Err(Stop::Aborted(SILENT.into()));
         }
         let Guard::Descent { from_us } = self.guard else {
@@ -520,7 +527,10 @@ impl<'a, W: Wire, O: Operator> Rig<'a, W, O> {
                     None => std::future::pending().await,
                 }
             };
+            // Biased: of events ready at once, an advertisement is recorded before the tick that
+            // may close the window, so the capture's order (its timeline, #516) is deterministic.
             tokio::select! {
+                biased;
                 v = &mut fut => return Ok(Some(v)),
                 ad = next => {
                     if let Some(mine) = ad {
@@ -1270,12 +1280,11 @@ pub fn summary(
     p: Procedure,
     stem: &str,
     report: &Report,
-    records: &[Record],
-    cps: &[Cps],
-    notes: &[Note],
+    text: &str,
     lag: &crate::partb::PowerLag,
 ) -> Value {
     let outcome = outcome(&report.procedure);
+    let records = crate::frames::parse_capture(text);
     let mut v = json!({
         "check": stem,
         "what_was_sent": p.what(),
@@ -1283,8 +1292,7 @@ pub fn summary(
         "release_write_error": report.release_error,
         "page71_frames": records.iter().filter(|r| r.rx && page_of(&r.bytes) == Some(71)).count(),
     });
-    v["result"] = crate::partb::analyse(stem, records, cps, notes, Some(&outcome), lag)
-        .unwrap_or(Value::Null);
+    v["result"] = crate::partb::analyse(stem, text, Some(&outcome), lag).unwrap_or(Value::Null);
     v
 }
 
@@ -1292,7 +1300,6 @@ pub fn summary(
 mod tests {
     use super::*;
     use crate::{
-        frames::{CPS_TAG, hex, parse_capture, parse_cps, parse_notes},
         partb::{Control, FINISHED, MAX_T90_US, OUTCOME, PowerLag, analyse, controls, outcome_in},
         sim::{Pattern, Plan, Sim},
     };
@@ -1410,17 +1417,7 @@ mod tests {
 
     /// The `.fecap` text of a run, with its outcome line as `hil_fec` appends it.
     fn fecap(sim: &Sim, report: &Report) -> String {
-        let mut text = sim.records().iter().fold(String::new(), |mut t, r| {
-            let dir = if r.rx { "rx" } else { "tx" };
-            let _ = writeln!(t, "{} {dir} {}", r.at_us, hex(&r.bytes));
-            t
-        });
-        for c in sim.cps() {
-            let _ = writeln!(text, "{CPS_TAG}{} {}", c.at_us, hex(&c.bytes));
-        }
-        for n in sim.notes() {
-            let _ = writeln!(text, "# {} {} {}", n.tag, n.at_us, hex(&n.bytes));
-        }
+        let mut text = sim.text();
         let _ = writeln!(text, "{OUTCOME}{}", outcome(&report.procedure));
         let _ = writeln!(text, "{FINISHED}{SESSION_START_S}");
         text
@@ -1445,26 +1442,9 @@ mod tests {
         stem: &str,
         lag: &PowerLag,
     ) -> Value {
-        let live = summary(
-            p,
-            stem,
-            report,
-            &sim.records(),
-            &sim.cps(),
-            &sim.notes(),
-            lag,
-        )["result"]
-            .clone();
+        let live = summary(p, stem, report, &sim.text(), lag)["result"].clone();
         let text = fecap(sim, report);
-        let offline = analyse(
-            stem,
-            &parse_capture(&text),
-            &parse_cps(&text),
-            &parse_notes(&text),
-            outcome_in(&text).as_deref(),
-            lag,
-        )
-        .expect("part B stem");
+        let offline = analyse(stem, &text, outcome_in(&text).as_deref(), lag).expect("part B stem");
         assert_eq!(live, offline);
         live
     }
@@ -1635,7 +1615,7 @@ mod tests {
         let released = crate::partb::secs(release_at(&sim));
         assert!((at..=at + 0.25).contains(&released), "{released} {v}");
         // Without the outcome line (a killed run) the same capture gives no verdict.
-        let v = analyse("check9", &sim.records(), &[], &[], None, &MEASURED).expect("part B stem");
+        let v = analyse("check9", &sim.text(), None, &MEASURED).expect("part B stem");
         assert_eq!(v["verdict"], Value::Null, "{v}");
     }
 
@@ -1934,16 +1914,9 @@ mod tests {
                     ..Plan::default()
                 };
                 let (sim, report) = run(Procedure::Check9, plan, None).await;
-                let v = summary(
-                    Procedure::Check9,
-                    "check9",
-                    &report,
-                    &sim.records(),
-                    &[],
-                    &[],
-                    &MEASURED,
-                )["result"]
-                    .clone();
+                let v =
+                    summary(Procedure::Check9, "check9", &report, &sim.text(), &MEASURED)["result"]
+                        .clone();
                 let verdict = v["verdict"].as_str().unwrap_or("no verdict").to_string();
                 if unsafe_trainer && !v["verdict"].is_null() {
                     judged.insert(name.clone());
@@ -1987,15 +1960,7 @@ mod tests {
                 ..Plan::default()
             };
             let (sim, report) = run(Procedure::Check9, plan, None).await;
-            let v = summary(
-                Procedure::Check9,
-                "check9",
-                &report,
-                &sim.records(),
-                &[],
-                &[],
-                &MEASURED,
-            )["result"]
+            let v = summary(Procedure::Check9, "check9", &report, &sim.text(), &MEASURED)["result"]
                 .clone();
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let end = (v["descent_detail"]["onset_s"].as_f64().expect("onset") * 1e6) as u64;
@@ -2007,16 +1972,9 @@ mod tests {
                     ..Plan::default()
                 };
                 let (sim, report) = run(Procedure::Check9, plan, None).await;
-                let v = summary(
-                    Procedure::Check9,
-                    "check9",
-                    &report,
-                    &sim.records(),
-                    &[],
-                    &[],
-                    &MEASURED,
-                )["result"]
-                    .clone();
+                let v =
+                    summary(Procedure::Check9, "check9", &report, &sim.text(), &MEASURED)["result"]
+                        .clone();
                 assert!(
                     matches!(&report.procedure, Err(Stop::Aborted(_))) && v["verdict"].is_null(),
                     "floor {floor}, stop at cue + {offset} us: {report:?} {}",
@@ -2280,7 +2238,7 @@ mod tests {
         // A capture without an outcome line (killed run, older capture) is no result either.
         let (sim, report) = run(Procedure::Check7, Plan::default(), None).await;
         assert_eq!(report.procedure, Ok(()));
-        let v = analyse("check7", &sim.records(), &[], &[], None, &MEASURED).expect("part B stem");
+        let v = analyse("check7", &sim.text(), None, &MEASURED).expect("part B stem");
         assert_eq!(v["held"], Value::Null, "{v}");
         assert!(v["line"].as_str().expect("line").contains("no result"));
     }
@@ -2465,15 +2423,7 @@ mod tests {
             "{v}"
         );
         // A killed run (no outcome line) gives neither verdict.
-        let v = analyse(
-            "check10",
-            &sim.records(),
-            &[],
-            &sim.notes(),
-            None,
-            &MEASURED,
-        )
-        .expect("part B stem");
+        let v = analyse("check10", &sim.text(), None, &MEASURED).expect("part B stem");
         assert_eq!(
             (&v["verdict"], &v["advertising"], &v["second_central"]),
             (&Value::Null, &Value::Null, &Value::Null)
@@ -2627,7 +2577,7 @@ mod tests {
                     answers: &["unsure"],
                     ..quiet
                 },
-                "unknown: the phone's answer is \"unsure\", and the scan saw no advertisement of the trainer (the scan ran over the whole window, 59 of other peripherals;",
+                "unknown: the phone's answer is \"unsure\", and the scan saw no advertisement of the trainer (the scan ran over the whole window, 60 of other peripherals;",
             ),
             (
                 Plan {
@@ -2649,7 +2599,7 @@ mod tests {
                     answers: &["not-seen"],
                     ..quiet
                 },
-                "not seen: the phone did not list it, and the scan, which ran over the whole window and saw 59 advertisements of other peripherals, saw none of the trainer",
+                "not seen: the phone did not list it, and the scan, which ran over the whole window and saw 60 advertisements of other peripherals, saw none of the trainer",
             ),
             (
                 Plan {
@@ -2737,12 +2687,9 @@ mod tests {
     }
 
     /// The link stamps `(code, at_us)` of a run.
-    fn link_stamps(sim: &Sim) -> Vec<(u8, u64)> {
-        sim.notes()
-            .into_iter()
-            .filter(|n| n.tag == crate::check11::LINK)
-            .map(|n| (n.bytes[0], n.at_us))
-            .collect()
+    fn link_stamps(sim: &Sim) -> Vec<crate::frames::Stamp> {
+        crate::frames::stamps(&sim.notes(), crate::check11::LINK, &[1, 2, 3, 4, 5, 6, 7])
+            .expect("link stamps in order")
     }
 
     #[tokio::test(start_paused = true)]
@@ -2757,7 +2704,7 @@ mod tests {
         assert_released(&sim, &report);
         let link = link_stamps(&sim);
         assert_eq!(
-            link.iter().map(|l| l.0).collect::<Vec<_>>(),
+            link.iter().map(|l| l.code).collect::<Vec<_>>(),
             [1, 2, 3, 4, 5]
         );
         let at = |code| crate::frames::stamp(&link, code).expect("stamped");
@@ -2881,9 +2828,9 @@ mod tests {
         assert_eq!(report.procedure, Ok(()));
         assert_eq!(report.release_error.as_deref(), Some("not connected"));
         let link = link_stamps(&sim);
-        assert_eq!(link.iter().map(|l| l.0).collect::<Vec<_>>(), [1, 6]);
+        assert_eq!(link.iter().map(|l| l.code).collect::<Vec<_>>(), [1, 6]);
         assert!(
-            (60 * SEC..=60 * SEC + 100_000).contains(&(link[1].1 - link[0].1)),
+            (60 * SEC..=60 * SEC + 100_000).contains(&(link[1].at_us - link[0].at_us)),
             "{link:?}"
         );
         let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
@@ -2913,7 +2860,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            link_stamps(&sim).iter().map(|l| l.0).collect::<Vec<_>>(),
+            link_stamps(&sim).iter().map(|l| l.code).collect::<Vec<_>>(),
             [1, 7]
         );
         let v = reanalysed(&sim, &report, Procedure::Check11b, "check11b");
@@ -3469,5 +3416,122 @@ mod tests {
             Err(Stop::Aborted("not confirmed by the operator".into()))
         );
         assert!(sim.notes().is_empty() && sim.cues().is_empty());
+    }
+
+    /// The valid captures of the property test: one completed sim run of each Part B check (11a
+    /// also with the silence guard's release before a drop), as `(stem, .fecap text)`.
+    async fn valid_captures() -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        let answers = |a: &'static [&'static str]| Plan {
+            answers: a,
+            ..Plan::default()
+        };
+        for (p, stem, plan) in [
+            (Procedure::Check5, "check5", Plan::default()),
+            (Procedure::Check6, "check6", Plan::default()),
+            (Procedure::Check7, "check7", Plan::default()),
+            (Procedure::Check8, "check8", Plan::default()),
+            (Procedure::Check9, "check9", Plan::default()),
+            (
+                Procedure::Check10,
+                "check10",
+                answers(&["seen", "connected"]),
+            ),
+            (Procedure::Check11a, "check11a", answers(&["unplugged"])),
+            (
+                Procedure::Check11a,
+                "check11a",
+                Plan {
+                    answers: &["unplugged"],
+                    silent_from_us: Some(45 * SEC),
+                    drop_at_us: Some(50 * SEC),
+                    ..Plan::default()
+                },
+            ),
+            (Procedure::Check12, "check12", Plan::default()),
+        ] {
+            let (sim, report) = run(p, plan, None).await;
+            out.push((stem, fecap(&sim, &report)));
+        }
+        let (sim, report) = run11b(answers(&["out"]), crate::sim::Dropout::default()).await;
+        out.push(("check11b", fecap(&sim, &report)));
+        let sim = Sim::cold(Plan::default());
+        assert_eq!(cold(&sim, advert_after(3), Ok(()), 1).await, Ok(()));
+        let report = drive(&sim, &sim, Procedure::Check11c, std::future::pending()).await;
+        out.push(("check11c", fecap(&sim, &report)));
+        out
+    }
+
+    /// A full row: a completed run whose verdict, if it has one, is not `unknown`.
+    fn full(v: &Value) -> bool {
+        v["completed"] == json!(true)
+            && v["verdict"]
+                .as_str()
+                .is_none_or(|x| !x.starts_with("unknown"))
+    }
+
+    /// #516 property: reordering the lines of a valid capture, or moving one line's stamp out of
+    /// its place, never turns `unknown` into a full row nor changes a full row. A mutation that
+    /// keeps the file in time order (equal stamps swapped, a stamp moved within its neighbours')
+    /// is another valid capture and is counted, not judged.
+    #[tokio::test(start_paused = true)]
+    async fn reordered_or_restamped_captures_never_gain_or_change_a_full_row() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % u64::try_from(n).expect("small")).expect("small")
+        };
+        let stamp_of_line = |l: &str| -> Option<u64> {
+            let t = l
+                .strip_prefix("# ")
+                .map_or(l, |r| r.split_once(' ').map_or("", |x| x.1));
+            t.split_whitespace().next()?.parse().ok()
+        };
+        let (mut judged, mut in_order, mut fulls) = (0, 0, 0);
+        for (stem, text) in valid_captures().await {
+            let base = analyse(stem, &text, outcome_in(&text).as_deref(), &MEASURED).expect("stem");
+            fulls += usize::from(full(&base));
+            let lines: Vec<&str> = text.lines().collect();
+            let stamped: Vec<usize> = (0..lines.len())
+                .filter(|i| stamp_of_line(lines[*i]).is_some())
+                .collect();
+            let max = lines
+                .iter()
+                .filter_map(|l| stamp_of_line(l))
+                .max()
+                .unwrap_or(0);
+            for k in 0..400_u32 {
+                let mut m: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
+                let i = stamped[next(stamped.len())];
+                if k % 2 == 0 {
+                    let j = stamped[next(stamped.len())];
+                    m.swap(i, j);
+                } else {
+                    let at = stamp_of_line(lines[i]).expect("stamped");
+                    let to = u64::try_from(next(usize::try_from(max + 1).expect("small")))
+                        .expect("small");
+                    m[i] = lines[i].replacen(&at.to_string(), &to.to_string(), 1);
+                }
+                let text = m.join("\n") + "\n";
+                if crate::timeline::Timeline::parse(&text).is_ok() {
+                    in_order += 1;
+                    continue;
+                }
+                judged += 1;
+                let v =
+                    analyse(stem, &text, outcome_in(&text).as_deref(), &MEASURED).expect("stem");
+                assert!(
+                    !full(&v),
+                    "{stem}: a full row from an out-of-order capture: {v}"
+                );
+                assert!(!full(&v) || (full(&base) && v == base), "{stem}: {v}");
+            }
+        }
+        println!(
+            "property: {fulls} full baselines, {judged} mutants judged, {in_order} still in time order"
+        );
+        assert!(fulls >= 10 && judged > 3000, "{fulls} {judged}");
     }
 }

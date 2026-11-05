@@ -10,8 +10,9 @@
 //! operator's `# answer-lights`. [`validate`] holds them to the procedure's rules, live and offline.
 use crate::{
     check10::{Question, answer},
-    frames::{Note, Record, page_of, stamp, stamps},
-    partb::{Control, SEC, controls, mean, procedure_end, round1, samples, secs},
+    frames::{Note, Record, Stamp, page_of, stamp, stamp_of, stamps},
+    partb::{Control, SEC, controls, mean, procedure_end, round1, samples, secs, writes},
+    timeline::{Grammar, Timeline},
 };
 use crank_fec::{Page, decode};
 use serde_json::{Value, json};
@@ -51,6 +52,13 @@ pub const RECONNECT_WAIT: Duration = Duration::from_mins(1);
 const GIVE_UP_SLACK_US: u64 = 1_000_000;
 /// The ERG target before the stop and after the reconnect, W.
 pub const TARGET_W: u16 = 100;
+
+/// Check 11b's stamped events ([`Timeline::grammar`]).
+const GRAMMAR: Grammar = Grammar {
+    cue: (WINDOW, STOPPING),
+    answers: &[LIGHTS.key],
+    drop: true,
+};
 
 /// The operator's observation, asked once the link is back (or the bound ran out).
 pub const LIGHTS: Question = Question {
@@ -113,8 +121,8 @@ pub fn same_trainer(records: &[Record], drop: u64, back: u64) -> Result<(), Stri
 
 /// A run's stamps, held to the procedure's rules.
 struct Run {
-    stop: u64,
-    link: Vec<(u8, u64)>,
+    stop: Stamp,
+    link: Vec<Stamp>,
 }
 
 /// Check 11b's stamps against the procedure: the link events as a state machine ([`follows`]),
@@ -122,19 +130,24 @@ struct Run {
 /// the drop, and "gave up" at that bound (within [`GIVE_UP_SLACK_US`]); no control but the release
 /// from the stop cue to the operator's `y`; the `y` only after the reconnect and its release; the
 /// same trainer on both sides. `Err` names the first breach, which makes the row `unknown`.
-fn validate(records: &[Record], notes: &[Note]) -> Result<Run, String> {
+fn validate(tl: &Timeline) -> Result<Run, String> {
+    tl.grammar(&GRAMMAR)?;
+    let (records, notes) = (tl.records(), tl.notes());
     let window = stamps(notes, WINDOW, &[STOPPING, CONFIRMED])?;
-    let stop = stamp(&window, STOPPING).ok_or("the capture has no stop cue")?;
-    let mut link: Vec<(u8, u64)> = Vec::new();
-    for n in notes.iter().filter(|n| n.tag == LINK) {
-        let prev = link.last().copied();
+    let stop = stamp_of(&window, STOPPING).ok_or("the capture has no stop cue")?;
+    let mut link: Vec<Stamp> = Vec::new();
+    for (seq, n) in notes.iter().enumerate().filter(|(_, n)| n.tag == LINK) {
         match n.bytes[..] {
-            [code] if follows(prev.map(|p| p.0), code) && prev.is_none_or(|p| n.at_us >= p.1) => {
-                link.push((code, n.at_us));
-            }
+            [code] if follows(link.last().map(|p| p.code), code) => link.push(Stamp {
+                code,
+                at_us: n.at_us,
+                seq,
+                before: n.before,
+            }),
             _ => {
+                let codes: Vec<u8> = link.iter().map(|l| l.code).collect();
                 return Err(format!(
-                    "contradictory link stamps: {:02X?} at {} us after {link:02X?}",
+                    "contradictory link stamps: {:02X?} at {} us after {codes:02X?}",
                     n.bytes, n.at_us
                 ));
             }
@@ -142,19 +155,16 @@ fn validate(records: &[Record], notes: &[Note]) -> Result<Run, String> {
     }
     let detected = stamp(&link, DETECTED).ok_or("the capture has no drop")?;
     let after_s = |at: u64, from: u64| round1(secs(at.saturating_sub(from)));
-    if detected < stop {
-        return Err("contradictory: the drop is stamped before the stop cue".into());
-    }
-    if detected > stop + DROP_WAIT.as_secs() * SEC + POLL_SLACK_US {
+    if detected > stop.at_us + DROP_WAIT.as_secs() * SEC + POLL_SLACK_US {
         return Err(format!(
             "the drop is stamped {} s after the stop cue, past the {} s bound",
-            after_s(detected, stop),
+            after_s(detected, stop.at_us),
             DROP_WAIT.as_secs()
         ));
     }
     let bound = detected + RECONNECT_WAIT.as_secs() * SEC;
-    let back = stamp(&link, FIRST_PAGE25);
-    if let Some(at) = back.filter(|at| *at > bound) {
+    let back = stamp_of(&link, FIRST_PAGE25);
+    if let Some(at) = back.map(|b| b.at_us).filter(|at| *at > bound) {
         return Err(format!(
             "the first page 25 is stamped {} s after the drop, past the {} s bound",
             after_s(at, detected),
@@ -177,33 +187,36 @@ fn validate(records: &[Record], notes: &[Note]) -> Result<Run, String> {
             ));
         }
     }
-    let confirmed = stamp(&window, CONFIRMED);
-    if confirmed.is_some_and(|y| back.is_none_or(|b| y < b)) {
+    let confirmed = stamp_of(&window, CONFIRMED);
+    if confirmed.is_some_and(|y| back.is_none_or(|b| y.seq < b.seq)) {
         return Err(
             "contradictory: the operator's y is stamped without a reconnect before it".into(),
         );
     }
-    let ctl = controls(records);
-    let early = ctl.iter().find(|(at, c)| {
-        *at >= stop && confirmed.is_none_or(|y| *at < y) && *c != Control::Resistance(0.0)
+    let ctl = writes(records);
+    let early = ctl.iter().find(|w| {
+        w.pos >= stop.before
+            && confirmed.is_none_or(|y| w.pos < y.before)
+            && w.control != Control::Resistance(0.0)
     });
-    if let Some((at, c)) = early {
+    if let Some(w) = early {
         return Err(format!(
-            "{c:?} at {} s after the stop cue, before the confirmed resume",
-            after_s(*at, stop)
+            "{:?} at {} s after the stop cue, before the confirmed resume",
+            w.control,
+            after_s(w.at_us, stop.at_us)
         ));
     }
     if let Some(back) = back {
         // With only releases before the `y`, a write after the reconnect and before the `y` is the
         // release: that makes it the first write, and the ERG after the `y` cannot be.
-        let first = ctl.iter().find(|(at, _)| *at >= back);
-        if confirmed.is_some_and(|y| first.is_none_or(|(at, _)| *at >= y)) {
+        let first = ctl.iter().find(|w| w.pos >= back.before);
+        if confirmed.is_some_and(|y| first.is_none_or(|w| w.pos >= y.before)) {
             return Err(
                 "contradictory: the operator's y is stamped before the release after the reconnect"
                     .into(),
             );
         }
-        same_trainer(records, detected, back)?;
+        same_trainer(records, detected, back.at_us)?;
     }
     Ok(Run { stop, link })
 }
@@ -221,7 +234,7 @@ fn fe_state(code: u8) -> String {
 }
 
 /// The reconnect, from the link stamps: each phase measured from the drop's detection.
-fn reconnect(link: &[(u8, u64)], detected: u64) -> String {
+fn reconnect(link: &[Stamp], detected: u64) -> String {
     let phase = |code: u8, name: &str| {
         stamp(link, code).map_or(format!("{name} unknown"), |at| {
             format!("{name} +{} s", round1(secs(at.saturating_sub(detected))))
@@ -249,23 +262,24 @@ fn reconnect(link: &[(u8, u64)], detected: u64) -> String {
     }
 }
 
-/// What the trainer did after the reconnect: its first page 25 (sent before any write) and how the
-/// re-engaged ERG target was held ([`validate`] has made sure the release came first).
-fn after(records: &[Record], first: u64) -> Value {
-    let page25 = records
-        .iter()
-        .filter(|r| r.rx && r.at_us >= first)
-        .find_map(|r| match decode(&r.bytes).ok()?.page {
-            Page::Trainer(t) => Some(t),
-            _ => None,
-        });
+/// What the trainer did after the reconnect (frames from index `first`): its first page 25 (sent
+/// before any write) and how the re-engaged ERG target was held ([`validate`] has made sure the
+/// release came first).
+fn after(records: &[Record], first: usize) -> Value {
+    let page25 =
+        records[first..]
+            .iter()
+            .filter(|r| r.rx)
+            .find_map(|r| match decode(&r.bytes).ok()?.page {
+                Page::Trainer(t) => Some(t),
+                _ => None,
+            });
     let ctl = controls(records);
-    let later: Vec<&(u64, Control)> = ctl.iter().filter(|(at, _)| *at >= first).collect();
-    let erg = later
+    let erg = writes(records)
         .iter()
         .rev()
-        .find(|(_, c)| matches!(c, Control::Erg(w) if *w > 0.0))
-        .map(|(at, _)| *at);
+        .find(|w| w.pos >= first && matches!(w.control, Control::Erg(x) if x > 0.0))
+        .map(|w| w.at_us);
     let end = procedure_end(records, &ctl);
     // Settled: from 5 s after the last ramp write to the final release.
     let held = erg.and_then(|at| {
@@ -285,25 +299,24 @@ fn after(records: &[Record], first: u64) -> Value {
 }
 
 /// The result of check 11b from the capture's records and notes.
-pub fn check11b(records: &[Record], notes: &[Note]) -> Value {
+pub fn check11b(tl: &Timeline) -> Value {
     let method = "stamps validated first (link events as a state machine, the 90 s and 60 s bounds, no control but the release from the stop cue to the operator's y, the y after the reconnect's release, the same page-81 serial on both sides), else unknown; drop = the link 01 stamp after the check11b 01 stop cue; trainer ran on = its last page 25 before the drop; reconnect = the link stamps from the drop (seen 02, connected 03, discovered 04, first page 25 05; 06 = the 60 s bound ran out); after = the first page 25 after the reconnect, whether the first write after it was page 48 at 0 %, and the mean power from 5 s after the re-engaged ERG target to the release; cause = the operator's lights answer";
     let unknown = |why: String| json!({ "method": method, "drop": Value::Null, "verdict": format!("unknown: {why}") });
-    let Run { stop, link } = match validate(records, notes) {
+    let Run { stop, link } = match validate(tl) {
         Ok(run) => run,
         Err(why) => return unknown(why),
     };
-    let detected = stamp(&link, DETECTED).unwrap_or(stop);
-    let ran_on = samples(records)
-        .iter()
-        .rev()
-        .find(|s| s.at_us >= stop && s.at_us < detected)
-        .map(|s| round1(secs(s.at_us - stop)));
-    let reconnect = reconnect(&link, detected);
-    let after = stamp(&link, FIRST_PAGE25).map(|at| after(records, at));
+    let (records, notes) = (tl.records(), tl.notes());
+    let detected = stamp_of(&link, DETECTED).unwrap_or(stop);
+    let ran_on = samples(&records[stop.before..detected.before.max(stop.before)])
+        .last()
+        .map(|s| round1(secs(s.at_us - stop.at_us)));
+    let reconnect = reconnect(&link, detected.at_us);
+    let after = stamp_of(&link, FIRST_PAGE25).map(|at| after(records, at.before));
     let cause = cause(notes);
     let drop = format!(
         "detected {} s after the stop cue (last page 25 {})",
-        round1(secs(detected - stop)),
+        round1(secs(detected.at_us - stop.at_us)),
         ran_on.map_or("before the stop cue".into(), |s| format!("{s} s after it"))
     );
     let resumed = after.as_ref().map_or_else(
@@ -337,11 +350,16 @@ mod tests {
     use super::*;
     use crate::check10::answer_tag;
 
+    fn check11b(r: &[Record], n: &[Note]) -> Value {
+        super::check11b(&Timeline::of_parts(r, &[], n))
+    }
+
     fn note(tag: &str, at_ms: u64, bytes: &[u8]) -> Note {
         Note {
             tag: tag.into(),
             at_us: at_ms * 1000,
             bytes: bytes.to_vec(),
+            before: 0,
         }
     }
 

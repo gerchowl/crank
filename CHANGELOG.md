@@ -34,6 +34,13 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Fixed
 
+- `hil_fec analyse` (Part B) reads a capture once into one validated timeline: stamps must not go back in file
+  order (else no result), ties count in file order, every check's windows are timeline positions, and checks 10,
+  11a, 11b and 11c hold their cue, answers and drop to a grammar; the live silence guard and the analyser share one
+  threshold. The live writer stamps each line under the capture lock (`Capture::record_now`, `record_aux_now`), so
+  file order is time order. Forged captures that gave full rows before (B1, B2, B3, N1) give none
+  ([#516](https://github.com/gerchowl/crank/issues/516))
+
 ### Security
 
 ## [0.1.0](https://github.com/gerchowl/crank/releases/tag/0.1.0) - 2026-11-03
