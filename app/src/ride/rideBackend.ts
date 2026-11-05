@@ -374,7 +374,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
           throw "missing required key id for command `workout_get`";
         if (args.id !== "w1") throw err("not_found", "unknown workout");
         return {
-          workout: {},
+          workout: { id: "w1", name: "Steady 5 min", ftp: 250, nodes: [] },
           dsl: "",
           compiled: {
             blocks: world.blocks,

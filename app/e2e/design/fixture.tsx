@@ -65,9 +65,29 @@ const RIDING: Partial<Record<MetricId, number | null>> = {
   hr: 142,
 };
 
-/** A loaded ride in `over`'s state, 3:20 into its 10-minute workout (rideBackend `BLOCKS`). */
+/**
+ * The traces' history up to `until` session seconds, 1 Hz, from fixed formulas (no randomness): power near the plan of
+ * rideBackend `BLOCKS`, heart rate rising with it, cadence around 90.
+ */
+const HISTORY = (until: number) =>
+  Array.from({ length: until }, (_, t) => {
+    const plan = t < 180 ? 100 + (80 * t) / 180 : 250;
+    return {
+      t,
+      power: Math.round(plan + 6 * Math.sin(t * 1.7) + 3 * Math.sin(t * 0.45)),
+      hr: Math.round(100 + 0.18 * t + 2 * Math.sin(t / 7)),
+      cadence: Math.round(89 + 2 * Math.sin(t * 1.3) + Math.sin(t * 0.31)),
+    };
+  });
+
+/** A loaded ride in `over`'s state, 3:20 into its 10-minute workout (rideBackend `BLOCKS`), or a free ride. */
 const ride =
-  (over: Partial<RideWorld>, values = RIDING, workoutS = 200) =>
+  (
+    over: Partial<RideWorld>,
+    values = RIDING,
+    workoutS = 200,
+    workoutId: string | null = "w1",
+  ) =>
   () => {
     const rig = installRide({ blocks: BLOCKS, ...over });
     rig.base.truth.infos = [
@@ -97,7 +117,14 @@ const ride =
       }
       return answer;
     });
-    beginRide({ rideId: rig.world.rideId, workoutId: "w1", hrLinked: true });
+    const session = beginRide({
+      rideId: rig.world.rideId,
+      workoutId,
+      hrLinked: true,
+    });
+    for (const h of HISTORY(workoutS))
+      for (const of of ["power", "hr", "cadence"] as const)
+        session.record(h.t, h.t, h[of], of);
     navigate("ride");
   };
 const active = { phase: "active", blockIdx: 1, sessionS: 200 } as const;
@@ -145,6 +172,11 @@ const SETUPS: Record<ScenarioName, () => void> = {
     },
     { ...RIDING, power: null, cadence: null },
   ),
+  "ride-erg-released": ride(
+    { ...active, ergReleased: true },
+    { ...RIDING, power: 40, cadence: 31 },
+  ),
+  "ride-free": ride({ ...active, blocks: [] }, RIDING, 200, null),
   review: () => {
     installHistory();
     navigate("history", "ride-1");
