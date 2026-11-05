@@ -479,3 +479,29 @@ fn a_changed_pairing_lets_the_device_go() {
     assert_eq!(cools(&effects), [(Strap, Phase::Warm, Cool::Unpaired)]);
     assert_eq!(phases(&k), [Some(Phase::Warm), None]);
 }
+
+/// §5.1.4: a load that comes while the links are still handed to an ended load (its release or
+/// their return reported later, on another channel) waits for them instead of failing.
+#[test]
+fn a_load_waits_for_links_still_handed_to_an_ended_load() {
+    let mut k = warm();
+    k.step(at(6), Input::Acquire);
+    assert_eq!(k.step(at(7), Input::Acquire), [], "waits");
+    assert_eq!(
+        k.step(at(8), Input::Released),
+        [Effect::Attempt(Trainer, 2), Effect::Attempt(Strap, 2)]
+    );
+    k.step(at(9), Input::Attempted(Trainer, 2, true));
+    assert_eq!(
+        k.step(at(9), Input::Attempted(Strap, 2, true)),
+        [Effect::HandOver]
+    );
+
+    let mut k = warm();
+    k.step(at(6), Input::Acquire);
+    assert_eq!(k.step(at(7), Input::Acquire), []);
+    assert_eq!(k.step(at(8), Input::Refused), [Effect::HandOver]);
+    // a loaded ride refuses a second load
+    k.step(at(9), Input::Loaded("ride".into()));
+    assert_eq!(k.step(at(10), Input::Acquire), [Effect::FailLoad]);
+}
