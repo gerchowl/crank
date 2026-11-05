@@ -3551,6 +3551,44 @@ mod tests {
         }
     }
 
+    /// Check 5 fails closed: its last target written 5 s before the closing release (in time
+    /// order, the program unchanged) is held too briefly for its window, so the run gives no result
+    /// rather than one from the first target alone.
+    #[tokio::test(start_paused = true)]
+    async fn check5_with_a_target_held_too_briefly_gives_no_result() {
+        let (_, text) = valid_captures()
+            .await
+            .into_iter()
+            .find(|c| c.0 == "check5")
+            .expect("check5");
+        assert!(full(&row("check5", &text)));
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let last_erg = lines
+            .iter()
+            .rposition(|l| l.contains(" tx A4 09 4F 05 31 "))
+            .expect("page 49");
+        let erg = lines.remove(last_erg);
+        let closing = lines
+            .iter()
+            .rposition(|l| l.contains(" tx A4 09 4F 05 30 "))
+            .expect("closing release");
+        let late = stamp_of_line(&lines[closing]).expect("stamped") - 5 * SEC;
+        let at = lines
+            .iter()
+            .position(|l| stamp_of_line(l).is_some_and(|t| t >= late))
+            .expect("a line after");
+        lines.insert(at, restamp(&erg, late));
+        let t = lines.join("\n") + "\n";
+        let v = row("check5", &t);
+        assert_eq!(v["completed"], json!(false), "{}", v["line"]);
+        assert!(
+            v["invalid"]
+                .as_str()
+                .is_some_and(|i| i.starts_with("the held ERG targets are [150.0]")),
+            "{v}"
+        );
+    }
+
     /// #516 round 2 blockers 3 and 4: an 11b drop stamped right after the stop cue with the
     /// trainer's frames after it, and an 11c connect stamped after that check's own writes and
     /// cue, each in time order; neither is a full row.

@@ -358,4 +358,55 @@ mod tests {
         assert_eq!(tl.index_at(10), 0);
         assert_eq!(tl.index_at(11), 2);
     }
+
+    /// The soft start is ERG 0 W, then six writes on the line from the 3 s power to the target
+    /// (each rounded to 1 W), the last one the target itself.
+    #[test]
+    fn the_soft_start_is_erg_0_then_six_steps_on_the_line_to_its_target() {
+        let ws = |c: &[f64]| {
+            c.iter()
+                .enumerate()
+                .map(|(pos, w)| Write {
+                    pos,
+                    at_us: u64::try_from(pos).expect("small"),
+                    control: Control::Erg(*w),
+                })
+                .collect::<Vec<_>>()
+        };
+        let program = [Step::SoftStart(100)];
+        let ramp = |v: [f64; 6]| ws(&[&[0.0][..], &v[..]].concat());
+        assert_eq!(
+            follows(&ramp([0.0, 20.0, 40.0, 60.0, 80.0, 100.0]), &program),
+            Ok(())
+        );
+        assert_eq!(
+            follows(&ramp([30.0, 44.0, 58.0, 72.0, 86.0, 100.0]), &program),
+            Ok(())
+        );
+        assert_eq!(
+            follows(&ramp([0.0, 20.0, 40.0, 60.0, 81.0, 100.0]), &program),
+            Ok(())
+        );
+        // Off the line, short of the target, without the ERG 0 W, one write too many.
+        assert_eq!(
+            follows(&ramp([0.0, 20.0, 60.0, 60.0, 80.0, 100.0]), &program),
+            Err(3)
+        );
+        assert_eq!(
+            follows(&ramp([0.0, 20.0, 40.0, 60.0, 80.0, 99.0]), &program),
+            Err(6)
+        );
+        // (ERG 0 W missing: the ramp is read from 20 W, and 40 W is off that line.)
+        assert_eq!(
+            follows(&ws(&[0.0, 20.0, 40.0, 60.0, 80.0, 100.0]), &program),
+            Err(2)
+        );
+        assert_eq!(
+            follows(
+                &ws(&[0.0, 0.0, 20.0, 40.0, 60.0, 80.0, 100.0, 100.0]),
+                &program
+            ),
+            Err(7)
+        );
+    }
 }
