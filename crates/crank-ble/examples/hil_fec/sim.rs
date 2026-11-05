@@ -332,6 +332,19 @@ impl Sim {
         }
     }
 
+    /// Check 11c's cold trainer: no link and no frames until [`Sim::link_up`].
+    pub fn cold(plan: Plan) -> Self {
+        let sim = Self::new(plan);
+        sim.lock().linked = false;
+        sim
+    }
+
+    /// The cold start's connect: the link is up, and frames flow, from now.
+    pub fn link_up(&self) {
+        self.advance();
+        self.lock().linked = true;
+    }
+
     /// The same simulator with check 11b's dropout scripted.
     pub fn with_dropout(mut self, d: Dropout) -> Self {
         self.dropout = Some(d);
@@ -416,7 +429,9 @@ impl Sim {
     fn step(&self, st: &mut State) {
         let now = st.at;
         let dt = STEP_US as f64 / 1e6;
-        let silent = self.plan.silent_from_us.is_some_and(|x| now >= x);
+        // A dropped link delivers nothing more, whatever the trainer does.
+        let silent = self.plan.silent_from_us.is_some_and(|x| now >= x)
+            || self.plan.drop_at_us.is_some_and(|x| now >= x);
         if self.plan.stop_at_us.is_some_and(|x| now >= x) {
             st.goal = 0.0;
         } else if let Some(goal) = st
@@ -635,15 +650,16 @@ impl Sim {
     fn record_tx(&self, frame: [u8; 13]) -> bool {
         self.advance();
         let mut s = self.lock();
-        if self.plan.drop_at_us.is_some_and(|x| s.at >= x) || !s.linked {
-            return false;
-        }
+        // As `Session::send`: the frame is recorded before the write, a failed one too.
         let at = s.at;
         s.records.push(Record {
             at_us: at,
             rx: false,
             bytes: frame.to_vec(),
         });
+        if self.plan.drop_at_us.is_some_and(|x| s.at >= x) || !s.linked {
+            return false;
+        }
         match decode(&frame).map(|f| f.page) {
             Ok(Page::TargetPower { watts }) => s.applied = Applied::Erg(f64::from(watts)),
             Ok(Page::BasicResistance { pct }) => {
@@ -684,13 +700,15 @@ impl Operator for Sim {
             return;
         }
         match cue {
-            Cue::Start | Cue::Steady => s.goal = s.goal.max(90.0),
+            Cue::Start | Cue::Steady | Cue::ColdStart => s.goal = s.goal.max(90.0),
             Cue::Cadence(rpm) => (s.goal, s.descend_from) = (f64::from(rpm), None),
             Cue::Descend if !matches!(self.plan.descent, Pattern::Hold) => {
                 s.descend_from = Some(at_us);
             }
-            Cue::Descend | Cue::Phone => {}
-            Cue::Stop => (s.goal, s.descend_from) = (0.0, None),
+            Cue::Descend | Cue::Phone | Cue::Unplug | Cue::Silent => {}
+            Cue::Stop | Cue::StopUnconfirmed | Cue::SilentUnconfirmed => {
+                (s.goal, s.descend_from) = (0.0, None);
+            }
             Cue::LightsOut => (s.goal, s.stopping) = (0.0, true),
             Cue::Wake => {
                 (s.goal, s.stopping) = (60.0, false);

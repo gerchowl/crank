@@ -60,10 +60,18 @@ CAP=~/crank-captures/$(date +%F)-app
 CRANK_CAPTURE_DIR=$CAP open ~/Applications/crank.app
 ```
 
-With `CRANK_CAPTURE_DIR` the app writes `$CAP/crank.log` (INFO, and `crank-ble` at TRACE) and one
+With `CRANK_CAPTURE_DIR` the app writes its log to `$CAP/logs.jsonl` (INFO, and `crank_ble` at TRACE) and one
 `trainer-<unix secs>-<n>.fecap` per trainer connection (AGENTS.md; `app/src-tauri/src/logging.rs`). If the
 directory cannot be opened the app says so and exits rather than riding unrecorded. Without it the log is
-`~/Library/Logs/io.github.gerchowl.crank/crank.log`. Captures hold raw device frames (the trainer serial):
+`~/Library/Logs/io.github.gerchowl.crank/logs.jsonl` (8 MiB segments, rotated to `logs-<UTC stamp>.jsonl`). The
+log is OTLP/JSON Lines, one `LogsData` per line, so read it with `jq`; `fromjson?` skips a partial last line
+left by a quit or crash:
+
+```sh
+jq -cR 'fromjson? | .resourceLogs[].scopeLogs[].logRecords[] | [.timeUnixNano, .body.stringValue]' "$CAP/logs.jsonl"
+```
+
+(The plain-text `crank.log` of older builds is no longer written.) Captures hold raw device frames (the trainer serial):
 redact before committing, share nothing unreviewed.
 
 ## 3. `hil_fec` checks
@@ -76,7 +84,7 @@ OUT=~/crank-captures/$(date +%F)-partb
 mkdir -p "$OUT"
 ```
 
-Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10 and 11b), with the same `--out`**, from an Alacritty window on `sage`. The binary is
+Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10, 11a, 11b and 11c), with the same `--out`**, from an Alacritty window on `sage`. The binary is
 `${CARGO_TARGET_DIR:-target}/debug/examples/hil_fec`:
 
 | # | Command | You do | About |
@@ -89,8 +97,15 @@ Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10 and 11b), with the sa
 | 12 | `hil_fec check12 --out "$OUT"` | 90 rpm at 200 W; it switches to Free; at the cue go to 70 rpm | 1 min |
 
 - Each run waits until you type **`y`** (or `yes`) and Enter in its window. Anything else aborts.
-- Follow the on-screen cues. A run that stops early prints `STOPPED: … (trainer released)` and exits with
-  status 4: that is safe, but it gives no result.
+- Follow the on-screen cues. A run that stops early exits with status 4 and gives no result. Read its last line:
+  `STOPPED: … (trainer released)` means the release was confirmed. `STOPPED: … (release NOT confirmed: …)` means
+  the trainer may still hold its target: stop pedalling; if it still resists, unplug it and wait until its lights
+  go out.
+- A run that completes but whose release was not confirmed (expected after an 11a or 11b drop: the link is down)
+  ends on `DONE, but the release was NOT confirmed: …` with the same instruction, and exits with status 5; its
+  result stands.
+- Exit status: 0 done, 1 error, 2 bad arguments, 3 blocked (the owner must act), 4 stopped early (no result),
+  5 completed with the release NOT confirmed.
 - Each run refuses to overwrite its own `.fecap` (`File::create_new`): re-run a stopped check into a **new**
   `--out` directory. For a stopped check 9 that directory has no `check6.fecap`, so first re-run check 6 into
   it, or copy `check6.fecap` over from the old one (valid for the same trainer within 2 h, `SESSION_BOUND_S`).
@@ -101,6 +116,19 @@ Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10 and 11b), with the sa
 - Check 9: lower your cadence smoothly as the cue says. Stopping abruptly is safe but gives no result. At
   250 W and a falling cadence it gets hard: keep turning until the run ends.
 - Each run prints one results row. Send them all, or just the `$OUT` folder name.
+
+### Known limits (#516)
+
+The offline `hil_fec analyse` can be fooled by a hand-built or hand-edited capture, which a live run cannot
+produce:
+
+- **B1:** a write at the silence guard's release µs.
+- **B2:** records out of time order.
+- **B3:** an unplug answer after the closing release.
+- **N1:** the 2 s silence boundary is 1 µs looser than the live guard.
+
+So until gerchowl/crank#516 lands, take results only from **unedited live captures**, and never edit a `.fecap`
+before `analyse`. #516 must land before the live Part B session (#44); see `part-b.md`, Known limits.
 
 ### Check 10: the phone as a second central (no pedalling)
 
@@ -134,14 +162,36 @@ closed) and the strap worn: `hil_fec reuse --scan-secs 5 --idle-secs 0 --target 
 stopped"; both give "after a disconnect". The ids of the paired devices are listed by
 `sqlite3 ~/Library/Application\ Support/io.github.gerchowl.crank/crank.db 'select kind, platform_id from device'`;
 without `--target` the first trainer seen is taken. Each run prints and writes `reuse.json` with `via` and `ms` per connect.
-A recorded app session also logs each connect's phases with their times (`link phase` and `ready_total` lines of
-`crank.log`, target `crank_core::links`). The architect records the results in the HIL doc and rewords §5.1.2 if
+A recorded app session also logs each connect's phases with their times (the `link phase` and `ready_total` records
+of `logs.jsonl`, from `crank_core::links`; read them with the `jq` line of section 2 and `grep 'link phase\|ready_total'`). The architect records the results in the HIL doc and rewords §5.1.2 if
 the lookup fails.
+
+### Check 11a: unplug while pedalling
+
+Run it after check 10, with the same `--out`, **with the trainer plugged in**. Have the mains plug within
+reach from the saddle.
+
+```sh
+hil_fec check11a --out "$OUT"
+```
+
+1. Type **`y`** and Enter when asked, then ride at about 90 rpm through the 100 W soft start and 20 s.
+2. At the cue *pull the trainer's mains plug now*, keep pedalling at about 90 rpm and pull the plug.
+3. When asked *Is the trainer's mains plug out now?*, type **`unplugged`** (or **`cannot`**, which stops the run)
+   and Enter, within 3 min. Keep riding at about 90 rpm for 30 s more; the run releases the trainer and prints
+   the row.
+4. Leave the trainer **unplugged** for check 11b. If the link drops after the unplug, that is the finding: the
+   run stops, still answer the question if it is asked, and say so to the architect. If the trainer only goes
+   silent, the cue *the trainer went silent* comes; keep pedalling easily while the harness waits up to 32 s for
+   the link to drop. If that cue says *the release was NOT confirmed*, stop pedalling instead.
+5. Read the last line. *done: trainer released* means the release was confirmed. *done, but the release was NOT
+   confirmed* (expected after a drop: the link is down) means the trainer may still hold 100 W: stop pedalling.
+   It is unplugged, so it shuts down once you stop; wait until its lights go out before the next run.
 
 ### Check 11b: the unplugged stop (pedalling)
 
-Run it after check 10, with the same `--out`. **Unplug the trainer from mains before you start**, then get
-on and pedal easily so that it powers up (its lights come on).
+Run it after check 11a, with the same `--out`. **The trainer stays unplugged from mains** (unplug it now if it is
+not); get on and pedal easily so that it is powered (its lights on).
 
 ```sh
 hil_fec check11b --out "$OUT"
@@ -157,12 +207,29 @@ hil_fec check11b --out "$OUT"
    the trainer's lights gone out?*: type **`out`**, **`on`** or **`unsure`** and Enter.
 5. It asks again before it applies anything: type **`y`** and Enter, then ride at about 90 rpm through the
    100 W soft start and 20 s. The run releases the trainer and prints the row.
-6. Plug the trainer back in afterwards.
+6. Stay off the pedals and leave the trainer unplugged for check 11c.
 
-### Still to come (#412 part c3)
+### Check 11c: the unplugged cold start (pedalling)
 
-- **Checks 11a and 11c** (unplug while pedalling, unplugged cold start): `TBD: command and procedure (#412
-  part c3)`.
+Run it right after check 11b, still unplugged. **Before you start, wait until the trainer is off (its lights
+out)**, and stay off the pedals.
+
+```sh
+hil_fec check11c --out "$OUT"
+```
+
+1. When asked whether the trainer is unplugged and off, type **`y`** and Enter.
+2. At the cue *start pedalling the unplugged trainer now*, pedal easily at about 90 rpm. The harness waits up
+   to 60 s for the trainer to advertise, then connects (30 s at most). If either runs out, the run stops; nothing
+   was written to the trainer.
+3. Once connected it releases the trainer and asks before it applies anything: type **`y`** and Enter, keep
+   riding at about 90 rpm through the 100 W soft start.
+4. At the cue *hold about 60 rpm*, hold 60 rpm in an easy gear for 20 s, then at the next cue 90 rpm for 20 s.
+   The run releases the trainer and prints the row.
+5. Plug the trainer back in afterwards.
+
+The times are counted from the start cue, so they include the moment the cue takes to reach you: start as soon
+as you see it.
 
 ## 4. Afterwards
 
