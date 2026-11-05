@@ -16,7 +16,7 @@ mod replay;
 mod routing_tests;
 mod telemetry;
 pub use capture::*;
-pub use central::BleCentral;
+pub use central::{BleCentral, RESOLVE_SCAN};
 pub use crank_devices::Clock;
 use crank_devices::{DeviceError, ProtocolErrorKind};
 pub use discovery::*;
