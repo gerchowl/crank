@@ -421,21 +421,23 @@ instead of ADR-0002 §7.9's flat-road default. `Free` and the free-ride control 
 
 #### 2.4.6 Worked examples
 
-`python3 docs/adr/models/route_speed.py` (rider 75 kg, bike 9 kg, defaults of §2.4.2):
+`python3 docs/adr/models/route_speed.py` (rider 75 kg, bike 9 kg, defaults of §2.4.2; example 6 is the relief of §2.8.1):
 
 ```text
-constants: ADR-0005 §2.4.2, §2.4.3, §2.6.2 == model (parameters, integration, surface Crr), ok
+constants: ADR-0005 §2.4.2, §2.4.3, §2.6.2, §2.8.1 == model (parameters, integration, surface Crr, relief), ok
 steady state: integrator == analytic power balance within 0.01 m/s on 5 grades, ok
 step: H = 25 ms vs 1 ms reference: max speed error 0.0018 m/s, distance error 0.008 m over 120 s, ok
 V_MIN: a 30 s standing start at 200 W covers -0.44 m against the V_MIN -> 0 limit, ok
 wire: grade, Crr and wind coefficient round-trip the FE-C grid; table Crr <= 0.0127, ok
 invariants: v >= 0, position never decreases, no rolling back, resume from rest, ok
+relief: arming grade >= 2.0 % for every FTP; never released coasting on a descent or the flat; arms on a stall; ends when the climb ends, also at cadence 0, ok
 worked examples (rider + bike 84 kg, CdA 0.4 m², Crr 0.004, rho 1.225 kg/m³, hub power, still air):
   1. flat 0 %, 200 W from rest: steady 31.9 km/h, 95 % of it after 32.2 s, 2.58 km in 5 min
   2. climb 8 %, 200 W, entered at the flat speed: steady 10.2 km/h (after 60 s 10.2 km/h), 0.88 km in 5 min, 70 m climbed
   3. descent −6 %, 0 W, entered at the flat speed: terminal 49.4 km/h (after 30 s 47.4 km/h, after 120 s 49.4 km/h)
   4. stop/start, flat: 200 W for 120 s (31.9 km/h), coast 30 s at 0 W (15.4 km/h), pause (resume from rest), 200 W again: 90 % of 31.9 km/h after 23.8 s; 1.62 km in all
   5. flat 0 %, 200 W on gravel (Crr 0.012): steady 28.5 km/h (tarmac 31.9 km/h)
+  6. relief arming grade, 30 rpm in 34x28 on 700x25c = 4.6 km/h: FTP 150 W: 13.9 %, FTP 200 W: 18.8 %, FTP 280 W: 27.0 % (at 10 % that speed needs 110 W, at 20 % 212 W)
 all checks passed
 ```
 
@@ -678,9 +680,9 @@ part of this design (§5, Q7).
   standing start in SIM is a standing start on a road.
 - **User pause:** `Resistance { pct: 0 }`, as in every ride (ADR-0002 §7.5, DESIGN §5.2). Position freezes; the
   resume starts from rest (§2.4.4) and slews the grade from 0 % again.
-- **SIM low-cadence relief (§2.8):** a cadence below 30 rpm for 3 s while the commanded grade is above 0 %
-  switches to `Resistance { pct: 0 }`. It ends when cadence is at least 50 rpm for 2 s, and the grade then slews
-  from 0 %. Position keeps advancing under the selected source.
+- **Low-cadence relief on climbs (§2.8.1):** only on a grade at or above the rider's arming grade (≥ 2 %), never
+  on a flat or a descent. A stall there switches to `Resistance { pct: 0 }`, and the relief ends on spinning up or
+  as soon as the climb ends, so a coasting descent is always simulated.
 - **End of route:** when the position reaches the route's length, the ride finishes as after a workout's last
   block (ADR-0001 §5): the end mode `Resistance { pct: 0 }` with its delivery hold (ADR-0002 §7.9).
 - **ERG ↔ SIM:** there is no switch inside a route ride. A route ride's end mode is the ADR-0002 §7.9 end mode, and
@@ -733,12 +735,80 @@ everywhere. DESIGN is amended by R9 before the screen is built.
 |---|---|---|
 | A sudden steep grade (a step in the data, a grade-profile segment boundary, resuming on a climb, a reconnect) | Slew 1 %/s from what was last commanded, and from 0 % after start, pause, release or reconnect (§2.3.5, §2.7.3) | FM-ROUTE-01 (data), -05 (start), -04 (pause), -11 (reconnect); the release's slew is FM-ROUTE-03 |
 | A grade beyond what the rider can push | Cap +20 % after scaling (§2.3.3) | FM-ROUTE-02 |
-| A steep grade at low cadence (stall, strain) | SIM low-cadence relief: < 30 rpm for 3 s with grade > 0 → `Resistance { 0 }`; back at ≥ 50 rpm for 2 s, slewing from 0 % (§2.7.3). Unlike ERG's 40 rpm spiral guard (ADR-0002 §7.4), SIM has no spiral: the force does not rise as cadence falls, so the threshold is lower, and riders legitimately grind steep climbs at 40–50 rpm. Check 13 records cadence on 8 %; check 9 measures the stall point of ERG | FM-ROUTE-03 |
+| A stall on a climb: low cadence under a grade the rider cannot push (strain; the flywheel stops and the rider cannot restart) | Low-cadence relief, armed only at or above the rider's arming grade (§2.8.1) | FM-ROUTE-03 |
+| The relief fires, or stays on, off a climb: coasting on a descent or the flat at cadence 0 drops the simulated road | The arming grade is ≥ 2 %; the relief ends at once when the target grade falls below it (§2.8.1) | FM-ROUTE-12 |
 | Descents | The NEO drives the flywheel, never the pedals (freehub, §1). Model (a) is bounded by the grade cap. Coasting does not auto-pause (§2.4.4) | FM-ROUTE-06 |
 | The end of the route leaves resistance applied | End mode `Resistance { 0 }` with the delivery hold (ADR-0002 §7.9) | FM-ROUTE-07 |
 | A Crr above the wire maximum refuses the mode and stalls control | Every class ≤ `Crr_max` by construction (§2.6.2) | FM-ROUTE-08 |
 | Model (a) produces a non-finite or negative speed and the position jumps | Speed is clamped ≥ 0, and position never decreases (`check_invariants`); a non-finite input (power `null`) counts as 0 W | FM-ROUTE-09 |
 | The trainer's speed stops under source (b) | Position holds, "— no trainer speed", recorded `null` (§2.5) | FM-ROUTE-10 |
+
+#### 2.8.1 Low-cadence relief on climbs
+
+**The hazard, and why cadence alone does not show it.** On a climb in SIM the trainer brakes with the road's
+force, `m·g·(sin θ + Crr·cos θ)` plus a little air. The rider must deliver that force at the wheel through the
+gears. If the grade asks more than the rider can sustain in their lowest gear, cadence falls until the
+flywheel stops. Restarting from rest against the full climb force means a near-standstill pedal stroke at the
+highest torque of the ride (the strain hazard), and check 9 measures the same stall in ERG. Low cadence alone is
+not this hazard. A rider coasting a descent or a flat has cadence 0 by choice, with almost no force on the pedals.
+The first draft armed the relief on cadence below 30 rpm with any positive grade, and ended it only on spinning up.
+So a relief at the top of a climb stayed on down the descent and dropped the simulated road (owner report of
+2026-11-06). The trigger is therefore defined from the hazard: **force the rider cannot sustain at low cadence**.
+
+**Signal.** The NEO reports no torque or resistance on FE-C. In the #44 Part A captures it sends pages 25
+(power, cadence) and 16 (speed), Tacx-specific pages `0xF0`, `0xFA` and `0xFB`, and the replies crank requests
+(54, 55, 71, 80, 81). There is no page 26 (trainer torque data). Torque derived as power / cadence is not usable
+either: it degenerates exactly at the stall, where both go to 0. The relief therefore arms on the **commanded
+grade**. crank chose that grade, so it is known exactly.
+
+**Arming grade (derived from the stall physics with model (a)).**
+
+- At the relief cadence `RELIEF_RPM` in the rider's lowest gear, the road speed is
+  `v_r = RELIEF_RPM / 60 × LOWEST_GEAR × WHEEL_CIRC_M`.
+- The arming grade `G_arm` is the grade at which holding `v_r` needs the rider's FTP:
+  `F(G_arm, v_r)·v_r = FTP`, with `F` the resistive force of §2.4.1 (`arming_grade` in `route_speed.py`).
+- Above `G_arm`, a rider who has fallen below the relief cadence needs more than their FTP just to hold it. Unless
+  they produce it, they cannot pedal back up, so they are stalling. Below `G_arm`, the same cadence costs less than
+  FTP. That is a slow grind or a gear choice, and the rider can shift: it is not a stall.
+- `G_arm` is computed at ride load from the rider's mass and FTP (athlete profile, ADR-0001 §6) and the equipment's
+  lowest gear and wheel. It is floored at `GRADE_ARM_MIN` = 2 %, so the relief can never arm on a flat or a
+  descent, whatever the inputs.
+
+| Constant | Value | Source or rationale |
+|---|---|---|
+| `RELIEF_RPM` relief cadence | 30 | Below it the crank turns at most once in 2 s: the pedal stroke is a standing push, not pedalling. ERG's release uses 40 rpm against the ERG spiral (ADR-0002 §7.4); SIM has no spiral, because the force does not rise as cadence falls |
+| `RELIEF_HOLD_S` | 3 | Longer than one slow pedal stroke at 30 rpm (2 s), so a single dead spot never arms it; the same 3 s as `stopped_pedalling` (ADR-0001 §5) |
+| `RETURN_RPM` return cadence | 50 | Clearly pedalling again. The 20 rpm gap to `RELIEF_RPM` is the hysteresis, so the relief does not chatter |
+| `RETURN_HOLD_S` | 2 | ERG's re-engagement hold (ADR-0002 §7.4) |
+| `LOWEST_GEAR` default | 1.2143 | 34 × 28: a compact chainring and an 11–28 cassette. crank cannot see the gears; it is an equipment setting (chainring and largest cog). A default larger than the rider's real lowest gear arms earlier, which is the safe side |
+| `WHEEL_CIRC_M` | 2.111 | 700×25c, ISO 5775 25-622: π × (622 + 2 × 25) mm. The equipment's wheel size (page 55) when set |
+| `GRADE_ARM_MIN` | 2.0 | Floor. At 2 % the relief speed needs 26 W, at which no rider stalls, and it keeps every flat and descent out of the relief by construction |
+
+These rows are checked against `route_speed.py` (`check_constants`). Worked example 6 (§2.4.6) gives
+`v_r` = 4.6 km/h and arming grades of 13.9 % (FTP 150 W), 18.8 % (200 W) and 27.0 % (280 W, the reference
+athlete) for 84 kg. A strong rider in a compact therefore never reaches it under the 20 % cap: for that rider the
+cap is the guard. The relief matters for lighter-geared or less powerful riders.
+
+**What the relief does.**
+
+- **Arms:** cadence below `RELIEF_RPM` for `RELIEF_HOLD_S`, while the target grade (route grade after scaling and
+  the cap, §2.3) is at or above `G_arm`. The cadence is the held trainer cadence of ADR-0001 §5; an invalid cadence
+  counts as 0.
+- **Relief:** `Resistance { pct: 0 }` at once, the same single-page, echo-verified mode as a pause (ADR-0002 §7.5).
+  It does not slew the grade down, because a stall needs the force gone now, not in 1 %/s steps. Position keeps
+  advancing under the selected source (model (a) coasts and stops on the climb), and the banner says "Grade released
+  · spin up to 50 rpm".
+- **Ends** when either:
+  - cadence is at or above `RETURN_RPM` for `RETURN_HOLD_S`; or
+  - **the target grade falls below `G_arm`** (the climb ends), at once and at any cadence.
+
+  Either way, `Sim` returns with the grade slewed from 0 % towards the target (§2.3.5). If the climb goes on and the
+  rider stalls again, the relief arms again: shown each time, never hidden.
+- **Never mid-descent:** arming needs a target at or above `G_arm` ≥ 2 %, and a relief that is on ends as soon as
+  the target falls below `G_arm`. So a descent and a coasting flat are always simulated. `check_relief` runs a
+  minute of cadence 0 at −15, −6, −0.5, 0 and 1.9 %, and a relief at the top of a climb that tips into −6 %.
+- `stopped_pedalling` (§2.4.4) still applies on top: a rider who stops on a climb (speed below 0.5 m/s) is paused,
+  and the pause's `Resistance { 0 }` takes over.
 
 Every row is in `docs/safety/fmea.toml` as `missing` with #523 until its implementation issue (§6) exists and
 adds the test. The `free_sim` phase covers a route ride. Track-page loss in a route ride is FM-FREE-04's
@@ -754,7 +824,7 @@ case, unchanged.
 | R4 elevation → grade | A refinement fixture `route_grade.json` emitted by `route_grade.py` (smoothed profile of every fixture segment, the pipeline trace of the 0 → 25 % step); the Rust `Profile` and pipeline match it within 1e-9; the flake check `route-grade-model` runs the model |
 | R5 speed model | A refinement fixture `route_speed.json` from `route_speed.py` (the worked examples' per-tick traces); the Rust integrator matches within 1e-9 m/s; the flake check `route-speed-model` runs the model; both models are also run by `just model` |
 | R6 local surface index | No network call outside the Map data download, and none from `route_import`, `route_resurface` or a ride (a mock transport that fails the test on any other request). The md5 is checked and a mismatch refuses the region. A filtered fixture extract (a few km², committed under the size limit) builds an index whose way count, classes and matched surfaces are pinned. The `.pbf` is deleted after the build, and the builder's peak memory stays under its bound with a run size that forces spills on the fixture (§2.6.1, builder memory); an unsorted PBF is refused. A route outside every region falls back and names the gap. A stale region (> 180 days) is marked. `deps-edges` fails when `crank-engine` or `crank-domain` depends on `crank-osm` or `reqwest`. Attribution is present in Map data, the import report and the summary DTO |
-| R7 ride mode | `crank-engine` scenarios with `SimTrainer`: the slew bound on every emitted grade; the cap; start, pause, reconnect and release slew from 0 %; the low-cadence relief engages and ends at the thresholds; the end of the route sends the end mode; coasting a descent does not auto-pause; a stop at the bottom of a climb does; source (b)'s distance across the 256 rollover and a 12 s gap (estimated); a trainer without speed refuses (b) at load with the notice; "a grade changing every second stays `following`". FMEA rows FM-ROUTE-01..11 flip to `guarded` |
+| R7 ride mode | `crank-engine` scenarios with `SimTrainer`: the slew bound on every emitted grade; the cap; start, pause, reconnect and release slew from 0 %; the low-cadence relief arms only at or above the arming grade, ends on spinning up and at once when the climb ends, and never engages coasting a descent or a flat (FM-ROUTE-12); the end of the route sends the end mode; coasting a descent does not auto-pause; a stop at the bottom of a climb does; source (b)'s distance across the 256 rollover and a 12 s gap (estimated); a trainer without speed refuses (b) at load with the notice; "a grade changing every second stays `following`". FMEA rows FM-ROUTE-01..12 flip to `guarded` |
 | R8 HIL check 13 | §2.4.7 runs in the owner's Part B session; results in `docs/hil/<date>-fec.md`; a failed pass criterion amends this ADR |
 | R9 UI | The DESIGN amendment first; then Vitest + mockIPC for the import dialog and its report, Map data (region list, download progress, extract date, outdated mark, attribution), the library, and the ride template; design-harness fixtures for the route ride states; the mocks model every refusal of `route_import` and `ride_load` for routes |
 
@@ -802,7 +872,7 @@ Each has a recommendation, which this ADR implements unless the owner decides ot
 | Q3 | When a region's extract counts as outdated | 180 days, shown in Map data; refresh only on the rider's request | Surfaces up to half a year old | 30 days: a 5 GB France download monthly for little change |
 | Q4 | Default speed source | (a) crank's model | Speed differs from what the trainer would report until check 13 calibrates | (b) the trainer: no surface effect on speed unless sent as Crr, and nothing on trainers without speed |
 | Q5 | Cobbles' Crr | 0.0127 (the FE-C ceiling) | Unmeasured; may be harder than real cobbles on wide tyres | 0.008 (FE-C "rough road", sourced): cobbles feel like rough tarmac |
-| Q6 | SIM low-cadence relief thresholds | 30 rpm for 3 s, back at 50 rpm for 2 s | A rider grinding at 25 rpm on a 15 % wall gets released | ERG's 40/60 rpm: interrupts legitimate grinding at 40 rpm |
+| Q6 | When the low-cadence relief arms (owner, 2026-11-06: it must never fire on a descent) | Only at or above the rider's arming grade: the grade at which holding 30 rpm in the lowest gear (default 34 × 28) needs more than their FTP, floored at 2 %. Below 30 rpm for 3 s there → `Resistance { 0 }`; it ends at 50 rpm for 2 s, or at once when the climb ends (§2.8.1) | Needs the rider's lowest gear (an equipment setting; the default may be wrong for their bike) and a current FTP. A strong rider is never relieved below the 20 % cap, and a rider grinding at 25 rpm above the arming grade is released | Cadence below 30 rpm on any positive grade (the first draft): fires on rolling terrain, and without the climb-end rule it dropped every descent after a relief |
 | Q7 | ERG blocks inside a route (a structured workout on a route) | Not in v1 | A route ride has no targets | A combined plan: compliance, soft start and SIM↔ERG switching inside one ride; a design of its own |
 | Q8 | Per-route Overpass lookup as a fallback for routes outside every stored region | Not offered (§2.6.5) | Such a route rides on the file's surface or tarmac until the rider adds its region | An opt-in per-route lookup: discloses the route's corridor and the IP to a volunteer-run service |
 | Q9 | How the index builder resolves node coordinates (§2.6.1) | A streaming external-sort builder: under 256 MB peak for any region | More code than a hash map; about 4 GB of temporary disk and an unmeasured, longer build for Germany | An in-memory map: about 110 MB for Slovenia but about 1.7 GB (before hash overhead) for Germany, so regions would need a PBF cap of about 1 GB (a state rather than a large country) |
@@ -819,9 +889,9 @@ In order. Each issue cites the section it builds and the acceptance of §2.9.
 | R4 | Elevation → grade profile and the send pipeline (ADR-0005 §2.3) | resampling, Gaussian smoothing, cap, scaling, slew/grid/period as pure functions; `route_grade.json` refinement fixture; flake check `route-grade-model` | R1 |
 | R5 | Speed model (a) (ADR-0005 §2.4) | integrator in `crank-domain`, `steady_speed`; `route_speed.json` refinement fixture; flake check `route-speed-model`; `just model` runs all three models | R4 |
 | R6 | Local OSM surface index: region download, index build, matching (ADR-0005 §2.6) | Geofabrik region list and download with md5 check (`crank-core`); `crank-osm` (PBF filter over `osmpbf`, surface classes, index, matching); `surface_region`/`surface_way` tables; `route_resurface`; fallback, attribution, `deps-edges` rule | R3, R4 |
-| R7 | Route ride mode in the engine (ADR-0005 §2.5, §2.7, §2.8) | `RidePlan::Route`, position, SIM emission, start/pause/relief/end, `stopped_pedalling` amendment, source (b) with `TrainerCaps::speed`, recording, status fields; FMEA rows to `guarded` | R4, R5 (R6 optional: surfaces default without it) |
+| R7 | Route ride mode in the engine (ADR-0005 §2.5, §2.7, §2.8) | `RidePlan::Route`, position, SIM emission, start/pause/relief/end (the relief's arming grade from FTP, mass and the equipment's new lowest-gear setting, §2.8.1), `stopped_pedalling` amendment, source (b) with `TrainerCaps::speed`, recording, status fields; FMEA rows to `guarded` | R4, R5 (R6 optional: surfaces default without it) |
 | R8 | HIL check 13: speed model against trainer speed (ADR-0005 §2.4.7) | `hil_fec check13` and its analysis; added to `docs/hil/part-b.md` and the owner's runbook | R5, #524, #516 |
-| R9 | Route UI: import dialog, Map data settings, route library, route ride screen (ADR-0005 §2.6.1, §2.7.6) | DESIGN amendment first, then the screens and design-harness fixtures | R3, R6, R7 |
+| R9 | Route UI: import dialog, Map data settings, route library, route ride screen (ADR-0005 §2.6.1, §2.7.6) | DESIGN amendment first, then the screens and design-harness fixtures; the equipment screen gains the lowest gear (chainring, largest cog; default 34 × 28) | R3, R6, R7 |
 | R10 | Route rides in FIT export (ADR-0005 §2.7.5) | the `virtual_activity` fields, position opt-in, ODbL notice in the export | #257, R7 |
 
 ## 7. References
