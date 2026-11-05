@@ -30,8 +30,11 @@ Facts this design rests on:
 - **Speed telemetry.** Page 16 bytes 4–5 are speed in 0.001 m/s and byte 3 is distance in metres,
   rolling over at 256 (ADR-0002 §4.2). On the NEO page 16 arrives about once a second at the median and
   5.0–5.5 s apart at the 99th percentile, so speed is held for 6 s (ADR-0001 §5, #437).
-- **The FE-C road model.** The wind resistance coefficient is frontal area × drag coefficient × air density,
-  in kg/m (Garmin Connect IQ `SimulationSettings`). The trainer's air force is therefore ½·Kw·(v + w)²·drafting:
+- **The FE-C road model.** The ANT+ FE profile, which defines page 50, needs an adopter login and was not
+  retrieved (ADR-0002 §4.1). Garmin's Connect IQ documentation of the same FE-C settings, `SimulationSettings`
+  (read 2026-11-05), defines the field: "Wind Resistance Coefficient [kg/m] = Frontal Surface Area [m2] x Drag
+  Coefficient x Air Density [kg/m3]", range 0–1.86 kg/m, invalid 0xFF. These are page 50's range and invalid
+  value in ADR-0002 §4.2, so it describes the same field. The trainer's air force is therefore ½·Kw·(v + w)²·drafting:
   FortiusANT, an open FE-C trainer implementation, computes exactly that, and factors the default
   0.51 kg/m as ρ 1.275 × A 0.4 × Cd 1.0. The same documentation gives sample rolling resistances: wooden track
   0.001, smooth concrete 0.002, asphalt 0.004, rough road 0.008. The check 8 analyser omits the ½;
@@ -266,11 +269,22 @@ all checks passed
 
 **Decision: σ = 100 m.**
 
-- On the flat shore, σ = 50 m still leaves a 6.1 % spurious grade. σ = 100 m brings it to 2.6 %, under the 3 %
-  bound, and the shore's spurious ascent falls from 61 m (raw) to 8 m.
-- On the climbs, 100 m is the knee. From 50 to 100 m the ascent of `korita-2` falls 6 % (180 → 170 m), and from
-  100 to 200 m it falls 13 % (170 → 148 m), because a 200 m kernel starts flattening real hills.
-- The model asserts both properties (`check_sigma`).
+- **The flat-road bound decides.** On the flat shore, σ = 50 m still leaves a 6.1 % spurious grade. σ = 100 m
+  brings it to 2.6 %, under the 3 % bound, and no smaller candidate does. The shore's spurious ascent falls from
+  61 m (raw) to 8 m.
+- **On the climbs, 100 m is where a larger kernel starts to cost more than it gains.** Ascent lost:
+
+  | Segment | 50 → 100 m | 100 → 200 m |
+  |---|---|---|
+  | `korita-1` | 4 % (345 → 330 m) | 6 % (330 → 310 m) |
+  | `korita-2` | 6 % (180 → 170 m) | 13 % (170 → 148 m) |
+  | `korita-3` | 25 % (61 → 46 m) | 43 % (46 → 26 m) |
+
+  Every segment loses more from 100 to 200 m than from 50 to 100 m.
+- **`korita-3` shows the cost.** Its relief is small: 46 m over 4 km, in bumps close to the noise in size. So it
+  already loses a quarter of its ascent at 100 m. Short undulations of that kind are flattened (the cost paragraph
+  below), and the flat-road bound is what justifies paying it.
+- The model asserts the flat bound and the ratio test on all three climbs (`check_sigma`).
 
 Cost: a real ramp shorter than about 200 m (a 50 m kicker at 15 %) is ridden as a longer, gentler slope. This is
 the price of not letting fix-to-fix noise move resistance. FIT courses and planner GPX files whose elevation came
@@ -488,12 +502,13 @@ region once, crank keeps a compact surface index of it, and every route is match
 - **Building the index** (`crank-osm`, reading the PBF with `osmpbf` 0.3.8, MIT OR Apache-2.0):
   - one streaming pass keeps the ways with a ridable `highway` value and their `surface`, `tracktype` and
     `smoothness` tags, reduced to a surface class (§2.6.2) and a highway code;
-  - a second pass resolves only those ways' node coordinates;
+  - a second pass resolves only those ways' node coordinates, **in bounded memory** (below: builder memory);
   - the result is stored in crank-store as `surface_region` (Geofabrik id, name, extract time from the PBF
     header, md5, built_at, way count) and `surface_way` (region, class, highway code, geometry as zigzag-varint
     deltas of 1e-7° coordinates), with a 0.01° grid table from cell to ways for matching.
   - Non-ridable values are not kept: `motorway`, `motorway_link`, `construction`, `proposed`, `abandoned`,
-    `steps`, `elevator`, `platform`, `raceway`, `bus_guideway`, `busway`, `corridor`, `escape` and `via_ferrata`.
+    `razed`, `planned`, `steps`, `elevator`, `platform`, `raceway`, `bus_guideway`, `busway`, `corridor`, `escape`
+    and `via_ferrata`.
   - The downloaded `.pbf` is deleted once the index is built. Only the index is kept.
 - **Lookup.** `route_import` matches every route that a stored region covers (§2.6.3). No opt-in is needed,
   because nothing leaves the machine. The report says "surface: OpenStreetMap, <region> extract of <date>, <n> %
@@ -542,15 +557,40 @@ Processing Slovenia (314 MB, extract of 2026-11-04) on sage (Mac Studio, Apple s
 | Tags | — | 34 % of the ways carry `surface` (asphalt 106 k, gravel 19 k, unpaved 10 k, ground 8 k, compacted 5 k); 72 k carry `tracktype`, 19 k `smoothness`; the other 66 % take the highway defaults of §2.6.2 |
 | **Index size** (crank's format, computed from those ways) | **≈ 35 MB**: 32.3 MB of geometry (zigzag-varint deltas of 1e-7°) + 2.6 MB of grid (637 936 cell-way pairs over 24 944 cells of 0.01°, 4 B each) | A tenth of the PBF |
 
-osmium stands in for crank's builder here because it is a native PBF reader. Its 2.3 GB peak comes from holding every
-node location of the extract. crank's two passes hold only the 7 M needed node ids and coordinates (about 16 B each,
-≈ 110 MB for Slovenia), and the R6 acceptance pins the builder's peak memory on its fixture.
+Reproduce with `docs/adr/models/osm_extract_cost.sh <region.osm.pbf> <work dir>` (osmium-tool and python3; it runs
+`docs/adr/models/osm_index_size.py`, stdlib only, which computes the index size, tag coverage and node count).
 
-Measurement script and raw output: the PR of this ADR (#523).
+**Builder memory.** osmium stands in for crank's builder here because it is a native PBF reader. Its 2.3 GB peak
+comes from holding every node location of the extract. A builder that keeps only the kept ways' nodes in memory
+(id and coordinates, 16 B each) needs 111 MB for Slovenia's 6 952 101 nodes. Scaled by PBF size, that is about
+1.7 GB for Germany before hash-map overhead, which typically doubles it. That is too much for a desktop app
+running beside other software on an 8–16 GB laptop, and the cost grows with the region the rider picks.
+
+**Decision: a streaming builder with bounded memory** (§5, Q9):
+
+- Pass 1 writes each kept way's node references, as (node id, way, position) records, into runs of a fixed size.
+  Each run is sorted by node id and spilled to a temporary file in the app's cache directory.
+- Pass 2 merges the runs with the node stream. A sorted PBF delivers nodes in id order: Geofabrik's extracts are
+  sorted by type, then id (Slovenia's declares `pbf_optional_feature_0=Sort.Type_then_ID`, read with
+  `osmium fileinfo`). The builder checks the PBF header's `Sort.Type_then_ID` feature and refuses an unsorted
+  file, naming why.
+- The resolved coordinates are sorted back into way order the same way, and each way's geometry is then written
+  in sequence.
+- Peak memory is the run buffers plus the merge heap: under 256 MB for any region.
+- The cost moves to temporary disk, about 2 × 20 B per node reference: 0.3 GB for Slovenia and about 4 GB for
+  Germany while it builds. That is on top of the download, and freed afterwards.
+
+The build time for this design is not measured. The R6 acceptance measures it on Slovenia and pins a peak-memory
+bound with a run size small enough to force spills on its fixture.
 
 Filtering and the index are both linear in the PBF's size, so a region's figure is Slovenia's scaled by its PBF
-size: about 60 MB of index for Switzerland, 95 MB for Bavaria and 540 MB for Germany. These are estimates, not
-measurements; the mix of road types varies by region. The download is the dominant cost and happens once per
+size. These are estimates, not measurements, because the mix of road types varies by region:
+
+| Region | Index | Temporary disk while building |
+|---|---|---|
+| Switzerland | about 60 MB | about 0.5 GB |
+| Bavaria | about 95 MB | about 0.8 GB |
+| Germany | about 540 MB | about 4 GB | The download is the dominant cost and happens once per
 region and refresh.
 
 #### 2.6.2 Surface → Crr
@@ -691,7 +731,7 @@ everywhere. DESIGN is amended by R9 before the screen is built.
 
 | Hazard | Guard | FMEA |
 |---|---|---|
-| A sudden steep grade (a step in the data, a grade-profile segment boundary, resuming on a climb, a reconnect) | Slew 1 %/s from what was last commanded, and from 0 % after start, pause, release or reconnect (§2.3.5, §2.7.3) | FM-ROUTE-01, -04, -05 |
+| A sudden steep grade (a step in the data, a grade-profile segment boundary, resuming on a climb, a reconnect) | Slew 1 %/s from what was last commanded, and from 0 % after start, pause, release or reconnect (§2.3.5, §2.7.3) | FM-ROUTE-01 (data), -05 (start), -04 (pause), -11 (reconnect); the release's slew is FM-ROUTE-03 |
 | A grade beyond what the rider can push | Cap +20 % after scaling (§2.3.3) | FM-ROUTE-02 |
 | A steep grade at low cadence (stall, strain) | SIM low-cadence relief: < 30 rpm for 3 s with grade > 0 → `Resistance { 0 }`; back at ≥ 50 rpm for 2 s, slewing from 0 % (§2.7.3). Unlike ERG's 40 rpm spiral guard (ADR-0002 §7.4), SIM has no spiral: the force does not rise as cadence falls, so the threshold is lower, and riders legitimately grind steep climbs at 40–50 rpm. Check 13 records cadence on 8 %; check 9 measures the stall point of ERG | FM-ROUTE-03 |
 | Descents | The NEO drives the flywheel, never the pedals (freehub, §1). Model (a) is bounded by the grade cap. Coasting does not auto-pause (§2.4.4) | FM-ROUTE-06 |
@@ -713,8 +753,8 @@ case, unchanged.
 | R3 store | `put_route`/`get_route` bit-exact (f64 NaN included) by property test; the migration is forward-only; deleting a route keeps its rides readable |
 | R4 elevation → grade | A refinement fixture `route_grade.json` emitted by `route_grade.py` (smoothed profile of every fixture segment, the pipeline trace of the 0 → 25 % step); the Rust `Profile` and pipeline match it within 1e-9; the flake check `route-grade-model` runs the model |
 | R5 speed model | A refinement fixture `route_speed.json` from `route_speed.py` (the worked examples' per-tick traces); the Rust integrator matches within 1e-9 m/s; the flake check `route-speed-model` runs the model; both models are also run by `just model` |
-| R6 local surface index | No network call outside the Map data download, and none from `route_import`, `route_resurface` or a ride (a mock transport that fails the test on any other request). The md5 is checked and a mismatch refuses the region. A filtered fixture extract (a few km², committed under the size limit) builds an index whose way count, classes and matched surfaces are pinned. The `.pbf` is deleted after the build, and the builder's peak memory on the fixture is pinned (it holds only the kept ways' nodes, §2.6.1). A route outside every region falls back and names the gap. A stale region (> 180 days) is marked. `deps-edges` fails when `crank-engine` or `crank-domain` depends on `crank-osm` or `reqwest`. Attribution is present in Map data, the import report and the summary DTO |
-| R7 ride mode | `crank-engine` scenarios with `SimTrainer`: the slew bound on every emitted grade; the cap; start, pause, reconnect and release slew from 0 %; the low-cadence relief engages and ends at the thresholds; the end of the route sends the end mode; coasting a descent does not auto-pause; a stop at the bottom of a climb does; source (b)'s distance across the 256 rollover and a 12 s gap (estimated); a trainer without speed refuses (b) at load with the notice; "a grade changing every second stays `following`". FMEA rows FM-ROUTE-01..10 flip to `guarded` |
+| R6 local surface index | No network call outside the Map data download, and none from `route_import`, `route_resurface` or a ride (a mock transport that fails the test on any other request). The md5 is checked and a mismatch refuses the region. A filtered fixture extract (a few km², committed under the size limit) builds an index whose way count, classes and matched surfaces are pinned. The `.pbf` is deleted after the build, and the builder's peak memory stays under its bound with a run size that forces spills on the fixture (§2.6.1, builder memory); an unsorted PBF is refused. A route outside every region falls back and names the gap. A stale region (> 180 days) is marked. `deps-edges` fails when `crank-engine` or `crank-domain` depends on `crank-osm` or `reqwest`. Attribution is present in Map data, the import report and the summary DTO |
+| R7 ride mode | `crank-engine` scenarios with `SimTrainer`: the slew bound on every emitted grade; the cap; start, pause, reconnect and release slew from 0 %; the low-cadence relief engages and ends at the thresholds; the end of the route sends the end mode; coasting a descent does not auto-pause; a stop at the bottom of a climb does; source (b)'s distance across the 256 rollover and a 12 s gap (estimated); a trainer without speed refuses (b) at load with the notice; "a grade changing every second stays `following`". FMEA rows FM-ROUTE-01..11 flip to `guarded` |
 | R8 HIL check 13 | §2.4.7 runs in the owner's Part B session; results in `docs/hil/<date>-fec.md`; a failed pass criterion amends this ADR |
 | R9 UI | The DESIGN amendment first; then Vitest + mockIPC for the import dialog and its report, Map data (region list, download progress, extract date, outdated mark, attribution), the library, and the ride template; design-harness fixtures for the route ride states; the mocks model every refusal of `route_import` and `ride_load` for routes |
 
@@ -765,6 +805,7 @@ Each has a recommendation, which this ADR implements unless the owner decides ot
 | Q6 | SIM low-cadence relief thresholds | 30 rpm for 3 s, back at 50 rpm for 2 s | A rider grinding at 25 rpm on a 15 % wall gets released | ERG's 40/60 rpm: interrupts legitimate grinding at 40 rpm |
 | Q7 | ERG blocks inside a route (a structured workout on a route) | Not in v1 | A route ride has no targets | A combined plan: compliance, soft start and SIM↔ERG switching inside one ride; a design of its own |
 | Q8 | Per-route Overpass lookup as a fallback for routes outside every stored region | Not offered (§2.6.5) | Such a route rides on the file's surface or tarmac until the rider adds its region | An opt-in per-route lookup: discloses the route's corridor and the IP to a volunteer-run service |
+| Q9 | How the index builder resolves node coordinates (§2.6.1) | A streaming external-sort builder: under 256 MB peak for any region | More code than a hash map; about 4 GB of temporary disk and an unmeasured, longer build for Germany | An in-memory map: about 110 MB for Slovenia but about 1.7 GB (before hash overhead) for Germany, so regions would need a PBF cap of about 1 GB (a state rather than a large country) |
 
 ## 6. Implementation issues (to file when this ADR is accepted; not filed yet)
 
@@ -803,8 +844,11 @@ Checked 2026-11-05.
   https://www.bipm.org/en/committees/cg/cgpm/3-1901/resolution-2
 - Moritz, H. (2000). Geodetic Reference System 1980. *Journal of Geodesy* 74, 128–133 (mean Earth radius
   R₁ = 6 371 008.8 m).
-- Garmin Connect IQ API, `Toybox.AntPlus.SimulationSettings` (wind resistance = frontal area × drag coefficient × air
-  density, kg/m; drafting 0–1; sample rolling resistances).
+- Garmin Connect IQ API, `Toybox.AntPlus.SimulationSettings`, read 2026-11-05: `windResistance` "Wind Resistance
+  Coefficient [kg/m] = Frontal Surface Area [m2] x Drag Coefficient x Air Density [kg/m3]", 0.0–1.86 kg/m, invalid
+  0xFF; `draftFactor` 0–1 (1.0 = no drafting); `surfaceResistance` 0–0.0127 with the samples wooden track 0.001,
+  smooth concrete 0.002, asphalt road 0.004, rough road 0.008. It stands in for the ANT+ FE profile, which was not
+  retrieved (ADR-0002 §4.1).
   https://developer.garmin.com/connect-iq/api-docs/Toybox/AntPlus/SimulationSettings.html
 - FortiusANT, `pythoncode/usbTrainer.py` (FE-C defaults Crr 0.004, wind 0.51 kg/m = 1.275 × 0.4 × 1.0; air power
   `0.5 · Kw · (v+w)·|v+w| · d · v`). https://github.com/WouterJD/FortiusANT
