@@ -787,7 +787,7 @@ agent assumes a hardware result it did not see.
 *Amends §1, §2, §6 and §9.1. The struck-through text above is kept as history.*
 
 - **CI.** Since #58 the gate is `nix flake check -L` on GitHub-hosted `ubuntu-latest` and `macos-latest`;
-  the `CI Summary` job is required on `dev` and `main` (since §9.6 macOS runs on release candidates and nightly, not on every PR). The fleet runner (anvil vm-runner) was offboarded
+  the `CI Summary` job is required on `dev` and `main` (since §9.6 macOS runs on release candidates and after each merge into `dev`, not on PRs). The fleet runner (anvil vm-runner) was offboarded
   from this repository because **self-hosted runners must never serve a public repository**: a pull request
   from a fork would execute untrusted code on a machine inside the owner's network (g-fleet#170).
   The attic binary cache is not used by this repository either; CI uses the magic Nix cache on hosted
@@ -847,16 +847,26 @@ agent assumes a hardware result it did not see.
 - **Required PR CI is Linux only.** `CI Summary` (still the one required check on `dev` and `main`) requires the
   `linux` job (`nix flake check -L`, x86_64-linux). The `macos` job (`nix flake check -L`, aarch64-darwin) runs
   only where a macOS gate is wanted: a branch `release/*` (its pull request or the CI run Prepare Release
-  dispatches on it), the nightly schedule (on `dev`), and a manual dispatch with `macos: true`. When it runs,
-  `CI Summary` requires it too; when it is not wanted it must be skipped. Hosted macOS arm64 runners were not
-  acquired often enough to gate every PR (#480).
+  dispatches on it), **post-merge on every push to `dev`**, and a manual dispatch with `macos: true`. When it
+  runs, `CI Summary` requires it too; when it is not wanted it must be skipped. A post-merge run never gates a
+  PR: it marks the `dev` commit red or green. Hosted macOS arm64 runners were not acquired often enough to
+  gate every PR (#480). A nightly schedule was rejected: GitHub runs `schedule` only from the default branch,
+  `main`, and nothing reaches `main` before #426, so it would never fire.
+- **Cost.** One macOS `nix flake check -L` took about 41 min of runner time (run 42104526304). At the recent
+  rate of roughly 12 merges into `dev` a day that is up to about 8 h of hosted macOS time a day. The repository
+  is public, so hosted runner minutes are not billed; the cost is runner time and queueing, and it competes
+  with release-candidate builds for the account's concurrent macOS jobs. Pushes to `dev` do not cancel a
+  running macOS job; GitHub keeps at most one queued run per ref, so on a busy day intermediate merges are
+  skipped and the next run covers them.
 - **What is checked less often, and the risk.** Code and checks that only a Darwin evaluation exercises are
-  checked nightly and on every release candidate, not per PR: the CoreBluetooth backend of `btleplug` as
+  checked after each merge into `dev` and on every release candidate, not per PR: the CoreBluetooth backend of `btleplug` as
   `crank-ble` builds it, the `target_os = "macos"` code of `crank-desktop` (`lifecycle.rs`, the quit handling
   for Cmd+Q and Dock Quit; `display.rs`, the CoreGraphics display width of the ride tiers), the `crank-app` derivation (§9.3) and its
   `bundle-no-nix-store` check (#413), the `install-app` check of `just bundle`, and anything that builds
   differently with the Darwin stdenv (linker, libiconv). A PR can therefore break the macOS build and land
-  green; the nightly run fails the next morning, and the next rc cannot be published until it is fixed. The
+  green; the post-merge run on `dev` turns red within the hour, and the next rc cannot be published until it
+  is fixed. Triage (RELEASING.md, AGENTS.md): a red post-merge macOS run on `dev` gets a `bug` issue before the
+  next merge into `dev`; a runner failure (not acquired, #480) is re-run once and noted on the run's PR. The
   §8.1 GUI-session commands on sage (`just e2e`, `just bundle`) are unchanged and still run before
   UI-touching merges. Accepted because macOS-specific code is small and changes rarely, and every build that
   reaches a test Mac has passed the full macOS gate (below).
@@ -876,6 +886,9 @@ agent assumes a hardware result it did not see.
   builds `.#crank-app`, zips it, writes its SHA-256, attests it, and **publishes** a GitHub pre-release
   `X.Y.Z-rc.N` (tag created at the merge commit). Fixes an rc surfaces land on `dev` by ordinary PRs; the next
   rc is cut from `dev` again. `dev` therefore carries the version of the last rc, and no main→dev sync is needed.
+  "Agents never merge release PRs" is policy only, not enforced: agents act as the owner's account (gerchowl), and
+  any merge of `release/X.Y.Z-rc.N` into `dev` publishes a pre-release. `main` stays safe without that policy:
+  Prepare Release refuses a final version and Release refuses to build one until #426.
 - **Final releases are gated on Developer ID signing and notarization** (#47, #426). Until #426 lands,
   Prepare Release refuses a final version (a dry run is allowed) and Release refuses to build one. The final
   path keeps #428's shape: `release/X.Y.Z` into `main` with the changelog frozen, then Release on the merge.
