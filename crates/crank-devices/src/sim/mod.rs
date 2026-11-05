@@ -184,8 +184,9 @@ pub struct SimConfig {
 }
 
 /// The connect latency of a simulated device (ADR-0002 §5.1.8): a delay per phase on the
-/// rig's clock, each reported as it is entered ([`crate::phase`]), or a device that never
-/// answers. The default connects at once, as the sim always did.
+/// rig's clock, each reported as it is entered ([`crate::phase`]), a device that never
+/// answers, or one that does not advertise. The default connects at once, as the sim always
+/// did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SimLatency {
     /// Finding the peripheral: a nonzero delay stands for a scan (`via=scan`), zero for an
@@ -197,17 +198,24 @@ pub struct SimLatency {
     pub handshake: Duration,
     /// The device is found, but its GATT connect never answers: the connect never ends.
     pub never_answers: bool,
+    /// The device does not advertise (asleep, or held by another central): its connect fails
+    /// `NotFound` once `resolve` has passed, and a scan does not list it
+    /// ([`SimRig::advertises`]).
+    pub not_advertising: bool,
 }
 impl SimLatency {
     /// Wait out each phase of a connect and report it; never returns when the device never
     /// answers.
-    async fn connect(self, clock: &dyn Clock, handshake: bool) {
+    async fn connect(self, clock: &dyn Clock, handshake: bool) -> Result<(), DeviceError> {
         let wait = |d: Duration| {
             let at = MonoTime(clock.now().0 + u64::try_from(d.as_micros()).unwrap_or(u64::MAX));
             (!d.is_zero()).then(|| clock.sleep_until(at))
         };
         if let Some(sleep) = wait(self.resolve) {
             sleep.await;
+        }
+        if self.not_advertising {
+            return Err(DeviceError::NotFound);
         }
         let via = if self.resolve.is_zero() {
             Via::Lookup
@@ -228,6 +236,7 @@ impl SimLatency {
                 sleep.await;
             }
         }
+        Ok(())
     }
 }
 impl Default for SimConfig {
@@ -774,6 +783,27 @@ impl SimRig {
     pub fn heart(&self) -> SimHeart {
         SimHeart(self.clone())
     }
+    /// Change the connect latency of the trainer (`trainer`) or the strap from the next
+    /// connect on: a device that starts or stops advertising.
+    pub fn set_latency(&self, trainer: bool, latency: SimLatency) {
+        let mut w = lock(&self.world);
+        if trainer {
+            w.cfg.trainer_latency = latency;
+        } else {
+            w.cfg.heart_latency = latency;
+        }
+    }
+    /// Whether the trainer (`trainer`) or the strap advertises now.
+    #[must_use]
+    pub fn advertises(&self, trainer: bool) -> bool {
+        let w = lock(&self.world);
+        let latency = if trainer {
+            w.cfg.trainer_latency
+        } else {
+            w.cfg.heart_latency
+        };
+        !latency.not_advertising
+    }
     /// Register a side and make sure the stepping task runs. Returns the epoch.
     fn attach(
         &self,
@@ -878,7 +908,7 @@ impl TrainerDriver for SimTrainer {
         let rig = self.0.clone();
         Box::pin(async move {
             let latency = lock(&rig.world).cfg.trainer_latency;
-            latency.connect(rig.clock.as_ref(), true).await;
+            latency.connect(rig.clock.as_ref(), true).await?;
             let (events, receiver) = mpsc::channel(256);
             let (commands, mut control) = mpsc::channel(64);
             let caps = lock(&rig.world).cfg.caps.clone();
@@ -940,7 +970,7 @@ impl HeartRateDriver for SimHeart {
         let rig = self.0.clone();
         Box::pin(async move {
             let latency = lock(&rig.world).cfg.heart_latency;
-            latency.connect(rig.clock.as_ref(), false).await;
+            latency.connect(rig.clock.as_ref(), false).await?;
             let (events, receiver) = mpsc::channel(256);
             for s in [LinkState::Connecting, LinkState::Ready] {
                 events

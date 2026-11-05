@@ -222,7 +222,7 @@ impl Backend {
                         .scan(),
                 )
             }
-            Kind::Sim(_) => {
+            Kind::Sim(rig) => {
                 let device = |id: &str, trainer, heart_rate| DiscoveredDevice {
                     device: DeviceRef(id.into()),
                     info: DeviceInfo {
@@ -232,11 +232,13 @@ impl Backend {
                     trainer,
                     heart_rate,
                 };
-                Ok(stream::iter([
-                    device(SIM_TRAINER, Some(DriverKind::Sim), false),
-                    device(SIM_STRAP, None, true),
-                ])
-                .boxed())
+                // a device that does not advertise is not listed (SimLatency::not_advertising)
+                let seen = [
+                    rig.advertises(true)
+                        .then(|| device(SIM_TRAINER, Some(DriverKind::Sim), false)),
+                    rig.advertises(false).then(|| device(SIM_STRAP, None, true)),
+                ];
+                Ok(stream::iter(seen.into_iter().flatten()).boxed())
             }
         }
     }
