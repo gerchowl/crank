@@ -15,7 +15,7 @@ import {
   type Counts,
 } from "./baseline";
 import { focusWalk, inOrder, ORDER_TOLERANCE } from "./focus";
-import { SCENARIOS, type Scenario } from "./scenarios";
+import { RIDE_SCENARIOS, SCENARIOS, type Scenario } from "./scenarios";
 import WarningsReporter, { WARNING } from "./warnings";
 
 const AUDIT = join(import.meta.dirname, "layout-audit.js");
@@ -152,6 +152,35 @@ test("the screenshots have no orphans", () => {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
   expect(found.filter((f) => !expected.has(f))).toEqual([]);
+});
+
+// Rule 10 (no layout shift, #498): the ride's regions (DESIGN §18.2, §18.3) have the same box in every ride fixture at
+// each size, so no state, banner or value moves one. Every region is there in every fixture.
+const REGIONS = ["status", "traces", "banner", "metrics", "timeline", "keys"];
+const regionBoxes = (page: Page) =>
+  page.evaluate(() =>
+    Object.fromEntries(
+      [...document.querySelectorAll<HTMLElement>("[data-region]")].map((e) => {
+        const r = e.getBoundingClientRect();
+        return [e.dataset.region, [r.x, r.y, r.width, r.height].join(" ")];
+      }),
+    ),
+  );
+test("the ride's region boxes are the same in every ride fixture", async ({
+  page,
+}) => {
+  let first: Record<string, string> | null = null;
+  for (const name of RIDE_SCENARIOS) {
+    const s = SCENARIOS.find((x) => x.name === name);
+    if (!s) throw new Error(`no fixture ${name}`);
+    await open(page, s);
+    const boxes = await regionBoxes(page);
+    expect(Object.keys(boxes).sort(), `${name}: the regions`).toEqual(
+      [...REGIONS].sort(),
+    );
+    first ??= boxes;
+    expect(boxes, `${name} against ${RIDE_SCENARIOS[0]}`).toEqual(first);
+  }
 });
 
 // The gate catches what it is for. No screen passes `button.height` today (rail 56 px, ride 65 px, section nav 40 px),

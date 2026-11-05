@@ -1,24 +1,47 @@
-// Ride (DESIGN §5.2, §6.1, §6.4, §16.1; #96 MVP subset, #256): ride the loaded workout in ERG with live tiles, the
-// whole-ride overview and pause / skip / end. It renders what the stream and the core's answers say and branches
-// on `ApiError.code`, never on `message` (ADR-0001 §4.4); the core's text is shown as the reason of a refusal.
+// Ride (DESIGN §5.2, §6.1, §16.1, §18.2–§18.5 direction A; #96 MVP subset, #256, #525): ride the loaded workout in ERG.
+// The anatomy is fixed (§18.2): status bar, the traces column (banner band, power / heart rate / cadence traces) beside
+// the metric column (countdown and next, power, heart rate, cadence), the block timeline and the key row; each region
+// carries `data-region`, and the design harness checks its box is the same in every state (rule 10, #498). It renders
+// what the stream and the core's answers say and branches on `ApiError.code`, never on `message` (ADR-0001 §4.4); the
+// core's text is shown as the reason of a refusal. The key hints are labels: the bindings come with the dispatcher (#104).
 //
 // Loss and reconnect states (#100, DESIGN §6.5/§6.6) are read from the status and the links only, never inferred: the
 // loss fields #329 added (`trainerLostSinceS`, `reconnectAttempt`, `softStartTargetW`, `lastGapS`, `reconnectedAtS`,
 // `userPaused`) are reported only while the ride is Active, and every duration is a difference on the session clock
 // (`sessionS`, which the heartbeat refreshes), never a timer of this screen.
-// Out of this subset, each with its issue: density modes, the coach lane, the road (#96), sound and the input
-// dispatcher, the rest of the failure states (#100), the Review/summary
+// Out of this subset, each with its issue: density modes, the coach lane (#99) and its coach marks on the timeline,
+// phase templates and the ERG band (#97), sound and the input dispatcher (#104), the symptom stop (#103), the rest of
+// the failure states (#100), the Review/summary
 // (#106: a finished ride routes to History with the ride id until it exists) and the phone layout.
 // A window reload loses the session; the core keeps the ride loaded, and picking it up again is the Resume sheet (#259).
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import {
+  Bluetooth,
+  Heart,
+  Keyboard,
+  Pause,
+  Play,
+  RotateCw,
+  SkipForward,
+  Square,
+  Timer,
+  Zap,
+} from "lucide-react";
 import "./ride.css";
 import { commands } from "../bindings";
 import type {
   ApiError,
-  CompiledView,
   LinkStatus,
+  StreamFollowing,
   StreamStatus,
   WorkoutBlock,
+  WorkoutDetail,
 } from "../bindings";
 import { Num } from "../Num";
 import { navigate } from "../router";
@@ -30,10 +53,18 @@ import {
   useStreamError,
 } from "../stream";
 import { useSubscribe } from "../stream";
-import { RideTiers } from "../useTypeTiers";
+import { openKeys } from "../shell/keys";
+import { useFit } from "./fit";
 import { markForcedEnd } from "./forcedEnds";
-import { RideChart } from "./RideChart";
-import { releaseRide, usePower, useSession, type RideSession } from "./session";
+import {
+  releaseRide,
+  useSeries,
+  useSession,
+  type RideSession,
+  type Series,
+} from "./session";
+import { PHASE_NAME, Timeline, watts } from "./Timeline";
+import { Trace } from "./Trace";
 
 /** `m:ss`, `h:mm:ss` from an hour; `—` while unknown. */
 export function clock(s: number | null): string {
@@ -183,69 +214,176 @@ const REFUSAL: Record<string, string> = {
 };
 
 /** One value of the grid: its slot reserves the widest form (`ch`), so a longer number moves nothing (P4, §16.1). */
-function Tile({
+
+const icon = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
+
+/** The status-bar chrome above and the timeline, key row and main padding below the main row (DESIGN §18.2). */
+export const CHROME_PX = 236;
+/** The metric column's minimum content (§18.2 budget): a shorter main row cannot hold the tiers (§6.2 too-small rule). */
+export const MAIN_MIN_PX = 462;
+const TOO_SMALL = "Window too small to read targets";
+const onResize = (l: () => void) => {
+  window.addEventListener("resize", l);
+  return () => window.removeEventListener("resize", l);
+};
+const useTooSmall = () =>
+  useSyncExternalStore(
+    onResize,
+    () => window.innerHeight - CHROME_PX < MAIN_MIN_PX,
+  );
+
+/** A key hint inside a button (§18.4); hidden from the accessible name, which is the action's word. */
+const Key = ({ k }: { k: string }) => <kbd aria-hidden>{k}</kbd>;
+
+/** A live value in a slot that reserves its widest form (`ch`), so a longer number moves nothing (P4, §16.1). */
+function Value({
   id,
-  label,
-  unit,
   ch,
   value,
-  sub,
+  tier,
 }: {
   id: string;
-  label: string;
-  unit: string;
   ch: number;
   value: number | string | null;
-  /** A smaller line under the value, in a slot of its own that reserves its widest form. */
-  sub?: { id: string; ch: number; text: string };
+  tier?: "t2";
 }) {
   return (
-    <div className="tile" data-tile={id}>
-      <span className="tile-label">{label}</span>
-      <span className="tile-row">
-        <Num className="tile-value" data-slot={id} style={{ width: `${ch}ch` }}>
-          {value ?? "—"}
-        </Num>
-        <span className="tile-unit">{unit}</span>
-      </span>
-      {sub && (
-        <Num
-          className="tile-sub"
-          data-slot={sub.id}
-          style={{ width: `${sub.ch}ch` }}
-        >
-          {sub.text}
-        </Num>
-      )}
-    </div>
+    <Num data-slot={id} data-tier={tier} data-live style={{ width: `${ch}ch` }}>
+      {value ?? "—"}
+    </Num>
   );
 }
 
-function Pill({ name, link }: { name: string; link: LinkStatus | undefined }) {
+function Pill({
+  name,
+  link,
+  Icon,
+}: {
+  name: string;
+  link: LinkStatus | undefined;
+  Icon: typeof Heart;
+}) {
   const word = link === undefined ? "not connected" : link;
   return (
-    <span className="pill-half" data-link={link ?? "none"}>
+    <span
+      className="pill-half"
+      data-link={link ?? "none"}
+      data-state={link ?? "none"}
+    >
+      <Icon {...icon} />
       {link === "lost" ? "⚠ " : ""}
       {name} <span aria-hidden>●</span>
-      <span className="sr-only"> {word}</span>
+      <span className="sr-only" data-state-label>
+        {" "}
+        {word}
+      </span>
     </span>
   );
 }
 
-function useDetail(session: RideSession): CompiledView | null {
-  const [detail, setDetail] = useState<CompiledView | null>(null);
+/**
+ * A state banner (§5.2, §6.1, §18.3): one bold line and at most two short lines. The lines join with a separator that
+ * is read (screen readers, the element's text) but not drawn: each line is drawn on its own row.
+ */
+function Banner({
+  id,
+  lines,
+  sep = " · ",
+  alert,
+  end,
+}: {
+  id: string;
+  lines: ReactNode[];
+  sep?: string;
+  alert?: boolean;
+  /** The End… action of a long trainer loss, at the end of the bold line. */
+  end?: ReactNode;
+}) {
+  return (
+    <div
+      role={alert ? "alert" : "status"}
+      className="banner"
+      data-testid={id}
+      data-state={id}
+    >
+      {lines.map((l, i) => (
+        <p
+          key={i}
+          className="banner-line"
+          data-tier="t3plus"
+          data-state-label={i === 0 ? "" : undefined}
+        >
+          {i > 0 && <span className="sr-only">{sep}</span>}
+          {i === 0 ? <strong>{l}</strong> : l}
+          {i === 0 && end}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function useDetail(session: RideSession): WorkoutDetail | null {
+  const [detail, setDetail] = useState<WorkoutDetail | null>(null);
   const id = session.workoutId;
   useEffect(() => {
     if (id === null) return;
     let live = true;
     void commands.workoutGet(id).then((r) => {
-      if (live && r.status === "ok") setDetail(r.data.compiled);
+      if (live && r.status === "ok") setDetail(r.data);
     });
     return () => {
       live = false;
     };
   }, [id]);
   return detail;
+}
+
+/** "next Cool-down 2:00 @ 120 W", shedding the word "next", then the watts, to fit (§16.1). */
+function Next({
+  block,
+  last,
+}: {
+  block: WorkoutBlock | undefined;
+  last: boolean;
+}) {
+  const name = block ? PHASE_NAME[block.phase] : "";
+  const when = block?.durS == null ? name : `${name} ${clock(block.durS)}`;
+  const w = block ? watts(block) : "";
+  const [ref, text] = useFit<HTMLParagraphElement>(
+    last
+      ? ["ride complete → Review", "ride complete"]
+      : block
+        ? [`next ${when} @ ${w}`, `${when} @ ${w}`, when, name]
+        : [""],
+  );
+  return (
+    <p ref={ref} className="hero-next" data-tier="t3plus" data-slot="next">
+      {text}
+    </p>
+  );
+}
+
+/** What the key row says of the trainer following its commanded mode (ADR-0002 §4.4.1). */
+const FOLLOWING: Record<StreamFollowing, string | null> = {
+  unknown: null,
+  checking: "checking the trainer",
+  suspect: "trainer suspect",
+  following: "trainer following",
+  not_following: "trainer not following",
+};
+
+/** Records one subscription's samples into the session's history of `of`. */
+function useRecord(
+  session: RideSession,
+  of: Series,
+  s: { t: number | null; v: number | null } | null,
+  workoutS: number | null,
+) {
+  const [t, v] = [s?.t ?? null, s?.v ?? null];
+  useEffect(() => {
+    if (t !== null && v !== null && workoutS !== null)
+      session.record(t, workoutS, v, of);
+  }, [session, of, t, v, workoutS]);
 }
 
 function Screen({ session }: { session: RideSession }) {
@@ -256,8 +394,10 @@ function Screen({ session }: { session: RideSession }) {
   const power = useSubscribe("power", { rateHz: 4 }).sample;
   const cadence = useSubscribe("cadence", { rateHz: 2 }).sample;
   const hr = useSubscribe("hr", { rateHz: 2 }).sample;
-  const compiled = useDetail(session);
-  const history = usePower(session);
+  const detail = useDetail(session);
+  const compiled = detail?.compiled ?? null;
+  const series = useSeries(session);
+  const tooSmall = useTooSmall();
 
   const start = useCommand(commands.rideStart);
   const pause = useCommand(commands.ridePause);
@@ -286,12 +426,10 @@ function Screen({ session }: { session: RideSession }) {
   useEffect(() => {
     if (finished) session.leaveOnce(() => navigate("history", session.rideId));
   }, [finished, session]);
-  // The measured power joins the history on the workout clock; a gap (`v` null) or a frozen clock adds nothing.
-  const [sampleT, sampleV] = [power?.t ?? null, power?.v ?? null];
-  useEffect(() => {
-    if (sampleT !== null && sampleV !== null && workoutS !== null)
-      session.record(sampleT, workoutS, sampleV);
-  }, [session, sampleT, sampleV, workoutS]);
+  // Each measured sample joins its history on the workout clock; a gap (`v` null) or a frozen clock adds nothing.
+  useRecord(session, "power", power, workoutS);
+  useRecord(session, "hr", hr, workoutS);
+  useRecord(session, "cadence", cadence, workoutS);
 
   const run = async <T,>(
     go: () => Promise<
@@ -380,226 +518,368 @@ function Screen({ session }: { session: RideSession }) {
   const round = (v: number | null | undefined, blank = false) =>
     v == null || blank ? null : Math.round(v);
 
+  const next = blockIdx === null ? undefined : blocks[blockIdx + 1];
+  // The plan dims while it does not run: the rider's pause and a trainer loss (§5.2 States).
+  const dim = userPaused || loss.trainer ? "" : undefined;
+  const xMax = Math.max(total ?? 0, workoutS ?? 0, 1);
+  const free = session.workoutId === null;
+  const counted = status?.compliance.countedS ?? 0;
+  const following = status
+    ? [
+        FOLLOWING[status.trainerFollowing],
+        counted > 0
+          ? `compliance ${Math.round((100 * (status.compliance.withinS ?? 0)) / counted)} %`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
+
+  // One banner at a time, the most urgent first; each keeps its own words (§5.2, §6.5).
+  const lostWhat = loss.reconnecting
+    ? loss.hr
+      ? "NEO and HR lost"
+      : "NEO lost"
+    : loss.hr
+      ? "No NEO data · HR lost"
+      : "No data from the NEO";
+  const reconnecting = loss.reconnecting
+    ? loss.attempt === null
+      ? "reconnecting"
+      : `reconnecting (attempt ${loss.attempt})`
+    : "your ride is saved";
+  const endHelp = (
+    <button className="ride-end" onClick={() => setConfirming("end")}>
+      End… <Key k="Esc" />
+    </button>
+  );
+  const banner = unresponsive ? (
+    <Banner
+      id="engine-unresponsive"
+      alert
+      lines={[
+        "Engine not answering",
+        "the values are not live",
+        "End still ends the ride",
+      ]}
+    />
+  ) : loss.trainer ? (
+    <>
+      <Banner
+        id="loss-trainer"
+        end={loss.long ? endHelp : undefined}
+        lines={[
+          <>
+            {lostWhat}
+            {loss.lostForS !== null && (
+              <>
+                {" "}
+                <span className="num" data-testid="lost-for">
+                  {clock(loss.lostForS)}
+                </span>
+              </>
+            )}
+          </>,
+          ...(loss.long
+            ? []
+            : [`paused at ${clock(status?.blockElapsedS ?? null)} of block`]),
+          reconnecting,
+        ]}
+      />
+      {loss.long && (
+        <p
+          role="status"
+          className="banner-line"
+          data-tier="t3plus"
+          data-testid="loss-help"
+        >
+          power-cycle NEO · close Zwift
+        </p>
+      )}
+    </>
+  ) : loss.reEntry || loss.softStartW !== null ? (
+    <>
+      {/* Only the fact (`lastGapS`). DESIGN §6.6's policy text (re-warm-up, restarting the interval, "no resume" past
+          15 min) is not shown: the engine applies none of it (`recover()` eases to the block's own target and the block
+          resumes where it froze) and the status carries no re-entry plan until #50 lands. */}
+      {loss.reEntry && (
+        <Banner id="re-entry" lines={[`↻ Back after ${clock(loss.gapS)}`]} />
+      )}
+      {loss.softStartW !== null && (
+        <Banner
+          id="soft-start"
+          lines={[
+            "Reconnected",
+            `easing back in to ${Math.round(loss.softStartW)} W`,
+          ]}
+        />
+      )}
+    </>
+  ) : loss.erg ? (
+    <Banner
+      id="loss-erg"
+      sep=" — "
+      lines={["ERG released", "spin up to 60 rpm", "the block timer runs on"]}
+    />
+  ) : userPaused ? (
+    <Banner
+      id="paused"
+      lines={["Paused", "Resume continues the plan", "trainer free"]}
+    />
+  ) : loss.hr ? (
+    <Banner
+      id="loss-hr"
+      lines={["HR lost", "heart rate shows —", "the ride goes on"]}
+    />
+  ) : free ? (
+    <Banner id="free-ride" lines={["Free ride", "no targets, no plan"]} />
+  ) : null;
+
   return (
     <div className="ride" data-testid="ride">
-      <header className="ride-bar">
-        <div className="ride-controls">
-          <button
-            className="primary ride-btn"
-            disabled={busy || status === null || kind !== "idle" || startSent}
-            onClick={() => void startRide()}
-          >
-            Start
-          </button>
-          <button
-            className="ride-btn"
-            disabled={busy || !canPause}
-            title={userPaused ? "Already paused" : undefined}
-            onClick={() => void pauseOrResume("pause")}
-          >
-            Pause
-          </button>
-          <button
-            className="ride-btn"
-            disabled={busy || !canResume}
-            onClick={() => void pauseOrResume("resume")}
-          >
-            Resume
-          </button>
-          <button
-            className="ride-btn"
-            disabled={busy || !live || !canSkip || skipWaits}
-            onClick={() =>
-              skipEnds ? setConfirming("skip") : void skipBlock()
-            }
-          >
-            Skip block
-          </button>
-          <button
-            className="ride-btn"
-            disabled={finished || status === null}
-            onClick={() => setConfirming("end")}
-          >
-            End
-          </button>
-        </div>
-        <div className="ride-times num" data-testid="times">
+      <header className="ride-bar" data-region="status">
+        <span className="ride-title">
+          {free ? "Free ride" : (detail?.workout.name ?? "")}
+        </span>
+        <span className="ride-times num" data-testid="times">
           <span data-slot="elapsed" style={{ width: "7ch" }}>
             {clock(workoutS)}
           </span>
-          <span className="muted"> ridden · </span>
+          <span className="muted">
+            {" "}
+            / {total === null ? "—" : clock(total)} ·{" "}
+          </span>
           <span data-slot="left" style={{ width: "7ch" }}>
             {total === null || workoutS === null
               ? "—"
               : clock(total - workoutS)}
           </span>
           <span className="muted"> left</span>
-        </div>
+        </span>
         <span
-          className="ride-chip"
+          className="ride-chip num"
           data-slot="neo-back"
           data-testid="neo-back"
           style={{ width: "20ch" }}
         >
           {loss.backChip ? `NEO back · ${clock(loss.gapS)} gap` : ""}
         </span>
-        <div className="ride-pill" aria-label="Devices">
-          <Pill name="NEO" link={links.trainer} />
-          <span aria-hidden> │ </span>
-          <Pill name="HR" link={links.hr} />
+        <div className="ride-pill" role="group" aria-label="Devices">
+          <Pill name="NEO" link={links.trainer} Icon={Bluetooth} />
+          <Pill name="HR" link={links.hr} Icon={Heart} />
         </div>
+        {detail?.workout.ftp != null && (
+          <span className="chip num">FTP {detail.workout.ftp}</span>
+        )}
+        {tooSmall && (
+          <p role="alert" className="too-small" data-tier="t3plus">
+            {TOO_SMALL}
+          </p>
+        )}
       </header>
 
-      <section className="ride-hero" aria-label="Block">
-        <div className="hero-row1">
-          <span data-slot="block">
-            {block
-              ? `${PHASE_WORD[block.phase]} · block ${(blockIdx ?? 0) + 1} of ${blocks.length}`
-              : blocks.length > 0 && blockIdx === null
-                ? "Last block done"
-                : session.workoutId === null
-                  ? "FREE RIDE"
-                  : "Loading the plan…"}
-          </span>
-          <span className="muted">
-            {block?.durS == null ? "in block" : "left in block"}
-          </span>
-        </div>
-        <div className="hero-t1 num" data-slot="countdown">
-          {clock(blockLeft)}
-        </div>
-        <div className="hero-band">
-          <Tile
-            id="target"
-            label="TARGET"
-            unit={targetView.unit}
-            ch={8}
-            value={targetView.value}
-            sub={{
-              id: "plan",
-              ch: 10,
-              text: target === null ? "Plan —" : `Plan ${target} W`,
-            }}
-          />
-          <Tile
-            id="power"
-            label="POWER"
-            unit="W"
-            ch={4}
-            value={round(power?.v, loss.trainer)}
-          />
-        </div>
-      </section>
+      <div className="ride-main">
+        <section
+          className="ride-traces panel"
+          data-region="traces"
+          aria-label="Traces"
+        >
+          <div className="banner-band" data-region="banner">
+            {banner}
+          </div>
+          <div className="trace-stack">
+            <Trace
+              series="power"
+              label="Power"
+              unit="W"
+              points={series.power}
+              xMax={xMax}
+              now={workoutS ?? 0}
+              plan={blocks}
+            />
+            <Trace
+              series="hr"
+              label="Heart rate"
+              unit="bpm"
+              points={series.hr}
+              xMax={xMax}
+              now={workoutS ?? 0}
+            />
+            <Trace
+              series="cadence"
+              label="Cadence"
+              unit="rpm"
+              points={series.cadence}
+              xMax={xMax}
+              now={workoutS ?? 0}
+            />
+          </div>
+        </section>
 
-      <aside className="ride-side" aria-label="Body">
-        <Tile
-          id="hr"
-          label="HEART RATE"
-          unit="bpm"
-          ch={3}
-          value={round(hr?.v, loss.hr)}
-        />
-        <Tile
-          id="cadence"
-          label="CADENCE"
-          unit="rpm"
-          ch={3}
-          value={round(cadence?.v, loss.trainer)}
-        />
-        <div className="coach-cell" data-cell="coach" aria-hidden />
-      </aside>
-
-      <div className="ride-notice">
-        <p className="ride-state" data-testid="state">
-          {stateLine(status)}
-        </p>
-        {loss.trainer && (
-          <p role="status" className="ride-loss" data-testid="loss-trainer">
-            <strong>
-              {loss.reconnecting
-                ? loss.hr
-                  ? "NEO and HR lost"
-                  : "NEO lost"
-                : loss.hr
-                  ? "No data from the NEO · HR lost"
-                  : "No data from the NEO"}
-            </strong>{" "}
-            {loss.lostForS !== null && (
-              <>
-                <strong data-testid="lost-for">
-                  {clock(loss.lostForS)}
-                </strong>{" "}
-              </>
-            )}
-            · workout paused at {clock(status?.blockElapsedS ?? null)} of this
-            block
-            {loss.reconnecting
-              ? loss.attempt === null
-                ? " · reconnecting"
-                : ` · reconnecting (attempt ${loss.attempt})`
-              : ""}{" "}
-            · keep pedalling or stop — your ride is saved
-          </p>
-        )}
-        {loss.trainer && loss.long && (
-          <p role="status" className="ride-loss" data-testid="loss-help">
-            <button className="ride-end" onClick={() => setConfirming("end")}>
-              End…
-            </button>{" "}
-            Try: power-cycle NEO · close Zwift
-          </p>
-        )}
-        {/* Only the fact (`lastGapS`). DESIGN §6.6's policy text (re-warm-up, restarting the interval, "no resume" past
-            15 min) is not shown: the engine applies none of it (`recover()` eases to the block's own target and the block
-            resumes where it froze) and the status carries no re-entry plan until #50 lands. */}
-        {loss.reEntry && (
-          <p role="status" className="ride-loss" data-testid="re-entry">
-            <strong>↻ Back after {clock(loss.gapS)}</strong>
-          </p>
-        )}
-        {loss.softStartW !== null && (
-          <p role="status" className="ride-loss" data-testid="soft-start">
-            <strong>Reconnected</strong> · easing back in to{" "}
-            {Math.round(loss.softStartW)} W
-          </p>
-        )}
-        {loss.hr && !loss.trainer && (
-          <p role="status" className="ride-loss" data-testid="loss-hr">
-            <strong>HR lost</strong> · heart rate shows — · the ride goes on
-          </p>
-        )}
-        {loss.erg && (
-          <p role="status" className="ride-loss" data-testid="loss-erg">
-            <strong>ERG released</strong> — spin up to 60 rpm
-          </p>
-        )}
-        {unresponsive && (
-          <p
-            role="alert"
-            className="ride-loss"
-            data-testid="engine-unresponsive"
-          >
-            <strong>The ride engine is not answering</strong> — the values are
-            not live · End still ends the ride
-          </p>
-        )}
-        {refusal && (
-          <p role="alert" className="ride-refusal" data-code={refusal.code}>
-            <strong>{REFUSAL[refusal.code] ?? "Failed"}:</strong>{" "}
-            {refusal.message}
-          </p>
-        )}
+        <section
+          className="ride-metrics panel"
+          data-region="metrics"
+          aria-label="Now"
+        >
+          <div className="readout hero" data-tile="countdown">
+            <span className="readout-head">
+              <Timer {...icon} />
+              <span data-slot="block">
+                {block
+                  ? `${PHASE_WORD[block.phase]} · block ${(blockIdx ?? 0) + 1} of ${blocks.length}`
+                  : blocks.length > 0 && blockIdx === null
+                    ? "Last block done"
+                    : free
+                      ? "FREE RIDE"
+                      : "Loading the plan…"}
+              </span>
+            </span>
+            <span className="readout-sub">
+              {block?.durS == null ? "in block" : "left in block"}
+            </span>
+            <Num
+              className="hero-t1"
+              data-slot="countdown"
+              data-tier="t1"
+              data-live
+              data-dim={dim}
+            >
+              {clock(blockLeft)
+                .split(":")
+                .flatMap((part, i) =>
+                  i === 0
+                    ? [part]
+                    : [
+                        <span key={i} className="colon">
+                          :
+                        </span>,
+                        part,
+                      ],
+                )}
+            </Num>
+            <Next
+              block={next}
+              last={blocks.length > 0 && blockIdx === blocks.length - 1}
+            />
+          </div>
+          <div className="readout" data-tile="power" data-series="power">
+            <span className="readout-head">
+              <Zap {...icon} />
+              <span data-series-label>Power</span>
+            </span>
+            <span className="readout-sub" data-tile="target">
+              TARGET <Value id="target" ch={8} value={targetView.value} />
+              <span className="tile-unit">{targetView.unit}</span> ·{" "}
+              <Value
+                id="plan"
+                ch={10}
+                value={target === null ? "Plan —" : `Plan ${target} W`}
+              />
+            </span>
+            <span className="readout-value">
+              <Value
+                id="power"
+                ch={4}
+                tier="t2"
+                value={round(power?.v, loss.trainer)}
+              />
+              <span className="tile-unit">W</span>
+            </span>
+            {/* Reserved for the ERG band (§5.2): its marker and Δ hide while the trainer settles, which the status does not carry yet (#97). */}
+            <span className="readout-band" aria-hidden />
+          </div>
+          <div className="readout" data-tile="hr" data-series="hr">
+            <span className="readout-head">
+              <Heart {...icon} />
+              <span data-series-label>Heart rate</span>
+            </span>
+            <span className="readout-sub">
+              {loss.hr ? "HR strap lost" : ""}
+            </span>
+            <span className="readout-value">
+              <Value id="hr" ch={3} tier="t2" value={round(hr?.v, loss.hr)} />
+              <span className="tile-unit">bpm</span>
+            </span>
+          </div>
+          <div className="readout" data-tile="cadence" data-series="cadence">
+            <span className="readout-head">
+              <RotateCw {...icon} />
+              <span data-series-label>Cadence</span>
+            </span>
+            <span className="readout-sub">
+              {loss.erg ? "▲ spin faster" : ""}
+            </span>
+            <span className="readout-value">
+              <Value
+                id="cadence"
+                ch={3}
+                tier="t2"
+                value={round(cadence?.v, loss.trainer)}
+              />
+              <span className="tile-unit">rpm</span>
+            </span>
+          </div>
+        </section>
       </div>
 
-      <footer className="ride-overview">
-        <RideChart
-          blocks={blocks}
-          totalS={total}
-          power={history}
-          workoutS={workoutS ?? 0}
-        />
+      <footer className="ride-timeline panel" data-region="timeline">
+        <Timeline blocks={blocks} totalS={total} workoutS={workoutS ?? 0} />
       </footer>
 
+      <div className="ride-keys" data-region="keys">
+        <button
+          className="primary"
+          disabled={busy || status === null || kind !== "idle" || startSent}
+          onClick={() => void startRide()}
+        >
+          <Play {...icon} />
+          Start <Key k="⏎" />
+        </button>
+        <button
+          disabled={busy || !canPause}
+          title={userPaused ? "Already paused" : undefined}
+          onClick={() => void pauseOrResume("pause")}
+        >
+          <Pause {...icon} />
+          Pause <Key k="Space" />
+        </button>
+        <button
+          disabled={busy || !canResume}
+          onClick={() => void pauseOrResume("resume")}
+        >
+          <Play {...icon} />
+          Resume <Key k="Space" />
+        </button>
+        <button
+          disabled={busy || !live || !canSkip || skipWaits}
+          onClick={() => (skipEnds ? setConfirming("skip") : void skipBlock())}
+        >
+          <SkipForward {...icon} />
+          Skip block <Key k="S" />
+        </button>
+        <div className="ride-status">
+          <span data-testid="state">{stateLine(status)}</span>
+          {following && <span className="muted"> · {following}</span>}
+          {refusal && (
+            <p role="alert" className="ride-refusal" data-code={refusal.code}>
+              <strong>{REFUSAL[refusal.code] ?? "Failed"}:</strong>{" "}
+              {refusal.message}
+            </p>
+          )}
+        </div>
+        <button onClick={openKeys}>
+          <Keyboard {...icon} />
+          Keys <Key k="?" />
+        </button>
+        <button
+          className="ride-end"
+          disabled={finished || status === null}
+          onClick={() => setConfirming("end")}
+        >
+          <Square {...icon} />
+          End <Key k="Esc" />
+        </button>
+      </div>
       {confirming && (
         <div className="scrim">
           {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the WAI-ARIA dialog pattern closes on Escape from inside; the rule keys on element names, not roles, so it cannot allow a role=alertdialog. */}
@@ -655,9 +935,7 @@ export function Ride() {
   return (
     <div className="ride-root">
       <StreamProvider key={session.rideId}>
-        <RideTiers>
-          <Screen session={session} />
-        </RideTiers>
+        <Screen session={session} />
       </StreamProvider>
     </div>
   );
