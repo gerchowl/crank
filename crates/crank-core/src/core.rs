@@ -1068,14 +1068,19 @@ impl keeper::Devices for KeeperDevices {
         let inner = self.inner();
         async move { inner?.backend.scan().await }.boxed()
     }
-    fn discard(&self, ride_id: String) {
-        if let Some(inner) = self.0.upgrade() {
-            tokio::spawn(async move {
-                if Core(inner).end_ride(true, Some(&ride_id)).await.is_ok() {
-                    tracing::info!(ride_id, "an unstarted ride was discarded");
-                }
-            });
+    fn discard(&self, ride_id: String) -> BoxFuture<'static, bool> {
+        let inner = self.0.upgrade();
+        async move {
+            let Some(inner) = inner else {
+                return false;
+            };
+            let discarded = Core(inner).end_ride(true, Some(&ride_id)).await.is_ok();
+            if discarded {
+                tracing::info!(ride_id, "an unstarted ride was discarded");
+            }
+            discarded
         }
+        .boxed()
     }
 }
 
@@ -1190,8 +1195,7 @@ impl Core {
             .intent(LinkIntent::Release {
                 reason: ReleaseReason::Devices,
             })
-            .await;
-        Ok(())
+            .await
     }
     /// The paired platform ids, trainer then strap.
     fn pairings(&self) -> Result<[Option<String>; 2], ApiError> {
@@ -1214,15 +1218,21 @@ impl Core {
     }
 
     /// The rider's likely next step, as the UI sees it (ADR-0002 §5.1.2): the keeper warms the
-    /// paired devices up while a ride is likely and lets them go when it is not. It returns
-    /// once a release this causes is done (each bounded by 2 s).
+    /// paired devices up while a ride is likely and lets them go when it is not.
+    ///
+    /// It answers once the intent is applied and what it releases is released: the keeper's
+    /// links (each release bounded by 2 s), a cancelled attempt, or a loaded ride it discards
+    /// (the end path's bounds). An intent that arrives while the links are handed to a load
+    /// that has not loaded its ride yet is recorded and applied when that load resolves
+    /// (its `Load` is bounded by 1 s), then answered (§5.1.3, the `Handed` state).
     ///
     /// "Release trainer" ([`ReleaseReason::RiderRelease`]) on the Ready sheet with a ride loaded
     /// but not started unloads that ride (the path of Cancel) and releases its links; during a
     /// started ride it is refused, because the ride owns the trainer: end the ride first.
     ///
     /// # Errors
-    /// `Conflict` for `RiderRelease` while a ride is started or starting; `Storage`.
+    /// `Conflict` for `RiderRelease` while a ride is started or starting, or when its discard
+    /// finds the ride started; `Conflict` for `Likely` or `Retry` after the quit; `Storage`.
     pub async fn links_intent(&self, intent: LinkIntent) -> Result<(), ApiError> {
         if intent
             == (LinkIntent::Release {
@@ -1241,8 +1251,7 @@ impl Core {
                 ));
             }
         }
-        self.keeper()?.intent(intent).await;
-        Ok(())
+        self.keeper()?.intent(intent).await
     }
 
     /// Scan for trainers and straps for `for_ms` (default 5 s, 0.2–15 s), or until the
@@ -3851,7 +3860,7 @@ mod tests {
     }
 
     /// Suspend the loaded ride's engine task: it keeps its links and answers nothing.
-    fn stall_engine(core: &Core) {
+    pub(super) fn stall_engine(core: &Core) {
         core.0.stall.on.store(true, Ordering::SeqCst);
     }
     const END_MODE: ControlMode = ControlMode::Resistance { pct: 0.0 };

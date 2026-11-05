@@ -7,7 +7,7 @@
 //! a warm trainer's control channel except the `Disconnect` that releases it. The task ends
 //! when the core drops its [`Handle`]: every link and attempt it holds is dropped with it,
 //! which the drivers' cleanup disconnects.
-use super::{Cool, Effect, Input, Keeper, Phase};
+use super::{Ack, Cool, Effect, Input, Keeper, Phase};
 use crate::dto::LinkIntent;
 use crate::error::{ApiError, ErrorCode};
 use crate::links::{self, Attempts, LinkDevice, Timeline};
@@ -36,8 +36,10 @@ pub(crate) trait Devices: Send + Sync + 'static {
     /// A scan for advertisements.
     fn scan(&self)
     -> BoxFuture<'static, Result<BoxStream<'static, DiscoveredDevice>, DeviceError>>;
-    /// End this loaded ride if it has not started (the path of Cancel).
-    fn discard(&self, ride_id: String);
+    /// End this loaded ride if it has not started (the path of Cancel), its devices released
+    /// when this resolves; `false` when it was not discarded (a Start was sent first, or the
+    /// ride is gone).
+    fn discard(&self, ride_id: String) -> BoxFuture<'static, bool>;
 }
 
 /// The links a load is handed (§5.1.4).
@@ -70,8 +72,10 @@ pub(crate) enum Note {
     /// That ride started.
     Started(String),
 }
+/// Where an intent's answer goes.
+type Answer = oneshot::Sender<Result<(), ApiError>>;
 enum Msg {
-    Intent(LinkIntent, oneshot::Sender<()>),
+    Intent(LinkIntent, Answer),
     Acquire(RiderConfig, oneshot::Sender<Result<Handed, ApiError>>),
     Note(Note),
     Shutdown(oneshot::Sender<()>),
@@ -84,6 +88,7 @@ pub(crate) enum Internal {
     Phase(LinkDevice, u32, Phase),
     Attempted(LinkDevice, u32, Result<Link, ApiError>),
     Lost(LinkDevice, u32),
+    Discarded(String, bool),
     /// The links of a cancelled load, with their attempts.
     Returned(u32, TrainerLink, Option<(u32, HeartRateLink)>),
     Released,
@@ -137,6 +142,9 @@ impl Handle {
             slots: Default::default(),
             waiting: None,
             scan: None,
+            direct: None,
+            pending: Vec::new(),
+            discard_done: None,
             clock,
         };
         task.apply(Input::Pairings(pairings));
@@ -147,12 +155,20 @@ impl Handle {
     pub(crate) fn note(&self, note: Note) {
         let _ = self.tx.send(Msg::Note(note));
     }
-    /// Report an intent; returns once any release it causes is done (bounded).
-    pub(crate) async fn intent(&self, intent: LinkIntent) {
+    /// Report an intent; answers once it is applied and what it releases is released (an
+    /// intent recorded while the links are handed out waits for the load to resolve; one that
+    /// discards the loaded ride waits for the discard). Every wait is bounded by the bound of
+    /// what it waits for (ADR-0002 §5.1.3).
+    ///
+    /// # Errors
+    /// `Conflict` when it is refused (`RiderRelease` while the ride holds the trainer, a
+    /// `Likely` after the quit) or its discard found the ride started; `Internal` without a
+    /// keeper.
+    pub(crate) async fn intent(&self, intent: LinkIntent) -> Result<(), ApiError> {
+        let gone = || ApiError::new(ErrorCode::Internal, "the link keeper is gone");
         let (ack, done) = oneshot::channel();
-        if self.tx.send(Msg::Intent(intent, ack)).is_ok() {
-            let _ = done.await;
-        }
+        self.tx.send(Msg::Intent(intent, ack)).map_err(|_| gone())?;
+        done.await.map_err(|_| gone())?
     }
     /// The links for a load: the warm ones at once, running attempts awaited, the others
     /// connected now, trainer and strap in parallel.
@@ -222,6 +238,12 @@ struct Task {
     slots: [Slot; 2],
     waiting: Option<Waiting>,
     scan: Option<ScanRun>,
+    /// The answer to the intent being applied.
+    direct: Option<Answer>,
+    /// The answers to intents recorded while the links are handed out.
+    pending: Vec<Answer>,
+    /// The discard under way: `Some(discarded)` once it ended.
+    discard_done: Option<watch::Receiver<Option<bool>>>,
 }
 fn ms(from: MonoTime, to: MonoTime) -> u64 {
     to.0.saturating_sub(from.0) / 1000
@@ -315,8 +337,8 @@ impl Task {
         match msg {
             Msg::Intent(intent, ack) => {
                 tracing::info!(target: TARGET, ?intent, "intent");
-                let releases = self.apply(Input::Intent(intent));
-                acknowledge(releases, ack);
+                self.direct = Some(ack);
+                drop(self.apply(Input::Intent(intent)));
             }
             Msg::Acquire(rider, reply) => {
                 let how =
@@ -338,7 +360,10 @@ impl Task {
             })),
             Msg::Shutdown(ack) => {
                 let releases = self.apply(Input::Shutdown);
-                acknowledge(releases, ack);
+                tokio::spawn(async move {
+                    released(releases).await;
+                    let _ = ack.send(());
+                });
             }
             #[cfg(test)]
             Msg::Phases(ack) => {
@@ -370,6 +395,11 @@ impl Task {
                 Input::Attempted(d, era, linked)
             }
             Internal::Lost(d, era) => Input::Lost(d, era),
+            Internal::Discarded(id, discarded) => {
+                tracing::info!(ride_id = id, discarded, "discard of an unstarted ride");
+                drop(self.apply(Input::Discarded(id, discarded)));
+                return;
+            }
             Internal::Returned(era, trainer, strap) => {
                 self.slots[0].held =
                     Some(self.drain(LinkDevice::Trainer, era, Link::Trainer(trainer)));
@@ -383,10 +413,12 @@ impl Task {
         };
         drop(self.apply(input));
     }
-    /// Step the keeper and act on its effects; returns the releases started.
+    /// Step the keeper and act on its effects; returns the releases started. The step's
+    /// answers ([`Effect::Ack`]) go out once those releases are done.
     fn apply(&mut self, input: Input<'_>) -> Vec<watch::Receiver<bool>> {
         let now = self.clock.now();
         let mut releases = Vec::new();
+        let mut acks = Vec::new();
         for effect in self.keeper.step(now, input) {
             match effect {
                 Effect::Attempt(d, era) => self.attempt(d, era),
@@ -399,10 +431,70 @@ impl Task {
                 }
                 Effect::HandOver => self.hand_over(),
                 Effect::FailLoad => self.fail_load(),
-                Effect::Discard(id) => self.devices.discard(id),
+                Effect::Discard(id) => self.discard(id),
+                Effect::Ack(ack) => acks.push(ack),
             }
         }
+        for ack in acks {
+            self.answer(ack, &releases);
+        }
         releases
+    }
+    /// Answer the intent being applied or, at a resolution of `Handed`, every recorded one.
+    fn answer(&mut self, ack: Ack, releases: &[watch::Receiver<bool>]) {
+        let answers = match self.direct.take() {
+            Some(answer) if ack == Ack::Recorded => {
+                self.pending.push(answer);
+                return;
+            }
+            Some(answer) => vec![answer],
+            None => std::mem::take(&mut self.pending),
+        };
+        if answers.is_empty() {
+            return;
+        }
+        let releases = releases.to_vec();
+        let discard = (ack == Ack::AwaitDiscard)
+            .then(|| self.discard_done.clone())
+            .flatten();
+        tokio::spawn(async move {
+            released(releases).await;
+            let result = match ack {
+                Ack::Applied | Ack::Recorded => Ok(()),
+                Ack::Refused(why) => Err(ApiError::new(ErrorCode::Conflict, why)),
+                Ack::AwaitDiscard => {
+                    let discarded = match discard {
+                        Some(mut done) => done
+                            .wait_for(Option::is_some)
+                            .await
+                            .is_ok_and(|d| *d == Some(true)),
+                        None => false,
+                    };
+                    if discarded {
+                        Ok(())
+                    } else {
+                        Err(ApiError::new(
+                            ErrorCode::Conflict,
+                            "the ride was started or is gone: it was not discarded",
+                        ))
+                    }
+                }
+            };
+            for answer in answers {
+                let _ = answer.send(result.clone());
+            }
+        });
+    }
+    /// Discard an unstarted ride through the core, and report how it ended.
+    fn discard(&mut self, id: String) {
+        let (done_tx, done) = watch::channel(None);
+        self.discard_done = Some(done);
+        let (discard, internal) = (self.devices.discard(id.clone()), self.internal.clone());
+        tokio::spawn(async move {
+            let discarded = discard.await;
+            let _ = internal.send(Internal::Discarded(id, discarded));
+            done_tx.send_replace(Some(discarded));
+        });
     }
     fn attempt(&mut self, d: LinkDevice, era: u32) {
         let slot = &mut self.slots[d as usize];
@@ -507,11 +599,20 @@ impl Task {
         reason: Cool,
     ) -> Option<watch::Receiver<bool>> {
         let slot = &mut self.slots[d as usize];
-        if let Some(attempt) = slot.attempt.take() {
-            // dropping the connect releases a half-open peripheral (#304)
-            attempt.abort();
-        }
         let held = slot.held.take();
+        if let Some(attempt) = slot.attempt.take() {
+            // dropping the connect releases a half-open peripheral (#304): done once the
+            // aborted task has dropped it
+            attempt.abort();
+            let (done_tx, done) = watch::channel(false);
+            tokio::spawn(async move {
+                let _ = attempt.await;
+                done_tx.send_replace(true);
+            });
+            slot.released = Some(done.clone());
+            tracing::info!(target: TARGET, device = d.as_str(), ?was, ?reason, held_s = 0, "cool");
+            return Some(done);
+        }
         tracing::info!(
             target: TARGET,
             device = d.as_str(),
@@ -620,12 +721,9 @@ impl Task {
         }
     }
 }
-/// Fire `ack` once every release in `releases` is done.
-fn acknowledge(releases: Vec<watch::Receiver<bool>>, ack: oneshot::Sender<()>) {
-    tokio::spawn(async move {
-        for mut done in releases {
-            let _ = done.wait_for(|d| *d).await;
-        }
-        let _ = ack.send(());
-    });
+/// Resolves once every release in `releases` is done.
+async fn released(releases: Vec<watch::Receiver<bool>>) {
+    for mut done in releases {
+        let _ = done.wait_for(|d| *d).await;
+    }
 }

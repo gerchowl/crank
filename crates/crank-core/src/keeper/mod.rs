@@ -18,9 +18,16 @@
 //!   no warm-up of it until a load or `Retry`.
 //! - **A ride** (§5.1.4): a load hands the links over once the trainer is `warm` and the strap
 //!   has settled (an attempt that is running is awaited, never doubled). From then until the
-//!   ride is released the keeper is inactive: every intent is ignored, except that a `Likely`
-//!   counts as rider input for `T_ABANDON` and that `Sleep` and `RiderRelease` discard a ride
-//!   that has not started. A started ride is never touched.
+//!   ride is released the keeper is inactive: a `Likely` counts as rider input for
+//!   `T_ABANDON`, `Sleep` and `RiderRelease` discard a ride that has not started, and a started
+//!   ride is never touched.
+//!
+//! **Totality.** The ride state is one of three: `Free` (the keeper is active), `Handed` (the
+//! links are handed to a load that has not loaded its ride yet) and `Loaded`. Every input has a
+//! transition in each of them, written as matches with no catch-all arm, and every intent is
+//! answered by exactly one [`Ack`]: applied (possibly with nothing to do, by a rule of
+//! §5.1.3), recorded (in `Handed`: applied the moment the load resolves, then acknowledged),
+//! awaiting a discard, or refused. No intent is dropped.
 use crate::dto::{LinkIntent, ReleaseReason};
 use crate::links::LinkDevice;
 use crank_devices::{MonoTime, RiderConfig};
@@ -117,10 +124,29 @@ pub(crate) enum Input<'a> {
     Loaded(String),
     /// The ride started.
     Started(String),
+    /// The discard of this ride ended: it was discarded (`true`), or not (a Start was sent
+    /// first, or the ride was gone).
+    Discarded(String, bool),
     /// The ride (or the load that was handed the links) let them go.
     Released,
     /// The application quits.
     Shutdown,
+}
+
+/// How an intent was taken (module docs, **Totality**).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ack {
+    /// Applied now; it is answered once the releases it caused are done.
+    Applied,
+    /// Recorded while the links are handed out: answered when the load resolves and the
+    /// recorded intent is applied (then a second `Ack` settles it).
+    Recorded,
+    /// It discards the loaded ride (or joins the discard under way): answered with the
+    /// discard's outcome.
+    AwaitDiscard,
+    /// Refused: the ride holds the trainer (`RiderRelease` during a started ride), or the
+    /// application quits (a `Likely` or `Retry` after `Shutdown`).
+    Refused(&'static str),
 }
 
 /// What the keeper's task must do.
@@ -141,8 +167,12 @@ pub(crate) enum Effect {
     HandOver,
     /// The waiting load gets no trainer.
     FailLoad,
-    /// Discard this loaded, unstarted ride (the path of Cancel).
+    /// Discard this loaded, unstarted ride (the path of Cancel); [`Input::Discarded`] reports
+    /// how it ended.
     Discard(String),
+    /// The answer to the intent of this step, or, in a step that resolves `Handed`, to every
+    /// intent recorded there.
+    Ack(Ack),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,20 +191,56 @@ enum Intent {
     },
 }
 
+/// Why a discard of an unstarted ride is under way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Discard {
+    /// `T_ABANDON` passed.
+    Abandoned,
+    /// `Release(Sleep)`.
+    Sleep,
+    /// "Release trainer": its success latches the trainer.
+    RiderRelease,
+}
+
+/// What `Handed` recorded, applied when the load resolves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Recorded {
+    /// The strongest release: `RiderRelease`, then `Sleep`, then `Devices`, then `Hidden`. A
+    /// later intent that is no release never overrides it.
+    release: Option<ReleaseReason>,
+    /// The latest other intent.
+    other: Option<LinkIntent>,
+    /// Some intent was recorded: its answer is due at the resolution.
+    any: bool,
+}
+fn strength(reason: ReleaseReason) -> u8 {
+    match reason {
+        ReleaseReason::Hidden => 0,
+        ReleaseReason::Devices => 1,
+        ReleaseReason::Sleep => 2,
+        ReleaseReason::RiderRelease => 3,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Ride {
     /// No ride: the keeper is active.
     Free,
     /// The links are handed to a load that has not loaded its ride yet.
-    Handed,
+    Handed {
+        recorded: Recorded,
+        /// The device's pairing changed since the handover: a link that comes back
+        /// ([`Input::Refused`]) is the old device's, and is released.
+        stale: [bool; 2],
+    },
     /// A ride is loaded.
     Loaded {
         id: String,
         started: bool,
         /// The load, or the last rider input since.
         input_at: MonoTime,
-        /// The discard was asked for.
-        discarding: bool,
+        /// A discard is under way, and why.
+        discard: Option<Discard>,
     },
 }
 
@@ -185,6 +251,12 @@ struct Dev {
     phase: Phase,
     /// The current attempt; results of any other are stale.
     era: u32,
+    /// The current attempt was started by an advertisement in the retry scan: its failure
+    /// does not restart the scan cap.
+    advertised: bool,
+    /// The scan window (0: the continuous scan) of the last attempt an advertisement
+    /// started, since the cap began: at most one per window (§5.1.2).
+    advert_window: Option<u64>,
 }
 
 /// The keeper's state machine (module docs).
@@ -195,9 +267,10 @@ pub(crate) struct Keeper {
     /// `RiderRelease`: no automatic warm-up of the trainer.
     latched: bool,
     ride: Ride,
-    /// A load waits for the attempts to settle.
+    /// A load waits for the attempts to settle (or for links still handed out).
     waiting: bool,
-    /// The last time a device became `not_found`: the scan cap counts from it.
+    /// When the scan cap began: a device became `not_found` other than by the failure of an
+    /// attempt an advertisement started.
     scan_since: Option<MonoTime>,
     rider: RiderConfig,
     shut: bool,
@@ -210,6 +283,9 @@ fn after(t: MonoTime, d: Duration) -> MonoTime {
 fn us(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
+const DEVICES: [LinkDevice; 2] = [LinkDevice::Trainer, LinkDevice::Strap];
+const QUITTING: &str = "the application is quitting";
+const RIDE_HOLDS_TRAINER: &str = "the ride holds the trainer: end the ride first";
 
 impl Keeper {
     /// No pairings, no intent; trainer links connect with `rider`.
@@ -218,6 +294,8 @@ impl Keeper {
             id: None,
             phase: Phase::Cold,
             era: 0,
+            advertised: false,
+            advert_window: None,
         };
         Self {
             devs: [dev.clone(), dev],
@@ -255,7 +333,10 @@ impl Keeper {
     /// Apply `input`, which happened at `now`.
     pub(crate) fn step(&mut self, now: MonoTime, input: Input<'_>) -> Vec<Effect> {
         match input {
-            Input::Intent(intent) => self.intent(now, intent),
+            Input::Intent(intent) => {
+                let ack = self.intent(now, intent);
+                self.out.push(Effect::Ack(ack));
+            }
             Input::Tick => self.tick(now),
             Input::Phase(d, era, phase) => {
                 let dev = &mut self.devs[d as usize];
@@ -267,8 +348,9 @@ impl Keeper {
                 let dev = &mut self.devs[d as usize];
                 if dev.era == era && dev.phase.attempting() {
                     dev.phase = if linked { Phase::Warm } else { Phase::NotFound };
-                    if !linked {
-                        self.scan_since = Some(now);
+                    // a failed attempt of an advertisement does not restart the cap (§5.1.2)
+                    if !linked && !dev.advertised {
+                        self.start_scan(now);
                     }
                     self.settle();
                 }
@@ -277,66 +359,20 @@ impl Keeper {
                 if self.devs[d as usize].era == era && self.devs[d as usize].phase == Phase::Warm {
                     self.cool(d, Cool::Lost);
                     self.devs[d as usize].phase = Phase::NotFound;
-                    self.scan_since = Some(now);
+                    self.start_scan(now);
                     // a load waiting for the strap still wants this device: connect it cold
                     if self.waiting {
-                        self.attempt(d);
+                        self.attempt(d, false);
                     }
                     self.settle();
                 }
             }
-            Input::Advertised(id) => {
-                if self.ride == Ride::Free && self.likely() && !self.shut {
-                    for d in [LinkDevice::Trainer, LinkDevice::Strap] {
-                        let dev = &self.devs[d as usize];
-                        if dev.id.as_deref() == Some(id)
-                            && dev.phase == Phase::NotFound
-                            && !self.latched_out(d)
-                        {
-                            self.attempt(d);
-                        }
-                    }
-                }
-            }
-            Input::Pairings(ids) => {
-                for (d, id) in [LinkDevice::Trainer, LinkDevice::Strap]
-                    .into_iter()
-                    .zip(ids)
-                {
-                    if self.devs[d as usize].id != id {
-                        self.cool(d, Cool::Unpaired);
-                        self.devs[d as usize].id = id;
-                    }
-                }
-                self.settle();
-            }
+            Input::Advertised(id) => self.advertised(now, id),
+            Input::Pairings(ids) => self.pairings(ids),
             Input::Rider(rider) => self.rider_changed(rider),
             Input::Acquire => self.acquire(now),
-            Input::Refused | Input::Loaded(_) | Input::Started(_) | Input::Released => {
-                self.ride_input(now, input);
-            }
-            Input::Shutdown => {
-                self.shut = true;
-                self.cool_all(Cool::Shutdown);
-            }
-        }
-        std::mem::take(&mut self.out)
-    }
-    /// What a load and its ride report.
-    fn ride_input(&mut self, now: MonoTime, input: Input<'_>) {
-        match input {
-            Input::Refused if self.ride == Ride::Handed => {
-                self.free(Phase::Warm);
-                self.resume_waiting();
-            }
-            Input::Loaded(id) if self.ride == Ride::Handed => {
-                self.ride = Ride::Loaded {
-                    id,
-                    started: false,
-                    input_at: now,
-                    discarding: false,
-                };
-            }
+            Input::Refused => self.refused(now),
+            Input::Loaded(id) => self.loaded(now, id),
             Input::Started(id) => {
                 if let Ride::Loaded {
                     id: loaded,
@@ -348,69 +384,101 @@ impl Keeper {
                     *started = true;
                 }
             }
-            Input::Released if self.ride != Ride::Free => {
-                self.free(Phase::Cold);
-                if self.waiting {
-                    self.resume_waiting();
-                } else {
-                    self.intent = Intent::None;
-                }
-            }
-            _ => {}
-        }
-    }
-    /// A load that came while the links were still handed out (its predecessor's release or
-    /// return not yet reported) gets them now.
-    fn resume_waiting(&mut self) {
-        if self.waiting {
-            self.warm_up(true);
-            self.settle();
-        }
-    }
-    /// The keeper is active again; the devices handed over are in `phase`.
-    fn free(&mut self, phase: Phase) {
-        self.ride = Ride::Free;
-        for dev in &mut self.devs {
-            if dev.phase == Phase::Riding {
-                dev.phase = phase;
+            Input::Discarded(id, discarded) => self.discarded(now, &id, discarded),
+            Input::Released => self.released(now),
+            Input::Shutdown => {
+                self.shut = true;
+                self.cool_all(Cool::Shutdown);
             }
         }
+        std::mem::take(&mut self.out)
     }
-    fn intent(&mut self, now: MonoTime, intent: LinkIntent) {
-        if self.ride != Ride::Free {
-            match intent {
-                LinkIntent::Likely { .. } | LinkIntent::Retry => {
-                    if let Ride::Loaded {
-                        started: false,
-                        input_at,
-                        ..
-                    } = &mut self.ride
-                    {
-                        *input_at = now;
-                    }
-                }
-                LinkIntent::Release {
-                    reason: reason @ (ReleaseReason::Sleep | ReleaseReason::RiderRelease),
-                } => {
-                    if let Ride::Loaded {
-                        id,
-                        started: false,
-                        discarding,
-                        ..
-                    } = &mut self.ride
-                    {
-                        if !std::mem::replace(discarding, true) {
-                            self.out.push(Effect::Discard(id.clone()));
+
+    /// An intent, in each ride state (module docs, **Totality**).
+    fn intent(&mut self, now: MonoTime, intent: LinkIntent) -> Ack {
+        match &mut self.ride {
+            Ride::Handed { recorded, .. } => {
+                recorded.any = true;
+                match intent {
+                    LinkIntent::Release { reason } => {
+                        if recorded
+                            .release
+                            .is_none_or(|r| strength(reason) >= strength(r))
+                        {
+                            recorded.release = Some(reason);
                         }
-                        self.latched |= reason == ReleaseReason::RiderRelease;
                     }
+                    LinkIntent::Likely { .. }
+                    | LinkIntent::Retry
+                    | LinkIntent::Left
+                    | LinkIntent::Background => recorded.other = Some(intent),
                 }
-                LinkIntent::Left | LinkIntent::Background | LinkIntent::Release { .. } => {}
+                Ack::Recorded
             }
-            return;
+            Ride::Loaded { .. } => self.loaded_intent(now, intent),
+            Ride::Free => self.free_intent(now, intent),
         }
+    }
+    /// An intent while a ride is loaded: the ride keeps its links (§5.1.3).
+    fn loaded_intent(&mut self, now: MonoTime, intent: LinkIntent) -> Ack {
+        let Ride::Loaded {
+            id,
+            started,
+            input_at,
+            discard,
+        } = &mut self.ride
+        else {
+            return Ack::Applied;
+        };
+        let cause = match intent {
+            // rider input on the Ready sheet
+            LinkIntent::Likely { .. } | LinkIntent::Retry => {
+                if !*started {
+                    *input_at = now;
+                }
+                return Ack::Applied;
+            }
+            LinkIntent::Left
+            | LinkIntent::Background
+            | LinkIntent::Release {
+                reason: ReleaseReason::Hidden | ReleaseReason::Devices,
+            } => return Ack::Applied,
+            LinkIntent::Release {
+                reason: ReleaseReason::Sleep,
+            } => Discard::Sleep,
+            LinkIntent::Release {
+                reason: ReleaseReason::RiderRelease,
+            } => Discard::RiderRelease,
+        };
+        if *started {
+            return if cause == Discard::RiderRelease {
+                Ack::Refused(RIDE_HOLDS_TRAINER)
+            } else {
+                // sleep during a started ride is #51
+                Ack::Applied
+            };
+        }
+        if let Some(under_way) = discard {
+            // joins the discard under way; "Release trainer" makes it latch
+            if cause == Discard::RiderRelease {
+                *under_way = cause;
+            }
+        } else {
+            *discard = Some(cause);
+            self.out.push(Effect::Discard(id.clone()));
+        }
+        Ack::AwaitDiscard
+    }
+    /// An intent while the keeper is active.
+    fn free_intent(&mut self, now: MonoTime, intent: LinkIntent) -> Ack {
         if self.shut {
-            return;
+            return match intent {
+                LinkIntent::Likely { .. } | LinkIntent::Retry => Ack::Refused(QUITTING),
+                // nothing is held after the quit
+                LinkIntent::Left | LinkIntent::Background | LinkIntent::Release { .. } => {
+                    Ack::Applied
+                }
+            };
         }
         match intent {
             LinkIntent::Likely { ready } => {
@@ -439,6 +507,160 @@ impl Keeper {
                 self.latched |= reason == ReleaseReason::RiderRelease;
             }
         }
+        Ack::Applied
+    }
+    /// Apply what `Handed` recorded, at `now`, once the load resolved into `self.ride`; then
+    /// answer it (the release's answer, when one was recorded).
+    fn apply_recorded(&mut self, now: MonoTime, recorded: Recorded) {
+        if !recorded.any {
+            return;
+        }
+        let mut ack = Ack::Applied;
+        // the other intent first: a release recorded beside it wins
+        if let Some(intent) = recorded.other {
+            ack = self.intent(now, intent);
+        }
+        if let Some(reason) = recorded.release {
+            ack = self.intent(now, LinkIntent::Release { reason });
+        }
+        self.out.push(Effect::Ack(ack));
+    }
+    /// `Handed` resolves: the ride was loaded.
+    fn loaded(&mut self, now: MonoTime, id: String) {
+        match &self.ride {
+            Ride::Handed { recorded, .. } => {
+                let recorded = *recorded;
+                self.ride = Ride::Loaded {
+                    id,
+                    started: false,
+                    input_at: now,
+                    discard: None,
+                };
+                // a load that came meanwhile gets no links: this one is loaded
+                if std::mem::replace(&mut self.waiting, false) {
+                    self.out.push(Effect::FailLoad);
+                }
+                self.apply_recorded(now, recorded);
+            }
+            // a load is installed only after its handover
+            Ride::Free | Ride::Loaded { .. } => {}
+        }
+    }
+    /// `Handed` resolves: the load is gone and the links are the keeper's again.
+    fn refused(&mut self, now: MonoTime) {
+        match &self.ride {
+            Ride::Handed { recorded, stale } => {
+                let (recorded, stale) = (*recorded, *stale);
+                self.free(Phase::Warm);
+                for d in DEVICES {
+                    if stale[d as usize] {
+                        self.cool(d, Cool::Unpaired);
+                    }
+                }
+                if self.shut {
+                    self.cool_all(Cool::Shutdown);
+                }
+                self.apply_recorded(now, recorded);
+                self.resume_waiting(now);
+            }
+            Ride::Free | Ride::Loaded { .. } => {}
+        }
+    }
+    /// The ride, or the load that was handed the links, let them go: they are `cold`.
+    fn released(&mut self, now: MonoTime) {
+        let recorded = match &self.ride {
+            Ride::Free => return,
+            Ride::Handed { recorded, .. } => *recorded,
+            Ride::Loaded { discard, .. } => {
+                // a discard by "Release trainer" that went through latches the trainer
+                self.latched |= *discard == Some(Discard::RiderRelease);
+                Recorded::default()
+            }
+        };
+        self.free(Phase::Cold);
+        self.intent = Intent::None;
+        self.apply_recorded(now, recorded);
+        self.resume_waiting(now);
+    }
+    /// A discard ended without discarding: the ride stays, and `T_ABANDON` and `Sleep` are
+    /// armed again from now.
+    fn discarded(&mut self, now: MonoTime, id: &str, discarded: bool) {
+        if let Ride::Loaded {
+            id: loaded,
+            input_at,
+            discard,
+            ..
+        } = &mut self.ride
+            && loaded == id
+            && !discarded
+        {
+            *discard = None;
+            *input_at = now;
+        }
+    }
+    /// A load that came while the links were still handed out gets them now.
+    fn resume_waiting(&mut self, now: MonoTime) {
+        if self.waiting && self.ride == Ride::Free {
+            self.refresh(now);
+            self.warm_up(true);
+            self.settle();
+        }
+    }
+    /// The keeper is active again; the devices handed over are in `phase`.
+    fn free(&mut self, phase: Phase) {
+        self.ride = Ride::Free;
+        for dev in &mut self.devs {
+            if dev.phase == Phase::Riding {
+                dev.phase = phase;
+            }
+        }
+    }
+    fn pairings(&mut self, ids: [Option<String>; 2]) {
+        for (d, id) in DEVICES.into_iter().zip(ids) {
+            if self.devs[d as usize].id == id {
+                continue;
+            }
+            match &mut self.ride {
+                Ride::Handed { stale, .. } if self.devs[d as usize].phase == Phase::Riding => {
+                    stale[d as usize] = true;
+                }
+                // a ride's links go `cold` at its release, whatever they were paired as
+                Ride::Free | Ride::Handed { .. } | Ride::Loaded { .. } => {
+                    self.cool(d, Cool::Unpaired);
+                }
+            }
+            let dev = &mut self.devs[d as usize];
+            dev.id = id;
+            dev.advert_window = None;
+        }
+        self.settle();
+    }
+    fn advertised(&mut self, now: MonoTime, id: &str) {
+        if self.ride != Ride::Free || !self.likely() || self.shut {
+            return;
+        }
+        let Some(window) = self.scan_window(now) else {
+            return;
+        };
+        for d in DEVICES {
+            let dev = &self.devs[d as usize];
+            if dev.id.as_deref() == Some(id)
+                && dev.phase == Phase::NotFound
+                && !self.latched_out(d)
+                && dev.advert_window != Some(window)
+            {
+                self.devs[d as usize].advert_window = Some(window);
+                self.attempt(d, true);
+            }
+        }
+    }
+    /// A device became `not_found`: the scan cap starts again (continuous for
+    /// `SCAN_CONTINUOUS`), with a new allowance of advertisement attempts.
+    fn start_scan(&mut self, now: MonoTime) {
+        self.scan_since = Some(now);
+        for dev in &mut self.devs {
+            dev.advert_window = None;
+        }
     }
     /// A `Likely` now, keeping a standing `ready`.
     fn refresh(&mut self, now: MonoTime) {
@@ -450,22 +672,27 @@ impl Keeper {
     }
     /// Attempt every paired device that is `cold` and, with `not_found`, every one that is.
     fn warm_up(&mut self, not_found: bool) {
-        for d in [LinkDevice::Trainer, LinkDevice::Strap] {
+        for d in DEVICES {
             let dev = &self.devs[d as usize];
             let due = match dev.phase {
                 Phase::Cold => true,
                 Phase::NotFound => not_found,
-                _ => false,
+                Phase::Searching
+                | Phase::Connecting
+                | Phase::Handshake
+                | Phase::Warm
+                | Phase::Riding => false,
             };
             if dev.id.is_some() && due && !self.latched_out(d) {
-                self.attempt(d);
+                self.attempt(d, false);
             }
         }
     }
-    fn attempt(&mut self, d: LinkDevice) {
+    fn attempt(&mut self, d: LinkDevice, advertised: bool) {
         let dev = &mut self.devs[d as usize];
         dev.era += 1;
         dev.phase = Phase::Searching;
+        dev.advertised = advertised;
         self.out.push(Effect::Attempt(d, dev.era));
     }
     /// Let `d` go if the keeper holds it or attempts it; it is `cold` after.
@@ -498,7 +725,7 @@ impl Keeper {
         if self.devs[0].phase.held() {
             self.cool(LinkDevice::Trainer, Cool::Rider);
             if self.likely() || self.waiting {
-                self.attempt(LinkDevice::Trainer);
+                self.attempt(LinkDevice::Trainer, false);
             }
         }
     }
@@ -507,29 +734,33 @@ impl Keeper {
     /// the links are still handed to a load that has ended (its release or their return is
     /// reported on another channel, so it may come later) waits for them.
     fn acquire(&mut self, now: MonoTime) {
-        if matches!(self.ride, Ride::Loaded { .. }) || self.shut {
-            self.out.push(Effect::FailLoad);
-            return;
-        }
-        self.latched = false;
-        self.refresh(now);
-        self.waiting = true;
-        if self.ride == Ride::Free {
-            self.warm_up(true);
-            self.settle();
+        match self.ride {
+            Ride::Loaded { .. } => self.out.push(Effect::FailLoad),
+            Ride::Free | Ride::Handed { .. } if self.shut => self.out.push(Effect::FailLoad),
+            Ride::Handed { .. } => self.waiting = true,
+            Ride::Free => {
+                self.latched = false;
+                self.refresh(now);
+                self.waiting = true;
+                self.warm_up(true);
+                self.settle();
+            }
         }
     }
     /// Answer a waiting load once the trainer has settled: hand over when it is `warm` and the
     /// strap has settled too, fail it when the trainer is not to be had.
     fn settle(&mut self) {
-        if !self.waiting {
+        if !self.waiting || self.ride != Ride::Free {
             return;
         }
         let [trainer, strap] = [&self.devs[0], &self.devs[1]].map(|d| d.phase);
         let strap_settled = self.devs[1].id.is_none() || !strap.attempting();
         if trainer == Phase::Warm && strap_settled {
             self.waiting = false;
-            self.ride = Ride::Handed;
+            self.ride = Ride::Handed {
+                recorded: Recorded::default(),
+                stale: [false; 2],
+            };
             for dev in &mut self.devs {
                 if dev.phase == Phase::Warm {
                     dev.phase = Phase::Riding;
@@ -542,25 +773,25 @@ impl Keeper {
         }
     }
     fn tick(&mut self, now: MonoTime) {
-        if let Ride::Loaded {
-            id,
-            started: false,
-            input_at,
-            discarding: discarding @ false,
-        } = &mut self.ride
-            && now >= after(*input_at, T_ABANDON)
-        {
-            *discarding = true;
-            self.out.push(Effect::Discard(id.clone()));
-        }
-        if self.ride != Ride::Free {
-            return;
-        }
-        if let Some((due, reason)) = self.cool_due()
-            && now >= due
-        {
-            self.cool_all(reason);
-            self.intent = Intent::None;
+        match &mut self.ride {
+            Ride::Loaded {
+                id,
+                started: false,
+                input_at,
+                discard: discard @ None,
+            } if now >= after(*input_at, T_ABANDON) => {
+                *discard = Some(Discard::Abandoned);
+                self.out.push(Effect::Discard(id.clone()));
+            }
+            Ride::Loaded { .. } | Ride::Handed { .. } => {}
+            Ride::Free => {
+                if let Some((due, reason)) = self.cool_due()
+                    && now >= due
+                {
+                    self.cool_all(reason);
+                    self.intent = Intent::None;
+                }
+            }
         }
     }
     /// When the intent cools the devices down, and why.
@@ -575,39 +806,40 @@ impl Keeper {
             Intent::None | Intent::Likely { ready: true, .. } => None,
         }
     }
-    /// The capped retry scan at `now` (§5.1.2): on (`Some(continuous)`) or off (`None`), and
-    /// when that changes next; `None` when no scan is wanted at all.
-    fn scan_at(&self, now: MonoTime) -> Option<(Option<bool>, MonoTime)> {
+    /// The capped retry scan at `now` (§5.1.2): on (`Some(window)`, 0 being the continuous
+    /// scan) or off (`None`), and when that changes next; `None` when no scan is wanted.
+    fn scan_at(&self, now: MonoTime) -> Option<(Option<u64>, MonoTime)> {
         let since = self.scan_since?;
         let wanted = !self.shut
             && self.ride == Ride::Free
             && self.likely()
-            && [LinkDevice::Trainer, LinkDevice::Strap]
-                .into_iter()
-                .any(|d| {
-                    let dev = &self.devs[d as usize];
-                    dev.id.is_some() && dev.phase == Phase::NotFound && !self.latched_out(d)
-                });
+            && DEVICES.into_iter().any(|d| {
+                let dev = &self.devs[d as usize];
+                dev.id.is_some() && dev.phase == Phase::NotFound && !self.latched_out(d)
+            });
         if !wanted {
             return None;
         }
         let elapsed = now.0.saturating_sub(since.0);
         let (cont, period, window) = (us(SCAN_CONTINUOUS), us(SCAN_PERIOD), us(SCAN_WINDOW));
         if elapsed < cont {
-            return Some((Some(true), MonoTime(since.0 + cont)));
+            return Some((Some(0), MonoTime(since.0 + cont)));
         }
         // window k (from 1) opens `k` periods after the continuous scan ended
         let k = (elapsed - cont) / period;
         let start = since.0 + cont + k * period;
         Some(if k > 0 && now.0 - start < window {
-            (Some(false), MonoTime(start + window))
+            (Some(k), MonoTime(start + window))
         } else {
             (None, MonoTime(start + period))
         })
     }
+    fn scan_window(&self, now: MonoTime) -> Option<u64> {
+        self.scan_at(now).and_then(|(on, _)| on)
+    }
     /// Whether the retry scan is on at `now`: `Some(true)` continuous, `Some(false)` a window.
     pub(crate) fn scanning(&self, now: MonoTime) -> Option<bool> {
-        self.scan_at(now).and_then(|(on, _)| on)
+        self.scan_window(now).map(|window| window == 0)
     }
     /// The next time something is due without an input: a cool-down, `T_ABANDON` or a change
     /// of the scan.
@@ -616,15 +848,42 @@ impl Keeper {
             Ride::Loaded {
                 started: false,
                 input_at,
-                discarding: false,
+                discard: None,
                 ..
             } => Some(after(*input_at, T_ABANDON)),
-            _ => None,
+            Ride::Loaded { .. } | Ride::Handed { .. } | Ride::Free => None,
         };
         let cool = (self.ride == Ride::Free)
             .then(|| self.cool_due().map(|(due, _)| due))
             .flatten();
         let scan = self.scan_at(now).map(|(_, change)| change);
         [abandon, cool, scan].into_iter().flatten().min()
+    }
+    /// Invariants every transition keeps (checked by the totality test).
+    #[cfg(test)]
+    pub(crate) fn invariant(&self) -> Result<(), String> {
+        let held = DEVICES.iter().any(|&d| self.devs[d as usize].phase.held());
+        let riding = DEVICES
+            .iter()
+            .any(|&d| self.devs[d as usize].phase == Phase::Riding);
+        if riding && self.ride == Ride::Free {
+            return Err("a device is riding with no ride".into());
+        }
+        if self.ride == Ride::Free && held && self.intent == Intent::None && !self.waiting {
+            return Err("links held with no intent and no load: nothing would let them go".into());
+        }
+        if self.shut && DEVICES.iter().any(|&d| self.devs[d as usize].phase.held()) {
+            return Err("links held after the quit".into());
+        }
+        if self.waiting && matches!(self.ride, Ride::Loaded { .. }) {
+            return Err("a load waits beside a loaded ride".into());
+        }
+        if DEVICES
+            .iter()
+            .any(|&d| self.devs[d as usize].id.is_none() && self.devs[d as usize].phase.held())
+        {
+            return Err("an unpaired device is held".into());
+        }
+        Ok(())
     }
 }
