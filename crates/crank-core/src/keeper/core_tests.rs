@@ -164,7 +164,7 @@ async fn every_release_reason_disconnects_at_once_mid_attempt_included() {
         let asked = Instant::now();
         core.links_intent(release(reason)).await.unwrap();
         assert!(asked.elapsed() < S(1), "{reason:?}: at once");
-        sleep(SETTLE).await;
+        // (answered once the releases are done: no settling wait, N5)
         assert_eq!(straps_released(&radio), 1, "{reason:?}");
         assert_eq!(
             radio.half_open.load(SeqCst),
@@ -302,8 +302,7 @@ async fn sleep_discards_an_unstarted_ride_and_leaves_a_started_one() {
     core.links_intent(release(ReleaseReason::Sleep))
         .await
         .unwrap();
-    sleep(SETTLE).await;
-    assert!(!loaded(&core).await);
+    assert!(!loaded(&core).await, "answered once discarded and released");
     assert_eq!(disconnects(&radio), 1);
 
     let dir = tempfile::tempdir().unwrap();
@@ -327,8 +326,7 @@ async fn release_trainer_with_an_unstarted_ride_unloads_it_and_latches() {
     core.links_intent(release(ReleaseReason::RiderRelease))
         .await
         .unwrap();
-    sleep(SETTLE).await;
-    assert!(!loaded(&core).await);
+    assert!(!loaded(&core).await, "answered once discarded and released");
     assert_eq!((disconnects(&radio), straps_released(&radio)), (1, 1));
     core.links_intent(likely(false)).await.unwrap();
     sleep(S(10)).await;
@@ -517,8 +515,11 @@ async fn a_quit_cancels_an_attempt_still_connecting() {
     let asked = Instant::now();
     assert_eq!(core.shutdown(S(3)).await, Shutdown::Idle);
     assert!(asked.elapsed() <= S(3));
-    sleep(SETTLE).await;
-    assert_eq!(radio.half_open.load(SeqCst), 1);
+    assert_eq!(
+        radio.half_open.load(SeqCst),
+        1,
+        "the quit awaits the cancelled attempt"
+    );
     assert_eq!(straps_released(&radio), 1);
     sleep(S(20)).await;
     assert_eq!(connects(&radio), [1, 1], "no attempt after the quit");
@@ -701,4 +702,126 @@ async fn the_handover_activates_on_ready_a_lost_link_connects_cold_and_an_end_le
     );
     core.ride_end().await.unwrap();
     assert_eq!(phases(&core).await, [Some(Phase::Cold); 2]);
+}
+
+/// Load over warm links with the engine stalled, so that the links stay handed out (`Handed`)
+/// until the stall is released: the load's `Load` waits for the engine.
+async fn handed_core(
+    dir: &std::path::Path,
+) -> (
+    Core,
+    FakeRadio,
+    tokio::task::JoinHandle<Result<RideLoaded, ApiError>>,
+) {
+    let (core, radio) = warm_core(dir).await;
+    super::tests::stall_engine(&core);
+    let load = {
+        let core = core.clone();
+        tokio::spawn(async move { core.ride_load(None).await })
+    };
+    sleep(Duration::from_millis(100)).await;
+    assert_eq!(phases(&core).await, [Some(Phase::Riding); 2], "handed");
+    (core, radio, load)
+}
+
+/// B1, probe C1: `Sleep` or "Release trainer" while the links are handed to a load whose
+/// engine is stalled is recorded, answered only once applied: when the stall is released the
+/// ride loads and is discarded at once, the trainer is released, and "Release trainer" latches.
+#[tokio::test(start_paused = true)]
+async fn a_release_while_handed_is_applied_once_the_load_resolves() {
+    for reason in [ReleaseReason::Sleep, ReleaseReason::RiderRelease] {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio, load) = handed_core(dir.path()).await;
+        let intent = {
+            let core = core.clone();
+            tokio::spawn(async move { core.links_intent(release(reason)).await })
+        };
+        sleep(Duration::from_millis(400)).await;
+        assert!(
+            !intent.is_finished(),
+            "{reason:?}: not answered before it is applied"
+        );
+        core.0.stall.release();
+        assert!(
+            load.await.unwrap().is_ok(),
+            "{reason:?}: the load went through"
+        );
+        intent.await.unwrap().unwrap();
+        assert!(!loaded(&core).await, "{reason:?}: discarded");
+        assert_eq!(disconnects(&radio), 1, "{reason:?}: the trainer released");
+        core.links_intent(likely(false)).await.unwrap();
+        sleep(S(5)).await;
+        let trainer = if reason == ReleaseReason::RiderRelease {
+            1
+        } else {
+            2
+        };
+        assert_eq!(connects(&radio)[0], trainer, "{reason:?}: latched or not");
+    }
+}
+
+/// N1 (kills M9): a discard of an unstarted ride is refused once `ride_start` has marked the
+/// ride starting, though the engine has not taken the Start yet (its status still idle).
+#[tokio::test(start_paused = true)]
+async fn a_discard_leaves_a_ride_whose_start_was_sent() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _radio) = loaded_core(dir.path()).await;
+    let ride_id = loaded_id(&core).await;
+    super::tests::stall_engine(&core);
+    let start = {
+        let core = core.clone();
+        tokio::spawn(async move { core.ride_start().await })
+    };
+    sleep(Duration::from_millis(10)).await;
+    assert!(
+        !core.ride_status().await.unwrap().status.in_progress(),
+        "the engine has not taken the Start"
+    );
+    let refused = core.end_ride(true, Some(&ride_id)).await.unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    core.0.stall.release();
+    let _ = start.await.unwrap();
+    assert!(loaded(&core).await, "the ride was not discarded");
+}
+
+/// N2: "Release trainer" that reaches the keeper while a Start races it (past the core's own
+/// check) answers `Conflict`, not `Ok`, and does not latch the trainer.
+#[tokio::test(start_paused = true)]
+async fn a_rider_release_racing_a_start_is_refused_and_does_not_latch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, radio) = loaded_core(dir.path()).await;
+    super::tests::stall_engine(&core);
+    let start = {
+        let core = core.clone();
+        tokio::spawn(async move { core.ride_start().await })
+    };
+    sleep(Duration::from_millis(10)).await;
+    // straight to the keeper, as if the core's check had passed just before the Start
+    let refused = core
+        .keeper()
+        .unwrap()
+        .intent(release(ReleaseReason::RiderRelease))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    core.0.stall.release();
+    start.await.unwrap().unwrap();
+    core.ride_end().await.unwrap();
+    core.links_intent(likely(false)).await.unwrap();
+    sleep(S(5)).await;
+    assert_eq!(
+        connects(&radio)[0],
+        2,
+        "not latched: the trainer warms up again"
+    );
+}
+async fn loaded_id(core: &Core) -> String {
+    core.0
+        .state
+        .lock()
+        .await
+        .session
+        .as_ref()
+        .map(|s| s.ride_id.clone())
+        .unwrap()
 }

@@ -811,6 +811,25 @@ releases its links exactly as today (end mode, release, disconnect: §7.9, `Link
 `cold`. If a warm view is shown again, the keeper warms up again from `cold`. All of §6 and §7 stays attached to the
 session and is not touched: reconnect backoff, `RideGate`, end mode, forced end, command gate.
 
+**The keeper's ride states (implementation, #469).** Beside the per-device phases, the keeper is in one of three ride
+states, and every input has a defined transition in each (the state machine's matches have no catch-all arm, and a
+test enumerates every state × input):
+
+| Ride state | Meaning | Leaves it |
+|---|---|---|
+| `Free` | no ride: the keeper is active (warm-up, cool-down, scan) | the handover → `Handed` |
+| `Handed` | the links are handed to a load that has not installed its ride yet (its engine's `Load` is under way, bounded by 1 s) | `Loaded` (the ride is installed) → `Loaded`; `Refused` (the load was cancelled before it took the links: they come back `warm`) → `Free`; `Released` (the load failed after taking them: they are gone, `cold`) → `Free` |
+| `Loaded` | a ride holds the links, started or not | `Released` (the ride's end or discard) → `Free`, every link `cold` |
+
+In `Handed` an intent is **recorded**, never dropped, and applied the moment the load resolves: on `Loaded` as in
+`Loaded` (`Sleep` discards the unstarted ride; `RiderRelease` unloads it, releases and latches), on `Refused` or
+`Released` as in `Free` (a release, the latch, or the intent and its timer). The latest intent wins, except that a
+recorded release is never overridden by a later intent that is no release; of two releases the stronger is kept
+(`RiderRelease`, then `Sleep`, then `Devices`, then `Hidden`). A pairing change in `Handed` marks the device's handed
+link stale: if it comes back (`Refused`), it is released, and the new pairing starts `cold`. A quit in `Handed`
+releases links that come back. A load that arrives in `Handed` waits for the links to come back or to be released;
+if the ride is installed instead, it fails.
+
 #### 5.1.2 Warm-up: when and how
 
 **Intent.** The UI reports the rider's intent; the core owns every timer and decision. `links_intent(intent)` is a
@@ -860,7 +879,11 @@ only while a paired device is `not_found` and intent is `Likely`, and it is **ca
 - it scans continuously for the first `SCAN_CONTINUOUS` = 30 s after a device becomes `not_found`;
 - then it scans in windows of `RESOLVE_SCAN` (4 s) every `SCAN_PERIOD` = 30 s, a duty cycle of about 13 %. The first
   window opens one period after the continuous scan ended (at 60 s, 90 s, … after the device became `not_found`);
-- it stops when intent is no longer `Likely`, when every paired device is `warm`, or at cool-down.
+- it stops when intent is no longer `Likely`, when every paired device is `warm`, or at cool-down;
+- an advertisement starts at most one attempt per device per scan window (the continuous scan counting as one
+  window), and the failure of an attempt an advertisement started does not restart the cap. Only a device that becomes
+  `not_found` otherwise (a failed attempt of a `Likely`, a load or Retry, or a lost warm link) restarts it. A device that
+  advertises but never connects therefore costs at most one connect per window, not one per advertisement (#469).
 
 **Cost of the cap.** An unbounded scan is a real cost while a NEO is held by another app and a warm view stays open.
 Active scanning keeps the Mac's Bluetooth radio receiving, and every scan response is a request from crank. On a
@@ -952,7 +975,15 @@ streams: the drivers `try_send` into bounded channels, and a full channel would 
     re-acquire until the rider asks for a ride again. During a started ride (riding or paused by the rider or by
     the engine) it is **not** reachable: the ride owns the trainer and the keeper is inactive, so `links_intent`
     refuses it with `Conflict` and changes nothing; the rider ends the ride first, and the ride's own end releases
-    the trainer (§7.9). A ride whose Start was sent counts as started.
+    the trainer (§7.9). A ride whose Start was sent counts as started, also when the Start races the release past
+    the core's own check: the discard then finds it started, and the release answers `Conflict`.
+
+**What `links_intent` answers (#469).** It answers once the intent is applied and what it releases is released: the
+keeper's links (each release bounded by 2 s), a cancelled attempt (once its connect is dropped), or a loaded ride it
+discards (the bounds of the end path, §7.9). An intent recorded in `Handed` (§5.1.1) is answered when the load resolves
+and the intent is applied; that wait is bounded by the load's own bounds (`Load` within 1 s). It is never answered `Ok`
+for an intent it has not applied. It answers `Conflict` for `RiderRelease` while the ride holds the trainer, for one
+whose discard found the ride started, and for `Likely` or `Retry` after the quit.
 
 The release is the driver's bounded disconnect (§7.9, #304). A disconnect that timed out leaves the same residual as
 there (#335). An attempt that is still connecting is cancelled, and the cancelled connect disconnects the half-open
@@ -970,7 +1001,9 @@ ride's first `SetMode`). Two rules bound an **unstarted** loaded ride:
 
 Both go through the same path as Cancel (`ride_end` on a loaded ride, §7.9). That discard checks, under the same lock as
 its `Stop`, that the ride is still loaded and that no Start was sent for it (`ride_start` marks it under that lock before
-it sends Start), so a discard and a Start that race never end a ride the rider started. A **started** ride follows §6 and §7
+it sends Start), so a discard and a Start that race never end a ride the rider started. A discard that does not go through
+(the Start came first, then failed, or the ride was gone) re-arms `T_abandon` from then, and a later `Sleep` discards
+again; a `RiderRelease` whose discard did not go through answers `Conflict` and does not latch. A **started** ride follows §6 and §7
 unchanged: it keeps its links through focus changes, hiding and background (sleep during a ride is #51).
 
 **Quit, `Core` drop and crash while warm.** Warm links are the keeper's, so no ride's end mode covers them, and none is
