@@ -1098,7 +1098,7 @@ cold warm-up per phase. No timing is derived from the UI.
    exemption, the keeper's inactivity during a ride, `T_abandon` and the sleep discard of an unstarted ride, the scan cap, release on shutdown, the latch, handover to `ride_load` with
    the link's current state, event draining, and the sim latency model below. `Core::links_intent` is the facade
    method; its Tauri command and binding are wired with the contract (step 3), and the rider-config change input waits
-   for athlete inputs (#247): until then the configuration is the constant `RIDER`, and a load passes it.
+   for athlete inputs (#247, #518): until then the configuration is the constant `RIDER`, and a load passes it.
 3. **Contract.** `LoadProgress` in `ride_status`, `links_open` / `LinkFrame`, and the regenerated bindings.
 4. **UI.** Intent reporting (warm views, focus, visibility, throttled input), `crank-desktop`'s sleep observer, the
    chips, and Ready-sheet progress, styled per #438.
