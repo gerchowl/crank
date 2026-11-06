@@ -147,6 +147,10 @@ pub(crate) enum Ack {
     /// Refused: the ride holds the trainer (`RiderRelease` during a started ride), or the
     /// application quits (a `Likely` or `Retry` after `Shutdown`).
     Refused(&'static str),
+    /// Not an answer to this step's intent: the releases recorded in `Handed` so far were
+    /// superseded by a rider action (a load, Retry) and are cancelled; their answers are
+    /// `Conflict` ([`SUPERSEDED`]). Recorded intents that are no release stay recorded.
+    Superseded,
 }
 
 /// What the keeper's task must do.
@@ -206,12 +210,19 @@ enum Discard {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Recorded {
     /// The strongest release: `RiderRelease`, then `Sleep`, then `Devices`, then `Hidden`. A
-    /// later intent that is no release never overrides it.
+    /// later intent that is no release and no rider action (visibility, focus) never
+    /// overrides it; a later rider action (a load, Retry) cancels it.
     release: Option<ReleaseReason>,
     /// The latest other intent.
     other: Option<LinkIntent>,
     /// Some intent was recorded: its answer is due at the resolution.
     any: bool,
+}
+/// A rider action in `Handed` cancels the release recorded so far; `true` if there was one.
+fn supersede(recorded: &mut Recorded) -> bool {
+    let had = recorded.release.take().is_some();
+    recorded.any = recorded.other.is_some();
+    had
 }
 fn strength(reason: ReleaseReason) -> u8 {
     match reason {
@@ -273,6 +284,8 @@ pub(crate) struct Keeper {
     /// attempt an advertisement started.
     scan_since: Option<MonoTime>,
     rider: RiderConfig,
+    /// The rider configuration of the trainer's current attempt or link.
+    trainer_rider: RiderConfig,
     shut: bool,
     out: Vec<Effect>,
 }
@@ -285,6 +298,8 @@ fn us(d: Duration) -> u64 {
 }
 const DEVICES: [LinkDevice; 2] = [LinkDevice::Trainer, LinkDevice::Strap];
 const QUITTING: &str = "the application is quitting";
+/// The answer to a recorded release that a rider action cancelled.
+pub(crate) const SUPERSEDED: &str = "superseded by the rider's request for a ride";
 const RIDE_HOLDS_TRAINER: &str = "the ride holds the trainer: end the ride first";
 
 impl Keeper {
@@ -305,6 +320,7 @@ impl Keeper {
             waiting: false,
             scan_since: None,
             rider,
+            trainer_rider: rider,
             shut: false,
             out: Vec::new(),
         }
@@ -408,10 +424,16 @@ impl Keeper {
                             recorded.release = Some(reason);
                         }
                     }
-                    LinkIntent::Likely { .. }
-                    | LinkIntent::Retry
-                    | LinkIntent::Left
-                    | LinkIntent::Background => recorded.other = Some(intent),
+                    LinkIntent::Retry => {
+                        if supersede(recorded) {
+                            self.out.push(Effect::Ack(Ack::Superseded));
+                        }
+                        recorded.other = Some(intent);
+                        recorded.any = true;
+                    }
+                    LinkIntent::Likely { .. } | LinkIntent::Left | LinkIntent::Background => {
+                        recorded.other = Some(intent);
+                    }
                 }
                 Ack::Recorded
             }
@@ -557,6 +579,14 @@ impl Keeper {
                         self.cool(d, Cool::Unpaired);
                     }
                 }
+                // a trainer that comes back connected with a rider configuration that changed
+                // meanwhile is reconnected (page 55 goes out only at connect)
+                if self.devs[0].phase == Phase::Warm && self.trainer_rider != self.rider {
+                    self.cool(LinkDevice::Trainer, Cool::Rider);
+                    if self.likely() || self.waiting {
+                        self.attempt(LinkDevice::Trainer, false);
+                    }
+                }
                 if self.shut {
                     self.cool_all(Cool::Shutdown);
                 }
@@ -689,6 +719,9 @@ impl Keeper {
         }
     }
     fn attempt(&mut self, d: LinkDevice, advertised: bool) {
+        if d == LinkDevice::Trainer {
+            self.trainer_rider = self.rider;
+        }
         let dev = &mut self.devs[d as usize];
         dev.era += 1;
         dev.phase = Phase::Searching;
@@ -737,7 +770,15 @@ impl Keeper {
         match self.ride {
             Ride::Loaded { .. } => self.out.push(Effect::FailLoad),
             Ride::Free | Ride::Handed { .. } if self.shut => self.out.push(Effect::FailLoad),
-            Ride::Handed { .. } => self.waiting = true,
+            // a rider action: it supersedes the release recorded so far
+            Ride::Handed {
+                ref mut recorded, ..
+            } => {
+                if supersede(recorded) {
+                    self.out.push(Effect::Ack(Ack::Superseded));
+                }
+                self.waiting = true;
+            }
             Ride::Free => {
                 self.latched = false;
                 self.refresh(now);
