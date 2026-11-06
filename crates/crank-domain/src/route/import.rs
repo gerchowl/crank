@@ -191,6 +191,36 @@ fn malformed(at: u64, what: impl Into<String>) -> RouteImportError {
     }
 }
 
+/// A finite latitude within ±90° and longitude within ±180°, else the point is malformed.
+fn check_position(p: &RawPoint) -> Result<(), RouteImportError> {
+    if !(p.lat.is_finite() && (-90.0..=90.0).contains(&p.lat)) {
+        return Err(malformed(p.at, format!("latitude {} outside ±90°", p.lat)));
+    }
+    if !(p.lon.is_finite() && (-180.0..=180.0).contains(&p.lon)) {
+        return Err(malformed(
+            p.at,
+            format!("longitude {} outside ±180°", p.lon),
+        ));
+    }
+    Ok(())
+}
+
+/// The point's elevation; one outside [`ELE_MIN_M`]..=[`ELE_MAX_M`] is a sensor fault, counted
+/// and treated as missing (then filled or refused by the §2.2.2 rules).
+fn plausible_elevation(
+    p: &RawPoint,
+    out_of_range: &mut usize,
+) -> Result<Option<f64>, RouteImportError> {
+    match p.ele_m {
+        Some(e) if !e.is_finite() => Err(malformed(p.at, "elevation is not a number")),
+        Some(e) if !(ELE_MIN_M..=ELE_MAX_M).contains(&e) => {
+            *out_of_range += 1;
+            Ok(None)
+        }
+        e => Ok(e),
+    }
+}
+
 /// Build a route from a file's points in order, applying the limits of ADR-0005 §2.2.4 and the
 /// missing-elevation rules of §2.2.2. `segments` is empty; a format with labels adds them.
 ///
@@ -208,27 +238,12 @@ pub fn route_from_points(
     let mut elevation_out_of_range = 0;
     let mut last_lat_lon = (0.0, 0.0);
     for p in raw {
-        if !(p.lat.is_finite() && (-90.0..=90.0).contains(&p.lat)) {
-            return Err(malformed(p.at, format!("latitude {} outside ±90°", p.lat)));
-        }
-        if !(p.lon.is_finite() && (-180.0..=180.0).contains(&p.lon)) {
-            return Err(malformed(
-                p.at,
-                format!("longitude {} outside ±180°", p.lon),
-            ));
-        }
+        check_position(p)?;
         if p.lat == 0.0 && p.lon == 0.0 {
             dropped_null_island += 1;
             continue;
         }
-        let ele_m = match p.ele_m {
-            Some(e) if !e.is_finite() => return Err(malformed(p.at, "elevation is not a number")),
-            Some(e) if !(ELE_MIN_M..=ELE_MAX_M).contains(&e) => {
-                elevation_out_of_range += 1;
-                None
-            }
-            e => e,
-        };
+        let ele_m = plausible_elevation(p, &mut elevation_out_of_range)?;
         let lat_lon = (p.lat, p.lon);
         let Some(prev) = points.last_mut() else {
             last_lat_lon = lat_lon;
