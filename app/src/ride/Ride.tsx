@@ -479,8 +479,10 @@ function Screen({ session }: { session: RideSession }) {
   const free = session.workoutId === null;
   const counted = status?.compliance.countedS ?? 0;
   // The trainer as the engine commands it and whether it follows (the same words as the pause banner, #324).
-  const trainer = trainerNow(status?.commanded);
-  const follows = status ? FOLLOWING[status.trainerFollowing] : null;
+  // Not while the trainer is lost: `commanded` then still holds the engine's last mode, which nothing is following.
+  const trainer = loss.trainer ? null : trainerNow(status?.commanded);
+  const follows =
+    status && !loss.trainer ? FOLLOWING[status.trainerFollowing] : null;
   const following = status
     ? [
         trainer && follows
@@ -706,8 +708,9 @@ function Screen({ session }: { session: RideSession }) {
       </footer>
 
       <div className="ride-keys" data-region="keys">
-        {/* Start only before the ride starts: the mockup's key row has none during a ride (§18.3). */}
-        {kind === "idle" && (
+        {/* Before the start the key row is the Ready stand-in's (Start; the core refuses pause, resume and skip then);
+            from the start it is the mockup's, with no Start (§18.3). */}
+        {kind === "idle" ? (
           <button
             className="primary"
             disabled={busy || status === null || startSent}
@@ -716,29 +719,34 @@ function Screen({ session }: { session: RideSession }) {
             <Play {...icon} />
             Start <Key k="⏎" />
           </button>
+        ) : (
+          <>
+            <button
+              disabled={busy || !canPause}
+              title={userPaused ? "Already paused" : undefined}
+              onClick={() => void pauseOrResume("pause")}
+            >
+              <Pause {...icon} />
+              Pause <Key k="Space" />
+            </button>
+            <button
+              disabled={busy || !canResume}
+              onClick={() => void pauseOrResume("resume")}
+            >
+              <Play {...icon} />
+              Resume <Key k="Space" />
+            </button>
+            <button
+              disabled={busy || !live || !canSkip || skipWaits}
+              onClick={() =>
+                skipEnds ? setConfirming("skip") : void skipBlock()
+              }
+            >
+              <SkipForward {...icon} />
+              Skip block <Key k="S" />
+            </button>
+          </>
         )}
-        <button
-          disabled={busy || !canPause}
-          title={userPaused ? "Already paused" : undefined}
-          onClick={() => void pauseOrResume("pause")}
-        >
-          <Pause {...icon} />
-          Pause <Key k="Space" />
-        </button>
-        <button
-          disabled={busy || !canResume}
-          onClick={() => void pauseOrResume("resume")}
-        >
-          <Play {...icon} />
-          Resume <Key k="Space" />
-        </button>
-        <button
-          disabled={busy || !live || !canSkip || skipWaits}
-          onClick={() => (skipEnds ? setConfirming("skip") : void skipBlock())}
-        >
-          <SkipForward {...icon} />
-          Skip block <Key k="S" />
-        </button>
         <div className="ride-status">
           <span data-testid="state">{stateLine(status)}</span>
           {following && <span className="muted"> · {following}</span>}
