@@ -10,6 +10,11 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- Route model and import, no UI or store yet (ADR-0005 §2.1, §2.2.1–2.2.2, §2.2.4–2.2.5): `crank_domain::route`
+  types, a hardened GPX 1.0/1.1 reader (`quick-xml`; a DOCTYPE, any entity but XML's five and nesting deeper than 32
+  are refused), the §2.2.4 limits and the missing-elevation rules with an import report, multi-track files listing
+  their tracks, and grade-profile text (`2km 3%, 3x(0.4km 12% cobbles, 0.6km 2%)`) with a canonical printer
+  ([#539](https://github.com/gerchowl/crank/issues/539))
 - ESLint design rules in `pnpm -C app lint` (DESIGN §18.7 rules 1, 2, 4 and 7): Lucide-only icons (`lucide-react` 1.62.0), no raw
   `<svg>` outside `src/icons/`, no literal colours or px in `style={{}}`, `eslint-plugin-jsx-a11y` recommended; a `<Num>`
   component for live numbers; the Feather MIT text in `NOTICE`
