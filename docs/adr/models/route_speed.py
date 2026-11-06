@@ -14,8 +14,9 @@ Stdlib only. It implements the equations of §2.4 literally and checks them:
   and the model integrates the decoded wire values, so model (a) and the trainer use the same numbers.
 * check_invariants(): speed is never negative, position never decreases, a stop stays a stop on a
   climb (no rolling back) and a paused ride resumes from rest.
-* check_relief(): the low-cadence relief of §2.8.1 arms only at or above the arming grade (≥ 2 %), never while
-  coasting on a descent or the flat, and ends when the climb ends even at cadence 0.
+* check_relief(): the low-cadence relief of §2.8.1 arms only at or above the arming grade (≥ 2 %, the floor
+  tested with a 10 W FTP), never while coasting on a descent or the flat, does not chatter on a target hovering at
+  the arming grade, and ends when the target eases 1 point below it, even at cadence 0.
 * worked examples (§2.4.6): flat at 200 W, an 8 % climb at 200 W, a −6 % descent at 0 W, a stop and start, gravel,
   and the relief's arming grade per FTP (§2.8.1).
 
@@ -49,8 +50,9 @@ V_STOP = 0.05        # m/s: below this with no net forward force, the bike is at
 
 # --- low-cadence relief on climbs (ADR-0005 §2.8.1) ---
 RELIEF_RPM, RELIEF_HOLD_S = 30, 3       # arms: cadence below 30 rpm for 3 s on a grade at or above the arming grade
-RETURN_RPM, RETURN_HOLD_S = 50, 2       # ends: cadence at least 50 rpm for 2 s (or the grade falls below arming)
-LOWEST_GEAR = 34 / 28                   # equipment default: compact 34 chainring, 28 cog (ratio 1.2143)
+RETURN_RPM, RETURN_HOLD_S = 50, 2       # ends: cadence at least 50 rpm for 2 s, or the target eases below arming − HYST
+RELIEF_HYST_PCT = 1.0                   # %: the target must fall 1 point below the arming grade to end the relief
+LOWEST_GEAR = 39 / 25                   # default 39 × 25 (ratio 1.56): largest lowest gear of Shimano 105 R7000 (§2.8.1)
 WHEEL_CIRC_M = math.pi * (0.622 + 2 * 0.025)   # 700×25c: ISO 25-622, bead seat 622 mm + 2 × 25 mm tyre = 2.111 m
 GRADE_ARM_MIN = 2.0                     # %: the arming grade is never below this, so never on a flat or a descent
 
@@ -194,7 +196,8 @@ def arming_grade(ftp_w, p: Params, cadence_rpm=RELIEF_RPM, gear=LOWEST_GEAR, cir
 def relief_trace(samples, arm_grade):
     """§2.8.1 relief state over 1 s samples [(cadence_rpm, target_grade_pct)] → [released: bool].
     Arms after RELIEF_HOLD_S below RELIEF_RPM with the target at or above the arming grade; ends after
-    RETURN_HOLD_S at or above RETURN_RPM, or at once when the target falls below the arming grade."""
+    RETURN_HOLD_S at or above RETURN_RPM, or at once when the target eases below the arming grade minus
+    RELIEF_HYST_PCT (the hysteresis keeps a target hovering at the arming grade from toggling it)."""
     out, released, low, high = [], False, 0, 0
     for cad, grade in samples:
         armed = grade >= arm_grade
@@ -204,20 +207,26 @@ def relief_trace(samples, arm_grade):
                 released, high = True, 0
         else:
             high = high + 1 if cad >= RETURN_RPM else 0
-            if high >= RETURN_HOLD_S or not armed:
+            if high >= RETURN_HOLD_S or grade < arm_grade - RELIEF_HYST_PCT:
                 released, low = False, 0
         out.append(released)
     return out
 
 
 def check_relief():
-    """Relief never arms off a climb, arms on a stall, and ends when the climb ends even at cadence 0."""
+    """Relief never arms off a climb, arms on a stall, does not chatter on a target hovering at the arming grade,
+    and ends when the target eases below the arming grade minus the hysteresis, even at cadence 0."""
     p = Params()
     for ftp in (100, 150, 200, 280, 400):
         g = arming_grade(ftp, p)
         assert g >= GRADE_ARM_MIN > 0, ("arming grade", ftp, g)
         # at the arming grade, holding the relief cadence needs the FTP (or the floor applies)
         assert g == GRADE_ARM_MIN or abs(power_needed(relief_speed(), g, p) - ftp) < 0.01, ("derivation", ftp, g)
+    # the floor: a tiny FTP would arm at a fraction of a percent; GRADE_ARM_MIN holds it at 2 %
+    v = relief_speed()
+    assert power_needed(v, GRADE_ARM_MIN, p) > 10, "the floor case needs a rider below the 2 % power"
+    assert arming_grade(10, p) == GRADE_ARM_MIN, ("floor", arming_grade(10, p))
+    assert not any(relief_trace([(0, GRADE_ARM_MIN - 0.1)] * 60, arming_grade(10, p))), "floor: released below 2 %"
     g = arming_grade(200, p)
     # coasting at cadence 0 on a descent and on the flat, for a minute: never released
     for grade in (-15.0, -6.0, -0.5, 0.0, 1.9):
@@ -228,6 +237,22 @@ def check_relief():
     # released at the top of a climb, then the road tips into a descent at cadence 0: released ends at once
     tr = relief_trace([(10, g + 2)] * 5 + [(0, -6.0)] * 5, g)
     assert tr[4] and not any(tr[5:]), tr
+    # a stalled rider on a target hovering ±0.5 % around the arming grade (4 s above, 4 s below, for 80 s):
+    # released once and it stays released; without the hysteresis the same trace toggles every few seconds
+    hover = [(10, g + (0.5 if (i // 4) % 2 == 0 else -0.5)) for i in range(80)]
+    tr = relief_trace(hover, g)
+    switches = sum(1 for a, b in zip(tr, tr[1:]) if a != b)
+    assert switches == 1 and tr[-1], ("chatter", switches)
+    global RELIEF_HYST_PCT
+    saved, RELIEF_HYST_PCT = RELIEF_HYST_PCT, 0.0
+    try:
+        tr0 = relief_trace(hover, g)
+    finally:
+        RELIEF_HYST_PCT = saved
+    assert sum(1 for a, b in zip(tr0, tr0[1:]) if a != b) >= 10, "the hover trace no longer exercises chatter"
+    # inside the hysteresis band it holds; one point below the arming grade it ends
+    tr = relief_trace([(10, g + 1)] * 4 + [(10, g - RELIEF_HYST_PCT + 0.01)] * 3 + [(10, g - RELIEF_HYST_PCT - 0.01)], g)
+    assert tr[3] and all(tr[4:7]) and not tr[7], tr
     # spinning back up ends it after RETURN_HOLD_S
     tr = relief_trace([(10, g + 2)] * 4 + [(60, g + 2)] * 3, g)
     assert tr[3] and tr[4] and not tr[5], tr
@@ -312,7 +337,7 @@ def check_constants(adr_path):
     model = {"g": G, "rho": RHO, "M_rot": M_ROT, "eta_hub": ETA_HUB, "CdA": CDA, "Crr_default": CRR_DEFAULT, "drafting": DRAFTING,
              "H": H, "V_MIN": V_MIN, "V_STOP": V_STOP, "Crr_max": CRR_MAX,
              "RELIEF_RPM": RELIEF_RPM, "RELIEF_HOLD_S": RELIEF_HOLD_S, "RETURN_RPM": RETURN_RPM,
-             "RETURN_HOLD_S": RETURN_HOLD_S, "LOWEST_GEAR": round(LOWEST_GEAR, 4),
+             "RETURN_HOLD_S": RETURN_HOLD_S, "RELIEF_HYST_PCT": RELIEF_HYST_PCT, "LOWEST_GEAR": round(LOWEST_GEAR, 4),
              "WHEEL_CIRC_M": round(WHEEL_CIRC_M, 3), "GRADE_ARM_MIN": GRADE_ARM_MIN}
     for sym, val in model.items():
         assert abs(row(sym) - val) < 1e-9, ("ADR != model", sym, row(sym), val)
@@ -361,7 +386,7 @@ def worked_examples():
     # 6. low-cadence relief: the arming grade per FTP (§2.8.1)
     v = relief_speed()
     arms = ", ".join(f"FTP {f} W: {arming_grade(f, p):.1f} %" for f in (150, 200, 280))
-    lines.append(f"6. relief arming grade, {RELIEF_RPM} rpm in 34x28 on 700x25c = {kmh(v):.1f} km/h: {arms} "
+    lines.append(f"6. relief arming grade, {RELIEF_RPM} rpm in 39x25 on 700x25c = {kmh(v):.1f} km/h: {arms} "
                  f"(at 10 % that speed needs {power_needed(v, 10.0, p):.0f} W, at 20 % {power_needed(v, 20.0, p):.0f} W)")
     return lines
 
@@ -382,8 +407,9 @@ def main(argv):
     check_invariants()
     print("invariants: v >= 0, position never decreases, no rolling back, resume from rest, ok")
     check_relief()
-    print(f"relief: arming grade >= {GRADE_ARM_MIN} % for every FTP; never released coasting on a descent or "
-          "the flat; arms on a stall; ends when the climb ends, also at cadence 0, ok")
+    print(f"relief: arming grade >= {GRADE_ARM_MIN} % for every FTP (floor at 10 W); never released coasting on a "
+          f"descent or the flat; arms on a stall; no chatter at the arming grade; ends {RELIEF_HYST_PCT:.0f} point "
+          "below it, also at cadence 0, ok")
     print(f"worked examples (rider + bike {RIDER_KG + BIKE_KG:.0f} kg, CdA {CDA} m², Crr {CRR_DEFAULT}, "
           f"rho {RHO} kg/m³, hub power, still air):")
     for line in worked_examples():
