@@ -10,6 +10,8 @@ workspace = true
 
 [dependencies]
 libm = "0.2.16"
+# GPX import (ADR-0005 §2.2.1): a streaming reader that expands no entity; already in the lock via plist.
+quick-xml = { version = "0.42", default-features = false }
 serde.workspace = true
 specta = { workspace = true, optional = true }
 
