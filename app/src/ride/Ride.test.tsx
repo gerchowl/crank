@@ -261,10 +261,8 @@ describe("Ride", () => {
       expect(screen.getByTestId("state").textContent).toBe("Riding"),
     );
     expect(rig.count("ride_pause")).toBe(0);
-    expect(
-      (screen.getByRole("button", { name: "Start" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
+    // Once the ride runs the key row has no Start (DESIGN §18.3), so there is nothing to start twice.
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
   });
 
   test("a refused Start can be tried again", async () => {
@@ -920,7 +918,9 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
     await publish(rig, { trainerLost: true, blockIdx: 1 });
     const banner = screen.getByTestId("loss-trainer");
     expect(banner.textContent).toContain("NEO lost");
-    expect(banner.textContent).toContain("paused at");
+    // The frozen countdown's caption says where the block paused (DESIGN §5.2); the banner keeps the rider's choice.
+    expect(screen.getByTestId("caption").textContent).toMatch(/^paused at /);
+    expect(banner.textContent).toContain("keep pedalling or stop");
     expect(banner.textContent).toContain("reconnecting");
     expect(banner.textContent).not.toContain("attempt");
     expect(slot("power")?.textContent).toBe("—");
@@ -1132,13 +1132,32 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
     expect(text("loss-trainer")).not.toContain("attempt");
   });
 
+  test("the key row says nothing of the trainer's mode or following while it is lost: `commanded` is stale then", async () => {
+    const rig = await open({ phase: "active" });
+    const keyRow = () =>
+      document.querySelector(".ride-status")?.textContent ?? "";
+    await publish(rig, { blockIdx: 1 });
+    expect(keyRow()).toContain("trainer in ERG at 250 W, following");
+    // No samples on a ready link: the engine still reports its last mode (`Erg { 0 }`), which nothing follows.
+    await publish(rig, { trainerSilent: true, sessionS: 100, lostSinceS: 100 });
+    expect(rig.base.truth.status.commanded).toEqual({ kind: "erg", watts: 0 });
+    expect(keyRow()).not.toMatch(/trainer in|following/);
+    await publish(rig, {
+      trainerSilent: false,
+      sessionS: 101,
+      gapS: 1,
+      reconnectedAtS: 101,
+    });
+    expect(keyRow()).toContain("following");
+  });
+
   test("lost for 29 s: no what-to-try row; at 30 s on the session clock it adds the text and End…", async () => {
     const rig = await lostRide();
     await publish(rig, { sessionS: 129 });
     expect(screen.queryByTestId("loss-help")).toBeNull();
     expect(screen.queryByRole("button", { name: "End…" })).toBeNull();
     await publish(rig, { sessionS: 130 });
-    expect(text("loss-help")).toContain("power-cycle NEO · close Zwift");
+    expect(text("loss-help")).toContain("power-cycle · close Zwift");
     expect(screen.getByRole("button", { name: "End…" })).toBeTruthy();
   });
 
