@@ -35,9 +35,12 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 ### Fixed
 
 - `hil_fec analyse` (Part B) reads a capture once into one validated timeline: stamps must not go back in file
-  order (else no result), no record twice, ties count in file order, every check's windows are timeline positions,
-  and every check holds its events (shape) and control writes (program) to its procedure's grammar, failing closed
-  on a missing part; the live silence guard and the analyser share one threshold. The live writer stamps each line under the capture lock (`Capture::record_now`, `record_aux_now`), so
+  order (else no result), no record twice, no malformed line, ties count in file order; checks read typed events
+  only (samples, writes, requests, command statuses, measurements, stamps), every kind of record they read is in
+  their grammar's vocabulary, and each holds its records (shape) and control writes (program) to its procedure,
+  failing closed on a missing part (check 9 too, beside a check 6 that fails closed); a repeated page-25/16 payload,
+  `# cps` measurement within its second or advertisement within 20 ms counts once; the live silence guard and the
+  analyser share one threshold. The live writer stamps each line under the capture lock (`Capture::record_now`, `record_aux_now`), so
   file order is time order. Forged captures that gave full rows before (B1, B2, B3, N1) give none
   ([#516](https://github.com/gerchowl/crank/issues/516))
 

@@ -3816,6 +3816,35 @@ mod tests {
         );
     }
 
+    /// The vocabulary's order for records no row reads directly: a page-71 status before the
+    /// run's first request (the NEO sends one only in answer to a request, docs/hil/captures) and
+    /// a tx frame of a page the procedure never writes (page 72) are each contradictory.
+    #[tokio::test(start_paused = true)]
+    async fn a_status_before_any_request_or_an_unknown_write_is_no_result() {
+        let text = capture_of(&valid_captures().await, "check7");
+        assert!(full(&row("check7", &text)));
+        let lines: Vec<&str> = text.lines().collect();
+        let first = lines
+            .iter()
+            .position(|l| stamp_of_line(l).is_some())
+            .expect("a record");
+        let at = stamp_of_line(lines[first]).expect("stamped");
+        let mut early = lines.clone();
+        let status = format!("{at} rx A4 09 4F 05 47 30 01 00 FF FF FF 00 00");
+        early.insert(first, &status);
+        let unknown = inserted(&text, "30000000 tx A4 09 4F 05 48 00 00 00 00 00 00 00 00");
+        for forged in [early.join("\n") + "\n", unknown] {
+            let v = row("check7", &forged);
+            assert!(!full(&v), "{}", v["line"]);
+            assert!(
+                v["invalid"]
+                    .as_str()
+                    .is_some_and(|i| i.starts_with("contradictory: the records do not follow")),
+                "{v}"
+            );
+        }
+    }
+
     /// #516 round 4 N1: a check 6 that fails closed (contradictory, or not the procedure's steps)
     /// leaves check 9 no result, not a result "only if check 6 t90 ≤ 2.3 s (not measured)".
     #[tokio::test(start_paused = true)]
@@ -3832,7 +3861,13 @@ mod tests {
         gone.remove(i);
         let mut twice = lines.clone();
         twice.insert(i, lines[i]);
-        for forged in [gone, twice] {
+        // Its steps intact but a request written mid-run: only check 6's grammar refuses it.
+        let request = inserted(
+            &check6,
+            "60000000 tx A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+        );
+        let request: Vec<&str> = request.lines().collect();
+        for forged in [gone, twice, request] {
             let lag = PowerLag::of_check6(Some(&(forged.join("\n") + "\n")));
             assert!(matches!(lag, PowerLag::Contradictory(_)), "{lag:?}");
             let v = analyse("check9", &nine, outcome_in(&nine).as_deref(), &lag).expect("stem");
