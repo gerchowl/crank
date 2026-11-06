@@ -303,6 +303,19 @@ active, "starts with 8:00 warm-up". **Start** is enabled when the trainer is con
 saddle, so it uses the ride tiers (T3+ title, T3 rows, ~~72 px buttons~~ superseded by §18.4: 32 px controls) and every button shows its bound key or
 remote button; the usual choice is primary and focused, "Start without HR" never is. A free ride says so.
 
+**In direction A (#526)** the sheet is the ride screen before Start (`app/src/ride/ReadySheet.tsx`): the ride anatomy
+of §18.2 stays, so no region moves when the ride starts (§18.7 rule 10). The status bar names the workout and its
+duration, the metric column shows the first block's countdown and the next block, the block timeline shows the plan,
+and the key row holds Start `⏎` (primary, focused once it can be pressed) and End `Esc` (unloads the unstarted ride,
+after the End dialog). The traces column, empty before the first sample, holds the sheet: its state as one banner in the
+band (§6.1: "Ready to ride", "Loading the ride…", "Connecting the NEO…", "NEO not found" with "close apps using the
+NEO", "HR not found" with "this ride runs without HR", "Could not start"), then at T3 one fixed row per device (word and
+glyph ✓ ↻ ⚠, a hint line) — the connect-progress region of ADR-0002 §5.1.4, in its final geometry — the mode and how
+the ride starts ("ERG · starts with 3:00 warm-up", "Free ride · no targets"), and the row of a refused command's reason.
+Start is disabled while the trainer link is connecting or lost. Still to come: the sheet over the load in flight and
+over a failed load with per-device `LoadProgress`, Retry and "Retry now" before "Start without HR" (#471, on #470's
+contract); the health cap row (#244); the sheet over Today (#438 step 8).
+
 ### 5.5 Review — *"Did it work, and was the coach right?"*
 Order follows the rider's questions:
 1. **Intent verdict** (headline): one line per part of the workout, from the core's per-interval stats (#12):
@@ -1968,7 +1981,7 @@ Numbers are never tweened: a value jumps to its new reading. The traces advance 
 | Target overlaps the power value | target in the power row's sub-line (§18.3); rule 6 |
 | 58–65 px controls | 32 px controls (§18.4); rules 2, 9 |
 | Today is a placeholder | #438 step 8 (Today), on these tokens |
-| No Ready sheet | #438 step 4 (with #435), §5.4 at 32 px with keys |
+| No Ready sheet | #438 step 4 (with #435), §5.4 at 32 px with keys; built in #526 (§5.4 "In direction A"), progress #471 |
 | Tokens are colour-only | space, radius, type and control-height tokens (§18.1, #453); rule 2 |
 
 ### 18.7 Design rules, enforced

@@ -9,7 +9,7 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import { AppRoot } from "../../src/App";
 import "../../src/theme.css";
 import "../../src/shell.css";
-import type { MetricId, PairedDevice } from "../../src/bindings";
+import type { LinkStatus, MetricId, PairedDevice } from "../../src/bindings";
 import { navigate } from "../../src/router";
 import {
   BLOCKS,
@@ -80,6 +80,16 @@ const HISTORY = (until: number) =>
     };
   });
 
+/** The devices of a loaded ride: each link as the core reports it (`null`: paired, no link), and the load's answer. */
+interface Devices {
+  trainer?: LinkStatus | null;
+  hr?: LinkStatus | null;
+  /** `RideLoaded.hrLinked`; defaults to a ready strap link. */
+  hrLinked?: boolean;
+  /** A stream command whose answer never comes (the scenario's `held`): `stream_snapshot` keeps the status unknown. */
+  hold?: string;
+}
+
 /** A loaded ride in `over`'s state, 3:20 into its 10-minute workout (rideBackend `BLOCKS`), or a free ride. */
 const ride =
   (
@@ -89,14 +99,23 @@ const ride =
     workoutId: string | null = "w1",
     /** The engine wedges once the view has subscribed (#351): its next frame's ack is refused. */
     wedge = false,
+    devices: Devices = {},
   ) =>
   () => {
     const rig = installRide({ blocks: BLOCKS, ...over });
+    const { trainer: t = "ready", hr = "ready" } = devices;
     rig.base.truth.infos = [
-      { role: "trainer", device: neo, link: "ready" },
-      { role: "heart_rate", device: hrm, link: "ready" },
+      { role: "trainer", device: neo, link: t },
+      { role: "heart_rate", device: hrm, link: hr },
     ];
     rig.publish(workoutS);
+    // Before Start the core reports the loaded ride's links in the snapshot as `device_links` does.
+    if (over.phase === "loaded")
+      rig.base.truth.links = [
+        ...(t === null ? [] : [{ device: "trainer" as const, state: t }]),
+        ...(hr === null ? [] : [{ device: "hr" as const, state: hr }]),
+      ];
+    if (devices.hold) rig.base.hold(devices.hold);
     // The ride view's subscriptions get the scenario's values as the core's latest sample, read by the snapshot.
     const inner = internals().invoke;
     let subscribed = 0;
@@ -127,7 +146,7 @@ const ride =
     const session = beginRide({
       rideId: rig.world.rideId,
       workoutId,
-      hrLinked: true,
+      hrLinked: devices.hrLinked ?? hr === "ready",
     });
     for (const h of HISTORY(workoutS))
       for (const of of ["power", "hr", "cadence"] as const)
@@ -150,7 +169,36 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "devices-denied": devices({
     adapter: { code: "permission_denied", message: "Bluetooth denied" },
   }),
+  // The Ready sheet (DESIGN §5.4, #526): the loaded, unstarted ride in each of its states.
   ready: ride({ phase: "loaded" }, {}, 0),
+  // The stream has not answered: no status yet (its snapshot is held), so nothing is the core's.
+  "ready-loading": ride({ phase: "loaded" }, {}, 0, "w1", false, {
+    hold: "stream_snapshot",
+  }),
+  // The trainer link is coming back up; the core refuses Start until it is ready (rideBackend `trainer`).
+  "ready-connecting": ride(
+    { phase: "loaded", trainer: "connecting" },
+    {},
+    0,
+    "w1",
+    false,
+    { trainer: "connecting" },
+  ),
+  "ready-trainer-missing": ride(
+    { phase: "loaded", trainer: "connecting" },
+    {},
+    0,
+    "w1",
+    false,
+    { trainer: "lost" },
+  ),
+  // The strap did not link at the load: the ride runs without heart rate.
+  "ready-strap-missing": ride({ phase: "loaded" }, {}, 0, "w1", false, {
+    hr: null,
+    hrLinked: false,
+  }),
+  // Start was pressed and the core refused it: the record cannot be opened.
+  "ready-error": ride({ phase: "loaded", recordFails: true }, {}, 0),
   // Back 6 s after a 4 s loss, ramping to the plan from 120 W, two of its five steps taken
   // (erg/policy.rs `ErgPolicy::desired`, the soft start).
   "ride-soft-start": ride({
