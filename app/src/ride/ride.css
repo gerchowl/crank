@@ -135,7 +135,7 @@
    ellipsis rather than being cut, and the End… action beside it never shrinks. */
 .banner-text {
   min-width: 0;
-  overflow: hidden;
+  overflow-x: clip;
   text-overflow: ellipsis;
 }
 .banner-line button {
@@ -220,7 +220,6 @@
   grid-template-rows:
     minmax(0, 184fr) minmax(0, 102fr) minmax(0, 88fr)
     minmax(0, 88fr);
-  overflow: hidden;
 }
 .readout {
   display: grid;
@@ -407,19 +406,18 @@
   border-radius: var(--radius-s);
   color: var(--ink-2);
 }
+/* Two lines in the 44 px row: the state with the trainer, and a refusal; the design harness fails on cut text. */
 .ride-status {
   flex: 1;
   min-width: 0;
+  max-height: 100%;
   overflow: hidden;
   text-align: center;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  line-height: 1.33;
   color: var(--ink-2);
 }
 .ride-refusal {
   margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--status-critical);
 }
 

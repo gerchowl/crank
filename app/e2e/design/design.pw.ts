@@ -166,29 +166,41 @@ const regionBoxes = (page: Page) =>
       }),
     ),
   );
-// No banner text is cut (§6.1: every line fits at 1024 and 1440) and every action in the band (End…) is wholly inside it
-// and the window. The audit's `layout.clipped` sees an overflowing box; this also names the line and the action.
-const bannerFit = (page: Page) =>
+// No text on the ride screen is cut (§6.1, rule 6): no box that hides or ellipsizes its overflow holds more than it
+// shows, in any region (the banner band, the key row, the title, the next line …), and every control is wholly inside
+// the window; an action in the banner band (End…) is wholly inside the band. The audit's `layout.clipped` sees only a
+// box whose parent clips too; this names the text and the control.
+const rideFit = (page: Page) =>
   page.evaluate(() => {
+    const ride = document.querySelector(".ride");
     const band = document.querySelector("[data-region='banner']");
-    if (!band) return ["no banner band"];
-    const b = band.getBoundingClientRect();
+    if (!ride || !band) return ["no ride screen"];
     const bad: string[] = [];
-    for (const t of band.querySelectorAll<HTMLElement>(
-      ".banner-text, .banner-line",
-    ))
-      if (t.scrollWidth > t.clientWidth + 1)
-        bad.push(`cut: "${t.textContent}" ${t.scrollWidth} > ${t.clientWidth}`);
-    for (const a of band.querySelectorAll("button")) {
-      const r = a.getBoundingClientRect();
+    for (const e of ride.querySelectorAll<HTMLElement>("*")) {
+      if (e.closest("svg, .sr-only")) continue;
+      const cs = getComputedStyle(e);
+      // Each axis that hides its overflow must hold its content.
       if (
-        r.left < b.left ||
-        r.right > b.right ||
-        r.top < b.top ||
-        r.bottom > b.bottom ||
-        r.right > innerWidth
+        (cs.overflowX !== "visible" && e.scrollWidth > e.clientWidth + 1) ||
+        (cs.overflowY !== "visible" && e.scrollHeight > e.clientHeight + 1)
       )
-        bad.push(`action outside the band: "${a.textContent}"`);
+        bad.push(
+          `cut: ${e.className || e.tagName} "${(e.textContent ?? "").slice(0, 60)}" ${e.scrollWidth}x${e.scrollHeight} > ${e.clientWidth}x${e.clientHeight}`,
+        );
+    }
+    const b = band.getBoundingClientRect();
+    for (const a of ride.querySelectorAll("button")) {
+      const r = a.getBoundingClientRect();
+      const box = band.contains(a)
+        ? b
+        : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+      if (
+        r.left < box.left ||
+        r.right > box.right ||
+        r.top < box.top ||
+        r.bottom > box.bottom
+      )
+        bad.push(`control outside its box: "${a.textContent}"`);
     }
     return bad;
   });
@@ -206,9 +218,7 @@ test("the ride's region boxes are the same in every ride fixture", async ({
     );
     first ??= boxes;
     expect(boxes, `${name} against ${RIDE_SCENARIOS[0]}`).toEqual(first);
-    expect(await bannerFit(page), `${name}: banner text and actions`).toEqual(
-      [],
-    );
+    expect(await rideFit(page), `${name}: cut text or controls`).toEqual([]);
   }
 });
 

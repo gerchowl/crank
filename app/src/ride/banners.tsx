@@ -1,8 +1,12 @@
 // The state banners of the ride screen (DESIGN §5.2 States, §6.1, §6.5, §18.2, §18.3): the band at the top of the traces
-// column holds three T3+ lines. Every state that holds gets at least its bold line, in BANNER_ORDER; the lines left go to
-// the most urgent first, each banner's lines being listed most important first (the action before the detail). Lines are
-// at most 26 characters (§6.1, re-derived for A in #467), so none is clipped at 1024. Every word comes from the status,
-// the links and the stream (`lossView`), never from a timer of this screen.
+// column holds three T3+ lines of at most 26 characters (§6.1, re-derived for A in #467). Every word comes from the
+// status, the links and the stream (`lossView`), never from a timer of this screen.
+//
+// The rule (#537 review): every active state's action instruction is always visible; status and context text (the
+// attempt, "your ride is saved", the elapsed time) is dropped first when the band is full. Each banner therefore names
+// its title, its action lines and its status lines, and `layout` fits them: titles with their actions first, a banner
+// whose title and first action do not both fit folds them into one compact line (`compact`), and only the room left
+// takes the titles of action-free states and status lines, most urgent first.
 import type { ReactNode } from "react";
 import type { StreamCommanded } from "../bindings";
 
@@ -15,7 +19,7 @@ export const LINE_MAX = 26;
  * Most urgent first (§5.2, §6.5). The engine not answering comes first: every other value on screen may be stale.
  * A lost trainer pauses the ride and needs the rider's action; the reconnect rows follow it. ERG released asks the rider
  * to spin up. The rider's own pause, a lost strap (the ride goes on) and a free ride are facts the rider chose or can
- * ride through, and each is also on screen elsewhere (the key row's state line, the HR readout, the title).
+ * ride through, and each is also on screen elsewhere (the key row's state line and Resume, the HR readout, the title).
  */
 export const BANNER_ORDER = [
   "engine-unresponsive",
@@ -29,23 +33,28 @@ export const BANNER_ORDER = [
 ] as const;
 export type BannerId = (typeof BANNER_ORDER)[number];
 
-/** One line: its text, an optional number in the number face, and a test hook. */
+/** One line: its text, an optional duration in the number face, a test hook, and whether End… sits on it. */
 export interface Line {
   text: string;
-  /** A duration after the text, `data-testid="lost-for"`. */
+  /** A duration after the text, `data-testid="lost-for"` (context: the compact line drops it). */
   time?: string;
   testid?: string;
+  /** The End… action is on this line (§5.2: a trainer lost ≥ 30 s). */
+  end?: boolean;
 }
 
 export interface Banner {
   id: BannerId;
-  /** Most important first; the first is the bold line. */
-  lines: Line[];
+  title: Line;
+  /** What the rider is to do: shown whenever the state holds. */
+  actions: Line[];
+  /** Context, shown only in the room the actions leave. */
+  status: Line[];
+  /** The title and the first action in one line, for a full band. */
+  compact?: string;
   /** Read between the lines (screen readers, the element's text), not drawn. */
   sep?: string;
   alert?: boolean;
-  /** The line that carries the End… action (§5.2: a trainer lost ≥ 30 s); the banner always gets that many lines. */
-  end?: number;
 }
 
 /** The trainer as the engine commands it (`commanded`, #324), for the pause banner and the key row. */
@@ -98,11 +107,10 @@ export function banners(i: BannerInput): Banner[] {
     out.push({
       id: "engine-unresponsive",
       alert: true,
-      lines: [
-        "Engine not answering",
-        "End still ends the ride",
-        "the values are not live",
-      ].map(text),
+      title: text("Engine not answering"),
+      actions: [text("End still ends the ride")],
+      status: [text("the values are not live")],
+      compact: "Engine silent: End works",
     });
   if (loss.trainer) {
     const what = loss.reconnecting
@@ -112,137 +120,187 @@ export function banners(i: BannerInput): Banner[] {
       : loss.hr
         ? "No NEO data, HR lost"
         : "No data from the NEO";
-    const state = loss.reconnecting
-      ? loss.attempt === null
-        ? "reconnecting"
-        : `reconnecting (attempt ${loss.attempt})`
-      : "your ride is saved";
+    const short = loss.hr
+      ? "NEO+HR lost"
+      : loss.reconnecting
+        ? "NEO lost"
+        : "NEO silent";
     out.push({
       id: "loss-trainer",
-      end: loss.long ? 1 : undefined,
-      lines: [
-        {
-          text: what,
-          time: loss.lostForS === null ? undefined : clock(loss.lostForS),
-        },
-        // ≥ 30 s: what to try, and End… on the bold line, replace the plain choice (§5.2 "Trainer lost ≥ 30 s").
-        loss.long
-          ? { text: "power-cycle · close Zwift", testid: "loss-help" }
-          : text("keep pedalling or stop"),
-        text(state),
+      title: {
+        text: what,
+        time: loss.lostForS === null ? undefined : clock(loss.lostForS),
+      },
+      // ≥ 30 s adds what to try, with End… (§5.2 "Trainer lost ≥ 30 s"); the plain choice stays.
+      actions: [
+        text("keep pedalling or stop"),
+        ...(loss.long
+          ? [
+              {
+                text: "power-cycle · close Zwift",
+                testid: "loss-help",
+                end: true,
+              },
+            ]
+          : []),
       ],
+      status: [
+        text(
+          loss.reconnecting
+            ? loss.attempt === null
+              ? "reconnecting"
+              : `reconnecting (attempt ${loss.attempt})`
+            : "your ride is saved",
+        ),
+      ],
+      compact: `${short}: pedal or stop`,
     });
   }
   if (loss.reEntry)
     out.push({
       id: "re-entry",
-      lines: [text(`↻ Back after ${clock(loss.gapS)}`)],
+      title: text(`↻ Back after ${clock(loss.gapS)}`),
+      actions: [],
+      status: [],
     });
   if (loss.softStartW !== null)
     out.push({
       id: "soft-start",
-      lines: [
-        text("Reconnected"),
-        text(`easing back in to ${Math.round(loss.softStartW)} W`),
-      ],
+      title: text("Reconnected"),
+      actions: [],
+      status: [text(`easing back in to ${Math.round(loss.softStartW)} W`)],
     });
   if (loss.erg)
     out.push({
       id: "loss-erg",
       sep: " — ",
-      lines: [
-        "ERG released",
-        "spin up to 60 rpm",
-        "the block timer runs on",
-      ].map(text),
+      title: text("ERG released"),
+      actions: [text("spin up to 60 rpm")],
+      status: [text("the block timer runs on")],
+      compact: "ERG off: spin up to 60 rpm",
     });
   if (i.userPaused) {
+    // The rider's own pause: its action is the key row's Resume, so these lines are context.
     const trainer = trainerNow(i.commanded);
     out.push({
       id: "paused",
-      lines: [
-        "Paused",
-        "Resume continues the plan",
-        ...(trainer ? [trainer] : []),
-      ].map(text),
+      title: text("Paused"),
+      actions: [],
+      status: [
+        text("Resume continues the plan"),
+        ...(trainer ? [text(trainer)] : []),
+      ],
     });
   }
   // A lost trainer's banner already names the strap ("NEO and HR lost").
   if (loss.hr && !loss.trainer)
     out.push({
       id: "loss-hr",
-      lines: ["HR lost", "the ride goes on", "heart rate shows —"].map(text),
+      title: text("HR lost"),
+      actions: [],
+      status: [text("the ride goes on"), text("heart rate shows —")],
     });
   if (i.free)
     out.push({
       id: "free-ride",
-      lines: ["Free ride", "no targets, no plan"].map(text),
+      title: text("Free ride"),
+      actions: [],
+      status: [text("no targets, no plan")],
     });
   return out;
 }
 
-/**
- * Lines per banner within the band: in order, each banner gets its bold line (and the line with End…, so the action is
- * never dropped) while room is left, then the lines left go to them in order. A banner that gets no room is not shown;
- * the order puts last the states that are also on screen elsewhere.
- */
-export function allocate(list: readonly Banner[], room = BAND_LINES): number[] {
-  let left = room;
-  const n = list.map((b) => {
-    const need = (b.end ?? 0) + 1;
-    if (need > left) return 0;
-    left -= need;
-    return need;
-  });
-  list.forEach((b, k) => {
-    if (n[k] === 0) return;
-    const more = Math.min(left, b.lines.length - n[k]!);
-    n[k]! += more;
-    left -= more;
-  });
-  return n;
+/** A banner as the band shows it: its lines, the first drawn bold. */
+export interface Shown {
+  banner: Banner;
+  lines: Line[];
 }
 
-/** The band: each banner with its allotted lines. */
+/**
+ * Fits the banners into `room` lines. Every banner with an action gets its title and all its actions; while they need
+ * more than the room, the least urgent banner that has a compact line folds its title into its first action. The room
+ * left goes, most urgent first, to the titles of action-free banners, then to status lines. Throws if the actions alone
+ * do not fit: the copy must then change (banners.test.ts walks every reachable combination of states).
+ */
+export function layout(list: readonly Banner[], room = BAND_LINES): Shown[] {
+  const folded = new Set<Banner>();
+  const need = (b: Banner) =>
+    b.actions.length === 0
+      ? 0
+      : folded.has(b)
+        ? b.actions.length
+        : b.actions.length + 1;
+  const total = () => list.reduce((n, b) => n + need(b), 0);
+  for (let k = list.length - 1; k >= 0 && total() > room; k--) {
+    const b = list[k]!;
+    if (b.compact !== undefined && b.actions.length > 0) folded.add(b);
+  }
+  if (total() > room)
+    throw new Error(
+      `banner actions need ${total()} lines: ${list.map((b) => b.id).join(", ")}`,
+    );
+  let left = room - total();
+  const shown = list.map((b) => {
+    if (need(b) > 0) return true;
+    if (left === 0) return false;
+    left -= 1;
+    return true;
+  });
+  const extra = list.map((b, k) => {
+    if (!shown[k]) return 0;
+    const more = Math.min(left, b.status.length);
+    left -= more;
+    return more;
+  });
+  return list.flatMap((b, k) => {
+    if (!shown[k]) return [];
+    const head: Line[] = folded.has(b)
+      ? [
+          { text: b.compact ?? b.title.text, end: b.actions[0]?.end },
+          ...b.actions.slice(1),
+        ]
+      : [b.title, ...b.actions];
+    return [{ banner: b, lines: [...head, ...b.status.slice(0, extra[k])] }];
+  });
+}
+
+/** The band: each shown banner with its lines. */
 export function BannerBand({ list, end }: { list: Banner[]; end: ReactNode }) {
-  const n = allocate(list);
-  return list.map((b, k) =>
-    n[k] === 0 ? null : (
-      <div
-        key={b.id}
-        role={b.alert ? "alert" : "status"}
-        className="banner"
-        data-testid={b.id}
-        data-state={b.id}
-      >
-        {b.lines.slice(0, n[k]).map((l, j) => (
-          <p
-            key={j}
-            className="banner-line"
-            data-tier="t3plus"
-            data-testid={l.testid}
-            data-state-label={j === 0 ? "" : undefined}
-          >
-            {j > 0 && <span className="sr-only">{b.sep ?? " · "}</span>}
-            {j === 0 ? (
-              <strong className="banner-text">
-                {l.text}
-                {l.time !== undefined && (
-                  <>
-                    {" "}
-                    <span className="num" data-testid="lost-for">
-                      {l.time}
-                    </span>
-                  </>
-                )}
-              </strong>
-            ) : (
-              <span className="banner-text">{l.text}</span>
-            )}
-            {j === b.end && end}
-          </p>
-        ))}
-      </div>
-    ),
-  );
+  return layout(list).map(({ banner: b, lines }) => (
+    <div
+      key={b.id}
+      role={b.alert ? "alert" : "status"}
+      className="banner"
+      data-testid={b.id}
+      data-state={b.id}
+    >
+      {lines.map((l, j) => (
+        <p
+          key={j}
+          className="banner-line"
+          data-tier="t3plus"
+          data-testid={l.testid}
+          data-state-label={j === 0 ? "" : undefined}
+        >
+          {j > 0 && <span className="sr-only">{b.sep ?? " · "}</span>}
+          {j === 0 ? (
+            <strong className="banner-text">
+              {l.text}
+              {l.time !== undefined && (
+                <>
+                  {" "}
+                  <span className="num" data-testid="lost-for">
+                    {l.time}
+                  </span>
+                </>
+              )}
+            </strong>
+          ) : (
+            <span className="banner-text">{l.text}</span>
+          )}
+          {l.end && end}
+        </p>
+      ))}
+    </div>
+  ));
 }
