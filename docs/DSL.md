@@ -192,3 +192,16 @@ Default-gate properties exercise arbitrary Unicode strings and the DSL alphabet,
 including both closed and unclosed deep repeats, asserting completion with
 success or a typed error. Each property runs 256 cases; DSL-alphabet bodies
 are bounded to 2,048 characters and generated nesting to 2,048 levels.
+
+## Grade profiles (routes)
+
+A route's grade profile is a sibling grammar, not an extension of this one (ADR-0005 §2.2.5, §3): it shares
+this lexer, labels, separators, comments, `N x(...)` repeats (without `[...]` options) and the error spans
+(UTF-16), but a segment is `DIST grade [surface]`, e.g. `"Col" 5km 6.5%, 3km ramp 6.5%..9% gravel`.
+Distances are in `km` only (0.001 km resolution); `500m` is refused because `m` is minutes here, and
+workout durations, step ends and power targets are refused naming the workout form. Grades are
+−25 % to +30 %, segments 0.01 to 100 km, 1 000 km and 32 nesting levels in all. The canonical printer
+writes one top-level item per line, lower-case keywords, km with at most three decimals and grades
+in their shortest exact form, so parse → print → parse is equal and printing is idempotent
+(`crank_domain::route::{parse_grade_profile, print_grade_profile, parse_route_dsl, print_route_dsl}`,
+property-tested in `crates/crank-domain/tests/route_dsl.rs`).

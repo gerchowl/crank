@@ -67,6 +67,8 @@ expect("crate dir prefix is a path, not a string prefix (so this is unclassified
        ["crates/crank-store-extra/src/lib.rs"], "all")
 expect("capture read by crank-ble tests", ["docs/hil/captures/check4.fecap"],
        ["crank-ble", "crank-core", "crank-desktop"])
+expect("model fixture read by crank-domain tests", ["docs/adr/models/fixtures/gpx-elevation-samples.csv"],
+       ["crank-ble", "crank-core", "crank-desktop", "crank-domain", "crank-store"])
 expect("two crates are unioned", ["crates/crank-fec/a.rs", "crates/crank-store/b.rs"],
        ["crank-ble", "crank-core", "crank-desktop", "crank-fec", "crank-store"])
 for f in ["Cargo.lock", "Cargo.toml", "flake.nix", "flake.lock", "rust-toolchain.toml", "clippy.toml",
