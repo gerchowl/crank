@@ -38,6 +38,47 @@ impl DeviceRole {
     }
 }
 
+/// What the rider is likely to do next, as the UI reports it (`links_intent`, ADR-0002
+/// §5.1.2). The core owns every timer and decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LinkIntent {
+    /// The window is visible and focused and shows a warm view (Today, Workouts, the Ready
+    /// sheet): sent when it appears or gains focus, and again on rider input, at most once
+    /// per 30 s. `ready` is the Ready sheet while no ride is loaded: it holds without input.
+    Likely {
+        /// The Ready sheet over a load in flight or failed.
+        ready: bool,
+    },
+    /// The rider pressed Retry on a link chip: attempt every device now, scan continuously
+    /// again and clear the `RiderRelease` latch.
+    Retry,
+    /// The window shows another view: the idle timer starts.
+    Left,
+    /// crank is no longer the frontmost app: the background grace starts.
+    Background,
+    /// Cool down now.
+    Release {
+        /// Why.
+        reason: ReleaseReason,
+    },
+}
+
+/// Why the keeper's links are released at once (ADR-0002 §5.1.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseReason {
+    /// The window is minimised or the app is hidden.
+    Hidden,
+    /// The Mac is about to sleep; it also discards a loaded ride that has not started.
+    Sleep,
+    /// Settings → Devices is open: pairing needs the devices free.
+    Devices,
+    /// "Release trainer": also latches the trainer until a load or Retry, and discards a
+    /// loaded ride that has not started. Refused during a started ride.
+    RiderRelease,
+}
+
 /// A peripheral seen by a scan.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]

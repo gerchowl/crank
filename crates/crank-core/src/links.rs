@@ -30,7 +30,8 @@ pub(crate) enum LinkDevice {
     Strap,
 }
 impl LinkDevice {
-    fn as_str(self) -> &'static str {
+    /// The log spelling: `trainer` or `strap`.
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Trainer => "trainer",
             Self::Strap => "strap",
@@ -68,10 +69,22 @@ pub(crate) struct Timeline {
     clock: Arc<dyn Clock>,
     start: MonoTime,
     state: Mutex<(&'static str, MonoTime, Vec<Step>)>,
+    /// Told each phase entered (the keeper's phases, §5.1.1).
+    watch: Option<Box<dyn Fn(&'static str) + Send + Sync>>,
 }
 impl Timeline {
     /// Attempt number `attempt` of `device`, starting now in `resolve`.
+    #[cfg(test)]
     pub(crate) fn new(device: LinkDevice, attempt: u32, clock: Arc<dyn Clock>) -> Arc<Self> {
+        Self::watched(device, attempt, clock, None)
+    }
+    /// As [`Timeline::new`], telling `watch` each phase entered.
+    pub(crate) fn watched(
+        device: LinkDevice,
+        attempt: u32,
+        clock: Arc<dyn Clock>,
+        watch: Option<Box<dyn Fn(&'static str) + Send + Sync>>,
+    ) -> Arc<Self> {
         let start = clock.now();
         Arc::new(Self {
             device,
@@ -79,6 +92,7 @@ impl Timeline {
             clock,
             start,
             state: Mutex::new(("resolve", start, Vec::new())),
+            watch,
         })
     }
     /// The phases left so far.
@@ -114,6 +128,10 @@ impl Timeline {
         state.0 = to;
         state.1 = self.clock.now();
         state.2.push(step);
+        drop(state);
+        if let Some(watch) = &self.watch {
+            watch(to);
+        }
     }
     fn sink(self: &Arc<Self>) -> PhaseSink {
         let timeline = self.clone();
@@ -176,6 +194,7 @@ mod tests {
                 gatt: s(2),
                 handshake: s(3),
                 never_answers: false,
+                not_advertising: false,
             },
             heart_latency: SimLatency {
                 never_answers: true,
