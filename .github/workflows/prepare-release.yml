@@ -1,13 +1,16 @@
-# Prepare a release (#428), adopted from devkit's prepare-release.yml: validate, cut release/X.Y.Z from dev,
-# bump every version source and freeze the changelog on it, dispatch CI there and open a draft PR into main.
-# The owner merges that PR; release.yml does the rest. No secrets: GITHUB_TOKEN only (RELEASING.md).
+# Prepare a release (#428, #485, ADR-0001 §9.6), adopted from devkit's prepare-release.yml: validate, cut
+# release/<version> from dev, bump every version source on it, dispatch CI there (Linux and macOS) and open a
+# draft PR. A release candidate X.Y.Z-rc.N goes into dev and keeps the changelog in `## Unreleased`; a final
+# X.Y.Z freezes the changelog and goes into main, and is refused (except as a dry run) until Developer ID
+# signing and notarization land (#47, #426). The owner merges the PR; release.yml does the rest.
+# No secrets: GITHUB_TOKEN only (RELEASING.md).
 name: Prepare Release
 
 on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
       version:
-        description: 'Semantic version to prepare (e.g. 0.1.0)'
+        description: 'Version to prepare: X.Y.Z-rc.N (a release candidate) or X.Y.Z (final, refused until #426)'
         required: true
         type: string
       dry-run:
@@ -43,9 +46,15 @@ jobs:
           fetch-depth: 0
 
       - name: Validate
+        id: validate
         run: |
           set -euo pipefail
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$VERSION' is not MAJOR.MINOR.PATCH"; exit 1; }
+          python3 -I scripts/release-version.py parse "$VERSION" | tee -a "$GITHUB_OUTPUT"
+          KIND=$(python3 -I scripts/release-version.py parse "$VERSION" | sed -n 's/^kind=//p')
+          if [ "$KIND" = final ] && [ "$DRY_RUN" != true ]; then
+            echo "::error::$VERSION is a final release: final releases need Developer ID signing and notarization (#47, #426). Prepare a release candidate (X.Y.Z-rc.N) instead"
+            exit 1
+          fi
           if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
             echo "::error::tag $VERSION already exists"; exit 1
           fi
@@ -58,23 +67,28 @@ jobs:
           # would freeze a changelog that omits them.
           BEHIND=$(git rev-list --count origin/main ^origin/dev)
           if [ "$BEHIND" != 0 ]; then
-            echo "::error::dev is behind main by $BEHIND commit(s). Merge the 'chore: sync main into dev' PR first"; exit 1
+            echo "::error::dev is behind main by $BEHIND commit(s). Merge main into dev first (RELEASING.md)"; exit 1
           fi
           python3 -I scripts/release-version.py check
 
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
-      - name: Bump versions and freeze the changelog on release/${{ inputs.version }}
+      - name: Bump versions on release/${{ inputs.version }}
+        env:
+          KIND: ${{ steps.validate.outputs.kind }}
         run: |
           set -euo pipefail
           git switch -c "release/$VERSION"
           python3 -I scripts/release-version.py bump "$VERSION"
           # Cargo.lock names the workspace crates; --workspace touches nothing else.
           nix develop -c cargo update --workspace
-          python3 -I scripts/release-version.py freeze "$VERSION" "$(date -u +%F)"
+          # A candidate's entries stay in `## Unreleased` until its final release freezes them.
+          if [ "$KIND" = final ]; then
+            python3 -I scripts/release-version.py freeze "$VERSION" "$(date -u +%F)"
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore: release $VERSION" -m "Refs: #428"
+          git commit -am "chore: release $VERSION" -m "Refs: #428, #485"
           git show --stat HEAD
 
       - name: Push release/${{ inputs.version }} and dispatch CI
@@ -86,11 +100,15 @@ jobs:
 
       - name: Open the draft release PR
         if: ${{ !inputs.dry-run }}
+        env:
+          KIND: ${{ steps.validate.outputs.kind }}
         run: |
           set -euo pipefail
+          BASE=$([ "$KIND" = rc ] && echo dev || echo main)
           NOTES=$(python3 -I scripts/release-version.py notes "$VERSION")
-          BODY="# Release $VERSION"$'\n\n'"Merge with a **merge commit** once \`CI Summary\` is green; \`release.yml\` then builds crank.app and drafts the release (RELEASING.md)."$'\n\n'"$NOTES"
-          if ! gh pr create --base main --head "release/$VERSION" --draft --title "chore: release $VERSION" --body "$BODY"; then
-            # Needs the repo setting "Allow GitHub Actions to create and approve pull requests" (RELEASING.md).
-            echo "::warning::could not open the PR; open it by hand: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...release/${VERSION}"
+          BODY="# Release $VERSION"$'\n\n'"Merge into \`$BASE\` with a **merge commit** once \`CI Summary\` (Linux and macOS) is green; \`release.yml\` then runs the macOS gate, builds and attests crank.app and publishes the release (RELEASING.md)."$'\n\n'"$NOTES"
+          if ! gh pr create --base "$BASE" --head "release/$VERSION" --draft --title "chore: release $VERSION" --body "$BODY"; then
+            # Needs the repo setting "Allow GitHub Actions to create and approve pull requests" (RELEASING.md, #439).
+            echo "::error::could not open the PR (is \"Allow GitHub Actions to create and approve pull requests\" on?). The branch is pushed and CI dispatched; open the PR by hand: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${BASE}...release/${VERSION}"
+            exit 1
           fi

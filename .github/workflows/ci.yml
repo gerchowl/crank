@@ -1,26 +1,52 @@
 name: CI
 
-on:
+on:  # yamllint disable-line rule:truthy
   pull_request:
     branches: [dev, main]
   push:
     branches: [dev, main]
-  # prepare-release.yml dispatches CI on release/X.Y.Z: a push made with GITHUB_TOKEN starts no
+  # prepare-release.yml dispatches CI on release/<version>: a push made with GITHUB_TOKEN starts no
   # workflow, and the release PR needs `CI Summary` on its head (RELEASING.md).
   workflow_dispatch:
+    inputs:
+      macos:
+        description: 'Also run the macOS gate (it always runs on release/* branches)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
+# A PR's new head supersedes its old run. A push to dev is not cancelled by the next one (that would starve
+# the post-merge macOS run on a busy day); GitHub still collapses queued runs to the latest.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# GitHub-hosted runners (the repo is public; no self-hosted runners, #25).
-# Both platforms run the locked flake gate, including shared/ tests (#28, #57).
-# macOS bundle assembly/signing awaits #37; BLE hardware is checked on sage.
+# GitHub-hosted runners (the repo is public; no self-hosted runners, #25). Both platforms run the locked
+# flake gate (#28, #57). The required gate on PRs is Linux; macOS runs on release candidates, release PRs,
+# after every merge into dev (post-merge, never gating a PR) and on request (ADR-0001 §9.6, #480). A red
+# post-merge macOS run on dev is triaged per RELEASING.md. BLE hardware is checked on sage.
 jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      macos: ${{ steps.plan.outputs.macos }}
+    steps:
+      - id: plan
+        env:
+          MACOS: >-
+            ${{ (github.event_name == 'push' && github.ref == 'refs/heads/dev')
+            || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/'))
+            || (github.event_name == 'workflow_dispatch' && (inputs.macos || startsWith(github.ref, 'refs/heads/release/'))) }}
+        run: |
+          echo "macos=$MACOS"
+          echo "macos=$MACOS" >> "$GITHUB_OUTPUT"
+
   linux:
+    needs: plan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,6 +57,8 @@ jobs:
       - run: nix flake check -L
 
   macos:
+    needs: plan
+    if: needs.plan.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,13 +71,19 @@ jobs:
   ci-summary:
     name: CI Summary
     if: always()
-    needs: [linux, macos]
+    needs: [plan, linux, macos]
     runs-on: ubuntu-latest
     steps:
-      - name: Require linux and macos to have succeeded
+      - name: Require linux, and macos where it is wanted
         env:
           LINUX: ${{ needs.linux.result }}
           MACOS: ${{ needs.macos.result }}
+          MACOS_WANTED: ${{ needs.plan.outputs.macos }}
         run: |
-          echo "linux=$LINUX macos=$MACOS"
-          [ "$LINUX" = success ] && [ "$MACOS" = success ]
+          echo "linux=$LINUX macos=$MACOS macos wanted=$MACOS_WANTED"
+          [ "$LINUX" = success ] || exit 1
+          if [ "$MACOS_WANTED" = true ]; then
+            [ "$MACOS" = success ]
+          else
+            [ "$MACOS" = skipped ]
+          fi

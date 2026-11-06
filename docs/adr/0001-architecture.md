@@ -787,7 +787,7 @@ agent assumes a hardware result it did not see.
 *Amends §1, §2, §6 and §9.1. The struck-through text above is kept as history.*
 
 - **CI.** Since #58 the gate is `nix flake check -L` on GitHub-hosted `ubuntu-latest` and `macos-latest`;
-  the `CI Summary` job is required on `dev` and `main`. The fleet runner (anvil vm-runner) was offboarded
+  the `CI Summary` job is required on `dev` and `main` (since §9.6 macOS runs on release candidates and after each merge into `dev`, not on PRs). The fleet runner (anvil vm-runner) was offboarded
   from this repository because **self-hosted runners must never serve a public repository**: a pull request
   from a fork would execute untrusted code on a machine inside the owner's network (g-fleet#170).
   The attic binary cache is not used by this repository either; CI uses the magic Nix cache on hosted
@@ -838,6 +838,82 @@ agent assumes a hardware result it did not see.
   `pnpm audit --prod` in the same workflow (production dependencies only: dev tooling never ships in the
   app). Rejected: a pinned offline npm advisory database (no maintained Nix-packaged source) and gating
   PRs on it (same upstream-blocks-unrelated-work problem as above).
+
+### 9.6 Amendment 2026-11-05: Linux PR gate, release candidates, attested pre-releases (#480, #485)
+
+*Amends §9.1 (CI), §9.3 (Distribution) and §9.4 (CI). Owner direction on #480 and #485. The workflows are
+`.github/workflows/{ci,prepare-release,release,abandon-release}.yml`; the owner's steps are in RELEASING.md.*
+
+- **Required PR CI is Linux only.** `CI Summary` (still the one required check on `dev` and `main`) requires the
+  `linux` job (`nix flake check -L`, x86_64-linux). The `macos` job (`nix flake check -L`, aarch64-darwin) runs
+  only where a macOS gate is wanted: a branch `release/*` (its pull request or the CI run Prepare Release
+  dispatches on it), **post-merge on every push to `dev`**, and a manual dispatch with `macos: true`. When it
+  runs, `CI Summary` requires it too; when it is not wanted it must be skipped. A post-merge run never gates a
+  PR: it marks the `dev` commit red or green. Hosted macOS arm64 runners were not acquired often enough to
+  gate every PR (#480). A nightly schedule was rejected: GitHub runs `schedule` only from the default branch,
+  `main`, and nothing reaches `main` before #426, so it would never fire.
+- **Cost.** One macOS `nix flake check -L` took about 41 min of runner time (run 42104526304). At the recent
+  rate of roughly 12 merges into `dev` a day that is up to about 8 h of hosted macOS time a day. The repository
+  is public, so hosted runner minutes are not billed; the cost is runner time and queueing, and it competes
+  with release-candidate builds for the account's concurrent macOS jobs. Pushes to `dev` do not cancel a
+  running macOS job; GitHub keeps at most one queued run per ref, so on a busy day intermediate merges are
+  skipped and the next run covers them.
+- **What is checked less often, and the risk.** Code and checks that only a Darwin evaluation exercises are
+  checked after each merge into `dev` and on every release candidate, not per PR: the CoreBluetooth backend of `btleplug` as
+  `crank-ble` builds it, the `target_os = "macos"` code of `crank-desktop` (`lifecycle.rs`, the quit handling
+  for Cmd+Q and Dock Quit; `display.rs`, the CoreGraphics display width of the ride tiers), the `crank-app` derivation (§9.3) and its
+  `bundle-no-nix-store` check (#413), the `install-app` check of `just bundle`, and anything that builds
+  differently with the Darwin stdenv (linker, libiconv). A PR can therefore break the macOS build and land
+  green; the post-merge run on `dev` turns red within the hour, and the next rc cannot be published until it
+  is fixed. Triage (RELEASING.md, AGENTS.md): a red post-merge macOS run on `dev` gets a `bug` issue before the
+  next merge into `dev`; a runner failure (not acquired, #480) is re-run once and noted on the run's PR. The
+  §8.1 GUI-session commands on sage (`just e2e`, `just bundle`) are unchanged and still run before
+  UI-touching merges. Accepted because macOS-specific code is small and changes rarely, and every build that
+  reaches a test Mac has passed the full macOS gate (below).
+- **Versions.** Tags, release names, `Cargo.toml` and every other version source carry the semver version:
+  `X.Y.Z` for a final release, `X.Y.Z-rc.N` (N ≥ 1) for a release candidate of `X.Y.Z`. macOS needs numeric
+  bundle versions, so `app/src-tauri/Info.plist` carries a mapping: `CFBundleShortVersionString` = `X.Y.Z`,
+  `CFBundleVersion` = the single integer `X·1000000 + Y·10000 + Z·100 + B`, with `B = N` for `rc.N` and
+  `B = 99` for the final release (0.2.0-rc.1 → 20001, 0.2.0-rc.2 → 20002, 0.2.0 → 20099). The integer
+  orders exactly like semver precedence, so LaunchServices and the update check (#522) see a later build as
+  newer. The mapping therefore bounds Y and Z to 0–99 and N to 1–98; `scripts/release-version.py` refuses
+  anything else, as well as any version that is not later than the current one. Its `check` (the
+  `release-versions` flake check) fails when any source disagrees with the mapping.
+- **Release candidates do not touch `main`.** Prepare Release on `dev` with `X.Y.Z-rc.N` pushes
+  `release/X.Y.Z-rc.N` (only the version bump; the changelog stays in `## Unreleased`), dispatches CI on it
+  (Linux and macOS) and opens a draft PR into **`dev`**. The owner merges it with a merge commit. The merge
+  starts Release, which runs the full macOS gate (`nix flake check -L` on aarch64-darwin) on that exact commit,
+  builds `.#crank-app`, zips it, writes its SHA-256, attests it, and **publishes** a GitHub pre-release
+  `X.Y.Z-rc.N` (tag created at the merge commit). Fixes an rc surfaces land on `dev` by ordinary PRs; the next
+  rc is cut from `dev` again. `dev` therefore carries the version of the last rc, and no main→dev sync is needed.
+  "Agents never merge release PRs" is policy only, not enforced: agents act as the owner's account (gerchowl), and
+  any merge of `release/X.Y.Z-rc.N` into `dev` publishes a pre-release. `main` stays safe without that policy:
+  Prepare Release refuses a final version and Release refuses to build one until #426.
+- **Final releases are gated on Developer ID signing and notarization** (#47, #426). Until #426 lands,
+  Prepare Release refuses a final version (a dry run is allowed) and Release refuses to build one. The final
+  path keeps #428's shape: `release/X.Y.Z` into `main` with the changelog frozen, then Release on the merge.
+  #426 replaces the refusal with signing, notarization and stapling, and brings back the main→dev sync PR
+  (#428's `sync-dev` job, removed here because nothing reaches `main` before #426), failing the run when the
+  PR cannot be opened instead of only warning (#439).
+- **Assets and provenance.** Every published build carries `crank-<version>-aarch64-darwin.zip` (`ditto -c -k
+  --keepParent` of `crank.app`), `crank-<version>-aarch64-darwin.zip.sha256` (one line of `shasum -a 256`,
+  verifiable with `shasum -a 256 -c`) and `crank-<version>-aarch64-darwin.zip.sigstore.json`, the Sigstore
+  bundle of a SLSA build-provenance attestation of the zip (`actions/attest-build-provenance`), which is also
+  stored in the repository's attestations (`gh attestation verify <zip> -R gerchowl/crank`). The names are a
+  contract: g-fleet's installer (g-fleet#1203) downloads them, verifies digest and provenance (signer workflow
+  `release.yml` of this repository), and re-signs the app with `nix-tcc` (§9.3) so the Bluetooth grant is
+  stable. A dispatched Release on any branch is a dry run: the same gate, zip, checksum and attestation,
+  uploaded as a workflow artifact, with no tag and no release.
+- **Signing and Gatekeeper.** The CI bundle carries only the ad-hoc signatures the `crank-app` derivation
+  writes (§9.3, #413); CI adds none, and no Developer ID is used before #426. A zip downloaded by a browser is
+  quarantined, and Gatekeeper refuses to open the app ("cannot be verified") until the quarantine attribute is
+  removed (`xattr -dr com.apple.quarantine`) or the owner allows it in System Settings > Privacy & Security.
+  `gh release download` and `curl` set no quarantine attribute. An ad-hoc signed app gets a new Bluetooth TCC
+  prompt for every build; the `nix-tcc` re-sign of g-fleet#1203 or `just bundle` avoids that.
+- **Tokens.** All workflows use `GITHUB_TOKEN` only, no PAT, no secrets. A push or PR made with it starts no
+  workflow, so Prepare Release dispatches CI explicitly, and Release runs on the merge the owner makes. Opening
+  PRs needs the repository setting "Allow GitHub Actions to create and approve pull requests"; without it the
+  step fails with the compare URL to open by hand (#439).
 
 ## 10. Alternatives considered (summary)
 
