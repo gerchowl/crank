@@ -10,7 +10,7 @@ workspace (Cargo.toml, Cargo.lock, flake.*, rust-toolchain.toml, clippy.toml,
 non-Rust paths selects nothing.
 
 Non-Rust paths (never affect a cargo test): docs/ (except docs/hil/captures/, which
-crank-ble's tests include), app/ (the frontend; app/src-tauri/ is the crank-desktop
+crank-ble's tests include, and docs/adr/models/fixtures/, which crank-domain's do), app/ (the frontend; app/src-tauri/ is the crank-desktop
 crate), design/, shared/, assets/, issues/, scripts/, .github/, any *.md, and the root
 files justfile, LICENSE, NOTICE, .gitignore, .editorconfig, package.json, pnpm-*.yaml,
 deny.toml, deny-fuzz.toml. Keep AGENTS.md in step with this list.
@@ -39,7 +39,7 @@ NON_RUST_ROOT = {
     "deny.toml", "deny-fuzz.toml",
 }
 # Files outside a crate directory that a crate's tests read (include_str!).
-EXTRA_OWNERS = {"docs/hil/captures/": "crank-ble"}
+EXTRA_OWNERS = {"docs/hil/captures/": "crank-ble", "docs/adr/models/fixtures/": "crank-domain"}
 # Feature flags CI turns on for the whole workspace (justfile `test`, flake `nextest`).
 FEATURES = {"crank-ble": ("replay", "hil")}
 
