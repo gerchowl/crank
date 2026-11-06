@@ -39,8 +39,13 @@ export const SCENARIOS = [
     ready: "text=Bluetooth access is denied",
     clicks: ["Scan"],
   },
-  // The loaded, unstarted ride: today's stand-in for the Ready sheet (§5.4, #438 step 4 with #435).
-  { name: "ready", ready: "role=button[name='Start'][disabled=false]" },
+  // The Ready sheet (§5.4, #526): the loaded, unstarted ride, in each of its states.
+  { name: "ready", ready: "[data-ready='ready']" },
+  { name: "ready-loading", ready: "[data-ready='loading']", held: 1 },
+  { name: "ready-connecting", ready: "[data-ready='connecting']" },
+  { name: "ready-trainer-missing", ready: "[data-ready='trainer-missing']" },
+  { name: "ready-strap-missing", ready: "[data-ready='strap-missing']" },
+  { name: "ready-error", ready: "[data-ready='error']", clicks: ["Start"] },
   { name: "ride-soft-start", ready: "[data-testid='soft-start']" },
   {
     name: "ride-work-step",
@@ -65,6 +70,11 @@ export type ScenarioName = (typeof SCENARIOS)[number]["name"];
 /** The fixtures of the ride screen: their region boxes are the same at each size (DESIGN §18.7 rule 10, #498). */
 export const RIDE_SCENARIOS: readonly ScenarioName[] = [
   "ready",
+  "ready-loading",
+  "ready-connecting",
+  "ready-trainer-missing",
+  "ready-strap-missing",
+  "ready-error",
   "ride-soft-start",
   "ride-work-step",
   "ride-paused",

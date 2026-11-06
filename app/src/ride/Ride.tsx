@@ -58,6 +58,7 @@ import {
   type RideSession,
   type Series,
 } from "./session";
+import { ReadyBody, readyBanner, readyView } from "./ReadySheet";
 import { PHASE_NAME, Timeline, watts } from "./Timeline";
 import { Trace } from "./Trace";
 
@@ -361,6 +362,7 @@ function Screen({ session }: { session: RideSession }) {
   const [refusal, setRefusal] = useState<ApiError | null>(null);
   const [confirming, setConfirming] = useState<"end" | "skip" | null>(null);
   const keepRiding = useRef<HTMLButtonElement>(null);
+  const startButton = useRef<HTMLButtonElement>(null);
   // The safe answer holds focus while the dialog is open (WAI-ARIA alertdialog), as autoFocus did.
   useEffect(() => {
     if (confirming) keepRiding.current?.focus();
@@ -496,8 +498,29 @@ function Screen({ session }: { session: RideSession }) {
         .join(" · ")
     : "";
 
+  // Before Start the traces column is the Ready sheet (ReadySheet.tsx, DESIGN §5.4): its state is the band's banner,
+  // after an engine that does not answer (the values are not live); the sheet's plan line says a free ride is free.
+  const ready = kind === "idle";
+  const sheet = readyView({
+    status: status !== null,
+    links,
+    hrLinked: session.loaded.hrLinked,
+    refusal,
+  });
+  // The usual choice is primary and focused (§5.4): focus goes to Start once it can be pressed, unless the rider has
+  // put it on a control already.
+  const startable =
+    ready && status !== null && sheet.canStart && !busy && !startSent;
+  const offeredStart = useRef(false);
+  useEffect(() => {
+    if (!startable || offeredStart.current) return;
+    offeredStart.current = true;
+    const at = document.activeElement;
+    if (at === null || at === document.body || at.matches("[data-destination]"))
+      startButton.current?.focus();
+  }, [startable]);
   // The band shows every state that holds, most urgent first (banners.tsx `BANNER_ORDER`).
-  const bannerList = banners({
+  const rideBanners = banners({
     unresponsive,
     loss,
     userPaused,
@@ -505,6 +528,17 @@ function Screen({ session }: { session: RideSession }) {
     commanded: status?.commanded,
     clock,
   });
+  const bannerList = ready
+    ? [
+        ...rideBanners.filter((b) => b.id === "engine-unresponsive"),
+        readyBanner(sheet.state),
+      ]
+    : rideBanners;
+  const refusalLine = refusal && (
+    <p role="alert" className="ride-refusal" data-code={refusal.code}>
+      <strong>{REFUSAL[refusal.code] ?? "Failed"}:</strong> {refusal.message}
+    </p>
+  );
   const endHelp = (
     <button className="ride-end" onClick={() => setConfirming("end")}>
       End… <Key k="Esc" />
@@ -563,33 +597,43 @@ function Screen({ session }: { session: RideSession }) {
           <div className="banner-band" data-region="banner">
             <BannerBand list={bannerList} end={endHelp} />
           </div>
-          <div className="trace-stack">
-            <Trace
-              series="power"
-              label="Power"
-              unit="W"
-              points={series.power}
-              xMax={xMax}
-              now={workoutS ?? 0}
-              plan={blocks}
+          {ready ? (
+            <ReadyBody
+              view={sheet}
+              free={free}
+              first={blocks[0]}
+              clock={clock}
+              refusal={refusalLine}
             />
-            <Trace
-              series="hr"
-              label="Heart rate"
-              unit="bpm"
-              points={series.hr}
-              xMax={xMax}
-              now={workoutS ?? 0}
-            />
-            <Trace
-              series="cadence"
-              label="Cadence"
-              unit="rpm"
-              points={series.cadence}
-              xMax={xMax}
-              now={workoutS ?? 0}
-            />
-          </div>
+          ) : (
+            <div className="trace-stack">
+              <Trace
+                series="power"
+                label="Power"
+                unit="W"
+                points={series.power}
+                xMax={xMax}
+                now={workoutS ?? 0}
+                plan={blocks}
+              />
+              <Trace
+                series="hr"
+                label="Heart rate"
+                unit="bpm"
+                points={series.hr}
+                xMax={xMax}
+                now={workoutS ?? 0}
+              />
+              <Trace
+                series="cadence"
+                label="Cadence"
+                unit="rpm"
+                points={series.cadence}
+                xMax={xMax}
+                now={workoutS ?? 0}
+              />
+            </div>
+          )}
         </section>
 
         <section
@@ -603,7 +647,7 @@ function Screen({ session }: { session: RideSession }) {
               <span data-slot="block">
                 {block
                   ? `${PHASE_WORD[block.phase]} · block ${(blockIdx ?? 0) + 1} of ${blocks.length}`
-                  : blocks.length > 0 && blockIdx === null
+                  : status !== null && blocks.length > 0 && blockIdx === null
                     ? "Last block done"
                     : free
                       ? "FREE RIDE"
@@ -708,12 +752,13 @@ function Screen({ session }: { session: RideSession }) {
       </footer>
 
       <div className="ride-keys" data-region="keys">
-        {/* Before the start the key row is the Ready stand-in's (Start; the core refuses pause, resume and skip then);
+        {/* Before the start the key row is the Ready sheet's (Start; the core refuses pause, resume and skip then);
             from the start it is the mockup's, with no Start (§18.3). */}
-        {kind === "idle" ? (
+        {ready ? (
           <button
+            ref={startButton}
             className="primary"
-            disabled={busy || status === null || startSent}
+            disabled={busy || status === null || startSent || !sheet.canStart}
             onClick={() => void startRide()}
           >
             <Play {...icon} />
@@ -750,12 +795,8 @@ function Screen({ session }: { session: RideSession }) {
         <div className="ride-status">
           <span data-testid="state">{stateLine(status)}</span>
           {following && <span className="muted"> · {following}</span>}
-          {refusal && (
-            <p role="alert" className="ride-refusal" data-code={refusal.code}>
-              <strong>{REFUSAL[refusal.code] ?? "Failed"}:</strong>{" "}
-              {refusal.message}
-            </p>
-          )}
+          {/* Before the start the refusal has its row on the Ready sheet. */}
+          {!ready && refusalLine}
         </div>
         <button onClick={openKeys}>
           <Keyboard {...icon} />
