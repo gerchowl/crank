@@ -29,6 +29,7 @@ mod rider;
 mod session;
 #[cfg(test)]
 mod sim;
+mod timeline;
 mod trace;
 
 use std::process::ExitCode;
@@ -43,17 +44,49 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match checks::run(&args).await {
+    let (out, err, code) = report(checks::run(&args).await);
+    for line in out {
+        println!("{line}");
+    }
+    for line in err {
+        eprintln!("{line}");
+    }
+    code
+}
+
+/// What a run prints (stdout, stderr) and its exit status (the table in the crate docs).
+fn report(run: session::Result<checks::Outcome>) -> (Vec<String>, Vec<String>, ExitCode) {
+    match run {
         Ok(outcome) => {
             let (lines, status) = outcome.lines();
-            for line in lines {
-                println!("{line}");
-            }
-            ExitCode::from(status)
+            (lines, Vec::new(), ExitCode::from(status))
         }
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
+        Err(e) => (Vec::new(), vec![format!("error: {e}")], ExitCode::FAILURE),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use checks::Outcome;
+    use std::path::PathBuf;
+
+    /// #516 N2: every outcome exits with its own status, an error with 1.
+    #[test]
+    fn each_outcome_maps_to_its_exit_status() {
+        let p = || PathBuf::from("s.json");
+        for (outcome, status) in [
+            (Outcome::Done(p()), 0),
+            (Outcome::Blocked("x".into()), 3),
+            (Outcome::Stopped(p(), "x".into()), 4),
+            (Outcome::Unconfirmed(p(), "x".into()), 5),
+        ] {
+            let (_, err, code) = report(Ok(outcome));
+            assert_eq!(code, ExitCode::from(status));
+            assert!(err.is_empty());
         }
+        let (out, err, code) = report(Err("boom".into()));
+        assert_eq!(code, ExitCode::FAILURE);
+        assert_eq!((out, err), (vec![], vec!["error: boom".to_string()]));
     }
 }

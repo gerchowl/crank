@@ -35,5 +35,7 @@ crank-store.workspace = true
 tempfile = "3"
 serde_json.workspace = true
 proptest = { version = "1", default-features = false, features = ["std"] }
+# The hil_fec Part B event grammars (#516): one shape per check over its event tokens.
+regex = "1"
 # `signal`: the hil_fec Part B checks release the trainer on SIGINT/SIGTERM/SIGHUP (#412).
 tokio = { version = "1", features = ["test-util", "rt-multi-thread", "signal"] }

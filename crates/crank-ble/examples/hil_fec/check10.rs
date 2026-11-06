@@ -8,8 +8,9 @@
 //! of another peripheral) and `# answer-<key> <us> <ASCII>` (the operator's typed answers).
 use crate::{
     cps::max_gap,
-    frames::{Note, Record, stamp, stamps},
-    partb::{SEC, round1, samples, secs},
+    frames::{Note, Stamp, stamp, stamp_of, stamps},
+    partb::{SEC, round1, secs},
+    timeline::{Grammar, Step, Timeline},
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -30,8 +31,36 @@ pub const ENDED: u8 = 0;
 pub const MIN_WINDOW: Duration = Duration::from_mins(1);
 /// Both answers must be in within this time from the window's start.
 pub const ANSWER_WAIT: Duration = Duration::from_mins(3);
+/// Advertising events of one advertiser are at least this far apart on air: the Bluetooth Core
+/// Specification's smallest advertising interval (`advInterval` 20 ms to 10.24 s, Vol 6, Part B,
+/// §4.4.2.2.1). Reports of one kind closer than this are counted as one event: a scan can report
+/// an event twice (an advertisement and its scan response), and the host stamps reports when it
+/// handles them, so a busy harness can bunch real events too; neither is a contradiction, and
+/// counting them once keeps a copied report from adding an advertisement.
+const ADV_EVENT_US: u64 = 20_000;
 /// Page 25 silent this long inside the window means the link was not held (ADR-0002 §6).
 const LINK_GAP_MAX_US: u64 = 2 * SEC;
+
+/// Check 10's event grammar ([`Timeline::grammar`]): the window opens and closes once, the
+/// listed answer and the optional connect answer inside it, between the opening and the closing
+/// release.
+pub(crate) const GRAMMAR: Grammar = Grammar {
+    tags: &[
+        (WINDOW, &[(OPEN, '1'), (CLOSE, '2')]),
+        (SCAN, &[(OPEN, 'o'), (ENDED, 'z'), (CLOSE, 'w')]),
+        (ADV, &[(1, 'h'), (0, 'j')]),
+    ],
+    answers: &[LISTED.key, CONNECT.key],
+    records: &[],
+    shapes: &[
+        // The scan opens just before the window; adverts are recorded only while it runs; it
+        // ends by itself (z, then no more adverts) or is closed just after the window (w).
+        "^f*Rf*u[fe]*o1(?:[fehjab]*2w|[fehjab]*z[feab]*2)[fe]*R[fe]*q[fe]*$",
+        // The listed answer once, then the connect answer at most once.
+        "^[^ab]*a[^ab]*(?:b[^ab]*)?$",
+    ],
+    programs: &[&[Step::Release, Step::Release]],
+};
 
 /// One typed question: capture key (tag `answer-<key>`), text, accepted answers.
 pub struct Question {
@@ -124,25 +153,25 @@ enum Scan {
 }
 
 impl Scan {
-    /// The scan's coverage of the window `from..to`: whole only when both stamps are present, it
-    /// opened at or before `from`, closed at or after `to`, and did not end by itself.
-    fn of(notes: &[Note], from: u64, to: u64) -> Self {
+    /// The scan's coverage of the window `from..to` (its stamps): whole only when both scan
+    /// stamps are present, it opened before `from`, closed after `to`, and did not end by itself.
+    fn of(notes: &[Note], from: &Stamp, to: &Stamp) -> Self {
         let scan = match stamps(notes, SCAN, &[OPEN, ENDED, CLOSE]) {
             Ok(s) => s,
             Err(why) => return Self::Contradictory(why),
         };
-        let Some(opened) = stamp(&scan, OPEN) else {
+        let Some(opened) = stamp_of(&scan, OPEN) else {
             return Self::NotStarted;
         };
         if let Some(at) = stamp(&scan, ENDED) {
             return Self::Ended(at);
         }
-        if opened > from {
-            return Self::Late(opened);
+        if opened.seq > from.seq {
+            return Self::Late(opened.at_us);
         }
-        match stamp(&scan, CLOSE) {
+        match stamp_of(&scan, CLOSE) {
             None => Self::Unclosed,
-            Some(at) if at < to => Self::Stopped(at),
+            Some(close) if close.seq < to.seq => Self::Stopped(close.at_us),
             Some(_) => Self::Whole,
         }
     }
@@ -206,15 +235,28 @@ fn advertising(
     }
 }
 
-/// The result of check 10 from the capture's records and notes.
-pub fn check10(records: &[Record], notes: &[Note]) -> Value {
+/// The result of check 10 from the capture's timeline.
+pub fn check10(tl: &Timeline) -> Value {
     let method = "window = the check10 open/close events; advertising = the parallel scan's adverts of this trainer inside the window (largest gap with the window's edges) and the operator's 'listed' answer, 'not seen' only when both agree; second central = the 'connect' answer, asked only when the phone listed the NEO; link held = no page-25 gap > 2 s inside the window";
+    let notes = tl.notes();
     let window = stamps(notes, WINDOW, &[OPEN, CLOSE]).and_then(|w| {
-        match (stamp(&w, OPEN), stamp(&w, CLOSE)) {
+        match (stamp_of(&w, OPEN), stamp_of(&w, CLOSE)) {
             (Some(from), Some(to)) => Ok((from, to)),
             _ => Err("the capture has no complete check 10 window".into()),
         }
     });
+    // The procedure asks the connect question exactly when the phone listed the NEO; a completed
+    // run with the one and not the other did not run it.
+    let window =
+        window.and_then(
+            |w| match (answer(notes, &LISTED).as_deref(), recorded(notes, &CONNECT)) {
+                (Ok("seen"), None) => Err(
+                    "contradictory: the phone listed the NEO, yet no connect answer is recorded"
+                        .into(),
+                ),
+                _ => Ok(w),
+            },
+        );
     let (from, to) = match window {
         Ok(w) => w,
         Err(why) => {
@@ -227,20 +269,29 @@ pub fn check10(records: &[Record], notes: &[Note]) -> Value {
             });
         }
     };
-    let inside = |at: u64| at >= from && at < to;
+    // Inside: between the window's stamps in the timeline.
+    // One advertising event per report closer than [`ADV_EVENT_US`] to the one before: the
+    // host's stamps can bunch reports together, the air cannot (see the constant).
     let adverts = |mine: u8| -> Vec<u64> {
-        notes
+        let mut out: Vec<u64> = Vec::new();
+        for n in notes[from.seq + 1..to.seq]
             .iter()
-            .filter(|n| n.tag == ADV && n.bytes == [mine] && inside(n.at_us))
-            .map(|n| n.at_us)
-            .collect()
+            .filter(|n| n.tag == ADV && n.bytes == [mine])
+        {
+            if out.last().is_none_or(|l| n.at_us - l >= ADV_EVENT_US) {
+                out.push(n.at_us);
+            }
+        }
+        out
     };
     let (trainer, others) = (adverts(1), adverts(0));
-    let scan = Scan::of(notes, from, to);
+    let scan = Scan::of(notes, &from, &to);
+    let (from, to) = (from.at_us, to.at_us);
     let listed = answer(notes, &LISTED);
     let advertising = advertising(&trainer, others.len(), &scan, &listed, (from, to));
     let second_central = second_central(notes);
-    let page25: Vec<u64> = samples(records).iter().map(|s| s.at_us).collect();
+    // Every page 25 holds the link, a repeat of the last update too.
+    let page25: Vec<u64> = tl.samples().iter().map(|s| s.at_us).collect();
     let link_gap = max_gap(page25, from, to);
     let link = if link_gap > LINK_GAP_MAX_US {
         format!("lost (page 25 silent for {} s)", round1(secs(link_gap)))
@@ -271,12 +322,18 @@ pub fn cells(v: &Value) -> (&'static str, &'static str, String, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frames::Record;
+
+    fn check10(r: &[Record], n: &[Note]) -> Value {
+        super::check10(&Timeline::of_parts(r, &[], n))
+    }
 
     fn note(tag: &str, at_s: u64, bytes: &[u8]) -> Note {
         Note {
             tag: tag.into(),
             at_us: at_s * SEC,
             bytes: bytes.to_vec(),
+            before: 0,
         }
     }
 
@@ -284,7 +341,8 @@ mod tests {
     fn page25(to_s: u64) -> Vec<Record> {
         (0..to_s * 2)
             .map(|k| {
-                let mut f = [0xa4, 9, 0x4e, 5, 25, 0, 0, 0, 0, 0, 0, 0x30, 0];
+                let count = u8::try_from(k % 256).expect("a byte");
+                let mut f = [0xa4, 9, 0x4e, 5, 25, count, 0, 0, 0, 0, 0, 0x30, 0];
                 f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
                 Record {
                     at_us: k * SEC / 2,
@@ -296,9 +354,10 @@ mod tests {
     }
 
     fn window(extra: &[Note]) -> Vec<Note> {
-        let mut n = vec![note(WINDOW, 10, &[OPEN]), note(SCAN, 10, &[OPEN])];
+        // As the procedure stamps them: the scan opens before the window and closes after it.
+        let mut n = vec![note(SCAN, 10, &[OPEN]), note(WINDOW, 10, &[OPEN])];
         n.extend_from_slice(extra);
-        n.extend([note(SCAN, 70, &[CLOSE]), note(WINDOW, 70, &[CLOSE])]);
+        n.extend([note(WINDOW, 70, &[CLOSE]), note(SCAN, 70, &[CLOSE])]);
         n
     }
 
@@ -413,8 +472,19 @@ mod tests {
                         "unknown: unrecognised answer \"maybe\" to whether the phone connected"
                             .into()
                     }
+                    // The procedure asks the connect question after `seen`: none is no run of it.
                     (Some("seen"), None) => {
-                        "unknown: no answer to whether the phone connected".into()
+                        let v = check10(&page25(80), &window(&n));
+                        assert_eq!(
+                            (&v["second_central"], &v["verdict"]),
+                            (
+                                &Value::Null,
+                                &json!(
+                                    "unknown: contradictory: the phone listed the NEO, yet no connect answer is recorded"
+                                )
+                            )
+                        );
+                        continue;
                     }
                     (Some(l @ ("not-seen" | "unsure")), Some(c)) => format!(
                         "unknown: contradictory answers: the phone's listing was {l:?}, yet a connect answer {c:?} is recorded"
@@ -478,6 +548,7 @@ mod tests {
         let seen = [
             note(WINDOW, 10, &[OPEN]),
             note(&answer_tag("listed"), 20, b"seen"),
+            note(&answer_tag("connect"), 25, b"failed"),
             note(WINDOW, 70, &[CLOSE]),
         ];
         assert_eq!(
@@ -492,11 +563,16 @@ mod tests {
     fn a_scan_counts_as_whole_only_when_its_stamps_cover_the_window() {
         let not_seen = note(&answer_tag("listed"), 20, b"not-seen");
         let others = (11..15).map(|s| note(ADV, s, &[0]));
+        // The scan's open goes before the window's, its close after the window's: at the same µs
+        // that is the procedure's file order.
         let with = |scan: &[Note]| {
-            let mut n = vec![note(WINDOW, 10, &[OPEN]), not_seen.clone()];
+            let (open, close): (Vec<Note>, Vec<Note>) =
+                scan.iter().cloned().partition(|n| n.bytes == [OPEN]);
+            let mut n = open;
+            n.extend([note(WINDOW, 10, &[OPEN]), not_seen.clone()]);
             n.extend(others.clone());
-            n.extend_from_slice(scan);
             n.push(note(WINDOW, 70, &[CLOSE]));
+            n.extend(close);
             check10(&page25(80), &n)["advertising"].clone()
         };
         let unknown = |why: &str| {
@@ -515,6 +591,20 @@ mod tests {
         assert_eq!(
             with(&[note(SCAN, 10, &[OPEN])]),
             unknown("has no close line, so its end is unknown")
+        );
+        // At the window's own µs, the file order decides: opened after the window's stamp is late.
+        let late = [
+            note(WINDOW, 10, &[OPEN]),
+            note(SCAN, 10, &[OPEN]),
+            not_seen.clone(),
+            note(WINDOW, 70, &[CLOSE]),
+            note(SCAN, 70, &[CLOSE]),
+        ];
+        assert_eq!(
+            check10(&page25(80), &late)["advertising"],
+            json!(
+                "unknown: the phone did not list it, but the scan started at 10 s, after the window opened and saw 0 advertisements of other peripherals, so it cannot confirm that"
+            )
         );
         // Stamps at the window's edges, or beyond them, cover it.
         for (open, close) in [(10, 70), (9, 71)] {
@@ -545,10 +635,9 @@ mod tests {
                 note(SCAN, 30, &[CLOSE]),
                 note(SCAN, 75, &[CLOSE]),
             ],
-            vec![note(SCAN, 75, &[CLOSE]), note(SCAN, 5, &[OPEN])],
             vec![
                 note(SCAN, 5, &[OPEN]),
-                note(SCAN, 5, &[OPEN]),
+                note(SCAN, 6, &[OPEN]),
                 note(SCAN, 75, &[CLOSE]),
             ],
             vec![note(SCAN, 5, &[OPEN]), note(SCAN, 4, &[CLOSE])],
@@ -561,6 +650,16 @@ mod tests {
                 "{scan:?}: {a}"
             );
         }
+        // The same stamp twice at its µs is no timeline at all, nor is one out of time order.
+        assert_eq!(
+            Timeline::parse("# scan 5000000 01\n# scan 5000000 01\n").err(),
+            Some("contradictory: line 2 repeats line 1".into())
+        );
+        // Out of time order in the file, the capture is no timeline at all.
+        assert_eq!(
+            Timeline::parse("# scan 75000000 02\n# scan 5000000 01\n").err(),
+            Some("contradictory: records out of time order (line 2)".into())
+        );
         let v = check10(
             &page25(80),
             &[

@@ -3,8 +3,8 @@ use crate::{
     cli::{Args, Check, write_summary},
     frames::{
         Checksum, analysis, build, command_status, distribution, hex, page_of, page_rates,
-        parse_capture, parse_cps, parse_notes, redact_capture, redact_frame, redact_name,
-        request_latencies, with_page_byte,
+        parse_capture, redact_capture, redact_frame, redact_name, request_latencies,
+        with_page_byte,
     },
     partb, rider, session,
     session::{Exchange, Result, Session, adapter, find_trainer, scan},
@@ -199,7 +199,7 @@ async fn cold(
         || clock.now().0.saturating_sub(started.0),
         |tag, bytes| {
             capture
-                .record_aux(clock.now(), tag, bytes)
+                .record_aux_now(&*clock, tag, bytes)
                 .err()
                 .map(|e| e.to_string())
         },
@@ -262,15 +262,7 @@ fn procedure_summary(
             partb::PowerLag::NotMeasured(format!("{}: {e}", capture_path.display())),
         ),
     };
-    let mut summary = rider::summary(
-        p,
-        stem,
-        report,
-        &parse_capture(&text),
-        &parse_cps(&text),
-        &parse_notes(&text),
-        &lag,
-    );
+    let mut summary = rider::summary(p, stem, report, &text, &lag);
     if let Err(e) = appended {
         summary["outcome_line_error"] = json!(e.to_string());
     }
@@ -309,15 +301,7 @@ fn analyse(args: &Args) -> Result<Outcome> {
     let records = parse_capture(&text);
     let mut v = analysis(&records);
     let lag = partb::PowerLag::beside(std::path::Path::new(src), &text);
-    let cps = parse_cps(&text);
-    if let Some(part_b) = partb::analyse(
-        stem,
-        &records,
-        &cps,
-        &parse_notes(&text),
-        partb::outcome_in(&text).as_deref(),
-        &lag,
-    ) {
+    if let Some(part_b) = partb::analyse(stem, &text, partb::outcome_in(&text).as_deref(), &lag) {
         if let Some(line) = part_b["line"].as_str() {
             println!("{line}");
         }
@@ -1398,7 +1382,11 @@ mod tests {
             assert_eq!(value, &offline[key], "live and offline differ in {key}");
         }
         assert_eq!(live, *offline, "live and offline differ");
-        assert_eq!(live["cps"]["notifications"], cps.len(), "{live}");
+        // A measurement repeating the one before in the same second counts once (`Timeline`).
+        let mut distinct = cps.clone();
+        distinct
+            .dedup_by(|b, a| a.bytes == b.bytes && a.at_us / partb::SEC == b.at_us / partb::SEC);
+        assert_eq!(live["cps"]["notifications"], distinct.len(), "{live}");
         (report, live)
     }
 
@@ -1411,7 +1399,7 @@ mod tests {
     }
 
     fn verdict_of(records: &[Record], cps: &[crate::frames::Cps]) -> (String, Value) {
-        let v = crate::cps::check5(records, cps);
+        let v = crate::cps::check5(&crate::timeline::Timeline::of_parts(records, cps, &[]));
         (v["verdict"].as_str().expect("verdict").to_string(), v)
     }
 
@@ -1636,9 +1624,7 @@ mod tests {
         assert_eq!(report.procedure, Ok(()));
         let v = partb::analyse(
             "check5",
-            &Wire::records(&sim),
-            &[],
-            &[],
+            &crate::timeline::text_of(&Wire::records(&sim), &[], &[]),
             Some(partb::COMPLETED),
             &partb::PowerLag::NotMeasured(String::new()),
         )

@@ -1,5 +1,5 @@
 //! Exact `.fecap` format from crank-fec/tests/fixtures/README.md (#141).
-use crank_devices::MonoTime;
+use crank_devices::{Clock, MonoTime};
 use std::{
     fmt::Write as _,
     fs::File,
@@ -59,16 +59,37 @@ impl Capture {
             .state
             .lock()
             .map_err(|_| io::Error::other("capture lock poisoned"))?;
-        let elapsed =
-            at.0.checked_sub(state.1.0)
-                .ok_or_else(|| io::Error::other("capture time before epoch"))?;
-        let mut line = format!("# {tag} {elapsed}");
-        for byte in bytes {
-            // Writing to a String cannot fail.
-            let _ = write!(line, " {byte:02X}");
-        }
-        line.push('\n');
-        state.0.write_all(line.as_bytes())
+        append_aux(&mut state, at, tag, bytes)
+    }
+    /// [`Capture::record`] stamped by `clock` while the capture's lock is held, so the stamps of
+    /// writers that use only the `_now` methods rise in file order: file order is the order in
+    /// which the records were appended (the `hil_fec` Part B timeline, #516). Returns the stamp.
+    /// An rx frame recorded this way is stamped when it is appended, after its ingress hop.
+    /// # Errors
+    /// As [`Capture::record`].
+    pub fn record_now(&self, clock: &dyn Clock, rx: bool, bytes: &[u8]) -> io::Result<MonoTime> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("capture lock poisoned"))?;
+        let at = clock.now();
+        append(&mut state, at, rx, bytes).map(|()| at)
+    }
+    /// [`Capture::record_aux`] stamped under the lock, as [`Capture::record_now`]. Returns the stamp.
+    /// # Errors
+    /// As [`Capture::record`].
+    pub fn record_aux_now(
+        &self,
+        clock: &dyn Clock,
+        tag: &str,
+        bytes: &[u8],
+    ) -> io::Result<MonoTime> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("capture lock poisoned"))?;
+        let at = clock.now();
+        append_aux(&mut state, at, tag, bytes).map(|()| at)
     }
     /// Log the first write failure of this capture (and only the first: a full disk would
     /// fail every frame). That is once per capture, hence once per trainer connection (each
@@ -85,6 +106,23 @@ fn append(state: &mut (File, MonoTime), at: MonoTime, rx: bool, bytes: &[u8]) ->
         at.0.checked_sub(state.1.0)
             .ok_or_else(|| io::Error::other("capture time before epoch"))?;
     let mut line = format!("{elapsed} {}", if rx { "rx" } else { "tx" });
+    for byte in bytes {
+        // Writing to a String cannot fail.
+        let _ = write!(line, " {byte:02X}");
+    }
+    line.push('\n');
+    state.0.write_all(line.as_bytes())
+}
+fn append_aux(
+    state: &mut (File, MonoTime),
+    at: MonoTime,
+    tag: &str,
+    bytes: &[u8],
+) -> io::Result<()> {
+    let elapsed =
+        at.0.checked_sub(state.1.0)
+            .ok_or_else(|| io::Error::other("capture time before epoch"))?;
+    let mut line = format!("# {tag} {elapsed}");
     for byte in bytes {
         // Writing to a String cannot fail.
         let _ = write!(line, " {byte:02X}");
@@ -137,5 +175,47 @@ impl CaptureDir {
         if empty && let Err(error) = std::fs::remove_file(path) {
             tracing::warn!(path = %path.display(), %error, "empty trainer capture not removed");
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::future::BoxFuture;
+    use std::sync::{Arc, OnceLock};
+
+    /// A clock that fails the test when it is read while the capture's lock is free.
+    struct UnderLock(OnceLock<Arc<Capture>>, AtomicU32);
+    impl Clock for UnderLock {
+        fn now(&self) -> MonoTime {
+            let capture = self.0.get().expect("capture set");
+            assert!(
+                capture.state.try_lock().is_err(),
+                "stamped outside the capture lock"
+            );
+            MonoTime(u64::from(self.1.fetch_add(1, Ordering::Relaxed)))
+        }
+        fn sleep_until(&self, _: MonoTime) -> BoxFuture<'static, ()> {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    /// #516: the stamp is taken under the lock that orders the appends.
+    #[test]
+    fn the_now_methods_stamp_while_holding_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("now.fecap");
+        let capture = Arc::new(Capture::create(&path, MonoTime(0)).unwrap());
+        let clock = UnderLock(OnceLock::new(), AtomicU32::new(7));
+        assert!(clock.0.set(capture.clone()).is_ok());
+        assert_eq!(
+            capture.record_now(&clock, true, &[0xa4]).unwrap(),
+            MonoTime(7)
+        );
+        assert_eq!(
+            capture.record_aux_now(&clock, "link", &[1]).unwrap(),
+            MonoTime(8)
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, format!("{HEADER}7 rx A4\n# link 8 01\n"));
     }
 }

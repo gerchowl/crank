@@ -5,8 +5,9 @@
 //! the `# cps` comment lines ([`crate::frames::CPS_TAG`]) that the live run wrote beside them.
 //! `docs/hil/part-b.md` states the method and the reasoning behind every tolerance.
 use crate::{
-    frames::{Cps, Record},
-    partb::{SEC, SETTLE, Sample, controls, erg_holds, mean, procedure_end, round1, samples, secs},
+    frames::Cps,
+    partb::{SEC, SETTLE, Sample, erg_holds, mean, procedure_end, round1, secs},
+    timeline::Timeline,
 };
 use serde_json::{Value, json};
 
@@ -90,13 +91,11 @@ struct Parsed {
 
 /// Decode the notifications and pair consecutive crank events. Both counters wrap at 65 536,
 /// so differences are taken modulo 2^16; a notification without a new crank event (same event
-/// time) adds a power reading only.
+/// time) adds a power reading only. `cps` is in time order (a [`Timeline`]'s).
 fn parse(cps: &[Cps]) -> Parsed {
-    let mut sorted: Vec<&Cps> = cps.iter().collect();
-    sorted.sort_by_key(|c| c.at_us);
     let mut out = Parsed::default();
     let mut prev: Option<(u64, u16, u16)> = None;
-    for c in sorted {
+    for c in cps {
         let Some(m) = decode(&c.bytes) else {
             out.malformed += 1;
             continue;
@@ -169,9 +168,9 @@ impl Window {
     }
 }
 
-/// Longest stretch of `[from, to)` without a timestamp in `times`, the window's edges included.
-pub(crate) fn max_gap(mut times: Vec<u64>, from: u64, to: u64) -> u64 {
-    times.sort_unstable();
+/// Longest stretch of `[from, to)` without a timestamp in `times` (in time order), the window's
+/// edges included.
+pub(crate) fn max_gap(times: Vec<u64>, from: u64, to: u64) -> u64 {
     let mut prev = from;
     let mut gap = 0;
     for t in times.into_iter().filter(|t| in_window(*t, from, to)) {
@@ -183,11 +182,10 @@ pub(crate) fn max_gap(mut times: Vec<u64>, from: u64, to: u64) -> u64 {
 
 /// Longest stretch of `[from, to)` not covered by a pair lying wholly inside it: the cadence of
 /// a window may only come from revolutions counted between two notifications of the window.
+/// `pairs` are in time order, as [`parse`] makes them.
 fn crank_gap(pairs: &[&Pair], from: u64, to: u64) -> u64 {
-    let mut sorted: Vec<&&Pair> = pairs.iter().collect();
-    sorted.sort_by_key(|p| p.from_us);
     let (mut prev, mut gap) = (from, 0);
-    for p in sorted {
+    for p in pairs {
         gap = gap.max(p.from_us.saturating_sub(prev));
         prev = prev.max(p.at_us);
     }
@@ -264,14 +262,30 @@ fn compare_window(
     }
 }
 
+/// Check 5's event grammar ([`Timeline::grammar`]): ERG targets only, the `# cps` measurements
+/// (`c`) between the opening and the closing request.
+pub(crate) const GRAMMAR: crate::timeline::Grammar = crate::timeline::Grammar {
+    tags: &[],
+    answers: &[],
+    records: &[("cps", 'c')],
+    shapes: &["^[fc]*R[fc]*u[fec]*(?:E[fec]*)+R[fec]*q[fec]*$"],
+    programs: &[&[
+        crate::timeline::Step::Release,
+        crate::timeline::Step::SoftStart(crate::rider::CHECK5_W[0]),
+        crate::timeline::Step::Erg(crate::rider::CHECK5_W[1]),
+        crate::timeline::Step::Release,
+    ]],
+};
+
 /// Check 5: page-25 rate, and page-25 against CPS power and cadence over the settled holds.
-pub fn check5(records: &[Record], cps: &[Cps]) -> Value {
-    let s = samples(records);
-    let ctl = controls(records);
+pub fn check5(tl: &Timeline) -> Value {
+    let cps = tl.cps();
+    let s = tl.updates();
+    let ctl = tl.controls();
     let parsed = parse(cps);
     // Settled windows: every ERG target held ≥ 10 s (check 6's definition of a hold), after its
     // first 10 s, and never the 0 W wait for the rider.
-    let spans: Vec<(f64, u64, u64)> = erg_holds(&ctl, procedure_end(records, &ctl))
+    let spans: Vec<(f64, u64, u64)> = erg_holds(&ctl, procedure_end(tl.end_us(), &ctl))
         .into_iter()
         .filter(|(held, h)| *held && h.watts > 0.0)
         .map(|(_, h)| (h.watts, h.at + SETTLE, h.end))
@@ -304,7 +318,7 @@ pub fn check5(records: &[Record], cps: &[Cps]) -> Value {
     let max_gap_s = times.windows(2).map(|w| secs(w[1] - w[0])).reduce(f64::max);
 
     let verdict = verdict(&parsed, rate_hz, &windows, (outside, max_abs, cadence_max));
-    json!({
+    let mut v = json!({
         "method": "both streams are stamped on arrival by the same process clock, so no offset is estimated; settled windows = each page-49 target held >= 10 s, after its first 10 s (power is steady under ERG, so the residual jitter of the two notification streams is not mistaken for disagreement); coverage, in continuous time: every ERG target of the procedure needs its window (>= 10 s); inside it neither stream may be silent for more than 2 s (page 25, power and cadence each) / 3 s (2A63), window edges included, and the crank-revolution pairs lying wholly inside the window must leave no stretch of it uncovered by more than 3 s, else the verdict names the target and is insufficient; more than 10 % malformed 2A63 notifications is insufficient; power: for each whole second of a window with at least one sample of each stream, mean page-25 power minus mean 2A63 power, which must be within ±1 W (ADR-0002 §5) in every compared second; cadence: per window, mean page-25 cadence against 2A63 crank revolutions over crank event time (differences modulo 2^16, event time in 1/1024 s), within ±1 rpm; page 25 must arrive at >= 2 Hz",
         "tolerances": {
             "power_w": POWER_TOL_W, "cadence_rpm": CADENCE_TOL_RPM, "page25_min_hz": RATE_MIN_HZ,
@@ -340,7 +354,16 @@ pub fn check5(records: &[Record], cps: &[Cps]) -> Value {
         "cadence_windows": windows.iter().filter_map(|w| w.cadence).map(|(a, b)| json!({"page25_rpm": round1(a), "cps_rpm": round1(b)})).collect::<Vec<_>>(),
         "max_abs_cadence_diff_rpm": windows.iter().any(|w| w.cadence.is_some()).then_some(round1(cadence_max)),
         "verdict": verdict,
-    })
+    });
+    // Fail closed: the windows are the procedure's targets, each once, in order, or no result.
+    let targets: Vec<f64> = spans.iter().map(|s| s.0).collect();
+    let want = crate::rider::CHECK5_W.map(f64::from);
+    if targets != want {
+        v["error"] = json!(format!(
+            "the held ERG targets are {targets:?}, not the procedure's {want:?}"
+        ));
+    }
+    v
 }
 
 /// The verdict: `insufficient` unless every target is covered, in continuous time, by both streams
@@ -457,6 +480,7 @@ pub fn result(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frames::Record;
 
     fn cps(at_us: u64, power: i16, revs: u16, time: u16) -> Cps {
         let mut bytes = vec![0x20, 0x00];
@@ -547,7 +571,9 @@ mod tests {
         let mut records = vec![erg(0, 150.0), erg(secs * SEC / 2, 200.0)];
         let mut at = 0;
         while at < secs * SEC {
-            let mut f = [0xa4, 9, 0x4e, 5, 25, 0, 90, 0, 0, 150, 0, 0x30, 0];
+            // The update event count, which moves with each update the trainer sends.
+            let count = u8::try_from(at / 1000 % 251).expect("a byte");
+            let mut f = [0xa4, 9, 0x4e, 5, 25, count, 90, 0, 0, 150, 0, 0x30, 0];
             f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
             records.push(Record {
                 at_us: at,
@@ -565,17 +591,20 @@ mod tests {
     #[test]
     fn page_25_slower_than_2_hz_disagrees_even_when_the_power_matches() {
         let (records, cps) = ride(1_000_000, 0, 60);
-        let v = check5(&records, &cps);
+        let v = check5(&Timeline::of_parts(&records, &cps, &[]));
         let verdict = v["verdict"].as_str().expect("verdict");
         assert!(verdict.starts_with("disagree: page 25 rate 1.0 Hz"), "{v}");
         let (records, cps) = ride(500_000, 0, 60);
-        assert_eq!(check5(&records, &cps)["verdict"], "agree");
+        assert_eq!(
+            check5(&Timeline::of_parts(&records, &cps, &[]))["verdict"],
+            "agree"
+        );
     }
 
     #[test]
     fn too_short_a_ride_has_no_verdict() {
         let (records, cps) = ride(250_000, 0, 25);
-        let v = check5(&records, &cps);
+        let v = check5(&Timeline::of_parts(&records, &cps, &[]));
         assert!(
             v["verdict"]
                 .as_str()
@@ -600,7 +629,8 @@ mod tests {
                 })
                 .collect()
         };
-        let verdict = |rpm| check5(&records, &at_rpm(rpm))["verdict"].clone();
+        let verdict =
+            |rpm| check5(&Timeline::of_parts(&records, &at_rpm(rpm), &[]))["verdict"].clone();
         assert_eq!(verdict(90.0), "agree");
         assert_eq!(verdict(89.2), "agree", "within 1 rpm");
         let off = verdict(75.0);
@@ -636,7 +666,7 @@ mod tests {
         records[0].bytes = encode(&ControlPage::TargetPower { watts: 0.0 })
             .expect("encodes")
             .to_vec();
-        let v = check5(&records, &cps);
+        let v = check5(&Timeline::of_parts(&records, &cps, &[]));
         assert_eq!(v["windows"].as_array().map(Vec::len), Some(1), "{v}");
         assert!(
             v["verdict"]
@@ -665,7 +695,9 @@ mod tests {
     }
 
     fn fe_frame_with(at_us: u64, power_unavailable: bool, cadence_unavailable: bool) -> Record {
-        let mut f = [0xa4, 9, 0x4e, 5, 25, 0, 90, 0, 0, 150, 0, 0x30, 0];
+        // The update event count, which moves with each update the trainer sends.
+        let count = u8::try_from(at_us / 1000 % 251).expect("a byte");
+        let mut f = [0xa4, 9, 0x4e, 5, 25, count, 90, 0, 0, 150, 0, 0x30, 0];
         if power_unavailable {
             (f[9], f[10]) = (0xff, 0x0f);
         }
@@ -716,14 +748,24 @@ mod tests {
     fn verdict_of(fe: Vec<Record>, cp: &[Cps]) -> String {
         let mut records = vec![erg(0, 150.0), erg(30 * SEC, 200.0)];
         records.extend(fe);
-        check5(&records, cp)["verdict"]
+        check5(&Timeline::of_parts(&records, cp, &[]))["verdict"]
             .as_str()
             .expect("verdict")
             .to_string()
     }
 
+    /// Page-25 frames on `times`, each with the next event count (byte 5) as the trainer sends
+    /// them, so no two are the same record.
     fn fe_of(times: &[u64]) -> Vec<Record> {
-        times.iter().map(|t| fe_frame(*t, false)).collect()
+        (0_u8..)
+            .zip(times)
+            .map(|(count, t)| {
+                let mut r = fe_frame(*t, false);
+                r.bytes[5] = count;
+                r.bytes[12] = r.bytes[..12].iter().fold(0, |x, v| x ^ v);
+                r
+            })
+            .collect()
     }
 
     fn cps_of(times: &[u64]) -> Vec<Cps> {

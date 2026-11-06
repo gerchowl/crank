@@ -5,7 +5,10 @@
 //! from its tx writes, the rider's from page 25 (power, cadence) and page 16 (speed). Only a run whose procedure
 //! completed gives a result; any other run (or a capture without an outcome line) reports
 //! "no result" and no verdict.
-use crate::frames::{Cps, Note, Record, page_of, parse_capture};
+use crate::{
+    frames::{Record, command_status, page_of, parse_capture},
+    timeline::{ERG_ONLY, Grammar, Step, Timeline},
+};
 use crank_engine::erg::policy::{REENGAGE_RPM, RELEASE_RPM};
 use crank_fec::{Page, decode};
 use serde_json::{Value, json};
@@ -82,39 +85,127 @@ pub struct Sample {
     pub power: Option<u16>,
     /// Target limit code (0 at target, 1 speed low, 2 speed high, 3 undetermined).
     pub target_limit: u8,
+    /// FE state code.
+    pub state: u8,
+    /// Trainer status bits.
+    pub status: u8,
+    /// Its index among the frames it was read from (a [`Timeline`]'s positions).
+    pub pos: usize,
+    /// The same payload as the page 25 before it: the trainer repeated its last update (the
+    /// update event count did not move), so it is no new sample of power or cadence.
+    pub repeat: bool,
 }
 
-/// Page-25 samples of a capture, in arrival order.
+/// Page-25 samples of frames in time order (a [`Timeline`]'s, or the live pump's), in that order.
 pub fn samples(records: &[Record]) -> Vec<Sample> {
-    let mut out: Vec<Sample> = records
+    let mut last: Option<&[u8]> = None;
+    records
         .iter()
-        .filter(|r| r.rx)
-        .filter_map(|r| match decode(&r.bytes).ok()?.page {
-            Page::Trainer(t) => Some(Sample {
-                at_us: r.at_us,
-                cadence: t.cadence_rpm,
-                power: t.power_w,
-                target_limit: t.target_limit,
-            }),
+        .enumerate()
+        .filter(|(_, r)| r.rx)
+        .filter_map(|(pos, r)| match decode(&r.bytes).ok()?.page {
+            Page::Trainer(t) => {
+                let repeat = last == Some(r.bytes.as_slice());
+                last = Some(&r.bytes);
+                Some(Sample {
+                    at_us: r.at_us,
+                    cadence: t.cadence_rpm,
+                    power: t.power_w,
+                    target_limit: t.target_limit,
+                    state: t.state,
+                    status: t.status,
+                    pos,
+                    repeat,
+                })
+            }
             _ => None,
         })
-        .collect();
-    out.sort_by_key(|s| s.at_us);
-    out
+        .collect()
 }
 
-/// Page-16 speeds `(at_us, m/s)`, in arrival order.
-fn speeds(records: &[Record]) -> Vec<(u64, f64)> {
-    let mut out: Vec<(u64, f64)> = records
+/// Page-16 speeds `(at_us, m/s)`, in time order; a payload repeating the one before is no new
+/// speed (as [`Sample::repeat`]).
+pub(crate) fn speeds(records: &[Record]) -> Vec<(u64, f64)> {
+    let mut last: Option<&[u8]> = None;
+    records
         .iter()
         .filter(|r| r.rx)
         .filter_map(|r| match decode(&r.bytes).ok()?.page {
-            Page::GeneralFe(g) => g.speed_mps.map(|v| (r.at_us, f64::from(v))),
+            Page::GeneralFe(g) => {
+                let repeat = last == Some(r.bytes.as_slice());
+                last = Some(&r.bytes);
+                g.speed_mps
+                    .filter(|_| !repeat)
+                    .map(|v| (r.at_us, f64::from(v)))
+            }
             _ => None,
         })
-        .collect();
-    out.sort_by_key(|s| s.0);
-    out
+        .collect()
+}
+
+/// One page-70 request the harness wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Request {
+    /// Its index among the frames.
+    pub pos: usize,
+    /// When it was written, µs from capture start.
+    pub at_us: u64,
+    /// The page it requests.
+    pub page: u8,
+}
+
+/// The page-70 requests among `records`.
+pub(crate) fn requests(records: &[Record]) -> Vec<Request> {
+    records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.rx && page_of(&r.bytes) == Some(70))
+        .map(|(pos, r)| Request {
+            pos,
+            at_us: r.at_us,
+            page: r.bytes[10],
+        })
+        .collect()
+}
+
+/// One page-71 command status the trainer sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Status {
+    /// Its index among the frames.
+    pub pos: usize,
+    /// Arrival, µs from capture start.
+    pub at_us: u64,
+    /// The last control page it names.
+    pub page: u8,
+    /// Its bytes 4–7, the echo of that page's.
+    pub echo: [u8; 4],
+}
+
+/// The page-71 command statuses among `records`.
+pub(crate) fn statuses(records: &[Record]) -> Vec<Status> {
+    records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.rx)
+        .filter_map(|(pos, r)| {
+            let (page, _, _, echo) = command_status(&r.bytes)?;
+            Some(Status {
+                pos,
+                at_us: r.at_us,
+                page,
+                echo,
+            })
+        })
+        .collect()
+}
+
+/// The page-81 serials (bytes 8–11) the trainer sent, `(at_us, serial)`.
+pub fn serials(records: &[Record]) -> Vec<(u64, [u8; 4])> {
+    records
+        .iter()
+        .filter(|r| r.rx && page_of(&r.bytes) == Some(0x51))
+        .filter_map(|r| Some((r.at_us, r.bytes.get(8..12)?.try_into().ok()?)))
+        .collect()
 }
 
 /// A control page the harness wrote.
@@ -138,25 +229,55 @@ pub enum Control {
     NotAFrame,
 }
 
-/// Control writes `(at_us, control)` in write order: every tx page 48–51 and 55, whatever its
-/// fields ([`Control::Malformed`]), and every tx record that is no ANT frame ([`Control::NotAFrame`]).
-pub fn controls(records: &[Record]) -> Vec<(u64, Control)> {
-    let mut out: Vec<(u64, Control)> = records
+/// One control write of a timeline.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Write {
+    /// Its index among the frames (a [`Timeline`]'s positions).
+    pub pos: usize,
+    /// When it was written, µs from capture start.
+    pub at_us: u64,
+    /// What it writes.
+    pub control: Control,
+    /// Its page bytes 4–7, what a page-71 reply echoes.
+    pub data: [u8; 4],
+}
+
+/// Control writes in write order: every tx page 48–51 and 55, whatever its fields
+/// ([`Control::Malformed`]), and every tx record that is no ANT frame ([`Control::NotAFrame`]).
+pub fn writes(records: &[Record]) -> Vec<Write> {
+    records
         .iter()
-        .filter(|r| !r.rx)
-        .filter_map(|r| {
-            let Some(page) = page_of(&r.bytes) else {
-                return Some((r.at_us, Control::NotAFrame));
+        .enumerate()
+        .filter(|(_, r)| !r.rx)
+        .filter_map(|(pos, r)| {
+            let control = match page_of(&r.bytes) {
+                None => Control::NotAFrame,
+                Some(page @ (48..=51 | 55)) => {
+                    control(&r.bytes).unwrap_or(Control::Malformed(page))
+                }
+                Some(_) => return None,
             };
-            let page = Some(page).filter(|p| matches!(p, 48..=51 | 55))?;
-            Some((
-                r.at_us,
-                control(&r.bytes).unwrap_or(Control::Malformed(page)),
-            ))
+            Some(Write {
+                pos,
+                at_us: r.at_us,
+                control,
+                data: r
+                    .bytes
+                    .get(8..12)
+                    .and_then(|d| d.try_into().ok())
+                    .unwrap_or_default(),
+            })
         })
-        .collect();
-    out.sort_by_key(|c| c.0);
-    out
+        .collect()
+}
+
+/// [`writes`] as `(at_us, control)`, for the checks that read durations between writes.
+#[cfg(test)]
+pub fn controls(records: &[Record]) -> Vec<(u64, Control)> {
+    writes(records)
+        .into_iter()
+        .map(|w| (w.at_us, w.control))
+        .collect()
 }
 
 /// The control a frame writes, when every field decodes.
@@ -223,9 +344,10 @@ pub(crate) fn share_within(p: &[f64], target: f64, tol: f64) -> Option<f64> {
     })
 }
 
-/// End of the procedure: the release write (page 48 0 %), or the last record.
-pub(crate) fn procedure_end(records: &[Record], ctl: &[(u64, Control)]) -> u64 {
-    released_at(ctl).unwrap_or_else(|| records.iter().map(|r| r.at_us).max().unwrap_or(0))
+/// End of the procedure: the release write (page 48 0 %), or the capture's last frame, at
+/// `last_us`.
+pub(crate) fn procedure_end(last_us: u64, ctl: &[(u64, Control)]) -> u64 {
+    released_at(ctl).unwrap_or(last_us)
 }
 
 /// The run's closing release: the last page 48 at 0 %, after some other write. `None` in a
@@ -239,21 +361,20 @@ pub(crate) fn released_at(ctl: &[(u64, Control)]) -> Option<u64> {
 }
 
 /// The release at the end of a capture: page 48 0 % written after the last other control
-/// write, and whether a page-71 reply echoed it.
-pub fn release(records: &[Record]) -> Value {
-    let ctl = controls(records);
-    let last = ctl.last().filter(|(_, c)| *c == Control::Resistance(0.0));
-    let echoed = last.is_some_and(|(at, _)| {
-        records.iter().any(|r| {
-            r.rx && r.at_us >= *at
-                && page_of(&r.bytes) == Some(71)
-                && r.bytes[5] == 48
-                && r.bytes[11] == 0
-        })
+/// write, and whether a later page-71 reply echoed it. Read in file order also from a capture
+/// the timeline refused: it says whether the trainer was left released.
+pub fn release(ws: &[Write], st: &[Status]) -> Value {
+    let last = ws
+        .last()
+        .filter(|w| w.control == Control::Resistance(0.0))
+        .copied();
+    let echoed = last.is_some_and(|w| {
+        st.iter()
+            .any(|s| s.pos > w.pos && s.page == 48 && s.echo[3] == 0)
     });
     json!({
         "page48_0pct_last": last.is_some(),
-        "at_s": last.map(|(at, _)| round1(secs(*at))),
+        "at_s": last.map(|w| round1(secs(w.at_us))),
         "page71_echoed": echoed,
     })
 }
@@ -343,9 +464,9 @@ fn crossings(s: &[Sample], h: &Hold) -> Vec<(u64, bool)> {
 }
 
 /// The ERG steps of a check-6 capture (a hold following a hold): `(from_w, hold, t90)`.
-fn erg_steps(records: &[Record], s: &[Sample]) -> Vec<(f64, Hold, Option<u64>)> {
-    let ctl = controls(records);
-    erg_holds(&ctl, procedure_end(records, &ctl))
+fn erg_steps(tl: &Timeline, s: &[Sample]) -> Vec<(f64, Hold, Option<u64>)> {
+    let ctl = tl.controls();
+    erg_holds(&ctl, procedure_end(tl.end_us(), &ctl))
         .windows(2)
         .filter_map(|pair| match pair {
             [(true, prev), (true, h)] => Some((prev.watts, *h, t90(s, prev.watts, h))),
@@ -354,13 +475,32 @@ fn erg_steps(records: &[Record], s: &[Sample]) -> Vec<(f64, Hold, Option<u64>)> 
         .collect()
 }
 
+/// Fail closed: `Err` unless `steps` are exactly the procedure's ([`crate::rider::CHECK6_W`]), so
+/// a missing or extra step never leaves the others to stand for the run.
+fn procedure_steps(steps: &[(f64, Hold, Option<u64>)]) -> Result<(), String> {
+    let want: Vec<(f64, f64)> = crate::rider::CHECK6_W
+        .windows(2)
+        .map(|w| (f64::from(w[0]), f64::from(w[1])))
+        .collect();
+    let got: Vec<(f64, f64)> = steps.iter().map(|(f, h, _)| (*f, h.watts)).collect();
+    if got == want {
+        Ok(())
+    } else {
+        Err(format!(
+            "the ERG steps are {got:?}, not the procedure's {want:?}"
+        ))
+    }
+}
+
 /// Check 6: ERG step response (t90) and cadence steps at a held target.
-pub fn check6(records: &[Record]) -> Value {
-    let s = samples(records);
-    let ctl = controls(records);
-    let holds = erg_holds(&ctl, procedure_end(records, &ctl));
+pub fn check6(tl: &Timeline) -> Value {
+    let s = tl.updates();
+    let ctl = tl.controls();
+    let holds = erg_holds(&ctl, procedure_end(tl.end_us(), &ctl));
     let mut steps = Vec::new();
-    for (from_w, h, t) in erg_steps(records, &s) {
+    let erg = erg_steps(tl, &s);
+    for (from_w, h, t) in &erg {
+        let (from_w, h, t) = (*from_w, *h, *t);
         steps.push(json!({
             "from_w": from_w, "to_w": h.watts, "t90_s": t.map(|t| round1(secs(t))),
             "mean_power_last_10s_w": mean(powers(&s, h.end.saturating_sub(10 * SEC), h.end)).map(round1),
@@ -384,30 +524,43 @@ pub fn check6(records: &[Record]) -> Value {
             }));
         }
     }
-    json!({
+    let mut v = json!({
         "method": "holds = page-49 writes kept >= 10 s; a step is a hold following a hold; t90 = write to the first page-25 sample past 90 % of the step; cadence steps = page-25 cadence crossing 75 rpm inside a hold, settled = first instant from which power stays within ±5 % for 3 s",
         "steps": steps,
         "cadence_steps": cadence_steps,
-    })
+    });
+    if let Err(why) = procedure_steps(&erg) {
+        v["error"] = json!(why);
+    }
+    v
 }
 
 /// Check 7: the procedure's target over the stretch from its write to the next write.
-pub fn check7(records: &[Record]) -> Value {
-    let s = samples(records);
+pub fn check7(tl: &Timeline) -> Value {
+    let s = tl.updates();
     let target = f64::from(crate::rider::CHECK7_W);
-    let Some(from) = controls(records)
+    let Some(write) = tl
+        .writes()
         .iter()
-        .find(|(_, c)| *c == Control::Erg(target))
-        .map(|(at, _)| *at)
+        .find(|w| w.control == Control::Erg(target))
+        .copied()
     else {
         return json!({"error": format!("no page-49 write of {target} W")});
     };
-    let Some(to) = records
+    let from = write.at_us;
+    // The next write of any page after it in the timeline, one of the same µs included (the
+    // grammar has made sure a completed run writes nothing but the closing release there).
+    let next_write = tl
+        .writes()
         .iter()
-        .filter(|r| !r.rx && r.at_us > from)
-        .map(|r| r.at_us)
-        .min()
-    else {
+        .find(|w| w.pos > write.pos)
+        .map(|w| (w.pos, w.at_us));
+    let next_request = tl
+        .requests()
+        .iter()
+        .find(|q| q.pos > write.pos)
+        .map(|q| (q.pos, q.at_us));
+    let Some((_, to)) = next_write.into_iter().chain(next_request).min() else {
         return json!({"error": "no write after the target"});
     };
     let p = powers(&s, from + SETTLE, to);
@@ -449,11 +602,11 @@ fn model_power(st: &SimState, v: f64) -> f64 {
 }
 
 /// Check 8: power per SIM state against the road model at the measured speed.
-pub fn check8(records: &[Record]) -> Value {
-    let s = samples(records);
-    let v = speeds(records);
-    let ctl = controls(records);
-    let end = procedure_end(records, &ctl);
+pub fn check8(tl: &Timeline) -> Value {
+    let s = tl.updates();
+    let v = tl.speeds();
+    let ctl = tl.controls();
+    let end = procedure_end(tl.end_us(), &ctl);
     let mut st = SimState {
         grade: f64::NAN,
         crr: 0.004,
@@ -548,6 +701,9 @@ pub enum PowerLag {
     Within(u64),
     /// A step slower than [`MAX_T90_US`]: the slowest t90, µs (`None`: never reached 90 %).
     TooSlow(Option<u64>),
+    /// A check 6 that claims a completed run but is contradictory or fails closed (no timeline,
+    /// a grammar breach, not the procedure's steps): check 9 gives no result beside it.
+    Contradictory(String),
 }
 
 impl PowerLag {
@@ -570,11 +726,22 @@ impl PowerLag {
         };
         match outcome_in(text) {
             Some(o) if o == COMPLETED => {
-                let records = parse_capture(text);
-                let s = samples(&records);
-                let t90s: Vec<Option<u64>> =
-                    erg_steps(&records, &s).iter().map(|(_, _, t)| *t).collect();
-                Self::of_steps(&t90s)
+                let steps = Timeline::parse(text).and_then(|tl| {
+                    malformed(tl.writes())
+                        .or_else(|| cut_off(&tl))
+                        .map_or(Ok(()), Err)?;
+                    tl.grammar(&GRAMMAR_6)?;
+                    let steps = erg_steps(&tl, &tl.updates());
+                    procedure_steps(&steps)?;
+                    Ok(steps)
+                });
+                match steps {
+                    Ok(steps) => {
+                        let t90s: Vec<Option<u64>> = steps.iter().map(|(_, _, t)| *t).collect();
+                        Self::of_steps(&t90s)
+                    }
+                    Err(why) => Self::Contradictory(format!("check 6: {why}")),
+                }
             }
             o => Self::NotMeasured(format!(
                 "check 6 did not complete ({})",
@@ -635,7 +802,7 @@ impl PowerLag {
         match self {
             Self::Within(t) | Self::TooSlow(Some(t)) => format!("{:.2} s", secs(*t)),
             Self::TooSlow(None) => "not reached".into(),
-            Self::NotMeasured(_) => "not measured".into(),
+            Self::NotMeasured(_) | Self::Contradictory(_) => "not measured".into(),
         }
     }
 
@@ -646,7 +813,7 @@ impl PowerLag {
             "within": match self {
                 Self::Within(_) => json!(true),
                 Self::TooSlow(_) => json!(false),
-                Self::NotMeasured(why) => json!(why),
+                Self::NotMeasured(why) | Self::Contradictory(why) => json!(why),
             },
         })
     }
@@ -843,27 +1010,32 @@ fn bin_followed(p: &[f64], target: f64) -> bool {
 /// The capture time of the procedure's first page-49 write of 250 W: [`DESCENT_AFTER_US`]
 /// before the descent starts. The live run and `analyse` both start it from here, also when
 /// the soft start begins at 250 W and writes it six times.
-pub fn descent_target_at(records: &[Record]) -> Option<u64> {
-    let ctl = controls(records);
-    let end = procedure_end(records, &ctl);
+pub fn descent_target_at(w: &[Write]) -> Option<u64> {
+    // Before the run's last release (as [`released_at`]), when there is one.
+    let end = w
+        .iter()
+        .rposition(|x| x.control == Control::Resistance(0.0))
+        .filter(|i| *i > 0)
+        .map_or(usize::MAX, |i| w[i].pos);
     let target = f64::from(crate::rider::MAX_ERG_W);
-    ctl.iter()
-        .find(|(at, c)| *at < end && *c == Control::Erg(target))
-        .map(|(at, _)| *at)
+    w.iter()
+        .find(|w| w.pos < end && w.control == Control::Erg(target))
+        .map(|w| w.at_us)
 }
 
 /// Check 9: down to which cadence ERG holds 250 W while the rider follows the cued descent.
 /// `lag` is check 6's measure of the power response, which "the release comes first" needs.
-pub fn check9(records: &[Record], lag: &PowerLag) -> Value {
-    let s = samples(records);
-    let ctl = controls(records);
-    let end = procedure_end(records, &ctl);
+pub fn check9(tl: &Timeline, lag: &PowerLag) -> Value {
+    // The descent reads every page 25, repeats too, as the live run does; the bins read updates.
+    let s = tl.samples();
+    let ctl = tl.controls();
+    let end = procedure_end(tl.end_us(), &ctl);
     let target = f64::from(crate::rider::MAX_ERG_W);
-    let Some(at) = descent_target_at(records) else {
+    let Some(at) = descent_target_at(tl.writes()) else {
         return json!({"error": format!("no page-49 write of {target} W")});
     };
     let from = at + DESCENT_AFTER_US;
-    let d = descent(&s, from, target);
+    let d = descent(s, from, target);
     let until = match &d {
         Descent::Stalled { at_us, .. }
         | Descent::Floor { at_us, .. }
@@ -877,11 +1049,14 @@ pub fn check9(records: &[Record], lag: &PowerLag) -> Value {
     };
     let descent_samples: Vec<&Sample> = s
         .iter()
-        .filter(|x| x.at_us >= from && x.at_us < hold_until)
+        .filter(|x| !x.repeat && x.at_us >= from && x.at_us < hold_until)
         .collect();
     let held = settled_hold(&descent_samples, target);
     let mut bins: std::collections::BTreeMap<u8, Vec<f64>> = std::collections::BTreeMap::new();
-    for x in s.iter().filter(|x| x.at_us >= at && x.at_us <= until) {
+    for x in s
+        .iter()
+        .filter(|x| !x.repeat && x.at_us >= at && x.at_us <= until)
+    {
         if let (Some(c), Some(p)) = (x.cadence, x.power) {
             bins.entry(c / 5 * 5).or_default().push(f64::from(p));
         }
@@ -906,7 +1081,7 @@ pub fn check9(records: &[Record], lag: &PowerLag) -> Value {
             json!({"at_s": round1(secs(*at_us)), "why": why}),
         ),
     };
-    json!({
+    let mut v = json!({
         "method": "descent from 10 s after the procedure's 250 W write; the cue falls from 90 rpm by 0.5 rpm/s; followed = cadence never falls > 9 rpm within 3 s and stays within 15 rpm of the cue; stall = power < 90 % of the target for 2 s with the cadence followed from 1 s before the drop; floor = first sample below 25 rpm with power held; anything else departs (no verdict). Verdict (power lag assumed first-order, tau <= 1 s): first = power settled >= 90 % for 5 s (samples <= 0.5 s apart) at cadences up to N with N + 2 < 40, and only with check 6 of the same capture set at t90 <= 2.3 s; too late = power < 90 % at a cadence > 40; otherwise ambiguous (not valid when check 6 t90 > 2.3 s). Bins: 5 rpm, followed = >= 2 samples and >= 80 % within ±10 %",
         "target_w": target,
         "descent_from_s": round1(secs(from)),
@@ -922,52 +1097,51 @@ pub fn check9(records: &[Record], lag: &PowerLag) -> Value {
         "reengage_rpm": REENGAGE_RPM,
         "power_lag": lag.json(),
         "verdict": stall_verdict(&d, held, lag),
-    })
+    });
+    // Fail closed: a check 6 beside it that is contradictory leaves no power-lag bound to judge by.
+    if let PowerLag::Contradictory(why) = lag {
+        v["error"] = json!(why);
+    }
+    v
 }
 
 /// Check 12: does `Free` (page 50 defaults, page 51 grade 0) release an ERG target?
-pub fn check12(records: &[Record]) -> Value {
-    let s = samples(records);
-    let ctl = controls(records);
-    let end = procedure_end(records, &ctl);
+pub fn check12(tl: &Timeline) -> Value {
+    let s = tl.updates();
+    let ctl = tl.writes();
+    let end = procedure_end(tl.end_us(), &tl.controls());
     let Some((erg_i, target)) = ctl
         .iter()
         .enumerate()
         .rev()
-        .find_map(|(i, (_, c))| match c {
-            Control::Erg(w) => Some((i, *w)),
+        .find_map(|(i, w)| match w.control {
+            Control::Erg(watts) => Some((i, watts)),
             _ => None,
         })
     else {
         return json!({"error": "no page-49 target"});
     };
     let after = &ctl[erg_i + 1..];
-    let wind = after.iter().find(|(_, c)| matches!(c, Control::Wind(..)));
+    let wind = after
+        .iter()
+        .find(|w| matches!(w.control, Control::Wind(..)));
     let track = after
         .iter()
-        .find(|(_, c)| matches!(c, Control::Track(g, _) if g.abs() < 1e-9));
+        .find(|w| matches!(w.control, Control::Track(g, _) if g.abs() < 1e-9));
     let (Some(wind), Some(track)) = (wind, track) else {
         return json!({"error": "no page 50 + page 51 grade 0 after the ERG target"});
     };
-    let free_at = wind.0.max(track.0);
+    let free_at = wind.at_us.max(track.at_us);
     let low: Vec<&Sample> = s
         .iter()
         .filter(|x| x.at_us > free_at && x.at_us < end && x.cadence.is_some_and(|c| c < 80))
         .collect();
     let low_power = mean(low.iter().filter_map(|x| x.power.map(f64::from)));
     // A page-71 reply after the write naming that page and echoing its bytes 4-7.
-    let echoed = |page: u8, at: u64| {
-        let sent = records
+    let echoed = |page: u8, w: &Write| {
+        tl.statuses()
             .iter()
-            .find(|r| !r.rx && r.at_us == at && page_of(&r.bytes) == Some(page));
-        sent.is_some_and(|w| {
-            records.iter().any(|r| {
-                r.rx && r.at_us >= at
-                    && page_of(&r.bytes) == Some(71)
-                    && r.bytes[5] == page
-                    && r.bytes[8..12] == w.bytes[8..12]
-            })
-        })
+            .any(|st| st.pos > w.pos && st.page == page && st.echo == w.data)
     };
     json!({
         "method": "Free = page 50 then page 51 grade 0 after a page-49 target; released = mean power of the samples below 80 rpm after Free < 90 % of the ERG target (ERG would hold it); echoed = a later page-71 reply names the page and echoes its bytes 4-7",
@@ -977,23 +1151,97 @@ pub fn check12(records: &[Record]) -> Value {
         "low_cadence_samples": low.len(),
         "low_cadence_mean_power_w": low_power.map(round1),
         "low_cadence_mean_rpm": mean(low.iter().filter_map(|x| x.cadence.map(f64::from))).map(round1),
-        "page71_echoed_50": echoed(50, wind.0),
-        "page71_echoed_51": echoed(51, track.0),
+        "page71_echoed_50": echoed(50, wind),
+        "page71_echoed_51": echoed(51, track),
         "released": low_power.map(|p| p < 0.9 * target),
     })
 }
 
+/// Check 6's event grammar ([`Timeline::grammar`]): ERG targets only, the soft start to the first
+/// of [`crate::rider::CHECK6_W`], then each next one.
+const GRAMMAR_6: Grammar = Grammar {
+    tags: &[],
+    answers: &[],
+    records: &[],
+    shapes: &[ERG_ONLY],
+    programs: &[&[
+        Step::Release,
+        Step::SoftStart(crate::rider::CHECK6_W[0]),
+        Step::Erg(crate::rider::CHECK6_W[1]),
+        Step::Erg(crate::rider::CHECK6_W[2]),
+        Step::Erg(crate::rider::CHECK6_W[3]),
+        Step::Erg(crate::rider::CHECK6_W[4]),
+        Step::Release,
+    ]],
+};
+/// Check 7's: the soft start to its target, nothing more.
+const GRAMMAR_7: Grammar = Grammar {
+    tags: &[],
+    answers: &[],
+    records: &[],
+    shapes: &[ERG_ONLY],
+    programs: &[&[
+        Step::Release,
+        Step::SoftStart(crate::rider::CHECK7_W),
+        Step::Release,
+    ]],
+};
+/// Check 9's: the soft start to 250 W, nothing more.
+const GRAMMAR_9: Grammar = Grammar {
+    tags: &[],
+    answers: &[],
+    records: &[],
+    shapes: &[ERG_ONLY],
+    programs: &[&[
+        Step::Release,
+        Step::SoftStart(crate::rider::MAX_ERG_W),
+        Step::Release,
+    ]],
+};
+/// Check 8's: SIM states (pages 50, 51, 55) only, as `rider.rs` `check8` writes them.
+const GRAMMAR_8: Grammar = Grammar {
+    tags: &[],
+    answers: &[],
+    records: &[],
+    shapes: &["^f*Rf*u[fe]*(?:S[fe]*)+R[fe]*q[fe]*$"],
+    programs: &[&[
+        Step::Release,
+        Step::User(75),
+        Step::Wind,
+        Step::Track(0),
+        Step::Track(5),
+        Step::User(100),
+        Step::User(75),
+        Step::Track(10),
+        Step::Release,
+    ]],
+};
+/// Check 12's: the soft start to 200 W, then `Free` (page 50 defaults, page 51 at 0 %).
+const GRAMMAR_12: Grammar = Grammar {
+    tags: &[],
+    answers: &[],
+    records: &[],
+    shapes: &["^f*Rf*u[fe]*(?:E[fe]*)+S[fe]*q[fe]*S[fe]*q[fe]*R[fe]*q[fe]*$"],
+    programs: &[&[
+        Step::Release,
+        Step::SoftStart(crate::rider::CHECK12_W),
+        Step::Wind,
+        Step::Track(0),
+        Step::Release,
+    ]],
+};
+
 /// The first malformed control write, named: the harness encodes only valid fields, so such a
 /// write is not its procedure's, and no check gives a result from that capture.
-fn malformed(records: &[Record]) -> Option<String> {
-    controls(records).into_iter().find_map(|(at, c)| match c {
+fn malformed(ws: &[Write]) -> Option<String> {
+    ws.iter().find_map(|w| match w.control {
         Control::Malformed(page) => Some(format!(
             "malformed control write (page {page} at {} s)",
-            round1(secs(at))
+            round1(secs(w.at_us))
         )),
         Control::NotAFrame => Some(format!(
             "malformed control write (not an ANT frame, at {} s)",
-            round1(secs(at))
+            round1(secs(w.at_us))
         )),
         _ => None,
     })
@@ -1003,41 +1251,82 @@ fn malformed(records: &[Record]) -> Option<String> {
 /// is written, a failed one too), so a capture whose last control write is not a release, or is
 /// the opening one, was cut off before the run's end and gives no result, as a live run without
 /// its end would not.
-fn cut_off(records: &[Record]) -> Option<String> {
-    let ctl = controls(records);
-    match ctl.last() {
-        Some((_, Control::Resistance(x))) if *x == 0.0 && ctl.len() > 1 => None,
-        _ => Some("the capture is cut off: no release write ends it".into()),
-    }
+fn cut_off(tl: &Timeline) -> Option<String> {
+    tl.closing_release()
+        .is_none()
+        .then(|| "the capture is cut off: no release write ends it".into())
 }
 
-/// Part B analysis by capture stem (`check5` …), `None` for other captures. `outcome` is how
-/// the procedure ended (the capture's outcome line); without `completed` there is no verdict.
-/// `lag` is check 6 of the same capture set ([`PowerLag::beside`]), which check 9 needs; `cps`
-/// is the capture's Cycling Power notifications, which check 5 compares; `notes` its tagged
-/// comment lines, which hold check 10's events.
-pub fn analyse(
-    stem: &str,
-    records: &[Record],
-    cps: &[Cps],
-    notes: &[Note],
-    outcome: Option<&str>,
+/// A Part B check of a timeline.
+type Check = fn(&Timeline, &PowerLag) -> Value;
+
+/// An `unknown` result.
+fn unknown(why: &String) -> Value {
+    json!({ "verdict": format!("unknown: {why}") })
+}
+
+/// The check's value of `tl`, and why it gives no result if it gives none: a malformed write or a
+/// cut-off capture; for a run that claims to have `completed`, a breach of its `grammar` (then the
+/// check does not read it) or the check's own `error` (what its procedure writes is not there).
+fn result_of(
+    tl: &Timeline,
+    check: Check,
+    grammar: &Grammar,
+    completed: bool,
     lag: &PowerLag,
-) -> Option<Value> {
-    let mut v = match stem {
-        "check5" => crate::cps::check5(records, cps),
-        "check6" => check6(records),
-        "check7" => check7(records),
-        "check8" => check8(records),
-        "check9" => check9(records, lag),
-        "check10" => crate::check10::check10(records, notes),
-        "check11a" => crate::check11ac::check11a(records, notes),
-        "check11b" => crate::check11::check11b(records, notes),
-        "check11c" => crate::check11ac::check11c(records, notes),
-        "check12" => check12(records),
+) -> (Value, Option<String>) {
+    if let Some(why) = malformed(tl.writes()).or_else(|| cut_off(tl)) {
+        return (check(tl, lag), Some(why));
+    }
+    if completed && let Err(why) = tl.grammar(grammar) {
+        return (unknown(&why), Some(why));
+    }
+    let v = check(tl, lag);
+    let error = v["error"]
+        .as_str()
+        .filter(|_| completed)
+        .map(str::to_string);
+    (v, error)
+}
+
+/// Part B analysis by capture stem (`check5` …) of a capture's text, `None` for other captures.
+/// `outcome` is how the procedure ended (the capture's outcome line); without `completed` there
+/// is no verdict. `lag` is check 6 of the same capture set ([`PowerLag::beside`]), which check 9
+/// needs. The text is read once into a [`Timeline`]; one that is not in time order is no result,
+/// and no check reads it.
+pub fn analyse(stem: &str, text: &str, outcome: Option<&str>, lag: &PowerLag) -> Option<Value> {
+    let (check, grammar): (Check, &Grammar) = match stem {
+        "check5" => (|tl, _| crate::cps::check5(tl), &crate::cps::GRAMMAR),
+        "check6" => (|tl, _| check6(tl), &GRAMMAR_6),
+        "check7" => (|tl, _| check7(tl), &GRAMMAR_7),
+        "check8" => (|tl, _| check8(tl), &GRAMMAR_8),
+        "check9" => (check9, &GRAMMAR_9),
+        "check10" => (
+            |tl, _| crate::check10::check10(tl),
+            &crate::check10::GRAMMAR,
+        ),
+        "check11a" => (
+            |tl, _| crate::check11ac::check11a(tl),
+            &crate::check11ac::GRAMMAR_A,
+        ),
+        "check11b" => (
+            |tl, _| crate::check11::check11b(tl),
+            &crate::check11::GRAMMAR,
+        ),
+        "check11c" => (
+            |tl, _| crate::check11ac::check11c(tl),
+            &crate::check11ac::GRAMMAR_C,
+        ),
+        "check12" => (|tl, _| check12(tl), &GRAMMAR_12),
         _ => return None,
     };
-    let malformed = malformed(records).or_else(|| cut_off(records));
+    // A capture that claims a completed run is held to the check's grammar before the check reads
+    // it; a run that did not complete gives no result anyway.
+    let (mut v, invalid) = match Timeline::parse(text) {
+        Err(why) => (unknown(&why), Some(why)),
+        Ok(tl) => result_of(&tl, check, grammar, outcome == Some(COMPLETED), lag),
+    };
+    let malformed = invalid;
     let completed = outcome == Some(COMPLETED) && malformed.is_none();
     v["procedure"] = json!(outcome.unwrap_or("unknown: the capture has no outcome line"));
     v["completed"] = json!(completed);
@@ -1065,7 +1354,10 @@ pub fn analyse(
             }
         }
     }
-    v["release"] = release(records);
+    // From the frames in file order also when the timeline refused them: whether the trainer was
+    // left released is read for every capture.
+    let frames = parse_capture(text);
+    v["release"] = release(&writes(&frames), &statuses(&frames));
     v["line"] = json!(line(stem, &v));
     Some(v)
 }
@@ -1214,13 +1506,38 @@ mod tests {
 
     fn p25(at_us: u64, cadence: u8, watts: u16) -> Record {
         let w = watts.to_le_bytes();
-        let mut f = [0xa4, 9, 0x4e, 5, 25, 0, cadence, 0, 0, w[0], w[1], 0x30, 0];
+        let count = u8::try_from(at_us / 250_000 % 256).expect("a byte");
+        let mut f = [
+            0xa4, 9, 0x4e, 5, 25, count, cadence, 0, 0, w[0], w[1], 0x30, 0,
+        ];
         f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
         Record {
             at_us,
             rx: true,
             bytes: f.to_vec(),
         }
+    }
+
+    /// The page-70 requests every run writes: for page 81 after its opening release, for page 71
+    /// after its closing one.
+    fn serial_request(at_us: u64) -> Record {
+        tx(at_us, &ControlPage::Request { page: 81, times: 1 })
+    }
+    fn status_request(at_us: u64) -> Record {
+        tx(at_us, &ControlPage::Request { page: 71, times: 1 })
+    }
+
+    /// `Rig::engage` from 0 W to `target` W as the soft start writes it, its last write at `end_us`.
+    fn soft_start(end_us: u64, target: f32) -> Vec<Record> {
+        let erg = |watts| ControlPage::TargetPower { watts };
+        let mut v = vec![tx(end_us - 600_000, &erg(0.0))];
+        v.extend((0..=5_u8).map(|k| {
+            tx(
+                end_us - u64::from(5 - k) * 100_000,
+                &erg(target * f32::from(k) / 5.0),
+            )
+        }));
+        v
     }
 
     /// A control page with a field set to its "invalid" value (checksum fixed).
@@ -1239,28 +1556,29 @@ mod tests {
     #[test]
     fn a_capture_cut_off_before_its_closing_release_gives_no_result() {
         let free = ControlPage::BasicResistance { pct: 0.0 };
-        let erg = ControlPage::TargetPower { watts: 150.0 };
         let p = |n: u64| (2..n).map(|k| p25(k * SEC / 2, 90, 150));
         let none = PowerLag::NotMeasured("test".into());
         let cut = "the capture is cut off: no release write ends it";
         for (ride, invalid) in [
             (
                 [
-                    vec![tx(0, &free), tx(SEC, &erg)],
+                    vec![tx(0, &free), serial_request(100_000)],
+                    soft_start(SEC, 150.0),
                     p(120).collect(),
-                    vec![tx(60 * SEC, &free)],
+                    vec![tx(60 * SEC, &free), status_request(60 * SEC + 300_000)],
                 ]
                 .concat(),
                 None,
             ),
             (
-                [vec![tx(0, &free), tx(SEC, &erg)], p(120).collect()].concat(),
+                [vec![tx(0, &free)], soft_start(SEC, 150.0), p(120).collect()].concat(),
                 Some(cut),
             ),
             ([vec![tx(0, &free)], p(120).collect()].concat(), Some(cut)),
             (p(120).collect(), Some(cut)),
         ] {
-            let v = analyse("check7", &ride, &[], &[], Some(COMPLETED), &none).expect("stem");
+            let text = crate::timeline::text_of(&ride, &[], &[]);
+            let v = analyse("check7", &text, Some(COMPLETED), &none).expect("stem");
             assert_eq!(v["invalid"].as_str(), invalid, "{v}");
             assert_eq!(v["completed"], json!(invalid.is_none()));
         }
@@ -1289,15 +1607,16 @@ mod tests {
             invalid(at, &user, [5, 6])
         };
         let free = ControlPage::BasicResistance { pct: 0.0 };
-        let mut ride = vec![
-            tx(0, &free),
-            tx(SEC, &ControlPage::TargetPower { watts: 150.0 }),
-        ];
+        let mut ride = vec![tx(0, &free), serial_request(100_000)];
+        ride.extend(soft_start(SEC, 150.0));
         ride.extend((2..120).map(|k| p25(k * SEC / 2, 90, 150)));
         ride.push(tx(60 * SEC, &free));
+        ride.push(status_request(60 * SEC + 300_000));
         let none = PowerLag::NotMeasured("test".into());
-        let run =
-            |r: &[Record], stem| analyse(stem, r, &[], &[], Some(COMPLETED), &none).expect("stem");
+        let run = |r: &[Record], stem| {
+            let text = crate::timeline::text_of(r, &[], &[]);
+            analyse(stem, &text, Some(COMPLETED), &none).expect("stem")
+        };
         assert_eq!(run(&ride, "check7")["completed"], json!(true));
         assert_eq!(
             run(&ride, "check7")["release"]["page48_0pct_last"],
@@ -1306,10 +1625,14 @@ mod tests {
         for (bad, page) in [(grade(30 * SEC), 51), (rider(30 * SEC), 55)] {
             let mut r = ride.clone();
             r.push(bad.clone());
-            assert_eq!(controls(&r)[2], (30 * SEC, Control::Malformed(page)));
-            let holds = erg_holds(&controls(&r), procedure_end(&r, &controls(&r)));
+            r.sort_by_key(|x| x.at_us);
+            assert_eq!(controls(&r)[8], (30 * SEC, Control::Malformed(page)));
+            let holds = erg_holds(
+                &controls(&r),
+                procedure_end(r.last().map_or(0, |x| x.at_us), &controls(&r)),
+            );
             assert_eq!(
-                holds[0].1.end,
+                holds.last().expect("the 150 W hold").1.end,
                 30 * SEC,
                 "the malformed write ends the hold"
             );
@@ -1337,7 +1660,8 @@ mod tests {
                 rx: false,
                 bytes,
             });
-            assert_eq!(controls(&r)[2], (30 * SEC, Control::NotAFrame));
+            r.sort_by_key(|x| x.at_us);
+            assert_eq!(controls(&r)[8], (30 * SEC, Control::NotAFrame));
             let v = run(&r, "check7");
             assert_eq!(v["completed"], json!(false), "{v}");
             assert!(
@@ -1349,7 +1673,10 @@ mod tests {
         // After the final release, it makes the run not released.
         let mut late = ride.clone();
         late.push(grade(61 * SEC));
-        assert_eq!(release(&late)["page48_0pct_last"], json!(false));
+        assert_eq!(
+            release(&writes(&late), &statuses(&late))["page48_0pct_last"],
+            json!(false)
+        );
     }
 
     #[test]
@@ -1375,6 +1702,10 @@ mod tests {
                     cadence: Some(c),
                     power: Some(p),
                     target_limit: 0,
+                    state: 3,
+                    status: 0,
+                    pos: 0,
+                    repeat: false,
                 }
             })
             .collect()
@@ -1605,7 +1936,10 @@ mod tests {
         ];
         records.extend((0..200).map(|k| p25(3 * SEC + k * 350_000, 90, 250)));
         assert_eq!(
-            check9(&records, &PowerLag::Within(MAX_T90_US))["error"],
+            check9(
+                &Timeline::of_parts(&records, &[], &[]),
+                &PowerLag::Within(MAX_T90_US)
+            )["error"],
             json!("no page-49 write of 250 W")
         );
     }
