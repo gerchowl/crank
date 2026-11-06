@@ -14,13 +14,7 @@
 // the failure states (#100), the Review/summary
 // (#106: a finished ride routes to History with the ride id until it exists) and the phone layout.
 // A window reload loses the session; the core keeps the ride loaded, and picking it up again is the Resume sheet (#259).
-import {
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Bluetooth,
   Heart,
@@ -54,6 +48,7 @@ import {
 } from "../stream";
 import { useSubscribe } from "../stream";
 import { openKeys } from "../shell/keys";
+import { BannerBand, banners, trainerNow } from "./banners";
 import { useFit } from "./fit";
 import { markForcedEnd } from "./forcedEnds";
 import {
@@ -281,47 +276,6 @@ function Pill({
   );
 }
 
-/**
- * A state banner (§5.2, §6.1, §18.3): one bold line and at most two short lines. The lines join with a separator that
- * is read (screen readers, the element's text) but not drawn: each line is drawn on its own row.
- */
-function Banner({
-  id,
-  lines,
-  sep = " · ",
-  alert,
-  end,
-}: {
-  id: string;
-  lines: ReactNode[];
-  sep?: string;
-  alert?: boolean;
-  /** The End… action of a long trainer loss, at the end of the bold line. */
-  end?: ReactNode;
-}) {
-  return (
-    <div
-      role={alert ? "alert" : "status"}
-      className="banner"
-      data-testid={id}
-      data-state={id}
-    >
-      {lines.map((l, i) => (
-        <p
-          key={i}
-          className="banner-line"
-          data-tier="t3plus"
-          data-state-label={i === 0 ? "" : undefined}
-        >
-          {i > 0 && <span className="sr-only">{sep}</span>}
-          {i === 0 ? <strong>{l}</strong> : l}
-          {i === 0 && end}
-        </p>
-      ))}
-    </div>
-  );
-}
-
 function useDetail(session: RideSession): WorkoutDetail | null {
   const [detail, setDetail] = useState<WorkoutDetail | null>(null);
   const id = session.workoutId;
@@ -366,10 +320,10 @@ function Next({
 /** What the key row says of the trainer following its commanded mode (ADR-0002 §4.4.1). */
 const FOLLOWING: Record<StreamFollowing, string | null> = {
   unknown: null,
-  checking: "checking the trainer",
-  suspect: "trainer suspect",
-  following: "trainer following",
-  not_following: "trainer not following",
+  checking: "checking it follows",
+  suspect: "may not be following",
+  following: "following",
+  not_following: "not following",
 };
 
 /** Records one subscription's samples into the session's history of `of`. */
@@ -524,9 +478,14 @@ function Screen({ session }: { session: RideSession }) {
   const xMax = Math.max(total ?? 0, workoutS ?? 0, 1);
   const free = session.workoutId === null;
   const counted = status?.compliance.countedS ?? 0;
+  // The trainer as the engine commands it and whether it follows (the same words as the pause banner, #324).
+  const trainer = trainerNow(status?.commanded);
+  const follows = status ? FOLLOWING[status.trainerFollowing] : null;
   const following = status
     ? [
-        FOLLOWING[status.trainerFollowing],
+        trainer && follows
+          ? `${trainer}, ${follows}`
+          : (trainer ?? (follows && `trainer ${follows}`)),
         counted > 0
           ? `compliance ${Math.round((100 * (status.compliance.withinS ?? 0)) / counted)} %`
           : null,
@@ -535,105 +494,20 @@ function Screen({ session }: { session: RideSession }) {
         .join(" · ")
     : "";
 
-  // One banner at a time, the most urgent first; each keeps its own words (§5.2, §6.5).
-  const lostWhat = loss.reconnecting
-    ? loss.hr
-      ? "NEO and HR lost"
-      : "NEO lost"
-    : loss.hr
-      ? "No NEO data · HR lost"
-      : "No data from the NEO";
-  const reconnecting = loss.reconnecting
-    ? loss.attempt === null
-      ? "reconnecting"
-      : `reconnecting (attempt ${loss.attempt})`
-    : "your ride is saved";
+  // The band shows every state that holds, most urgent first (banners.tsx `BANNER_ORDER`).
+  const bannerList = banners({
+    unresponsive,
+    loss,
+    userPaused,
+    free,
+    commanded: status?.commanded,
+    clock,
+  });
   const endHelp = (
     <button className="ride-end" onClick={() => setConfirming("end")}>
       End… <Key k="Esc" />
     </button>
   );
-  const banner = unresponsive ? (
-    <Banner
-      id="engine-unresponsive"
-      alert
-      lines={[
-        "Engine not answering",
-        "the values are not live",
-        "End still ends the ride",
-      ]}
-    />
-  ) : loss.trainer ? (
-    <>
-      <Banner
-        id="loss-trainer"
-        end={loss.long ? endHelp : undefined}
-        lines={[
-          <>
-            {lostWhat}
-            {loss.lostForS !== null && (
-              <>
-                {" "}
-                <span className="num" data-testid="lost-for">
-                  {clock(loss.lostForS)}
-                </span>
-              </>
-            )}
-          </>,
-          ...(loss.long
-            ? []
-            : [`paused at ${clock(status?.blockElapsedS ?? null)} of block`]),
-          reconnecting,
-        ]}
-      />
-      {loss.long && (
-        <p
-          role="status"
-          className="banner-line"
-          data-tier="t3plus"
-          data-testid="loss-help"
-        >
-          power-cycle NEO · close Zwift
-        </p>
-      )}
-    </>
-  ) : loss.reEntry || loss.softStartW !== null ? (
-    <>
-      {/* Only the fact (`lastGapS`). DESIGN §6.6's policy text (re-warm-up, restarting the interval, "no resume" past
-          15 min) is not shown: the engine applies none of it (`recover()` eases to the block's own target and the block
-          resumes where it froze) and the status carries no re-entry plan until #50 lands. */}
-      {loss.reEntry && (
-        <Banner id="re-entry" lines={[`↻ Back after ${clock(loss.gapS)}`]} />
-      )}
-      {loss.softStartW !== null && (
-        <Banner
-          id="soft-start"
-          lines={[
-            "Reconnected",
-            `easing back in to ${Math.round(loss.softStartW)} W`,
-          ]}
-        />
-      )}
-    </>
-  ) : loss.erg ? (
-    <Banner
-      id="loss-erg"
-      sep=" — "
-      lines={["ERG released", "spin up to 60 rpm", "the block timer runs on"]}
-    />
-  ) : userPaused ? (
-    <Banner
-      id="paused"
-      lines={["Paused", "Resume continues the plan", "trainer free"]}
-    />
-  ) : loss.hr ? (
-    <Banner
-      id="loss-hr"
-      lines={["HR lost", "heart rate shows —", "the ride goes on"]}
-    />
-  ) : free ? (
-    <Banner id="free-ride" lines={["Free ride", "no targets, no plan"]} />
-  ) : null;
 
   return (
     <div className="ride" data-testid="ride">
@@ -685,7 +559,7 @@ function Screen({ session }: { session: RideSession }) {
           aria-label="Traces"
         >
           <div className="banner-band" data-region="banner">
-            {banner}
+            <BannerBand list={bannerList} end={endHelp} />
           </div>
           <div className="trace-stack">
             <Trace
@@ -734,8 +608,13 @@ function Screen({ session }: { session: RideSession }) {
                       : "Loading the plan…"}
               </span>
             </span>
-            <span className="readout-sub">
-              {block?.durS == null ? "in block" : "left in block"}
+            {/* Under a trainer loss the countdown is frozen: the caption says where the block paused (§5.2). */}
+            <span className="readout-sub" data-testid="caption">
+              {loss.trainer
+                ? `paused at ${clock(status?.blockElapsedS ?? null)}`
+                : block?.durS == null
+                  ? "in block"
+                  : "left in block"}
             </span>
             <Num
               className="hero-t1"
@@ -827,14 +706,17 @@ function Screen({ session }: { session: RideSession }) {
       </footer>
 
       <div className="ride-keys" data-region="keys">
-        <button
-          className="primary"
-          disabled={busy || status === null || kind !== "idle" || startSent}
-          onClick={() => void startRide()}
-        >
-          <Play {...icon} />
-          Start <Key k="⏎" />
-        </button>
+        {/* Start only before the ride starts: the mockup's key row has none during a ride (§18.3). */}
+        {kind === "idle" && (
+          <button
+            className="primary"
+            disabled={busy || status === null || startSent}
+            onClick={() => void startRide()}
+          >
+            <Play {...icon} />
+            Start <Key k="⏎" />
+          </button>
+        )}
         <button
           disabled={busy || !canPause}
           title={userPaused ? "Already paused" : undefined}

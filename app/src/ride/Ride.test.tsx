@@ -261,10 +261,8 @@ describe("Ride", () => {
       expect(screen.getByTestId("state").textContent).toBe("Riding"),
     );
     expect(rig.count("ride_pause")).toBe(0);
-    expect(
-      (screen.getByRole("button", { name: "Start" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
+    // Once the ride runs the key row has no Start (DESIGN §18.3), so there is nothing to start twice.
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
   });
 
   test("a refused Start can be tried again", async () => {
@@ -920,7 +918,9 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
     await publish(rig, { trainerLost: true, blockIdx: 1 });
     const banner = screen.getByTestId("loss-trainer");
     expect(banner.textContent).toContain("NEO lost");
-    expect(banner.textContent).toContain("paused at");
+    // The frozen countdown's caption says where the block paused (DESIGN §5.2); the banner keeps the rider's choice.
+    expect(screen.getByTestId("caption").textContent).toMatch(/^paused at /);
+    expect(banner.textContent).toContain("keep pedalling or stop");
     expect(banner.textContent).toContain("reconnecting");
     expect(banner.textContent).not.toContain("attempt");
     expect(slot("power")?.textContent).toBe("—");
@@ -1138,7 +1138,7 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
     expect(screen.queryByTestId("loss-help")).toBeNull();
     expect(screen.queryByRole("button", { name: "End…" })).toBeNull();
     await publish(rig, { sessionS: 130 });
-    expect(text("loss-help")).toContain("power-cycle NEO · close Zwift");
+    expect(text("loss-help")).toContain("power-cycle · close Zwift");
     expect(screen.getByRole("button", { name: "End…" })).toBeTruthy();
   });
 

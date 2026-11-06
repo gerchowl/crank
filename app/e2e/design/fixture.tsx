@@ -87,6 +87,8 @@ const ride =
     values = RIDING,
     workoutS = 200,
     workoutId: string | null = "w1",
+    /** The engine wedges once the view has subscribed (#351): its next frame's ack is refused. */
+    wedge = false,
   ) =>
   () => {
     const rig = installRide({ blocks: BLOCKS, ...over });
@@ -97,6 +99,7 @@ const ride =
     rig.publish(workoutS);
     // The ride view's subscriptions get the scenario's values as the core's latest sample, read by the snapshot.
     const inner = internals().invoke;
+    let subscribed = 0;
     mockIPC(async (cmd, payload) => {
       const answer = await inner(cmd, payload);
       if (cmd === "stream_subscribe") {
@@ -112,6 +115,10 @@ const ride =
         pending++;
         setTimeout(() => {
           rig.base.push({ samples: [sample] });
+          if (wedge && ++subscribed === 3) {
+            rig.wedge();
+            rig.base.push({ status: rig.base.truth.status });
+          }
           pending--;
         });
       }
@@ -168,9 +175,39 @@ const SETUPS: Record<ScenarioName, () => void> = {
       sessionS: 212,
       trainerLost: true,
       lostSinceS: 200,
-      attempt: 2,
+      attempt: 12,
     },
     { ...RIDING, power: null, cadence: null },
+  ),
+  // The longest trainer-loss copy (banners.tsx): no samples on a ready link with the strap lost, 59:59 into the loss,
+  // so the bold line is its widest and End… and what to try show.
+  "ride-trainer-lost-long": ride(
+    {
+      ...active,
+      sessionS: 3799,
+      trainerSilent: true,
+      hrLost: true,
+      lostSinceS: 200,
+    },
+    { ...RIDING, power: null, cadence: null, hr: null },
+  ),
+  // Two banners at once: the engine stops answering while the trainer is lost (#351, §6.5).
+  "ride-engine-silent": ride(
+    {
+      ...active,
+      sessionS: 212,
+      trainerLost: true,
+      lostSinceS: 200,
+      attempt: 3,
+    },
+    { ...RIDING, power: null, cadence: null },
+    200,
+    "w1",
+    true,
+  ),
+  "ride-paused-hr-lost": ride(
+    { ...active, userPause: true, hrLost: true },
+    { ...RIDING, power: 0, cadence: 0, hr: null },
   ),
   "ride-erg-released": ride(
     { ...active, ergReleased: true },

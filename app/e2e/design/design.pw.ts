@@ -166,6 +166,32 @@ const regionBoxes = (page: Page) =>
       }),
     ),
   );
+// No banner text is cut (§6.1: every line fits at 1024 and 1440) and every action in the band (End…) is wholly inside it
+// and the window. The audit's `layout.clipped` sees an overflowing box; this also names the line and the action.
+const bannerFit = (page: Page) =>
+  page.evaluate(() => {
+    const band = document.querySelector("[data-region='banner']");
+    if (!band) return ["no banner band"];
+    const b = band.getBoundingClientRect();
+    const bad: string[] = [];
+    for (const t of band.querySelectorAll<HTMLElement>(
+      ".banner-text, .banner-line",
+    ))
+      if (t.scrollWidth > t.clientWidth + 1)
+        bad.push(`cut: "${t.textContent}" ${t.scrollWidth} > ${t.clientWidth}`);
+    for (const a of band.querySelectorAll("button")) {
+      const r = a.getBoundingClientRect();
+      if (
+        r.left < b.left ||
+        r.right > b.right ||
+        r.top < b.top ||
+        r.bottom > b.bottom ||
+        r.right > innerWidth
+      )
+        bad.push(`action outside the band: "${a.textContent}"`);
+    }
+    return bad;
+  });
 test("the ride's region boxes are the same in every ride fixture", async ({
   page,
 }) => {
@@ -180,6 +206,9 @@ test("the ride's region boxes are the same in every ride fixture", async ({
     );
     first ??= boxes;
     expect(boxes, `${name} against ${RIDE_SCENARIOS[0]}`).toEqual(first);
+    expect(await bannerFit(page), `${name}: banner text and actions`).toEqual(
+      [],
+    );
   }
 });
 

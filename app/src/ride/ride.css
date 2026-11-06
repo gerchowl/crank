@@ -131,6 +131,16 @@
 .banner-line strong {
   font-weight: 600;
 }
+/* Copy is sized to fit (banners.tsx `LINE_MAX`, checked by the harness); were a line ever longer, it ends in an
+   ellipsis rather than being cut, and the End… action beside it never shrinks. */
+.banner-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.banner-line button {
+  flex: none;
+}
 .trace-stack {
   display: grid;
   grid-template-rows: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
@@ -262,7 +272,6 @@
 .readout-value [data-tier="t2"] {
   font-size: var(--tier-t2);
   line-height: 1;
-  text-align: right;
 }
 .tile-unit {
   font-size: var(--text-l);
