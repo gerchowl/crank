@@ -7,7 +7,7 @@
 //! a warm trainer's control channel except the `Disconnect` that releases it. The task ends
 //! when the core drops its [`Handle`]: every link and attempt it holds is dropped with it,
 //! which the drivers' cleanup disconnects.
-use super::{Ack, Cool, Effect, Input, Keeper, Phase};
+use super::{Ack, Cool, Effect, Input, Keeper, Phase, SUPERSEDED};
 use crate::dto::LinkIntent;
 use crate::error::{ApiError, ErrorCode};
 use crate::links::{self, Attempts, LinkDevice, Timeline};
@@ -82,6 +82,10 @@ enum Msg {
     /// The phases, for a test.
     #[cfg(test)]
     Phases(oneshot::Sender<[Option<Phase>; 2]>),
+    /// Hold (`true`) or let go the keeper's own reports, for a test to order them after a
+    /// message of the core.
+    #[cfg(test)]
+    HoldInternal(bool, oneshot::Sender<()>),
 }
 /// What the keeper's own tasks report.
 pub(crate) enum Internal {
@@ -145,6 +149,7 @@ impl Handle {
             direct: None,
             pending: Vec::new(),
             discard_done: None,
+            hold_internal: false,
             clock,
         };
         task.apply(Input::Pairings(pairings));
@@ -187,6 +192,12 @@ impl Handle {
         if self.tx.send(Msg::Shutdown(ack)).is_ok() {
             let _ = done.await;
         }
+    }
+    #[cfg(test)]
+    pub(crate) async fn hold_internal(&self, hold: bool) {
+        let (ack, done) = oneshot::channel();
+        let _ = self.tx.send(Msg::HoldInternal(hold, ack));
+        let _ = done.await;
     }
     #[cfg(test)]
     pub(crate) async fn phases(&self) -> [Option<Phase>; 2] {
@@ -239,11 +250,14 @@ struct Task {
     waiting: Option<Waiting>,
     scan: Option<ScanRun>,
     /// The answer to the intent being applied.
-    direct: Option<Answer>,
+    direct: Option<(Answer, bool)>,
     /// The answers to intents recorded while the links are handed out.
-    pending: Vec<Answer>,
+    pending: Vec<(Answer, bool)>,
     /// The discard under way: `Some(discarded)` once it ended.
     discard_done: Option<watch::Receiver<Option<bool>>>,
+    /// A test holds the keeper's own reports back (`Handle::hold_internal`); always `false`
+    /// outside tests.
+    hold_internal: bool,
 }
 fn ms(from: MonoTime, to: MonoTime) -> u64 {
     to.0.saturating_sub(from.0) / 1000
@@ -325,7 +339,7 @@ impl Task {
                     Some(msg) => self.message(msg),
                     None => break,
                 },
-                Some(event) = internal.recv() => self.internal(event),
+                Some(event) = internal.recv(), if !self.hold_internal => self.internal(event),
                 () = tick => drop(self.apply(Input::Tick)),
                 seen = advertised(&mut self.scan) => {
                     drop(self.apply(Input::Advertised(&seen.device.0)));
@@ -337,7 +351,8 @@ impl Task {
         match msg {
             Msg::Intent(intent, ack) => {
                 tracing::info!(target: TARGET, ?intent, "intent");
-                self.direct = Some(ack);
+                let release = matches!(intent, LinkIntent::Release { .. });
+                self.direct = Some((ack, release));
                 drop(self.apply(Input::Intent(intent)));
             }
             Msg::Acquire(rider, reply) => {
@@ -364,6 +379,11 @@ impl Task {
                     released(releases).await;
                     let _ = ack.send(());
                 });
+            }
+            #[cfg(test)]
+            Msg::HoldInternal(hold, ack) => {
+                self.hold_internal = hold;
+                let _ = ack.send(());
             }
             #[cfg(test)]
             Msg::Phases(ack) => {
@@ -442,13 +462,27 @@ impl Task {
     }
     /// Answer the intent being applied or, at a resolution of `Handed`, every recorded one.
     fn answer(&mut self, ack: Ack, releases: &[watch::Receiver<bool>]) {
-        let answers = match self.direct.take() {
-            Some(answer) if ack == Ack::Recorded => {
-                self.pending.push(answer);
+        if ack == Ack::Superseded {
+            // the recorded releases are cancelled; the other recorded intents wait on
+            let (cancelled, kept) = std::mem::take(&mut self.pending)
+                .into_iter()
+                .partition(|(_, release)| *release);
+            self.pending = kept;
+            for (answer, _) in cancelled {
+                let _ = answer.send(Err(ApiError::new(ErrorCode::Conflict, SUPERSEDED)));
+            }
+            return;
+        }
+        let answers: Vec<Answer> = match self.direct.take() {
+            Some(direct) if ack == Ack::Recorded => {
+                self.pending.push(direct);
                 return;
             }
-            Some(answer) => vec![answer],
-            None => std::mem::take(&mut self.pending),
+            Some((answer, _)) => vec![answer],
+            None => std::mem::take(&mut self.pending)
+                .into_iter()
+                .map(|(answer, _)| answer)
+                .collect(),
         };
         if answers.is_empty() {
             return;
@@ -460,7 +494,7 @@ impl Task {
         tokio::spawn(async move {
             released(releases).await;
             let result = match ack {
-                Ack::Applied | Ack::Recorded => Ok(()),
+                Ack::Applied | Ack::Recorded | Ack::Superseded => Ok(()),
                 Ack::Refused(why) => Err(ApiError::new(ErrorCode::Conflict, why)),
                 Ack::AwaitDiscard => {
                     let discarded = match discard {

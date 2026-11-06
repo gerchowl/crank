@@ -544,6 +544,10 @@ fn states() -> Vec<(&'static str, Keeper)> {
     k.st(at(6), Input::Acquire);
     k.st(at(6), Input::Shutdown);
     all.push(("handed, quitting", k));
+    let mut k = warm();
+    k.st(at(6), Input::Acquire);
+    k.st(at(6), release(ReleaseReason::Hidden));
+    all.push(("handed, Hidden recorded", k));
     all.push(("loaded", loaded(6)));
     let mut k = loaded(6);
     k.st(at(616), Input::Tick);
@@ -644,11 +648,12 @@ fn the_transition_table_is_total() {
         for intent in intents() {
             let mut k = state.clone();
             let effects = k.step(at(700), Input::Intent(intent));
-            assert_eq!(
-                acks(&effects),
-                [expected(name, intent)],
-                "{name} × {intent:?}"
-            );
+            let mut owed = vec![expected(name, intent)];
+            // a Retry is a rider action: it supersedes a recorded release first
+            if name == "handed, Hidden recorded" && intent == LinkIntent::Retry {
+                owed.insert(0, Ack::Superseded);
+            }
+            assert_eq!(acks(&effects), owed, "{name} × {intent:?}");
             k.invariant()
                 .unwrap_or_else(|e| panic!("{name} × {intent:?}: {e}"));
             if name.starts_with("handed") {
@@ -670,10 +675,17 @@ fn the_transition_table_is_total() {
         for input in others() {
             let mut k = state.clone();
             let effects = k.step(at(700), input.clone());
-            assert!(
-                acks(&effects).is_empty(),
-                "{name} × {input:?}: no intent to answer"
-            );
+            let owed: &[Ack] = match (name, &input) {
+                // a load supersedes the recorded release
+                ("handed, Hidden recorded", Input::Acquire) => &[Ack::Superseded],
+                // a resolution answers the recorded intent
+                (
+                    "handed, Hidden recorded",
+                    Input::Refused | Input::Loaded(_) | Input::Released,
+                ) => &[Ack::Applied],
+                _ => &[],
+            };
+            assert_eq!(acks(&effects), owed, "{name} × {input:?}");
             k.invariant()
                 .unwrap_or_else(|e| panic!("{name} × {input:?}: {e}"));
             for resolution in resolutions() {
@@ -819,4 +831,168 @@ fn a_rider_release_whose_discard_failed_does_not_latch() {
         k.st(at(901), likely()),
         [Effect::Attempt(Trainer, 2), Effect::Attempt(Strap, 2)]
     );
+}
+
+/// X1 (decided rule, ADR-0002 §5.1.1): a load ("Ride this") after a recorded release
+/// supersedes it, in either order of the load and the return of the links: the new load gets
+/// the links, never a `FailLoad`.
+#[test]
+fn a_load_after_a_recorded_release_supersedes_it_in_either_order() {
+    // the load reaches the keeper before the links come back
+    let mut k = warm();
+    k.st(at(6), Input::Acquire);
+    k.st(at(7), release(ReleaseReason::Hidden));
+    k.st(at(7), Input::Intent(LinkIntent::Likely { ready: true }));
+    assert_eq!(k.st(at(8), Input::Acquire), [Effect::Ack(Ack::Superseded)]);
+    let effects = k.st(at(9), Input::Refused);
+    assert!(cools(&effects).is_empty(), "{effects:?}");
+    assert!(effects.contains(&Effect::HandOver), "{effects:?}");
+    assert!(!effects.contains(&Effect::FailLoad));
+
+    // the links come back first: Hidden releases them, and the load connects them again
+    let mut k = warm();
+    k.st(at(6), Input::Acquire);
+    k.st(at(7), release(ReleaseReason::Hidden));
+    k.st(at(7), Input::Intent(LinkIntent::Likely { ready: true }));
+    assert_eq!(cools(&k.st(at(8), Input::Refused)).len(), 2);
+    let effects = k.st(at(9), Input::Acquire);
+    assert_eq!(
+        effects,
+        [Effect::Attempt(Trainer, 3), Effect::Attempt(Strap, 3)]
+    );
+    k.st(at(10), Input::Attempted(Trainer, 3, true));
+    assert_eq!(
+        k.st(at(10), Input::Attempted(Strap, 3, true)),
+        [Effect::HandOver]
+    );
+}
+
+/// X3: Retry after a recorded `Hidden` supersedes it too: the links come back warm and stay.
+#[test]
+fn retry_after_a_recorded_release_supersedes_it() {
+    let mut k = warm();
+    k.st(at(6), Input::Acquire);
+    k.st(at(7), release(ReleaseReason::Hidden));
+    assert_eq!(
+        k.st(at(8), Input::Intent(LinkIntent::Retry)),
+        [Effect::Ack(Ack::Superseded), Effect::Ack(Ack::Recorded)]
+    );
+    let effects = k.st(at(9), Input::Refused);
+    assert!(cools(&effects).is_empty(), "{effects:?}");
+    assert_eq!(phases(&k), [Some(Phase::Warm); 2]);
+    k.invariant().unwrap();
+}
+
+/// X2: a load after a recorded "Release trainer" supersedes it, latch included: with the
+/// links released, the new load connects both, whichever comes first.
+#[test]
+fn a_load_after_a_recorded_rider_release_supersedes_it_in_either_order() {
+    let mut k = warm();
+    k.st(at(6), Input::Acquire);
+    k.st(at(7), release(ReleaseReason::RiderRelease));
+    assert_eq!(k.st(at(8), Input::Acquire), [Effect::Ack(Ack::Superseded)]);
+    assert_eq!(
+        k.st(at(9), Input::Released),
+        [Effect::Attempt(Trainer, 2), Effect::Attempt(Strap, 2)]
+    );
+
+    let mut k = warm();
+    k.st(at(6), Input::Acquire);
+    k.st(at(7), release(ReleaseReason::RiderRelease));
+    k.st(at(8), Input::Released);
+    assert_eq!(
+        k.st(at(9), Input::Acquire),
+        [Effect::Attempt(Trainer, 2), Effect::Attempt(Strap, 2)],
+        "the load clears the latch"
+    );
+}
+
+/// M3, M23: of two releases recorded in `Handed`, in either order, the stronger is applied
+/// (`RiderRelease` > `Sleep` > `Devices` > `Hidden`), never the weaker or merely the later.
+#[test]
+fn the_stronger_of_two_recorded_releases_wins_in_every_order() {
+    use ReleaseReason::{Devices, Hidden, RiderRelease, Sleep};
+    let all = [Hidden, Devices, Sleep, RiderRelease];
+    for a in all {
+        for b in all {
+            let stronger = if strength(a) >= strength(b) { a } else { b };
+            let mut k = warm();
+            k.st(at(6), Input::Acquire);
+            k.st(at(7), release(a));
+            k.st(at(7), release(b));
+            let reasons: Vec<Cool> = cools(&k.st(at(8), Input::Refused))
+                .into_iter()
+                .map(|c| c.2)
+                .collect();
+            assert_eq!(reasons, [Cool::Release(stronger); 2], "{a:?} then {b:?}");
+        }
+    }
+    // on the ride: Sleep and Hidden, in either order, discard (Hidden would keep the ride)
+    for (first, second) in [(Sleep, Hidden), (Hidden, Sleep)] {
+        let mut k = warm();
+        k.st(at(6), Input::Acquire);
+        k.st(at(7), release(first));
+        k.st(at(7), release(second));
+        assert!(
+            k.st(at(8), Input::Loaded("ride".into()))
+                .contains(&Effect::Discard("ride".into())),
+            "{first:?} then {second:?}"
+        );
+    }
+}
+
+/// M21: "Release trainer" that joins a discard already under way (`T_abandon`, `Sleep`)
+/// latches the trainer once that discard went through.
+#[test]
+fn a_rider_release_joining_a_discard_under_way_latches() {
+    for cause in ["abandon", "sleep"] {
+        let mut k = loaded(10);
+        if cause == "abandon" {
+            assert_eq!(k.st(at(610), Input::Tick), [Effect::Discard("ride".into())]);
+        } else {
+            k.st(at(20), release(ReleaseReason::Sleep));
+        }
+        assert_eq!(
+            k.st(at(611), release(ReleaseReason::RiderRelease)),
+            [Effect::Ack(Ack::AwaitDiscard)],
+            "{cause}: joins, no second discard"
+        );
+        k.st(at(612), Input::Discarded("ride".into(), true));
+        k.st(at(612), Input::Released);
+        assert_eq!(
+            k.st(at(613), likely()),
+            [Effect::Attempt(Strap, 2)],
+            "{cause}: latched"
+        );
+    }
+}
+
+/// §5.1.2 and the brief's point 3: a rider configuration that changes while the links are
+/// handed out reconnects the trainer that comes back (`Refused`); the next attempt after a
+/// ride uses it.
+#[test]
+fn a_rider_change_while_handed_reconnects_the_returned_trainer() {
+    let heavier = RiderConfig {
+        rider_kg: 80.0,
+        ..RIDER
+    };
+    let mut k = warm();
+    k.st(at(6), Input::Acquire);
+    assert_eq!(k.st(at(7), Input::Rider(heavier)), []);
+    let effects = k.st(at(8), Input::Refused);
+    assert_eq!(cools(&effects), [(Trainer, Phase::Warm, Cool::Rider)]);
+    assert!(
+        effects.contains(&Effect::Attempt(Trainer, 3)),
+        "{effects:?}"
+    );
+    assert_eq!(k.rider(), heavier);
+
+    // loaded instead: the ride keeps its link; the keeper's next trainer link uses the new one
+    let mut k = warm();
+    k.st(at(6), Input::Acquire);
+    k.st(at(7), Input::Rider(heavier));
+    assert_eq!(k.st(at(8), Input::Loaded("ride".into())), []);
+    k.st(at(9), Input::Released);
+    k.st(at(10), likely());
+    assert_eq!(k.trainer_rider, heavier);
 }

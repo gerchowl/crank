@@ -825,3 +825,72 @@ async fn loaded_id(core: &Core) -> String {
         .map(|s| s.ride_id.clone())
         .unwrap()
 }
+
+/// X2 at core level, both interleavings: "Release trainer" recorded while the links are handed
+/// to a load whose engine never takes it; that load fails (its links released), and the rider
+/// asks for the ride again. Whether the keeper sees the release of the failed load before or
+/// after the new load (held back with `hold_internal`), the new load connects the trainer
+/// again and gets the ride; the release was applied (released first) or superseded (load
+/// first).
+#[tokio::test(start_paused = true)]
+async fn a_load_after_a_recorded_rider_release_gets_the_ride_in_either_order() {
+    for released_first in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio, first) = handed_core(dir.path()).await;
+        let intent = {
+            let core = core.clone();
+            tokio::spawn(async move {
+                core.links_intent(release(ReleaseReason::RiderRelease))
+                    .await
+            })
+        };
+        sleep(Duration::from_millis(10)).await;
+        let keeper = core.keeper().unwrap();
+        if !released_first {
+            keeper.hold_internal(true).await;
+        }
+        // the stalled engine never takes `Load`: the load fails at its bound
+        let failed = first.await.unwrap().unwrap_err();
+        assert_eq!(failed.code, ErrorCode::EngineUnresponsive);
+        core.0.stall.release();
+        if released_first {
+            for _ in 0..50 {
+                if phases(&core).await[0] != Some(Phase::Riding) {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(phases(&core).await[0], Some(Phase::Cold), "released first");
+        } else {
+            assert_eq!(
+                phases(&core).await[0],
+                Some(Phase::Riding),
+                "the release is held back"
+            );
+        }
+        let second = {
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_load(None).await })
+        };
+        sleep(Duration::from_millis(10)).await;
+        if !released_first {
+            keeper.hold_internal(false).await;
+        }
+        let loaded = second.await.unwrap();
+        assert!(
+            loaded.is_ok(),
+            "released first: {released_first}: {loaded:?}"
+        );
+        assert_eq!(connects(&radio)[0], 2, "the trainer connected again");
+        let answered = intent.await.unwrap();
+        if released_first {
+            answered.unwrap();
+        } else {
+            assert_eq!(
+                answered.unwrap_err().code,
+                ErrorCode::Conflict,
+                "superseded"
+            );
+        }
+    }
+}
