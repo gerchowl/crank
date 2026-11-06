@@ -10,11 +10,10 @@
 //! operator's `# answer-lights`. [`validate`] holds them to the procedure's rules, live and offline.
 use crate::{
     check10::{Question, answer},
-    frames::{Note, Record, Stamp, page_of, stamp, stamp_of, stamps},
-    partb::{Control, SEC, controls, mean, procedure_end, round1, samples, secs, writes},
-    timeline::{Grammar, Step, Timeline},
+    frames::{Note, Stamp, stamp, stamp_of, stamps},
+    partb::{Control, SEC, mean, procedure_end, round1, secs},
+    timeline::{Grammar, LINK_TOKENS, Step, Timeline},
 };
-use crank_fec::{Page, decode};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -58,10 +57,12 @@ pub const TARGET_W: u16 = 100;
 /// page 25, the release, the lights answer, the `y` and ERG again by soft start, or the bound
 /// running out and the lights answer; the closing release last.
 pub(crate) const GRAMMAR: Grammar = Grammar {
-    tag: Some(WINDOW),
+    tags: &[(WINDOW, &[(STOPPING, '1'), (CONFIRMED, '2')]), LINK_TOKENS],
     answers: &[LIGHTS.key],
-    ignored: &[],
-    shape: "^Rf*(?:Ef*)+Rf*1f*d(?:vk?nf*pRf*af*2f*(?:Ef*)+Rf*|(?:v(?:k?nf*)?)?gf*a?f*Rf*)$",
+    records: &[],
+    shapes: &[
+        "^f*Rf*u[fe]*(?:E[fe]*)+R[fe]*1[fe]*d(?:vk?n[fe]*p[fe]*R[fe]*u[fe]*a[fe]*2[fe]*(?:E[fe]*)+R[fe]*q[fe]*|(?:v(?:k?n[fe]*)?)?g[fe]*a?[fe]*R[fe]*q[fe]*)$",
+    ],
     programs: &[
         &[
             Step::Release,
@@ -110,12 +111,12 @@ fn follows(prev: Option<u8>, code: u8) -> bool {
     }
 }
 
-/// The page-81 serials (bytes 8-11) of the rx frames in `from..to`, deduplicated.
-fn serials(records: &[Record], from: u64, to: u64) -> Vec<Vec<u8>> {
-    let mut out: Vec<Vec<u8>> = records
+/// The page-81 serials `(at_us, serial)` stamped in `from..to`, deduplicated.
+fn serials(all: &[(u64, [u8; 4])], from: u64, to: u64) -> Vec<[u8; 4]> {
+    let mut out: Vec<[u8; 4]> = all
         .iter()
-        .filter(|r| r.rx && r.at_us >= from && r.at_us < to && page_of(&r.bytes) == Some(0x51))
-        .filter_map(|r| r.bytes.get(8..12).map(<[u8]>::to_vec))
+        .filter(|(at, _)| *at >= from && *at < to)
+        .map(|(_, s)| *s)
         .collect();
     out.sort_unstable();
     out.dedup();
@@ -125,10 +126,11 @@ fn serials(records: &[Record], from: u64, to: u64) -> Vec<Vec<u8>> {
 /// The trainer after the reconnect (from `back`) is the one before the drop: one page-81 serial on
 /// each side, the same. A redacted capture compares its redacted serials, which `redact` writes
 /// alike on both sides; the live run compared the real ones.
-pub fn same_trainer(records: &[Record], drop: u64, back: u64) -> Result<(), String> {
+/// `all` are the page-81 serials of the capture ([`crate::partb::serials`]).
+pub fn same_trainer(all: &[(u64, [u8; 4])], drop: u64, back: u64) -> Result<(), String> {
     match (
-        &serials(records, 0, drop)[..],
-        &serials(records, back, u64::MAX)[..],
+        &serials(all, 0, drop)[..],
+        &serials(all, back, u64::MAX)[..],
     ) {
         ([a], [b]) if a == b => Ok(()),
         ([_], [_]) => {
@@ -151,7 +153,7 @@ struct Run {
 /// from the stop cue to the operator's `y`; the `y` only after the reconnect and its release; the
 /// same trainer on both sides. `Err` names the first breach, which makes the row `unknown`.
 fn validate(tl: &Timeline) -> Result<Run, String> {
-    let (records, notes) = (tl.records(), tl.notes());
+    let notes = tl.notes();
     let window = stamps(notes, WINDOW, &[STOPPING, CONFIRMED])?;
     let stop = stamp_of(&window, STOPPING).ok_or("the capture has no stop cue")?;
     let mut link: Vec<Stamp> = Vec::new();
@@ -217,7 +219,7 @@ fn validate(tl: &Timeline) -> Result<Run, String> {
             "contradictory: the operator's y is stamped without a reconnect before it".into(),
         );
     }
-    let ctl = writes(records);
+    let ctl = tl.writes();
     let early = ctl.iter().find(|w| {
         w.pos >= stop.before
             && confirmed.is_none_or(|y| w.pos < y.before)
@@ -240,7 +242,7 @@ fn validate(tl: &Timeline) -> Result<Run, String> {
                     .into(),
             );
         }
-        same_trainer(records, detected, back.at_us)?;
+        same_trainer(&tl.serials(), detected, back.at_us)?;
     }
     Ok(Run { stop, link })
 }
@@ -289,26 +291,20 @@ fn reconnect(link: &[Stamp], detected: u64) -> String {
 /// What the trainer did after the reconnect (frames from index `first`): its first page 25 (sent
 /// before any write) and how the re-engaged ERG target was held ([`validate`] has made sure the
 /// release came first).
-fn after(records: &[Record], first: usize) -> Value {
-    let page25 =
-        records[first..]
-            .iter()
-            .filter(|r| r.rx)
-            .find_map(|r| match decode(&r.bytes).ok()?.page {
-                Page::Trainer(t) => Some(t),
-                _ => None,
-            });
-    let ctl = controls(records);
-    let erg = writes(records)
+fn after(tl: &Timeline, first: usize) -> Value {
+    let page25 = tl.samples().iter().find(|s| s.pos >= first).copied();
+    let ctl = tl.controls();
+    let erg = tl
+        .writes()
         .iter()
         .rev()
         .find(|w| w.pos >= first && matches!(w.control, Control::Erg(x) if x > 0.0))
         .map(|w| w.at_us);
-    let end = procedure_end(records, &ctl);
+    let end = procedure_end(tl.end_us(), &ctl);
     // Settled: from 5 s after the last ramp write to the final release.
     let held = erg.and_then(|at| {
         mean(
-            samples(records)
+            tl.updates()
                 .iter()
                 .filter(|s| s.at_us >= at + 5_000_000 && s.at_us < end)
                 .filter_map(|s| s.power.map(f64::from)),
@@ -317,7 +313,7 @@ fn after(records: &[Record], first: usize) -> Value {
     json!({
         "first_page25_fe_state": page25.map(|t| fe_state(t.state)),
         "first_page25_target_limit": page25.map(|t| t.target_limit),
-        "first_page25_power_w": page25.and_then(|t| t.power_w),
+        "first_page25_power_w": page25.and_then(|t| t.power),
         "erg_mean_power_w": held.map(round1),
     })
 }
@@ -330,13 +326,15 @@ pub fn check11b(tl: &Timeline) -> Value {
         Ok(run) => run,
         Err(why) => return unknown(why),
     };
-    let (records, notes) = (tl.records(), tl.notes());
+    let notes = tl.notes();
     let detected = stamp_of(&link, DETECTED).unwrap_or(stop);
-    let ran_on = samples(&records[stop.before..detected.before.max(stop.before)])
-        .last()
+    let ran_on = tl
+        .samples()
+        .iter()
+        .rfind(|s| s.pos >= stop.before && s.pos < detected.before)
         .map(|s| round1(secs(s.at_us - stop.at_us)));
     let reconnect = reconnect(&link, detected.at_us);
-    let after = stamp_of(&link, FIRST_PAGE25).map(|at| after(records, at.before));
+    let after = stamp_of(&link, FIRST_PAGE25).map(|at| after(tl, at.before));
     let cause = cause(notes);
     let drop = format!(
         "detected {} s after the stop cue (last page 25 {})",
@@ -373,6 +371,7 @@ pub fn cells(v: &Value) -> (&'static str, &'static str, String, &'static str) {
 mod tests {
     use super::*;
     use crate::check10::answer_tag;
+    use crate::frames::Record;
 
     fn check11b(r: &[Record], n: &[Note]) -> Value {
         super::check11b(&Timeline::of_parts(r, &[], n))
@@ -449,7 +448,8 @@ mod tests {
 
     /// A page 25 at `at_ms` reporting `watts`.
     fn p25(at_ms: u64, watts: u8) -> Record {
-        let mut f = [0xa4, 9, 0x4e, 5, 25, 0, 90, 0, 0, watts, 0, 0x30, 0];
+        let count = u8::try_from(at_ms / 250 % 256).expect("a byte");
+        let mut f = [0xa4, 9, 0x4e, 5, 25, count, 90, 0, 0, watts, 0, 0x30, 0];
         f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
         Record {
             at_us: at_ms * 1000,

@@ -277,6 +277,17 @@ fn emit(s: &mut State, at_us: u64, f: [u8; 13]) {
     s.rx.push(r);
 }
 
+/// Page 16 at `now` µs and `speed` m/s, with the elapsed time in 0.25 s as the NEO's page 16
+/// counts it (so no two updates repeat).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn page16(now: u64, speed: f64) -> [u8; 13] {
+    let mm = ((speed * 1000.0) as u16).to_le_bytes();
+    let elapsed = u8::try_from(now / 250_000 % 256).unwrap_or(0);
+    checked([
+        0xa4, 9, 0x4e, 5, 16, 25, elapsed, 0, mm[0], mm[1], 0xff, 0x30, 0,
+    ])
+}
+
 /// `curve` (see [`Plan::erg_curve`]) at `rpm`.
 fn share(curve: &[(f64, f64)], rpm: f64) -> f64 {
     let next = curve.iter().position(|p| p.0 > rpm);
@@ -510,9 +521,7 @@ impl Sim {
             emit(st, now, frame);
         }
         if now.is_multiple_of(1_350_000) {
-            let mm = ((speed * 1000.0) as u16).to_le_bytes();
-            let frame = checked([0xa4, 9, 0x4e, 5, 16, 25, 0, 0, mm[0], mm[1], 0xff, 0x30, 0]);
-            emit(st, now, frame);
+            emit(st, now, page16(now, speed));
         }
         while st.serial_replies.first().is_some_and(|due| *due <= now) {
             st.serial_replies.remove(0);

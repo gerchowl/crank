@@ -6,7 +6,7 @@
 //! `docs/hil/part-b.md` states the method and the reasoning behind every tolerance.
 use crate::{
     frames::Cps,
-    partb::{SEC, SETTLE, Sample, controls, erg_holds, mean, procedure_end, round1, samples, secs},
+    partb::{SEC, SETTLE, Sample, erg_holds, mean, procedure_end, round1, secs},
     timeline::Timeline,
 };
 use serde_json::{Value, json};
@@ -262,13 +262,13 @@ fn compare_window(
     }
 }
 
-/// Check 5's event grammar ([`Timeline::grammar`]): ERG targets only (the `# cps` lines are
-/// records, not events).
+/// Check 5's event grammar ([`Timeline::grammar`]): ERG targets only, the `# cps` measurements
+/// (`c`) between the opening and the closing request.
 pub(crate) const GRAMMAR: crate::timeline::Grammar = crate::timeline::Grammar {
-    tag: None,
+    tags: &[],
     answers: &[],
-    ignored: &[],
-    shape: crate::timeline::ERG_ONLY,
+    records: &[("cps", 'c')],
+    shapes: &["^[fc]*R[fc]*u[fec]*(?:E[fec]*)+R[fec]*q[fec]*$"],
     programs: &[&[
         crate::timeline::Step::Release,
         crate::timeline::Step::SoftStart(crate::rider::CHECK5_W[0]),
@@ -279,13 +279,13 @@ pub(crate) const GRAMMAR: crate::timeline::Grammar = crate::timeline::Grammar {
 
 /// Check 5: page-25 rate, and page-25 against CPS power and cadence over the settled holds.
 pub fn check5(tl: &Timeline) -> Value {
-    let (records, cps) = (tl.records(), tl.cps());
-    let s = samples(records);
-    let ctl = controls(records);
+    let cps = tl.cps();
+    let s = tl.updates();
+    let ctl = tl.controls();
     let parsed = parse(cps);
     // Settled windows: every ERG target held ≥ 10 s (check 6's definition of a hold), after its
     // first 10 s, and never the 0 W wait for the rider.
-    let spans: Vec<(f64, u64, u64)> = erg_holds(&ctl, procedure_end(records, &ctl))
+    let spans: Vec<(f64, u64, u64)> = erg_holds(&ctl, procedure_end(tl.end_us(), &ctl))
         .into_iter()
         .filter(|(held, h)| *held && h.watts > 0.0)
         .map(|(_, h)| (h.watts, h.at + SETTLE, h.end))
@@ -571,7 +571,9 @@ mod tests {
         let mut records = vec![erg(0, 150.0), erg(secs * SEC / 2, 200.0)];
         let mut at = 0;
         while at < secs * SEC {
-            let mut f = [0xa4, 9, 0x4e, 5, 25, 0, 90, 0, 0, 150, 0, 0x30, 0];
+            // The update event count, which moves with each update the trainer sends.
+            let count = u8::try_from(at / 1000 % 251).expect("a byte");
+            let mut f = [0xa4, 9, 0x4e, 5, 25, count, 90, 0, 0, 150, 0, 0x30, 0];
             f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
             records.push(Record {
                 at_us: at,
@@ -693,7 +695,9 @@ mod tests {
     }
 
     fn fe_frame_with(at_us: u64, power_unavailable: bool, cadence_unavailable: bool) -> Record {
-        let mut f = [0xa4, 9, 0x4e, 5, 25, 0, 90, 0, 0, 150, 0, 0x30, 0];
+        // The update event count, which moves with each update the trainer sends.
+        let count = u8::try_from(at_us / 1000 % 251).expect("a byte");
+        let mut f = [0xa4, 9, 0x4e, 5, 25, count, 90, 0, 0, 150, 0, 0x30, 0];
         if power_unavailable {
             (f[9], f[10]) = (0xff, 0x0f);
         }

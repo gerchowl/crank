@@ -1382,7 +1382,11 @@ mod tests {
             assert_eq!(value, &offline[key], "live and offline differ in {key}");
         }
         assert_eq!(live, *offline, "live and offline differ");
-        assert_eq!(live["cps"]["notifications"], cps.len(), "{live}");
+        // A measurement repeating the one before in the same second counts once (`Timeline`).
+        let mut distinct = cps.clone();
+        distinct
+            .dedup_by(|b, a| a.bytes == b.bytes && a.at_us / partb::SEC == b.at_us / partb::SEC);
+        assert_eq!(live["cps"]["notifications"], distinct.len(), "{live}");
         (report, live)
     }
 

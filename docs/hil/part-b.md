@@ -132,31 +132,60 @@ page-71 reply echoed it.
   µs is after the release, a frame after a drop stamp at its µs is after the drop. Windows bounded by events
   (a cue, an answer, a release, a drop, a write) are positions on the timeline; only windows that start a
   duration after an event (the 5 s left out after a cue, the 15 s before it) are measured in µs.
-- **No record twice.** A record identical to another of the same µs (same kind, same bytes) is
-  `contradictory: line N repeats line M`: the writer appends each record once.
-- **Each check's events follow its grammar** (`Timeline::grammar`, one `Grammar` per check, applied by `analyse`
-  to a capture whose outcome is `completed`, before the check reads it). The grammar names the events the check
-  may contain, in one token each (control writes by kind, the check's own stamps, `# link` stamps, its questions'
-  answers; any other stamp fits no grammar), and two rules over them:
-  - *shape*: the order and number of the events, relative to the cue, the answers, the connect, the drop and the
-    closing release (e.g. 11a: the unplug cue once, then the answer and the closing release, or the drop with the
-    answer before or after it, a release before it only directly before the drop, no trainer frame after it,
-    the closing release last; 11b: no trainer frame from the drop until the reconnect is discovered; 11c: the
-    advertisement and the connect before any write or cue);
+- **No record twice, no malformed line.** A record identical to another of the same µs (same kind, same bytes) is
+  `contradictory: line N repeats line M`; a line that is neither a record nor a comment (a frame or a `# tag <µs>`
+  note whose fields do not read) is `contradictory: line N is no record`: a record lost, never one to skip.
+- **Checks read typed events only.** The frames are private to `Timeline`; a check reads page-25 samples (`Sample`,
+  with FE state, status bits and their position), page-16 speeds, control writes, page-70 requests, page-71
+  command statuses, page-81 serials, Cycling Power measurements and the stamps, never raw records
+  (`timeline::tests::checks_read_typed_events_only`).
+- **A repeated report is one report.** A page-25 or page-16 payload identical to the one before it of its page is
+  the trainer repeating its last update (the update event count, or the elapsed time, did not move; the committed
+  live captures show the NEO repeating such payloads, the closest 209 ms apart): power, cadence and speed are read
+  from updates only (`Timeline::updates`), while the live guards' reading (every page 25 keeps the link alive, the
+  silence guard's evidence, check 9's descent) counts every frame, as the live run does. A `# cps` measurement
+  identical to the one before in the same whole second is counted once (check 5 compares per whole second; a sensor
+  without crank data repeats an unchanged power from one second to the next honestly). Check 10 counts trainer and
+  other advertisements closer than 20 ms to the one before as one advertising event (the Core Specification's
+  smallest advertising interval, Vol 6, Part B, §4.4.2.2.1). None of these is a contradiction: the live writer
+  stamps a record when it appends it, so a stalled pump appends queued frames microseconds apart, and no spacing
+  bound on those stamps is physically sound; counting a repeat once is.
+- **Each check's records follow its grammar** (`Timeline::grammar`, one `Grammar` per check, applied by `analyse`
+  to a capture whose outcome is `completed`, before the check reads it). The grammar's vocabulary covers every kind
+  of record the check reads, one token each: control writes by kind (`R` release, `E` page 49, `S` pages 50, 51 and
+  55), page-70 requests (`u` for page 81, the run's opening one, `q` for page 71), page-71 command statuses (`e`,
+  only after a request: the NEO never sent one unasked in the committed live captures), other trainer frames (`f`,
+  pages 25 and 16 and the broadcast pages 80 and 81), the check's own stamps, `# link` stamps, its questions'
+  answers, check 10's `# scan` and `# adv` stamps and check 5's `# cps` lines; any other record fits no grammar.
+  Over them:
+  - *shapes*: the order and number of the records, relative to the cue, the answers, the connect, the drop and the
+    closing release (e.g. check 7: nothing written between its target and the closing release; 11a: the unplug
+    cue once, then the answer and the closing release, or the drop with the answer before or after it, a release
+    before it only directly before the drop, no trainer frame after it; 11b: no trainer frame from the drop until
+    the reconnect is discovered; 11c: the advertisement and the connect before any write or cue; check 10: the scan
+    opened just before the window, adverts only while it runs, ended by itself or closed just after the window);
   - *program*: the exact control writes the procedure makes, in order, with the soft start as ERG 0 W and six
     1 Hz writes on a line to its target (`Step`, the procedure's constants `CHECK5_W`, `CHECK6_W`, `CHECK7_W`,
     `CHECK12_W`, `MAX_ERG_W`, `TARGET_W`), one program per way the procedure can end.
 
-  A breach is no result: `contradictory: control write N (…) is not the procedure's`, or `contradictory: the events
-  do not follow the procedure (<shape>): <tokens>`. A run that did not complete gives no result anyway; its
+  A breach is no result: `contradictory: control write N (…) is not the procedure's`, or `contradictory: the
+  records do not follow the procedure (<shape>): <tokens>`. A run that did not complete gives no result anyway; its
   checks still read any timeline without failing.
 - **Fail closed.** A derived result that misses part of the procedure gives no result rather than a result from
-  the rest: check 6 needs exactly the procedure's four ERG steps (else no result, and check 9's power lag is not
-  measured), check 5 exactly its held targets, check 10 a connect answer whenever the phone listed the NEO; any
-  check that cannot find what its procedure writes (its `error`) gives no result.
+  the rest: check 6 needs exactly the procedure's four ERG steps, check 5 exactly its held targets, check 10 a connect
+  answer whenever the phone listed the NEO; a check 6 beside check 9 that is contradictory or fails closed leaves
+  check 9 no result (a missing check 6 still leaves its verdict conditional); any check that cannot find what its
+  procedure writes (its `error`) gives no result.
 - **One silence threshold.** The silence guard stops a run when strictly more than `SILENCE_US` (2 s) passed
   without page 25 (`rider::silent`); `analyse` accepts a release before an 11a drop as the guard's only on that same
   condition, from the last page 25 before it in the timeline.
+
+**Known limit: plausible retiming.** The integrity layer rejects captures that contradict the procedure, not
+plausible forgeries. A record retimed within what a live run could show (e.g. check 6's step writes moved 0.4 s
+later, past frames only and in time order, which shortens t90 and can change check 9's verdict) is a different
+capture that no rule can tell from a live one. For live captures the guarantee is the writer: each line is stamped
+and appended under one lock (`Capture::record_now`, `record_aux_now`), so a capture `hil_fec` wrote is the order and
+timing the run saw; a capture edited by hand is not covered, so commit only the output of `redact`.
 
 ### Check 9: what counts as a stall
 

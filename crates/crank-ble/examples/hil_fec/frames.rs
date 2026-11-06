@@ -792,7 +792,6 @@ mod tests {
                     # check10 20 01\n\
                     # scan 30\n\
                     # answer-listed 40 73 65 65 6E\n\
-                    # adv 50 zz\n\
                     # see: 0A 0B\n\
                     # hil_fec procedure: completed\n\
                     # hil_fec finished: 1700000000\n";

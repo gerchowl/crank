@@ -9,7 +9,7 @@
 use crate::{
     cps::max_gap,
     frames::{Note, Stamp, stamp, stamp_of, stamps},
-    partb::{SEC, round1, samples, secs},
+    partb::{SEC, round1, secs},
     timeline::{Grammar, Step, Timeline},
 };
 use serde_json::{Value, json};
@@ -31,6 +31,13 @@ pub const ENDED: u8 = 0;
 pub const MIN_WINDOW: Duration = Duration::from_mins(1);
 /// Both answers must be in within this time from the window's start.
 pub const ANSWER_WAIT: Duration = Duration::from_mins(3);
+/// Advertising events of one advertiser are at least this far apart on air: the Bluetooth Core
+/// Specification's smallest advertising interval (`advInterval` 20 ms to 10.24 s, Vol 6, Part B,
+/// §4.4.2.2.1). Reports of one kind closer than this are counted as one event: a scan can report
+/// an event twice (an advertisement and its scan response), and the host stamps reports when it
+/// handles them, so a busy harness can bunch real events too; neither is a contradiction, and
+/// counting them once keeps a copied report from adding an advertisement.
+const ADV_EVENT_US: u64 = 20_000;
 /// Page 25 silent this long inside the window means the link was not held (ADR-0002 §6).
 const LINK_GAP_MAX_US: u64 = 2 * SEC;
 
@@ -38,10 +45,20 @@ const LINK_GAP_MAX_US: u64 = 2 * SEC;
 /// listed answer and the optional connect answer inside it, between the opening and the closing
 /// release.
 pub(crate) const GRAMMAR: Grammar = Grammar {
-    tag: Some(WINDOW),
+    tags: &[
+        (WINDOW, &[(OPEN, '1'), (CLOSE, '2')]),
+        (SCAN, &[(OPEN, 'o'), (ENDED, 'z'), (CLOSE, 'w')]),
+        (ADV, &[(1, 'h'), (0, 'j')]),
+    ],
     answers: &[LISTED.key, CONNECT.key],
-    ignored: &[SCAN, ADV],
-    shape: "^Rf*1f*af*(?:bf*)?2f*Rf*$",
+    records: &[],
+    shapes: &[
+        // The scan opens just before the window; adverts are recorded only while it runs; it
+        // ends by itself (z, then no more adverts) or is closed just after the window (w).
+        "^f*Rf*u[fe]*o1(?:[fehjab]*2w|[fehjab]*z[feab]*2)[fe]*R[fe]*q[fe]*$",
+        // The listed answer once, then the connect answer at most once.
+        "^[^ab]*a[^ab]*(?:b[^ab]*)?$",
+    ],
     programs: &[&[Step::Release, Step::Release]],
 };
 
@@ -221,7 +238,7 @@ fn advertising(
 /// The result of check 10 from the capture's timeline.
 pub fn check10(tl: &Timeline) -> Value {
     let method = "window = the check10 open/close events; advertising = the parallel scan's adverts of this trainer inside the window (largest gap with the window's edges) and the operator's 'listed' answer, 'not seen' only when both agree; second central = the 'connect' answer, asked only when the phone listed the NEO; link held = no page-25 gap > 2 s inside the window";
-    let (records, notes) = (tl.records(), tl.notes());
+    let notes = tl.notes();
     let window = stamps(notes, WINDOW, &[OPEN, CLOSE]).and_then(|w| {
         match (stamp_of(&w, OPEN), stamp_of(&w, CLOSE)) {
             (Some(from), Some(to)) => Ok((from, to)),
@@ -253,12 +270,19 @@ pub fn check10(tl: &Timeline) -> Value {
         }
     };
     // Inside: between the window's stamps in the timeline.
+    // One advertising event per report closer than [`ADV_EVENT_US`] to the one before: the
+    // host's stamps can bunch reports together, the air cannot (see the constant).
     let adverts = |mine: u8| -> Vec<u64> {
-        notes[from.seq + 1..to.seq]
+        let mut out: Vec<u64> = Vec::new();
+        for n in notes[from.seq + 1..to.seq]
             .iter()
             .filter(|n| n.tag == ADV && n.bytes == [mine])
-            .map(|n| n.at_us)
-            .collect()
+        {
+            if out.last().is_none_or(|l| n.at_us - l >= ADV_EVENT_US) {
+                out.push(n.at_us);
+            }
+        }
+        out
     };
     let (trainer, others) = (adverts(1), adverts(0));
     let scan = Scan::of(notes, &from, &to);
@@ -266,7 +290,8 @@ pub fn check10(tl: &Timeline) -> Value {
     let listed = answer(notes, &LISTED);
     let advertising = advertising(&trainer, others.len(), &scan, &listed, (from, to));
     let second_central = second_central(notes);
-    let page25: Vec<u64> = samples(records).iter().map(|s| s.at_us).collect();
+    // Every page 25 holds the link, a repeat of the last update too.
+    let page25: Vec<u64> = tl.samples().iter().map(|s| s.at_us).collect();
     let link_gap = max_gap(page25, from, to);
     let link = if link_gap > LINK_GAP_MAX_US {
         format!("lost (page 25 silent for {} s)", round1(secs(link_gap)))
@@ -316,7 +341,8 @@ mod tests {
     fn page25(to_s: u64) -> Vec<Record> {
         (0..to_s * 2)
             .map(|k| {
-                let mut f = [0xa4, 9, 0x4e, 5, 25, 0, 0, 0, 0, 0, 0, 0x30, 0];
+                let count = u8::try_from(k % 256).expect("a byte");
+                let mut f = [0xa4, 9, 0x4e, 5, 25, count, 0, 0, 0, 0, 0, 0x30, 0];
                 f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
                 Record {
                     at_us: k * SEC / 2,

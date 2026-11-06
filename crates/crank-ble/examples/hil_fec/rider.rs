@@ -667,7 +667,8 @@ async fn check8<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop>
 /// at 0.5 rpm/s; so it ends within 160 s (the cue at 10 rpm, 15 under the floor).
 async fn check9<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
     r.engage(MAX_ERG_W).await?;
-    let from_us = crate::partb::descent_target_at(&r.w.records()).unwrap_or_else(|| r.w.now_us())
+    let from_us = crate::partb::descent_target_at(&crate::partb::writes(&r.w.records()))
+        .unwrap_or_else(|| r.w.now_us())
         + crate::partb::DESCENT_AFTER_US;
     r.cue(Cue::Cadence(90));
     r.hold(Duration::from_micros(from_us.saturating_sub(r.w.now_us())))
@@ -872,7 +873,7 @@ async fn check11b<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Sto
             "no page-81 serial within 2 s of the reconnect: the trainer is not confirmed".into(),
         ));
     }
-    same_trainer(&r.w.records(), detected, back).map_err(Stop::Aborted)?;
+    same_trainer(&crate::partb::serials(&r.w.records()), detected, back).map_err(Stop::Aborted)?;
     let until = Instant::now() + ANSWER_WAIT;
     r.answer(&mut None, until, &LIGHTS).await?;
     let op = r.op;
@@ -3539,7 +3540,7 @@ mod tests {
                 let t = m.join("\n") + "\n";
                 let lag = PowerLag::of_check6(Some(&t));
                 assert!(
-                    matches!(lag, PowerLag::NotMeasured(_)),
+                    matches!(lag, PowerLag::Contradictory(_)),
                     "{what} line {i}: {lag:?}"
                 );
                 assert_eq!(
@@ -3687,7 +3688,7 @@ mod tests {
             "check11b" => ("lights", "out"),
             _ => ("unplugged", "unplugged"),
         };
-        let family = match k % 6 {
+        let family = match k % 7 {
             0 => {
                 let (i, j) = (stamped[next(stamped.len())], stamped[next(stamped.len())]);
                 m.swap(i, j);
@@ -3719,6 +3720,18 @@ mod tests {
                 };
                 m.insert(i, extra);
                 "insert"
+            }
+            6 => {
+                // The same record again 1 µs later (in its next interval, the file kept in time
+                // order): every kind, frames and `# cps` lines included.
+                let i = stamped[next(stamped.len())];
+                let at = stamp_of_line(&lines[i]).expect("stamped");
+                let room = lines[i + 1..]
+                    .iter()
+                    .find_map(|l| stamp_of_line(l))
+                    .unwrap_or(u64::MAX);
+                m.insert(i + 1, restamp(&lines[i], (at + 1).min(room)));
+                "copy"
             }
             4 => {
                 // Not the adapter's connect event (`# link 03`): the procedure does not always get
@@ -3753,6 +3766,152 @@ mod tests {
         Some((family, m))
     }
 
+    /// Insert `line` into the capture `text` at its stamp, in time order.
+    fn inserted(text: &str, line: &str) -> String {
+        let at = stamp_of_line(line).expect("stamped");
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let i = lines
+            .iter()
+            .position(|l| stamp_of_line(l).is_some_and(|t| t > at))
+            .expect("a later line");
+        lines.insert(i, line.to_string());
+        lines.join("\n") + "\n"
+    }
+
+    fn capture_of(captures: &[(&'static str, String)], stem: &str) -> String {
+        captures
+            .iter()
+            .find(|c| c.0 == stem)
+            .map(|c| c.1.clone())
+            .expect("capture")
+    }
+
+    /// #516 round 4 B1: a page-70 request written inside check 7's silent window (in time order)
+    /// ended the window early and changed the row; the procedure writes nothing there, so it is no
+    /// result now.
+    #[tokio::test(start_paused = true)]
+    async fn check7_a_request_in_the_silent_window_is_no_result() {
+        let text = capture_of(&valid_captures().await, "check7");
+        let base = row("check7", &text);
+        assert!(full(&base) && base["held"] == json!(true), "{base}");
+        let target = text
+            .lines()
+            .rfind(|l| l.contains(" tx A4 09 4F 05 31 "))
+            .and_then(stamp_of_line)
+            .expect("the 150 W write");
+        let forged = inserted(
+            &text,
+            &format!(
+                "{} tx A4 09 4F 05 46 FF FF FF FF 81 47 01 66",
+                target + 3_600_000
+            ),
+        );
+        let v = row("check7", &forged);
+        assert!(!full(&v), "{}", v["line"]);
+        assert!(
+            v["invalid"]
+                .as_str()
+                .is_some_and(|i| i.starts_with("contradictory: ")),
+            "{v}"
+        );
+    }
+
+    /// #516 round 4 N1: a check 6 that fails closed (contradictory, or not the procedure's steps)
+    /// leaves check 9 no result, not a result "only if check 6 t90 ≤ 2.3 s (not measured)".
+    #[tokio::test(start_paused = true)]
+    async fn check9_beside_a_check6_that_fails_closed_is_no_result() {
+        let captures = valid_captures().await;
+        let check6 = capture_of(&captures, "check6");
+        let nine = capture_of(&captures, "check9");
+        let lines: Vec<&str> = check6.lines().collect();
+        let i = lines
+            .iter()
+            .rposition(|l| l.contains(" tx A4 09 4F 05 31 "))
+            .expect("a step write");
+        let mut gone = lines.clone();
+        gone.remove(i);
+        let mut twice = lines.clone();
+        twice.insert(i, lines[i]);
+        for forged in [gone, twice] {
+            let lag = PowerLag::of_check6(Some(&(forged.join("\n") + "\n")));
+            assert!(matches!(lag, PowerLag::Contradictory(_)), "{lag:?}");
+            let v = analyse("check9", &nine, outcome_in(&nine).as_deref(), &lag).expect("stem");
+            assert_eq!(v["completed"], json!(false), "{}", v["line"]);
+            assert!(
+                v["invalid"]
+                    .as_str()
+                    .is_some_and(|i| i.starts_with("check 6: ")),
+                "{v}"
+            );
+        }
+        // Without a check 6 at all the verdict still says it is conditional (#423).
+        let missing = PowerLag::of_check6(None);
+        assert!(full(
+            &analyse("check9", &nine, outcome_in(&nine).as_deref(), &missing).expect("stem")
+        ));
+    }
+
+    /// #516 round 4 M11: check 6 fails closed on its own: a step write moved 11 s later, past
+    /// frames only and in time order (the program unchanged), leaves the 150 W target held under
+    /// 10 s, so the procedure's steps are not all there and the run gives no result.
+    #[tokio::test(start_paused = true)]
+    async fn check6_with_a_step_held_too_briefly_gives_no_result() {
+        let text = capture_of(&valid_captures().await, "check6");
+        assert!(full(&row("check6", &text)));
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let writes: Vec<usize> = (0..lines.len())
+            .filter(|i| lines[*i].contains(" tx A4 09 4F 05 31 "))
+            .collect();
+        // The 150 W step: the fourth-from-last ERG write.
+        let i = writes[writes.len() - 4];
+        let line = lines.remove(i);
+        let late = stamp_of_line(&line).expect("stamped") + 11 * SEC;
+        let at = lines
+            .iter()
+            .position(|l| stamp_of_line(l).is_some_and(|t| t > late))
+            .expect("a later line");
+        lines.insert(at, restamp(&line, late));
+        let t = lines.join("\n") + "\n";
+        let v = row("check6", &t);
+        assert_eq!(v["completed"], json!(false), "{}", v["line"]);
+        assert!(
+            v["invalid"]
+                .as_str()
+                .is_some_and(|i| i.starts_with("the ERG steps are ")),
+            "{v}"
+        );
+    }
+
+    /// #516 round 4 N2: check 10's scan stamps are part of its grammar: a second open, an end then
+    /// a close, a close inside the window are each no result; a trainer advert copied 1 µs later
+    /// is the same advertising event and changes nothing.
+    #[tokio::test(start_paused = true)]
+    async fn check10_contradictory_scan_stamps_are_no_result_and_a_copied_advert_counts_once() {
+        let text = capture_of(&valid_captures().await, "check10");
+        let base = row("check10", &text);
+        assert!(full(&base), "{base}");
+        let close = text
+            .lines()
+            .find(|l| l.starts_with("# check10 ") && l.ends_with(" 02"))
+            .and_then(stamp_of_line)
+            .expect("window close");
+        for forged in [
+            inserted(&text, &format!("# scan {} 01", close - 2_000_000)),
+            inserted(&text, &format!("# scan {} 00", close - 30_000_000)),
+            inserted(&text, &format!("# scan {} 02", close - 10_000_000)),
+        ] {
+            let v = row("check10", &forged);
+            assert!(!full(&v), "{}", v["line"]);
+        }
+        let advert = text
+            .lines()
+            .find(|l| l.starts_with("# adv ") && l.ends_with(" 01"))
+            .expect("a trainer advert");
+        let at = stamp_of_line(advert).expect("stamped");
+        let v = row("check10", &inserted(&text, &restamp(advert, at + 1)));
+        assert_eq!(v, base);
+    }
+
     /// #516 property: no change to a valid capture gives a full row it did not have, nor changes a
     /// full row. Out of order (two lines swapped, or one stamp moved anywhere) and in order: a
     /// record repeated at its µs, an extra cue, answer, release or link stamp inserted (never a full
@@ -3781,7 +3940,7 @@ mod tests {
                 .filter(|i| stamp_of_line(&lines[*i]).is_some())
                 .collect();
             let events: Vec<usize> = (0..lines.len()).filter(|i| is_event(&lines[*i])).collect();
-            for k in 0..600_u32 {
+            for k in 0..700_u32 {
                 let Some((family, m)) = mutant(k, stem, &lines, &stamped, &events, &mut next)
                 else {
                     continue;
@@ -3797,6 +3956,8 @@ mod tests {
                     // Equal stamps swapped, or a stamp moved within its neighbours': another
                     // valid capture, counted, not judged.
                 } else if matches!(family, "swap" | "restamp" | "repeat" | "insert") {
+                    // (A copy of a frame, `# cps` line or advert is the same update; of a write
+                    // or stamp, contradictory: either way no gained or changed full row, below.)
                     if full(&v) {
                         bad.push(format!("{stem} {family} k={k}: {}", v["line"]));
                     }
@@ -3815,6 +3976,6 @@ mod tests {
             bad.len(),
             bad.join("\n")
         );
-        assert!(counts.values().all(|c| c.0 >= 900), "{counts:?}");
+        assert!(counts.values().all(|c| c.0 >= 800), "{counts:?}");
     }
 }
