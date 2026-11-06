@@ -996,3 +996,247 @@ fn a_rider_change_while_handed_reconnects_the_returned_trainer() {
     k.st(at(10), likely());
     assert_eq!(k.trainer_rider, heavier);
 }
+
+/// Every state the keeper's components can form, not a hand-written list: the product of the
+/// ride state (with what `Handed` recorded and its stale marks, a loaded ride's start and
+/// discard), `waiting`, `shut`, the intent, the latch, the scan cap and both devices' phases
+/// (the strap also unpaired), filtered only by the documented invariants
+/// ([`Keeper::invariant`]) and by what the ride state allows of the phases (§5.1.1: in
+/// `Handed` and `Loaded` the trainer is the ride's, and nothing is attempted).
+/// Every ride state the generator combines: `Free`, `Handed` with each recorded release and
+/// other intent and stale marks, and `Loaded` started or not with each discard cause.
+fn generated_rides() -> Vec<Ride> {
+    use ReleaseReason::{Hidden, RiderRelease, Sleep};
+    let mut rides = vec![Ride::Free];
+    for release in [None, Some(Hidden), Some(Sleep), Some(RiderRelease)] {
+        for other in [
+            None,
+            Some(LinkIntent::Likely { ready: true }),
+            Some(LinkIntent::Retry),
+        ] {
+            for stale in [[false, false], [true, false]] {
+                rides.push(Ride::Handed {
+                    recorded: Recorded {
+                        release,
+                        other,
+                        any: release.is_some() || other.is_some(),
+                    },
+                    stale,
+                });
+            }
+        }
+    }
+    for started in [false, true] {
+        for discard in [
+            None,
+            Some(Discard::Abandoned),
+            Some(Discard::Sleep),
+            Some(Discard::RiderRelease),
+        ] {
+            rides.push(Ride::Loaded {
+                id: "ride".into(),
+                started,
+                input_at: at(0),
+                discard,
+            });
+        }
+    }
+    rides
+}
+fn generated_states() -> Vec<Keeper> {
+    let rides = generated_rides();
+    let intents = [
+        Intent::None,
+        Intent::Likely {
+            ready: false,
+            since: at(0),
+        },
+        Intent::Likely {
+            ready: true,
+            since: at(0),
+        },
+        Intent::Left { since: at(0) },
+        Intent::Background { since: at(0) },
+    ];
+    let phases = [
+        Phase::Cold,
+        Phase::Searching,
+        Phase::Warm,
+        Phase::NotFound,
+        Phase::Riding,
+    ];
+    let dev = |id: Option<&str>, phase| Dev {
+        id: id.map(Into::into),
+        phase,
+        era: 1,
+        advertised: false,
+        advert_window: None,
+    };
+    let mut all = Vec::new();
+    for ride in &rides {
+        for waiting in [false, true] {
+            for shut in [false, true] {
+                for intent in intents {
+                    for latched in [false, true] {
+                        for scan_since in [None, Some(at(0))] {
+                            for trainer in phases {
+                                for strap in phases.iter().map(|&p| Some(p)).chain([None]) {
+                                    let free = *ride == Ride::Free;
+                                    let allowed = |p: Phase| {
+                                        if free {
+                                            p != Phase::Riding
+                                        } else {
+                                            matches!(
+                                                p,
+                                                Phase::Riding | Phase::NotFound | Phase::Cold
+                                            )
+                                        }
+                                    };
+                                    if !allowed(trainer)
+                                        || strap.is_some_and(|p| !allowed(p))
+                                        || (!free && trainer != Phase::Riding)
+                                    {
+                                        continue;
+                                    }
+                                    let k = Keeper {
+                                        devs: [
+                                            dev(Some("neo"), trainer),
+                                            match strap {
+                                                Some(p) => dev(Some("hrm"), p),
+                                                None => dev(None, Phase::Cold),
+                                            },
+                                        ],
+                                        intent,
+                                        latched,
+                                        ride: ride.clone(),
+                                        waiting,
+                                        scan_since,
+                                        rider: RIDER,
+                                        trainer_rider: RIDER,
+                                        shut,
+                                        out: Vec::new(),
+                                    };
+                                    if k.invariant().is_ok() {
+                                        all.push(k);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    all
+}
+/// What must hold of a step from `before` that gave `effects` and left `after`.
+fn check_step(
+    before: &Keeper,
+    input: &Input<'_>,
+    effects: &[Effect],
+    after: &Keeper,
+) -> Result<(), String> {
+    after.invariant()?;
+    if after.shut
+        && effects
+            .iter()
+            .any(|e| matches!(e, Effect::Attempt(..) | Effect::HandOver))
+    {
+        return Err(format!("acquires a link after the quit: {effects:?}"));
+    }
+    let started = matches!(before.ride, Ride::Loaded { started: true, .. });
+    if started && effects.iter().any(|e| matches!(e, Effect::Discard(_))) {
+        return Err("discards a started ride".into());
+    }
+    if started && *input != Input::Released && !matches!(after.ride, Ride::Loaded { .. }) {
+        return Err("lets a started ride's links go".into());
+    }
+    if let Input::Intent(_) = input {
+        let answers = acks(effects)
+            .into_iter()
+            .filter(|a| *a != Ack::Superseded)
+            .count();
+        if answers != 1 {
+            return Err(format!("an intent answered {answers} times: {effects:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// Totality over the generated state set (round 3): every state × every input keeps the
+/// invariants, never acquires a link after the quit, never releases a started ride, answers
+/// every intent exactly once; and so does each way the load can resolve afterwards.
+#[test]
+fn every_generated_state_and_input_keeps_the_invariants() {
+    let states = generated_states();
+    assert!(states.len() > 1000, "{} states", states.len());
+    let mut inputs: Vec<Input<'static>> = intents().into_iter().map(Input::Intent).collect();
+    inputs.extend(others());
+    let mut checked = 0;
+    for state in &states {
+        for input in &inputs {
+            let mut k = state.clone();
+            let effects = k.step(at(700), input.clone());
+            check_step(state, input, &effects, &k)
+                .unwrap_or_else(|e| panic!("{state:?}\n × {input:?}: {e}"));
+            for resolution in resolutions() {
+                let mut resolved = k.clone();
+                let effects = resolved.step(at(701), resolution.clone());
+                check_step(&k, &resolution, &effects, &resolved)
+                    .unwrap_or_else(|e| panic!("{state:?}\n × {input:?} × {resolution:?}: {e}"));
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 100_000, "{checked} steps");
+}
+
+/// The round-3 blocker: a load that waits in `Handed`, then the quit, then the links released:
+/// nothing connects after the quit, and the waiting load fails. Also with a recorded `Sleep`
+/// that the load superseded.
+#[test]
+fn nothing_connects_after_the_quit_from_a_load_that_waited_in_handed() {
+    for sleep in [false, true] {
+        let mut k = warm();
+        k.st(at(6), Input::Acquire);
+        if sleep {
+            k.st(at(6), release(ReleaseReason::Sleep));
+        }
+        k.st(at(7), Input::Acquire);
+        let quit = k.st(at(8), Input::Shutdown);
+        assert!(quit.contains(&Effect::FailLoad), "sleep {sleep}: {quit:?}");
+        let effects = k.st(at(9), Input::Released);
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::Attempt(..))),
+            "sleep {sleep}: {effects:?}"
+        );
+        k.invariant().unwrap();
+        assert_eq!(phases(&k), [Some(Phase::Cold); 2]);
+    }
+}
+
+/// The quit's choke point itself (`Keeper::emit`): after `Shutdown` an attempt is never
+/// emitted and its device stays `cold`, and a handover is turned back into the load's failure
+/// with the links released. No transition reaches the handover case today (every path cools
+/// the links before it could hand them over); the guard is what keeps a future one from it.
+#[test]
+fn after_the_quit_the_choke_point_emits_no_attempt_and_no_handover() {
+    let mut k = warm();
+    k.shut = true;
+    k.devs[0].phase = Phase::Searching;
+    k.emit(Effect::Attempt(Trainer, 2));
+    assert_eq!(k.phase(Trainer), Some(Phase::Cold));
+    k.devs[0].phase = Phase::Riding;
+    k.devs[1].phase = Phase::Riding;
+    k.ride = Ride::Handed {
+        recorded: Recorded::default(),
+        stale: [false, false],
+    };
+    k.emit(Effect::HandOver);
+    let effects = std::mem::take(&mut k.out);
+    assert!(!effects.contains(&Effect::HandOver), "{effects:?}");
+    assert!(!effects.iter().any(|e| matches!(e, Effect::Attempt(..))));
+    assert_eq!(effects.last(), Some(&Effect::FailLoad));
+    assert_eq!(cools(&effects).len(), 2, "the links are released");
+    assert_eq!(phases(&k), [Some(Phase::Cold); 2]);
+}

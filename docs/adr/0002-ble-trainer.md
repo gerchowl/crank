@@ -833,9 +833,19 @@ decision on #520, 2026-11-06; this is the one statement of the rule):
   recorded release;
 - a later **rider action**, "Ride this" (a load) or Retry, **supersedes** it: the recorded release, a recorded
   `RiderRelease` and its latch included, is cancelled and answered `Conflict` ("superseded"). The rider action then
-  proceeds as in `Free`. This is the latch's own rule (§5.1.3: it lasts until the rider asks for a ride), so the
-  outcome does not depend on whether the load reaches the keeper before or after the links come back: either the
-  release is applied first and the load then clears the latch and connects again, or the load supersedes it.
+  proceeds as in `Free`. This is the latch's own rule (§5.1.3: it lasts until the rider asks for a ride).
+
+What is order-independent, and what is not: a rider action supersedes a **recorded** release; it cannot undo an
+**applied** one. So a load gets its ride whether it reaches the keeper before or after the links come back (either the
+release is applied first and the load then clears the latch and connects again, or the load supersedes it). But a
+release that resolution applied stays applied. Written out for a `Sleep` around the load's resolution:
+
+- `Sleep`, then Retry, then `Loaded`: the Retry superseded the recorded `Sleep` (the rider acted, so the Mac was awake),
+  and the unstarted ride is kept;
+- `Loaded`, then `Sleep`, then Retry: the `Sleep` was applied on `Loaded` and discarded the unstarted ride; the later
+  Retry does not bring it back.
+
+Both follow the rule; neither is a race the keeper resolves.
 
 A pairing change in `Handed` marks the device's handed link stale: if it comes back (`Refused`), it is released, and
 the new pairing starts `cold`. A change of the rider configuration in `Handed` is applied when the trainer comes back:
@@ -996,7 +1006,12 @@ keeper's links (each release bounded by 2 s), a cancelled attempt (once its conn
 discards (the bounds of the end path, §7.9). An intent recorded in `Handed` (§5.1.1) is answered when the load resolves
 and the intent is applied; that wait is bounded by the load's own bounds (`Load` within 1 s). It is never answered `Ok`
 for an intent it has not applied. It answers `Conflict` for `RiderRelease` while the ride holds the trainer, for one
-whose discard found the ride started, and for `Likely` or `Retry` after the quit.
+whose discard found the ride started, for `Likely` or `Retry` after the quit, and for a release recorded in `Handed`
+that a later rider action superseded (§5.1.1; it was never applied).
+
+**After the quit nothing acquires a link (#469).** `Shutdown` lets every keeper link go, and from then on no transition
+may connect or hand over: the keeper's single point of emission drops any attempt and turns a handover back, and a load
+still waiting gets its failure. A load that waited in `Handed` and links released after the quit connect nothing.
 
 The release is the driver's bounded disconnect (§7.9, #304). A disconnect that timed out leaves the same residual as
 there (#335). An attempt that is still connecting is cancelled, and the cancelled connect disconnects the half-open

@@ -82,10 +82,10 @@ enum Msg {
     /// The phases, for a test.
     #[cfg(test)]
     Phases(oneshot::Sender<[Option<Phase>; 2]>),
-    /// Hold (`true`) or let go the keeper's own reports, for a test to order them after a
-    /// message of the core.
+    /// Hold back (`true`) or replay (`false`) the reports that resolve `Handed` (`Returned`,
+    /// `Released`), for a test to put the core's messages before them.
     #[cfg(test)]
-    HoldInternal(bool, oneshot::Sender<()>),
+    HoldResolutions(bool, oneshot::Sender<()>),
 }
 /// What the keeper's own tasks report.
 pub(crate) enum Internal {
@@ -149,7 +149,7 @@ impl Handle {
             direct: None,
             pending: Vec::new(),
             discard_done: None,
-            hold_internal: false,
+            held: None,
             clock,
         };
         task.apply(Input::Pairings(pairings));
@@ -167,8 +167,8 @@ impl Handle {
     ///
     /// # Errors
     /// `Conflict` when it is refused (`RiderRelease` while the ride holds the trainer, a
-    /// `Likely` after the quit) or its discard found the ride started; `Internal` without a
-    /// keeper.
+    /// `Likely` after the quit), its discard found the ride started, or it was a recorded
+    /// release that a rider action superseded; `Internal` without a keeper.
     pub(crate) async fn intent(&self, intent: LinkIntent) -> Result<(), ApiError> {
         let gone = || ApiError::new(ErrorCode::Internal, "the link keeper is gone");
         let (ack, done) = oneshot::channel();
@@ -194,9 +194,9 @@ impl Handle {
         }
     }
     #[cfg(test)]
-    pub(crate) async fn hold_internal(&self, hold: bool) {
+    pub(crate) async fn hold_resolutions(&self, hold: bool) {
         let (ack, done) = oneshot::channel();
-        let _ = self.tx.send(Msg::HoldInternal(hold, ack));
+        let _ = self.tx.send(Msg::HoldResolutions(hold, ack));
         let _ = done.await;
     }
     #[cfg(test)]
@@ -255,9 +255,9 @@ struct Task {
     pending: Vec<(Answer, bool)>,
     /// The discard under way: `Some(discarded)` once it ended.
     discard_done: Option<watch::Receiver<Option<bool>>>,
-    /// A test holds the keeper's own reports back (`Handle::hold_internal`); always `false`
-    /// outside tests.
-    hold_internal: bool,
+    /// The resolutions a test holds back (`Handle::hold_resolutions`); always `None` outside
+    /// tests.
+    held: Option<Vec<Internal>>,
 }
 fn ms(from: MonoTime, to: MonoTime) -> u64 {
     to.0.saturating_sub(from.0) / 1000
@@ -339,7 +339,7 @@ impl Task {
                     Some(msg) => self.message(msg),
                     None => break,
                 },
-                Some(event) = internal.recv(), if !self.hold_internal => self.internal(event),
+                Some(event) = internal.recv() => self.internal(event),
                 () = tick => drop(self.apply(Input::Tick)),
                 seen = advertised(&mut self.scan) => {
                     drop(self.apply(Input::Advertised(&seen.device.0)));
@@ -381,8 +381,14 @@ impl Task {
                 });
             }
             #[cfg(test)]
-            Msg::HoldInternal(hold, ack) => {
-                self.hold_internal = hold;
+            Msg::HoldResolutions(hold, ack) => {
+                if hold {
+                    self.held.get_or_insert_with(Vec::new);
+                } else {
+                    for event in self.held.take().unwrap_or_default() {
+                        self.internal(event);
+                    }
+                }
                 let _ = ack.send(());
             }
             #[cfg(test)]
@@ -393,6 +399,12 @@ impl Task {
         }
     }
     fn internal(&mut self, event: Internal) {
+        if let Some(held) = &mut self.held
+            && matches!(event, Internal::Returned(..) | Internal::Released)
+        {
+            held.push(event);
+            return;
+        }
         let input = match event {
             Internal::Phase(d, era, phase) => Input::Phase(d, era, phase),
             Internal::Attempted(d, era, result) => {

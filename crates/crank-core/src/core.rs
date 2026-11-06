@@ -1232,7 +1232,9 @@ impl Core {
     ///
     /// # Errors
     /// `Conflict` for `RiderRelease` while a ride is started or starting, or when its discard
-    /// finds the ride started; `Conflict` for `Likely` or `Retry` after the quit; `Storage`.
+    /// finds the ride started; `Conflict` for `Likely` or `Retry` after the quit; `Conflict` for a
+    /// release recorded while the links were handed out that a later rider action ("Ride this",
+    /// Retry) superseded, so it was never applied; `Storage`.
     pub async fn links_intent(&self, intent: LinkIntent) -> Result<(), ApiError> {
         if intent
             == (LinkIntent::Release {
