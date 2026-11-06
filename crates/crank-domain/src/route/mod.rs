@@ -9,12 +9,13 @@ mod gpx;
 mod import;
 
 pub use dsl::{
-    GradeProfileItem, GradeProfileRepeat, GradeProfileSegment, ProfileGrade, RouteDslError,
-    RouteDslErrorKind, parse_grade_profile, parse_route_dsl, print_grade_profile, print_route_dsl,
+    GradeProfileItem, GradeProfileRepeat, GradeProfileSegment, MAX_GRADE_PCT, MAX_SEGMENT_M,
+    MIN_GRADE_PCT, MIN_SEGMENT_M, ProfileGrade, RouteDslError, RouteDslErrorKind, UNLABELLED_NAME,
+    parse_grade_profile, parse_route_dsl, print_grade_profile, print_route_dsl,
 };
 pub use gpx::{GpxImport, TrackChoice, TrackKind, import_gpx};
 pub use import::{
-    ImportedRoute, RawPoint, RouteImportError, RouteImportOptions, RouteImportReport,
+    FilledGap, ImportedRoute, RawPoint, RouteImportError, RouteImportOptions, RouteImportReport,
     route_from_points,
 };
 
