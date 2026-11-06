@@ -157,6 +157,23 @@ wanted.engine = "not a Disagree for any component"
 wanted.ui = "trainerFollowing never not_following from this echo"
 
 [[row]]
+id = "FM-ROUTE-05"
+phase = "start"
+severity = "S1"
+failure_mode = "Route starts on a climb at full grade"
+cause = "the first Sim sent with the route grade at 0 m"
+fault_plan = "route whose first 1 km is 12 %"
+detection = "slew monitor from the first Sim"
+guard = "ADR-0005 §2.7.3"
+status = "missing"
+test = "missing"
+issue = 545
+note = "the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "first Sim at 0 %, slewing to the route grade at 1 %/s"
+wanted.engine = "position 0 until the bike moves"
+wanted.ui = "no jump"
+
+[[row]]
 id = "FM-RAMP-01"
 phase = "ramp"
 severity = "S1"
@@ -1013,6 +1030,142 @@ wanted.engine = "edit refused cap_requires_erg / cap_exceeded_target; refused ed
 wanted.ui = "refusal line in the lane"
 
 [[row]]
+id = "FM-ROUTE-01"
+phase = "free_sim"
+severity = "S1"
+failure_mode = "Sudden steep grade reaches the trainer in a route ride"
+cause = "a step in the file's elevation, or a grade-profile segment boundary (0 → 12 %)"
+fault_plan = "route whose target grade steps 0 → 25 % in one node"
+detection = "slew monitor on emitted Sim grades"
+guard = "ADR-0005 §2.3.5"
+status = "missing"
+test = "missing"
+issue = 545
+note = "the slew and cap are checked by docs/adr/models/route_grade.py (check_pipeline); the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "commanded grade moves ≤ 1 %/s (≤ 0.25 % per tick), ≤ 1 page-51 change per second, capped at +20 %"
+wanted.engine = "commandedGradePct follows the slew; routeGradePct is the route's"
+wanted.ui = "commanded and route grade shown; no jump"
+
+[[row]]
+id = "FM-ROUTE-02"
+phase = "free_sim"
+severity = "S1"
+failure_mode = "Grade above the cap sent"
+cause = "a route or grade profile steeper than +20 %, or scaling applied after the cap"
+fault_plan = "grade profile with a 30 % segment, scale_all 100 % and 50 %"
+detection = "cap monitor on emitted Sim grades"
+guard = "ADR-0005 §2.3.3"
+status = "missing"
+test = "missing"
+issue = 545
+note = "the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "no Sim grade above +20 % or below −15 %; scaling before the cap"
+wanted.engine = "routeGradePct 30, commandedGradePct ≤ 20"
+wanted.ui = "grade row shows both values"
+
+[[row]]
+id = "FM-ROUTE-03"
+phase = "free_sim"
+severity = "S1"
+failure_mode = "Stall on a climb: the rider cannot push the grade at low cadence"
+cause = "a grade above what the rider sustains in their lowest gear; SIM has no release of its own"
+fault_plan = "SimFault::CadenceStall on a route section at the rider's arming grade + 2 % (FTP 150 W, 84 kg, default 39 × 25: 12.6 %)"
+detection = "cadence monitor while the target grade is at or above the arming grade"
+guard = "ADR-0005 §2.8.1"
+status = "missing"
+test = "missing"
+issue = 545
+note = "arming grade from route_speed.py arming_grade (worked example 6); relief logic checked by check_relief; Q6 of ADR-0005 §5, decided by the owner 2026-11-06; the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "cadence < 30 rpm for 3 s with the target grade ≥ the arming grade (≥ 2 %) → Resistance{0}; at ≥ 50 rpm for 2 s, or when the target eases 1 point below the arming grade, Sim again with the grade slewed from 0 %"
+wanted.engine = "relief state set; position keeps advancing (model (a) coasts)"
+wanted.ui = "banner \"Grade released · spin up to 50 rpm\""
+
+[[row]]
+id = "FM-ROUTE-06"
+phase = "free_sim"
+severity = "S2"
+failure_mode = "Coasting a descent auto-pauses the route ride"
+cause = "stopped_pedalling (cadence 0, power 0 for 3 s) applied without the speed condition"
+fault_plan = "0 W, cadence 0 on a −6 % section at 40 km/h"
+detection = "pause-reason trace"
+guard = "ADR-0005 §2.4.4"
+status = "missing"
+test = "missing"
+issue = 545
+note = "the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "Sim unchanged; no Resistance{0}"
+wanted.engine = "no stopped_pedalling while the selected speed is ≥ 0.5 m/s"
+wanted.ui = "no pause banner"
+
+[[row]]
+id = "FM-ROUTE-08"
+phase = "free_sim"
+severity = "S2"
+failure_mode = "Surface Crr refused at the mode boundary and control stalls"
+cause = "a surface class with Crr above CRR_MAX (0.0127)"
+fault_plan = "every surface class through ControlMode::grid_key"
+detection = "grid_key error count"
+guard = "ADR-0005 §2.6.2"
+status = "missing"
+test = "missing"
+issue = 545
+note = "every class ≤ Crr_max is checked by docs/adr/models/route_speed.py (check_wire); the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "Sim with Crr ≤ 0.0127 for every class"
+wanted.engine = "no mode error"
+wanted.ui = "surface shown"
+
+[[row]]
+id = "FM-ROUTE-09"
+phase = "free_sim"
+severity = "S3"
+failure_mode = "Model speed non-finite or negative; route position jumps"
+cause = "power null in the loss window, or an integrator fault"
+fault_plan = "power null for 2 s; descents at −15 % from rest"
+detection = "invariant monitor: v ≥ 0, finite, position non-decreasing"
+guard = "ADR-0005 §2.4.4"
+status = "missing"
+test = "missing"
+issue = 545
+note = "the invariants are checked by docs/adr/models/route_speed.py (check_invariants); the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "unchanged"
+wanted.engine = "null power counts as 0 W (coast); v ≥ 0; position never decreases"
+wanted.ui = "speed and distance stay finite"
+
+[[row]]
+id = "FM-ROUTE-10"
+phase = "free_sim"
+severity = "S3"
+failure_mode = "Trainer speed lost under source (b)"
+cause = "page 16 stops while page 25 flows"
+fault_plan = "SimTrainer without page 16 for 10 s"
+detection = "speed hold expiry (6 s)"
+guard = "ADR-0005 §2.5"
+status = "missing"
+test = "missing"
+issue = 545
+note = "the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "unchanged"
+wanted.engine = "position holds; speed_trainer_mps null; gap distance estimated only within a 10 s page-16 gap"
+wanted.ui = "\"— no trainer speed\""
+
+[[row]]
+id = "FM-ROUTE-12"
+phase = "free_sim"
+severity = "S2"
+failure_mode = "Low-cadence relief fires, or stays on, off a climb: the simulated descent or flat is dropped"
+cause = "relief armed on cadence alone (coasting is cadence 0), or ended only on spinning up, so a relief at the top of a climb lasts down the descent (owner report 2026-11-06)"
+fault_plan = "cadence 0 for 60 s at −15, −6, −0.5, 0 and +1.9 %; a relief on a climb that tips into −6 % at cadence 0; a target hovering ±0.5 % around the arming grade"
+detection = "relief-state trace against the target grade"
+guard = "ADR-0005 §2.8.1"
+status = "missing"
+test = "missing"
+issue = 545
+note = "the relief rule is checked by docs/adr/models/route_speed.py (check_relief); the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "Sim unchanged while coasting; a relief on ends at once when the target eases 1 point below the arming grade (no toggling while it hovers at it): Sim slewed from 0 % towards the descent's grade"
+wanted.engine = "relief never set with a target below the arming grade (≥ 2 %)"
+wanted.ui = "no \"Grade released\" banner on a descent or a flat"
+
+[[row]]
 id = "FM-PAUSE-01"
 phase = "paused"
 severity = "S1"
@@ -1120,6 +1273,40 @@ issue = 240
 wanted.trainer = "no target write until the re-engagement rules produce one: Erg{0}, then soft start to the then-current block"
 wanted.engine = "edit moves state only"
 wanted.ui = "editSeq changes; state stays paused"
+
+[[row]]
+id = "FM-ROUTE-04"
+phase = "paused"
+severity = "S1"
+failure_mode = "Resume on a climb jumps to the route grade"
+cause = "resume re-applies the grade at the position at once"
+fault_plan = "user pause on a 10 % section, then resume"
+detection = "slew monitor from the resume tick"
+guard = "ADR-0005 §2.7.3"
+status = "missing"
+test = "missing"
+issue = 545
+note = "the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "while paused Resistance{0}; on resume Sim with the grade slewed from 0 % at 1 %/s; model (a) from rest"
+wanted.engine = "position frozen while paused; speed 0 at resume"
+wanted.ui = "no jump"
+
+[[row]]
+id = "FM-ROUTE-11"
+phase = "paused"
+severity = "S1"
+failure_mode = "Reconnect on a climb re-applies the route grade at once"
+cause = "the reconnect re-issues Sim at the grade of the position instead of slewing from 0 %"
+fault_plan = "SimFault::Dropout on a 10 % route section, then the link returns and the rider pedals"
+detection = "slew monitor from the Ready tick"
+guard = "ADR-0005 §2.7.3; ADR-0002 §6"
+status = "missing"
+test = "missing"
+issue = 545
+note = "the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "nothing while not Ready; on Ready Sim with the grade slewed from 0 % at 1 %/s"
+wanted.engine = "trainer_lost while lost: position frozen; on resume model (a) from rest"
+wanted.ui = "reconnected banner; no grade jump"
 
 [[row]]
 id = "FM-FIN-01"
@@ -1251,3 +1438,20 @@ wanted.trainer = "the core itself sends Resistance{pct: 0} with its own sequence
 wanted.engine = "the engine runs on its own thread (EngineHost::Thread, #344), so a blocked engine cannot starve the core's deadlines; it is cut off from its links and its ride-active signal, aborted (detached if blocked in synchronous code); the ride is closed as aborted, off the async executor, and stays so when the engine wakes (its writes are refused: ride is not live); the ride-active gate is cleared unless a newer ride's engine has taken it over (a late forced end of a replaced ride leaves the newer ride's gate and signal up, #370), and a newer load that builds no session gives its claim back (SignalClaim), so no load leaves the gate up; the engine sets it only while not cut off and while its ride owns it (ride_activity), so an engine reaped after it dropped the signal itself, still ending or detached, cannot touch a newer ride's (#392); the reaper's reap (not forced) clears the signal for its ride as it takes the session out, and from then on that engine cannot set it (SignalOwner::settable), so an engine that calls set_active(true) after its own normal End cannot raise it with no ride loaded (#399; that reap does not cut the engine off, which would drop its own end mode queued in the command gate); settle's forced reap (Stop answered, signal never dropped within REAP_TIMEOUT) cuts the engine off before it reaps, as a forced end does, so an engine it detaches cannot raise the signal after the clear (#392); it stays up with no ride loaded only if a forced end or settle's forced reap is cancelled between its reap and its clear, which in the app only shutdown's cap does, right before the process exits (the next load's claim takes it over); a settle cancelled between its cut-off and its reap leaves the ride loaded with its engine cut off and the signal up, owned by that loaded ride, and the next End or load settles it again, reaping it by force after REAP_TIMEOUT (#399); a new ride can be loaded at once; no other request waits on the engine under the state lock, so none holds End (#351): each is bounded by REQUEST_TIMEOUT (1 s) and answers engine_unresponsive"
 wanted.ui = "ride_end answers {rideId, forced: true} (dto.rs RideEnded); the rider leaves the ride; the summary says the data may be incomplete, keyed on forced and not on the recorded outcome (app/src/ride/forcedEnds.ts, #346; an aborted ride that was not ended by force shows no note); while the engine does not answer, the ride view says so (engine_unresponsive) and End stays available"
 note = "residual: a GATT write stalled for more than END_MODE_TIMEOUT lets the core give up on the end mode and drop the link, as in FM-FIN-02 (the trainer sees the link drop and disconnect)"
+
+[[row]]
+id = "FM-ROUTE-07"
+phase = "finishing"
+severity = "S1"
+failure_mode = "End of route leaves Sim resistance applied"
+cause = "the ride finishes on position without the end mode"
+fault_plan = "route ends while the rider pedals"
+detection = "control-log check at the finish"
+guard = "ADR-0005 §2.7.3; ADR-0002 §7.9"
+status = "missing"
+test = "missing"
+issue = 545
+note = "the engine test comes with the ride-mode issue (#545, R7 of ADR-0005 §6)"
+wanted.trainer = "end mode Resistance{0} with its delivery hold"
+wanted.engine = "finished when the position reaches the route length"
+wanted.ui = "Review opens (#6)"
