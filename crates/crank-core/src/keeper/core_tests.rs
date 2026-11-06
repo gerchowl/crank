@@ -829,7 +829,7 @@ async fn loaded_id(core: &Core) -> String {
 /// X2 at core level, both interleavings: "Release trainer" recorded while the links are handed
 /// to a load whose engine never takes it; that load fails (its links released), and the rider
 /// asks for the ride again. Whether the keeper sees the release of the failed load before or
-/// after the new load (held back with `hold_internal`), the new load connects the trainer
+/// after the new load (held back with `hold_resolutions`), the new load connects the trainer
 /// again and gets the ride; the release was applied (released first) or superseded (load
 /// first).
 #[tokio::test(start_paused = true)]
@@ -847,7 +847,7 @@ async fn a_load_after_a_recorded_rider_release_gets_the_ride_in_either_order() {
         sleep(Duration::from_millis(10)).await;
         let keeper = core.keeper().unwrap();
         if !released_first {
-            keeper.hold_internal(true).await;
+            keeper.hold_resolutions(true).await;
         }
         // the stalled engine never takes `Load`: the load fails at its bound
         let failed = first.await.unwrap().unwrap_err();
@@ -874,7 +874,7 @@ async fn a_load_after_a_recorded_rider_release_gets_the_ride_in_either_order() {
         };
         sleep(Duration::from_millis(10)).await;
         if !released_first {
-            keeper.hold_internal(false).await;
+            keeper.hold_resolutions(false).await;
         }
         let loaded = second.await.unwrap();
         assert!(
@@ -892,5 +892,139 @@ async fn a_load_after_a_recorded_rider_release_gets_the_ride_in_either_order() {
                 "superseded"
             );
         }
+    }
+}
+
+/// A core whose links are handed to a load that was cancelled before it took them: their
+/// return (`Refused`) is held back, so the keeper stays in `Handed` until the test replays it.
+async fn handed_to_a_cancelled_load(dir: &std::path::Path) -> (Core, FakeRadio) {
+    let (core, radio) = latent_core(dir, latency(1, 1, 1), latency(1, 1, 0)).await;
+    core.keeper().unwrap().hold_resolutions(true).await;
+    let first = {
+        let core = core.clone();
+        tokio::spawn(async move { core.ride_load(None).await })
+    };
+    sleep(S(1)).await;
+    // the rider gives up while the devices connect: the keeper hands them over when they are
+    // warm, the load is gone, and they come back
+    first.abort();
+    let _ = first.await;
+    sleep(S(3)).await;
+    assert_eq!(phases(&core).await, [Some(Phase::Riding); 2], "handed out");
+    (core, radio)
+}
+fn intent_task(core: &Core, intent: LinkIntent) -> tokio::task::JoinHandle<Result<(), ApiError>> {
+    let core = core.clone();
+    tokio::spawn(async move { core.links_intent(intent).await })
+}
+
+/// X1 at core level, both orders: `Hidden` and `Likely { ready }` recorded while the links are
+/// handed to a cancelled load, then "Ride this". If the load reaches the keeper first it
+/// supersedes `Hidden` (answered `Conflict`) and gets the returned links warm, with no
+/// reconnect; if the links come back first `Hidden` releases them and the load connects them
+/// again. The load gets its ride either way.
+#[tokio::test(start_paused = true)]
+async fn ride_this_after_a_recorded_hidden_gets_the_ride_in_either_order() {
+    for load_first in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio) = handed_to_a_cancelled_load(dir.path()).await;
+        let hidden = intent_task(&core, release(ReleaseReason::Hidden));
+        let ready = intent_task(&core, likely(true));
+        sleep(Duration::from_millis(10)).await;
+        let keeper = core.keeper().unwrap();
+        let load = if load_first {
+            let load = {
+                let core = core.clone();
+                tokio::spawn(async move { core.ride_load(None).await })
+            };
+            sleep(Duration::from_millis(10)).await;
+            keeper.hold_resolutions(false).await;
+            load
+        } else {
+            keeper.hold_resolutions(false).await;
+            sleep(Duration::from_millis(10)).await;
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_load(None).await })
+        };
+        assert!(
+            load.await.unwrap().unwrap().hr_linked,
+            "load first: {load_first}"
+        );
+        let hidden = hidden.await.unwrap();
+        if load_first {
+            assert_eq!(hidden.unwrap_err().code, ErrorCode::Conflict, "superseded");
+            assert_eq!(connects(&radio), [1, 1], "the returned links, no reconnect");
+        } else {
+            hidden.unwrap();
+            assert_eq!(connects(&radio), [2, 2], "released, then connected again");
+        }
+        ready.await.unwrap().unwrap();
+    }
+}
+
+/// X3 at core level, and N-c (kills S9): Retry after a recorded `Hidden` supersedes it, and is
+/// itself answered only once it is applied, when the links come back: they stay warm.
+#[tokio::test(start_paused = true)]
+async fn retry_after_a_recorded_hidden_keeps_the_links_and_is_answered_when_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, radio) = handed_to_a_cancelled_load(dir.path()).await;
+    let hidden = intent_task(&core, release(ReleaseReason::Hidden));
+    sleep(Duration::from_millis(10)).await;
+    let retry = intent_task(&core, LinkIntent::Retry);
+    sleep(Duration::from_millis(200)).await;
+    assert!(
+        hidden.is_finished(),
+        "the superseded release is answered at once"
+    );
+    assert_eq!(hidden.await.unwrap().unwrap_err().code, ErrorCode::Conflict);
+    assert!(
+        !retry.is_finished(),
+        "the recorded Retry is not answered before it is applied"
+    );
+    core.keeper().unwrap().hold_resolutions(false).await;
+    retry.await.unwrap().unwrap();
+    assert_eq!(phases(&core).await, [Some(Phase::Warm); 2]);
+    assert_eq!(connects(&radio), [1, 1]);
+}
+
+/// The round-3 blocker at core level: a load that waits while the links are handed out, then
+/// the quit: nothing connects after the quit, also once the links are released.
+#[tokio::test(start_paused = true)]
+async fn a_quit_with_a_load_waiting_in_handed_connects_nothing() {
+    for sleep_recorded in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio, first) = handed_core(dir.path()).await;
+        if sleep_recorded {
+            drop(intent_task(&core, release(ReleaseReason::Sleep)));
+            sleep(Duration::from_millis(10)).await;
+        }
+        let keeper = core.keeper().unwrap();
+        keeper.hold_resolutions(true).await;
+        // the first load fails at its bound; its release is held back, and a second load waits
+        assert_eq!(
+            first.await.unwrap().unwrap_err().code,
+            ErrorCode::EngineUnresponsive
+        );
+        core.0.stall.release();
+        let second = {
+            let core = core.clone();
+            tokio::spawn(async move { core.ride_load(None).await })
+        };
+        sleep(Duration::from_millis(10)).await;
+        let quit = {
+            let core = core.clone();
+            tokio::spawn(async move { core.shutdown(S(5)).await })
+        };
+        sleep(Duration::from_millis(10)).await;
+        keeper.hold_resolutions(false).await;
+        assert_eq!(quit.await.unwrap(), Shutdown::Idle);
+        assert!(second.await.unwrap().is_err(), "the waiting load fails");
+        sleep(S(10)).await;
+        assert_eq!(
+            phases(&core).await,
+            [Some(Phase::Cold); 2],
+            "sleep {sleep_recorded}"
+        );
+        assert_eq!(connects(&radio), [1, 1], "nothing connected after the quit");
     }
 }

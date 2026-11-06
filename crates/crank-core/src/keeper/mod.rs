@@ -351,7 +351,7 @@ impl Keeper {
         match input {
             Input::Intent(intent) => {
                 let ack = self.intent(now, intent);
-                self.out.push(Effect::Ack(ack));
+                self.emit(Effect::Ack(ack));
             }
             Input::Tick => self.tick(now),
             Input::Phase(d, era, phase) => {
@@ -407,7 +407,33 @@ impl Keeper {
                 self.cool_all(Cool::Shutdown);
             }
         }
+        // a load still waiting after the quit gets no links (ADR-0002 §5.1.3)
+        if self.shut && std::mem::replace(&mut self.waiting, false) {
+            self.emit(Effect::FailLoad);
+        }
         std::mem::take(&mut self.out)
+    }
+    /// The one way an effect leaves the keeper, and the one place the quit is enforced: after
+    /// `Shutdown` no effect may acquire a link. An attempt is dropped (the device stays
+    /// `cold`); a handover is turned back (its links released) into the load's failure. Every
+    /// path that would connect or hand over after the quit, now or later, goes through here.
+    fn emit(&mut self, effect: Effect) {
+        if self.shut {
+            match effect {
+                Effect::Attempt(d, _) => {
+                    self.devs[d as usize].phase = Phase::Cold;
+                    return;
+                }
+                Effect::HandOver => {
+                    self.free(Phase::Warm);
+                    self.cool_all(Cool::Shutdown);
+                    self.out.push(Effect::FailLoad);
+                    return;
+                }
+                Effect::Cool { .. } | Effect::FailLoad | Effect::Discard(_) | Effect::Ack(_) => {}
+            }
+        }
+        self.out.push(effect);
     }
 
     /// An intent, in each ride state (module docs, **Totality**).
@@ -425,11 +451,12 @@ impl Keeper {
                         }
                     }
                     LinkIntent::Retry => {
-                        if supersede(recorded) {
-                            self.out.push(Effect::Ack(Ack::Superseded));
-                        }
+                        let superseded = supersede(recorded);
                         recorded.other = Some(intent);
                         recorded.any = true;
+                        if superseded {
+                            self.emit(Effect::Ack(Ack::Superseded));
+                        }
                     }
                     LinkIntent::Likely { .. } | LinkIntent::Left | LinkIntent::Background => {
                         recorded.other = Some(intent);
@@ -487,7 +514,8 @@ impl Keeper {
             }
         } else {
             *discard = Some(cause);
-            self.out.push(Effect::Discard(id.clone()));
+            let id = id.clone();
+            self.emit(Effect::Discard(id));
         }
         Ack::AwaitDiscard
     }
@@ -545,7 +573,7 @@ impl Keeper {
         if let Some(reason) = recorded.release {
             ack = self.intent(now, LinkIntent::Release { reason });
         }
-        self.out.push(Effect::Ack(ack));
+        self.emit(Effect::Ack(ack));
     }
     /// `Handed` resolves: the ride was loaded.
     fn loaded(&mut self, now: MonoTime, id: String) {
@@ -560,7 +588,7 @@ impl Keeper {
                 };
                 // a load that came meanwhile gets no links: this one is loaded
                 if std::mem::replace(&mut self.waiting, false) {
-                    self.out.push(Effect::FailLoad);
+                    self.emit(Effect::FailLoad);
                 }
                 self.apply_recorded(now, recorded);
             }
@@ -574,6 +602,14 @@ impl Keeper {
             Ride::Handed { recorded, stale } => {
                 let (recorded, stale) = (*recorded, *stale);
                 self.free(Phase::Warm);
+                // the links came back for a load: they are held under its `Likely` (`T_cool`
+                // lets them go), never with nothing due
+                if self.intent == Intent::None {
+                    self.intent = Intent::Likely {
+                        ready: false,
+                        since: now,
+                    };
+                }
                 for d in DEVICES {
                     if stale[d as usize] {
                         self.cool(d, Cool::Unpaired);
@@ -726,7 +762,8 @@ impl Keeper {
         dev.era += 1;
         dev.phase = Phase::Searching;
         dev.advertised = advertised;
-        self.out.push(Effect::Attempt(d, dev.era));
+        let era = dev.era;
+        self.emit(Effect::Attempt(d, era));
     }
     /// Let `d` go if the keeper holds it or attempts it; it is `cold` after.
     fn cool(&mut self, d: LinkDevice, reason: Cool) {
@@ -734,16 +771,17 @@ impl Keeper {
         if dev.phase == Phase::Riding {
             return;
         }
-        if dev.phase.held() {
-            self.out.push(Effect::Cool {
-                device: d,
-                was: dev.phase,
-                reason,
-            });
+        let was = dev.phase;
+        dev.phase = Phase::Cold;
+        if was.held() {
             // a late result of the attempt let go is stale
             dev.era += 1;
+            self.emit(Effect::Cool {
+                device: d,
+                was,
+                reason,
+            });
         }
-        dev.phase = Phase::Cold;
     }
     fn cool_all(&mut self, reason: Cool) {
         self.cool(LinkDevice::Trainer, reason);
@@ -768,14 +806,14 @@ impl Keeper {
     /// reported on another channel, so it may come later) waits for them.
     fn acquire(&mut self, now: MonoTime) {
         match self.ride {
-            Ride::Loaded { .. } => self.out.push(Effect::FailLoad),
-            Ride::Free | Ride::Handed { .. } if self.shut => self.out.push(Effect::FailLoad),
+            Ride::Loaded { .. } => self.emit(Effect::FailLoad),
+            Ride::Free | Ride::Handed { .. } if self.shut => self.emit(Effect::FailLoad),
             // a rider action: it supersedes the release recorded so far
             Ride::Handed {
                 ref mut recorded, ..
             } => {
                 if supersede(recorded) {
-                    self.out.push(Effect::Ack(Ack::Superseded));
+                    self.emit(Effect::Ack(Ack::Superseded));
                 }
                 self.waiting = true;
             }
@@ -807,10 +845,10 @@ impl Keeper {
                     dev.phase = Phase::Riding;
                 }
             }
-            self.out.push(Effect::HandOver);
+            self.emit(Effect::HandOver);
         } else if self.devs[0].id.is_none() || !trainer.held() {
             self.waiting = false;
-            self.out.push(Effect::FailLoad);
+            self.emit(Effect::FailLoad);
         }
     }
     fn tick(&mut self, now: MonoTime) {
@@ -822,7 +860,8 @@ impl Keeper {
                 discard: discard @ None,
             } if now >= after(*input_at, T_ABANDON) => {
                 *discard = Some(Discard::Abandoned);
-                self.out.push(Effect::Discard(id.clone()));
+                let id = id.clone();
+                self.emit(Effect::Discard(id));
             }
             Ride::Loaded { .. } | Ride::Handed { .. } => {}
             Ride::Free => {
@@ -915,6 +954,14 @@ impl Keeper {
         }
         if self.shut && DEVICES.iter().any(|&d| self.devs[d as usize].phase.held()) {
             return Err("links held after the quit".into());
+        }
+        if self.shut && self.waiting {
+            return Err("a load waits after the quit".into());
+        }
+        // a load is a `Likely` (§5.1.4); only a cool-down or release takes the intent, and it
+        // fails the load first
+        if self.waiting && self.ride == Ride::Free && self.intent == Intent::None {
+            return Err("a load waits with no intent".into());
         }
         if self.waiting && matches!(self.ride, Ride::Loaded { .. }) {
             return Err("a load waits beside a loaded ride".into());
