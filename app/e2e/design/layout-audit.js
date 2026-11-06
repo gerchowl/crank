@@ -353,8 +353,9 @@
         add("a11y.contrast", e, `${c.toFixed(2)}:1 < ${need} (${fs}px)`);
     }
 
-    // 6. Icons (rule 4): Lucide at 16 px (20 in the rail), stroke 1.5, with a word or an accessible name
-    for (const svg of all.filter((x) => x.matches("svg"))) {
+    // 6. Icons (rule 4): Lucide at 16 px (20 in the rail), stroke 1.5, with a word or an accessible name. A data
+    // graphic (`svg[data-graphic]`: a trace, the block timeline) is no icon; it names itself with `role="img"`.
+    for (const svg of all.filter((x) => x.matches("svg:not([data-graphic])"))) {
       const r = svg.getBoundingClientRect();
       const want = svg.closest(opts.rail ?? ".rail") ? 20 : 16;
       if (Math.round(r.width) !== want || Math.round(r.height) !== want)

@@ -6,6 +6,7 @@ import { isMode, navigate, useRoute, type View } from "./router";
 import { ErrorBoundary } from "./shell/ErrorBoundary";
 import { Rail } from "./shell/Rail";
 import { KeysDialog } from "./shell/KeysDialog";
+import { closeKeys, openKeys, useKeysOpen } from "./shell/keys";
 import { StartScreen, type Boot } from "./shell/StartScreen";
 import { useApplyTheme } from "./theme";
 import { Ride } from "./ride/Ride";
@@ -62,7 +63,7 @@ function useBoot(wait: WaitForCore) {
 }
 
 function useKeysDialog() {
-  const [open, setOpen] = useState(false);
+  const open = useKeysOpen();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target;
@@ -70,12 +71,12 @@ function useKeysDialog() {
         t instanceof HTMLElement &&
         (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
       if (e.key === "?" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey)
-        setOpen(true);
+        openKeys();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
-  return { open, close: useCallback(() => setOpen(false), []) };
+  return { open, close: closeKeys };
 }
 
 function Destination({ views }: { views: ViewRegistry }) {

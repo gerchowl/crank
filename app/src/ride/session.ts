@@ -4,18 +4,28 @@
 import { useSyncExternalStore } from "react";
 import type { RideLoaded } from "../bindings";
 
-/** One measured power sample, placed on the workout clock (display only: no derived physiology, #2). */
-export interface PowerPoint {
+/** The live series a ride keeps a history of: the three traces (DESIGN §18.3). */
+export type Series = "power" | "hr" | "cadence";
+
+/** One measured sample at session second `t`, placed on the workout clock (display only: no derived physiology, #2). */
+export interface Point {
+  t: number;
   workoutS: number;
-  w: number;
+  v: number;
 }
+
+const EMPTY = { power: [], hr: [], cadence: [] } as const;
 
 /** What one `ride_load` made. */
 export class RideSession {
-  /** The history. Replaced on every append, never mutated, so a reader (and the render cache) sees the change. */
-  power: readonly PowerPoint[] = [];
+  /** The histories. Each is replaced on every append, never mutated, so a reader (and the render cache) sees the change. */
+  series: Record<Series, readonly Point[]> = EMPTY;
   disposed = false;
-  private lastT = -Infinity;
+  private lastT: Record<Series, number> = {
+    power: -Infinity,
+    hr: -Infinity,
+    cadence: -Infinity,
+  };
   private routed = false;
 
   constructor(readonly loaded: RideLoaded) {}
@@ -28,11 +38,19 @@ export class RideSession {
     return this.loaded.workoutId;
   }
 
+  /** The power history. */
+  get power(): readonly Point[] {
+    return this.series.power;
+  }
+
   /** Record a sample of session time `t` once: a re-delivered sample (same `t`) is not a second point. */
-  record(t: number, workoutS: number, w: number): void {
-    if (this.disposed || t <= this.lastT) return;
-    this.lastT = t;
-    this.power = [...this.power, { workoutS, w }];
+  record(t: number, workoutS: number, v: number, of: Series = "power"): void {
+    if (this.disposed || t <= this.lastT[of]) return;
+    this.lastT[of] = t;
+    this.series = {
+      ...this.series,
+      [of]: [...this.series[of], { t, workoutS, v }],
+    };
     notify();
   }
 
@@ -45,7 +63,7 @@ export class RideSession {
 
   dispose(): void {
     this.disposed = true;
-    this.power = [];
+    this.series = EMPTY;
   }
 }
 
@@ -84,6 +102,6 @@ export const currentSession = (): RideSession | null => current;
 export const useSession = (): RideSession | null =>
   useSyncExternalStore(subscribe, () => current);
 
-/** The ride's history; re-renders on every appended sample. */
-export const usePower = (s: RideSession): readonly PowerPoint[] =>
-  useSyncExternalStore(subscribe, () => s.power);
+/** The ride's histories; re-renders on every appended sample. */
+export const useSeries = (s: RideSession): Record<Series, readonly Point[]> =>
+  useSyncExternalStore(subscribe, () => s.series);
