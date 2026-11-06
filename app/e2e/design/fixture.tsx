@@ -65,9 +65,31 @@ const RIDING: Partial<Record<MetricId, number | null>> = {
   hr: 142,
 };
 
-/** A loaded ride in `over`'s state, 3:20 into its 10-minute workout (rideBackend `BLOCKS`). */
+/**
+ * The traces' history up to `until` session seconds, 1 Hz, from fixed formulas (no randomness): power near the plan of
+ * rideBackend `BLOCKS`, heart rate rising with it, cadence around 90.
+ */
+const HISTORY = (until: number) =>
+  Array.from({ length: until }, (_, t) => {
+    const plan = t < 180 ? 100 + (80 * t) / 180 : 250;
+    return {
+      t,
+      power: Math.round(plan + 6 * Math.sin(t * 1.7) + 3 * Math.sin(t * 0.45)),
+      hr: Math.round(100 + 0.18 * t + 2 * Math.sin(t / 7)),
+      cadence: Math.round(89 + 2 * Math.sin(t * 1.3) + Math.sin(t * 0.31)),
+    };
+  });
+
+/** A loaded ride in `over`'s state, 3:20 into its 10-minute workout (rideBackend `BLOCKS`), or a free ride. */
 const ride =
-  (over: Partial<RideWorld>, values = RIDING, workoutS = 200) =>
+  (
+    over: Partial<RideWorld>,
+    values = RIDING,
+    workoutS = 200,
+    workoutId: string | null = "w1",
+    /** The engine wedges once the view has subscribed (#351): its next frame's ack is refused. */
+    wedge = false,
+  ) =>
   () => {
     const rig = installRide({ blocks: BLOCKS, ...over });
     rig.base.truth.infos = [
@@ -77,6 +99,7 @@ const ride =
     rig.publish(workoutS);
     // The ride view's subscriptions get the scenario's values as the core's latest sample, read by the snapshot.
     const inner = internals().invoke;
+    let subscribed = 0;
     mockIPC(async (cmd, payload) => {
       const answer = await inner(cmd, payload);
       if (cmd === "stream_subscribe") {
@@ -92,12 +115,23 @@ const ride =
         pending++;
         setTimeout(() => {
           rig.base.push({ samples: [sample] });
+          if (wedge && ++subscribed === 3) {
+            rig.wedge();
+            rig.base.push({ status: rig.base.truth.status });
+          }
           pending--;
         });
       }
       return answer;
     });
-    beginRide({ rideId: rig.world.rideId, workoutId: "w1", hrLinked: true });
+    const session = beginRide({
+      rideId: rig.world.rideId,
+      workoutId,
+      hrLinked: true,
+    });
+    for (const h of HISTORY(workoutS))
+      for (const of of ["power", "hr", "cadence"] as const)
+        session.record(h.t, h.t, h[of], of);
     navigate("ride");
   };
 const active = { phase: "active", blockIdx: 1, sessionS: 200 } as const;
@@ -141,10 +175,45 @@ const SETUPS: Record<ScenarioName, () => void> = {
       sessionS: 212,
       trainerLost: true,
       lostSinceS: 200,
-      attempt: 2,
+      attempt: 12,
     },
     { ...RIDING, power: null, cadence: null },
   ),
+  // The longest trainer-loss copy (banners.tsx): no samples on a ready link with the strap lost, 59:59 into the loss,
+  // so the bold line is its widest and End… and what to try show.
+  "ride-trainer-lost-long": ride(
+    {
+      ...active,
+      sessionS: 3799,
+      trainerSilent: true,
+      hrLost: true,
+      lostSinceS: 200,
+    },
+    { ...RIDING, power: null, cadence: null, hr: null },
+  ),
+  // Two banners at once: the engine stops answering while the trainer is lost (#351, §6.5).
+  "ride-engine-silent": ride(
+    {
+      ...active,
+      sessionS: 212,
+      trainerLost: true,
+      lostSinceS: 200,
+      attempt: 3,
+    },
+    { ...RIDING, power: null, cadence: null },
+    200,
+    "w1",
+    true,
+  ),
+  "ride-paused-hr-lost": ride(
+    { ...active, userPause: true, hrLost: true },
+    { ...RIDING, power: 0, cadence: 0, hr: null },
+  ),
+  "ride-erg-released": ride(
+    { ...active, ergReleased: true },
+    { ...RIDING, power: 40, cadence: 31 },
+  ),
+  "ride-free": ride({ ...active, blocks: [] }, RIDING, 200, null),
   review: () => {
     installHistory();
     navigate("history", "ride-1");
