@@ -51,6 +51,9 @@ export const SCENARIOS = [
   { name: "ride-trainer-lost", ready: "[data-testid='loss-trainer']" },
   { name: "ride-erg-released", ready: "[data-testid='loss-erg']" },
   { name: "ride-free", ready: "[data-testid='free-ride']" },
+  { name: "ride-trainer-lost-long", ready: "[data-testid='loss-help']" },
+  { name: "ride-engine-silent", ready: "[data-testid='engine-unresponsive']" },
+  { name: "ride-paused-hr-lost", ready: "[data-testid='loss-hr']" },
   // The post-ride summary: a finished ride routes to History with its id until the summary route exists (#106).
   { name: "review", ready: "role=heading[name='Sweet spot 3x12']" },
   { name: "history", ready: "role=list[name='Rides']" },
@@ -69,4 +72,7 @@ export const RIDE_SCENARIOS: readonly ScenarioName[] = [
   "ride-trainer-lost",
   "ride-erg-released",
   "ride-free",
+  "ride-trainer-lost-long",
+  "ride-engine-silent",
+  "ride-paused-hr-lost",
 ];
