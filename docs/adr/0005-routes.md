@@ -1,6 +1,6 @@
 # ADR-0005: Routes: GPX, FIT and grade-profile import, SIM-mode ride, speed model, OSM surface
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-06)
 - **Date:** 2026-11-05
 - **Issue:** #523
 - **Related:** ADR-0001 (crates, clock, pauses, store), ADR-0002 (FE-C pages 50/51/55, `ControlMode::Sim`, §4.4.1
@@ -607,7 +607,7 @@ Surface classes, their OSM tags and Crr (checked against `route_speed.py`):
 | `gravel` | `compacted`, `fine_gravel`, `gravel`, `pebblestone`, `unpaved`, `dirt`, `earth`, `ground`, `rock` | 0.012 | Steyn & Warnich 2014: gravel 0.006 against bituminous 0.002, a ratio of 3, applied to crank's 0.004 |
 | `grass` | `grass`, `grass_paver` | 0.0127 | Steyn & Warnich 2014: grass 0.007, a ratio of 3.5 (0.014), clamped to `Crr_max` |
 | `sand` | `sand`, `mud` | 0.0127 | Steyn & Warnich 2014: sand 0.030, a ratio of 15 (0.060), clamped to `Crr_max` |
-| `cobbles` | `sett`, `cobblestone`, `unhewn_cobblestone`, `cobblestone:flattened` | 0.0127 | No bicycle measurement on cobbles was found. They are rougher than "rough road", so the FE-C ceiling is used; owner question Q5 |
+| `cobbles` | `sett`, `cobblestone`, `unhewn_cobblestone`, `cobblestone:flattened` | 0.0127 | No bicycle measurement on cobbles was found. They are rougher than "rough road", so the FE-C ceiling is used (Q5, decided in §5) |
 
 - **No `surface` tag:** `highway=track` with `tracktype=grade1` is `rough_paved`; any other `track`, and `path` or
   `bridleway`, is `gravel`; every other `highway` value is `smooth_paved` (OSM's default assumption for roads).
@@ -782,7 +782,7 @@ grade**. crank chose that grade, so it is known exactly.
 | `RETURN_RPM` return cadence | 50 | Clearly pedalling again. The 20 rpm gap to `RELIEF_RPM` is the cadence hysteresis |
 | `RETURN_HOLD_S` | 2 | ERG's re-engagement hold (ADR-0002 §7.4) |
 | `RELIEF_HYST_PCT` grade hysteresis | 1.0 | The relief ends on grade only when the target eases below `G_arm − 1` point. A stalled rider's target that hovers at `G_arm` (the grade wobbles by a few tenths over a few metres, and at walking pace those metres take seconds) would otherwise toggle the relief every few seconds. `check_relief` shows the same hovering trace toggling ten times without it, and once with it. One point is 13 W at the default relief speed, at the arming grade of a 200 W rider (7 % of that FTP): eased by that much, the climb is materially easier than the stall grade. It is twice the ±0.5 % hover that `check_relief` models |
-| `LOWEST_GEAR` default | 1.56 | 39 × 25, the largest lowest gear of a common road groupset: Shimano 105 R7000 offers 53/39, 52/36 and 50/34 chainrings and 12-25, 11-28, 11-30 and 11-32 cassettes (§7). A bigger gear gives a higher speed at the relief cadence and so a lower arming grade. With 39 × 25 as the default, every combination of that range arms at or below its true grade (table below), so a rider who has not set their gear is relieved early, never late. The rider sets their real lowest gear (chainring and largest cog) in the equipment settings |
+| `LOWEST_GEAR` default | 1.56 | 39 × 25, the largest lowest gear of a common road groupset: Shimano 105 R7000 offers 53/39, 52/36 and 50/34 chainrings and 12-25, 11-28, 11-30 and 11-32 cassettes (§7). A bigger gear gives a higher speed at the relief cadence and so a lower arming grade. With 39 × 25 as the default, every combination of that range arms at or below its true grade (table below), so a rider of that range who has not set their gear is relieved early, never late. Older or racier gearing is bigger still and arms late: 39 × 23 (a standard double with a 12-23 cassette) arms 1.2 points late for a 200 W rider (13.2 % against the computed 14.4 %), which is why the rider sets their real gear in Settings. The rider sets their real lowest gear (chainring and largest cog) in the equipment settings |
 | `WHEEL_CIRC_M` | 2.111 | 700×25c, ISO 5775 25-622: π × (622 + 2 × 25) mm. The equipment's wheel size (page 55) when set |
 | `GRADE_ARM_MIN` | 2.0 | Floor. At 2 % the relief speed needs 26 W, at which no rider stalls, and it keeps every flat and descent out of the relief by construction |
 
@@ -832,8 +832,8 @@ for that rider the cap is the guard.
 - `stopped_pedalling` (§2.4.4) still applies on top: a rider who stops on a climb (speed below 0.5 m/s) is paused,
   and the pause's `Resistance { 0 }` takes over.
 
-Every row is in `docs/safety/fmea.toml` as `missing` with #523 until its implementation issue (§6) exists and
-adds the test. The `free_sim` phase covers a route ride. Track-page loss in a route ride is FM-FREE-04's
+Every row is in `docs/safety/fmea.toml` as `missing` with #545 (R7, §6), whose acceptance adds the engine tests
+and flips the rows to `guarded`. The `free_sim` phase covers a route ride. Track-page loss in a route ride is FM-FREE-04's
 case, unchanged.
 
 ### 2.9 Tests and acceptance per phase
@@ -849,6 +849,7 @@ case, unchanged.
 | R7 ride mode | `crank-engine` scenarios with `SimTrainer`: the slew bound on every emitted grade; the cap; start, pause, reconnect and release slew from 0 %; the low-cadence relief arms only at or above the arming grade, ends on spinning up or at once when the target eases 1 point below it, does not chatter on a target hovering at it, and never engages coasting a descent or a flat (FM-ROUTE-12); the end of the route sends the end mode; coasting a descent does not auto-pause; a stop at the bottom of a climb does; source (b)'s distance across the 256 rollover and a 12 s gap (estimated); a trainer without speed refuses (b) at load with the notice; "a grade changing every second stays `following`". FMEA rows FM-ROUTE-01..12 flip to `guarded` |
 | R8 HIL check 13 | §2.4.7 runs in the owner's Part B session; results in `docs/hil/<date>-fec.md`; a failed pass criterion amends this ADR |
 | R9 UI | The DESIGN amendment first; then Vitest + mockIPC for the import dialog and its report, Map data (region list, download progress, extract date, outdated mark, attribution), the library, and the ride template; design-harness fixtures for the route ride states; the mocks model every refusal of `route_import` and `ride_load` for routes |
+| R10 FIT export | A route ride exported through #257's FIT writer has `sub_sport` virtual_activity and, per `record`, `distance`, `speed` (the selected source) and `enhanced_altitude` (the route elevation at the position). `position_lat/long` are present only when the rider opts in at export and the route has coordinates. Surface data in the export carries the ODbL notice. #257's FIT import reads the file back with the same distance and speed per second |
 
 ## 3. Alternatives considered
 
@@ -883,38 +884,40 @@ case, unchanged.
 - Sand, grass and cobbles are capped at the trainer's maximum Crr, so they ride easier than they are.
 - Check 8's analyser needs #524 before Part B: its air term is twice too large.
 
-## 5. Open for the owner
+## 5. Owner decisions
 
-Each has a recommendation, which this ADR implements unless the owner decides otherwise.
+Decided by the owner on 2026-11-06, when ADR-0005 was accepted. Q1–Q5 and Q7–Q9 are as recommended. Q6 was
+reworked after the owner's report that the first draft fired on descents (§2.8.1); the reworked recommendation is
+what was accepted. This ADR implements every row as decided.
 
-| # | Question | Recommended | Cost of the recommendation | Alternative and its cost |
-|---|---|---|---|---|
-| Q1 | Grade cap | −15 % to +20 % | Roads steeper than 20 % over 100 m ride as 20 % | +25 % (the NEO's maximum): more stall exposure at low cadence |
-| Q2 | Difficulty defaults | 100 % overall, 100 % on descents | A weak day on a hilly route is the road's difficulty until the rider lowers it | 50 % overall by default (common in other apps): the route no longer feels like itself unless changed |
-| Q3 | When a region's extract counts as outdated | 180 days, shown in Map data; refresh only on the rider's request | Surfaces up to half a year old | 30 days: a 5 GB France download monthly for little change |
-| Q4 | Default speed source | (a) crank's model | Speed differs from what the trainer would report until check 13 calibrates | (b) the trainer: no surface effect on speed unless sent as Crr, and nothing on trainers without speed |
-| Q5 | Cobbles' Crr | 0.0127 (the FE-C ceiling) | Unmeasured; may be harder than real cobbles on wide tyres | 0.008 (FE-C "rough road", sourced): cobbles feel like rough tarmac |
-| Q6 | When the low-cadence relief arms (owner, 2026-11-06: it must never fire on a descent) | Only at or above the rider's arming grade: the grade at which holding 30 rpm in the lowest gear needs more than their FTP, floored at 2 %. The default gear, 39 × 25, is the largest lowest gear of a common road range, so without the rider's own gear it arms early, never late. Below 30 rpm for 3 s there → `Resistance { 0 }`. It ends at 50 rpm for 2 s, or at once when the target eases below the arming grade minus 1 point, the hysteresis that stops it toggling on a target hovering at the arming grade (§2.8.1) | Needs a current FTP and the rider's real lowest gear (an equipment setting). Until it is set, a rider with a smaller gear is relieved on grades they could still push (by up to 7 points at 200 W with 34 × 32). A rider grinding at 25 rpm above the arming grade is released | Cadence below 30 rpm on any positive grade (the first draft): fires on rolling terrain, and without the climb-end rule it dropped every descent after a relief |
-| Q7 | ERG blocks inside a route (a structured workout on a route) | Not in v1 | A route ride has no targets | A combined plan: compliance, soft start and SIM↔ERG switching inside one ride; a design of its own |
-| Q8 | Per-route Overpass lookup as a fallback for routes outside every stored region | Not offered (§2.6.5) | Such a route rides on the file's surface or tarmac until the rider adds its region | An opt-in per-route lookup: discloses the route's corridor and the IP to a volunteer-run service |
-| Q9 | How the index builder resolves node coordinates (§2.6.1) | A streaming external-sort builder: under 256 MB peak for any region | More code than a hash map; about 4 GB of temporary disk and an unmeasured, longer build for Germany | An in-memory map: about 110 MB for Slovenia but about 1.7 GB (before hash overhead) for Germany, so regions would need a PBF cap of about 1 GB (a state rather than a large country) |
+| # | Question | Recommended | Cost of the recommendation | Alternative and its cost | Decision |
+|---|---|---|---|---|---|
+| Q1 | Grade cap | −15 % to +20 % | Roads steeper than 20 % over 100 m ride as 20 % | +25 % (the NEO's maximum): more stall exposure at low cadence | Decided: as recommended |
+| Q2 | Difficulty defaults | 100 % overall, 100 % on descents | A weak day on a hilly route is the road's difficulty until the rider lowers it | 50 % overall by default (common in other apps): the route no longer feels like itself unless changed | Decided: as recommended |
+| Q3 | When a region's extract counts as outdated | 180 days, shown in Map data; refresh only on the rider's request | Surfaces up to half a year old | 30 days: a 5 GB France download monthly for little change | Decided: as recommended |
+| Q4 | Default speed source | (a) crank's model | Speed differs from what the trainer would report until check 13 calibrates | (b) the trainer: no surface effect on speed unless sent as Crr, and nothing on trainers without speed | Decided: as recommended |
+| Q5 | Cobbles' Crr | 0.0127 (the FE-C ceiling) | Unmeasured; may be harder than real cobbles on wide tyres | 0.008 (FE-C "rough road", sourced): cobbles feel like rough tarmac | Decided: as recommended |
+| Q6 | When the low-cadence relief arms (owner, 2026-11-06: it must never fire on a descent) | Only at or above the rider's arming grade: the grade at which holding 30 rpm in the lowest gear needs more than their FTP, floored at 2 %. The default gear, 39 × 25, is the largest lowest gear of the Shimano 105 R7000 range, so for any gear of that range it arms early, never late, until the rider sets their own. Older or racier gearing is bigger still and arms late: 39 × 23 (a standard double with a 12-23 cassette) arms 1.2 points late for a 200 W rider (13.2 % against the computed 14.4 %), which is why the rider sets their real gear in Settings. Below 30 rpm for 3 s there → `Resistance { 0 }`. It ends at 50 rpm for 2 s, or at once when the target eases below the arming grade minus 1 point, the hysteresis that stops it toggling on a target hovering at the arming grade (§2.8.1) | Needs a current FTP and the rider's real lowest gear (an equipment setting). Until it is set, a rider with a smaller gear is relieved on grades they could still push (by up to 7 points at 200 W with 34 × 32). A rider grinding at 25 rpm above the arming grade is released | Cadence below 30 rpm on any positive grade (the first draft): fires on rolling terrain, and without the climb-end rule it dropped every descent after a relief | Decided: as reworked (§2.8.1) |
+| Q7 | ERG blocks inside a route (a structured workout on a route) | Not in v1 | A route ride has no targets | A combined plan: compliance, soft start and SIM↔ERG switching inside one ride; a design of its own | Decided: as recommended |
+| Q8 | Per-route Overpass lookup as a fallback for routes outside every stored region | Not offered (§2.6.5) | Such a route rides on the file's surface or tarmac until the rider adds its region | An opt-in per-route lookup: discloses the route's corridor and the IP to a volunteer-run service | Decided: as recommended |
+| Q9 | How the index builder resolves node coordinates (§2.6.1) | A streaming external-sort builder: under 256 MB peak for any region | More code than a hash map; about 4 GB of temporary disk and an unmeasured, longer build for Germany | An in-memory map: about 110 MB for Slovenia but about 1.7 GB (before hash overhead) for Germany, so regions would need a PBF cap of about 1 GB (a state rather than a large country) | Decided: as recommended |
 
-## 6. Implementation issues (to file when this ADR is accepted; not filed yet)
+## 6. Implementation issues (filed 2026-11-06)
 
 In order. Each issue cites the section it builds and the acceptance of §2.9.
 
-| # | Title | Scope | Depends on |
-|---|---|---|---|
-| R1 | Route model and GPX + grade-profile import (ADR-0005 §2.1, §2.2.1–2.2.2, §2.2.4–2.2.5) | `crank-domain::route` types, `Profile`; GPX parser (`quick-xml`, hardened), missing-elevation rules, limits, import report; grade-profile grammar, parser, printer | — |
-| R2 | FIT course import with the shared `crank-fit` decoder (ADR-0005 §2.2.3) | `crank-fit` crate over `fitparser`, course messages → `Route`; the decoder #257 reuses | R1 |
-| R3 | Route store and `route_import` / `route_list` / `route_get` / `route_delete` commands (ADR-0005 §2.1, §2.2) | migration, `route` table, `ride` columns, bit-exact round trip, `Core` facade + Tauri commands + bindings | R1 |
-| R4 | Elevation → grade profile and the send pipeline (ADR-0005 §2.3) | resampling, Gaussian smoothing, cap, scaling, slew/grid/period as pure functions; `route_grade.json` refinement fixture; flake check `route-grade-model` | R1 |
-| R5 | Speed model (a) (ADR-0005 §2.4) | integrator in `crank-domain`, `steady_speed`; `route_speed.json` refinement fixture; flake check `route-speed-model`; `just model` runs all three models | R4 |
-| R6 | Local OSM surface index: region download, index build, matching (ADR-0005 §2.6) | Geofabrik region list and download with md5 check (`crank-core`); `crank-osm` (PBF filter over `osmpbf`, surface classes, index, matching); `surface_region`/`surface_way` tables; `route_resurface`; fallback, attribution, `deps-edges` rule | R3, R4 |
-| R7 | Route ride mode in the engine (ADR-0005 §2.5, §2.7, §2.8) | `RidePlan::Route`, position, SIM emission, start/pause/relief/end (the relief's arming grade from FTP, mass and the equipment's new lowest-gear setting, §2.8.1), `stopped_pedalling` amendment, source (b) with `TrainerCaps::speed`, recording, status fields; FMEA rows to `guarded` | R4, R5 (R6 optional: surfaces default without it) |
-| R8 | HIL check 13: speed model against trainer speed (ADR-0005 §2.4.7) | `hil_fec check13` and its analysis; added to `docs/hil/part-b.md` and the owner's runbook | R5, #524, #516 |
-| R9 | Route UI: import dialog, Map data settings, route library, route ride screen (ADR-0005 §2.6.1, §2.7.6) | DESIGN amendment first, then the screens and design-harness fixtures; the equipment screen gains the lowest gear (chainring, largest cog; default 39 × 25) | R3, R6, R7 |
-| R10 | Route rides in FIT export (ADR-0005 §2.7.5) | the `virtual_activity` fields, position opt-in, ODbL notice in the export | #257, R7 |
+| # | Issue | Title | Scope | Depends on |
+|---|---|---|---|---|
+| R1 | #539 | Route model and GPX + grade-profile import (ADR-0005 §2.1, §2.2.1–2.2.2, §2.2.4–2.2.5) | `crank-domain::route` types, `Profile`; GPX parser (`quick-xml`, hardened), missing-elevation rules, limits, import report; grade-profile grammar, parser, printer | — |
+| R2 | #540 | FIT course import with the shared `crank-fit` decoder (ADR-0005 §2.2.3) | `crank-fit` crate over `fitparser`, course messages → `Route`; the decoder #257 reuses | R1 |
+| R3 | #541 | Route store and `route_import` / `route_list` / `route_get` / `route_delete` commands (ADR-0005 §2.1, §2.2) | migration, `route` table, `ride` columns, bit-exact round trip, `Core` facade + Tauri commands + bindings | R1 |
+| R4 | #542 | Elevation → grade profile and the send pipeline (ADR-0005 §2.3) | resampling, Gaussian smoothing, cap, scaling, slew/grid/period as pure functions; `route_grade.json` refinement fixture; flake check `route-grade-model` | R1 |
+| R5 | #543 | Speed model (a) (ADR-0005 §2.4) | integrator in `crank-domain`, `steady_speed`; `route_speed.json` refinement fixture; flake check `route-speed-model`; `just model` runs all three models | R4 |
+| R6 | #544 | Local OSM surface index: region download, index build, matching (ADR-0005 §2.6) | Geofabrik region list and download with md5 check (`crank-core`); `crank-osm` (PBF filter over `osmpbf`, surface classes, index, matching); `surface_region`/`surface_way` tables; `route_resurface`; fallback, attribution, `deps-edges` rule | R3, R4 |
+| R7 | #545 | Route ride mode in the engine (ADR-0005 §2.5, §2.7, §2.8) | `RidePlan::Route`, position, SIM emission, start/pause/relief/end (the relief's arming grade from FTP, mass and the equipment's new lowest-gear setting, §2.8.1), `stopped_pedalling` amendment, source (b) with `TrainerCaps::speed`, recording, status fields; FMEA rows to `guarded` | R4, R5 (R6 optional: surfaces default without it) |
+| R8 | #546 | HIL check 13: speed model against trainer speed (ADR-0005 §2.4.7) | `hil_fec check13` and its analysis; added to `docs/hil/part-b.md` and the owner's runbook | R5, #524, #516 |
+| R9 | #547 | Route UI: import dialog, Map data settings, route library, route ride screen (ADR-0005 §2.6.1, §2.7.6) | DESIGN amendment first, then the screens and design-harness fixtures; the equipment screen gains the lowest gear (chainring, largest cog; default 39 × 25) | R3, R6, R7 |
+| R10 | #548 | Route rides in FIT export (ADR-0005 §2.7.5) | the `virtual_activity` fields, position opt-in, ODbL notice in the export | #257, R7 |
 
 ## 7. References
 
@@ -960,9 +963,8 @@ Checked 2026-11-05.
 - `fitparser` 0.12.0 (MIT). https://crates.io/crates/fitparser
 - Shimano, FC-R7000 exploded view (EV-FC-R7000-4331A): "Chainring teeth combinations: 50-34T/52-36T/53-39T".
   Mirror read 2026-11-06: https://velosiped.com/pdf/shimano_tech_docs/cranks/ev-fc-r7000-4331a.pdf
-- Shimano CS-R7000 cassette: 12-25T, 11-28T, 11-30T and 11-32T. Shimano's product page
-  (https://bike.shimano.com/en-EU/product/component/grx-11-speed/CS-R7000.html) refuses scripted fetches (HTTP 403),
-  so the sizes were read on 2026-11-06 from a retailer listing of the same part:
+- Shimano CS-R7000 cassette: 12-25T, 11-28T, 11-30T and 11-32T, read on 2026-11-06 from a retailer listing of the
+  part (Shimano's own product pages refuse scripted fetches with HTTP 403):
   https://www.rosebikes.com/shimano-105-cs-r7000-11-speed-cassette-2668808
 - In-repo: ADR-0001 §2, §4.4, §5, §6, §7; ADR-0002 §4.2–§4.4.1, §5, §7.2–§7.9, §9; `spec/TRAINER-BLE.md`;
   `docs/DSL.md`; `docs/hil/part-b.md` (check 8); `docs/safety/FMEA.md`; `docs/adr/models/route_speed.py`,
