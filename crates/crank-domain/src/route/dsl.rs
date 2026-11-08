@@ -1,12 +1,9 @@
 //! Grade-profile text (ADR-0005 §2.2.5): the workout DSL's lexer, labels, separators, comments,
 //! repeats and canonical printing, with a distance end and a grade target.
-use super::{
-    ElevationKind, MAX_ROUTE_M, Route, RoutePoint, RouteSegment, RouteSource, SegmentGrade,
-    Surface, SurfaceProvenance,
-};
+use super::{MAX_ROUTE_M, Route, RoutePoint, RouteSegment, RouteSource, SegmentGrade, Surface};
 use crate::workout::{
     DslErrorKind, MAX_NESTING_DEPTH,
-    dsl::{Token, lex, number, suffix},
+    dsl::{Token, lex, number, quote_label, suffix},
     parse_duration_word,
 };
 use serde::{Deserialize, Serialize};
@@ -701,9 +698,7 @@ pub fn parse_grade_profile(text: &str) -> Result<Vec<GradeProfileItem>, RouteDsl
 }
 
 fn print_label(label: Option<&String>) -> String {
-    label.map_or_else(String::new, |s| {
-        format!("\"{}\" ", s.replace('\\', "\\\\").replace('"', "\\\""))
-    })
+    label.map_or_else(String::new, |s| format!("{} ", quote_label(s)))
 }
 
 fn print_km(m: u32) -> String {
@@ -822,9 +817,10 @@ fn expanded_label_bytes(items: &[GradeProfileItem], inherited: u64) -> u64 {
 }
 
 /// Parse grade-profile text into a route (ADR-0005 §2.2.5): points at 0 and at every segment
-/// end, elevation the integral of the grade from 0 m ([`ElevationKind::Exact`]), segments
+/// end, elevation the integral of the grade from 0 m ([`ElevationKind::Exact`](super::ElevationKind::Exact)), segments
 /// carrying their grades, and the canonical text as [`RouteSource::GradeProfile`]. The name is
-/// the first label, else [`UNLABELLED_NAME`].
+/// the first label, else [`UNLABELLED_NAME`]. That text is the route's one source of truth
+/// ([`Route::check`] reparses it), so `parse_route_dsl(print_route_dsl(r))` equals `r`.
 ///
 /// # Errors
 /// Every error of [`parse_grade_profile`], and [`RouteDslErrorKind::Empty`] for a profile
@@ -887,18 +883,12 @@ pub fn parse_route_dsl(text: &str) -> Result<Route, RouteDslError> {
         });
     }
     let from_file = flat.iter().any(|f| f.surface.is_some());
-    Route::new(
+    Route::new_from_text(
         first_label(&items).map_or_else(|| UNLABELLED_NAME.to_owned(), Clone::clone),
-        RouteSource::GradeProfile {
-            dsl: print_grade_profile(&items),
-        },
+        print_grade_profile(&items),
         points,
         segments,
-        ElevationKind::Exact,
-        SurfaceProvenance {
-            osm: None,
-            from_file,
-        },
+        from_file,
     )
     .map_err(|e| RouteDslError {
         kind: RouteDslErrorKind::Invariant,
