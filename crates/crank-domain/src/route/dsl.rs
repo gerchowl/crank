@@ -19,8 +19,21 @@ pub const MAX_SEGMENT_M: u32 = 100_000;
 pub const MIN_GRADE_PCT: f64 = -25.0;
 /// Steepest climb a grade-profile segment may state, percent (ADR-0005 §2.2.5).
 pub const MAX_GRADE_PCT: f64 = 30.0;
-/// The name of a grade profile without a label.
+/// The name of a grade profile without a non-blank label.
 pub const UNLABELLED_NAME: &str = "Grade profile";
+/// Longest grade-profile text, UTF-8 bytes (ADR-0005 §2.2.4): a 1 000 km profile written out
+/// without repeats at 100 m per segment is 10 000 segments of about 15 bytes, 150 KB.
+pub const MAX_PROFILE_TEXT_BYTES: usize = 256 * 1024;
+/// Longest label, characters (ADR-0005 §2.2.4): a climb's or a stretch's name for the ride
+/// screen, where a few words fit.
+pub const MAX_LABEL_CHARS: usize = 100;
+/// Most segments a grade profile expands to: 1 000 km of the shortest (10 m) segments. The
+/// 1 000 km total, checked while parsing, enforces it before anything is expanded.
+pub const MAX_PROFILE_SEGMENTS: u64 = 100_000;
+/// Most label bytes the expanded route may hold, counting a repeated label once per segment it
+/// names (ADR-0005 §2.2.4): checked before expanding, so `100000x("…" 0.01km 0%)` cannot
+/// allocate gigabytes. 10 000 labelled segments of 100 bytes fit.
+pub const MAX_EXPANDED_LABEL_BYTES: u64 = 1024 * 1024;
 
 /// One item of a grade profile.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -150,6 +163,15 @@ pub enum RouteDslErrorKind {
     RouteTooLong,
     /// No segment at all.
     Empty,
+    /// The text is longer than [`MAX_PROFILE_TEXT_BYTES`].
+    TextTooLong,
+    /// A label longer than [`MAX_LABEL_CHARS`].
+    LabelTooLong,
+    /// The expanded route's labels exceed [`MAX_EXPANDED_LABEL_BYTES`].
+    LabelsTooLarge,
+    /// The parser built a route that breaks an ADR-0005 §2.1 invariant: a bug, never a property
+    /// of the text.
+    Invariant,
 }
 
 /// Grade-profile parse failure; the span is in UTF-16 code units, as in the workout DSL.
@@ -315,7 +337,19 @@ impl Parser {
     }
 
     fn item(&mut self, depth: usize) -> Result<GradeProfileItem, RouteDslError> {
-        let label = (self.peek().kind == 's').then(|| self.next().text);
+        let label = if self.peek().kind == 's' {
+            let l = self.next();
+            if l.text.chars().count() > MAX_LABEL_CHARS {
+                return Err(err(
+                    &l,
+                    RouteDslErrorKind::LabelTooLong,
+                    format!("A label is at most {MAX_LABEL_CHARS} characters"),
+                ));
+            }
+            Some(l.text)
+        } else {
+            None
+        };
         let t = self.next();
         if t.kind != 'w' {
             return Err(if t.kind == 'e' {
@@ -368,7 +402,7 @@ impl Parser {
             ));
         }
         // Every segment is at least MIN_SEGMENT_M, so a larger count can never fit MAX_ROUTE_M.
-        let max_count = MAX_ROUTE_WHOLE_M / u64::from(MIN_SEGMENT_M);
+        let max_count = MAX_PROFILE_SEGMENTS;
         let Some(count) = count_text
             .parse::<u64>()
             .ok()
@@ -621,6 +655,17 @@ fn segment_length(t: &Token) -> RouteDslError {
 /// The first lexical or grammatical error, a workout token where a distance or grade belongs
 /// (`500m` names the km form), or a limit: segment length, grade range, nesting, 1 000 km in all.
 pub fn parse_grade_profile(text: &str) -> Result<Vec<GradeProfileItem>, RouteDslError> {
+    if text.len() > MAX_PROFILE_TEXT_BYTES {
+        return Err(RouteDslError {
+            kind: RouteDslErrorKind::TextTooLong,
+            message: format!(
+                "A grade profile is at most {} KiB of text",
+                MAX_PROFILE_TEXT_BYTES / 1024
+            ),
+            offset: 0,
+            length: 0,
+        });
+    }
     let tokens = lex(text).map_err(|e| RouteDslError {
         kind: match e.kind {
             DslErrorKind::UnterminatedLabel => RouteDslErrorKind::UnterminatedLabel,
@@ -724,10 +769,35 @@ fn flatten<'a>(
 }
 
 fn first_label(items: &[GradeProfileItem]) -> Option<&String> {
+    fn usable(l: Option<&String>) -> Option<&String> {
+        l.filter(|l| !l.trim().is_empty())
+    }
     items.iter().find_map(|item| match item {
-        GradeProfileItem::Segment(s) => s.label.as_ref(),
-        GradeProfileItem::Repeat(r) => r.label.as_ref().or_else(|| first_label(&r.children)),
+        GradeProfileItem::Segment(s) => usable(s.label.as_ref()),
+        GradeProfileItem::Repeat(r) => {
+            usable(r.label.as_ref()).or_else(|| first_label(&r.children))
+        }
     })
+}
+
+/// Label bytes of the expanded segments, as [`flatten`] would copy them, without expanding.
+fn expanded_label_bytes(items: &[GradeProfileItem], inherited: u64) -> u64 {
+    items
+        .iter()
+        .map(|item| match item {
+            GradeProfileItem::Segment(s) => s
+                .label
+                .as_ref()
+                .map_or(inherited, |l| u64::try_from(l.len()).unwrap_or(u64::MAX)),
+            GradeProfileItem::Repeat(r) => {
+                let label = r
+                    .label
+                    .as_ref()
+                    .map_or(inherited, |l| u64::try_from(l.len()).unwrap_or(u64::MAX));
+                expanded_label_bytes(&r.children, label).saturating_mul(u64::from(r.count))
+            }
+        })
+        .fold(0, u64::saturating_add)
 }
 
 /// Parse grade-profile text into a route (ADR-0005 §2.2.5): points at 0 and at every segment
@@ -746,6 +816,17 @@ pub fn parse_route_dsl(text: &str) -> Result<Route, RouteDslError> {
             message: "A grade profile needs at least one segment, e.g. 2km 3%".into(),
             offset: 0,
             length: 0,
+        });
+    }
+    if expanded_label_bytes(&items, 0) > MAX_EXPANDED_LABEL_BYTES {
+        return Err(RouteDslError {
+            kind: RouteDslErrorKind::LabelsTooLarge,
+            message: format!(
+                "Repeated labels would take more than {} MiB: label fewer segments or shorten the labels",
+                MAX_EXPANDED_LABEL_BYTES / (1024 * 1024)
+            ),
+            offset: 0,
+            length: text.encode_utf16().count(),
         });
     }
     let mut flat = Vec::new();
@@ -785,18 +866,24 @@ pub fn parse_route_dsl(text: &str) -> Result<Route, RouteDslError> {
         });
     }
     let from_file = flat.iter().any(|f| f.surface.is_some());
-    Ok(Route {
-        name: first_label(&items).map_or_else(|| UNLABELLED_NAME.to_owned(), Clone::clone),
-        source: RouteSource::GradeProfile {
+    Route::new(
+        first_label(&items).map_or_else(|| UNLABELLED_NAME.to_owned(), Clone::clone),
+        RouteSource::GradeProfile {
             dsl: print_grade_profile(&items),
         },
         points,
         segments,
-        elevation: ElevationKind::Exact,
-        surface: SurfaceProvenance {
+        ElevationKind::Exact,
+        SurfaceProvenance {
             osm: None,
             from_file,
         },
+    )
+    .map_err(|e| RouteDslError {
+        kind: RouteDslErrorKind::Invariant,
+        message: e.to_string(),
+        offset: 0,
+        length: 0,
     })
 }
 

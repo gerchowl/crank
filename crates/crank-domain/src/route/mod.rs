@@ -9,7 +9,8 @@ mod gpx;
 mod import;
 
 pub use dsl::{
-    GradeProfileItem, GradeProfileRepeat, GradeProfileSegment, MAX_GRADE_PCT, MAX_SEGMENT_M,
+    GradeProfileItem, GradeProfileRepeat, GradeProfileSegment, MAX_EXPANDED_LABEL_BYTES,
+    MAX_GRADE_PCT, MAX_LABEL_CHARS, MAX_PROFILE_SEGMENTS, MAX_PROFILE_TEXT_BYTES, MAX_SEGMENT_M,
     MIN_GRADE_PCT, MIN_SEGMENT_M, ProfileGrade, RouteDslError, RouteDslErrorKind, UNLABELLED_NAME,
     parse_grade_profile, parse_route_dsl, print_grade_profile, print_route_dsl,
 };
@@ -39,6 +40,11 @@ pub const ELE_MAX_M: f64 = 9_000.0;
 pub const ELE_GAP_M: f64 = 500.0;
 /// Deepest XML element nesting a GPX file may use (ADR-0005 §2.2.1).
 pub const MAX_XML_DEPTH: usize = 32;
+/// Most tracks and routes one GPX file may hold, so a file of empty `<trk/>`s cannot build a
+/// list of millions (ADR-0005 §2.2.4): a year of daily tracks is 366, a multi-day course a few.
+pub const MAX_TRACKS: usize = 1_000;
+/// The name of a route whose file names neither it nor itself, and has no usable file name.
+pub const DEFAULT_ROUTE_NAME: &str = "Route";
 
 /// A road to ride: points along it plus labelled stretches (ADR-0005 §2.1).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -237,6 +243,127 @@ pub struct OsmMatch {
     pub matched_at: i64,
     /// Share of the profile's nodes that matched a way, 0 to 1.
     pub matched_share: f32,
+}
+
+/// A route that breaks an ADR-0005 §2.1 invariant. The importers never build one; seeing this
+/// error is a bug in the code that built the route.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct RouteInvariantError {
+    /// Which invariant, and where.
+    pub what: String,
+}
+impl std::fmt::Display for RouteInvariantError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "route invariant broken: {}", self.what)
+    }
+}
+impl std::error::Error for RouteInvariantError {}
+
+fn broken(what: String) -> RouteInvariantError {
+    RouteInvariantError { what }
+}
+
+impl Route {
+    /// Build a route, checking every invariant of ADR-0005 §2.1 ([`Route::check`]).
+    ///
+    /// # Errors
+    /// The first invariant the parts break.
+    pub fn new(
+        name: String,
+        source: RouteSource,
+        points: Vec<RoutePoint>,
+        segments: Vec<RouteSegment>,
+        elevation: ElevationKind,
+        surface: SurfaceProvenance,
+    ) -> Result<Self, RouteInvariantError> {
+        let route = Self {
+            name,
+            source,
+            points,
+            segments,
+            elevation,
+            surface,
+        };
+        route.check()?;
+        Ok(route)
+    }
+
+    /// Check the invariants of ADR-0005 §2.1: a non-blank name; at least two points; `dist_m`
+    /// finite, 0 at the first point and strictly increasing; every elevation `None` when
+    /// [`ElevationKind::None`], else finite; coordinates on every point of a file route, finite and
+    /// within ±90°/±180°, and on none of a grade profile; segments finite, non-empty and within
+    /// the route.
+    ///
+    /// # Errors
+    /// The first invariant the route breaks.
+    pub fn check(&self) -> Result<(), RouteInvariantError> {
+        if self.name.trim().is_empty() {
+            return Err(broken("the name is blank".into()));
+        }
+        if self.points.len() < 2 {
+            return Err(broken(format!(
+                "{} points, fewer than 2",
+                self.points.len()
+            )));
+        }
+        if self.points[0].dist_m.to_bits() != 0f64.to_bits() {
+            return Err(broken(format!(
+                "the first point is at {} m, not 0",
+                self.points[0].dist_m
+            )));
+        }
+        let profile = matches!(self.source, RouteSource::GradeProfile { .. });
+        let mut prev = f64::NEG_INFINITY;
+        for (i, p) in self.points.iter().enumerate() {
+            if !(p.dist_m.is_finite() && p.dist_m > prev) {
+                return Err(broken(format!(
+                    "point {i}: distance {} m does not increase",
+                    p.dist_m
+                )));
+            }
+            prev = p.dist_m;
+            let ele_ok = match (self.elevation, p.ele_m) {
+                (ElevationKind::None, e) => e.is_none(),
+                (_, e) => e.is_some_and(f64::is_finite),
+            };
+            if !ele_ok {
+                return Err(broken(format!(
+                    "point {i}: elevation {:?} for {:?}",
+                    p.ele_m, self.elevation
+                )));
+            }
+            let position_ok = match p.lat_lon {
+                None => profile,
+                Some((lat, lon)) => {
+                    !profile
+                        && lat.is_finite()
+                        && lon.is_finite()
+                        && (-90.0..=90.0).contains(&lat)
+                        && (-180.0..=180.0).contains(&lon)
+                }
+            };
+            if !position_ok {
+                return Err(broken(format!("point {i}: position {:?}", p.lat_lon)));
+            }
+        }
+        for (i, s) in self.segments.iter().enumerate() {
+            let grades_finite = match s.grade {
+                SegmentGrade::FromPoints => true,
+                SegmentGrade::Constant { pct } => pct.is_finite(),
+                SegmentGrade::Ramp { from_pct, to_pct } => {
+                    from_pct.is_finite() && to_pct.is_finite()
+                }
+            };
+            if !(grades_finite && s.start_m >= 0.0 && s.start_m < s.end_m && s.end_m <= prev) {
+                return Err(broken(format!(
+                    "segment {i}: {} m to {} m, {:?}",
+                    s.start_m, s.end_m, s.grade
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A route resampled and smoothed for riding (ADR-0005 §2.1, §2.3). It is a pure function of the

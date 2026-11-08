@@ -1,8 +1,9 @@
 //! From a file's points to a [`Route`]: the limits of ADR-0005 §2.2.4 and the missing-elevation
 //! rules of §2.2.2, shared by every file format (GPX here, FIT in #540).
 use super::{
-    ELE_GAP_M, ELE_MAX_M, ELE_MIN_M, ElevationKind, MAX_JUMP_M, MAX_POINTS, MAX_ROUTE_M,
-    MIN_ROUTE_M, Route, RoutePoint, RouteSource, Surface, SurfaceProvenance, haversine_m,
+    DEFAULT_ROUTE_NAME, ELE_GAP_M, ELE_MAX_M, ELE_MIN_M, ElevationKind, MAX_JUMP_M, MAX_POINTS,
+    MAX_ROUTE_M, MIN_ROUTE_M, Route, RouteInvariantError, RoutePoint, RouteSource, Surface,
+    SurfaceProvenance, haversine_m,
 };
 use serde::{Deserialize, Serialize};
 
@@ -53,7 +54,8 @@ pub struct RouteImportReport {
     pub points_kept: usize,
     /// Points at exactly (0, 0), a logger's "no fix yet", dropped.
     pub dropped_null_island: usize,
-    /// Points at distance 0 from the previous one, merged into it.
+    /// Points that add no distance to the previous one (the same position, or a move too small
+    /// to change the along-route distance at its magnitude), merged into it.
     pub merged_repeats: usize,
     /// Elevations outside [`ELE_MIN_M`]..=[`ELE_MAX_M`], treated as missing (a sensor fault).
     pub elevation_out_of_range: usize,
@@ -141,6 +143,23 @@ pub enum RouteImportError {
     },
     /// The file has no track or route, or none at the requested index.
     NoTrack,
+    /// The file holds more than [`super::MAX_TRACKS`] tracks and routes.
+    TooManyTracks {
+        /// The limit that was passed.
+        max: usize,
+    },
+    /// The importer built a route that breaks an ADR-0005 §2.1 invariant: a bug, never a property
+    /// of the file.
+    Invariant {
+        /// The broken invariant.
+        what: String,
+    },
+}
+
+impl From<RouteInvariantError> for RouteImportError {
+    fn from(e: RouteInvariantError) -> Self {
+        Self::Invariant { what: e.what }
+    }
 }
 
 impl std::fmt::Display for RouteImportError {
@@ -179,6 +198,8 @@ impl std::fmt::Display for RouteImportError {
                 write!(f, "FIT file type {file_type} is not a course")
             }
             Self::NoTrack => write!(f, "no track or route to import"),
+            Self::TooManyTracks { max } => write!(f, "more than {max} tracks and routes"),
+            Self::Invariant { what } => write!(f, "route invariant broken: {what}"),
         }
     }
 }
@@ -222,7 +243,9 @@ fn plausible_elevation(
 }
 
 /// Build a route from a file's points in order, applying the limits of ADR-0005 §2.2.4 and the
-/// missing-elevation rules of §2.2.2. `segments` is empty; a format with labels adds them.
+/// missing-elevation rules of §2.2.2. `segments` is empty; a format with labels adds them. A
+/// blank `name` becomes [`DEFAULT_ROUTE_NAME`]. A point whose distance would not increase the
+/// along-route distance is merged into the previous one, so `dist_m` strictly increases (§2.1).
 ///
 /// # Errors
 /// The first refusal: a malformed point, a [`RouteImportError::Jump`], too many points, a route
@@ -256,19 +279,21 @@ pub fn route_from_points(
             continue;
         };
         let d = haversine_m(last_lat_lon, lat_lon);
-        if d == 0.0 {
-            merged_repeats += 1;
-            prev.ele_m = prev.ele_m.or(ele_m);
-            prev.surface = prev.surface.or(p.surface);
-            continue;
-        }
         if d > MAX_JUMP_M {
             return Err(RouteImportError::Jump {
                 at_m: prev.dist_m,
                 len_m: d,
             });
         }
+        // Merge on the accumulated distance, not on `d == 0`: far from 0 a tiny `d` adds nothing
+        // in f64, and keeping that point would repeat a distance (and divide by 0 when filling).
         let dist_m = prev.dist_m + d;
+        if dist_m <= prev.dist_m {
+            merged_repeats += 1;
+            prev.ele_m = prev.ele_m.or(ele_m);
+            prev.surface = prev.surface.or(p.surface);
+            continue;
+        }
         if points.len() == MAX_POINTS {
             return Err(RouteImportError::TooManyPoints { max: MAX_POINTS });
         }
@@ -305,20 +330,23 @@ pub fn route_from_points(
         surfaces_from_file,
         unknown_surfaces: 0,
     };
-    Ok(ImportedRoute {
-        route: Route {
-            name,
-            source,
-            points,
-            segments: Vec::new(),
-            elevation,
-            surface: SurfaceProvenance {
-                osm: None,
-                from_file: surfaces_from_file > 0,
-            },
+    let name = if name.trim().is_empty() {
+        DEFAULT_ROUTE_NAME.to_owned()
+    } else {
+        name
+    };
+    let route = Route::new(
+        name,
+        source,
+        points,
+        Vec::new(),
+        elevation,
+        SurfaceProvenance {
+            osm: None,
+            from_file: surfaces_from_file > 0,
         },
-        report,
-    })
+    )?;
+    Ok(ImportedRoute { route, report })
 }
 
 impl RouteImportReport {
@@ -368,8 +396,14 @@ fn fill_elevation(
         let (Some(e0), Some(e1)) = (e0, e1) else {
             continue;
         };
+        // d1 > d0: distances strictly increase (the merge in `route_from_points`).
+        let span = d1 - d0;
         for p in &mut points[i + 1..j] {
-            p.ele_m = Some(e0 + (e1 - e0) * (p.dist_m - d0) / (d1 - d0));
+            p.ele_m = Some(if span > 0.0 {
+                e0 + (e1 - e0) * (p.dist_m - d0) / span
+            } else {
+                e0
+            });
         }
     }
     if last + 1 < points.len() {

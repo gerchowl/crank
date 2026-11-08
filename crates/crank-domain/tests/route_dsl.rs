@@ -1,9 +1,10 @@
 //! Grade-profile text (ADR-0005 §2.2.5, §2.9 R1): grammar, refusals, the route it builds, and
 //! the round trip parse → print → parse.
 use crank_domain::route::{
-    ElevationKind, GradeProfileItem as Item, GradeProfileRepeat, GradeProfileSegment, ProfileGrade,
-    RouteDslErrorKind as K, RouteSource, SegmentGrade, Surface, parse_grade_profile,
-    parse_route_dsl, print_grade_profile, print_route_dsl,
+    ElevationKind, GradeProfileItem as Item, GradeProfileRepeat, GradeProfileSegment,
+    MAX_EXPANDED_LABEL_BYTES, MAX_LABEL_CHARS, MAX_PROFILE_SEGMENTS, MAX_PROFILE_TEXT_BYTES,
+    MAX_ROUTE_M, MIN_SEGMENT_M, ProfileGrade, RouteDslErrorKind as K, RouteSource, SegmentGrade,
+    Surface, parse_grade_profile, parse_route_dsl, print_grade_profile, print_route_dsl,
 };
 use proptest::prelude::*;
 use std::fmt::Write as _;
@@ -226,6 +227,79 @@ fn structure_errors_match_the_workout_dsl() {
     // UTF-16 offsets, as in the workout DSL.
     let e = parse_grade_profile("\"😀\" 1km 1% x").expect_err("unknown");
     assert_eq!((e.offset, e.length), (12, 1));
+}
+
+#[test]
+fn the_text_is_at_most_256_kib() {
+    let pad = |n: usize| format!("1km 1%\n#{}", "x".repeat(n - "1km 1%\n#".len()));
+    assert!(parse_route_dsl(&pad(MAX_PROFILE_TEXT_BYTES)).is_ok());
+    assert_eq!(kind(&pad(MAX_PROFILE_TEXT_BYTES + 1)), K::TextTooLong);
+}
+
+#[test]
+fn a_label_is_at_most_100_characters() {
+    let label = |n: usize| format!("\"{}\" 1km 1%", "é".repeat(n));
+    assert!(parse_grade_profile(&label(MAX_LABEL_CHARS)).is_ok());
+    assert_eq!(kind(&label(MAX_LABEL_CHARS + 1)), K::LabelTooLong);
+    // The falsifier's 10 KB text that peaked at 1.1 GB.
+    let bomb = format!("100000x(\"{}\" 0.01km 0%)", "a".repeat(10_000));
+    assert_eq!(kind(&bomb), K::LabelTooLong);
+}
+
+#[test]
+fn expanded_labels_are_bounded_before_expanding() {
+    let label = "a".repeat(100);
+    let rep = |n: u64| format!("{n}x(\"{label}\" 0.01km 0%)");
+    let fits = MAX_EXPANDED_LABEL_BYTES / 100;
+    let r = parse_route_dsl(&rep(fits)).expect("just under the bound");
+    assert_eq!(u64::try_from(r.segments.len()).ok(), Some(fits));
+    let over = parse_route_dsl(&rep(fits + 1)).expect_err("just over the bound");
+    assert_eq!(over.kind, K::LabelsTooLarge);
+    // An inherited repeat label counts once per segment it names.
+    let inherited = |n: u64| format!("\"{label}\" {n}x(0.01km 0%)");
+    assert!(parse_route_dsl(&inherited(fits)).is_ok());
+    assert_eq!(
+        parse_route_dsl(&inherited(fits + 1))
+            .expect_err("over")
+            .kind,
+        K::LabelsTooLarge
+    );
+    // 100 000 × 100 bytes would be 10 MB of copies: refused before any is made.
+    assert_eq!(
+        parse_route_dsl(&format!("100000x(\"{label}\" 0.01km 0%)"))
+            .expect_err("over")
+            .kind,
+        K::LabelsTooLarge
+    );
+}
+
+#[test]
+fn the_segment_bound_is_the_route_bound() {
+    assert_eq!(
+        u32::try_from(MAX_PROFILE_SEGMENTS).map(f64::from).ok(),
+        Some(MAX_ROUTE_M / f64::from(MIN_SEGMENT_M))
+    );
+    let r = parse_route_dsl("100000x(0.01km 0%)").expect("1 000 km of 10 m segments");
+    assert_eq!(
+        u64::try_from(r.segments.len()).ok(),
+        Some(MAX_PROFILE_SEGMENTS)
+    );
+}
+
+#[test]
+fn a_blank_first_label_does_not_name_the_route() {
+    assert_eq!(
+        parse_route_dsl("\"\" 1km 1%, \" \" 1km 0%")
+            .expect("parses")
+            .name,
+        "Grade profile"
+    );
+    assert_eq!(
+        parse_route_dsl("\" \" 1km 1%, \"Top\" 1km 0%")
+            .expect("parses")
+            .name,
+        "Top"
+    );
 }
 
 #[test]
