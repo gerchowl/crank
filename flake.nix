@@ -222,7 +222,7 @@
           inherit pnpmDeps;
           nativeBuildInputs = rustCheck.nativeBuildInputs ++ [ pkgs.nodejs pkgs.pnpm_12 pkgs.pnpmConfigHook ];
           buildPhaseCargoCommand = ''
-            cargo run --locked ${testFeatures} -p crank-domain --example export_scale_edges > "$TMPDIR/rust-edges.json"
+            cargo run --locked -p crank-domain --example export_scale_edges > "$TMPDIR/rust-edges.json"
             CRANK_SCALE_EDGES="$TMPDIR/rust-edges.json" pnpm -C app exec vitest run tests/scales-parity.test.ts
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
