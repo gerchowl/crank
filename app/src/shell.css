@@ -163,6 +163,60 @@ main.mode {
   margin-bottom: var(--space-1);
 }
 
+/* The ride-load notice (#320, RideLoadNotice.tsx): the first thing in the main region, above the view, in the page's
+   flow, at the page's gutter and width; one elevation (panel on background, §18.1), an edge in its state's colour
+   beside ⚠ or ✓ (rule 11), and the 32 px buttons (§18.4). */
+.ride-notice-band {
+  max-width: 1364px; /* the page's, .page */
+  padding: var(--space-5) var(--page-gutter) 0;
+}
+.ride-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-left: 4px solid var(--status-info);
+  border-radius: var(--radius-m);
+  font-size: var(--text-s);
+}
+.ride-notice[data-state="error"] {
+  border-left-color: var(--status-warning);
+}
+.ride-notice-text {
+  min-width: 0;
+  max-width: 70ch;
+  overflow-wrap: anywhere;
+}
+.ride-notice[data-state="error"] [data-state-label] {
+  color: var(--status-warning);
+}
+.ride-notice-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.ride-notice button {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-h);
+  min-height: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-m);
+  background: var(--panel-2);
+  font-size: var(--text-s);
+  white-space: nowrap;
+}
+.ride-notice button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
 .keys-scrim {
   position: fixed;
   inset: 0;

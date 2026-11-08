@@ -22,7 +22,8 @@ import { RideTraces } from "./RideTraces";
 import { formatDuration } from "./Workouts";
 import "./history.css";
 
-const OUTCOME: Record<RideOutcome, string> = {
+/** A ride's outcome in words (History's list, Review, Today's last ride). */
+export const OUTCOME: Record<RideOutcome, string> = {
   open: "Still recording",
   finished: "Finished",
   aborted: "Aborted",

@@ -20,6 +20,7 @@ import {
   RIDE_SCENARIOS,
   SCENARIOS,
   SETTINGS_SCENARIOS,
+  TODAY_SCENARIOS,
   WORKOUTS_SCENARIOS,
   type Scenario,
 } from "./scenarios";
@@ -238,6 +239,33 @@ test("the ride's region boxes are the same in every ride fixture", async ({
     expect(boxes, `${name} against ${RIDE_SCENARIOS[0]}`).toEqual(first);
     expect(
       await screenFit(page, ".ride"),
+      `${name}: cut text or controls`,
+    ).toEqual([]);
+  }
+});
+
+// Today (#530) passes the same whole-screen check, with no region exempt: every panel and the long name of a loaded ride
+// stay whole and inside the window at 1024×768. Each fixture opens through the start screen's hand-off (the shell's
+// default core adapter, core.ts): once settled the start screen is gone and focus is on Today's main region, the
+// destination it hands off to (shell/StartScreen.tsx).
+test("nothing on Today is cut, in any of its fixtures, and the hand-off focused it", async ({
+  page,
+}) => {
+  for (const name of TODAY_SCENARIOS) {
+    const s = SCENARIOS.find((x) => x.name === name);
+    if (!s) throw new Error(`no fixture ${name}`);
+    await open(page, s);
+    expect(await page.locator(".start").count(), `${name}: start screen`).toBe(
+      0,
+    );
+    expect(
+      await page.evaluate(() =>
+        document.activeElement?.matches("main#main[data-destination]"),
+      ),
+      `${name}: focus after the hand-off`,
+    ).toBe(true);
+    expect(
+      await screenFit(page, "#root"),
       `${name}: cut text or controls`,
     ).toEqual([]);
   }

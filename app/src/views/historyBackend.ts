@@ -80,7 +80,7 @@ export function rustDebug(s: string): string {
 }
 
 /** The core's order: `ORDER BY started_at DESC, id DESC`, a ride with no start last (SQLite sorts NULL lowest). */
-const newestFirst = (a: RideRecord, b: RideRecord) =>
+export const newestFirst = (a: RideRecord, b: RideRecord) =>
   (b.startedAt ?? -Infinity) - (a.startedAt ?? -Infinity) ||
   (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
 
