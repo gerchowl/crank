@@ -87,13 +87,13 @@ const newestFirst = (a: RideRecord, b: RideRecord) =>
 /**
  * `rides_list` and `ride_summary` behind `mockIPC`, with every refusal the core can give
  * (crates/crank-core/src/core.rs):
- * - `rides_list`: `storage` when the store fails, core.rs:2570 `Core::rides_list` (`store.rides()?`; the store's
+ * - `rides_list`: `storage` when the store fails, core.rs `Core::rides_list` (~2570) (`store.rides()?`; the store's
  *   read errors all map to `storage`, error.rs `ApiError` (~54)). It has no other refusal.
- * - `ride_summary`: core.rs:2583 `Core::ride_summary` is `rides_list` plus a find, so a store failure of `rides_list`
+ * - `ride_summary`: core.rs `Core::ride_summary` (~2583) is `rides_list` plus a find, so a store failure of `rides_list`
  *   fails it too (set `fail.rides_list`), and an id that is not stored is `not_found` `no ride "<id>"`, the id as
- *   Rust's `{id:?}` prints it (core.rs:2588, `rustDebug`). `fail.ride_summary` fails it alone (a failure between the
+ *   Rust's `{id:?}` prints it (core.rs `Core::ride_summary` (~2588); `rustDebug`). `fail.ride_summary` fails it alone (a failure between the
  *   two calls).
- * A stored summary the core cannot parse comes back as `summary: null` (core.rs:2544 `Core::record`), like an open
+ * A stored summary the core cannot parse comes back as `summary: null` (core.rs `Core::record` (~2544)), like an open
  * or aborted ride; both are in `RIDES`. Tauri rejects a `ride_summary` without `id` with a plain string.
  */
 export function install(over: Partial<Backend> = {}): Backend {
