@@ -102,7 +102,7 @@ gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and com
 `just screens` awaits the UI waves (#229) and fails explicitly until then.
 **Design harness (#457, DESIGN §18.7):** `just design` (= `pnpm -C app exec playwright test`, in the devShell) opens every
 fixture of `app/e2e/design/scenarios.ts` at 1024×768 and 1440×900 in both themes, injects `app/e2e/design/layout-audit.js`
-(reads the `theme.css` scales; controls are exactly `--control-h` except the rail's `--control-h-m`) and runs
+(reads the `theme.css` scales; controls are exactly `--control-h` except the rail's `--control-h-rail`, its own height variant, DESIGN §18.4) and runs
 `@axe-core/playwright` (WCAG 2.2 A/AA). `app/e2e/design/index.html?scenario=<name>` is its own Vite root
 (`app/e2e/design/vite.config.ts`), never part of the app build; it mounts the real `AppRoot` on the mockIPC backends
 (`rideBackend.ts`, `devicesBackend.ts`, `workoutsBackend.ts`, `historyBackend.ts`; a new screen state is a scenario entry

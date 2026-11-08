@@ -1,192 +1,52 @@
 {
-  "devices-denied@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-denied@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-denied@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-denied@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-empty@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-empty@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-empty@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-empty@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-forget-confirm@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-forget-confirm@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-forget-confirm@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-forget-confirm@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-found@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-found@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-found@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-found@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-paired@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-paired@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-paired@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-paired@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-pairing@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-pairing@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-pairing@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-pairing@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-scanning@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-scanning@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-scanning@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "devices-scanning@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-empty@1024x768-dark": {
-    "button.height": 4
-  },
-  "history-empty@1024x768-light": {
-    "button.height": 4
-  },
-  "history-empty@1440x900-dark": {
-    "button.height": 4
-  },
-  "history-empty@1440x900-light": {
-    "button.height": 4
-  },
-  "history-error@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-error@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-error@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-error@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-long@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-long@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-long@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-long@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-selected@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-selected@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-selected@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history-selected@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "history@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
+  "devices-denied@1024x768-dark": {},
+  "devices-denied@1024x768-light": {},
+  "devices-denied@1440x900-dark": {},
+  "devices-denied@1440x900-light": {},
+  "devices-empty@1024x768-dark": {},
+  "devices-empty@1024x768-light": {},
+  "devices-empty@1440x900-dark": {},
+  "devices-empty@1440x900-light": {},
+  "devices-forget-confirm@1024x768-dark": {},
+  "devices-forget-confirm@1024x768-light": {},
+  "devices-forget-confirm@1440x900-dark": {},
+  "devices-forget-confirm@1440x900-light": {},
+  "devices-found@1024x768-dark": {},
+  "devices-found@1024x768-light": {},
+  "devices-found@1440x900-dark": {},
+  "devices-found@1440x900-light": {},
+  "devices-paired@1024x768-dark": {},
+  "devices-paired@1024x768-light": {},
+  "devices-paired@1440x900-dark": {},
+  "devices-paired@1440x900-light": {},
+  "devices-pairing@1024x768-dark": {},
+  "devices-pairing@1024x768-light": {},
+  "devices-pairing@1440x900-dark": {},
+  "devices-pairing@1440x900-light": {},
+  "devices-scanning@1024x768-dark": {},
+  "devices-scanning@1024x768-light": {},
+  "devices-scanning@1440x900-dark": {},
+  "devices-scanning@1440x900-light": {},
+  "history-empty@1024x768-dark": {},
+  "history-empty@1024x768-light": {},
+  "history-empty@1440x900-dark": {},
+  "history-empty@1440x900-light": {},
+  "history-error@1024x768-dark": {},
+  "history-error@1024x768-light": {},
+  "history-error@1440x900-dark": {},
+  "history-error@1440x900-light": {},
+  "history-long@1024x768-dark": {},
+  "history-long@1024x768-light": {},
+  "history-long@1440x900-dark": {},
+  "history-long@1440x900-light": {},
+  "history-selected@1024x768-dark": {},
+  "history-selected@1024x768-light": {},
+  "history-selected@1440x900-dark": {},
+  "history-selected@1440x900-light": {},
+  "history@1024x768-dark": {},
+  "history@1024x768-light": {},
+  "history@1440x900-dark": {},
+  "history@1440x900-light": {},
   "ready-connecting@1024x768-dark": {},
   "ready-connecting@1024x768-light": {},
   "ready-connecting@1440x900-dark": {},
@@ -211,86 +71,26 @@
   "ready@1024x768-light": {},
   "ready@1440x900-dark": {},
   "ready@1440x900-light": {},
-  "review-aborted@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-aborted@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-aborted@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-aborted@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-error@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-error@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-error@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-error@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-long@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-long@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-long@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-long@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-short@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-short@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-short@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review-short@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "review@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
+  "review-aborted@1024x768-dark": {},
+  "review-aborted@1024x768-light": {},
+  "review-aborted@1440x900-dark": {},
+  "review-aborted@1440x900-light": {},
+  "review-error@1024x768-dark": {},
+  "review-error@1024x768-light": {},
+  "review-error@1440x900-dark": {},
+  "review-error@1440x900-light": {},
+  "review-long@1024x768-dark": {},
+  "review-long@1024x768-light": {},
+  "review-long@1440x900-dark": {},
+  "review-long@1440x900-light": {},
+  "review-short@1024x768-dark": {},
+  "review-short@1024x768-light": {},
+  "review-short@1440x900-dark": {},
+  "review-short@1440x900-light": {},
+  "review@1024x768-dark": {},
+  "review@1024x768-light": {},
+  "review@1440x900-dark": {},
+  "review@1440x900-light": {},
   "ride-engine-silent@1024x768-dark": {},
   "ride-engine-silent@1024x768-light": {},
   "ride-engine-silent@1440x900-dark": {},
@@ -331,260 +131,76 @@
   "ride-work-step@1024x768-light": {},
   "ride-work-step@1440x900-dark": {},
   "ride-work-step@1440x900-light": {},
-  "settings-ride-loaded@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "settings-ride-loaded@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "settings-ride-loaded@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "settings-ride-loaded@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "settings@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "settings@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "settings@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "settings@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-empty@1024x768-dark": {
-    "button.height": 4
-  },
-  "today-empty@1024x768-light": {
-    "button.height": 4
-  },
-  "today-empty@1440x900-dark": {
-    "button.height": 4
-  },
-  "today-empty@1440x900-light": {
-    "button.height": 4
-  },
-  "today-error@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-error@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-error@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-error@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-link-lost@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-link-lost@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-link-lost@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-link-lost@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-reading@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-reading@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-reading@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-reading@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-loaded@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-loaded@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-loaded@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-loaded@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-loading@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-loading@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-loading@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-loading@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-refused@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-refused@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-refused@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today-ride-refused@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "today@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "workouts-blocked@1024x768-dark": {
-    "button.height": 4
-  },
-  "workouts-blocked@1024x768-light": {
-    "button.height": 4
-  },
-  "workouts-blocked@1440x900-dark": {
-    "button.height": 4
-  },
-  "workouts-blocked@1440x900-light": {
-    "button.height": 4
-  },
-  "workouts-empty@1024x768-dark": {
-    "button.height": 4
-  },
-  "workouts-empty@1024x768-light": {
-    "button.height": 4
-  },
-  "workouts-empty@1440x900-dark": {
-    "button.height": 4
-  },
-  "workouts-empty@1440x900-light": {
-    "button.height": 4
-  },
-  "workouts-list-error@1024x768-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "workouts-list-error@1024x768-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "workouts-list-error@1440x900-dark": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "workouts-list-error@1440x900-light": {
-    "button.height": 4,
-    "button.inconsistentHeight": 1
-  },
-  "workouts-load-error@1024x768-dark": {
-    "button.height": 4
-  },
-  "workouts-load-error@1024x768-light": {
-    "button.height": 4
-  },
-  "workouts-load-error@1440x900-dark": {
-    "button.height": 4
-  },
-  "workouts-load-error@1440x900-light": {
-    "button.height": 4
-  },
-  "workouts-loading@1024x768-dark": {
-    "button.height": 4
-  },
-  "workouts-loading@1024x768-light": {
-    "button.height": 4
-  },
-  "workouts-loading@1440x900-dark": {
-    "button.height": 4
-  },
-  "workouts-loading@1440x900-light": {
-    "button.height": 4
-  },
-  "workouts-long@1024x768-dark": {
-    "button.height": 4
-  },
-  "workouts-long@1024x768-light": {
-    "button.height": 4
-  },
-  "workouts-long@1440x900-dark": {
-    "button.height": 4
-  },
-  "workouts-long@1440x900-light": {
-    "button.height": 4
-  },
-  "workouts-selected@1024x768-dark": {
-    "button.height": 4
-  },
-  "workouts-selected@1024x768-light": {
-    "button.height": 4
-  },
-  "workouts-selected@1440x900-dark": {
-    "button.height": 4
-  },
-  "workouts-selected@1440x900-light": {
-    "button.height": 4
-  },
-  "workouts@1024x768-dark": {
-    "button.height": 4
-  },
-  "workouts@1024x768-light": {
-    "button.height": 4
-  },
-  "workouts@1440x900-dark": {
-    "button.height": 4
-  },
-  "workouts@1440x900-light": {
-    "button.height": 4
-  }
+  "settings-ride-loaded@1024x768-dark": {},
+  "settings-ride-loaded@1024x768-light": {},
+  "settings-ride-loaded@1440x900-dark": {},
+  "settings-ride-loaded@1440x900-light": {},
+  "settings@1024x768-dark": {},
+  "settings@1024x768-light": {},
+  "settings@1440x900-dark": {},
+  "settings@1440x900-light": {},
+  "today-empty@1024x768-dark": {},
+  "today-empty@1024x768-light": {},
+  "today-empty@1440x900-dark": {},
+  "today-empty@1440x900-light": {},
+  "today-error@1024x768-dark": {},
+  "today-error@1024x768-light": {},
+  "today-error@1440x900-dark": {},
+  "today-error@1440x900-light": {},
+  "today-link-lost@1024x768-dark": {},
+  "today-link-lost@1024x768-light": {},
+  "today-link-lost@1440x900-dark": {},
+  "today-link-lost@1440x900-light": {},
+  "today-reading@1024x768-dark": {},
+  "today-reading@1024x768-light": {},
+  "today-reading@1440x900-dark": {},
+  "today-reading@1440x900-light": {},
+  "today-ride-loaded@1024x768-dark": {},
+  "today-ride-loaded@1024x768-light": {},
+  "today-ride-loaded@1440x900-dark": {},
+  "today-ride-loaded@1440x900-light": {},
+  "today-ride-loading@1024x768-dark": {},
+  "today-ride-loading@1024x768-light": {},
+  "today-ride-loading@1440x900-dark": {},
+  "today-ride-loading@1440x900-light": {},
+  "today-ride-refused@1024x768-dark": {},
+  "today-ride-refused@1024x768-light": {},
+  "today-ride-refused@1440x900-dark": {},
+  "today-ride-refused@1440x900-light": {},
+  "today@1024x768-dark": {},
+  "today@1024x768-light": {},
+  "today@1440x900-dark": {},
+  "today@1440x900-light": {},
+  "workouts-blocked@1024x768-dark": {},
+  "workouts-blocked@1024x768-light": {},
+  "workouts-blocked@1440x900-dark": {},
+  "workouts-blocked@1440x900-light": {},
+  "workouts-empty@1024x768-dark": {},
+  "workouts-empty@1024x768-light": {},
+  "workouts-empty@1440x900-dark": {},
+  "workouts-empty@1440x900-light": {},
+  "workouts-list-error@1024x768-dark": {},
+  "workouts-list-error@1024x768-light": {},
+  "workouts-list-error@1440x900-dark": {},
+  "workouts-list-error@1440x900-light": {},
+  "workouts-load-error@1024x768-dark": {},
+  "workouts-load-error@1024x768-light": {},
+  "workouts-load-error@1440x900-dark": {},
+  "workouts-load-error@1440x900-light": {},
+  "workouts-loading@1024x768-dark": {},
+  "workouts-loading@1024x768-light": {},
+  "workouts-loading@1440x900-dark": {},
+  "workouts-loading@1440x900-light": {},
+  "workouts-long@1024x768-dark": {},
+  "workouts-long@1024x768-light": {},
+  "workouts-long@1440x900-dark": {},
+  "workouts-long@1440x900-light": {},
+  "workouts-selected@1024x768-dark": {},
+  "workouts-selected@1024x768-light": {},
+  "workouts-selected@1440x900-dark": {},
+  "workouts-selected@1440x900-light": {},
+  "workouts@1024x768-dark": {},
+  "workouts@1024x768-light": {},
+  "workouts@1440x900-dark": {},
+  "workouts@1440x900-light": {}
 }

@@ -55,6 +55,10 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Changed
 
+- Rail item height (DESIGN §18.4): the labelled rail item has its own token, `--control-h-rail` (55 px, derived from its
+  border, inset, icon, gap and word), instead of breaking the 40 px rule; the layout audit holds it to that token, and
+  every railed design fixture drops its rail-only `button.height` and `button.inconsistentHeight` counts
+  ([#555](https://github.com/gerchowl/crank/issues/555))
 - CI and releases (ADR-0001 §9.6): the required PR gate is Linux only; macOS runs on `release/*` branches, after
   every merge into `dev` and on request. Release candidates `X.Y.Z-rc.N` (bundle version `X·1000000 + Y·10000 + Z·100 + N`, final
   `… + 99`) are cut into `dev` and published as GitHub pre-releases with the zip, its `.sha256` and a build-provenance
