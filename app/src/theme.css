@@ -59,6 +59,9 @@
   --control-h: 32px;
   --control-h-m: 40px;
   --control-h-l: 48px;
+  /* The labelled rail item (DESIGN §18.4, #555): border 1 + --space-2 8 + icon 20 (--text-l at line-height 1)
+     + gap --space-1 4 + word 13.2 (--text-xs at line-height 1.1) + --space-2 8 + border 1 = 55.2, to the whole pixel. */
+  --control-h-rail: 55px;
 
   /* Side padding of .page: 20 px at 1024 wide to 32 px at 1440, with no breakpoint (DESIGN §16.3). */
   --page-gutter: clamp(20px, calc(2.885vw - 9.5px), 32px);
