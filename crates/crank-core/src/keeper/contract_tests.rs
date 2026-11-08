@@ -337,3 +337,122 @@ async fn link_channels_belong_to_their_window() {
         "no frame after the close"
     );
 }
+
+/// §5.1.4 "Which channel reports link state during a ride", per device: a strap that does not
+/// advertise at the load stays out of the ride (`hr_linked: false`) and the keeper's frame
+/// goes on reporting it (`not_found`) beside the ride's trainer (`riding`); at the ride's end
+/// only the device the ride held goes `cold`.
+#[tokio::test(start_paused = true)]
+async fn each_device_has_one_source_an_unlinked_strap_stays_the_keepers() {
+    let dir = tempfile::tempdir().unwrap();
+    let absent = SimLatency {
+        not_advertising: true,
+        ..latency(1, 0, 0)
+    };
+    let (core, _radio) = latent_core(dir.path(), SimLatency::default(), absent).await;
+    let mut page = page(&core, "main").await;
+    assert!(!core.ride_load(None).await.unwrap().hr_linked);
+    page.follow(&core, "main", TICK).await;
+    let during = page.seen.last().copied().unwrap();
+    assert_eq!(
+        phase(during.links),
+        [Some(LinkPhase::Riding), Some(LinkPhase::NotFound)]
+    );
+    core.ride_start().await.unwrap();
+    core.ride_end().await.unwrap();
+    page.follow(&core, "main", TICK).await;
+    let after = page.seen.last().copied().unwrap();
+    assert_eq!(
+        phase(after.links),
+        [Some(LinkPhase::Cold), Some(LinkPhase::NotFound)]
+    );
+}
+
+/// §5.1.1 "A ride's end leaves the phase `cold`" as a stalled page sees it: frames held
+/// across a load and the ride's end arrive, after the ack, as one frame of `cold` devices
+/// with no sample, in the next seq.
+#[tokio::test(start_paused = true)]
+async fn a_page_stalled_across_a_load_and_its_end_gets_cold_after_its_ack() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _radio) =
+        latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
+    core.links_intent(likely(false)).await.unwrap();
+    sleep(TICK).await;
+    let mut page = page(&core, "main").await;
+    sleep(TICK).await;
+    let first = page.take(&core, "main", false).await;
+    assert_eq!(phase(first[0].links), [Some(LinkPhase::Warm); 2]);
+    core.ride_load(None).await.unwrap();
+    core.ride_start().await.unwrap();
+    core.ride_end().await.unwrap();
+    sleep(S(1)).await;
+    assert!(page.take(&core, "main", false).await.is_empty(), "stalled");
+    core.links_ack(Some("main"), page.id, first[0].seq)
+        .await
+        .unwrap();
+    sleep(TICK).await;
+    let got = page.take(&core, "main", false).await;
+    let cold = Some(DeviceLinkView {
+        phase: LinkPhase::Cold,
+        sample: None,
+    });
+    assert_eq!(
+        got,
+        [LinkFrame {
+            seq: first[0].seq + 1,
+            links: LinkView {
+                trainer: cold,
+                strap: cold
+            }
+        }]
+    );
+}
+
+/// ADR-0002 §5.1.3 "What `links_intent` answers": an intent that discards the loaded ride is
+/// answered with the state after the ride's links were released (`cold`), and an applied
+/// intent with the state its own step published (pins "publish, then answer").
+#[tokio::test(start_paused = true)]
+async fn links_intent_answers_the_state_its_resolving_step_published() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _radio) =
+        latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
+    let started = core.links_intent(likely(false)).await.unwrap();
+    assert_eq!(phase(started), [Some(LinkPhase::Searching); 2]);
+    sleep(TICK).await;
+    core.ride_load(None).await.unwrap();
+    let discarded = core
+        .links_intent(LinkIntent::Release {
+            reason: ReleaseReason::Sleep,
+        })
+        .await
+        .unwrap();
+    assert_eq!(phase(discarded), [Some(LinkPhase::Cold); 2]);
+    assert!(!core.ride_status().await.unwrap().status.loaded);
+}
+
+/// The reload race (#561 review): the page-load event issues the close of the old page's
+/// channel, and the new page may open its own before that close runs. A close drops only
+/// what was open when it was issued: the new page's channel and its acks are untouched.
+#[tokio::test(start_paused = true)]
+async fn a_close_issued_before_a_reopen_never_drops_the_new_channel() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _radio) =
+        latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
+    let _old = page(&core, "main").await;
+    let close = core.close_window("main".into());
+    let mut new = page(&core, "main").await;
+    close.await;
+    sleep(TICK).await;
+    let first = new.take(&core, "main", true).await;
+    assert_eq!(
+        first.len(),
+        1,
+        "the new channel is open and its ack is taken"
+    );
+    core.links_intent(likely(false)).await.unwrap();
+    sleep(TICK).await;
+    assert!(
+        !new.take(&core, "main", true).await.is_empty(),
+        "and it keeps sending"
+    );
+}

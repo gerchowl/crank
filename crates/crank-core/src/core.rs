@@ -1200,6 +1200,7 @@ impl Core {
                 reason: ReleaseReason::Devices,
             })
             .await
+            .map(drop)
     }
     /// The paired platform ids, trainer then strap.
     fn pairings(&self) -> Result<[Option<String>; 2], ApiError> {
@@ -1234,8 +1235,10 @@ impl Core {
     /// but not started unloads that ride (the path of Cancel) and releases its links; during a
     /// started ride it is refused, because the ride owns the trainer: end the ride first.
     ///
-    /// It answers the keeper's state once the intent is applied (ADR-0002 §5.1.4), the same
-    /// state a [`LinkFrame`](crate::LinkFrame) carries.
+    /// It answers the keeper's state as published by the step that resolved the intent
+    /// (ADR-0002 §5.1.4): the intent's own step, the load's resolution for an intent recorded
+    /// while the links were handed out, or, for a discard, the step after its links' release.
+    /// It is the state a [`LinkFrame`](crate::LinkFrame) carries.
     ///
     /// # Errors
     /// `Conflict` for `RiderRelease` while a ride is started or starting, or when its discard
@@ -1260,17 +1263,17 @@ impl Core {
                 ));
             }
         }
-        let keeper = self.keeper()?;
-        keeper.intent(intent).await?;
-        Ok(keeper.links())
+        self.keeper()?.intent(intent).await
     }
 
     /// Open the window's link channel (ADR-0002 §5.1.4), dropping that window's previous one:
     /// frames of the keeper's complete state go to `sink`, the first at once, then one per
     /// change once the window acknowledged the last ([`Core::links_ack`]), at most 10 per
     /// second; changes meanwhile are coalesced into the next frame (latest wins, no resync).
-    /// It works with and without a ride; while a ride holds a device its phase is `riding`
-    /// and its live state is the ride stream's (`StreamFrame.links`).
+    /// It works with and without a ride. Each device has one source: while a ride holds a
+    /// device its phase is `riding` and its live state is the ride stream's
+    /// (`StreamFrame.links`); every other device, a strap that missed the load included, is
+    /// read from these frames.
     ///
     /// # Errors
     /// `Storage` when the pairings cannot be read to start the keeper.
@@ -2592,12 +2595,23 @@ impl Core {
         let (engine, id) = self.owned(window, stream).await?;
         bounded(engine.stream_snapshot(id)).await
     }
-    /// A window was destroyed or reloads: drop its streams and its link channel. The engine
-    /// is told without the state lock and for at most 1 s (`REQUEST_TIMEOUT`; its request
-    /// channel may be full, #351); if it does not take the request, the window's streams still
-    /// end, as their sink fails.
-    pub async fn close_window(&self, window: String) {
+    /// A window was destroyed or reloads: drop its streams and its link channel.
+    ///
+    /// The link channel is dropped **now**, when the close is issued, not when the returned
+    /// future runs: the caller issues it from the page-load event, before the new page can
+    /// open its own channel, so a close can only drop a channel opened before it and never the
+    /// new page's (whose acks would otherwise answer `NotFound`, with no resync to recover).
+    /// The returned future drops the window's streams, by label when it runs, so a stream the
+    /// new page opened before it can still be dropped (#564): the engine is told without the state
+    /// lock and for at most 1 s (`REQUEST_TIMEOUT`; its request channel may be full, #351); if
+    /// it does not take the request, the window's streams still end, as their sink fails.
+    pub fn close_window(&self, window: String) -> impl Future<Output = ()> + Send + 'static {
         self.0.link_channels.close(&window);
+        let core = self.clone();
+        async move { core.close_streams(window).await }
+    }
+    /// The streams part of [`Core::close_window`].
+    async fn close_streams(&self, window: String) {
         let engine = {
             let mut st = self.0.state.lock().await;
             let Some(session) = st.session.as_mut() else {

@@ -170,8 +170,14 @@ export interface RideWorld {
   /** Publish the status frame after a command (the core does; false models the frame still on its way). */
   publishes: boolean;
   blocks: WorkoutBlock[];
-  /** The link keeper's state while no ride holds the devices (`links_intent`'s answer, the link channel's frames). */
+  /** The link keeper's state of the devices no ride holds (`links_intent`'s answer, the link channel's frames). */
   keeper: LinkView;
+  /**
+   * The strap was warm at the load and the ride holds it (`RideLoaded.hrLinked`). When false it stayed the keeper's
+   * and keeps its own phase, e.g. `not_found` for a strap that did not advertise (keeper/mod.rs `Keeper::settle`
+   * hands over only `warm` devices; core.rs `Core::connect_links`).
+   */
+  strapHanded: boolean;
   /** The keeper's store read fails when it first starts: `links_intent` answers `storage`. */
   keeperStorage: boolean;
   /** The next release reaches the keeper while the links are handed to a load, and a rider action supersedes it. */
@@ -222,6 +228,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
     publishes: true,
     blocks: BLOCKS,
     keeper: COLD_LINKS,
+    strapHanded: true,
     keeperStorage: false,
     supersedes: false,
     quitting: false,
@@ -317,6 +324,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
         `session clock went backwards: ${clockS} -> ${world.sessionS}`,
       );
     clockS = world.sessionS;
+    settleLinks();
     if (!world.publishes) return;
     base.truth.status = makeStatus({
       ...lossFields(),
@@ -333,17 +341,44 @@ export function installRide(over: Partial<RideWorld> = {}) {
     });
     base.truth.links = links();
     base.push({ status: base.truth.status, links: links() });
-    linksChanged();
   };
-  /** What the keeper reports: a ride that is loaded, started or not yet ended holds the paired devices (`riding`). */
+  /**
+   * A loaded or started ride holds the devices it was handed: the trainer, and the strap when `strapHanded`. A
+   * finished ride is reaped, and so is an unloaded one: its hold is gone (core.rs `Core::reap`).
+   */
+  const rideHolds = () => world.phase === "loaded" || world.phase === "active";
+  let held = rideHolds();
+  /**
+   * What the keeper reports, per device: one the ride holds is `riding` (its live state is the ride stream's), every
+   * other device its own phase (ADR-0002 §5.1.4).
+   */
   const linkView = (): LinkView => {
-    if (world.phase === "none") return world.keeper;
+    if (!rideHolds()) return world.keeper;
     const riding = (d: DeviceLinkView | null): DeviceLinkView | null =>
       d && { phase: "riding", sample: null };
     return {
       trainer: riding(world.keeper.trainer),
-      strap: riding(world.keeper.strap),
+      strap: world.strapHanded
+        ? riding(world.keeper.strap)
+        : world.keeper.strap,
     };
+  };
+  /**
+   * The ride's hold is released (an unload, a discard, a ride's end): the devices it held come back `cold`, with no
+   * sample, and a strap it never held keeps its phase (keeper/mod.rs `Keeper::free`, `Phase::Cold`). Then the link
+   * channel gets the change.
+   */
+  const settleLinks = () => {
+    const now = rideHolds();
+    if (held && !now)
+      world.keeper = {
+        trainer: cold(world.keeper.trainer),
+        strap: world.strapHanded
+          ? cold(world.keeper.strap)
+          : world.keeper.strap,
+      };
+    held = now;
+    linksChanged();
   };
   let linkCh: {
     id: number;
@@ -467,10 +502,6 @@ export function installRide(over: Partial<RideWorld> = {}) {
           if (release === "sleep" || release === "rider_release") {
             // discarded: the path of Cancel, its links released
             world.phase = "none";
-            world.keeper = {
-              trainer: cold(world.keeper.trainer),
-              strap: cold(world.keeper.strap),
-            };
             publish();
           }
         } else if (!started) {

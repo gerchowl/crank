@@ -8,8 +8,11 @@
 //! control channel except the `Disconnect` that releases it.
 //!
 //! **The published state.** After every step the task publishes the phases into a
-//! [`watch`] of [`LinkView`] ([`Handle::view`]), before it answers the step's intents, so
-//! an answer is never older than what it applied. `ride_status`, `device_links`,
+//! [`watch`] of [`LinkView`] ([`Handle::view`]), and only then answers the step's intents.
+//! Each answer carries the state published by the step that resolves it (the intent's own
+//! step; for a recorded intent the load's resolution; for a discard the step that took the
+//! discard's end, after its links' release), so an answer is never older than what it
+//! applied. `ride_status`, `device_links`,
 //! `links_intent` and the link channels ([`super::channel`]) read it. The task ends
 //! when the core drops its [`Handle`]: every link and attempt it holds is dropped with it,
 //! which the drivers' cleanup disconnects.
@@ -78,8 +81,8 @@ pub(crate) enum Note {
     /// That ride started.
     Started(String),
 }
-/// Where an intent's answer goes.
-type Answer = oneshot::Sender<Result<(), ApiError>>;
+/// Where an intent's answer goes: the state published by the step that resolved it.
+type Answer = oneshot::Sender<Result<LinkView, ApiError>>;
 enum Msg {
     Intent(LinkIntent, Answer),
     Acquire(RiderConfig, oneshot::Sender<Result<Handed, ApiError>>),
@@ -174,7 +177,8 @@ impl Handle {
             scan: None,
             direct: None,
             pending: Vec::new(),
-            discard_done: None,
+            discarding: Vec::new(),
+            discarded: Vec::new(),
             held: None,
             clock,
             view: self.view.clone(),
@@ -196,7 +200,7 @@ impl Handle {
     /// `Conflict` when it is refused (`RiderRelease` while the ride holds the trainer, a
     /// `Likely` after the quit), its discard found the ride started, or it was a recorded
     /// release that a rider action superseded; `Internal` without a keeper.
-    pub(crate) async fn intent(&self, intent: LinkIntent) -> Result<(), ApiError> {
+    pub(crate) async fn intent(&self, intent: LinkIntent) -> Result<LinkView, ApiError> {
         let gone = || ApiError::new(ErrorCode::Internal, "the link keeper is gone");
         let (ack, done) = oneshot::channel();
         self.tx.send(Msg::Intent(intent, ack)).map_err(|_| gone())?;
@@ -280,8 +284,11 @@ struct Task {
     direct: Option<(Answer, bool)>,
     /// The answers to intents recorded while the links are handed out.
     pending: Vec<(Answer, bool)>,
-    /// The discard under way: `Some(discarded)` once it ended.
-    discard_done: Option<watch::Receiver<Option<bool>>>,
+    /// The answers that wait for the discard under way.
+    discarding: Vec<Answer>,
+    /// The discard went through, but the ride's release has not been taken yet: these
+    /// answers go out with the state of the step that takes it.
+    discarded: Vec<Answer>,
     /// The resolutions a test holds back (`Handle::hold_resolutions`); always `None` outside
     /// tests.
     held: Option<Vec<Internal>>,
@@ -503,6 +510,24 @@ impl Task {
             Internal::Discarded(id, discarded) => {
                 tracing::info!(ride_id = id, discarded, "discard of an unstarted ride");
                 drop(self.apply(Input::Discarded(id, discarded)));
+                let waiting = std::mem::take(&mut self.discarding);
+                if !discarded {
+                    for answer in waiting {
+                        let _ = answer.send(Err(ApiError::new(
+                            ErrorCode::Conflict,
+                            "the ride was started or is gone: it was not discarded",
+                        )));
+                    }
+                } else if self.keeper.is_free() {
+                    // the ride's release was taken first (one channel: the hold's drop
+                    // precedes the discard's end)
+                    let links = *self.view.borrow();
+                    for answer in waiting {
+                        let _ = answer.send(Ok(links));
+                    }
+                } else {
+                    self.discarded.extend(waiting);
+                }
                 return;
             }
             Internal::Returned(era, trainer, strap) => {
@@ -514,7 +539,14 @@ impl Task {
                 }
                 Input::Refused
             }
-            Internal::Released => Input::Released,
+            Internal::Released => {
+                drop(self.apply(Input::Released));
+                let links = *self.view.borrow();
+                for answer in std::mem::take(&mut self.discarded) {
+                    let _ = answer.send(Ok(links));
+                }
+                return;
+            }
         };
         drop(self.apply(input));
     }
@@ -590,33 +622,19 @@ impl Task {
         if answers.is_empty() {
             return;
         }
+        let result = match ack {
+            // the state this step published (`apply` publishes before it answers)
+            Ack::Applied | Ack::Recorded | Ack::Superseded => Ok(*self.view.borrow()),
+            Ack::Refused(why) => Err(ApiError::new(ErrorCode::Conflict, why)),
+            Ack::AwaitDiscard => {
+                // answered by the step that takes the discard's end (`Internal::Discarded`)
+                self.discarding.extend(answers);
+                return;
+            }
+        };
         let releases = releases.to_vec();
-        let discard = (ack == Ack::AwaitDiscard)
-            .then(|| self.discard_done.clone())
-            .flatten();
         tokio::spawn(async move {
             released(releases).await;
-            let result = match ack {
-                Ack::Applied | Ack::Recorded | Ack::Superseded => Ok(()),
-                Ack::Refused(why) => Err(ApiError::new(ErrorCode::Conflict, why)),
-                Ack::AwaitDiscard => {
-                    let discarded = match discard {
-                        Some(mut done) => done
-                            .wait_for(Option::is_some)
-                            .await
-                            .is_ok_and(|d| *d == Some(true)),
-                        None => false,
-                    };
-                    if discarded {
-                        Ok(())
-                    } else {
-                        Err(ApiError::new(
-                            ErrorCode::Conflict,
-                            "the ride was started or is gone: it was not discarded",
-                        ))
-                    }
-                }
-            };
             for answer in answers {
                 let _ = answer.send(result.clone());
             }
@@ -624,13 +642,10 @@ impl Task {
     }
     /// Discard an unstarted ride through the core, and report how it ended.
     fn discard(&mut self, id: String) {
-        let (done_tx, done) = watch::channel(None);
-        self.discard_done = Some(done);
         let (discard, internal) = (self.devices.discard(id.clone()), self.internal.clone());
         tokio::spawn(async move {
             let discarded = discard.await;
             let _ = internal.send(Internal::Discarded(id, discarded));
-            done_tx.send_replace(Some(discarded));
         });
     }
     fn attempt(&mut self, d: LinkDevice, era: u32) {

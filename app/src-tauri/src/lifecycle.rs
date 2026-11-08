@@ -280,11 +280,12 @@ pub fn page_load<R: Runtime>(app: &AppHandle<R>, window: &str, event: PageLoadEv
     }
 }
 
-/// Drop the streams of `window` on the managed core, if there is one.
+/// Drop the streams and the link channel of `window` on the managed core, if there is one.
 fn drop_streams<R: Runtime>(app: &AppHandle<R>, window: &str) {
     if let Some(core) = app.try_state::<Core>() {
         let (core, window) = (core.inner().clone(), window.to_owned());
-        tauri::async_runtime::spawn(async move { core.close_window(window).await });
+        // the link channel is dropped here, at the event; the streams when the task runs
+        tauri::async_runtime::spawn(core.close_window(window));
     }
 }
 

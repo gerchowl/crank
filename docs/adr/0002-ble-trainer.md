@@ -1127,9 +1127,14 @@ backpressure). Its rules:
 - **Why its own channel.** It must work outside a ride; the ride stream (`open_stream`) exists only while a ride is
   loaded.
 
-**Which channel reports link state during a ride.** `StreamFrame.links` during a ride, `LinkFrame` otherwise; there
-is exactly one source at a time, and the hand-off is the phase `riding`. While a ride holds a device the keeper's
-frame says only `riding` (no sample: the session owns the link and the keeper sees none of its events). The ride's
+**Which channel reports link state, per device (#561 review, architect decision 2026-11-08).** At any moment each
+device has exactly one source. A device whose phase is `riding` is read from `StreamFrame.links` (and
+`device_links().link`); every other device is read from `LinkFrame`. The rule is per device, not per ride: a ride
+holds only the devices handed to it at `ride_load`, so a strap that was not `warm` then (`hr_linked: false`, for
+example one that did not advertise) stays the keeper's during the ride, and its frame keeps its own phase (`not_found`)
+beside the trainer's `riding`. While a ride holds a device the keeper's frame says only `riding` (no sample: the
+session owns the link and the keeper sees none of its events); when the ride's hold is released (an unload, a discard,
+the ride's end) the devices it held come back `cold`, with no sample, and a device it never held keeps its phase. The ride's
 live link state (`connecting`, `ready`, `lost`, reconnecting) is the session's, and it already goes out in the ride
 stream, in the same frame as the status change it causes (ADR-0001 §4.3's ordering guarantee: a loss and the pause
 it brings cannot be reordered). Carrying it in `LinkFrame` too would need a second writer that copies the engine's
