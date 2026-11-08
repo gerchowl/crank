@@ -58,7 +58,12 @@ import {
   type RideSession,
   type Series,
 } from "./session";
-import { ReadyBody, readyBanner, readyView } from "./ReadySheet";
+import {
+  ReadyBody,
+  readyBanner,
+  readyView,
+  type RideCommand,
+} from "./ReadySheet";
 import { PHASE_NAME, Timeline, watts } from "./Timeline";
 import { Trace } from "./Trace";
 
@@ -123,14 +128,17 @@ const PHASE_WORD = {
   free: "FREE",
 } as const;
 
-/** What the state line says; every word is the core's status, none is guessed. */
+/**
+ * What the state line says once the ride has started; every word is the core's status, none is guessed. Before the
+ * start (no status yet, or idle) the line is the Ready sheet's (`ReadyView.line`).
+ */
 function stateLine(st: StreamStatus | null): string {
-  if (!st) return "Connecting to the ride…";
+  if (!st) return "";
   if (st.recordError !== null) return `Not recording: ${st.recordError}`;
   const s = st.state;
   switch (s.kind) {
     case "idle":
-      return "Loaded. Press Start; the trainer waits for you to pedal.";
+      return "";
     case "finished":
       return "Finished";
     case "paused":
@@ -359,7 +367,12 @@ function Screen({ session }: { session: RideSession }) {
   const resume = useCommand(commands.rideResume);
   const skip = useCommand(commands.rideSkip);
   const end = useCommand(commands.rideEnd);
-  const [refusal, setRefusal] = useState<ApiError | null>(null);
+  // The last refusal and the command it answered (the Ready sheet titles it by the command).
+  const [refused, setRefused] = useState<{
+    command: RideCommand;
+    error: ApiError;
+  } | null>(null);
+  const refusal = refused?.error ?? null;
   const [confirming, setConfirming] = useState<"end" | "skip" | null>(null);
   const keepRiding = useRef<HTMLButtonElement>(null);
   const startButton = useRef<HTMLButtonElement>(null);
@@ -388,34 +401,39 @@ function Screen({ session }: { session: RideSession }) {
   useRecord(session, "cadence", cadence, workoutS);
 
   const run = async <T,>(
+    command: RideCommand,
     go: () => Promise<
       { status: "ok"; data: T } | { status: "error"; error: ApiError }
     >,
   ) => {
-    setRefusal(null);
+    setRefused(null);
     const outcome = await go();
-    if (outcome.status === "error") setRefusal(outcome.error);
+    if (outcome.status === "error")
+      setRefused({ command, error: outcome.error });
     return outcome;
   };
   const startRide = async () => {
     setStartSent(true);
-    const outcome = await run(start.run);
+    const outcome = await run("start", start.run);
     if (outcome.status === "error") setStartSent(false);
   };
   const pauseOrResume = async (which: "pause" | "resume") => {
     setPauseSent(which);
-    const outcome = await run(which === "pause" ? pause.run : resume.run);
+    const outcome = await run(
+      which,
+      which === "pause" ? pause.run : resume.run,
+    );
     if (outcome.status === "error") setPauseSent(null);
   };
   const skipBlock = async () => {
     setConfirming(null);
     setSkippedFrom(blockIdx);
-    const outcome = await run(skip.run);
+    const outcome = await run("skip", skip.run);
     if (outcome.status === "error") setSkippedFrom(null);
   };
   const endRide = async () => {
     setConfirming(null);
-    const outcome = await run(end.run);
+    const outcome = await run("end", end.run);
     // The summary says so when the core ended the ride by force (`forced`, not the recorded outcome). Marked
     // before leaving, and also when the `finished` frame already routed: the summary follows the mark.
     if (outcome.status === "ok" && outcome.data.forced && outcome.data.rideId)
@@ -505,7 +523,7 @@ function Screen({ session }: { session: RideSession }) {
     status: status !== null,
     links,
     hrLinked: session.loaded.hrLinked,
-    refusal,
+    refused: refused?.command ?? null,
   });
   // The usual choice is primary and focused (§5.4): focus goes to Start once it can be pressed, unless the rider has
   // put it on a control already.
@@ -531,7 +549,7 @@ function Screen({ session }: { session: RideSession }) {
   const bannerList = ready
     ? [
         ...rideBanners.filter((b) => b.id === "engine-unresponsive"),
-        readyBanner(sheet.state),
+        readyBanner(sheet),
       ]
     : rideBanners;
   const refusalLine = refusal && (
@@ -793,8 +811,12 @@ function Screen({ session }: { session: RideSession }) {
           </>
         )}
         <div className="ride-status">
-          <span data-testid="state">{stateLine(status)}</span>
-          {following && <span className="muted"> · {following}</span>}
+          {/* Before the start the line is the Ready sheet's: what Start waits for, never the sheet's words again; the
+              trainer is not commanded yet, so nothing follows. */}
+          <span data-testid="state">
+            {ready ? sheet.line : stateLine(status)}
+          </span>
+          {!ready && following && <span className="muted"> · {following}</span>}
           {/* Before the start the refusal has its row on the Ready sheet. */}
           {!ready && refusalLine}
         </div>

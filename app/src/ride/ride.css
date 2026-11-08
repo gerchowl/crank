@@ -286,14 +286,11 @@
   color: var(--ink-2);
   white-space: nowrap;
 }
+/* The refused command's reason, at T3 like the rest of the body (§5.4); it wraps within the row the grid leaves it. */
 .ready-refusal {
   min-height: 0;
-  font-size: var(--text-m);
-  line-height: 1.33;
-}
-/* A readable measure at 1440 (the layout audit's 100 ch). */
-.ready-refusal p {
-  max-width: 72ch;
+  font-size: var(--text-t3);
+  line-height: 1.2;
 }
 
 /* Metric column (§18.2 budget at 1024: countdown 184 + power 88 + band 14 + heart rate 88 + cadence 88 = 462 px); the
