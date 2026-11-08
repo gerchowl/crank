@@ -383,7 +383,7 @@ fn point(e: &BytesStart<'_>, at: u64) -> Result<RawPoint, RouteImportError> {
 }
 
 fn read(bytes: &[u8]) -> Result<Doc, RouteImportError> {
-    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    // A UTF-8 byte-order mark needs no stripping: quick-xml's reader skips it.
     let text = std::str::from_utf8(bytes).map_err(|e| {
         malformed(
             u64::try_from(e.valid_up_to()).unwrap_or(u64::MAX),

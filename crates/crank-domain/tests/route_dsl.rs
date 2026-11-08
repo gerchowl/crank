@@ -248,9 +248,11 @@ fn a_label_is_at_most_100_characters() {
 
 #[test]
 fn expanded_labels_are_bounded_before_expanding() {
-    let label = "a".repeat(100);
+    // 64-byte labels: 16 384 of them are exactly 1 MiB.
+    let label = "a".repeat(64);
     let rep = |n: u64| format!("{n}x(\"{label}\" 0.01km 0%)");
-    let fits = MAX_EXPANDED_LABEL_BYTES / 100;
+    let fits = MAX_EXPANDED_LABEL_BYTES / 64;
+    assert_eq!(fits * 64, MAX_EXPANDED_LABEL_BYTES);
     let r = parse_route_dsl(&rep(fits)).expect("just under the bound");
     assert_eq!(u64::try_from(r.segments.len()).ok(), Some(fits));
     let over = parse_route_dsl(&rep(fits + 1)).expect_err("just over the bound");
@@ -266,7 +268,7 @@ fn expanded_labels_are_bounded_before_expanding() {
     );
     // 100 000 × 100 bytes would be 10 MB of copies: refused before any is made.
     assert_eq!(
-        parse_route_dsl(&format!("100000x(\"{label}\" 0.01km 0%)"))
+        parse_route_dsl(&format!("100000x(\"{}\" 0.01km 0%)", "a".repeat(100)))
             .expect_err("over")
             .kind,
         K::LabelsTooLarge

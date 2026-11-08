@@ -90,14 +90,16 @@ fn walk() -> impl Strategy<Value = Vec<RawPoint>> {
         let mut out = Vec::new();
         for (i, (kind, x, ele_kind, ele)) in steps.into_iter().enumerate() {
             let (mut plat, mut plon) = (lat, lon);
+            // Metre steps go towards the equator, so a walk from near a pole stays valid there.
+            let towards_equator = if lat > 0.0 { -1.0 } else { 1.0 };
             match kind {
-                0 => lat += x * 0.000_3,
+                0 => lat += towards_equator * x * 0.000_3,
                 1 => lon += x * 0.000_3,
                 2 => lon = lon.next_up(),
                 3 => lat = lat.next_down(),
                 4 => {}
                 5 => (plat, plon) = (0.0, 0.0),
-                6 => lat += x * 0.2,
+                6 => lat += towards_equator * x * 0.2,
                 7 => plat = f64::NAN,
                 _ => lon = -lon,
             }
@@ -126,7 +128,10 @@ proptest! {
 
     #[test]
     fn every_point_sequence_is_refused_or_satisfies_the_invariants(raw in walk()) {
-        if let Ok(r) = route_from_points("walk".into(), RouteSource::GpxTrack, &raw) {
+        let result = route_from_points("walk".into(), RouteSource::GpxTrack, &raw);
+        // A refusal must be one of §2.2.4's, never the importer breaking §2.1 itself.
+        prop_assert!(!matches!(result, Err(RouteImportError::Invariant { .. })), "{:?}", result);
+        if let Ok(r) = result {
             prop_assert!(r.route.check().is_ok(), "{:?}", r.route.check());
             let p = &r.route.points;
             prop_assert_eq!(p[0].dist_m.to_bits(), 0f64.to_bits());
