@@ -3,12 +3,18 @@
 //!
 //! A warm link is held by a drain task that reads its events and drops them (§5.1.3: the
 //! drivers `try_send` into bounded channels, so an unread link would fault) until the keeper
-//! takes it back, to hand it over or release it, or the link is lost. Nothing is ever sent on
-//! a warm trainer's control channel except the `Disconnect` that releases it. The task ends
+//! takes it back, to hand it over or release it, or the link is lost; it keeps the link's
+//! latest sample in the published [`LinkView`]. Nothing is ever sent on a warm trainer's
+//! control channel except the `Disconnect` that releases it.
+//!
+//! **The published state.** After every step the task publishes the phases into a
+//! [`watch`] of [`LinkView`] ([`Handle::view`]), before it answers the step's intents, so
+//! an answer is never older than what it applied. `ride_status`, `device_links`,
+//! `links_intent` and the link channels ([`super::channel`]) read it. The task ends
 //! when the core drops its [`Handle`]: every link and attempt it holds is dropped with it,
 //! which the drivers' cleanup disconnects.
-use super::{Ack, Cool, Effect, Input, Keeper, Phase, SUPERSEDED};
-use crate::dto::LinkIntent;
+use super::{Ack, Cool, DEVICES, Effect, Input, Keeper, Phase, SUPERSEDED};
+use crate::dto::{DeviceLinkView, LinkIntent, LinkPhase, LinkSample, LinkView, LoadProgress};
 use crate::error::{ApiError, ErrorCode};
 use crate::links::{self, Attempts, LinkDevice, Timeline};
 use crank_devices::{
@@ -114,6 +120,8 @@ pub(crate) type Setup = (
 pub(crate) struct Handle {
     tx: mpsc::UnboundedSender<Msg>,
     rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<Msg>>>,
+    /// The published state (module docs); no device until the task starts.
+    view: Arc<watch::Sender<LinkView>>,
 }
 impl Handle {
     pub(crate) fn new() -> Self {
@@ -121,6 +129,24 @@ impl Handle {
         Self {
             tx,
             rx: std::sync::Mutex::new(Some(rx)),
+            view: Arc::new(watch::Sender::new(LinkView::default())),
+        }
+    }
+    /// The keeper's state now.
+    pub(crate) fn links(&self) -> LinkView {
+        *self.view.borrow()
+    }
+    /// The keeper's state, as it changes.
+    pub(crate) fn view(&self) -> watch::Receiver<LinkView> {
+        self.view.subscribe()
+    }
+    /// The phases of a load in flight (ADR-0002 §5.1.4): a trainer with no pairing reads
+    /// `cold` (such a load fails at once).
+    pub(crate) fn load_progress(&self) -> LoadProgress {
+        let links = self.links();
+        LoadProgress {
+            trainer: links.trainer.map_or(LinkPhase::Cold, |t| t.phase),
+            strap: links.strap.map(|s| s.phase),
         }
     }
     /// Start the task, once; later calls do nothing. Messages sent before it are queued.
@@ -151,6 +177,7 @@ impl Handle {
             discard_done: None,
             held: None,
             clock,
+            view: self.view.clone(),
         };
         task.apply(Input::Pairings(pairings));
         tokio::spawn(task.run(rx, internal_rx));
@@ -258,6 +285,8 @@ struct Task {
     /// The resolutions a test holds back (`Handle::hold_resolutions`); always `None` outside
     /// tests.
     held: Option<Vec<Internal>>,
+    /// The published state (module docs).
+    view: Arc<watch::Sender<LinkView>>,
 }
 fn ms(from: MonoTime, to: MonoTime) -> u64 {
     to.0.saturating_sub(from.0) / 1000
@@ -277,23 +306,67 @@ async fn advertised(scan: &mut Option<ScanRun>) -> DiscoveredDevice {
     }
     std::future::pending().await
 }
-/// Read and drop a warm link's events until it is lost.
-async fn lost(link: &mut Link) {
+/// Read a warm link's events until it is lost, keeping its latest sample in `view` and
+/// dropping the rest.
+async fn lost(link: &mut Link, view: &watch::Sender<LinkView>) {
     match link {
         Link::Trainer(t) => {
             while let Some(event) = t.events.recv().await {
-                if event == TrainerEvent::Link(LinkState::Lost) {
-                    return;
+                match event {
+                    TrainerEvent::Link(LinkState::Lost) => return,
+                    // page 16 and page 25 arrive apart (interleaved): each field keeps the
+                    // last value reported
+                    TrainerEvent::Sample(s) => sample(view, LinkDevice::Trainer, |last| {
+                        let (power, cadence) = match last {
+                            Some(LinkSample::Trainer {
+                                power_w,
+                                cadence_rpm,
+                            }) => (power_w, cadence_rpm),
+                            _ => (None, None),
+                        };
+                        LinkSample::Trainer {
+                            power_w: s.power_w.or(power),
+                            cadence_rpm: s.cadence_rpm.or(cadence),
+                        }
+                    }),
+                    _ => {}
                 }
             }
         }
         Link::Strap(s) => {
             while let Some(event) = s.events.recv().await {
-                if event == HrEvent::Link(LinkState::Lost) {
-                    return;
+                match event {
+                    HrEvent::Link(LinkState::Lost) => return,
+                    HrEvent::Sample(s) => {
+                        sample(view, LinkDevice::Strap, |_| LinkSample::HeartRate {
+                            bpm: s.bpm,
+                        });
+                    }
+                    _ => {}
                 }
             }
         }
+    }
+}
+/// Set a device's latest sample, if it is `warm` (a drain task that is being stopped never
+/// writes into the phase that follows).
+fn sample(
+    view: &watch::Sender<LinkView>,
+    d: LinkDevice,
+    next: impl FnOnce(Option<LinkSample>) -> LinkSample,
+) {
+    view.send_if_modified(|links| match device(links, d) {
+        Some(dev) if dev.phase == LinkPhase::Warm => {
+            let sample = Some(next(dev.sample));
+            std::mem::replace(&mut dev.sample, sample) != sample
+        }
+        _ => false,
+    });
+}
+fn device(links: &mut LinkView, d: LinkDevice) -> &mut Option<DeviceLinkView> {
+    match d {
+        LinkDevice::Trainer => &mut links.trainer,
+        LinkDevice::Strap => &mut links.strap,
     }
 }
 /// Release a link the keeper took back: the trainer's `Disconnect`, then its stream closing;
@@ -467,10 +540,28 @@ impl Task {
                 Effect::Ack(ack) => acks.push(ack),
             }
         }
+        self.publish();
         for ack in acks {
             self.answer(ack, &releases);
         }
         releases
+    }
+    /// Publish the phases (module docs): a device that is not `warm` has no sample.
+    fn publish(&self) {
+        let phases = DEVICES.map(|d| self.keeper.phase(d));
+        self.view.send_if_modified(|links| {
+            let before = *links;
+            for (d, phase) in DEVICES.into_iter().zip(phases) {
+                let dev = device(links, d);
+                *dev = phase.map(|phase| DeviceLinkView {
+                    phase: phase.into(),
+                    sample: dev
+                        .filter(|_| phase == Phase::Warm)
+                        .and_then(|dev| dev.sample),
+                });
+            }
+            *links != before
+        });
     }
     /// Answer the intent being applied or, at a resolution of `Handed`, every recorded one.
     fn answer(&mut self, ack: Ack, releases: &[watch::Receiver<bool>]) {
@@ -612,12 +703,12 @@ impl Task {
     /// Spawn the drain task of a warm link.
     fn drain(&self, d: LinkDevice, era: u32, mut link: Link) -> Held {
         let (stop, mut stopped) = oneshot::channel::<()>();
-        let internal = self.internal.clone();
+        let (internal, view) = (self.internal.clone(), self.view.clone());
         let drain = tokio::spawn(async move {
             tokio::select! {
                 biased;
                 _ = &mut stopped => {}
-                () = lost(&mut link) => {
+                () = lost(&mut link, &view) => {
                     let _ = internal.send(Internal::Lost(d, era));
                 }
             }

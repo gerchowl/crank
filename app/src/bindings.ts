@@ -40,6 +40,27 @@ export const commands = {
 	 */
 	deviceLinks: () => typedError<DeviceLinkInfo[], ApiError>(__TAURI_INVOKE("device_links")),
 	/**
+	 *  The rider's likely next step, for the link keeper; answers the keeper's state.
+	 * 
+	 *  # Errors
+	 *  As [`Core::links_intent`].
+	 */
+	linksIntent: (intent: LinkIntent) => typedError<LinkView, ApiError>(__TAURI_INVOKE("links_intent", { intent })),
+	/**
+	 *  Open the calling window's link channel.
+	 * 
+	 *  # Errors
+	 *  As [`Core::links_open`].
+	 */
+	linksOpen: (channel: Channel<LinkFrame>) => typedError<LinksId, ApiError>(__TAURI_INVOKE("links_open", { channel })),
+	/**
+	 *  The window applied frame `seq` of its link channel.
+	 * 
+	 *  # Errors
+	 *  As [`Core::links_ack`].
+	 */
+	linksAck: (id: LinksId, seq: number) => typedError<null, ApiError>(__TAURI_INVOKE("links_ack", { id, seq })),
+	/**
 	 *  The workout library.
 	 * 
 	 *  # Errors
@@ -226,6 +247,19 @@ export type DeviceLinkInfo = {
 	device: PairedDevice | null,
 	/**  Live link state of the loaded ride; `null` without a ride, and after it ends. */
 	link: LinkStatus | null,
+	/**
+	 *  The link keeper's phase of the paired device (`riding` while a ride holds it, whose
+	 *  state is then `link`); `null` when none is paired.
+	 */
+	phase: LinkPhase | null,
+};
+
+/**  One paired device as the link keeper sees it. */
+export type DeviceLinkView = {
+	/**  Its phase. */
+	phase: LinkPhase,
+	/**  Its latest sample while `warm` and since it became `warm`; `null` in every other phase. */
+	sample: LinkSample | null,
 };
 
 /**  The two device roles of a ride. */
@@ -310,6 +344,86 @@ export type LinkDevice =
 /**  The heart-rate strap. */
 "hr";
 
+/**
+ *  One frame of the window's link channel (`links_open`, ADR-0002 §5.1.4). Each frame is
+ *  the complete state, so the latest wins. At most one frame is unacknowledged
+ *  (`links_ack`): while the window has not acknowledged the last one, changes are coalesced
+ *  into the next, which is again the complete state, so nothing is lost and there is no
+ *  resync.
+ */
+export type LinkFrame = {
+	/**  Per channel, from 1, +1 per frame (wrapping). */
+	seq: number,
+	/**  The keeper's state. */
+	links: LinkView,
+};
+
+/**
+ *  What the rider is likely to do next, as the UI reports it (`links_intent`, ADR-0002
+ *  §5.1.2). The core owns every timer and decision.
+ */
+export type LinkIntent = 
+/**
+ *  The window is visible and focused and shows a warm view (Today, Workouts, the Ready
+ *  sheet): sent when it appears or gains focus, and again on rider input, at most once
+ *  per 30 s. `ready` is the Ready sheet while no ride is loaded: it holds without input.
+ */
+{ kind: "likely"; 
+/**  The Ready sheet over a load in flight or failed. */
+ready: boolean } | 
+/**
+ *  The rider pressed Retry on a link chip: attempt every device now, scan continuously
+ *  again and clear the `RiderRelease` latch.
+ */
+{ kind: "retry" } | 
+/**  The window shows another view: the idle timer starts. */
+{ kind: "left" } | 
+/**  crank is no longer the frontmost app: the background grace starts. */
+{ kind: "background" } | 
+/**  Cool down now. */
+{ kind: "release"; 
+/**  Why. */
+reason: ReleaseReason };
+
+/**  The link phase of one paired device (ADR-0002 §5.1.1), as the link keeper reports it. */
+export type LinkPhase = 
+/**  Not connected, no attempt running. */
+"cold" | 
+/**  Resolving the peripheral (adapter lookup, then the shared scan). */
+"searching" | 
+/**  GATT connect, discovery, subscribe, DIS read and identity check. */
+"connecting" | 
+/**  Trainer only: page 55 written, the page-54 reply awaited. */
+"handshake" | 
+/**  Connected and checked; the keeper holds the link and writes nothing. */
+"warm" | 
+/**
+ *  The last attempt failed (not seen, connect failed, identity mismatch, timeout), or
+ *  the warm link was lost; kept until the next attempt.
+ */
+"not_found" | 
+/**
+ *  Handed to a ride: its live state is the ride stream's (`StreamFrame.links`,
+ *  `device_links().link`), not the keeper's.
+ */
+"riding";
+
+/**
+ *  The latest telemetry of a warm link (ADR-0002 §5.1.3: the keeper reads only telemetry
+ *  while warm, for the chips).
+ */
+export type LinkSample = 
+/**  The trainer's last sample: each field is the last value it reported. */
+{ kind: "trainer"; 
+/**  Instantaneous power, W. */
+powerW: number | null; 
+/**  Cadence, rpm. */
+cadenceRpm: number | null } | 
+/**  The strap's last sample. */
+{ kind: "heart_rate"; 
+/**  Heart rate, bpm; `null` when the strap reports none (no skin contact). */
+bpm: number | null };
+
 /**  Readiness of a device link (ADR-0002 §3). */
 export type LinkStatus = 
 /**  Establishing. */
@@ -318,6 +432,34 @@ export type LinkStatus =
 "ready" | 
 /**  Lost or released. */
 "lost";
+
+/**
+ *  The link keeper's complete state (ADR-0002 §5.1.4): what `links_intent` answers and what
+ *  each [`LinkFrame`] carries.
+ */
+export type LinkView = {
+	/**  The trainer; `null` when none is paired. */
+	trainer: DeviceLinkView | null,
+	/**  The strap; `null` when none is paired. */
+	strap: DeviceLinkView | null,
+};
+
+/**
+ *  The window's link channel (`links_open`): unique per process, owned by the window that
+ *  opened it.
+ */
+export type LinksId = number;
+
+/**  The phases of a load in flight (`ride_status().load`, ADR-0002 §5.1.4). */
+export type LoadProgress = {
+	/**
+	 *  The trainer's phase. A load with no trainer paired fails at once
+	 *  (`device_unavailable`); until it answers the trainer reads `cold`.
+	 */
+	trainer: LinkPhase,
+	/**  The strap's phase; `null` when none is paired. */
+	strap: LinkPhase | null,
+};
 
 /**
  *  A source metric the engine publishes every tick: the record's catalogue names
@@ -414,6 +556,20 @@ export type Progression = {
 	pctPerRep: number | null,
 };
 
+/**  Why the keeper's links are released at once (ADR-0002 §5.1.3). */
+export type ReleaseReason = 
+/**  The window is minimised or the app is hidden. */
+"hidden" | 
+/**  The Mac is about to sleep; it also discards a loaded ride that has not started. */
+"sleep" | 
+/**  Settings → Devices is open: pairing needs the devices free. */
+"devices" | 
+/**
+ *  "Release trainer": also latches the trainer until a load or Retry, and discards a
+ *  loaded ride that has not started. Refused during a started ride.
+ */
+"rider_release";
+
 /**  A nested repeated sequence. */
 export type RepeatNode = {
 	/**  Identity supplied by the caller. */
@@ -478,13 +634,13 @@ export type RideRecord = {
 	summary: RideSummary | null,
 };
 
-/**
- *  The ride's state (`ride_status`): the engine's status, and whether a ride is being
- *  loaded (devices connecting) right now.
- */
+/**  The ride's state (`ride_status`): the engine's status, and the load in flight, if any. */
 export type RideStatusView = {
-	/**  `ride_load` is connecting devices; the other commands answer as before. */
-	loading: boolean,
+	/**
+	 *  `ride_load` is under way (devices connecting, the ride being built), with each
+	 *  device's phase; `null` otherwise. The other commands answer as before.
+	 */
+	load: LoadProgress | null,
 	/**  The loaded ride's status, the last finished ride's, or idle. */
 	status: StreamStatus,
 };

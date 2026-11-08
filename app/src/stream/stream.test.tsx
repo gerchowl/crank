@@ -454,7 +454,9 @@ describe("resync", () => {
     // The core's durable state is what the whole run produced.
     backend.truth.status = paused;
     backend.truth.links = [{ device: "hr", state: "lost" }];
-    backend.truth.infos = [{ role: "heart_rate", device: null, link: "lost" }];
+    backend.truth.infos = [
+      { role: "heart_rate", device: null, link: "lost", phase: null },
+    ];
     backend.setSample(final);
     const before = backend.count("stream_snapshot");
     frames.forEach((f, i) => {
@@ -553,7 +555,9 @@ describe("resync", () => {
       state: { kind: "paused", reason: "user" },
     });
     backend.truth.links = [{ device: "hr", state: "lost" }];
-    backend.truth.infos = [{ role: "heart_rate", device: null, link: "lost" }];
+    backend.truth.infos = [
+      { role: "heart_rate", device: null, link: "lost", phase: null },
+    ];
     backend.setSample({ sub, t: 1, v: 1 });
     const answers = ["ride_status", "device_links", "stream_snapshot"].map(
       (c) => backend.hold(c),
@@ -588,8 +592,8 @@ describe("resync", () => {
     backend.truth.snapshotBare = true;
     backend.truth.status = status({ state: { kind: "finished" } });
     backend.truth.infos = [
-      { role: "trainer", device: null, link: null },
-      { role: "heart_rate", device: null, link: "connecting" },
+      { role: "trainer", device: null, link: null, phase: null },
+      { role: "heart_rate", device: null, link: "connecting", phase: null },
     ];
     act(() => void backend.push({ resync: true }));
     await waitFor(() =>
@@ -627,7 +631,7 @@ describe("useCommand", () => {
       outcome = await result.current.run();
     });
     expect(outcome?.status).toBe("ok");
-    expect(result.current.data?.loading).toBe(false);
+    expect(result.current.data?.load).toBeNull();
 
     // Tauri rejects an unknown command with a plain string; the hook still gives an ApiError.
     const bad = renderHook(() => useCommand(commands.rideStart));

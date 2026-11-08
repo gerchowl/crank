@@ -1,7 +1,10 @@
 //! The command layer (ADR-0001 §4) on the simulator: a whole ride driven through the
 //! Tauri command functions, with the managed `Core` and a window of the mock runtime,
 //! and frames arriving on a real IPC `Channel`.
-use crank_core::{Core, CoreConfig, DeviceMode, DeviceRole, EngineHost, ErrorCode, RideOutcome};
+use crank_core::{
+    Core, CoreConfig, DeviceLinkView, DeviceMode, DeviceRole, EngineHost, ErrorCode, LinkFrame,
+    LinkIntent, LinkPhase, ReleaseReason, RideOutcome,
+};
 use crank_desktop::commands as cmd;
 use crank_devices::sim::SimConfig;
 use crank_engine::{MetricId, StreamFrame, StreamRideState, SubscribeOpts, VirtualClock};
@@ -183,5 +186,74 @@ async fn a_destroyed_window_loses_its_streams() {
         .await
         .unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound);
+    cmd::ride_end(core.clone(), app.state()).await.unwrap();
+}
+
+/// The link contract through the commands (ADR-0002 §5.1.4): `links_open` sends the keeper's
+/// state on a real IPC channel, the next frame waits for `links_ack`, `links_intent` answers
+/// the state, another window's ack is refused, and "Release trainer" is refused in a started
+/// ride.
+#[tokio::test(start_paused = true)]
+async fn the_link_commands_carry_the_keepers_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = app(dir.path());
+    let core = app.state::<Core>();
+    let (main, other) = (win(&app, "main"), win(&app, "other"));
+    cmd::device_pair(core.clone(), "trainer".into(), DeviceRole::Trainer)
+        .await
+        .unwrap();
+    let frames: Arc<Mutex<Vec<LinkFrame>>> = Arc::default();
+    let sink = frames.clone();
+    let channel = Channel::new(move |body| {
+        let InvokeResponseBody::Json(json) = body else {
+            panic!("frames are JSON");
+        };
+        sink.lock()
+            .expect("test mutex")
+            .push(serde_json::from_str(&json).expect("a LinkFrame"));
+        Ok(())
+    });
+    let id = cmd::links_open(core.clone(), main.clone(), channel)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let first = frames.lock().unwrap().clone();
+    assert_eq!(first.len(), 1);
+    let cold = Some(DeviceLinkView {
+        phase: LinkPhase::Cold,
+        sample: None,
+    });
+    assert_eq!(first[0].links.trainer, cold);
+    assert_eq!(first[0].links.strap, None, "no strap paired");
+
+    let answered = cmd::links_intent(core.clone(), LinkIntent::Likely { ready: false })
+        .await
+        .unwrap();
+    assert!(answered.trainer.is_some_and(|t| t.phase != LinkPhase::Cold));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(frames.lock().unwrap().len(), 1, "one frame in flight");
+    let refused = cmd::links_ack(core.clone(), other, id, 1)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotFound);
+    cmd::links_ack(core.clone(), main.clone(), id, 1)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let latest = *frames.lock().unwrap().last().unwrap();
+    assert_eq!(latest.seq, 2);
+    assert_eq!(latest.links.trainer.map(|t| t.phase), Some(LinkPhase::Warm));
+
+    cmd::ride_load(core.clone(), None).await.unwrap();
+    cmd::ride_start(core.clone()).await.unwrap();
+    let held = cmd::links_intent(
+        core.clone(),
+        LinkIntent::Release {
+            reason: ReleaseReason::RiderRelease,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(held.code, ErrorCode::Conflict);
     cmd::ride_end(core.clone(), app.state()).await.unwrap();
 }

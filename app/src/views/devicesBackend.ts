@@ -164,6 +164,8 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
             role,
             device: st.paired[role] ?? null,
             link: null,
+            // no ride here: the keeper's phase, `cold` until a warm view's intent (core.rs `Core::device_links`)
+            phase: st.paired[role] ? "cold" : null,
           }),
         );
     }

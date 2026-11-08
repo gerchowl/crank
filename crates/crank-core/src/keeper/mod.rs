@@ -28,11 +28,12 @@
 //! answered by exactly one [`Ack`]: applied (possibly with nothing to do, by a rule of
 //! §5.1.3), recorded (in `Handed`: applied the moment the load resolves, then acknowledged),
 //! awaiting a discard, or refused. No intent is dropped.
-use crate::dto::{LinkIntent, ReleaseReason};
+use crate::dto::{LinkIntent, LinkPhase, ReleaseReason};
 use crate::links::LinkDevice;
 use crank_devices::{MonoTime, RiderConfig};
 use std::time::Duration;
 
+pub(crate) mod channel;
 pub(crate) mod run;
 #[cfg(test)]
 mod tests;
@@ -67,6 +68,19 @@ pub(crate) enum Phase {
     NotFound,
     /// Handed to a ride's session: the keeper no longer owns it.
     Riding,
+}
+impl From<Phase> for LinkPhase {
+    fn from(phase: Phase) -> Self {
+        match phase {
+            Phase::Cold => Self::Cold,
+            Phase::Searching => Self::Searching,
+            Phase::Connecting => Self::Connecting,
+            Phase::Handshake => Self::Handshake,
+            Phase::Warm => Self::Warm,
+            Phase::NotFound => Self::NotFound,
+            Phase::Riding => Self::Riding,
+        }
+    }
 }
 impl Phase {
     fn attempting(self) -> bool {
