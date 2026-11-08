@@ -16,6 +16,7 @@ import {
 } from "./baseline";
 import { focusWalk, inOrder, ORDER_TOLERANCE } from "./focus";
 import {
+  HISTORY_SCENARIOS,
   RIDE_SCENARIOS,
   SCENARIOS,
   SETTINGS_SCENARIOS,
@@ -64,6 +65,7 @@ async function open(page: Page, s: Scenario) {
   for (const name of s.clicks ?? [])
     await page.getByRole("button", { name }).first().click();
   await expect(page.locator(s.ready).first()).toBeVisible();
+  if (s.scrollTo) await page.locator(s.scrollTo).scrollIntoViewIfNeeded();
   await page.evaluate(() => window.__fixture.settled());
 }
 
@@ -177,44 +179,49 @@ const regionBoxes = (page: Page) =>
 // No text is cut (§6.1, rule 6): no box that hides or ellipsizes its overflow holds more than it shows, anywhere under
 // `root` (on the ride: the banner band, the key row, the title, the next line …), and every control is wholly inside
 // the window; on the ride an action in the banner band (End…) is wholly inside the band. The audit's `layout.clipped`
-// sees only a box whose parent clips too; this names the text and the control.
-const screenFit = (page: Page, root: string) =>
-  page.evaluate((root) => {
-    const screen = document.querySelector(root);
-    if (!screen) return [`no ${root}`];
-    const ride = root === ".ride";
-    const band = screen.querySelector("[data-region='banner']");
-    if (ride && !band) return ["no banner band on the ride screen"];
-    const bad: string[] = [];
-    for (const e of screen.querySelectorAll<HTMLElement>("*")) {
-      if (e.closest("svg, .sr-only")) continue;
-      const cs = getComputedStyle(e);
-      // Each axis that hides its overflow must hold its content.
-      if (
-        (cs.overflowX !== "visible" && e.scrollWidth > e.clientWidth + 1) ||
-        (cs.overflowY !== "visible" && e.scrollHeight > e.clientHeight + 1)
-      )
-        bad.push(
-          `cut: ${e.className || e.tagName} "${(e.textContent ?? "").slice(0, 60)}" ${e.scrollWidth}x${e.scrollHeight} > ${e.clientWidth}x${e.clientHeight}`,
-        );
-    }
-    const b = band?.getBoundingClientRect();
-    for (const a of screen.querySelectorAll("button")) {
-      const r = a.getBoundingClientRect();
-      const box =
-        b && band?.contains(a)
-          ? b
-          : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
-      if (
-        r.left < box.left ||
-        r.right > box.right ||
-        r.top < box.top ||
-        r.bottom > box.bottom
-      )
-        bad.push(`control outside its box: "${a.textContent}"`);
-    }
-    return bad;
-  }, root);
+// sees only a box whose parent clips too; this names the text and the control. A control inside `flow` (a list as long
+// as its data, History's rides) may sit above or below the window, where the page scrolls and Tab reaches it, but is
+// still wholly inside it across.
+const screenFit = (page: Page, root: string, flow?: string) =>
+  page.evaluate(
+    ([root, flow]) => {
+      const screen = document.querySelector(root);
+      if (!screen) return [`no ${root}`];
+      const ride = root === ".ride";
+      const band = screen.querySelector("[data-region='banner']");
+      if (ride && !band) return ["no banner band on the ride screen"];
+      const bad: string[] = [];
+      for (const e of screen.querySelectorAll<HTMLElement>("*")) {
+        if (e.closest("svg, .sr-only")) continue;
+        const cs = getComputedStyle(e);
+        // Each axis that hides its overflow must hold its content.
+        if (
+          (cs.overflowX !== "visible" && e.scrollWidth > e.clientWidth + 1) ||
+          (cs.overflowY !== "visible" && e.scrollHeight > e.clientHeight + 1)
+        )
+          bad.push(
+            `cut: ${e.className || e.tagName} "${(e.textContent ?? "").slice(0, 60)}" ${e.scrollWidth}x${e.scrollHeight} > ${e.clientWidth}x${e.clientHeight}`,
+          );
+      }
+      const b = band?.getBoundingClientRect();
+      for (const a of screen.querySelectorAll("button")) {
+        const r = a.getBoundingClientRect();
+        const box =
+          b && band?.contains(a)
+            ? b
+            : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+        const flows = flow !== undefined && a.closest(flow) !== null;
+        if (
+          r.left < box.left ||
+          r.right > box.right ||
+          (!flows && (r.top < box.top || r.bottom > box.bottom))
+        )
+          bad.push(`control outside its box: "${a.textContent}"`);
+      }
+      return bad;
+    },
+    [root, flow] as const,
+  );
 test("the ride's region boxes are the same in every ride fixture", async ({
   page,
 }) => {
@@ -260,6 +267,26 @@ test("nothing on Workouts is cut, in any of its fixtures", async ({ page }) => {
     await open(page, s);
     expect(
       await screenFit(page, "#root"),
+      `${name}: cut text or controls`,
+    ).toEqual([]);
+  }
+});
+
+// History and Review (#529) too: a long ride, a long list, a long name; nothing is cut, and every control but a ride
+// row's Review (in a list as long as the history) is in the window, the rail and the head included. A fixture scrolled
+// on purpose (`scrollTo`, the end of a long list) is checked from the top: the shell scrolls with the page (#566), so
+// scrolled down the rail and the head are above the window by construction, and the cut and horizontal checks do not
+// depend on where the page is scrolled.
+test("nothing on History or Review is cut, in any of their fixtures", async ({
+  page,
+}) => {
+  for (const name of HISTORY_SCENARIOS) {
+    const s = SCENARIOS.find((x) => x.name === name);
+    if (!s) throw new Error(`no fixture ${name}`);
+    await open(page, s);
+    if ("scrollTo" in s) await page.evaluate(() => scrollTo(0, 0));
+    expect(
+      await screenFit(page, "#root", ".history-list"),
       `${name}: cut text or controls`,
     ).toEqual([]);
   }
