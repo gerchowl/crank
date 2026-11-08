@@ -299,6 +299,7 @@ export function Workouts() {
   // The core refuses a workout with an error-severity issue (`ride_load`: invalid input); say so up front.
   const blocking =
     detail?.compiled.issues.find((i) => i.severity === "error") ?? null;
+  // A pending Ride this names what it is doing (§5.9, §18.4), as Devices' "Scanning…" does: its own load is in flight.
   const busy = load.phase === "loading" && load.workoutId === picked;
   return (
     <div className="page workouts">
@@ -319,11 +320,6 @@ export function Workouts() {
       )}
       <div className="workouts-body">
         <div className="workouts-library">
-          {loading && (
-            <p role="status" className="workouts-hint">
-              Loading ride…
-            </p>
-          )}
           {list.data?.length === 0 && (
             <p className="workouts-hint">
               No workouts yet. The built-in workouts and the ones you write will
@@ -379,7 +375,14 @@ export function Workouts() {
           )}
         </div>
         <div className="workouts-detail">
-          {picked === null && list.data && list.data.length > 0 && (
+          {/* Nothing picked while a load runs (it started before this view mounted, here or in another window): the
+              panel says why the rows are disabled. A picked workout's own load is named by its Ride this. */}
+          {picked === null && loading && (
+            <p role="status" className="workouts-hint">
+              Loading ride…
+            </p>
+          )}
+          {picked === null && !loading && workouts.length > 0 && (
             <p className="workouts-hint">
               Pick a workout to see its profile, its figures and its blocks.
             </p>
@@ -414,7 +417,7 @@ export function Workouts() {
                   }
                 >
                   <Play {...icon} />
-                  Ride this
+                  {busy ? "Loading ride…" : "Ride this"}
                 </button>
                 {blocking && (
                   <p id="ride-blocked" className="workouts-blocked">

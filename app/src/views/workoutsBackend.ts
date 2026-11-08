@@ -60,9 +60,13 @@ export interface Backend {
    * library to come (#110) or Tauri's own rejection, which the view shows all the same.
    */
   fail: Record<string, unknown>;
-  /** The library, in its order (the built-in library is never empty today; the store-backed one of #110 can be). */
+  /**
+   * The library, in its order (the built-in library is never empty today; the store-backed one of #110 can be). It is
+   * the one library `workouts_list`, `workout_get` and `ride_load` all read (library.rs `Library::summaries` (~81),
+   * library.rs `Library::get` (~75)): an id not in it is `not_found` for every command.
+   */
   summaries: WorkoutSummary[];
-  /** The compiled view each workout answers with. */
+  /** The compiled view each workout of `summaries` answers with (a listed id without one is a broken fixture). */
   compiled: Record<string, CompiledView>;
   /** A ride is already in progress. */
   rideActive: boolean;
@@ -89,13 +93,15 @@ export type ApiErr = { code: string; message: string };
  * - `workout_get`: unknown id, `not_found` (library.rs `Library::detail` (~93), library.rs `Library::get` (~75)). Its
  *   other refusal, `internal` from a block index that does not fit (dto.rs `WorkoutBlock` (~196)), is unreachable
  *   through the API and not modelled.
- * - `ride_status` never fails (core.rs `Core::ride_status` (~2382)).
+ * - `ride_status` never fails (core.rs `Core::ride_status` (~2382)). Its `loading` is the core's one flag (a load in
+ *   flight here, or `coreLoading`); its `status` is always idle, as no test or fixture here reads it.
  *
  * `ride_load` refuses, in the core's order (core.rs `Core::ride_load` (~1679)):
  * - unknown id: `not_found` (library.rs `Library::get` (~75), via core.rs `Core::resolve_workout` (~1633))
  * - error-severity issue: `invalid_input` with the issue's message (`resolve_workout`)
  * - ride in progress: `conflict` (`ride_load`, "a ride is in progress")
- * - another load in flight: `conflict` (core.rs `Core::ride_load` (~1679), "another ride is loading or loaded")
+ * - another load in flight, here or started by another window (`coreLoading`): `conflict`
+ *   (core.rs `Core::ride_load` (~1679), "another ride is loading or loaded")
  * - `stage.storage`: `store.devices()?` fails, `storage` (core.rs `Core::connect_links` (~1515), or the keeper's start
  *   reading the pairings, core.rs `Core::pairings` (~1201))
  * - no trainer paired: `device_unavailable` (`connect_links`, "no trainer paired")
@@ -133,6 +139,17 @@ export function install(over: Partial<Backend> = {}): Backend {
     stage: {},
     ...over,
   };
+  /** The library's entry for `id`: `not_found` with the core's text (`{id:?}` quotes it) when it is not listed. */
+  const compiledOf = (id: string): CompiledView => {
+    if (!b.summaries.some((w) => w.id === id))
+      throw apiError("not_found", `no workout "${id}"`);
+    const c = b.compiled[id];
+    if (!c)
+      throw new Error(
+        `fixture: workout ${id} is listed but has no compiled view`,
+      );
+    return c;
+  };
   mockIPC((cmd, payload) => {
     const args = (payload ?? {}) as Record<string, unknown>;
     b.calls.push({ cmd, args });
@@ -142,22 +159,22 @@ export function install(over: Partial<Backend> = {}): Backend {
         return b.summaries;
       case "workout_get": {
         const id = args.id as string;
-        const c = b.compiled[id];
-        if (!c) throw apiError("not_found", `no workout ${id}`);
-        return detail(id, c, b.summaries);
+        return detail(id, compiledOf(id), b.summaries);
       }
       case "ride_load": {
         if (!("workoutId" in args))
           throw "missing required key workoutId for command `ride_load`";
         const id = args.workoutId as string | null;
         if (id !== null) {
-          const c = b.compiled[id];
-          if (!c) throw apiError("not_found", `no workout ${id}`);
-          const issue = c.issues.find((i) => i.severity === "error");
+          const issue = compiledOf(id).issues.find(
+            (i) => i.severity === "error",
+          );
           if (issue) throw apiError("invalid_input", issue.message);
         }
         if (b.rideActive) throw apiError("conflict", "a ride is in progress");
-        if (b.loading > 0)
+        // One `loading` flag for the whole core, whichever window started the load (core.rs `Core::ride_load` (~1679),
+        // `loading.swap(true)`): a load this mock runs, or one started elsewhere (`coreLoading`).
+        if (b.loading > 0 || b.coreLoading)
           throw apiError("conflict", "another ride is loading or loaded");
         const done = () =>
           ({

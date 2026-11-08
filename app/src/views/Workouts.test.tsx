@@ -8,6 +8,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { invoke } from "@tauri-apps/api/core";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { navigate, useRoute } from "../router";
@@ -141,13 +142,14 @@ test("a failing library list shows the error and can be retried", async () => {
 });
 
 test("a workout the core cannot give shows the error instead of a summary", async () => {
-  install({ compiled: { "w-easy": compiled() } }); // w-ss is listed but gone
+  // The library changed between the list and the pick (the store-backed library of #110): w-ss is gone.
+  const b = install();
   open();
-  await userEvent.click(
-    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
-  );
+  const row = await screen.findByRole("option", { name: /Sweet spot 3x12/ });
+  b.summaries = b.summaries.filter((w) => w.id !== "w-ss");
+  await userEvent.click(row);
   expect((await screen.findByRole("alert")).textContent).toMatch(
-    /no workout w-ss/,
+    /no workout "w-ss"/,
   );
   expect(screen.queryByRole("region", { name: "Compiled summary" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Ride this" })).toBeNull();
@@ -666,8 +668,11 @@ test("while a load is in flight the keys move nothing and pick nothing", async (
   expect(document.activeElement).toBe(easy);
   expect(pressed(/Easy spin/)).toBe("true");
   expect(b.calls.filter((c) => c.cmd === "workout_get")).toHaveLength(1);
-  // Ride this says the load is its own while it is in flight
-  const ride = screen.getByRole("button", { name: "Ride this" });
+  // Ride this names its pending state while its own load is in flight (DESIGN §5.9 "a pending one names what it is
+  // doing"); no other line says it, so the table above does not move.
+  const ride = screen.getByRole("button", { name: "Loading ride…" });
+  expect(screen.getByText("Loading ride…")).toBe(ride);
+  expect(screen.queryByRole("button", { name: "Ride this" })).toBeNull();
   expect(ride.getAttribute("aria-busy")).toBe("true");
   expect((ride as HTMLButtonElement).disabled).toBe(true);
   release();
@@ -711,4 +716,26 @@ test("the picked workout shows its profile and every block with its length and w
     "2Work12:00225 W",
     "3Cool-down5:00140–100 W",
   ]);
+});
+
+// ---- #528 round 2: the mock refuses what the core refuses ----
+
+test("the mock refuses a load while another window's load is in flight, as the core's one loading flag does", async () => {
+  // core.rs `Core::ride_load` (~1679): `loading.swap(true)` is one flag for the whole core.
+  install({ coreLoading: true });
+  await expect(invoke("ride_load", { workoutId: "w-easy" })).rejects.toEqual({
+    code: "conflict",
+    message: "another ride is loading or loaded",
+  });
+});
+
+test("the mock answers every command from one library: an id not in it is not_found", async () => {
+  // library.rs `Library::get` (~75) serves `workout_get` and `ride_load` alike; `{id:?}` quotes the id.
+  const b = install({ summaries: [] });
+  expect(Object.keys(b.compiled)).toContain("w-ss");
+  const notFound = { code: "not_found", message: 'no workout "w-ss"' };
+  await expect(invoke("workout_get", { id: "w-ss" })).rejects.toEqual(notFound);
+  await expect(invoke("ride_load", { workoutId: "w-ss" })).rejects.toEqual(
+    notFound,
+  );
 });

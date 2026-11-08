@@ -37,7 +37,8 @@
   border-radius: var(--radius-l);
 }
 
-/* The 32 px button family (§18.4): default and primary; disabled reads as disabled, a pending one says so. */
+/* The 32 px button family (§18.4): default and primary; disabled reads as disabled, and a pending one names what it is
+   doing (Ride this reads "Loading ride…" while its load runs) and shows the progress cursor. */
 .workouts button {
   display: inline-flex;
   align-items: center;
