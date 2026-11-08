@@ -173,6 +173,9 @@ pub struct LinksId(pub u32);
 /// if its `seq` is at least the highest `seq` applied so far, from either source; one with a
 /// lower `seq` is older than a state already shown and is dropped. Equal `seq`s are the same
 /// state.
+///
+/// **Ack every frame received**, whether it was applied or dropped by that rule: the ack means
+/// "received", not "applied". A frame that is never acked stalls the channel (window of 1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkFrame {

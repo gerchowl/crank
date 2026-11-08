@@ -415,6 +415,72 @@ async fn a_page_stalled_across_a_load_and_its_end_gets_cold_after_its_ack() {
     );
 }
 
+/// A page that follows the whole contract of §5.1.4 through an answer that outruns the
+/// channel's first frame: the answer (of a newer state) is applied, then the older frame
+/// arrives and is dropped by the order rule, and the keeper's state moves on. Returns what
+/// the answer it applied first, what the page shows and the keeper's state at the end. The page acks the dropped frame only
+/// when `ack_dropped`.
+async fn page_with_a_dropped_frame(ack_dropped: bool) -> (LinkFrame, LinkFrame, LinkFrame) {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _radio) =
+        latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
+    core.links_intent(likely(false)).await.unwrap();
+    sleep(TICK).await;
+    let mut page = page(&core, "main").await;
+    sleep(TICK).await;
+    // the answer of a later state reaches the page before the channel's first frame does
+    let answer = core
+        .links_intent(LinkIntent::Release {
+            reason: ReleaseReason::Devices,
+        })
+        .await
+        .unwrap();
+    let mut shown = keep_newest(None, answer);
+    let got = page.take(&core, "main", false).await;
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].seq < answer.seq, "{got:?} vs {answer:?}");
+    shown = keep_newest(Some(shown), got[0]);
+    assert_eq!(shown, answer, "the older frame is dropped");
+    if ack_dropped {
+        core.links_ack(Some("main"), page.id, got[0].seq)
+            .await
+            .unwrap();
+    }
+    // the keeper's state moves on
+    core.links_intent(likely(false)).await.unwrap();
+    // a page that keeps up acks every frame as it comes
+    for _ in 0..8 {
+        sleep(SPACING).await;
+        for frame in page.take(&core, "main", true).await {
+            shown = keep_newest(Some(shown), frame);
+        }
+    }
+    (answer, shown, *core.0.keeper.view().borrow())
+}
+
+/// §5.1.4 "ack window of 1" with the order rule: the UI acks every frame it receives,
+/// applied or dropped (#577). A page that acks only what it applied never acks the dropped
+/// frame, and the channel sends nothing more (the page keeps showing a state the keeper left).
+#[tokio::test(start_paused = true)]
+async fn a_dropped_frame_that_is_never_acked_stalls_the_channel() {
+    let (answer, shown, keeper) = page_with_a_dropped_frame(false).await;
+    assert_eq!(shown, answer, "stalled on the answer: {keeper:?}");
+    assert!(shown.seq < keeper.seq, "stalled: {shown:?} vs {keeper:?}");
+}
+
+/// The same page, acking the dropped frame as well: the channel's next frame is the
+/// keeper's state now, and the page converges to it.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_frame_that_is_acked_lets_the_page_converge() {
+    let (answer, shown, keeper) = page_with_a_dropped_frame(true).await;
+    assert!(shown.seq > answer.seq, "{shown:?} vs {answer:?}");
+    assert_eq!(
+        phase(shown.links),
+        phase(keeper.links),
+        "{shown:?} vs {keeper:?}"
+    );
+}
+
 /// ADR-0002 §5.1.3 "What `links_intent` answers": an intent that discards the loaded ride is
 /// answered with the state after the ride's links were released (`cold`), and an applied
 /// intent with the state its own step published (pins "publish, then answer").

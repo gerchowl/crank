@@ -43,6 +43,7 @@
 //               intent leaves a loaded or started ride alone (keeper/mod.rs `Keeper::loaded_intent`)
 //   links_open  answers the channel id and sends the state at once; replaces the window's earlier channel
 //   links_ack   unknown or replaced channel  not_found  "unknown link channel"  keeper/channel.rs `Channels::ack`;
+//               (the page acks every frame it receives, applied or dropped by the seq rule, #577)
 //               one frame in flight: a change waits for the ack of the last frame sent, then goes out as one frame of
 //               the latest state; an ack of any other seq is ignored (the core's 10 Hz spacing is not modelled)
 //   seq         the keeper state's number, +1 per change, shared by every frame and every `links_intent` answer

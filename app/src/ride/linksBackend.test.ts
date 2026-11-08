@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { api } from "../api";
 import { commands } from "../bindings";
 import type { LinkFrame, LinkView } from "../bindings";
-import { keepNewest } from "./linkOrder";
+import { keepNewest, receiveFrame } from "./linkOrder";
 import { COLD_LINKS, SUPERSEDED, installRide } from "./rideBackend";
 
 afterEach(() => clearMocks());
@@ -406,5 +406,40 @@ describe("answers and frames are ordered by seq", () => {
       applied.push(keepNewest(applied.at(-1) ?? null, frame));
     expect(applied.map((f) => f.seq)).toEqual([1, 3, 3, 3]);
     expect(applied.at(-1)?.links).toEqual(SEARCHING);
+  });
+
+  // #577: the UI acks every frame it receives, applied or dropped. Answer 12 arrives, then the older frame 11: the page
+  // drops 11, still acks it, and the next frame brings it to the keeper's state (keeper/contract_tests.rs
+  // `a_dropped_frame_that_is_acked_lets_the_page_converge`).
+  test("a frame dropped by the order rule is still acked, and the page converges", async () => {
+    const rig = installRide({ phase: "none", keeper: WARM });
+    const frames: LinkFrame[] = [];
+    const channel = new Channel<LinkFrame>();
+    channel.onmessage = (f) => frames.push(f);
+    const opened = await api(commands.linksOpen(channel));
+    if (opened.status !== "ok") throw new Error("open failed");
+    // the channel's first frame is in flight; the answer of a newer state outruns it
+    rig.setKeeper(SEARCHING);
+    const answer = await api(commands.linksIntent({ kind: "left" }));
+    if (answer.status !== "ok") throw new Error("intent failed");
+    expect(frames.map((f) => f.seq)).toEqual([1]);
+    expect(answer.data.seq).toBeGreaterThan(frames[0].seq);
+    const ack = async (seq: number) => {
+      await api(commands.linksAck(opened.data, seq));
+    };
+    let shown = keepNewest(null, answer.data);
+    shown = await receiveFrame(shown, frames[0], ack);
+    expect(shown).toEqual(answer.data); // the older frame was dropped...
+    expect(frames.map((f) => f.seq)).toEqual([1, answer.data.seq]); // ...but acked, so the next frame went out
+    rig.setKeeper(WARM);
+    shown = await receiveFrame(shown, frames[1], ack);
+    expect(frames.map((f) => f.seq)).toEqual([
+      1,
+      answer.data.seq,
+      answer.data.seq + 1,
+    ]);
+    shown = await receiveFrame(shown, frames[2], ack);
+    expect(shown).toEqual(frames.at(-1));
+    expect(shown.links).toEqual(WARM);
   });
 });

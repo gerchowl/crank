@@ -112,7 +112,7 @@ pub async fn links_open<R: tauri::Runtime>(
         .await
 }
 
-/// The window applied frame `seq` of its link channel.
+/// The window received frame `seq` of its link channel, applied or dropped by the `seq` order rule.
 ///
 /// # Errors
 /// As [`Core::links_ack`].
