@@ -37,7 +37,7 @@
         fetcherVersion = 4; hash = "sha256-KeoWmC7cnYrxJPEiMSuktaaIqQD/WO1DNYIZ+HWEIpo=";
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
-        pname = name; inherit version; src = frontendSrc;
+        pname = name; inherit version; src = frontendSrc; CRANK_MEASURE_SALT = builtins.getEnv "SALT";
         inherit pnpmDeps;
         nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm_12 pkgs.pnpmConfigHook ];
         buildPhase = command;
@@ -80,7 +80,7 @@
       common = {
         pname = "crank"; inherit version; src = source rustFiles;
         inherit cargoVendorDir;
-        strictDeps = true;
+        strictDeps = true; CRANK_MEASURE_SALT = builtins.getEnv "SALT";
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.webkitgtk_4_1 pkgs.gtk3 pkgs.libsoup_3 pkgs.openssl pkgs.dbus ];
