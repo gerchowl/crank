@@ -13,6 +13,7 @@ import type { LinkStatus, MetricId, PairedDevice } from "../../src/bindings";
 import { navigate } from "../../src/router";
 import {
   BLOCKS,
+  block,
   installRide,
   type RideWorld,
 } from "../../src/ride/rideBackend";
@@ -25,8 +26,12 @@ import {
 } from "../../src/views/devicesBackend";
 import { install as installHistory } from "../../src/views/historyBackend";
 import {
+  ERROR_ISSUE,
+  SUMMARIES,
+  WARNING,
   compiled,
   install as installWorkouts,
+  type Backend as WorkoutsBackend,
 } from "../../src/views/workoutsBackend";
 import { SCENARIOS, type ScenarioName } from "./scenarios";
 
@@ -155,13 +160,85 @@ const ride =
   };
 const active = { phase: "active", blockIdx: 1, sessionS: 200 } as const;
 
+/** Sweet spot 3x12 as the core compiles it: a warm-up ramp, three 12-minute sets at 90 % with 2 minutes easy, a cool-down. */
+const SWEET_SPOT = compiled({
+  blocks: [
+    block(0, 240, 110, 175, "warmup"),
+    ...[0, 1, 2].flatMap((i) => [
+      block(240 + i * 840, 720, 225, 225, "work"),
+      block(960 + i * 840, 120, 140, 140, "recovery"),
+    ]),
+    block(2760, 240, 140, 100, "cooldown"),
+  ],
+  totalS: 3000,
+  totalRangeS: [3000, 3000],
+  timeInZoneS: [180, 660, 0, 2160, 0, 0, 0],
+});
+/** A long name, and a long workout: 3.5 hours, 57 blocks, an open-ended cool-down (a duration range). */
+const LONG_NAME =
+  "Over-unders 6×(4×(2 min at 95 % FTP, 1 min at 110 % FTP)) with a long Zone 2 tail and an open-ended cool-down";
+const LONG = (() => {
+  const blocks = [block(0, 900, 100, 175, "warmup")];
+  let t = 900;
+  for (let set = 0; set < 6; set++) {
+    for (let rep = 0; rep < 4; rep++) {
+      blocks.push(block(t, 120, 238, 238, "work"), block(t + 120, 60, 275));
+      t += 180;
+    }
+    blocks.push(block(t, 300, 140, 140, "recovery"));
+    t += 300;
+  }
+  blocks.push(block(t, 4800, 175, 175, "work"));
+  t += 4800;
+  blocks.push({
+    ...block(t, 600, 140, 100, "cooldown"),
+    durRangeS: [300, 900],
+  });
+  return compiled({
+    blocks,
+    totalS: t + 600,
+    totalRangeS: [t + 300, t + 900],
+    tss: 251.6,
+    if: 0.85,
+    timeInZoneS: [600, 1500, 5400, 2880, 1440, 1440, 0],
+    issues: [WARNING],
+  });
+})();
+const workouts =
+  (over: Partial<WorkoutsBackend> = {}) =>
+  () => {
+    installWorkouts({
+      compiled: { "w-ss": SWEET_SPOT, "w-easy": compiled({ tss: 20 }) },
+      ...over,
+    });
+    navigate("workouts");
+  };
+
 const SETUPS: Record<ScenarioName, () => void> = {
   today: () => navigate("today"),
-  workouts: () => {
-    installWorkouts({ compiled: { "w-ss": compiled({ blocks: BLOCKS }) } });
-    navigate("workouts");
-  },
-  "workouts-selected": () => SETUPS.workouts(),
+  // The library as the core lists it (the built-in one is never empty today; the store-backed one, #110, can be).
+  "workouts-empty": workouts({ summaries: [] }),
+  // The list cannot be read (Tauri's own rejection, or the store-backed library to come).
+  "workouts-list-error": workouts({
+    fail: { workouts_list: { code: "storage", message: "database is locked" } },
+  }),
+  workouts: workouts(),
+  "workouts-selected": workouts(),
+  // An error-severity issue: the core refuses to load it (core.rs `Core::resolve_workout`), so Ride this is disabled.
+  "workouts-blocked": workouts({
+    compiled: { "w-ss": { ...SWEET_SPOT, issues: [ERROR_ISSUE, WARNING] } },
+  }),
+  // Ride this was pressed and the load never answers: the library is locked, Ride this pending.
+  "workouts-loading": workouts({ gate: new Promise<void>(() => {}) }),
+  // The load was refused: no trainer is paired.
+  "workouts-load-error": workouts({ trainerPaired: false }),
+  "workouts-long": workouts({
+    summaries: [
+      ...SUMMARIES,
+      { id: "w-long", name: LONG_NAME, totalS: 12420, tss: 251.6, ftp: 250 },
+    ],
+    compiled: { "w-ss": SWEET_SPOT, "w-long": LONG },
+  }),
   "devices-empty": devices({}),
   // The scan never answers: the button stays "Scanning…".
   "devices-scanning": devices({ gate: new Promise<void>(() => {}) }),

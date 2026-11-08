@@ -19,6 +19,7 @@ import {
   RIDE_SCENARIOS,
   SCENARIOS,
   SETTINGS_SCENARIOS,
+  WORKOUTS_SCENARIOS,
   type Scenario,
 } from "./scenarios";
 import WarningsReporter, { WARNING } from "./warnings";
@@ -58,6 +59,8 @@ async function open(page: Page, s: Scenario) {
     };
   });
   await page.goto(`/?scenario=${s.name}`);
+  for (const name of s.picks ?? [])
+    await page.getByRole("option", { name }).first().click();
   for (const name of s.clicks ?? [])
     await page.getByRole("button", { name }).first().click();
   await expect(page.locator(s.ready).first()).toBeVisible();
@@ -239,6 +242,19 @@ test("nothing on Settings or Devices is cut, in any of their fixtures", async ({
   page,
 }) => {
   for (const name of SETTINGS_SCENARIOS) {
+    const s = SCENARIOS.find((x) => x.name === name);
+    if (!s) throw new Error(`no fixture ${name}`);
+    await open(page, s);
+    expect(
+      await screenFit(page, "#root"),
+      `${name}: cut text or controls`,
+    ).toEqual([]);
+  }
+});
+
+// Workouts (#528) too: a long name or a long workout wraps rather than being cut, and Ride this stays in the window.
+test("nothing on Workouts is cut, in any of its fixtures", async ({ page }) => {
+  for (const name of WORKOUTS_SCENARIOS) {
     const s = SCENARIOS.find((x) => x.name === name);
     if (!s) throw new Error(`no fixture ${name}`);
     await open(page, s);

@@ -1,0 +1,313 @@
+/* Workouts, direction A (DESIGN §5.7, §18; #528): the page title, then the 12-column grid (§18.2) with the library in 7
+   columns and the picked workout's panel in 5; one elevation, panel on background (§18.1). Desk chrome is 13 px with
+   12 px captions; the one control family is the 32 px button of Settings and the ride's key row (§18.4). */
+.workouts {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+  font-size: var(--text-s);
+}
+.workouts h1 {
+  margin: 0;
+  font-size: var(--text-l);
+}
+.workouts p {
+  margin: 0;
+}
+.workouts-body {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--space-5);
+  align-items: start;
+}
+.workouts-library {
+  grid-column: span 7;
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.workouts-detail {
+  grid-column: span 5;
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+}
+
+/* The 32 px button family (§18.4): default and primary; disabled reads as disabled, and a pending one names what it is
+   doing (Ride this reads "Loading ride…" while its load runs) and shows the progress cursor. */
+.workouts button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h);
+  min-height: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-m);
+  background: var(--panel-2);
+  font-size: var(--text-s);
+  white-space: nowrap;
+}
+.workouts button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.workouts button:disabled {
+  cursor: default;
+  color: var(--ink-3);
+}
+.workouts button.primary:disabled {
+  background: var(--panel-2);
+  border-color: var(--edge);
+}
+.workouts button[aria-busy="true"] {
+  cursor: progress;
+}
+
+.workouts-hint {
+  max-width: 70ch;
+  color: var(--ink-2);
+}
+
+/* The library: one grid, its column heads and its rows on a subgrid, so the columns line up from row to row. A row is
+   a listbox option, as tall as its name needs (a long name wraps, never cut). */
+.workouts-table {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
+  column-gap: var(--space-5);
+}
+.workouts-columns,
+.workouts-list,
+.workouts-list li {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+}
+.workouts-columns {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.workouts-columns span:not(:first-child),
+.workouts-list li > span:not(:first-child) {
+  text-align: right;
+}
+.workouts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.workouts-list li {
+  align-items: center;
+  min-height: var(--control-h-m);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.workouts-list li[aria-selected="true"] {
+  background: var(--panel-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+  font-weight: 600;
+}
+.workouts-list li[aria-disabled="true"] {
+  cursor: default;
+  color: var(--ink-3);
+}
+.workouts-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The picked workout: its head, profile, Ride this, the compiled summary and the block list. */
+.workouts-detail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.workouts-detail h2 {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-m);
+  overflow-wrap: anywhere;
+}
+.workouts-chip {
+  flex: none;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-s);
+  font-size: var(--text-xs);
+  color: var(--ink-2);
+}
+.workouts-profile {
+  display: block;
+  width: 100%;
+  aspect-ratio: 5 / 1;
+}
+.workouts-profile-block {
+  fill: var(--accent-soft);
+  stroke: var(--power);
+  stroke-width: 1;
+}
+.workouts-profile-block[data-phase="work"] {
+  fill: var(--zone-4);
+}
+.workouts-actions {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+}
+.workouts-blocked {
+  color: var(--ink-2);
+}
+.workouts-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-left: 4px solid var(--status-warning);
+  border-radius: var(--radius-m);
+}
+.workouts-notice p {
+  min-width: 0;
+  max-width: 70ch;
+  overflow-wrap: anywhere;
+}
+.workouts-notice [data-state-label],
+.workouts-issues [data-state-label] {
+  color: var(--status-warning);
+}
+.workouts-summary,
+.workouts-part {
+  display: grid;
+  gap: var(--space-3);
+}
+.workouts-part h3 {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+/* Duration (a range can be long: it wraps after its dash), TSS and IF as tiles. */
+.workouts-stats {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  margin: 0;
+}
+.workouts-stats div {
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--panel-2);
+  border-radius: var(--radius-m);
+}
+.workouts-stats dt {
+  font-size: var(--text-xs);
+  color: var(--ink-2);
+}
+.workouts-stats dd {
+  margin: 0;
+  font-size: var(--text-l);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.workouts-issues {
+  display: grid;
+  gap: var(--space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.workouts-issues li {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.workouts-issues li[data-severity="error"] {
+  font-weight: 600;
+}
+.workouts-zones,
+.workouts-blocks {
+  display: grid;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.workouts-zones {
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  gap: var(--space-1) var(--space-3);
+  align-items: center;
+}
+.workouts-zones li {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+}
+.workouts-zones li > span:last-child {
+  text-align: right;
+}
+.workouts-zone-track {
+  height: var(--space-2);
+  background: var(--panel-2);
+  border-radius: var(--radius-s);
+}
+.workouts-zone-bar {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-s);
+  background: var(--zone-4);
+}
+.workouts-zone-bar[data-zone="1"] {
+  background: var(--zone-1);
+}
+.workouts-zone-bar[data-zone="2"] {
+  background: var(--zone-2);
+}
+.workouts-zone-bar[data-zone="3"] {
+  background: var(--zone-3);
+}
+.workouts-zone-bar[data-zone="5"] {
+  background: var(--zone-5);
+}
+.workouts-zone-bar[data-zone="6"] {
+  background: var(--zone-6);
+}
+.workouts-zone-bar[data-zone="7"] {
+  background: var(--zone-7);
+}
+.workouts-blocks {
+  grid-template-columns: max-content minmax(0, 1fr) max-content max-content;
+  column-gap: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+.workouts-blocks li {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--line);
+}
+.workouts-blocks li > span:nth-child(n + 3) {
+  text-align: right;
+}
+.workouts-index {
+  color: var(--ink-2);
+}
