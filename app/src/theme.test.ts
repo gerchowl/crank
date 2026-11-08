@@ -170,10 +170,41 @@ describe("scales", () => {
     expect(tier["tier-t2"]).toBe(64);
     expect(tier["tier-t3plus"]).toBe(40);
   });
-  test("--control-h is 32px, and 40 and 48 are the only other heights", () => {
+  test("--control-h is 32px, and 40, 48 and the rail's 55 are the only other heights", () => {
     const c = px("control-h");
     expect(c["control-h"]).toBe(32);
-    expect(Object.values(c).sort((a, b) => a - b)).toEqual([32, 40, 48]);
+    expect(c["control-h-rail"]).toBe(55);
+    expect(Object.values(c).sort((a, b) => a - b)).toEqual([32, 40, 48, 55]);
+  });
+  test("--control-h-rail is the rail item's parts, to the whole pixel (DESIGN §18.4, #555)", () => {
+    // Top to bottom: border, --space-2 inset, the icon's line, --space-1 gap, the word's line, --space-2 inset, border.
+    const shell = readFileSync(new URL("./shell.css", import.meta.url), "utf8");
+    const rule = (sel: string) => {
+      const at = shell.indexOf(`\n${sel} {`);
+      expect(at, sel).toBeGreaterThanOrEqual(0);
+      return shell.slice(at, shell.indexOf("}", at));
+    };
+    const decl = (sel: string, prop: string) =>
+      rule(sel).match(new RegExp(`[\\s{]${prop}:\\s*([^;]+);`))?.[1];
+    const tok = (v: string | undefined) => {
+      const name = v?.match(/^var\(--([\w-]+)\)$/)?.[1];
+      expect(name, v).toBeDefined();
+      return px("")[name!]!;
+    };
+    expect(decl(".rail button", "height")).toBe("var(--control-h-rail)");
+    expect(decl(".rail button", "gap")).toBe("var(--space-1)");
+    const border = 1; // `button`'s 1 px border (transparent on the rail)
+    expect(decl("button", "border")).toMatch(/^1px solid /);
+    const icon =
+      tok(decl(".rail .rail-icon", "font-size")) *
+      Number(decl(".rail .rail-icon", "line-height"));
+    const word =
+      tok(decl(".rail .rail-label", "font-size")) *
+      Number(decl(".rail .rail-label", "line-height"));
+    const s = px("space-");
+    const parts = 2 * border + 2 * s["space-2"]! + icon + s["space-1"]! + word;
+    expect(parts).toBeCloseTo(55.2, 5);
+    expect(px("control-h")["control-h-rail"]).toBe(Math.round(parts));
   });
   test("every size token, in every block, is a px length", () => {
     // `px()` reads only the shared `:root` block; this reads every declaration, so a rem or a theme-block size gets caught.

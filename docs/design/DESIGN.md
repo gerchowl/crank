@@ -2042,7 +2042,7 @@ calibration windows). The metric column's minimum content must fit the smaller o
   a 13.2 px line), `--space-2` inset, 1 px border: **55.2 px**, to the whole pixel **55 px**. The item is exactly the
   token tall and centres its stack (the insets become 7.9 px), so it neither grows nor clips. The layout audit holds
   `.rail button` to this token and counts it as its own height variant, so it never clashes with the 32 px default;
-  a change to any of the parts changes the token with it.
+  a change to any of the parts changes the token with it (`app/src/theme.test.ts` recomputes it from `shell.css`).
 - **Every action shows its key** as a `kbd` hint inside the button: Pause `Space`, Skip block `S`, intensity `−` /
   `+`, `?`, End `Esc`, Coach `Enter`, Keep `N`, and on Today and the Ready sheet Start `⏎`.
 - **Remote and keys are the primary input on the bike** (§7.2); the on-screen buttons are the desk path and the
