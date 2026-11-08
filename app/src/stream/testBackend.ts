@@ -313,7 +313,7 @@ export function installBackend(firstStream = 7) {
           links: truth.snapshotBare ? [] : truth.links,
         } satisfies StreamSnapshot;
       case "ride_status":
-        return { loading: false, status: truth.status };
+        return { load: null, status: truth.status };
       case "device_links":
         return truth.infos;
       default:

@@ -150,6 +150,7 @@ are what Tauri itself uses for download progress and child-process output
 |---|---|
 | **Commands** (request/response, async) | every query and mutation: `history`, `histogram`, `heatmap`, `mmp`, `hr_recovery`, `streams`, `recoveries`, `laps`, `compile_workout`, `parse_dsl`, `print_dsl`, ride control (`ride_load/start/pause/resume/stop/adjust/skip_block`), `ride_status`, `coach_decisions`, `device_links`, `stream_ack`, `stream_snapshot`, layouts, snippets, workouts, athlete model, coach respond/rate, planner propose/rewrite, devices, settings |
 | **One `Channel<StreamFrame>` per window** | all live data: subscribed samples, ride status, nudge changes, device link changes |
+| **One `Channel<LinkFrame>` per window** (ADR-0002 §5.1.4, #470) | the link keeper's state with or without a ride (phases and the latest sample per warm device); during a ride the device links are `StreamFrame.links`'s. Acked with a window of 1, latest wins, no resync (§4.3's flow-control rule) |
 | **Events** | only low-rate, app-wide invalidation hints for multiple windows: `store_changed { table }` |
 
 Queries become async (they were synchronous in the mock). The polling budget in `shared/README.md`

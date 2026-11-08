@@ -12,11 +12,12 @@
 //! loaded ride's engine and to a window label; they end with the ride.
 use crate::backend::{Backend, DeviceMode};
 use crate::dto::{
-    CoreInfo, DeviceLinkInfo, DeviceRole, KnownDevice, LinkIntent, PairedDevice, ReleaseReason,
-    RideLoaded, RideOutcome, RideRecord, RideStatusView, RideSummary, ScannedDevice, WorkoutDetail,
-    WorkoutSummary,
+    CoreInfo, DeviceLinkInfo, DeviceRole, KnownDevice, LinkIntent, LinkPhase, LinkView, LinksId,
+    PairedDevice, ReleaseReason, RideLoaded, RideOutcome, RideRecord, RideStatusView, RideSummary,
+    ScannedDevice, WorkoutDetail, WorkoutSummary,
 };
 use crate::error::{ApiError, ErrorCode};
+use crate::keeper::channel::{Channels, LinkSink};
 use crate::keeper::run::{self as keeper, Hold, Note};
 use crate::library::Library;
 use crate::recorder::{RideMeta, StoreRecorder};
@@ -873,6 +874,8 @@ struct Inner {
     next_stream: AtomicU32,
     /// The link keeper (ADR-0002 §5.1), started on first use ([`Core::keeper`]).
     keeper: keeper::Handle,
+    /// The windows' link channels (`links_open`).
+    link_channels: Channels,
     /// Lets a test interleave a command into `discard` (#278).
     #[cfg(test)]
     discard_hook: Rendezvous,
@@ -1140,6 +1143,7 @@ impl Core {
             quits: watch::channel(0).0,
             next_stream: AtomicU32::new(1),
             keeper: keeper::Handle::new(),
+            link_channels: Channels::new(),
             #[cfg(test)]
             discard_hook: Rendezvous::default(),
             #[cfg(test)]
@@ -1230,12 +1234,15 @@ impl Core {
     /// but not started unloads that ride (the path of Cancel) and releases its links; during a
     /// started ride it is refused, because the ride owns the trainer: end the ride first.
     ///
+    /// It answers the keeper's state once the intent is applied (ADR-0002 §5.1.4), the same
+    /// state a [`LinkFrame`](crate::LinkFrame) carries.
+    ///
     /// # Errors
     /// `Conflict` for `RiderRelease` while a ride is started or starting, or when its discard
     /// finds the ride started; `Conflict` for `Likely` or `Retry` after the quit; `Conflict` for a
     /// release recorded while the links were handed out that a later rider action ("Ride this",
     /// Retry) superseded, so it was never applied; `Storage`.
-    pub async fn links_intent(&self, intent: LinkIntent) -> Result<(), ApiError> {
+    pub async fn links_intent(&self, intent: LinkIntent) -> Result<LinkView, ApiError> {
         if intent
             == (LinkIntent::Release {
                 reason: ReleaseReason::RiderRelease,
@@ -1253,7 +1260,51 @@ impl Core {
                 ));
             }
         }
-        self.keeper()?.intent(intent).await
+        let keeper = self.keeper()?;
+        keeper.intent(intent).await?;
+        Ok(keeper.links())
+    }
+
+    /// Open the window's link channel (ADR-0002 §5.1.4), dropping that window's previous one:
+    /// frames of the keeper's complete state go to `sink`, the first at once, then one per
+    /// change once the window acknowledged the last ([`Core::links_ack`]), at most 10 per
+    /// second; changes meanwhile are coalesced into the next frame (latest wins, no resync).
+    /// It works with and without a ride; while a ride holds a device its phase is `riding`
+    /// and its live state is the ride stream's (`StreamFrame.links`).
+    ///
+    /// # Errors
+    /// `Storage` when the pairings cannot be read to start the keeper.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn links_open(
+        &self,
+        window: Option<String>,
+        sink: impl LinkSink,
+    ) -> Result<LinksId, ApiError> {
+        let view = self.keeper()?.view();
+        Ok(self
+            .0
+            .link_channels
+            .open(window, view, self.0.clock.clone(), sink))
+    }
+    /// The window has applied frame `seq` of its link channel `id`: the next frame may go.
+    ///
+    /// # Errors
+    /// `NotFound` for a channel `window` does not have open (another window's, one dropped by
+    /// a reload, a close or a failed send).
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn links_ack(
+        &self,
+        window: Option<&str>,
+        id: LinksId,
+        seq: u32,
+    ) -> Result<(), ApiError> {
+        self.0.link_channels.ack(window, id, seq)
     }
 
     /// Scan for trainers and straps for `for_ms` (default 5 s, 0.2–15 s), or until the
@@ -1410,12 +1461,14 @@ impl Core {
     }
 
     /// The pairing and live link of each role; the link is the loaded ride's, `null`
-    /// without one and once it has finished.
+    /// without one and once it has finished. The phase is the link keeper's (ADR-0002
+    /// §5.1.4), `riding` while the ride holds the device.
     ///
     /// # Errors
     /// `Storage`.
     pub async fn device_links(&self) -> Result<Vec<DeviceLinkInfo>, ApiError> {
         let devices = self.0.store.devices()?;
+        let keeper = self.keeper()?.links();
         let live = self
             .0
             .state
@@ -1428,16 +1481,30 @@ impl Core {
             .map(|s| (s.trainer_link, s.hr_link));
         Ok([DeviceRole::Trainer, DeviceRole::HeartRate]
             .into_iter()
-            .map(|role| DeviceLinkInfo {
-                role,
-                device: devices
+            .map(|role| {
+                let device = devices
                     .iter()
                     .find(|d| d.kind == role.kind())
                     .cloned()
-                    .and_then(paired),
-                link: live
-                    .and_then(|(t, h)| if role == DeviceRole::Trainer { t } else { h })
-                    .map(Into::into),
+                    .and_then(paired);
+                let kept = if role == DeviceRole::Trainer {
+                    keeper.trainer
+                } else {
+                    keeper.strap
+                };
+                DeviceLinkInfo {
+                    role,
+                    link: live
+                        .and_then(|(t, h)| if role == DeviceRole::Trainer { t } else { h })
+                        .map(Into::into),
+                    // The pairing read here decides whether there is a phase: the keeper learns of
+                    // a pairing change by a note it may not have taken yet, and a device it has
+                    // not seen paired has no attempt running, so it is `cold`.
+                    phase: device
+                        .as_ref()
+                        .map(|_| kept.map_or(LinkPhase::Cold, |d| d.phase)),
+                    device,
+                }
             })
             .collect())
     }
@@ -2375,7 +2442,8 @@ impl Core {
             tracing::warn!("quit: the core is busy, the ride span stays open");
         }
     }
-    /// The ride's state; durable truth behind `resync` (ADR-0001 §4.3).
+    /// The ride's state; durable truth behind `resync` (ADR-0001 §4.3). While a load is under
+    /// way, `load` holds each device's phase (ADR-0002 §5.1.4).
     ///
     /// # Errors
     /// Never fails today.
@@ -2387,7 +2455,11 @@ impl Core {
             (None, None) => self.0.idle.clone(),
         };
         Ok(RideStatusView {
-            loading: self.0.loading.load(Ordering::SeqCst),
+            load: self
+                .0
+                .loading
+                .load(Ordering::SeqCst)
+                .then(|| self.0.keeper.load_progress()),
             status,
         })
     }
@@ -2520,10 +2592,12 @@ impl Core {
         let (engine, id) = self.owned(window, stream).await?;
         bounded(engine.stream_snapshot(id)).await
     }
-    /// A window was destroyed: drop its streams. The engine is told without the state lock
-    /// and for at most 1 s (`REQUEST_TIMEOUT`; its request channel may be full, #351); if it does
-    /// not take the request, the window's streams still end, as their sink fails.
+    /// A window was destroyed or reloads: drop its streams and its link channel. The engine
+    /// is told without the state lock and for at most 1 s (`REQUEST_TIMEOUT`; its request
+    /// channel may be full, #351); if it does not take the request, the window's streams still
+    /// end, as their sink fails.
     pub async fn close_window(&self, window: String) {
+        self.0.link_channels.close(&window);
         let engine = {
             let mut st = self.0.state.lock().await;
             let Some(session) = st.session.as_mut() else {
@@ -2589,6 +2663,9 @@ impl Core {
     }
 }
 
+#[cfg(test)]
+#[path = "keeper/contract_tests.rs"]
+mod contract_tests;
 #[cfg(test)]
 #[path = "keeper/core_tests.rs"]
 mod keeper_tests;
@@ -3248,7 +3325,7 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
         // Mid-connect: the status answers at once, says so, and nothing else may start.
         let view = core.ride_status().await.unwrap();
-        assert!(view.loading);
+        assert!(view.load.is_some());
         assert_eq!(
             core.ride_load(None).await.unwrap_err().code,
             ErrorCode::Conflict
@@ -3263,7 +3340,7 @@ mod tests {
         );
         loading.await.unwrap().unwrap();
         let view = core.ride_status().await.unwrap();
-        assert!(!view.loading && view.status.loaded);
+        assert!(view.load.is_none() && view.status.loaded);
     }
 
     /// A core whose paired trainer and strap (paired with no latency) now connect with
@@ -3410,7 +3487,7 @@ mod tests {
         // The caller gives up (a dropped command future) in the middle of the connect.
         let cancelled = tokio::time::timeout(Duration::from_secs(2), core.ride_load(None)).await;
         assert!(cancelled.is_err(), "the load was cut off");
-        assert!(!core.ride_status().await.unwrap().loading);
+        assert!(core.ride_status().await.unwrap().load.is_none());
         core.device_pair("hrm".into(), DeviceRole::HeartRate)
             .await
             .unwrap();
@@ -3475,7 +3552,7 @@ mod tests {
                 ErrorCode::Conflict
             );
             assert!(radio.disconnects.lock().unwrap().is_empty());
-            assert!(core.ride_status().await.unwrap().loading);
+            assert!(core.ride_status().await.unwrap().load.is_some());
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -3530,7 +3607,7 @@ mod tests {
         radio
             .panic_connect
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        assert!(!core.ride_status().await.unwrap().loading);
+        assert!(core.ride_status().await.unwrap().load.is_none());
         core.ride_load(None).await.unwrap();
     }
 
@@ -3551,7 +3628,7 @@ mod tests {
         assert_eq!(e.code, ErrorCode::DeviceUnavailable);
         // Nothing is loaded and the devices are free again.
         let view = core.ride_status().await.unwrap();
-        assert!(!view.status.loaded && !view.loading);
+        assert!(!view.status.loaded && view.load.is_none());
         radio
             .fail_connect
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -3605,7 +3682,7 @@ mod tests {
             Some(ControlMode::Resistance { pct: 0.0 }),
             "{commands:?}"
         );
-        assert!(!core.ride_status().await.unwrap().loading);
+        assert!(core.ride_status().await.unwrap().load.is_none());
         assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Ended);
     }
 
@@ -4423,7 +4500,7 @@ mod tests {
         assert_unresponsive("ride_load", loaded.map(|_| ()), t.elapsed());
         assert_eq!(radio.disconnects.lock().unwrap().len(), 1, "released");
         let status = core.ride_status().await.unwrap();
-        assert!(!status.loading && !status.status.loaded);
+        assert!(status.load.is_none() && !status.status.loaded);
         core.0.stall.release();
         core.ride_load(None).await.unwrap();
         core.ride_start().await.unwrap();
