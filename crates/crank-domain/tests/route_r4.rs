@@ -470,24 +470,8 @@ fn extensions_are_gpx_1_1_only() {
     );
 }
 
-#[test]
-fn an_extension_holds_elements_of_other_namespaces_only() {
-    // `##other`: neither the GPX namespace nor no namespace.
-    for inner in [r"<ele>5</ele>", r#"<x xmlns="">5</x>"#] {
-        let text = doc(
-            GPX11,
-            &format!(
-                r#"<trk><trkseg><trkpt lat="47" lon="8"><extensions>{inner}</extensions></trkpt>{}</trkseg></trk>"#,
-                pt(47.001)
-            ),
-        );
-        let what = malformed(&text);
-        assert!(
-            what.contains("not allowed in <extensions>") || what.contains("extensionsType"),
-            "{inner}: {what}"
-        );
-    }
-}
+// Round 5 replaced `##other` inside <extensions>: everything there is extension data, skipped
+// whatever its namespace (`route_r5::extension_content_is_never_refused_but_must_be_well_formed`).
 
 #[test]
 fn an_undeclared_prefix_is_malformed_wherever_it_stands() {

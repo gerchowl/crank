@@ -1,7 +1,8 @@
 //! GPX 1.0 and 1.1 import (ADR-0005 §2.2.1): a streaming reader that expands no entity, refuses a
 //! DOCTYPE and stops at a depth of [`MAX_XML_DEPTH`]. Every element of the GPX namespace must
 //! stand where its schema's content model puts it, from the single root down ([`child_type`]);
-//! other namespaces only where the schema allows them ([`foreign_allowed`]).
+//! other namespaces only where the schema allows them ([`foreign_allowed`]). Everything inside a
+//! GPX 1.1 `<extensions>` is extension data, skipped whatever its namespace ([`Content::Foreign`]).
 use super::{
     DEFAULT_ROUTE_NAME, MAX_FILE_BYTES, MAX_TRACKS, MAX_XML_DEPTH, RouteSource, Surface,
     haversine_m,
@@ -71,6 +72,9 @@ enum Field {
     TrackName = 2,
     Ele = 4,
     Surface = 8,
+    /// Not a value but the element holding the document name: GPX 1.1 `metadata` occurs once,
+    /// so a second one cannot replace the first's name.
+    Metadata = 16,
 }
 
 #[derive(Default)]
@@ -207,7 +211,8 @@ enum Ty {
     Trkseg,
     /// `wptType` as a track point (1.0 adds `course` and `speed`).
     Trkpt,
-    /// 1.1 `extensionsType`: `<xsd:any namespace="##other">` only.
+    /// 1.1 `extensionsType`: `<xsd:any namespace="##other">` in the schema; its content is
+    /// extension data whatever its namespace (ADR-0005 §2.2.1).
     Extensions,
     /// A simple type (`xsd:string`, `xsd:decimal`, `xsd:dateTime`, …): text, no child element.
     Text,
@@ -344,18 +349,15 @@ fn child_type(v1_0: bool, parent: Ty, name: &str) -> Option<Ty> {
     }
 }
 
-/// Whether an element of another namespace may stand in an element of type `parent`: GPX 1.0's
-/// `<xsd:any namespace="##other">` at the end of `gpx`, `wpt`, `rte`, `rtept`, `trk` and `trkpt`
-/// (not `trkseg`), GPX 1.1's only in `extensionsType`. `##other` excludes no namespace.
+/// Whether an element of another namespace may stand in an element of type `parent` outside an
+/// `<extensions>`: GPX 1.0's `<xsd:any namespace="##other">` at the end of `gpx`, `wpt`, `rte`,
+/// `rtept`, `trk` and `trkpt` (not `trkseg`). GPX 1.1 allows other namespaces only inside
+/// `extensionsType`, whose content [`Walk::open`] skips whatever its namespace.
 fn foreign_allowed(v1_0: bool, parent: Ty) -> bool {
-    if v1_0 {
-        matches!(
-            parent,
-            Ty::Gpx | Ty::Wpt | Ty::Rte | Ty::Rtept | Ty::Trk | Ty::Trkpt
-        )
-    } else {
-        parent == Ty::Extensions
-    }
+    v1_0 && matches!(
+        parent,
+        Ty::Gpx | Ty::Wpt | Ty::Rte | Ty::Rtept | Ty::Trk | Ty::Trkpt
+    )
 }
 
 /// How an open element is read.
@@ -363,8 +365,9 @@ fn foreign_allowed(v1_0: bool, parent: Ty) -> bool {
 enum Content {
     /// An element of the document's GPX namespace, of this type.
     Gpx(Ty),
-    /// An element of another namespace where the schema allows one, or anything inside it
-    /// (`processContents="lax"`): skipped, except a `<surface>` inside a point (ADR-0005 §2.2.1).
+    /// Extension data: an element of another namespace where GPX 1.0 allows one, any element
+    /// inside a GPX 1.1 `<extensions>`, or anything inside either. Skipped, except a `<surface>`
+    /// of a namespace other than GPX's inside a point (ADR-0005 §2.2.1).
     Foreign,
 }
 
@@ -450,7 +453,12 @@ impl Walk {
             };
         };
         let parent = match parent {
-            Content::Foreign => return self.foreign(name, at),
+            // ADR-0005 §2.2.1: everything inside `<extensions>` is extension data, whatever its
+            // namespace. The schema's `##other` refuses the GPX namespace and none there, but real
+            // exports write unprefixed elements, which inherit the GPX namespace: Strava's
+            // `<power>`, older OsmAnd's `<speed>` and `<color>`. Skipping them is safe, as nothing
+            // inside is ever read as GPX structure: a `<trkpt>` or `<gpx>` in there imports nothing.
+            Content::Foreign | Content::Gpx(Ty::Extensions) => return self.foreign(name, uri, at),
             Content::Gpx(ty) => ty,
         };
         if uri == Some(self.gpx_ns) {
@@ -468,7 +476,7 @@ impl Walk {
             return self.structural(name, parent, ty, e, at);
         }
         if uri.is_some() && foreign_allowed(self.v1_0(), parent) {
-            return self.foreign(name, at);
+            return self.foreign(name, uri, at);
         }
         let rule = if self.v1_0() {
             "GPX 1.0 allows other namespaces only at the end of gpx, wpt, rte, rtept, trk and trkpt"
@@ -492,22 +500,16 @@ impl Walk {
     /// Mark `field` read in the open element at `owner`, refusing a second one.
     fn read_once(&mut self, owner: usize, field: Field, at: u64) -> Result<(), RouteImportError> {
         let bit = field as u8;
-        let rule = match field {
-            Field::Surface => "one surface per point, ADR-0005 §2.2",
-            Field::Ele => "GPX wptType: ele maxOccurs 1",
-            Field::TrackName | Field::DocName => "GPX: name maxOccurs 1",
+        let (what, rule) = match field {
+            Field::Surface => ("surface", "one surface per point, ADR-0005 §2.2"),
+            Field::Ele => ("ele", "GPX wptType: ele maxOccurs 1"),
+            Field::TrackName | Field::DocName => ("name", "GPX: name maxOccurs 1"),
+            Field::Metadata => ("metadata", "GPX 1.1 gpxType: metadata maxOccurs 1"),
         };
         let Some(frame) = self.stack.get_mut(owner) else {
             return Ok(());
         };
         if frame.seen & bit != 0 {
-            let what = if field == Field::Surface {
-                "surface"
-            } else if field == Field::Ele {
-                "ele"
-            } else {
-                "name"
-            };
             return Err(malformed(
                 at,
                 format!("a second <{what}> in one <{}> ({rule})", frame.name),
@@ -517,9 +519,15 @@ impl Walk {
         Ok(())
     }
 
-    /// An element of another namespace, or one inside it.
-    fn foreign(&mut self, name: String, at: u64) -> Result<(), RouteImportError> {
-        let surface = name == "surface" && self.point.is_some();
+    /// Extension data ([`Content::Foreign`]) in namespace `uri`.
+    fn foreign(
+        &mut self,
+        name: String,
+        uri: Option<&str>,
+        at: u64,
+    ) -> Result<(), RouteImportError> {
+        let surface =
+            name == "surface" && self.point.is_some() && uri.is_some_and(|u| u != self.gpx_ns);
         self.push(name, Content::Foreign);
         if surface {
             self.read_once(self.point_depth - 1, Field::Surface, at)?;
@@ -558,6 +566,7 @@ impl Walk {
                 self.point = Some(point(e, at)?);
                 self.point_depth = self.stack.len() + 1;
             }
+            Ty::Metadata => self.read_once(self.stack.len() - 1, Field::Metadata, at)?,
             _ => {}
         }
         // The values read; `child_type` allows each only where it is meant (a 1.1 root has no
@@ -623,6 +632,8 @@ impl Walk {
                     })?);
                 }
             }
+            // Never captured: it marks the element, not a value.
+            Field::Metadata => {}
             Field::Surface => {
                 if let (Some(p), Some(t)) = (&mut self.point, text) {
                     match Surface::from_osm(&t.to_ascii_lowercase()) {
@@ -640,13 +651,18 @@ impl Walk {
     }
 
     /// Character data: outside the root only whitespace, and in a GPX element of a complex
-    /// type (element-only content, no `mixed`) only whitespace too.
+    /// type (element-only content, no `mixed`) only whitespace too. Inside `<extensions>` it is
+    /// extension data like the elements there.
     fn text(&mut self, s: &str, at: u64) -> Result<(), RouteImportError> {
         let blank = s.chars().all(char::is_whitespace);
         match self.stack.last() {
             None if !blank => return Err(malformed(at, "text outside the <gpx> element")),
             Some(f)
-                if !blank && !matches!(f.content, Content::Foreign | Content::Gpx(Ty::Text)) =>
+                if !blank
+                    && !matches!(
+                        f.content,
+                        Content::Foreign | Content::Gpx(Ty::Text | Ty::Extensions)
+                    ) =>
             {
                 let xsd = match f.content {
                     Content::Gpx(ty) => ty.xsd(),

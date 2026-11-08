@@ -92,7 +92,9 @@ A grade profile also round-trips through its text: `parse_route_dsl(print_route_
 printing that again gives the same bytes (the workout DSL's rule, `docs/DSL.md`). The stored `dsl` is the
 canonical text and the profile's one source of truth (it keeps the repeats, which the expanded segments do
 not): `Route::check` reparses it and refuses a route whose name, points or segments differ from it, bit for
-bit. `elevation` is `Exact` for a grade profile and only for one. Deleting a route keeps every
+bit. `elevation` is `Exact` for a grade profile and only for one. JSON (`segments_json`, IPC) round-trips
+bit for bit too: serde_json is built with `float_roundtrip` workspace-wide, as its default float parsing can
+come back one ULP off, and a profile one ULP off is no longer its text (#539). Deleting a route keeps every
 ride ridden on it: `ride.route_json` carries what the ride needs to show itself.
 
 ### 2.2 Import
@@ -109,15 +111,22 @@ ascent, and the surface sources. Nothing is dropped or filled silently.
   of 32. A file with a `<!DOCTYPE` is refused as `Malformed` (GPX needs none), so a hostile file cannot inflate (an
   XML bomb) or recurse.
 - `trk/trkseg/trkpt` and `rte/rtept` are read; `wpt` and `extensions` are ignored, except a surface extension
-  (`<surface>` in any namespace but GPX's, mapped by §2.6.2), which sets the point's surface. One surface per point: a
-  second is `Malformed`.
+  (`<surface>` in any namespace but GPX's or none, mapped by §2.6.2), which sets the point's surface. One surface per
+  point: a second is `Malformed`.
+- **Everything inside `<extensions>` is extension data.** It is skipped whatever its namespace: never read as GPX
+  structure, never refused, except the surface extension above. The schema's `##other` would refuse the GPX
+  namespace and none there, but real exports write unprefixed elements, which inherit the GPX namespace: Strava's
+  `<power>`, older OsmAnd's `<speed>` and `<color>`. Refusing them refused those files. Skipping is still safe: a
+  `<trkpt>` or `<gpx>` inside `<extensions>` imports nothing. The content must still be well-formed XML with every
+  prefix declared.
 - **Structure is the schema's.** The root is `gpx` in the GPX 1.0 or 1.1 namespace. Every element of that
   namespace below it must be one its parent's type allows in the GPX 1.0/1.1 XSD content model, from the root
   down: a nested `<gpx>`, a `trkpt` inside a `trkpt`, a child element inside `desc`, or text inside a `trk` is
   `Malformed`. Elements the schema allows and the importer does not read (`desc`, `time`, `link`, …) are
   ignored. Elements of other namespaces stand only where the schema's `xsd:any namespace="##other"` allows them
   (GPX 1.1: inside `extensions`; GPX 1.0: at the end of `gpx`, `wpt`, `rte`, `rtept`, `trk`, `trkpt`); the values
-  read (`ele`, `name`) occur once. A prefix that is not declared is `Malformed` (not namespace well-formed).
+  read (`ele`, `name`) and the `metadata` holding the document name occur once, so a second is `Malformed`, not a
+  silent replacement of the first. A prefix that is not declared is `Malformed` (not namespace well-formed).
   Sequence order is not checked.
 - **One route per import.** A file with exactly one `trk` or one `rte` imports it. A file with several lists them
   (name, distance) and the rider picks one; the import call takes the index. The segments of a `trk` are joined in

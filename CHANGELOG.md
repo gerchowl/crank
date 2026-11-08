@@ -12,7 +12,8 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 - Route model and import, no UI or store yet (ADR-0005 §2.1, §2.2.1–2.2.2, §2.2.4–2.2.5): `crank_domain::route`
   types, a hardened GPX 1.0/1.1 reader (`quick-xml`; a DOCTYPE, any entity but XML's five and nesting deeper than 32
-  are refused, and every element must stand where the GPX XSD content model puts it), the §2.2.4 limits and the
+  are refused, every element must stand where the GPX XSD content model puts it, and everything inside `<extensions>`
+  is skipped whatever its namespace, so Strava's unprefixed `<power>` imports), the §2.2.4 limits and the
   missing-elevation rules with an import report, multi-track files listing their tracks, and grade-profile text
   (`2km 3%, 3x(0.4km 12% cobbles, 0.6km 2%)`) with a canonical printer
   ([#539](https://github.com/gerchowl/crank/issues/539))
@@ -80,6 +81,8 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 - The workout DSL printer escapes a newline inside a label (`\` then the newline), so every label it prints reads
   back as the same label ([#539](https://github.com/gerchowl/crank/issues/539))
+- serde_json parses floats exactly (`float_roundtrip`, workspace-wide), so a value read back from JSON has the bits
+  it was written with; its default parsing can be one ULP off ([#539](https://github.com/gerchowl/crank/issues/539))
 
 ### Security
 
