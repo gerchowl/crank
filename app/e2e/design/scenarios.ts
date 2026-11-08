@@ -34,7 +34,7 @@ export const SCENARIOS = [
   },
   {
     name: "workouts-loading",
-    ready: "role=button[name='Ride this'][disabled=true]",
+    ready: "role=button[name='Loading ride…'][disabled=true]",
     picks: ["Sweet spot 3x12"],
     clicks: ["Ride this"],
     held: 1,
