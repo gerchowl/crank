@@ -1239,8 +1239,9 @@ impl Core {
     /// (ADR-0002 §5.1.4), with that state's `seq`: the intent's own step, the load's
     /// resolution for an intent recorded while the links were handed out, or, for a discard,
     /// the step that takes its end, after its links' release. It is a
-    /// [`LinkFrame`], ordered with the link channel's frames by `seq`: a
-    /// frame of a newer state can arrive first, and then the answer is older than it.
+    /// [`LinkFrame`], ordered with the link channel's frames and the other answers by `seq`:
+    /// a newer frame, or a later intent's answer, can arrive first, and then this answer is
+    /// older than it and is dropped ([`Core::links_open`]).
     ///
     /// # Errors
     /// `Conflict` for `RiderRelease` while a ride is started or starting, or when its discard
@@ -1276,9 +1277,10 @@ impl Core {
     /// device its phase is `riding` and its live state is the ride stream's
     /// (`StreamFrame.links`); every other device, a strap that missed the load included, is
     /// read from these frames. A device is `riding` from the hand-over to a load on, before
-    /// the stream exists: until `ride_load` answers, `ride_status().load` is its progress.
-    /// The frames are authoritative: [`Core::links_intent`]'s answer is applied only if its
-    /// `seq` is at least the last frame's.
+    /// the stream exists: until `ride_load` answers, `ride_status().load` only repeats
+    /// `riding` and adds no progress information. A frame or a [`Core::links_intent`] answer
+    /// is applied only if its `seq` is at least the highest `seq` applied so far, from
+    /// either source (an answer can arrive after a newer frame or a later intent's answer).
     ///
     /// # Errors
     /// `Storage` when the pairings cannot be read to start the keeper.

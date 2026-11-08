@@ -46,7 +46,9 @@
 //               one frame in flight: a change waits for the ack of the last frame sent, then goes out as one frame of
 //               the latest state; an ack of any other seq is ignored (the core's 10 Hz spacing is not modelled)
 //   seq         the keeper state's number, +1 per change, shared by every frame and every `links_intent` answer
-//               (keeper/run.rs `change`), so an answer older than the last frame has a lower seq
+//               (keeper/run.rs `change`); an answer is computed at its call, so one delayed by `hold` keeps its
+//               state's seq, as the core's release answer does while it waits for its links (run.rs `Task::answer`).
+//               The page applies a frame or an answer only if its seq is at least the highest applied (`linkOrder.ts`)
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type { Channel } from "@tauri-apps/api/core";

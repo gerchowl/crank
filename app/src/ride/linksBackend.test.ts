@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { api } from "../api";
 import { commands } from "../bindings";
 import type { LinkFrame, LinkView } from "../bindings";
+import { keepNewest } from "./linkOrder";
 import { COLD_LINKS, SUPERSEDED, installRide } from "./rideBackend";
 
 afterEach(() => clearMocks());
@@ -17,6 +18,10 @@ const WARM: LinkView = {
     sample: { kind: "trainer", powerW: 180, cadenceRpm: 90 },
   },
   strap: { phase: "warm", sample: { kind: "heart_rate", bpm: 120 } },
+};
+const SEARCHING: LinkView = {
+  trainer: { phase: "searching", sample: null },
+  strap: { phase: "searching", sample: null },
 };
 const releaseTrainer = {
   kind: "release",
@@ -80,6 +85,28 @@ describe("links_intent", () => {
       error: { code: "conflict", message: SUPERSEDED },
     });
     expect(rig.world.keeper).toEqual(WARM);
+  });
+
+  // A release is recorded, and can be superseded, only while the links are handed to a load in flight, `Ride::Handed`
+  // (keeper/mod.rs `Keeper::intent` (~458)); with a ride loaded or started it is the ride's to answer.
+  test("with a ride loaded or started a release is never superseded", async () => {
+    let rig = installRide({ phase: "loaded", keeper: WARM, supersedes: true });
+    const discarded = await api(
+      commands.linksIntent({ kind: "release", reason: "sleep" }),
+    );
+    expect(discarded.status === "ok" && discarded.data.links).toEqual(
+      COLD_LINKS,
+    );
+    expect(rig.world.phase).toBe("none");
+    clearMocks();
+    rig = installRide({ phase: "active", keeper: WARM, supersedes: true });
+    const kept = await api(
+      commands.linksIntent({ kind: "release", reason: "hidden" }),
+    );
+    expect(kept.status === "ok" && kept.data.links.trainer?.phase).toBe(
+      "riding",
+    );
+    expect(rig.world.phase).toBe("active");
   });
 
   test("after the quit Likely and Retry are refused; releases still answer", async () => {
@@ -318,8 +345,8 @@ describe("the ride's hold on the links", () => {
   });
 });
 
-// ADR-0002 §5.1.4: the frames are authoritative and an answer is applied only if its seq is at least the last frame's
-// (keeper/contract_tests.rs `an_answer_and_a_frame_of_the_same_state_share_its_seq_and_a_newer_frame_outranks_it`).
+// ADR-0002 §5.1.4: a frame or an answer is applied only if its seq is at least the highest applied so far, from either
+// source (keeper/contract_tests.rs `applied_in_arrival_order_the_newest_state_wins_an_answer_after_a_newer_answer_included`).
 describe("answers and frames are ordered by seq", () => {
   test("an answer has its state's seq; a later change outranks it", async () => {
     const rig = installRide({ phase: "none", keeper: WARM });
@@ -335,14 +362,49 @@ describe("answers and frames are ordered by seq", () => {
     rig.setKeeper(COLD_LINKS);
     const newer = frames.at(-1)!;
     expect(newer.seq).toBeGreaterThan(answer.data.seq);
-    // a UI that applies the rule keeps the frame
-    const applied = [newer, answer.data].reduce((a, b) =>
-      b.seq >= a.seq ? b : a,
-    );
-    expect(applied.links).toEqual(COLD_LINKS);
+    expect(keepNewest(newer, answer.data)).toEqual(newer);
     const released = await api(
       commands.linksIntent({ kind: "release", reason: "hidden" }),
     );
     expect(released.status === "ok" && released.data.seq).toBe(newer.seq);
+  });
+
+  // #561 round 3: the release's answer waits for its links and arrives after the answer of the `likely` sent after it.
+  test("applied in arrival order, an older answer after a newer one never steps back", async () => {
+    const rig = installRide({ phase: "none", keeper: WARM });
+    const log: { from: string; frame: LinkFrame }[] = [];
+    const channel = new Channel<LinkFrame>();
+    channel.onmessage = (frame) => log.push({ from: "frame", frame });
+    const opened = await api(commands.linksOpen(channel));
+    if (opened.status !== "ok") throw new Error("open failed");
+    const answered =
+      (from: string) => (a: { status: string; data?: LinkFrame }) => {
+        if (a.status !== "ok" || !a.data) throw new Error(`${from} failed`);
+        log.push({ from, frame: a.data });
+      };
+    // the first frame is not acked yet: the changes below wait for its ack
+    const letGo = rig.hold("links_intent");
+    const release = api(
+      commands.linksIntent({ kind: "release", reason: "devices" }),
+    ).then(answered("release"));
+    rig.setKeeper(SEARCHING);
+    await api(commands.linksIntent({ kind: "likely", ready: false })).then(
+      answered("likely"),
+    );
+    letGo();
+    await release;
+    await api(commands.linksAck(opened.data, log[0].frame.seq));
+    expect(log.map((a) => [a.from, a.frame.seq])).toEqual([
+      ["frame", 1],
+      ["likely", 3],
+      ["release", 2],
+      ["frame", 3],
+    ]);
+    expect(log[2].frame.links).toEqual(COLD_LINKS);
+    const applied: LinkFrame[] = [];
+    for (const { frame } of log)
+      applied.push(keepNewest(applied.at(-1) ?? null, frame));
+    expect(applied.map((f) => f.seq)).toEqual([1, 3, 3, 3]);
+    expect(applied.at(-1)?.links).toEqual(SEARCHING);
   });
 });
