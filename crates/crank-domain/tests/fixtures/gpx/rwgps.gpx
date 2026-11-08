@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="http://ridewithgps.com/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Gravel 60</name>
+    <link href="https://ridewithgps.com/routes/123">
+      <text>Gravel 60</text>
+    </link>
+    <time>2024-05-01T07:00:00Z</time>
+  </metadata>
+  <wpt lat="47.3769" lon="8.5417">
+    <name>Left</name>
+    <sym>Left</sym>
+    <type>Left</type>
+    <desc>Turn left onto Seestrasse</desc>
+  </wpt>
+  <trk>
+    <name>Gravel 60</name>
+    <trkseg>
+      <trkpt lat="47.3769" lon="8.5417"><ele>408.2</ele></trkpt>
+      <trkpt lat="47.3779" lon="8.5427"><ele>409.0</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

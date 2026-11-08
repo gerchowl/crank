@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5398b63abad808f59fed8b6de4b5345d8f84915a8e43e257955408537b42ca43 # shrinks to items = [Repeat(GradeProfileRepeat { label: None, count: 1, children: [Segment(GradeProfileSegment { label: None, length_m: 10, grade: Constant { pct: 0.0 }, surface: None })] })], seed = 1

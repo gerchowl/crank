@@ -89,7 +89,12 @@ and is recorded with each ride (§2.7.5), so an old ride says which profile it w
 
 **Round trip.** `store.put_route(r)` then `store.get_route(id)` equals `r` exactly (bit for bit, f64 included).
 A grade profile also round-trips through its text: `parse_route_dsl(print_route_dsl(r))` equals `r`, and
-printing that again gives the same bytes (the workout DSL's rule, `docs/DSL.md`). Deleting a route keeps every
+printing that again gives the same bytes (the workout DSL's rule, `docs/DSL.md`). The stored `dsl` is the
+canonical text and the profile's one source of truth (it keeps the repeats, which the expanded segments do
+not): `Route::check` reparses it and refuses a route whose name, points or segments differ from it, bit for
+bit. `elevation` is `Exact` for a grade profile and only for one. JSON (`segments_json`, IPC) round-trips
+bit for bit too: serde_json is built with `float_roundtrip` workspace-wide, as its default float parsing can
+come back one ULP off, and a profile one ULP off is no longer its text (#539). Deleting a route keeps every
 ride ridden on it: `ride.route_json` carries what the ride needs to show itself.
 
 ### 2.2 Import
@@ -106,7 +111,23 @@ ascent, and the surface sources. Nothing is dropped or filled silently.
   of 32. A file with a `<!DOCTYPE` is refused as `Malformed` (GPX needs none), so a hostile file cannot inflate (an
   XML bomb) or recurse.
 - `trk/trkseg/trkpt` and `rte/rtept` are read; `wpt` and `extensions` are ignored, except a surface extension
-  (`<surface>` in any namespace, mapped by §2.6.2), which sets the point's surface.
+  (`<surface>` in any namespace but GPX's or none, mapped by §2.6.2), which sets the point's surface. One surface per
+  point: a second is `Malformed`.
+- **Everything inside `<extensions>` is extension data.** It is skipped whatever its namespace: never read as GPX
+  structure, never refused, except the surface extension above. The schema's `##other` would refuse the GPX
+  namespace and none there, but real exports write unprefixed elements, which inherit the GPX namespace: Strava's
+  `<power>`, older OsmAnd's `<speed>` and `<color>`. Refusing them refused those files. Skipping is still safe: a
+  `<trkpt>` or `<gpx>` inside `<extensions>` imports nothing. The content must still be well-formed XML with every
+  prefix declared.
+- **Structure is the schema's.** The root is `gpx` in the GPX 1.0 or 1.1 namespace. Every element of that
+  namespace below it must be one its parent's type allows in the GPX 1.0/1.1 XSD content model, from the root
+  down: a nested `<gpx>`, a `trkpt` inside a `trkpt`, a child element inside `desc`, or text inside a `trk` is
+  `Malformed`. Elements the schema allows and the importer does not read (`desc`, `time`, `link`, …) are
+  ignored. Elements of other namespaces stand only where the schema's `xsd:any namespace="##other"` allows them
+  (GPX 1.1: inside `extensions`; GPX 1.0: at the end of `gpx`, `wpt`, `rte`, `rtept`, `trk`, `trkpt`); the values
+  read (`ele`, `name`) and the `metadata` holding the document name occur once, so a second is `Malformed`, not a
+  silent replacement of the first. A prefix that is not declared is `Malformed` (not namespace well-formed).
+  Sequence order is not checked.
 - **One route per import.** A file with exactly one `trk` or one `rte` imports it. A file with several lists them
   (name, distance) and the rider picks one; the import call takes the index. The segments of a `trk` are joined in
   document order, and the join is ridden as a straight line (its distance counts).
@@ -148,10 +169,17 @@ ascent, and the surface sources. Nothing is dropped or filled silently.
 | Elevation | −500 m to 9 000 m | Below the Dead Sea shore (−430 m) or above Everest (8 849 m) is a sensor fault |
 | Repeated point (distance 0 to the previous) | merged, counted | Keeps distance strictly increasing |
 | Distance between consecutive points | ≤ 10 km | A larger jump is a corrupt file or a teleport; the import is refused and the report names the position |
+| Repeated position, by accumulated distance | merged, counted | A move too small to change the along-route distance in f64 (sub-micrometre near the poles) is a repeat too, so `dist_m` strictly increases (#539) |
+| Tracks and routes per GPX file | 1 000 | A year of daily tracks is 366; the cap keeps 32 MiB of empty `<trk/>` from listing millions (#539) |
+| Grade-profile text, as given and as printed canonically | 256 KiB each | 1 000 km at 100 m per segment, written without repeats, is about 150 KB. The canonical form can be longer than the input (`,` is printed `, `), so a profile whose canonical form exceeds the limit is refused when parsed (`CanonicalTooLong`): every accepted profile prints to text that parses back (§2.1 round trip) (#539) |
+| Grade-profile label | 100 characters | A name for the ride screen, a few words (#539) |
+| Grade-profile labels after expanding repeats | 1 MiB, checked before expanding | Each expanded segment carries its label; without it `100000x("<10 000 chars>" 0.01km 0%)`, 10 KB of text, would allocate about 1 GB (#539). 10 000 labelled segments of 100 bytes fit |
 
 Every refusal is a typed `RouteImportError` (`TooLarge`, `TooManyPoints`, `TooShort`, `TooLong`, `Malformed { at,
-what }`, `MissingElevation { from_m, to_m }`, `Jump { at_m, len_m }`, `NotACourse`, `NoTrack`), mapped to
-`ApiError::InvalidInput` with the position (ADR-0001 §4.4).
+what }`, `MissingElevation { from_m, to_m }`, `Jump { at_m, len_m }`, `NotACourse`, `NoTrack`, `TooManyTracks`), mapped to
+`ApiError::InvalidInput` with the position (ADR-0001 §4.4). A truncated file (an element still open at the end) and
+text outside the root element are `Malformed`. `Invariant { what }` is not a property of the file: it reports a route that
+breaks §2.1, which `Route::new` refuses, and is a bug (#539).
 
 #### 2.2.5 Grade-profile text
 

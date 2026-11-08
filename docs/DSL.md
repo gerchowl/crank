@@ -19,7 +19,7 @@ aside), and `print_dsl` of that is byte-identical. Loosely inspired by intervals
 workout   = sep* [ item { sep+ item } ] sep* ;
 sep       = "," | ";" | newline ;              (* all three are equivalent *)
 item      = [ label ] ( repeat | step ) ;
-label     = '"' { char | '\"' | '\\' } '"' ;  (* no newlines inside *)
+label     = '"' { char | '\' any } '"' ;      (* '\' any = that character, a newline included; a raw newline is unterminated *)
 
 repeat    = COUNT "x" [ "[" option { [","] option } "]" ] "(" workout ")" ;
 option    = SIGNED "w"                         (* progression.wattsPerRep, e.g. +5w, -10w *)
@@ -73,7 +73,8 @@ case-insensitive (`4M`, `RAMP`, `LAP` are accepted; printing emits lower case).
 
 `print_dsl` emits one top-level item per line and comma-separated items inside repeats; durations
 are normalised (`90s` → `1m30s`, `3600s` → `1h`), options print as `[+5w, +2%, !last]`, the
-default `!lower` flag is omitted, labels are re-quoted. Comments and blank lines are not kept.
+default `!lower` flag is omitted, labels are re-quoted with `\`, `"` and a newline escaped by `\`, so
+every label prints to text that reads back as the same label. Comments and blank lines are not kept.
 
 ## Errors
 
@@ -156,8 +157,8 @@ progression to three decimal places, using JavaScript's ties-towards-positive-
 infinity rule. Structural round trips apply to DSL-representable trees: positive
 integer step durations, integer HR/watts/cadence/count, decimal precision within
 three places, ordered ranges, nonempty repeats, at least one progression field
-when present, and absent or true `skipLastRest`. Labels must survive re-quoting
-without raw newlines. Generated property tests cover every target/end form,
+when present, and absent or true `skipLastRest`. Labels survive re-quoting
+whatever they hold. Generated property tests cover every target/end form,
 labels, cadence, signed progression, and nested repeats under these constraints.
 
 Canonical number-format parity is bounded to finite numeric magnitudes whose
@@ -192,3 +193,24 @@ Default-gate properties exercise arbitrary Unicode strings and the DSL alphabet,
 including both closed and unclosed deep repeats, asserting completion with
 success or a typed error. Each property runs 256 cases; DSL-alphabet bodies
 are bounded to 2,048 characters and generated nesting to 2,048 levels.
+
+## Grade profiles (routes)
+
+A route's grade profile is a sibling grammar, not an extension of this one (ADR-0005 §2.2.5, §3): it shares
+this lexer, labels, separators, comments, `N x(...)` repeats (without `[...]` options) and the error spans
+(UTF-16), but a segment is `DIST grade [surface]`, e.g. `"Col" 5km 6.5%, 3km ramp 6.5%..9% gravel`.
+Distances are in `km` only (0.001 km resolution); `500m` is refused because `m` is minutes here, and
+workout durations, step ends and power targets are refused naming the workout form. Grades are
+−25 % to +30 %, segments 0.01 to 100 km, 1 000 km and 32 nesting levels in all. The canonical printer
+writes one top-level item per line, lower-case keywords, km with at most three decimals and grades
+in their shortest exact form, so parse → print → parse is equal and printing is idempotent
+(`crank_domain::route::{parse_grade_profile, print_grade_profile, parse_route_dsl, print_route_dsl}`,
+property-tested in `crates/crank-domain/tests/route_dsl.rs` and, near the size limits, `route_r3.rs`).
+
+Input limits (ADR-0005 §2.2.4, the same numbers): the text is at most 256 KiB (UTF-8 bytes,
+`MAX_PROFILE_TEXT_BYTES`), a label at most 100 characters (`MAX_LABEL_CHARS`), and the labels of the
+expanded route (each repeated segment carrying its own or its repeat's label) at most 1 MiB
+(`MAX_EXPANDED_LABEL_BYTES`), computed from the repeat counts before anything is expanded. The
+canonical form is bounded too: a profile whose canonical text would exceed 256 KiB is refused when it
+is parsed (`CanonicalTooLong`), even if the text as given fits, so every profile the parser accepts
+prints to text it accepts again.

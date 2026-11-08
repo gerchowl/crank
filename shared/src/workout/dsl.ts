@@ -303,7 +303,8 @@ export function formatDuration(totalS: number): string {
   return `${h ? `${h}h` : ""}${m ? `${m}m` : ""}${sec ? `${sec}s` : ""}`;
 }
 
-const quote = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" `;
+// The lexer takes the character after a backslash as itself and ends a label at a raw newline.
+const quote = (s: string) => `"${s.replace(/[\\"\n]/g, (c) => `\\${c}`)}" `;
 
 function printTarget(t: PowerTarget): string {
   switch (t.kind) {

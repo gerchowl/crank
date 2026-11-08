@@ -4,12 +4,13 @@ use super::{
 };
 /// Maximum number of enclosing repeats accepted from untrusted text.
 pub const MAX_NESTING_DEPTH: usize = 32;
+// The route grade-profile grammar (ADR-0005 §2.2.5) shares this lexer and its number rules.
 #[derive(Clone)]
-struct Token {
-    kind: char,
-    text: String,
-    offset: usize,
-    length: usize,
+pub(crate) struct Token {
+    pub(crate) kind: char,
+    pub(crate) text: String,
+    pub(crate) offset: usize,
+    pub(crate) length: usize,
 }
 impl Token {
     fn error(&self, kind: DslErrorKind, message: impl Into<String>) -> DslError {
@@ -35,7 +36,7 @@ fn whitespace(c: char) -> bool {
                 | '\u{feff}'
     )
 }
-fn lex(src: &str) -> Result<Vec<Token>, DslError> {
+pub(crate) fn lex(src: &str) -> Result<Vec<Token>, DslError> {
     let mut chars = src.chars().peekable();
     let mut offset = 0;
     let mut tokens = Vec::new();
@@ -155,7 +156,7 @@ fn is_numeric_token(text: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | 'h' | 'm' | 's'))
 }
-fn number(s: &str, decimal: bool) -> Option<f64> {
+pub(crate) fn number(s: &str, decimal: bool) -> Option<f64> {
     let mut parts = s.split('.');
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
     if !digits(parts.next()?) {
@@ -168,7 +169,7 @@ fn number(s: &str, decimal: bool) -> Option<f64> {
     }
     s.parse().ok()
 }
-fn suffix(s: &str, unit: &str, decimal: bool) -> Option<f64> {
+pub(crate) fn suffix(s: &str, unit: &str, decimal: bool) -> Option<f64> {
     number(s.strip_suffix(unit)?, decimal)
 }
 fn range(s: &str, unit: &str, decimal: bool) -> Option<(f64, f64)> {
@@ -598,14 +599,30 @@ pub fn format_duration(s: f64) -> String {
     }
     text
 }
+/// A label as quoted text that [`lex`] reads back as the same label: the lexer takes the
+/// character after a `\` as itself, and a raw newline ends a label unterminated, so `\`, `"`
+/// and the newline are written escaped and every other character as itself.
+pub(crate) fn quote_label(label: &str) -> String {
+    let mut out = String::with_capacity(label.len() + 2);
+    out.push('"');
+    for c in label.chars() {
+        if matches!(c, '\\' | '"' | '\n') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
 fn print_node(node: &WorkoutNode) -> String {
     let label = match node {
         WorkoutNode::Step(n) => &n.label,
         WorkoutNode::Repeat(n) => &n.label,
     };
-    let label = label.as_ref().map_or_else(String::new, |s| {
-        format!("\"{}\" ", s.replace('\\', "\\\\").replace('"', "\\\""))
-    });
+    let label = label
+        .as_ref()
+        .map_or_else(String::new, |s| format!("{} ", quote_label(s)));
     match node {
         WorkoutNode::Repeat(n) => {
             let mut opts = Vec::new();
