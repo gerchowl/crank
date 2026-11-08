@@ -88,11 +88,25 @@
         cargoExtraArgs = "--workspace --locked";
       };
       cargoArtifacts = craneLib.buildDepsOnly (common // { src = source cargoFiles; });
+      # P1 prototype (ADR-0006): checks build in the dev profile, once, with CI's feature set.
+      testFeatures = "--features crank-ble/replay,crank-ble/hil";
+      devArgs = { CARGO_PROFILE = "dev"; };
+      cargoArtifactsDev = craneLib.buildDepsOnly (common // devArgs // { pname = "crank-dev"; src = source cargoFiles;
+        cargoExtraArgs = "--workspace --locked ${testFeatures}"; });
       rustCheck = common // {
         inherit cargoArtifacts;
         nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.python3 ];
         postConfigure = "python3 scripts/relocate-tauri-permissions.py";
       };
+      testWs = craneLib.cargoBuild (rustCheck // devArgs // { pname = "crank-test-ws"; cargoArtifacts = cargoArtifactsDev;
+        cargoExtraArgs = "--workspace --locked --all-targets ${testFeatures}"; doCheck = false; });
+      devCheck = rustCheck // devArgs // { cargoArtifacts = testWs; };
+      # P1: desktop and cli in one release build (one compile of the shared workspace crates).
+      bins = craneLib.buildPackage (rustCheck // {
+        pname = "crank-bins"; cargoExtraArgs = "--locked -p crank-desktop --bin crank-desktop -p crank-cli --features crank-desktop/custom-protocol";
+        doCheck = false;
+        preBuild = ''export TAURI_CONFIG='{"build":{"frontendDist":"${appDist}"}}' '';
+      });
       desktop = features: craneLib.buildPackage (rustCheck // {
         cargoVendorDir = if lib.hasInfix "e2e" features then cargoVendorDirE2e else cargoVendorDir;
         pname = "crank-desktop"; cargoExtraArgs = "--locked -p crank-desktop --bin crank-desktop --features custom-protocol${features}";
@@ -114,8 +128,8 @@
       crankApp = pkgs.runCommand "crank-app" { nativeBuildInputs = [ pkgs.cctools pkgs.darwin.sigtool ]; } ''
         app=$out/crank.app/Contents
         mkdir -p $app/MacOS $app/Resources
-        install -m755 ${desktop ""}/bin/crank-desktop $app/MacOS/crank-desktop
-        install -m755 ${cli}/bin/crank $app/MacOS/crank
+        install -m755 ${bins}/bin/crank-desktop $app/MacOS/crank-desktop
+        install -m755 ${bins}/bin/crank $app/MacOS/crank
         for bin in $app/MacOS/*; do
           otool -L "$bin" | awk '/^\t\/nix\/store\/.*-libiconv-.*\/libiconv\.2\.dylib /{print $1}' | while read -r lib; do
             install_name_tool -change "$lib" /usr/lib/libiconv.2.dylib "$bin"
@@ -148,21 +162,21 @@
           '';
         } // lib.optionalAttrs (cargoVendorDir != null) { inherit cargoVendorDir; });
       checks = {
-        build = desktop "";
+        build = bins;
         # The e2e package must keep building where CI runs (ADR-0001 §8.3, #35); the harness itself is `just e2e`.
         build-e2e = desktop ",e2e";
         fmt = craneLib.cargoFmt { pname = "crank"; inherit version; src = source cargoFiles; };
-        clippy = craneLib.cargoClippy (rustCheck // { cargoClippyExtraArgs = "--features crank-ble/replay,crank-ble/hil --all-targets -- -D warnings"; });
-        nextest = craneLib.cargoNextest (rustCheck // { cargoNextestExtraArgs = "--features crank-ble/replay,crank-ble/hil"; });
-        doctest = craneLib.cargoDocTest rustCheck;
+        clippy = craneLib.cargoClippy (rustCheck // devArgs // { cargoArtifacts = cargoArtifactsDev; cargoClippyExtraArgs = "--features crank-ble/replay,crank-ble/hil --all-targets -- -D warnings"; });
+        nextest = craneLib.cargoNextest (devCheck // { cargoNextestExtraArgs = "--features crank-ble/replay,crank-ble/hil"; });
+        doctest = craneLib.cargoDocTest (devCheck // { cargoExtraArgs = "--workspace --locked ${testFeatures}"; });
         # crank-engine's dev-dependency on itself enables its `specta` feature in every test
         # build (#271), which hides the plain build; this check compiles the library alone (#252).
         # crank-engine declares no default features, so no feature flag is needed (#293).
-        engine-no-features = craneLib.mkCargoDerivation (rustCheck // {
+        engine-no-features = craneLib.mkCargoDerivation (devCheck // {
           buildPhaseCargoCommand = "cargo check --locked -p crank-engine";
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
-        doc = craneLib.cargoDoc (rustCheck // { RUSTDOCFLAGS = "-D warnings"; });
+        doc = craneLib.cargoDoc (rustCheck // devArgs // { cargoArtifacts = cargoArtifactsDev; RUSTDOCFLAGS = "-D warnings"; });
         deny = denyCheck {
           pname = "crank";
           src = source cargoFiles;
@@ -182,11 +196,11 @@
           policy = ./deny-fuzz.toml;
           manifest = "crates/crank-fec/fuzz/Cargo.toml";
         };
-        bindings-drift = craneLib.mkCargoDerivation (rustCheck // {
+        bindings-drift = craneLib.mkCargoDerivation (devCheck // {
           src = source (lib.fileset.unions [ rustFiles ./app/src/bindings.ts ]);
           buildPhaseCargoCommand = ''
             bindingsDir=$(mktemp -d)
-            cargo run --release --locked -p crank-desktop --bin export-bindings -- "$bindingsDir/bindings.ts"
+            cargo run --locked ${testFeatures} -p crank-desktop --bin export-bindings -- "$bindingsDir/bindings.ts"
             diff -u app/src/bindings.ts "$bindingsDir/bindings.ts"
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
@@ -201,14 +215,14 @@
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
         });
-        scales-parity = craneLib.mkCargoDerivation (rustCheck // {
+        scales-parity = craneLib.mkCargoDerivation (devCheck // {
           src = source (lib.fileset.unions [ rustFiles
             (lib.fileset.difference ./app ./app/src-tauri) ./shared
             ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ]);
           inherit pnpmDeps;
           nativeBuildInputs = rustCheck.nativeBuildInputs ++ [ pkgs.nodejs pkgs.pnpm_12 pkgs.pnpmConfigHook ];
           buildPhaseCargoCommand = ''
-            cargo run --release --locked -p crank-domain --example export_scale_edges > "$TMPDIR/rust-edges.json"
+            cargo run --locked ${testFeatures} -p crank-domain --example export_scale_edges > "$TMPDIR/rust-edges.json"
             CRANK_SCALE_EDGES="$TMPDIR/rust-edges.json" pnpm -C app exec vitest run tests/scales-parity.test.ts
           '';
           doInstallCargoArtifacts = false; installPhase = "touch $out";
