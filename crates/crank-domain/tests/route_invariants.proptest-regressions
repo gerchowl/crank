@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d37f8e2ff763b31b8ad16c4b4cdb77dbcd0814d78fa932a53b2037b64c9e843c # shrinks to raw = [RawPoint { at: 0, lat: 89.9999999, lon: 10.0, ele_m: Some(100.0), surface: None }, RawPoint { at: 0, lat: 89.9996399, lon: 10.0, ele_m: Some(100.0), surface: None }, RawPoint { at: 0, lat: 89.9992799, lon: 10.0, ele_m: Some(100.0), surface: None }, RawPoint { at: 0, lat: 89.9989199, lon: 10.0, ele_m: Some(100.0), surface: None }, RawPoint { at: 0, lat: 89.9985599, lon: 10.0, ele_m: Some(100.0), surface: None }, RawPoint { at: 0, lat: 89.9981999, lon: 10.0, ele_m: Some(100.0), surface: None }, RawPoint { at: 0, lat: 89.9981999, lon: 10.000000000000002, ele_m: Some(0.0), surface: None }]

@@ -27,7 +27,7 @@ Inner loop (#371): `just test-changed [base=origin/dev]` runs nextest and doctes
 `git diff base...HEAD` (plus the working tree and untracked files) touches and their reverse dependencies
 (`scripts/test-changed.py`, from `cargo metadata`; its mapping is tested by `scripts/test-test-changed.py`, the
 `test-changed-test` flake check). The default for a path is safe: anything outside a workspace crate that is not on the
-non-Rust list (`docs/` except `docs/hil/captures/`, which maps to crank-ble; `app/` except `app/src-tauri/`; `design/`,
+non-Rust list (`docs/` except `docs/hil/captures/`, which maps to crank-ble, and `docs/adr/models/fixtures/`, which maps to crank-domain; `app/` except `app/src-tauri/`; `design/`,
 `shared/`, `assets/`, `issues/`, `scripts/`, `.github/`, any `*.md`, and the root files justfile, LICENSE, NOTICE,
 .gitignore, .editorconfig, package.json, pnpm-*.yaml, deny*.toml) runs the whole workspace (Cargo.toml, Cargo.lock,
 flake.*, rust-toolchain.toml, clippy.toml, `.cargo/`, `.config/` and anything new); a diff of non-Rust paths only runs

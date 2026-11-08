@@ -9,6 +9,7 @@ pub mod distributions;
 pub mod filters;
 pub mod history;
 pub mod metric_error;
+pub mod route;
 pub mod scales;
 /// Workout trees and text DSL.
 pub mod workout;

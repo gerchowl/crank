@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<gpx version="1.1" creator="OsmAnd~ 4.6.6" xmlns="http://www.topografix.com/GPX/1/1" xmlns:osmand="https://osmand.net" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata>
+    <name>2024-05-01_ride</name>
+  </metadata>
+  <trk>
+    <trkseg>
+      <trkpt lat="47.3769" lon="8.5417">
+        <ele>408.2</ele>
+        <time>2024-05-01T07:00:00Z</time>
+        <hdop>3.2</hdop>
+        <extensions>
+          <osmand:speed>5.1</osmand:speed>
+        </extensions>
+      </trkpt>
+      <trkpt lat="47.3779" lon="8.5427">
+        <ele>409.0</ele>
+        <time>2024-05-01T07:00:05Z</time>
+      </trkpt>
+    </trkseg>
+    <extensions>
+      <osmand:color>#a71de1</osmand:color>
+    </extensions>
+  </trk>
+  <extensions>
+    <osmand:show_arrows>false</osmand:show_arrows>
+  </extensions>
+</gpx>
