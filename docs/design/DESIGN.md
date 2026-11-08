@@ -378,6 +378,18 @@ suggestion is explained before it is accepted:
 - the **summary shows Current → Proposed** for duration range, TSS, IF and zone time, every value labelled.
 Undo/redo spans all three views; tree ops, undo/redo and DSL ↔ tree sync are unit-tested in production (#9).
 
+**In direction A** (#528, `app/src/views/Workouts.tsx`; the library subset of #256, no editor yet): the page title,
+then on the 12-column grid (§18.2) the library in 7 columns and the picked workout in one panel in 5. The library is a
+table of Name, Duration and TSS whose rows are the options of a single-select listbox (selection follows focus: one tab
+stop, ↑ / ↓ / Home / End walk it and pick as they go); a row is as tall as its name needs, so a long name wraps and is
+never cut, and while a ride is loading every row is disabled (#320). The panel holds the name and the reference FTP, the
+profile (blocks by height over the workout's length), **Ride this** (32 px primary, §18.4; disabled with the reason
+under it for an error-severity issue; pending while its load is in flight), then the compiled summary (Duration, a
+range for open-ended steps; TSS; IF; the issues, each with ⚠ and its word; time in zone, one bar per zone) and every
+block (phase, length, watts). Ride this sits above the summary so it stays in the window however long the block list
+runs. A refused load is a notice with ⚠ under Ride this, or at the top naming the workout (#333); "no workouts yet" says
+where workouts come from. Ride this leads to the Ready check (§5.4) as before. Desk screens bind no keys (§5.9).
+
 ### 5.8 Onboarding (first run)
 Eight steps (spec/ONBOARDING §1; §15.1 added *Training for*): About you · Background · Current numbers · Health
 check · Training for · Devices · Baseline · Your starting model. A mode without the rail (§3); progress

@@ -8,7 +8,9 @@ export interface Scenario {
   name: string;
   /** A Playwright selector that is visible once the state is on screen. */
   ready: string;
-  /** Buttons the spec clicks, by accessible name, before it waits for `ready` (a pick, a scan). */
+  /** Listbox options the spec clicks, by accessible name, before its `clicks` (a workout picked in the library). */
+  picks?: string[];
+  /** Buttons the spec clicks, by accessible name, before it waits for `ready` (a scan, Ride this). */
   clicks?: string[];
   /** Mock answers that stay pending on purpose (a scan in flight): the settle wait ignores this many. */
   held?: number;
@@ -16,11 +18,37 @@ export interface Scenario {
 
 export const SCENARIOS = [
   { name: "today", ready: "role=heading[name='Today']" },
-  { name: "workouts", ready: "role=button[name=/Sweet spot 3x12/]" },
+  // Workouts (§5.7, #528): the library and the picked workout, in each of their states.
+  { name: "workouts-empty", ready: "text=No workouts yet" },
+  { name: "workouts-list-error", ready: "role=button[name='Retry']" },
+  { name: "workouts", ready: "role=option[name=/Sweet spot 3x12/]" },
   {
     name: "workouts-selected",
     ready: "role=region[name='Compiled summary']",
-    clicks: ["Sweet spot 3x12"],
+    picks: ["Sweet spot 3x12"],
+  },
+  {
+    name: "workouts-blocked",
+    ready: "#ride-blocked",
+    picks: ["Sweet spot 3x12"],
+  },
+  {
+    name: "workouts-loading",
+    ready: "role=button[name='Ride this'][disabled=true]",
+    picks: ["Sweet spot 3x12"],
+    clicks: ["Ride this"],
+    held: 1,
+  },
+  {
+    name: "workouts-load-error",
+    ready: "text=no trainer paired",
+    picks: ["Sweet spot 3x12"],
+    clicks: ["Ride this"],
+  },
+  {
+    name: "workouts-long",
+    ready: "role=region[name='Compiled summary']",
+    picks: ["Over-unders"],
   },
   { name: "devices-empty", ready: "role=button[name='Scan']" },
   {
@@ -94,6 +122,18 @@ export const SETTINGS_SCENARIOS: readonly ScenarioName[] = [
   "devices-paired",
   "devices-forget-confirm",
   "devices-denied",
+];
+
+/** The fixtures of Workouts (#528): nothing on them is cut, and every control is inside the window. */
+export const WORKOUTS_SCENARIOS: readonly ScenarioName[] = [
+  "workouts-empty",
+  "workouts-list-error",
+  "workouts",
+  "workouts-selected",
+  "workouts-blocked",
+  "workouts-loading",
+  "workouts-load-error",
+  "workouts-long",
 ];
 
 /** The fixtures of the ride screen: their region boxes are the same at each size (DESIGN §18.7 rule 10, #498). */
