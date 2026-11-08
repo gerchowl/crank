@@ -111,24 +111,80 @@
     "button.height": 4,
     "button.inconsistentHeight": 1
   },
+  "history-empty@1024x768-dark": {
+    "button.height": 4
+  },
+  "history-empty@1024x768-light": {
+    "button.height": 4
+  },
+  "history-empty@1440x900-dark": {
+    "button.height": 4
+  },
+  "history-empty@1440x900-light": {
+    "button.height": 4
+  },
+  "history-error@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-error@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-error@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-error@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-long@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-long@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-long@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-long@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-selected@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-selected@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-selected@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "history-selected@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
   "history@1024x768-dark": {
-    "button.fullWidth": 3,
-    "button.height": 7,
+    "button.height": 4,
     "button.inconsistentHeight": 1
   },
   "history@1024x768-light": {
-    "button.fullWidth": 3,
-    "button.height": 7,
+    "button.height": 4,
     "button.inconsistentHeight": 1
   },
   "history@1440x900-dark": {
-    "button.fullWidth": 3,
-    "button.height": 7,
+    "button.height": 4,
     "button.inconsistentHeight": 1
   },
   "history@1440x900-light": {
-    "button.fullWidth": 3,
-    "button.height": 7,
+    "button.height": 4,
     "button.inconsistentHeight": 1
   },
   "ready-connecting@1024x768-dark": {},
@@ -155,33 +211,85 @@
   "ready@1024x768-light": {},
   "ready@1440x900-dark": {},
   "ready@1440x900-light": {},
+  "review-aborted@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-aborted@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-aborted@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-aborted@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-error@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-error@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-error@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-error@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-long@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-long@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-long@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-long@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-short@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-short@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-short@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "review-short@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
   "review@1024x768-dark": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 7,
-    "spacing.offScale": 4,
-    "type.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "review@1024x768-light": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 7,
-    "spacing.offScale": 4,
-    "type.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "review@1440x900-dark": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 7,
-    "spacing.offScale": 4,
-    "type.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "review@1440x900-light": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 7,
-    "spacing.offScale": 4,
-    "type.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "ride-engine-silent@1024x768-dark": {},
   "ride-engine-silent@1024x768-light": {},

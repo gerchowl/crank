@@ -14,6 +14,8 @@ export interface Scenario {
   clicks?: string[];
   /** Mock answers that stay pending on purpose (a scan in flight): the settle wait ignores this many. */
   held?: number;
+  /** A selector the spec scrolls into view once the state is ready (a long list, scrolled to its end). */
+  scrollTo?: string;
 }
 
 export const SCENARIOS = [
@@ -104,9 +106,30 @@ export const SCENARIOS = [
   { name: "ride-trainer-lost-long", ready: "[data-testid='loss-help']" },
   { name: "ride-engine-silent", ready: "[data-testid='engine-unresponsive']" },
   { name: "ride-paused-hr-lost", ready: "[data-testid='loss-hr']" },
-  // The post-ride summary: a finished ride routes to History with its id until the summary route exists (#106).
+  // Review (§5.5, #529): a finished ride routes to History with its id until the summary route exists (#106).
+  // A stored ride opened from the list: its figures, no traces (the core returns no samples, RideTraces.tsx).
   { name: "review", ready: "role=heading[name='Sweet spot 3x12']" },
-  { name: "history", ready: "role=list[name='Rides']" },
+  // The ride this window just rode: a 5-minute spin and a 3 h ride at 4 Hz with 57 blocks, traces and all.
+  { name: "review-short", ready: "role=img[name=/^Power over the ride/]" },
+  { name: "review-long", ready: "role=img[name=/^Power over the ride/]" },
+  // Aborted, ended by force: no summary, and the note.
+  { name: "review-aborted", ready: "role=note" },
+  { name: "review-error", ready: "role=button[name='Retry']" },
+  // History (§5.6, #529): the ride list in each of its states.
+  { name: "history-empty", ready: "text=No rides yet." },
+  { name: "history-error", ready: "role=button[name='Retry']" },
+  { name: "history", ready: "role=table[name='Rides']" },
+  {
+    name: "history-long",
+    ready: "role=table[name='Rides']",
+    scrollTo: ".history-row:last-child",
+  },
+  // Back from a ride's Review: the list marks the ride last opened.
+  {
+    name: "history-selected",
+    ready: "[aria-current='true']",
+    clicks: ["All rides"],
+  },
   { name: "settings", ready: "role=heading[name='Appearance']" },
 ] as const satisfies readonly Scenario[];
 
@@ -134,6 +157,20 @@ export const WORKOUTS_SCENARIOS: readonly ScenarioName[] = [
   "workouts-loading",
   "workouts-load-error",
   "workouts-long",
+];
+
+/** The fixtures of History and Review (#529): nothing on them is cut, and every control is inside the window. */
+export const HISTORY_SCENARIOS: readonly ScenarioName[] = [
+  "review",
+  "review-short",
+  "review-long",
+  "review-aborted",
+  "review-error",
+  "history-empty",
+  "history-error",
+  "history",
+  "history-long",
+  "history-selected",
 ];
 
 /** The fixtures of the ride screen: their region boxes are the same at each size (DESIGN §18.7 rule 10, #498). */
