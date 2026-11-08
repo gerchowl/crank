@@ -335,6 +335,30 @@ impl Route {
         Ok(route)
     }
 
+    /// [`Route::new`] for the grade-profile parser, which builds the route its text gives and so
+    /// cannot reparse that text: every invariant but the text's agreement ([`Route::check`]).
+    pub(super) fn new_from_text(
+        name: String,
+        dsl: String,
+        points: Vec<RoutePoint>,
+        segments: Vec<RouteSegment>,
+        from_file: bool,
+    ) -> Result<Self, RouteInvariantError> {
+        let route = Self {
+            name,
+            source: RouteSource::GradeProfile { dsl },
+            points,
+            segments,
+            elevation: ElevationKind::Exact,
+            surface: SurfaceProvenance {
+                osm: None,
+                from_file,
+            },
+        };
+        route.check_shape()?;
+        Ok(route)
+    }
+
     /// [`Route::new`] from its parts.
     ///
     /// # Errors
@@ -401,13 +425,72 @@ impl Route {
 
     /// Check the invariants of ADR-0005 §2.1: a non-blank name; at least two points; `dist_m`
     /// finite, 0 at the first point and strictly increasing; every elevation `None` when
-    /// [`ElevationKind::None`], else finite; coordinates on every point of a file route, finite and
-    /// within ±90°/±180°, and on none of a grade profile; segments finite, non-empty and within
-    /// the route.
+    /// [`ElevationKind::None`], else finite; [`ElevationKind::Exact`] for a grade profile and
+    /// only for one; coordinates on every point of a file route, finite and within ±90°/±180°,
+    /// and on none of a grade profile; segments finite, non-empty and within the route, with
+    /// [`SegmentGrade::FromPoints`] in a file route and a stated grade in a grade profile, which
+    /// has at least one. A grade profile's text is its one source of truth: parsing it
+    /// ([`parse_route_dsl`]) must give this route, bit for bit.
     ///
     /// # Errors
     /// The first invariant the route breaks.
     pub fn check(&self) -> Result<(), RouteInvariantError> {
+        self.check_shape()?;
+        if let RouteSource::GradeProfile { dsl } = &self.source {
+            let rebuilt = parse_route_dsl(dsl)
+                .map_err(|e| broken(format!("its grade-profile text does not parse: {e}")))?;
+            if !rebuilt.same_bits(self) {
+                return Err(broken(
+                    "its name, points or segments are not what its grade-profile text gives".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Equal, with every `f64` compared by its bits.
+    fn same_bits(&self, other: &Self) -> bool {
+        type PointBits = (u64, Option<u64>, Option<(u64, u64)>, Option<Surface>);
+        fn bits(x: f64) -> u64 {
+            x.to_bits()
+        }
+        fn point(p: &RoutePoint) -> PointBits {
+            (
+                bits(p.dist_m),
+                p.ele_m.map(bits),
+                p.lat_lon.map(|(lat, lon)| (bits(lat), bits(lon))),
+                p.surface,
+            )
+        }
+        fn segment(s: &RouteSegment) -> (u64, u64, Option<&str>, [u64; 3], Option<Surface>) {
+            let grade = match s.grade {
+                SegmentGrade::FromPoints => [0, 0, 0],
+                SegmentGrade::Constant { pct } => [1, bits(pct), 0],
+                SegmentGrade::Ramp { from_pct, to_pct } => [2, bits(from_pct), bits(to_pct)],
+            };
+            (
+                bits(s.start_m),
+                bits(s.end_m),
+                s.label.as_deref(),
+                grade,
+                s.surface,
+            )
+        }
+        self == other
+            && self
+                .points
+                .iter()
+                .map(point)
+                .eq(other.points.iter().map(point))
+            && self
+                .segments
+                .iter()
+                .map(segment)
+                .eq(other.segments.iter().map(segment))
+    }
+
+    /// Every invariant of [`Route::check`] but a grade profile's agreement with its text.
+    fn check_shape(&self) -> Result<(), RouteInvariantError> {
         if self.name.trim().is_empty() {
             return Err(broken("the name is blank".into()));
         }
@@ -424,6 +507,18 @@ impl Route {
             )));
         }
         let profile = matches!(self.source, RouteSource::GradeProfile { .. });
+        // ADR-0005 §2.1: `Recorded | None (§2.2.2) | Exact (grade profile)`; §2.2.5: a grade
+        // profile's elevation is the integral of its grades, `Exact`.
+        if profile != (self.elevation == ElevationKind::Exact) {
+            return Err(broken(format!(
+                "{:?} elevation for a {} route",
+                self.elevation,
+                if profile { "grade-profile" } else { "file" }
+            )));
+        }
+        if profile && self.segments.is_empty() {
+            return Err(broken("a grade profile without segments".into()));
+        }
         let mut prev = f64::NEG_INFINITY;
         for (i, p) in self.points.iter().enumerate() {
             if !(p.dist_m.is_finite() && p.dist_m > prev) {
@@ -459,7 +554,8 @@ impl Route {
         }
         for (i, s) in self.segments.iter().enumerate() {
             let grades_finite = match s.grade {
-                SegmentGrade::FromPoints => true,
+                SegmentGrade::FromPoints => !profile,
+                _ if !profile => false,
                 SegmentGrade::Constant { pct } => pct.is_finite(),
                 SegmentGrade::Ramp { from_pct, to_pct } => {
                     from_pct.is_finite() && to_pct.is_finite()

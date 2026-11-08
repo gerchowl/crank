@@ -1,5 +1,7 @@
 //! GPX 1.0 and 1.1 import (ADR-0005 §2.2.1): a streaming reader that expands no entity, refuses a
-//! DOCTYPE and stops at a depth of [`MAX_XML_DEPTH`].
+//! DOCTYPE and stops at a depth of [`MAX_XML_DEPTH`]. Every element of the GPX namespace must
+//! stand where its schema's content model puts it, from the single root down ([`child_type`]);
+//! other namespaces only where the schema allows them ([`foreign_allowed`]).
 use super::{
     DEFAULT_ROUTE_NAME, MAX_FILE_BYTES, MAX_TRACKS, MAX_XML_DEPTH, RouteSource, Surface,
     haversine_m,
@@ -61,12 +63,14 @@ struct Candidate {
     unknown_surfaces: usize,
 }
 
+/// A value the importer reads, as a bit of its owner's [`Frame::seen`]: each is read once.
 #[derive(Clone, Copy, PartialEq)]
+#[repr(u8)]
 enum Field {
-    DocName,
-    TrackName,
-    Ele,
-    Surface,
+    DocName = 1,
+    TrackName = 2,
+    Ele = 4,
+    Surface = 8,
 }
 
 #[derive(Default)]
@@ -170,33 +174,205 @@ fn decimal(text: &str) -> Option<f64> {
     ok.then(|| t.parse().ok()).flatten()
 }
 
-/// The GPX 1.0 and 1.1 namespaces; the root must be `gpx` in one of them, and structural
-/// elements must be in the root's.
+/// The GPX 1.0 and 1.1 namespaces; the root must be `gpx` in one of them, and the GPX
+/// elements below it in the root's.
 const GPX_NAMESPACES: [&str; 2] = [
     "http://www.topografix.com/GPX/1/0",
     "http://www.topografix.com/GPX/1/1",
 ];
 
-/// Parents under which the GPX 1.0 schema allows elements of other namespaces
-/// (`<xsd:any namespace="##other">` at the end of `gpx`, `wpt`, `rte`, `rtept`, `trk`, `trkpt`;
-/// not `trkseg`). GPX 1.1 allows them only inside `<extensions>` (`extensionsType`).
-const GPX10_OPEN_PARENTS: [&str; 6] = ["gpx", "wpt", "rte", "rtept", "trk", "trkpt"];
+/// The schema type of an element of the document's GPX namespace: GPX 1.1's complex types
+/// (`gpx.xsd` 1.1), and GPX 1.0's anonymous types named after their element (`gpx.xsd` 1.0).
+#[derive(Clone, Copy, PartialEq)]
+enum Ty {
+    /// `gpxType`, the root.
+    Gpx,
+    /// 1.1 `metadataType`.
+    Metadata,
+    /// 1.1 `personType` (`author`).
+    Person,
+    /// 1.1 `copyrightType`.
+    Copyright,
+    /// 1.1 `linkType`.
+    Link,
+    /// `wptType` as a waypoint: read by no route.
+    Wpt,
+    /// `rteType`.
+    Rte,
+    /// `wptType` as a route point.
+    Rtept,
+    /// `trkType`.
+    Trk,
+    /// `trksegType`.
+    Trkseg,
+    /// `wptType` as a track point (1.0 adds `course` and `speed`).
+    Trkpt,
+    /// 1.1 `extensionsType`: `<xsd:any namespace="##other">` only.
+    Extensions,
+    /// A simple type (`xsd:string`, `xsd:decimal`, `xsd:dateTime`, …): text, no child element.
+    Text,
+    /// `boundsType`, 1.1 `emailType`: attributes only.
+    Empty,
+}
+
+impl Ty {
+    fn xsd(self) -> &'static str {
+        match self {
+            Self::Gpx => "gpxType",
+            Self::Metadata => "metadataType",
+            Self::Person => "personType",
+            Self::Copyright => "copyrightType",
+            Self::Link => "linkType",
+            Self::Wpt | Self::Rtept | Self::Trkpt => "wptType",
+            Self::Rte => "rteType",
+            Self::Trk => "trkType",
+            Self::Trkseg => "trksegType",
+            Self::Extensions => "extensionsType",
+            Self::Text => "simple type, no child elements",
+            Self::Empty => "empty type",
+        }
+    }
+}
+
+/// GPX 1.1 `wptType`'s simple-typed children: every child but `link` and `extensions`.
+const WPT_TEXT_1_1: [&str; 17] = [
+    "ele",
+    "time",
+    "magvar",
+    "geoidheight",
+    "name",
+    "cmt",
+    "desc",
+    "src",
+    "sym",
+    "type",
+    "fix",
+    "sat",
+    "hdop",
+    "vdop",
+    "pdop",
+    "ageofdgpsdata",
+    "dgpsid",
+];
+/// GPX 1.0 `wpt`'s and `rtept`'s children, all simple-typed; `trkpt` adds `course` and `speed`.
+const WPT_TEXT_1_0: [&str; 19] = [
+    "ele",
+    "time",
+    "magvar",
+    "geoidheight",
+    "name",
+    "cmt",
+    "desc",
+    "src",
+    "url",
+    "urlname",
+    "sym",
+    "type",
+    "fix",
+    "sat",
+    "hdop",
+    "vdop",
+    "pdop",
+    "ageofdgpsdata",
+    "dgpsid",
+];
+/// GPX 1.1 `rteType`'s and `trkType`'s simple-typed children.
+const TRK_TEXT_1_1: [&str; 6] = ["name", "cmt", "desc", "src", "number", "type"];
+/// GPX 1.0 `rte`'s and `trk`'s simple-typed children.
+const TRK_TEXT_1_0: [&str; 7] = ["name", "cmt", "desc", "src", "url", "urlname", "number"];
+/// GPX 1.0 `gpx`'s simple-typed children.
+const GPX_TEXT_1_0: [&str; 8] = [
+    "name", "desc", "author", "email", "url", "urlname", "time", "keywords",
+];
+/// GPX 1.1 `metadataType`'s simple-typed children.
+const METADATA_TEXT_1_1: [&str; 4] = ["name", "desc", "time", "keywords"];
+
+/// The type of the GPX-namespace element `name` inside one of type `parent`, `None` if the
+/// schema's content model does not allow it there. Sequence order and `maxOccurs` are not
+/// checked, except for the values the importer reads ([`Field`]), which may occur once.
+fn child_type(v1_0: bool, parent: Ty, name: &str) -> Option<Ty> {
+    let text = |list: &[&str]| list.contains(&name).then_some(Ty::Text);
+    if v1_0 {
+        return match (parent, name) {
+            (Ty::Gpx, "bounds") => Some(Ty::Empty),
+            (Ty::Gpx, "wpt") => Some(Ty::Wpt),
+            (Ty::Gpx, "rte") => Some(Ty::Rte),
+            (Ty::Gpx, "trk") => Some(Ty::Trk),
+            (Ty::Gpx, _) => text(&GPX_TEXT_1_0),
+            (Ty::Rte, "rtept") => Some(Ty::Rtept),
+            (Ty::Trk, "trkseg") => Some(Ty::Trkseg),
+            (Ty::Rte | Ty::Trk, _) => text(&TRK_TEXT_1_0),
+            (Ty::Trkseg, "trkpt") => Some(Ty::Trkpt),
+            (Ty::Trkpt, "course" | "speed") => Some(Ty::Text),
+            (Ty::Wpt | Ty::Rtept | Ty::Trkpt, _) => text(&WPT_TEXT_1_0),
+            _ => None,
+        };
+    }
+    match (parent, name) {
+        (
+            Ty::Gpx
+            | Ty::Metadata
+            | Ty::Wpt
+            | Ty::Rte
+            | Ty::Rtept
+            | Ty::Trk
+            | Ty::Trkseg
+            | Ty::Trkpt,
+            "extensions",
+        ) => Some(Ty::Extensions),
+        (Ty::Gpx, "metadata") => Some(Ty::Metadata),
+        (Ty::Gpx, "wpt") => Some(Ty::Wpt),
+        (Ty::Gpx, "rte") => Some(Ty::Rte),
+        (Ty::Gpx, "trk") => Some(Ty::Trk),
+        (
+            Ty::Metadata | Ty::Person | Ty::Wpt | Ty::Rte | Ty::Rtept | Ty::Trk | Ty::Trkpt,
+            "link",
+        ) => Some(Ty::Link),
+        (Ty::Metadata, "author") => Some(Ty::Person),
+        (Ty::Metadata, "copyright") => Some(Ty::Copyright),
+        (Ty::Metadata, "bounds") | (Ty::Person, "email") => Some(Ty::Empty),
+        (Ty::Metadata, _) => text(&METADATA_TEXT_1_1),
+        (Ty::Person, "name")
+        | (Ty::Copyright, "year" | "license")
+        | (Ty::Link, "text" | "type") => Some(Ty::Text),
+        (Ty::Rte, "rtept") => Some(Ty::Rtept),
+        (Ty::Trk, "trkseg") => Some(Ty::Trkseg),
+        (Ty::Rte | Ty::Trk, _) => text(&TRK_TEXT_1_1),
+        (Ty::Trkseg, "trkpt") => Some(Ty::Trkpt),
+        (Ty::Wpt | Ty::Rtept | Ty::Trkpt, _) => text(&WPT_TEXT_1_1),
+        _ => None,
+    }
+}
+
+/// Whether an element of another namespace may stand in an element of type `parent`: GPX 1.0's
+/// `<xsd:any namespace="##other">` at the end of `gpx`, `wpt`, `rte`, `rtept`, `trk` and `trkpt`
+/// (not `trkseg`), GPX 1.1's only in `extensionsType`. `##other` excludes no namespace.
+fn foreign_allowed(v1_0: bool, parent: Ty) -> bool {
+    if v1_0 {
+        matches!(
+            parent,
+            Ty::Gpx | Ty::Wpt | Ty::Rte | Ty::Rtept | Ty::Trk | Ty::Trkpt
+        )
+    } else {
+        parent == Ty::Extensions
+    }
+}
 
 /// How an open element is read.
 #[derive(Clone, Copy, PartialEq)]
-enum Role {
-    /// An element of the document's GPX namespace.
-    Gpx,
-    /// A GPX 1.1 `<extensions>`: its children are extensions.
-    Extensions,
-    /// An element of another namespace where the schema allows one, or anything inside it:
-    /// skipped, except a `<surface>` inside a point (ADR-0005 §2.2.1).
-    Extension,
+enum Content {
+    /// An element of the document's GPX namespace, of this type.
+    Gpx(Ty),
+    /// An element of another namespace where the schema allows one, or anything inside it
+    /// (`processContents="lax"`): skipped, except a `<surface>` inside a point (ADR-0005 §2.2.1).
+    Foreign,
 }
 
 struct Frame {
     name: String,
-    role: Role,
+    content: Content,
+    /// The [`Field`]s this element already had.
+    seen: u8,
 }
 
 /// An element's namespace, resolved by quick-xml's namespace reader.
@@ -225,36 +401,17 @@ struct Walk {
     point: Option<RawPoint>,
     /// Depth of the point's element; 0 outside a point.
     point_depth: usize,
-    /// Whether the open point already had its `<ele>`.
-    ele_seen: bool,
     /// The field being read, the depth of its element and its text so far.
     capture: Option<(Field, usize, String)>,
 }
 
 impl Walk {
-    fn parent(&self) -> Option<&Frame> {
-        self.stack.last()
-    }
-
-    fn parent_is(&self, name: &str) -> bool {
-        self.parent()
-            .is_some_and(|f| f.role == Role::Gpx && f.name == name)
-    }
-
     fn v1_0(&self) -> bool {
         self.gpx_ns == GPX_NAMESPACES[0]
     }
 
-    /// Refuse a structural element whose parent is not the one the schema gives it.
-    fn placed(&self, name: &str, parent: &str, xsd: &str, at: u64) -> Result<(), RouteImportError> {
-        if self.parent_is(parent) {
-            Ok(())
-        } else {
-            Err(malformed(
-                at,
-                format!("<{name}> outside a <{parent}> (GPX {xsd})"),
-            ))
-        }
+    fn version(&self) -> &'static str {
+        if self.v1_0() { "1.0" } else { "1.1" }
     }
 
     fn open(&mut self, ns: &Ns, e: &BytesStart<'_>, at: u64) -> Result<(), RouteImportError> {
@@ -275,15 +432,12 @@ impl Walk {
             Ns::None => None,
             Ns::Uri(u) => Some(u.as_str()),
         };
-        let Some(parent) = self.parent().map(|f| f.role) else {
+        let Some(parent) = self.stack.last().map(|f| f.content) else {
             let root_ns = uri.and_then(|u| GPX_NAMESPACES.iter().find(|g| **g == u));
             return match (name.as_str(), root_ns) {
                 ("gpx", Some(g)) => {
                     self.gpx_ns = g;
-                    self.stack.push(Frame {
-                        name,
-                        role: Role::Gpx,
-                    });
+                    self.push(name, Content::Gpx(Ty::Gpx));
                     Ok(())
                 }
                 _ => Err(malformed(
@@ -295,62 +449,100 @@ impl Walk {
                 )),
             };
         };
-        if parent != Role::Gpx {
-            let surface = name == "surface" && self.point.is_some();
-            self.stack.push(Frame {
-                name,
-                role: Role::Extension,
-            });
-            if surface {
-                self.start_capture(Field::Surface);
-            }
-            return Ok(());
+        let parent = match parent {
+            Content::Foreign => return self.foreign(name, at),
+            Content::Gpx(ty) => ty,
+        };
+        if uri == Some(self.gpx_ns) {
+            let Some(ty) = child_type(self.v1_0(), parent, &name) else {
+                return Err(malformed(
+                    at,
+                    format!(
+                        "<{name}> is not allowed in <{}> (GPX {} {})",
+                        self.stack.last().map_or("", |f| f.name.as_str()),
+                        self.version(),
+                        parent.xsd()
+                    ),
+                ));
+            };
+            return self.structural(name, parent, ty, e, at);
         }
-        if uri != Some(self.gpx_ns) {
-            let open_parent = self
-                .parent()
-                .is_some_and(|f| GPX10_OPEN_PARENTS.contains(&f.name.as_str()));
-            if self.v1_0() && open_parent {
-                let surface = name == "surface" && self.point.is_some();
-                self.stack.push(Frame {
-                    name,
-                    role: Role::Extension,
-                });
-                if surface {
-                    self.start_capture(Field::Surface);
-                }
-                return Ok(());
-            }
-            let rule = if self.v1_0() {
-                "GPX 1.0 allows other namespaces only at the end of gpx, wpt, rte, rtept, trk and trkpt"
+        if uri.is_some() && foreign_allowed(self.v1_0(), parent) {
+            return self.foreign(name, at);
+        }
+        let rule = if self.v1_0() {
+            "GPX 1.0 allows other namespaces only at the end of gpx, wpt, rte, rtept, trk and trkpt"
+        } else {
+            "GPX 1.1 allows other namespaces only inside <extensions>, extensionsType"
+        };
+        Err(malformed(
+            at,
+            format!("<{name}> in namespace '{}': {rule}", uri.unwrap_or("")),
+        ))
+    }
+
+    fn push(&mut self, name: String, content: Content) {
+        self.stack.push(Frame {
+            name,
+            content,
+            seen: 0,
+        });
+    }
+
+    /// Mark `field` read in the open element at `owner`, refusing a second one.
+    fn read_once(&mut self, owner: usize, field: Field, at: u64) -> Result<(), RouteImportError> {
+        let bit = field as u8;
+        let rule = match field {
+            Field::Surface => "one surface per point, ADR-0005 §2.2",
+            Field::Ele => "GPX wptType: ele maxOccurs 1",
+            Field::TrackName | Field::DocName => "GPX: name maxOccurs 1",
+        };
+        let Some(frame) = self.stack.get_mut(owner) else {
+            return Ok(());
+        };
+        if frame.seen & bit != 0 {
+            let what = if field == Field::Surface {
+                "surface"
+            } else if field == Field::Ele {
+                "ele"
             } else {
-                "GPX 1.1 allows other namespaces only inside <extensions>, extensionsType"
+                "name"
             };
             return Err(malformed(
                 at,
-                format!("<{name}> in namespace '{}': {rule}", uri.unwrap_or("")),
+                format!("a second <{what}> in one <{}> ({rule})", frame.name),
             ));
         }
-        self.structural(name, e, at)
+        frame.seen |= bit;
+        Ok(())
     }
 
-    /// An element of the document's GPX namespace, below the root.
+    /// An element of another namespace, or one inside it.
+    fn foreign(&mut self, name: String, at: u64) -> Result<(), RouteImportError> {
+        let surface = name == "surface" && self.point.is_some();
+        self.push(name, Content::Foreign);
+        if surface {
+            self.read_once(self.point_depth - 1, Field::Surface, at)?;
+            self.start_capture(Field::Surface);
+        }
+        Ok(())
+    }
+
+    /// An element of the document's GPX namespace, below the root, that its parent allows.
     fn structural(
         &mut self,
         name: String,
+        parent: Ty,
+        ty: Ty,
         e: &BytesStart<'_>,
         at: u64,
     ) -> Result<(), RouteImportError> {
-        let mut role = Role::Gpx;
-        let mut field = None;
-        match name.as_str() {
-            "extensions" if !self.v1_0() => role = Role::Extensions,
-            "trk" | "rte" => {
-                self.placed(&name, "gpx", "gpxType", at)?;
+        match ty {
+            Ty::Rte | Ty::Trk => {
                 if self.doc.candidates.len() == MAX_TRACKS {
                     return Err(RouteImportError::TooManyTracks { max: MAX_TRACKS });
                 }
-                let kind = if name == "trk" {
+                let kind = if ty == Ty::Trk {
                     TrackKind::Track
                 } else {
                     TrackKind::Route
@@ -362,37 +554,24 @@ impl Walk {
                     unknown_surfaces: 0,
                 });
             }
-            "trkseg" => self.placed(&name, "trk", "trkType", at)?,
-            "trkpt" | "rtept" => {
-                let (parent, xsd) = if name == "trkpt" {
-                    ("trkseg", "trksegType")
-                } else {
-                    ("rte", "rteType")
-                };
-                self.placed(&name, parent, xsd, at)?;
+            Ty::Rtept | Ty::Trkpt => {
                 self.point = Some(point(e, at)?);
                 self.point_depth = self.stack.len() + 1;
-                self.ele_seen = false;
-            }
-            "ele" if self.parent_is("trkpt") || self.parent_is("rtept") => {
-                if self.ele_seen {
-                    return Err(malformed(
-                        at,
-                        "a second <ele> in one point (GPX wptType: ele maxOccurs 1)",
-                    ));
-                }
-                self.ele_seen = true;
-                field = Some(Field::Ele);
-            }
-            "name" if self.parent_is("trk") || self.parent_is("rte") => {
-                field = Some(Field::TrackName);
-            }
-            "name" if self.parent_is("metadata") || (self.v1_0() && self.parent_is("gpx")) => {
-                field = Some(Field::DocName);
             }
             _ => {}
         }
-        self.stack.push(Frame { name, role });
+        // The values read; `child_type` allows each only where it is meant (a 1.1 root has no
+        // `name`, its document name is the `metadata`'s).
+        let field = match (parent, name.as_str()) {
+            (Ty::Rtept | Ty::Trkpt, "ele") => Some(Field::Ele),
+            (Ty::Rte | Ty::Trk, "name") => Some(Field::TrackName),
+            (Ty::Gpx | Ty::Metadata, "name") => Some(Field::DocName),
+            _ => None,
+        };
+        if let Some(field) = field {
+            self.read_once(self.stack.len() - 1, field, at)?;
+        }
+        self.push(name, Content::Gpx(ty));
         if let Some(field) = field {
             self.start_capture(field);
         }
@@ -431,10 +610,10 @@ impl Walk {
     fn finish(&mut self, field: Field, text: String, at: u64) -> Result<(), RouteImportError> {
         let text = (!text.is_empty()).then_some(text);
         match field {
-            Field::DocName => self.doc.name = self.doc.name.take().or(text),
+            Field::DocName => self.doc.name = text,
             Field::TrackName => {
                 if let Some(c) = self.doc.candidates.last_mut() {
-                    c.name = c.name.take().or(text);
+                    c.name = text;
                 }
             }
             Field::Ele => {
@@ -460,16 +639,54 @@ impl Walk {
         Ok(())
     }
 
-    /// Character data; outside the root element only whitespace is allowed.
+    /// Character data: outside the root only whitespace, and in a GPX element of a complex
+    /// type (element-only content, no `mixed`) only whitespace too.
     fn text(&mut self, s: &str, at: u64) -> Result<(), RouteImportError> {
-        if self.stack.is_empty() && !s.chars().all(char::is_whitespace) {
-            return Err(malformed(at, "text outside the <gpx> element"));
+        let blank = s.chars().all(char::is_whitespace);
+        match self.stack.last() {
+            None if !blank => return Err(malformed(at, "text outside the <gpx> element")),
+            Some(f)
+                if !blank && !matches!(f.content, Content::Foreign | Content::Gpx(Ty::Text)) =>
+            {
+                let xsd = match f.content {
+                    Content::Gpx(ty) => ty.xsd(),
+                    Content::Foreign => "",
+                };
+                return Err(malformed(
+                    at,
+                    format!(
+                        "text inside <{}> (GPX {} {xsd}: no character content)",
+                        f.name,
+                        self.version()
+                    ),
+                ));
+            }
+            _ => {}
         }
         if let Some((_, _, t)) = &mut self.capture {
             t.push_str(s);
         }
         Ok(())
     }
+}
+
+/// Refuse an attribute whose prefix is not declared: such a document is not namespace
+/// well-formed (Namespaces in XML 1.0, §5 "Prefix Declared").
+fn attributes_declared(
+    reader: &NsReader<&[u8]>,
+    e: &BytesStart<'_>,
+    at: u64,
+) -> Result<(), RouteImportError> {
+    for attr in e.attributes() {
+        let attr = attr.map_err(|err| malformed(at, err.to_string()))?;
+        if let (ResolveResult::Unknown(p), _) = reader.resolver().resolve_attribute(attr.key) {
+            return Err(malformed(
+                at,
+                format!("namespace prefix '{p}' is not declared"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn point(e: &BytesStart<'_>, at: u64) -> Result<RawPoint, RouteImportError> {
@@ -517,7 +734,6 @@ fn read(bytes: &[u8]) -> Result<Doc, RouteImportError> {
         doc: Doc::default(),
         point: None,
         point_depth: 0,
-        ele_seen: false,
         capture: None,
     };
     let mut root_seen = false;
@@ -536,6 +752,7 @@ fn read(bytes: &[u8]) -> Result<Doc, RouteImportError> {
                     return Err(malformed(at, "content after the root element"));
                 }
                 root_seen = true;
+                attributes_declared(&reader, &e, at)?;
                 walk.open(&ns, &e, at)?;
             }
             Event::Empty(e) => {
@@ -543,6 +760,7 @@ fn read(bytes: &[u8]) -> Result<Doc, RouteImportError> {
                     return Err(malformed(at, "content after the root element"));
                 }
                 root_seen = true;
+                attributes_declared(&reader, &e, at)?;
                 walk.open(&ns, &e, at)?;
                 walk.close(at)?;
             }

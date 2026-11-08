@@ -319,19 +319,25 @@ fn a_second_ele_in_one_point_is_malformed() {
 #[test]
 fn structural_elements_must_sit_where_the_schema_puts_them() {
     for (body, want) in [
-        (format!("<trk>{PTS}</trk>"), "trksegType"),
-        (format!("<rte><trkseg>{PTS}</trkseg></rte>"), "trkType"),
+        (
+            format!("<trk>{PTS}</trk>"),
+            "<trkpt> is not allowed in <trk> (GPX 1.1 trkType)",
+        ),
+        (
+            format!("<rte><trkseg>{PTS}</trkseg></rte>"),
+            "<trkseg> is not allowed in <rte> (GPX 1.1 rteType)",
+        ),
         (
             r#"<trk><trkseg><rtept lat="46" lon="8"/></trkseg></trk>"#.to_owned(),
-            "rteType",
+            "<rtept> is not allowed in <trkseg> (GPX 1.1 trksegType)",
         ),
         (
             format!("<metadata><trk><trkseg>{PTS}</trkseg></trk></metadata>"),
-            "gpxType",
+            "<trk> is not allowed in <metadata> (GPX 1.1 metadataType)",
         ),
         (
             format!("<trk><trk><trkseg>{PTS}</trkseg></trk></trk>"),
-            "gpxType",
+            "<trk> is not allowed in <trk> (GPX 1.1 trkType)",
         ),
     ] {
         let what = malformed(&doc(GPX11, &body));

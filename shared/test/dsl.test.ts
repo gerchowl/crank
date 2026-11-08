@@ -178,7 +178,7 @@ describe("printDsl round trip", () => {
                   ? { kind: "hr" as const, bpm: rng.int(100, 180) }
                   : { kind: "free" as const };
       const s: WorkoutNode = { type: "step", id: "x", end, target };
-      if (rng.chance(0.3)) s.label = rng.pick(["Warm-up", 'say "hi"', "back\\slash", "VO2, max; (hard)", ""]);
+      if (rng.chance(0.3)) s.label = rng.pick(["Warm-up", 'say "hi"', "back\\slash", "VO2, max; (hard)", "two\nlines", ""]);
       if (rng.chance(0.3)) {
         const lo = rng.int(60, 100);
         s.cadence = { lo, hi: rng.chance(0.5) ? lo : lo + rng.int(1, 20) };

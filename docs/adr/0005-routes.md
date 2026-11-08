@@ -89,7 +89,10 @@ and is recorded with each ride (§2.7.5), so an old ride says which profile it w
 
 **Round trip.** `store.put_route(r)` then `store.get_route(id)` equals `r` exactly (bit for bit, f64 included).
 A grade profile also round-trips through its text: `parse_route_dsl(print_route_dsl(r))` equals `r`, and
-printing that again gives the same bytes (the workout DSL's rule, `docs/DSL.md`). Deleting a route keeps every
+printing that again gives the same bytes (the workout DSL's rule, `docs/DSL.md`). The stored `dsl` is the
+canonical text and the profile's one source of truth (it keeps the repeats, which the expanded segments do
+not): `Route::check` reparses it and refuses a route whose name, points or segments differ from it, bit for
+bit. `elevation` is `Exact` for a grade profile and only for one. Deleting a route keeps every
 ride ridden on it: `ride.route_json` carries what the ride needs to show itself.
 
 ### 2.2 Import
@@ -106,7 +109,16 @@ ascent, and the surface sources. Nothing is dropped or filled silently.
   of 32. A file with a `<!DOCTYPE` is refused as `Malformed` (GPX needs none), so a hostile file cannot inflate (an
   XML bomb) or recurse.
 - `trk/trkseg/trkpt` and `rte/rtept` are read; `wpt` and `extensions` are ignored, except a surface extension
-  (`<surface>` in any namespace, mapped by §2.6.2), which sets the point's surface.
+  (`<surface>` in any namespace but GPX's, mapped by §2.6.2), which sets the point's surface. One surface per point: a
+  second is `Malformed`.
+- **Structure is the schema's.** The root is `gpx` in the GPX 1.0 or 1.1 namespace. Every element of that
+  namespace below it must be one its parent's type allows in the GPX 1.0/1.1 XSD content model, from the root
+  down: a nested `<gpx>`, a `trkpt` inside a `trkpt`, a child element inside `desc`, or text inside a `trk` is
+  `Malformed`. Elements the schema allows and the importer does not read (`desc`, `time`, `link`, …) are
+  ignored. Elements of other namespaces stand only where the schema's `xsd:any namespace="##other"` allows them
+  (GPX 1.1: inside `extensions`; GPX 1.0: at the end of `gpx`, `wpt`, `rte`, `rtept`, `trk`, `trkpt`); the values
+  read (`ele`, `name`) occur once. A prefix that is not declared is `Malformed` (not namespace well-formed).
+  Sequence order is not checked.
 - **One route per import.** A file with exactly one `trk` or one `rte` imports it. A file with several lists them
   (name, distance) and the rider picks one; the import call takes the index. The segments of a `trk` are joined in
   document order, and the join is ridden as a straight line (its distance counts).

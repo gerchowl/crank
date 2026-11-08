@@ -19,7 +19,7 @@ aside), and `print_dsl` of that is byte-identical. Loosely inspired by intervals
 workout   = sep* [ item { sep+ item } ] sep* ;
 sep       = "," | ";" | newline ;              (* all three are equivalent *)
 item      = [ label ] ( repeat | step ) ;
-label     = '"' { char | '\"' | '\\' } '"' ;  (* no newlines inside *)
+label     = '"' { char | '\' any } '"' ;      (* '\' any = that character, a newline included; a raw newline is unterminated *)
 
 repeat    = COUNT "x" [ "[" option { [","] option } "]" ] "(" workout ")" ;
 option    = SIGNED "w"                         (* progression.wattsPerRep, e.g. +5w, -10w *)
@@ -73,7 +73,8 @@ case-insensitive (`4M`, `RAMP`, `LAP` are accepted; printing emits lower case).
 
 `print_dsl` emits one top-level item per line and comma-separated items inside repeats; durations
 are normalised (`90s` → `1m30s`, `3600s` → `1h`), options print as `[+5w, +2%, !last]`, the
-default `!lower` flag is omitted, labels are re-quoted. Comments and blank lines are not kept.
+default `!lower` flag is omitted, labels are re-quoted with `\`, `"` and a newline escaped by `\`, so
+every label prints to text that reads back as the same label. Comments and blank lines are not kept.
 
 ## Errors
 
@@ -156,8 +157,8 @@ progression to three decimal places, using JavaScript's ties-towards-positive-
 infinity rule. Structural round trips apply to DSL-representable trees: positive
 integer step durations, integer HR/watts/cadence/count, decimal precision within
 three places, ordered ranges, nonempty repeats, at least one progression field
-when present, and absent or true `skipLastRest`. Labels must survive re-quoting
-without raw newlines. Generated property tests cover every target/end form,
+when present, and absent or true `skipLastRest`. Labels survive re-quoting
+whatever they hold. Generated property tests cover every target/end form,
 labels, cadence, signed progression, and nested repeats under these constraints.
 
 Canonical number-format parity is bounded to finite numeric magnitudes whose

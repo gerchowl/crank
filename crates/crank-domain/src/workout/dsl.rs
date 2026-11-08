@@ -599,14 +599,30 @@ pub fn format_duration(s: f64) -> String {
     }
     text
 }
+/// A label as quoted text that [`lex`] reads back as the same label: the lexer takes the
+/// character after a `\` as itself, and a raw newline ends a label unterminated, so `\`, `"`
+/// and the newline are written escaped and every other character as itself.
+pub(crate) fn quote_label(label: &str) -> String {
+    let mut out = String::with_capacity(label.len() + 2);
+    out.push('"');
+    for c in label.chars() {
+        if matches!(c, '\\' | '"' | '\n') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
 fn print_node(node: &WorkoutNode) -> String {
     let label = match node {
         WorkoutNode::Step(n) => &n.label,
         WorkoutNode::Repeat(n) => &n.label,
     };
-    let label = label.as_ref().map_or_else(String::new, |s| {
-        format!("\"{}\" ", s.replace('\\', "\\\\").replace('"', "\\\""))
-    });
+    let label = label
+        .as_ref()
+        .map_or_else(String::new, |s| format!("{} ", quote_label(s)));
     match node {
         WorkoutNode::Repeat(n) => {
             let mut opts = Vec::new();

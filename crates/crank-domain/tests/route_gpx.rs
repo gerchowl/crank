@@ -208,11 +208,12 @@ fn nested(extra: usize) -> String {
     // gpx(1) trk(2) trkseg(3) trkpt(4) extensions(5), then `extra` more.
     let (mut open, mut close) = (String::new(), String::new());
     for i in 0..extra {
-        write!(open, "<x{i}>").expect("write to a String");
-        write!(close, "</x{}>", extra - 1 - i).expect("write to a String");
+        write!(open, "<o:x{i}>").expect("write to a String");
+        write!(close, "</o:x{}>", extra - 1 - i).expect("write to a String");
     }
+    // Extensions hold elements of other namespaces (`xsd:any namespace="##other"`).
     gpx(&format!(
-        r#"<trk><trkseg><trkpt lat="46" lon="8"><extensions>{open}{close}</extensions></trkpt>
+        r#"<trk><trkseg><trkpt lat="46" lon="8"><extensions xmlns:o="urn:o">{open}{close}</extensions></trkpt>
 <trkpt lat="46.01" lon="8"/></trkseg></trk>"#
     ))
 }
@@ -413,8 +414,8 @@ fn a_route_imports_and_waypoints_and_extensions_are_ignored() {
 fn a_surface_extension_in_any_namespace_sets_the_point_surface() {
     let text = gpx(r#"<trk><trkseg>
 <trkpt lat="46" lon="8"><extensions><a:surface xmlns:a="urn:a">gravel</a:surface></extensions></trkpt>
-<trkpt lat="46.001" lon="8"><extensions><x><surface>sett</surface></x></extensions></trkpt>
-<trkpt lat="46.002" lon="8"><extensions><surface>moon dust</surface></extensions></trkpt>
+<trkpt lat="46.001" lon="8"><extensions><b:x xmlns:b="urn:b"><b:surface>sett</b:surface></b:x></extensions></trkpt>
+<trkpt lat="46.002" lon="8"><extensions><surface xmlns="urn:c">moon dust</surface></extensions></trkpt>
 </trkseg></trk>"#);
     let r = imported(&text);
     let s: Vec<_> = r.route.points().iter().map(|p| p.surface).collect();
