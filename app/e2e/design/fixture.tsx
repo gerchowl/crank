@@ -422,6 +422,12 @@ const SETUPS: Record<ScenarioName, () => void> = {
     { links: { trainer: "ready", heart_rate: "connecting" } },
     longLibrary(),
   ),
+  // No trainer is paired in the workouts backend's core: `ride_load` is refused with `device_unavailable`.
+  "today-ride-refused": today({}, longLibrary({ trainerPaired: false })),
+  "today-link-lost": today(
+    { links: { trainer: "lost", heart_rate: "ready" } },
+    longLibrary(),
+  ),
   // The library as the core lists it (the built-in one is never empty today; the store-backed one, #110, can be).
   "workouts-empty": workouts({ summaries: [] }),
   // The list cannot be read (Tauri's own rejection, or the store-backed library to come).
@@ -578,6 +584,11 @@ const SETUPS: Record<ScenarioName, () => void> = {
   // Opened from Review: "All rides" leads back to the list with this ride marked.
   "history-selected": history("ride-3"),
   settings: () => navigate("settings"),
+  "settings-ride-loaded": () => {
+    navigate("settings");
+    installWorkouts(longLibrary());
+    void startRideLoad("w-long", LONG_NAME);
+  },
 };
 
 const name = new URLSearchParams(location.search).get("scenario");

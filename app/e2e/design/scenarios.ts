@@ -36,6 +36,13 @@ export const SCENARIOS = [
     name: "today-ride-loaded",
     ready: "role=button[name='Start'][disabled=false]",
   },
+  // The load was refused (no trainer reached): the ride-load notice above the page says so, Today is back to nothing.
+  { name: "today-ride-refused", ready: "role=alert >> text=Could not load" },
+  // The loaded ride's trainer link is lost: ⚠ and its word.
+  {
+    name: "today-link-lost",
+    ready: "role=listitem >> text=lost",
+  },
   // Workouts (§5.7, #528): the library and the picked workout, in each of their states.
   { name: "workouts-empty", ready: "text=No workouts yet" },
   { name: "workouts-list-error", ready: "role=button[name='Retry']" },
@@ -147,6 +154,11 @@ export const SCENARIOS = [
     clicks: ["All rides"],
   },
   { name: "settings", ready: "role=heading[name='Appearance']" },
+  // A load finished while the rider was elsewhere: the ride-load notice offers it (#320).
+  {
+    name: "settings-ride-loaded",
+    ready: "role=button[name='Go to ride']",
+  },
 ] as const satisfies readonly Scenario[];
 
 export type ScenarioName = (typeof SCENARIOS)[number]["name"];
@@ -159,11 +171,14 @@ export const TODAY_SCENARIOS: readonly ScenarioName[] = [
   "today-error",
   "today-ride-loading",
   "today-ride-loaded",
+  "today-ride-refused",
+  "today-link-lost",
 ];
 
 /** The fixtures of Settings and Devices (#527): nothing on them is cut, and every control is inside the window. */
 export const SETTINGS_SCENARIOS: readonly ScenarioName[] = [
   "settings",
+  "settings-ride-loaded",
   "devices-empty",
   "devices-scanning",
   "devices-found",

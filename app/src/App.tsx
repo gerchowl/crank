@@ -89,10 +89,12 @@ function Destination({ views }: { views: ViewRegistry }) {
       <View sub={route.sub} />
     </ErrorBoundary>
   );
-  // `data-destination`: where focus lands when the start screen hands off; `#main` is the skip-link target.
+  // `data-destination`: where focus lands when the start screen hands off; `#main` is the skip-link target. The ride-load
+  // notice (#320) leads the main region, above the view.
   if (isMode(route.view))
     return (
       <main id="main" className="mode" data-destination tabIndex={-1}>
+        <RideLoadNotice />
         {body}
       </main>
     );
@@ -100,6 +102,7 @@ function Destination({ views }: { views: ViewRegistry }) {
     <div className="shell">
       <Rail view={route.view} />
       <main id="main" data-destination tabIndex={-1}>
+        <RideLoadNotice />
         {body}
       </main>
     </div>
@@ -129,7 +132,6 @@ export function App({
         Skip to main
       </a>
       {boot.phase === "ready" && <Destination views={views} />}
-      {boot.phase === "ready" && <RideLoadNotice />}
       {!gone && (
         <StartScreen boot={boot} mode={mode} onRetry={retry} onGone={onGone} />
       )}

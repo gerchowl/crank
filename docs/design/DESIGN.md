@@ -191,10 +191,11 @@ for the wish matrix, which is not here yet (#86), so nothing needs the width. **
 started in Workouts (§5.7): "Nothing planned" with **Pick a workout** (32 px primary, §18.4) when none is loaded; while a
 load runs its name and a disabled **Start** that reads "Loading ride…"; once loaded its name and **Start** `⏎`, which
 opens the Ready check (§5.4). The loaded-ride notice (#320) does not repeat it on Today; a refused load stays the
-notice's. **Devices** lists each role (`device_links`): who is paired, and the loaded ride's link with ✓ ↻ ⚠ and its word
+notice's. The notice leads the main region of every place, above the view and in its flow (it covers nothing): ⚠ or ✓,
+its words, an edge in its state's colour, and 32 px buttons (Go to ride, Dismiss). **Devices** lists each role (`device_links`): who is paired, and the loaded ride's link with ✓ ↻ ⚠ and its word
 (§18.7 rule 11); without a paired trainer it says a ride needs one, and **Pair a trainer** opens Settings → Devices
 (**Devices** when one is paired). **Last 7 days** is seven day cells, oldest first, today last and marked, each with its
-weekday, date, the minutes ridden (TSS is not in the contract) and "rest", "no ride yet" or the number of rides; the days
+weekday, date, the minutes ridden (the stored summary has no TSS yet, #570; an empty day reads "no ride" to a screen reader, not a bare dash) and "rest", "no ride yet" or the number of rides; the days
 are local calendar days. **Last ride** is the newest stored ride with its start, duration, work and outcome, and
 **Review**, named as History's row is (§5.6); "No rides yet" says where rides are saved. Each read shows "Loading…"
 while it runs, and a failed one is a notice with ⚠ and Retry (the rides' notice under Last ride; the week then says the
