@@ -225,7 +225,8 @@ async fn ui_ack(core: State<'_, Core>, window: Window, channel: UiChannelId, seq
 pub struct UiFrame {
     pub channel: UiChannelId,    // the channel the frame belongs to; the page acks with it
     pub seq: u32,                // per channel, from 0, +1 per frame; the ack names it
-    pub ride: Option<RideView>,  // the loaded ride, or the last ended one; null before any and after an unload
+    pub ride: Option<RideView>,  // the loaded ride, or the last ended one; null before any, after an unload, and
+                                 // from the start of a load until it installs its ride (§4.3.3, "Ride lifetime")
     pub loading: bool,           // a `ride_load` is under way; its per-device progress is `devices`
     pub devices: DevicesView,    // both roles, always
     // pub nudges: Vec<NudgeView>, added by #248: the live nudges, latest per call id, at most 8
@@ -235,6 +236,7 @@ pub struct RideView {
     pub id: String,                  // the id `ride_load` answered
     pub workout_id: Option<String>,  // null for a free ride
     pub status: StreamStatus,        // the engine's status (§4.3.6)
+    pub live: LiveValues,            // this tick's values, for the big numbers (§4.3.3)
     pub ended: Option<RideEnding>,   // null until the ride is over
     pub engine_unresponsive: bool,   // §4.3.5
 }
@@ -242,6 +244,11 @@ pub struct RideView {
 pub enum RideEnding {
     Finished,  // the engine ended it
     Forced,    // the core ended it: the engine was stuck or gone; recorded as aborted (#331)
+}
+pub struct LiveValues {              // null: paused, lost, a gap, or not riding
+    pub power_w: Option<u16>,
+    pub cadence_rpm: Option<u16>,
+    pub hr_bpm: Option<u16>,
 }
 pub struct DevicesView { pub trainer: DeviceView, pub strap: DeviceView }
 pub struct DeviceView {
@@ -296,9 +303,28 @@ These are today's rates (`Ride.tsx:357-359`, DESIGN §6.4), now fixed in the cor
 - A tick appends a point only while the ride is riding and the value is present and finite. §5 makes gaps absent,
   never interpolated; today the page skips them itself (`Ride.tsx:398-401`). The traces draw a gap where a second has
   no point, as now.
-- The newest point of a series is also the value its big number shows.
+- The big numbers do not read the series. They read `ride.live`, the engine's values at its latest tick (`null` while
+  paused, during a loss or a gap, and outside a ride), as today's subscriptions deliver `null` for such ticks
+  (`crates/crank-engine/src/engine.rs:1216-1237`). So a number blanks at once in a pause or a dropout, and it is
+  current while a reloaded page is still backfilling the traces.
 - Memory: a 6 h ride has 86 400 power points and 43 200 each of cadence and HR. At 18 B a point (two `f64`, one
-  `u16`) that is about 3 MB per process, not per window. It is dropped at the next load.
+  `u16`) that is about 3 MB per process, not per window; a `Vec` that grows by doubling can reserve up to twice that.
+  It is dropped at the next load.
+
+**Who owns the series, and consistency.** The series store belongs to the core (one per loaded ride, behind a `std`
+mutex). The engine appends to it on its own task, in the same step in which it publishes the tick's status
+(`engine.rs:1597-1607`): the append and the status `send_replace` happen under the store's lock, and the frame builder
+reads the status and the series lengths under that lock. So a frame never holds a status newer than its points, or
+points newer than its status, and the old §4.3's ordering guarantee holds for the series too. The engine holds the
+lock only for the push; it never waits on a channel.
+
+**Ride lifetime.** `ride_load` sets `loading` and, from its start, the frame's `ride` is `null` and the series are
+dropped: the next frame carries every series with `from: 0` and no points, so the page clears the previous ride's
+traces and routes on nothing stale. Today the core keeps the previous ride's status (`last`) until the new session is
+installed (`crates/crank-core/src/core.rs:1834`); the snapshot does not show it during a load. When the load installs
+its ride, `ride` is the new ride; when it fails, `ride` stays `null` and `loading` goes false (the refusal is the
+command's answer). An unload (`ride_end` of an unstarted ride) makes `ride` `null`. A ride that ended stays in `ride`,
+with `ended` set, until the next load starts.
 
 **Frame bound.** Each bound is measured by a test, not counted:
 
@@ -353,11 +379,15 @@ ack window now does that job, and the budget is gone.
     ride's series by cursor; no channel has a buffer of its own.
 - **Cursor.** There is one cursor per channel and series: the index of the first point not yet acknowledged.
   - A frame carries the points from `cursor` up to `min(len, cursor + 2 048)`.
-  - Its ack moves the cursor to the end of what it carried.
-  - A new ride resets every cursor to 0, so its frames start with `from: 0`.
+  - Its ack moves the cursor to the end of what it carried, **only if the series it carried are still the current
+    ones**. Each series store has an epoch (+1 per load), the channel remembers the epoch of the frame in flight, and
+    an ack of a frame from an earlier epoch moves no cursor. Otherwise a late ack of ride A's frame would move ride
+    B's cursor to A's length, and B's points would be appended to A's trace.
+  - A new epoch (a load starting) resets every cursor to 0, so the channel's next frame says `from: 0`.
 - **Reload, or a new window.** A new channel starts every cursor at 0, so its first frames **backfill the ride's whole
   series**: oldest first, 2 048 points per series per frame, with the current state in each. The traces fill in while
-  the numbers are already live. A 3 h ride (43 200 power points) backfills in 22 frames, about 2.2 s. Downsampling the
+  the numbers (`ride.live`) are already live. A 3 h ride (43 200 power points) backfills in 22 frames, at least 2.2 s
+  (each such frame takes Tauri's fetch path and a ~160 KB JSON parse). Downsampling the
   backfill to the trace's pixels is #599 (step 4, §4.3.10).
 - **Ordering.** Frames cannot overtake one another, because only one is ever in flight. Tauri also delivers a
   channel's messages in index order. Everything in one frame happened before everything in the next.
@@ -384,7 +414,7 @@ ack window now does that job, and the budget is gone.
 - **Engine unresponsive (#351).** Today the stream's acks go through the engine (`core.rs:2583-2595`), so a wedged
   engine shows up as an `engine_unresponsive` ack within 1 s while frames flow. Acks now go to the core, so the core
   sets `ride.engine_unresponsive` itself, in two cases:
-  - any of its bounded engine requests times out (`REQUEST_TIMEOUT`, `core.rs:87`);
+  - any of its bounded engine requests times out (`REQUEST_TIMEOUT`, `core.rs:85`);
   - while the ride is in progress (riding or paused), its status watch has not changed for `REQUEST_TIMEOUT` on the
     pacing clock. In progress, the engine ticks at 4 Hz and publishes every tick (`engine.rs:793-866`).
 
@@ -497,7 +527,7 @@ decided in an amendment to this section, with the field's size bound, a cost tes
 
 **Unchanged.**
 
-- `core_ready` answers static facts (versions, mode).
+- `core_ready` answers static facts (versions, mode); `display_width_mm` answers the display's width.
 - `devices_scan` answers the result of the scan it ran; nothing on the channel repeats it.
 - `device_forget`, `ride_start`, `ride_pause`, `ride_resume` and `ride_skip` answer `()`.
 - `workouts_list`, `workout_get`, `rides_list` and `ride_summary` query durable data, invalidated by `store_changed`
@@ -508,8 +538,8 @@ and MCP once they read a live ride (#40). It is not a Tauri command, so the page
 
 **hil / Part B (#44).** Unaffected.
 
-- Its checks read the `.fecap` captures and `logs.jsonl` (`crates/crank-ble/examples/hil_fec/partb.rs:1-7`; AGENTS.md,
-  `CRANK_CAPTURE_DIR`).
+- Its checks read the `.fecap` captures (`crates/crank-ble/examples/hil_fec/partb.rs:1-7`) and the reconnect records of
+  `<dir>/logs.jsonl` under `CRANK_CAPTURE_DIR` (`AGENTS.md:54`, `:63`).
 - Its link timings come from the `crank_core::links` log lines (ADR-0002 §5.1.6: "No timing is derived from the UI").
 - No check reads a stream or a link channel. The riding session uses the desktop app, whose screen this changes, and
   no measurement depends on that screen.
@@ -565,7 +595,7 @@ When #40 gives them a live ride, they read `Core::snapshot()` or a `UiSink` with
     - the protocol half of `app/src/ride/rideBackend.ts`: the `links_*` handling (`:27-51`, `:517-572`) and the frame
       plumbing it takes from `stream/testBackend.ts`;
     - `RideSession.record`, `Ride.tsx` `useRecord`, and the page-built history (the series come from frames);
-    - the polling of `device_links` in `Today.tsx:144` and `Devices.tsx:205`.
+    - the polling of `device_links` in `app/src/views/Today.tsx:144` and `app/src/views/Devices.tsx:205`.
   - kept: `app/src/stream/lint.test.ts`, the `structuredClone` ban, now applied to the new client.
 
 **Docs**, each updated by the step that changes its subject:
@@ -582,16 +612,16 @@ When #40 gives them a live ride, they read `Core::snapshot()` or a `UiSink` with
 
 | Test today | Intent | Replaced by |
 |---|---|---|
-| `flow_control_holds_over_arbitrary_interleavings`, `the_generator_reaches_the_split_and_bare_paths`, `a_full_window_sends_nothing_and_coalesces_to_the_latest`, `an_ack_for_a_frame_never_sent_is_ignored`, `seq_wraps_at_u32_max_and_the_ack_window_follows`, `a_split_across_the_wrap…` (`stream/tests.rs:303-445`, `:1426-1472`) | flow control is bounded and loses nothing it promises | **one property test** of the `ui` channel over arbitrary interleavings of ticks, keeper changes, ride loads and ends, acks (right, stale, foreign, none for a long time). It asserts: at most one frame unacknowledged; each frame's state equals `Core::snapshot()` at its send; the series chunks received, applied by the client rule, equal the core's series exactly (no hole, no duplicate, `from` always the page's length); frames ≥ 100 ms apart; every frame within the bound |
+| `flow_control_holds_over_arbitrary_interleavings`, `the_generator_reaches_the_split_and_bare_paths`, `a_full_window_sends_nothing_and_coalesces_to_the_latest`, `an_ack_for_a_frame_never_sent_is_ignored`, `seq_wraps_at_u32_max_and_the_ack_window_follows`, `a_split_across_the_wrap…` (`stream/tests.rs:303-445`, `:1426-1472`) | flow control is bounded and loses nothing it promises | **one property test** of the `ui` channel over arbitrary interleavings of ticks, keeper changes, ride loads and ends, acks (right, stale, foreign, none for a long time). It asserts: at most one frame unacknowledged; each frame's state equals `Core::snapshot()` at its send; the series chunks received, applied by the client rule, equal the core's series exactly (no hole, no duplicate, `from` always the page's length, also when a load starts while a frame is in flight); `ride.live` equals the engine's latest tick; frames ≥ 100 ms apart; every frame within the bound |
 | `every_frame_stays_under_the_byte_budget_at_every_cap`, `oversized_samples_split…`, `a_split_stops_at_the_window…`, `discrete_state_over_budget_becomes_the_bare_resync_frame` (`:482-618`), `the_largest_frame_is_under_the_byte_budget` (`keeper/channel.rs:337-358`) | a frame has a known size | **the frame-bound test** (§4.3.3): every part at its cap |
 | `subscription_chain…`, `each_subscription_has_its_own_chain`, `subscriptions_are_bounded_and_validated`, `unsubscribe_drops_the_pending_sample`, `filter_chains_are_capped…`, `subscribe_opts_wire_contract_for_the_ui_mock`, `ids_skip_zero…`, `stream_and_subscription_ids_stay_unique…` (`:633-741`, `:1018-1065`, `:1473-1608`) | subscriptions and chains | deleted with subscriptions. Chains return only under §4.3.7, with its tests |
 | `the_tick_cost_stays_bounded_at_every_cap` (`:1066-1144`) | a tick's work is bounded | **the series append costs one push per series per tick, however many channels are open** (the engine holds no channel) |
 | `non_finite_values_are_gaps…`, `a_chain_that_overflows_to_infinity_emits_a_gap` (`:1180-1239`) | a NaN never reaches the page | **a non-finite or absent value appends no point** |
-| `frames_never_exceed_ten_per_second…`, `frames_are_spaced_and_sent_only_on_change` (`keeper/channel.rs:266-300`) | ≤ 10 Hz, only on change | the same on the `ui` channel, with the series |
-| `status_is_sent_on_change_and_otherwise_at_two_hertz`, `the_block_start_and_the_lap_count_are_sent_on_change`, `no_heartbeat_while_idle_or_finished`, `a_blocked_stream_does_not_beat_into_resync`, `a_status_change_restarts_the_heartbeat_period`, `a_blocked_stream_neither_beats_nor_flags_resync_after_the_ack`, `the_loss_fields_are_discrete…`, `a_hub_sends_a_status_when_only_a_loss_field_changed` | no status change is missed; the heartbeat is cheap | **a change visible at an ack is in the next frame**, and **an idle core sends nothing** |
-| `a_new_stream_starts_with_the_current_status_and_links`, `the_first_frame_is_the_state_at_the_open` | a new page starts from the truth | **the first frame is `Core::snapshot()` at the open, sent at once**, and **a channel opened mid-ride backfills the series from index 0, contiguously, until it has caught up** (fails today: a new page's trace starts empty) |
+| `frames_never_exceed_ten_per_second…` (`stream/tests.rs:742-770`), `frames_are_spaced_and_sent_only_on_change` (`keeper/channel.rs:266-300`) | ≤ 10 Hz, only on change | the same on the `ui` channel, with the series |
+| `status_is_sent_on_change_and_otherwise_at_two_hertz`, `the_block_start_and_the_lap_count_are_sent_on_change`, `no_heartbeat_while_idle_or_finished`, `a_blocked_stream_does_not_beat_into_resync`, `a_status_change_restarts_the_heartbeat_period`, `a_blocked_stream_neither_beats_nor_flags_resync_after_the_ack`, `the_loss_fields_are_discrete…`, `a_hub_sends_a_status_when_only_a_loss_field_changed` (`stream/tests.rs:788-880`, `:955-1017`, `:1609-1668`) | no status change is missed; the heartbeat is cheap | **a change visible at an ack is in the next frame**, and **an idle core sends nothing** |
+| `a_new_stream_starts_with_the_current_status_and_links` (`stream/tests.rs:881-892`), `the_first_frame_is_the_state_at_the_open` (`keeper/channel.rs:204-216`) | a new page starts from the truth | **the first frame is `Core::snapshot()` at the open, sent at once**, and **a channel opened mid-ride backfills the series from index 0, contiguously, until it has caught up** (fails today: a new page's trace starts empty) |
 | `a_consumer_that_never_reads_or_acks_is_bounded`, `a_stalled_page_gets_only_the_latest_state_once_it_acks` (`keeper/channel.rs:221-242`), `a_stalled_consumer_never_blocks_the_ride_or_the_record` (`crates/crank-engine/tests/streams.rs:189`) | a stalled page costs nothing and loses nothing | **the page converges after a stall**: a page stalls 60 s mid-ride, then acks. Its next frames carry the current state, and series that start exactly where its own ended, until they have caught up. The ride and the record are unaffected. (Fails today: the trace has a hole, #557 item 4) |
-| `window_cleanup_drops_streams_and_dead_sinks`, `closed_receivers_are_reaped…`, `a_blocked_dead_stream_is_reaped`, `opening_a_stream_frees_the_closed_ones…`, `unlabelled_streams_never_evict_each_other`, `reopen_close_and_a_failed_send_drop_the_channel`, `a_close_issued_before_a_reopen_never_drops_the_new_channel` (`keeper/contract_tests.rs:443-468`) | lifecycle | **lifecycle by id**: a failed send, a page-load event and a reopen each close exactly the channels §4.3.5 says. The #564 reproduction becomes a test: the close is issued, the new page opens, the close runs, and the new channel is alive and acks (fails today: `NotFound`) |
+| `window_cleanup_drops_streams_and_dead_sinks`, `closed_receivers_are_reaped…`, `a_blocked_dead_stream_is_reaped`, `opening_a_stream_frees_the_closed_ones…`, `unlabelled_streams_never_evict_each_other` (`stream/tests.rs:909-985`, `:1145-1255`), `reopen_close_and_a_failed_send_drop_the_channel`, `a_close_issued_before_a_reopen_never_drops_the_new_channel` (`keeper/contract_tests.rs:443-468`) | lifecycle | **lifecycle by id**: a failed send, a page-load event and a reopen each close exactly the channels §4.3.5 says. The #564 reproduction becomes a test: the close is issued, the new page opens, the close runs, and the new channel is alive and acks (fails today: `NotFound`) |
 | `keeper/contract_tests.rs`: `each_device_has_one_source_an_unlinked_strap_stays_the_keepers` (`:351`) and the other phase tests (`:77-290`, `:379-568`) | the devices' state | **the overlay test**: a riding device shows the ride's link in `devices`, a lost trainer shows `lost` in the same frame as the status's `trainer_lost_since_s`, and an unlinked strap keeps its own phase. The phase tests move to `devices` unchanged |
 | `keep_newest`, `applied_in_arrival_order_the_newest_state_wins…`, `a_discards_answer_carries_the_seq_of_its_own_state`, `links_intent_answers_the_state_its_resolving_step_published` (`:421-441`, `:569-708`), `app/src/ride/linksBackend.test.ts:350-410` | ordering two sources | deleted: one source, so there is nothing to order. **The client acks every frame it receives** replaces #577's concern |
 | `app/src/stream/stream.test.tsx` (643 lines) | the client applies frames and re-queries | **client tests** (mockIPC): applies every frame in order, acks each, replaces the state, appends the series, replaces on `from: 0`, keeps no state from a closed channel |
@@ -611,7 +641,9 @@ Each step leaves `dev` working, with no lost data and no regressed screen.
 **Step 2 (#597): link commands return nothing; one source per device.**
 
 - `links_intent` answers `()`. The ordering rule between answers and frames is deleted (ADR-0002 §5.1.4), and so is
-  `linkOrder.ts`. `LinkFrame.seq` stays, as the frame's number for `links_ack` only.
+  `linkOrder.ts`. `LinkFrame.seq` becomes a **per-channel frame counter** (+1 per frame sent), the number `links_ack`
+  names. It can no longer be the keeper state's number: with the overlay a frame can change because the ride's link
+  changed while the keeper's state did not, and two frames with one `seq` would let an ack match the wrong one.
 - The core overlays the ride's link state onto the link channel's device view (`DeviceView.link`, §4.3.2), and
   `device_links` reports the same view. `StreamFrame.links` is deleted, and so is the hub's links lane.
 - `RideLoaded.hr_linked` is deleted. The Ready sheet and the ride screen read each device from the link channel only,
@@ -634,6 +666,9 @@ Each step leaves `dev` working, with no lost data and no regressed screen.
 **Step 3 (#598): the snapshot channel replaces the ride stream and the link channel.**
 
 - Everything in §4.3.2 to §4.3.6, and the deletions and commands of §4.3.8 and §4.3.9.
+- It may land as three PRs under #598, each leaving `dev` working: (3a) the core's `ui` channel, `ui_open`/`ui_ack`
+  and their tests, beside the old channels; (3b) the app switches to it (client, hooks, mocks, design fixtures, e2e);
+  (3c) the deletions of §4.3.9 and the doc updates.
 - The series store is a plain append-only vector per series in the core. The cursors need it: a stalled page's next
   frame must carry every point since its ack. A new channel backfills from index 0 (§4.3.4). This makes #564 moot.
 - **Acceptance:**
