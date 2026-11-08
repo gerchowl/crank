@@ -3,6 +3,7 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   CompiledView,
+  LoadProgress,
   RideLoaded,
   WorkoutDetail,
   WorkoutIssue,
@@ -78,8 +79,10 @@ export interface Backend {
   loading: number;
   /** Hold the next `ride_load` answer until the gate opens. */
   gate: Promise<void> | null;
-  /** A load started elsewhere is in flight: `ride_status().loading` is true (core.rs `ride_status` (~2382)). */
+  /** A load started elsewhere is in flight: `ride_status().load` is set (core.rs `ride_status` (~2382)). */
   coreLoading: boolean;
+  /** The phases `ride_status().load` reports while a load is in flight (the keeper's, core.rs `Core::ride_status`). */
+  progress: LoadProgress;
   /** A refusal raised at one stage of `ride_load` (see the doc below), while the load is in flight. */
   stage: Partial<
     Record<"storage" | "driver" | "connect" | "build" | "installed", ApiErr>
@@ -93,8 +96,9 @@ export type ApiErr = { code: string; message: string };
  * - `workout_get`: unknown id, `not_found` (library.rs `Library::detail` (~93), library.rs `Library::get` (~75)). Its
  *   other refusal, `internal` from a block index that does not fit (dto.rs `WorkoutBlock` (~196)), is unreachable
  *   through the API and not modelled.
- * - `ride_status` never fails (core.rs `Core::ride_status` (~2382)). Its `loading` is the core's one flag (a load in
- *   flight here, or `coreLoading`); its `status` is always idle, as no test or fixture here reads it.
+ * - `ride_status` never fails (core.rs `Core::ride_status` (~2382)). Its `load` is set while the core's one flag is (a
+ *   load in flight here, or `coreLoading`), with `progress` as the phases; its `status` is always idle, as no test or
+ *   fixture here reads it.
  *
  * `ride_load` refuses, in the core's order (core.rs `Core::ride_load` (~1679)):
  * - unknown id: `not_found` (library.rs `Library::get` (~75), via core.rs `Core::resolve_workout` (~1633))
@@ -136,6 +140,7 @@ export function install(over: Partial<Backend> = {}): Backend {
     loading: 0,
     gate: null,
     coreLoading: false,
+    progress: { trainer: "searching", strap: null },
     stage: {},
     ...over,
   };
@@ -207,7 +212,7 @@ export function install(over: Partial<Backend> = {}): Backend {
       }
       case "ride_status":
         return {
-          loading: b.loading > 0 || b.coreLoading,
+          load: b.loading > 0 || b.coreLoading ? b.progress : null,
           status: idleStatus(),
         };
       default:
