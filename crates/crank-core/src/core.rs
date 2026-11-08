@@ -12,12 +12,13 @@
 //! loaded ride's engine and to a window label; they end with the ride.
 use crate::backend::{Backend, DeviceMode};
 use crate::dto::{
-    CoreInfo, DeviceLinkInfo, DeviceRole, KnownDevice, PairedDevice, RideLoaded, RideOutcome,
-    RideRecord, RideStatusView, RideSummary, ScannedDevice, WorkoutDetail, WorkoutSummary,
+    CoreInfo, DeviceLinkInfo, DeviceRole, KnownDevice, LinkIntent, PairedDevice, ReleaseReason,
+    RideLoaded, RideOutcome, RideRecord, RideStatusView, RideSummary, ScannedDevice, WorkoutDetail,
+    WorkoutSummary,
 };
 use crate::error::{ApiError, ErrorCode};
+use crate::keeper::run::{self as keeper, Hold, Note};
 use crate::library::Library;
-use crate::links::{self, Attempts, LinkDevice, Timeline};
 use crate::recorder::{RideMeta, StoreRecorder};
 use crank_ble::{Pairing, RideGate};
 use crank_devices::{
@@ -30,7 +31,7 @@ use crank_engine::{
     StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts,
 };
 use crank_store::{Device, RideListing, Store};
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -48,7 +49,7 @@ use tracing::Instrument;
 
 /// Longest a connect may take before the command fails, so the UI never waits on a
 /// device indefinitely.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long a released link may take to close before pairing stops waiting.
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Longest an ending engine may take to drop the ride-active signal after it was told to
@@ -288,6 +289,9 @@ struct Session {
     /// Set once a driver has closed its event stream, i.e. handed the peripheral back
     /// (the same confirmation pairing waits for).
     release: LinkRelease,
+    /// The ride's hold on the links the keeper handed over: dropped with the session (its
+    /// reap), which makes the keeper active again (ADR-0002 §5.1.1).
+    _hold: Hold,
     /// The core's own hold on the trainer, independent of the engine task, for the end mode
     /// of a forced end.
     trainer: TrainerHold,
@@ -732,6 +736,9 @@ struct State {
     /// Id of the ride a forced end is in progress for: an overlapping `ride_end` waits for
     /// it instead of spending `STOP_TIMEOUT` on the same stuck engine again.
     forcing: Option<String>,
+    /// Id of the loaded ride that `ride_start` was asked to start: from then on the keeper's
+    /// discard of an unstarted ride (`T_ABANDON`, sleep, "Release trainer") leaves it alone.
+    starting: Option<String>,
 }
 /// A ride's claim on the ride-active signal (`signal_of`), from just before its `Load` until
 /// `build_session` hands the session on.
@@ -778,6 +785,11 @@ impl Drop for SignalClaim<'_> {
         cut_off(self.takeover);
         self.core.clear_signal(self.ride_id);
     }
+}
+/// The links a load was handed, with the store ids of their devices.
+struct Links {
+    handed: keeper::Handed,
+    ids: [Option<String>; 2],
 }
 /// Clears the loading flag when a `ride_load` ends in any way, including its future
 /// being dropped (a cancelled command) or panicking.
@@ -859,8 +871,8 @@ struct Inner {
     quits: watch::Sender<u64>,
     /// The next core stream id (never 0).
     next_stream: AtomicU32,
-    /// The connect attempts of each device so far, for the phase log (ADR-0002 §5.1.6).
-    attempts: Attempts,
+    /// The link keeper (ADR-0002 §5.1), started on first use ([`Core::keeper`]).
+    keeper: keeper::Handle,
     /// Lets a test interleave a command into `discard` (#278).
     #[cfg(test)]
     discard_hook: Rendezvous,
@@ -1006,6 +1018,72 @@ fn pairing(d: &Device) -> Pairing {
     )
 }
 
+/// What the keeper's task uses of the core: held weakly, so that it never keeps the core
+/// alive.
+struct KeeperDevices(std::sync::Weak<Inner>);
+impl KeeperDevices {
+    fn inner(&self) -> Result<Arc<Inner>, crank_devices::DeviceError> {
+        self.0
+            .upgrade()
+            .ok_or(crank_devices::DeviceError::AdapterUnavailable)
+    }
+}
+impl keeper::Devices for KeeperDevices {
+    fn trainer(
+        &self,
+    ) -> BoxFuture<'static, Result<Arc<dyn crank_devices::TrainerDriver>, crank_devices::DeviceError>>
+    {
+        let inner = self.inner();
+        async move {
+            let inner = inner?;
+            inner
+                .backend
+                .trainer(inner.clock.clone(), inner.gate.clone())
+                .await
+        }
+        .boxed()
+    }
+    fn heart(
+        &self,
+    ) -> BoxFuture<
+        'static,
+        Result<Arc<dyn crank_devices::HeartRateDriver>, crank_devices::DeviceError>,
+    > {
+        let inner = self.inner();
+        async move {
+            let inner = inner?;
+            inner
+                .backend
+                .heart(inner.clock.clone(), inner.gate.clone())
+                .await
+        }
+        .boxed()
+    }
+    fn scan(
+        &self,
+    ) -> BoxFuture<
+        'static,
+        Result<BoxStream<'static, crank_devices::DiscoveredDevice>, crank_devices::DeviceError>,
+    > {
+        let inner = self.inner();
+        async move { inner?.backend.scan().await }.boxed()
+    }
+    fn discard(&self, ride_id: String) -> BoxFuture<'static, bool> {
+        let inner = self.0.upgrade();
+        async move {
+            let Some(inner) = inner else {
+                return false;
+            };
+            let discarded = Core(inner).end_ride(true, Some(&ride_id)).await.is_ok();
+            if discarded {
+                tracing::info!(ride_id, "an unstarted ride was discarded");
+            }
+            discarded
+        }
+        .boxed()
+    }
+}
+
 impl Core {
     /// Open the store as its owner and build the core. Must run inside a tokio runtime
     /// when devices are used.
@@ -1061,7 +1139,7 @@ impl Core {
             load_done: Notify::new(),
             quits: watch::channel(0).0,
             next_stream: AtomicU32::new(1),
-            attempts: Attempts::default(),
+            keeper: keeper::Handle::new(),
             #[cfg(test)]
             discard_hook: Rendezvous::default(),
             #[cfg(test)]
@@ -1100,16 +1178,82 @@ impl Core {
     }
 
     /// Pairing, forgetting and scanning need the one BLE central and the pairing rows a
-    /// ride uses: not while a ride is loaded, in progress or still ending.
+    /// ride uses: not while a ride is loaded, in progress or still ending. They also need the
+    /// devices free (a connected NEO does not advertise, and pairing connects itself), so the
+    /// keeper releases its links first, as on `Release(Devices)` (ADR-0002 §5.1.3).
     async fn require_no_ride(&self) -> Result<(), ApiError> {
-        let st = self.0.state.lock().await;
-        if st.session.is_some() || self.0.loading.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                ErrorCode::Conflict,
-                "a ride is loaded: end it first",
-            ));
+        {
+            let st = self.0.state.lock().await;
+            if st.session.is_some() || self.0.loading.load(Ordering::SeqCst) {
+                return Err(ApiError::new(
+                    ErrorCode::Conflict,
+                    "a ride is loaded: end it first",
+                ));
+            }
         }
-        Ok(())
+        self.keeper()?
+            .intent(LinkIntent::Release {
+                reason: ReleaseReason::Devices,
+            })
+            .await
+    }
+    /// The paired platform ids, trainer then strap.
+    fn pairings(&self) -> Result<[Option<String>; 2], ApiError> {
+        let devices = self.0.store.devices()?;
+        Ok(["trainer", "hr"].map(|kind| {
+            devices
+                .iter()
+                .find(|d| d.kind == kind)
+                .map(|d| d.platform_id.clone())
+        }))
+    }
+    /// The link keeper, its task started on first use (it needs the runtime).
+    fn keeper(&self) -> Result<&keeper::Handle, ApiError> {
+        self.0.keeper.start(|| {
+            let devices: Arc<dyn keeper::Devices> =
+                Arc::new(KeeperDevices(Arc::downgrade(&self.0)));
+            Ok::<_, ApiError>((devices, self.0.clock.clone(), RIDER, self.pairings()?))
+        })?;
+        Ok(&self.0.keeper)
+    }
+
+    /// The rider's likely next step, as the UI sees it (ADR-0002 §5.1.2): the keeper warms the
+    /// paired devices up while a ride is likely and lets them go when it is not.
+    ///
+    /// It answers once the intent is applied and what it releases is released: the keeper's
+    /// links (each release bounded by 2 s), a cancelled attempt, or a loaded ride it discards
+    /// (the end path's bounds). An intent that arrives while the links are handed to a load
+    /// that has not loaded its ride yet is recorded and applied when that load resolves
+    /// (its `Load` is bounded by 1 s), then answered (§5.1.3, the `Handed` state).
+    ///
+    /// "Release trainer" ([`ReleaseReason::RiderRelease`]) on the Ready sheet with a ride loaded
+    /// but not started unloads that ride (the path of Cancel) and releases its links; during a
+    /// started ride it is refused, because the ride owns the trainer: end the ride first.
+    ///
+    /// # Errors
+    /// `Conflict` for `RiderRelease` while a ride is started or starting, or when its discard
+    /// finds the ride started; `Conflict` for `Likely` or `Retry` after the quit; `Conflict` for a
+    /// release recorded while the links were handed out that a later rider action ("Ride this",
+    /// Retry) superseded, so it was never applied; `Storage`.
+    pub async fn links_intent(&self, intent: LinkIntent) -> Result<(), ApiError> {
+        if intent
+            == (LinkIntent::Release {
+                reason: ReleaseReason::RiderRelease,
+            })
+        {
+            let st = self.0.state.lock().await;
+            let started = st.session.as_ref().is_some_and(|s| {
+                st.starting.as_deref() == Some(s.ride_id.as_str())
+                    || s.handle.status().state != RideState::Idle
+            });
+            if started {
+                return Err(ApiError::new(
+                    ErrorCode::Conflict,
+                    "the ride holds the trainer: end the ride first",
+                ));
+            }
+        }
+        self.keeper()?.intent(intent).await
     }
 
     /// Scan for trainers and straps for `for_ms` (default 5 s, 0.2–15 s), or until the
@@ -1238,6 +1382,7 @@ impl Core {
             .find(|d| d.id == db_id)
             .ok_or_else(|| ApiError::new(ErrorCode::Internal, "pairing vanished"))?;
         self.0.backend.remember(pairing(&kept));
+        self.keeper()?.note(Note::Pairings(self.pairings()?));
         paired(kept).ok_or_else(|| ApiError::new(ErrorCode::Internal, "unknown device kind"))
     }
 
@@ -1259,6 +1404,7 @@ impl Core {
             any |= self.0.store.forget_device(&d.id)?;
             self.0.backend.forget(&d.platform_id);
         }
+        self.keeper()?.note(Note::Pairings(self.pairings()?));
         any.then_some(())
             .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "nothing paired for that role"))
     }
@@ -1360,67 +1506,34 @@ impl Core {
         Ok(())
     }
 
-    /// Connect the paired trainer and strap, concurrently (ADR-0002 §5.1.4, #468): a load
-    /// takes the longer of the two connects, at most one `CONNECT_TIMEOUT`, and both resolve
-    /// through the one shared adapter scan. The trainer is required; a strap that fails or
-    /// times out gives a ride without heart rate. When the trainer fails, the strap's attempt
-    /// is dropped, which releases it, half-open or linked.
-    async fn connect_links(
-        &self,
-        spans: &mut RideSpans,
-    ) -> Result<(TrainerLink, Option<HeartRateLink>, [Option<String>; 2]), ApiError> {
+    /// The paired trainer and strap, from the keeper (ADR-0002 §5.1.4): a warm link is taken
+    /// with no Bluetooth work, a running attempt is awaited, and a cold or `not_found` device
+    /// is connected now, trainer and strap in parallel, so a load takes the longer of the two
+    /// connects, at most one `CONNECT_TIMEOUT`. The trainer is required; a strap that is not
+    /// warm once its attempt ended gives a ride without heart rate. When the trainer fails,
+    /// the strap stays the keeper's.
+    async fn connect_links(&self, spans: &mut RideSpans) -> Result<Links, ApiError> {
         let devices = self.0.store.devices()?;
         let find = |kind: &str| devices.iter().find(|d| d.kind == kind);
         let trainer = find("trainer")
             .ok_or_else(|| ApiError::new(ErrorCode::DeviceUnavailable, "no trainer paired"))?;
-        let (clock, gate) = (&self.0.clock, &self.0.gate);
-        let timeline = |device| Timeline::new(device, self.0.attempts.next(device), clock.clone());
-        let trainer_span = spans.device("trainer", "<trainer-id>");
-        let trainer_link = async {
-            let driver = self.0.backend.trainer(clock.clone(), gate.clone()).await?;
-            let connect = driver.connect(&DeviceRef(trainer.platform_id.clone()), RIDER);
-            links::attempt(timeline(LinkDevice::Trainer), CONNECT_TIMEOUT, connect)
-                .instrument(trainer_span.clone())
-                .await
-                .ok_or_else(|| {
-                    ApiError::new(ErrorCode::DeviceUnavailable, "trainer connect timed out")
-                })?
-                .map_err(ApiError::from)
-        };
-        let strap_link = async {
-            let Some(strap) = find("hr") else {
-                return Ok(None);
-            };
-            let driver = self.0.backend.heart(clock.clone(), gate.clone()).await?;
-            let span = spans.device("strap", "<strap-id>");
-            let connect = driver.connect(&DeviceRef(strap.platform_id.clone()));
-            Ok::<_, ApiError>(
-                match links::attempt(timeline(LinkDevice::Strap), CONNECT_TIMEOUT, connect)
-                    .instrument(span.clone())
-                    .await
-                {
-                    Some(Ok(l)) => Some((l, strap.id.clone(), span)),
-                    Some(Err(e)) => {
-                        tracing::warn!(%e, "strap unavailable: riding without heart rate");
-                        None
-                    }
-                    None => {
-                        tracing::warn!("strap connect timed out: riding without heart rate");
-                        None
-                    }
-                },
-            )
-        };
-        let (link, strap) = tokio::try_join!(trainer_link, strap_link)?;
-        spans.devices.push(trainer_span);
-        let (hr, hr_id) = match strap {
-            Some((l, id, span)) => {
-                spans.devices.push(span);
-                (Some(l), Some(id))
+        let handed = self.keeper()?.acquire(RIDER).await?;
+        spans.devices.push(spans.device("trainer", "<trainer-id>"));
+        let hr_id = match (&handed.strap, find("hr")) {
+            (Some(_), Some(strap)) => {
+                spans.devices.push(spans.device("strap", "<strap-id>"));
+                Some(strap.id.clone())
             }
-            None => (None, None),
+            (None, Some(_)) => {
+                tracing::warn!("strap unavailable: riding without heart rate");
+                None
+            }
+            _ => None,
         };
-        Ok((link, hr, [Some(trainer.id.clone()), hr_id]))
+        Ok(Links {
+            ids: [Some(trainer.id.clone()), hr_id],
+            handed,
+        })
     }
 
     /// Release the session of `ride_id` once the engine has dropped the ride-active gate
@@ -1622,6 +1735,7 @@ impl Core {
         // A quit cancels a build still connecting: dropping it closes its spans, which would
         // otherwise stay open inside the future (never exported, vigil#8).
         let mut quits = self.0.quits.subscribe();
+        let asked = tokio::time::Instant::now();
         let built = tokio::select! {
             built = self.build_session(workout, compiled) => built,
             _ = quits.changed() => Err(ApiError::new(
@@ -1629,7 +1743,9 @@ impl Core {
                 "the application is quitting",
             )),
         };
-        let (session, hr_linked) = built?;
+        let (session, hr_linked, how) = built.inspect_err(|error| {
+            tracing::info!(target: "crank_core::links", %error, ms = asked.elapsed().as_millis(), "ride_load");
+        })?;
         // The lock below may be contended, and waiting for it is a cancellation point:
         // until the session is installed the guard owns it.
         loading.built = Some(session);
@@ -1642,9 +1758,18 @@ impl Core {
         st.last_release = None;
         st.last_forced = None;
         st.forcing = None;
+        st.starting = None;
         let ride_id = session.ride_id.clone();
         st.session = Some(session);
         drop(st);
+        self.keeper()?.note(Note::Loaded(ride_id.clone()));
+        tracing::info!(
+            target: "crank_core::links",
+            trainer = how[0],
+            strap = how[1],
+            ms = asked.elapsed().as_millis(),
+            "ride_load"
+        );
         self.spawn_reaper(&ride_id);
         Ok(RideLoaded {
             ride_id,
@@ -1777,7 +1902,7 @@ impl Core {
         &self,
         workout: Workout,
         compiled: CompiledWorkout,
-    ) -> Result<(Session, bool), ApiError> {
+    ) -> Result<(Session, bool, [&'static str; 2]), ApiError> {
         let ride_id = format!(
             "ride-{:x}",
             SystemTime::now()
@@ -1796,9 +1921,12 @@ impl Core {
         mut spans: RideSpans,
         workout: Workout,
         compiled: CompiledWorkout,
-    ) -> Result<(Session, bool), ApiError> {
-        let (mut trainer, mut hr, [trainer_device_id, hr_device_id]) =
-            self.connect_links(&mut spans).await?;
+    ) -> Result<(Session, bool, [&'static str; 2]), ApiError> {
+        let Links {
+            handed,
+            ids: [trainer_device_id, hr_device_id],
+        } = self.connect_links(&mut spans).await?;
+        let (mut trainer, mut hr, how) = (handed.trainer, handed.strap, handed.how);
         let takeover = Arc::new(watch::channel(Takeover::Engine).0);
         let (hold, release) = relay_links(&ride_id, &mut trainer, hr.as_mut(), &takeover);
         let hr_linked = hr.is_some();
@@ -1883,6 +2011,7 @@ impl Core {
                 ride_id,
                 spans,
                 release,
+                _hold: handed.hold,
                 trainer: hold,
                 takeover,
                 #[cfg(test)]
@@ -1891,6 +2020,7 @@ impl Core {
                 engine_activity,
             },
             hr_linked,
+            how,
         ))
     }
 
@@ -1916,7 +2046,27 @@ impl Core {
     /// `EngineUnresponsive` if the engine does not answer within 1 s (`REQUEST_TIMEOUT`).
     pub async fn ride_start(&self) -> Result<(), ApiError> {
         self.ensure_start_allowed()?;
-        self.ride_cmd(EngineCmd::Start).await
+        // Marked before `Start` is sent, under the state lock: from here the keeper's discard
+        // of an unstarted ride leaves this one alone (`end_ride`'s `unstarted`).
+        let (engine, ride_id) = {
+            let mut st = self.0.state.lock().await;
+            let session = st
+                .session
+                .as_ref()
+                .ok_or_else(|| ApiError::new(ErrorCode::Conflict, "no ride loaded"))?;
+            let found = (session.handle.clone(), session.ride_id.clone());
+            st.starting = Some(found.1.clone());
+            found
+        };
+        if let Err(error) = bounded(engine.send(EngineCmd::Start)).await {
+            let mut st = self.0.state.lock().await;
+            if st.starting.as_deref() == Some(ride_id.as_str()) {
+                st.starting = None;
+            }
+            return Err(error);
+        }
+        self.keeper()?.note(Note::Started(ride_id));
+        Ok(())
     }
     /// Pause the ride (the rider's pause).
     ///
@@ -1964,13 +2114,17 @@ impl Core {
     /// # Errors
     /// `Conflict` without a loaded or just-ended ride.
     pub async fn ride_end_outcome(&self) -> Result<RideEnd, ApiError> {
-        self.end_ride(true).await
+        self.end_ride(true, None).await
     }
     /// `ride_end`; without `release` it returns once the engine has ended (the end mode
     /// delivered, the link lost or its deadline passed) and does not wait for the devices'
     /// drivers to hand their peripherals back. That is for a process that is exiting, which
     /// releases the radio anyway and must not spend its quit cap on `RELEASE_TIMEOUT`.
-    async fn end_ride(&self, release: bool) -> Result<RideEnd, ApiError> {
+    ///
+    /// With `unstarted`, it ends only that ride and only while it is loaded and not started
+    /// or starting, checked under the same lock as the `Stop` (the keeper's discard,
+    /// ADR-0002 §5.1.3); otherwise it changes nothing and answers `Conflict`.
+    async fn end_ride(&self, release: bool, unstarted: Option<&str>) -> Result<RideEnd, ApiError> {
         let (id, finishes, link_release, forced) = loop {
             let mut st = self.0.state.lock().await;
             if st.forcing.is_some() {
@@ -1979,6 +2133,18 @@ impl Core {
                 drop(st);
                 self.wait_forcing_done().await;
                 continue;
+            }
+            if let Some(id) = unstarted {
+                let idle = st
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.ride_id == id && s.handle.status().state == RideState::Idle);
+                if !idle || st.starting.as_deref() == Some(id) {
+                    return Err(ApiError::new(
+                        ErrorCode::Conflict,
+                        "the ride is no longer loaded and unstarted",
+                    ));
+                }
             }
             let Some(s) = &st.session else {
                 // Already reaped, possibly by an end that is still waiting for the devices:
@@ -2158,12 +2324,19 @@ impl Core {
     /// The cap bounds a trainer that never answers; it should exceed the engine's 2 s.
     pub async fn shutdown(&self, cap: Duration) -> Shutdown {
         self.0.quits.send_modify(|n| *n += 1);
-        let outcome = match tokio::time::timeout(cap, async {
+        // The keeper's links go in parallel with the ride's end: no write of any kind, each
+        // release bounded by 2 s, inside the cap (ADR-0002 §5.1.3).
+        let keeper = async {
+            if let Ok(keeper) = self.keeper() {
+                keeper.shutdown().await;
+            }
+        };
+        let ride = tokio::time::timeout(cap, async {
             self.wait_load_over().await;
-            self.end_ride(false).await
-        })
-        .await
-        {
+            self.end_ride(false, None).await
+        });
+        let (outcome, _) = tokio::join!(ride, tokio::time::timeout(cap, keeper));
+        let outcome = match outcome {
             Err(_) => Shutdown::TimedOut,
             Ok(Ok(_)) => Shutdown::Ended,
             Ok(Err(e)) if e.code == ErrorCode::Conflict => Shutdown::Idle,
@@ -2417,6 +2590,9 @@ impl Core {
 }
 
 #[cfg(test)]
+#[path = "keeper/core_tests.rs"]
+mod keeper_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::backend::Radio;
@@ -2430,41 +2606,77 @@ mod tests {
 
     /// A radio over the simulator that records what the core tells it.
     #[derive(Clone)]
-    struct FakeRadio {
-        rig: SimRig,
-        script: Vec<DiscoveredDevice>,
-        never_ends: bool,
-        remembered: Arc<Mutex<Vec<String>>>,
-        forgotten: Arc<Mutex<Vec<String>>>,
-        commands: Arc<Mutex<Vec<TrainerCommand>>>,
+    pub(super) struct FakeRadio {
+        pub(super) rig: SimRig,
+        pub(super) script: Vec<DiscoveredDevice>,
+        pub(super) never_ends: bool,
+        pub(super) remembered: Arc<Mutex<Vec<String>>>,
+        pub(super) forgotten: Arc<Mutex<Vec<String>>>,
+        pub(super) commands: Arc<Mutex<Vec<TrainerCommand>>>,
         /// The ride-active gate the radio was given (the engine's signal, shared).
-        gate: Arc<Mutex<Option<RideGate>>>,
+        pub(super) gate: Arc<Mutex<Option<RideGate>>>,
         /// For each `Disconnect` sent: was the gate still active?
-        disconnects: Arc<Mutex<Vec<bool>>>,
+        pub(super) disconnects: Arc<Mutex<Vec<bool>>>,
         /// For each `SetMode` sent: was the gate active?
-        mode_gate: Arc<Mutex<Vec<bool>>>,
+        pub(super) mode_gate: Arc<Mutex<Vec<bool>>>,
         /// How long a trainer connect takes.
-        connect_delay: Duration,
+        pub(super) connect_delay: Duration,
         /// How long releasing the trainer (its `Disconnect`, or its control channel
         /// closing) takes.
-        disconnect_delay: Duration,
+        pub(super) disconnect_delay: Duration,
         /// How long the trainer takes to take each `SetMode` (it delivers after that).
-        mode_delay: Duration,
+        pub(super) mode_delay: Duration,
         /// The trainer never takes a `SetMode`: no `Delivered` ever reaches the engine.
-        swallow_modes: Arc<std::sync::atomic::AtomicBool>,
+        pub(super) swallow_modes: Arc<std::sync::atomic::AtomicBool>,
         /// How long releasing the strap takes once the engine's end of its stream is gone.
-        hr_delay: Duration,
+        pub(super) hr_delay: Duration,
         /// How many straps have been released.
-        hr_released: Arc<std::sync::atomic::AtomicUsize>,
+        pub(super) hr_released: Arc<std::sync::atomic::AtomicUsize>,
         /// `set_mode` and `disconnect`, in the order and at the times the trainer saw them.
-        order: Arc<Mutex<Vec<(&'static str, tokio::time::Instant)>>>,
+        pub(super) order: Arc<Mutex<Vec<(&'static str, tokio::time::Instant)>>>,
         /// Trainer connects fail while set.
-        fail_connect: Arc<std::sync::atomic::AtomicBool>,
+        pub(super) fail_connect: Arc<std::sync::atomic::AtomicBool>,
         /// Trainer connects panic while set.
-        panic_connect: Arc<std::sync::atomic::AtomicBool>,
+        pub(super) panic_connect: Arc<std::sync::atomic::AtomicBool>,
+        /// Connects begun, trainer then strap.
+        pub(super) connects: Arc<[std::sync::atomic::AtomicUsize; 2]>,
+        /// Trainer connects dropped before they returned: a half-open peripheral the driver
+        /// releases (#304).
+        pub(super) half_open: Arc<std::sync::atomic::AtomicUsize>,
+        /// Each scan's start and end.
+        pub(super) scans: Arc<Mutex<Vec<(&'static str, tokio::time::Instant)>>>,
+        /// Advertisements every new scan reports after the script.
+        pub(super) ads: Arc<Mutex<Vec<DiscoveredDevice>>>,
+        /// The trainer is the real FE-C driver over this transport.
+        pub(super) fec: Option<Arc<dyn crank_ble::FecTransport>>,
     }
     use crank_devices::DiscoveredDevice;
     struct Recording(FakeRadio);
+    /// Counts a connect dropped before it returned.
+    struct HalfOpen(Option<Arc<std::sync::atomic::AtomicUsize>>);
+    impl HalfOpen {
+        /// The connect returned: nothing half-open is left.
+        fn disarm(&mut self) {
+            self.0 = None;
+        }
+    }
+    impl Drop for HalfOpen {
+        fn drop(&mut self) {
+            if let Some(n) = self.0.take() {
+                n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+    /// Records a scan's end.
+    struct ScanEnd(Arc<Mutex<Vec<(&'static str, tokio::time::Instant)>>>);
+    impl Drop for ScanEnd {
+        fn drop(&mut self) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(("stop", tokio::time::Instant::now()));
+        }
+    }
     impl TrainerDriver for Recording {
         fn kind(&self) -> DriverKind {
             DriverKind::Sim
@@ -2480,6 +2692,8 @@ mod tests {
             let delay = self.0.connect_delay;
             let (mode_delay, swallow) = (self.0.mode_delay, self.0.swallow_modes.clone());
             let (fail, boom) = (self.0.fail_connect.clone(), self.0.panic_connect.clone());
+            self.0.connects[0].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut half_open = HalfOpen(Some(self.0.half_open.clone()));
             async move {
                 tokio::time::sleep(delay).await;
                 assert!(
@@ -2489,7 +2703,9 @@ mod tests {
                 if fail.load(std::sync::atomic::Ordering::SeqCst) {
                     return Err(crank_devices::DeviceError::NotFound);
                 }
-                let mut link = inner.connect(&dev, rider).await?;
+                let linked = inner.connect(&dev, rider).await;
+                half_open.disarm();
+                let mut link = linked?;
                 let (tx, mut rx) = tokio::sync::mpsc::channel(64);
                 let real = std::mem::replace(&mut link.control, tx);
                 tokio::spawn(async move {
@@ -2561,6 +2777,7 @@ mod tests {
         ) -> BoxFuture<'static, Result<crank_devices::HeartRateLink, crank_devices::DeviceError>>
         {
             let (inner, radio, dev) = (self.0.rig.heart(), self.0.clone(), dev.clone());
+            self.0.connects[1].fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async move {
                 let mut link = inner.connect(&dev).await?;
                 let (tx, rx) = tokio::sync::mpsc::channel(64);
@@ -2593,16 +2810,32 @@ mod tests {
     }
     impl Radio for FakeRadio {
         fn scan(&self) -> BoxStream<'static, DiscoveredDevice> {
-            let s = stream::iter(self.script.clone());
-            if self.never_ends {
+            let mut seen = self.script.clone();
+            seen.extend(self.ads.lock().unwrap().iter().cloned());
+            self.scans
+                .lock()
+                .unwrap()
+                .push(("start", tokio::time::Instant::now()));
+            // the stream holds the guard: it records the end when the core drops the scan
+            let end = ScanEnd(self.scans.clone());
+            let s = stream::iter(seen);
+            let s = if self.never_ends {
                 s.chain(stream::pending()).boxed()
             } else {
                 s.boxed()
-            }
+            };
+            s.map(move |d| {
+                let _ = &end;
+                d
+            })
+            .boxed()
         }
-        fn trainer(&self, _: Arc<dyn Clock>, gate: RideGate) -> Arc<dyn TrainerDriver> {
+        fn trainer(&self, clock: Arc<dyn Clock>, gate: RideGate) -> Arc<dyn TrainerDriver> {
             *self.gate.lock().unwrap() = Some(gate);
-            Arc::new(Recording(self.clone()))
+            match &self.fec {
+                Some(transport) => Arc::new(crank_ble::FecTrainer::new(transport.clone(), clock)),
+                None => Arc::new(Recording(self.clone())),
+            }
         }
         fn heart(&self, _: Arc<dyn Clock>, _: RideGate) -> Arc<dyn HeartRateDriver> {
             Arc::new(SlowHeart(self.clone()))
@@ -2614,7 +2847,12 @@ mod tests {
             self.forgotten.lock().unwrap().push(platform_id.into());
         }
     }
-    fn found(id: &str, name: Option<&str>, trainer: bool, heart_rate: bool) -> DiscoveredDevice {
+    pub(super) fn found(
+        id: &str,
+        name: Option<&str>,
+        trainer: bool,
+        heart_rate: bool,
+    ) -> DiscoveredDevice {
         DiscoveredDevice {
             device: DeviceRef(id.into()),
             info: DeviceInfo {
@@ -2625,7 +2863,7 @@ mod tests {
             heart_rate,
         }
     }
-    fn fake(script: Vec<DiscoveredDevice>, never_ends: bool) -> FakeRadio {
+    pub(super) fn fake(script: Vec<DiscoveredDevice>, never_ends: bool) -> FakeRadio {
         FakeRadio {
             rig: SimRig::new(SimConfig::default(), Arc::new(VirtualClock::new(1))),
             script,
@@ -2645,10 +2883,15 @@ mod tests {
             order: Arc::default(),
             fail_connect: Arc::default(),
             panic_connect: Arc::default(),
+            connects: Arc::default(),
+            half_open: Arc::default(),
+            scans: Arc::default(),
+            ads: Arc::default(),
+            fec: None,
         }
     }
     /// Re-opening the data dir with a radio the test controls.
-    fn open(dir: &std::path::Path, radio: &FakeRadio) -> Core {
+    pub(super) fn open(dir: &std::path::Path, radio: &FakeRadio) -> Core {
         let radio = radio.clone();
         let factory: crate::backend::RadioFactory = Arc::new(move |_| {
             let radio: Arc<dyn Radio> = Arc::new(radio.clone());
@@ -3025,7 +3268,7 @@ mod tests {
 
     /// A core whose paired trainer and strap (paired with no latency) now connect with
     /// these latencies (ADR-0002 §5.1.8).
-    async fn latent_core(
+    pub(super) async fn latent_core(
         dir: &std::path::Path,
         trainer: SimLatency,
         heart: SimLatency,
@@ -3049,16 +3292,17 @@ mod tests {
         (open(dir, &radio), radio)
     }
     /// A connect of `resolve` + `gatt` + `handshake` seconds.
-    fn latency(resolve: u64, gatt: u64, handshake: u64) -> SimLatency {
+    pub(super) fn latency(resolve: u64, gatt: u64, handshake: u64) -> SimLatency {
         SimLatency {
             resolve: Duration::from_secs(resolve),
             gatt: Duration::from_secs(gatt),
             handshake: Duration::from_secs(handshake),
             never_answers: false,
+            not_advertising: false,
         }
     }
     /// One engine tick: the tolerance of the §5.1.8 load bounds.
-    const TICK: Duration = Duration::from_millis(250);
+    pub(super) const TICK: Duration = Duration::from_millis(250);
 
     /// #468, ADR-0002 §5.1.8: a cold load takes the longer of the two connects, not their sum.
     #[tokio::test(start_paused = true)]
@@ -3105,8 +3349,6 @@ mod tests {
         assert!(links[1].link.is_none(), "no heart rate: {links:?}");
     }
 
-    /// #468: with both connecting at once, a trainer that fails fails the load at once, and
-    /// a strap that has linked meanwhile is released.
     /// #468: a trainer that fails beside a strap that never answers fails the load at the
     /// trainer's failure, not at `CONNECT_TIMEOUT`.
     #[tokio::test(start_paused = true)]
@@ -3128,8 +3370,11 @@ mod tests {
         assert_eq!(started.elapsed(), Duration::from_secs(3));
     }
 
+    /// #468: with both connecting at once, a trainer that fails fails the load at once. A
+    /// strap that has linked meanwhile stays the keeper's (ADR-0002 §5.1.3: the Ready sheet
+    /// over a failed load holds the keeper's links), until the keeper lets it go.
     #[tokio::test(start_paused = true)]
-    async fn a_failed_trainer_releases_the_strap_that_linked_beside_it() {
+    async fn a_failed_trainer_leaves_the_strap_that_linked_beside_it_with_the_keeper() {
         let dir = tempfile::tempdir().unwrap();
         let (_, mut radio) =
             latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
@@ -3143,10 +3388,14 @@ mod tests {
         assert_eq!(error.code, ErrorCode::DeviceUnavailable);
         assert_eq!(started.elapsed(), Duration::from_secs(3));
         tokio::time::sleep(Duration::from_secs(1)).await;
-        assert_eq!(
-            radio.hr_released.load(std::sync::atomic::Ordering::SeqCst),
-            1
-        );
+        let released = || radio.hr_released.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(released(), 0);
+        core.links_intent(LinkIntent::Release {
+            reason: ReleaseReason::Hidden,
+        })
+        .await
+        .unwrap();
+        assert_eq!(released(), 1);
     }
 
     #[tokio::test(start_paused = true)]
@@ -3260,6 +3509,8 @@ mod tests {
         assert!(!core.ride_status().await.unwrap().status.loaded);
     }
 
+    /// A connect that panics (in the keeper's attempt, ADR-0002 §5.1.4) fails the load, and
+    /// the core loads again afterwards.
     #[tokio::test(start_paused = true)]
     async fn a_panicking_load_leaves_the_core_usable() {
         let dir = tempfile::tempdir().unwrap();
@@ -3275,7 +3526,7 @@ mod tests {
             let core = core.clone();
             tokio::spawn(async move { core.ride_load(None).await })
         };
-        assert!(load.await.unwrap_err().is_panic());
+        assert_eq!(load.await.unwrap().unwrap_err().code, ErrorCode::Internal);
         radio
             .panic_connect
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -3506,7 +3757,8 @@ mod tests {
             tokio::spawn(async move { core.ride_load(None).await })
         };
         tokio::time::sleep(Duration::from_secs(1)).await;
-        assert_eq!(tracker.open(), ["device", "ride"], "connecting");
+        // (a `device` span opens once the keeper hands the link over, ADR-0002 §5.1.4)
+        assert_eq!(tracker.open(), ["ride"], "connecting");
         assert_eq!(
             core.shutdown(Duration::from_millis(2500)).await,
             Shutdown::Idle
@@ -3610,7 +3862,7 @@ mod tests {
     }
 
     /// Suspend the loaded ride's engine task: it keeps its links and answers nothing.
-    fn stall_engine(core: &Core) {
+    pub(super) fn stall_engine(core: &Core) {
         core.0.stall.on.store(true, Ordering::SeqCst);
     }
     const END_MODE: ControlMode = ControlMode::Resistance { pct: 0.0 };

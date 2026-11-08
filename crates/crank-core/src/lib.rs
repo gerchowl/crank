@@ -13,6 +13,7 @@ mod backend;
 mod core;
 mod dto;
 mod error;
+mod keeper;
 mod library;
 mod links;
 mod recorder;

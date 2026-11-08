@@ -153,17 +153,21 @@ pub const IDENTIFIERS: [(&str, Identifier); 17] = [
 /// `crates/` and `app/src-tauri/`, 2026-11-04; the `event_names_are_crank_messages` test keeps
 /// each one in the source). A message with interpolated values is not one. #509's `event` names
 /// are added here.
-pub const EVENTS: [&str; 40] = [
+pub const EVENTS: [&str; 46] = [
     "a device did not confirm release",
+    "a release timed out",
     "a driver did not close its stream after the engine",
+    "an unstarted ride was discarded",
     "BLE scan failed to start",
     "BLE scan failed to stop",
     "cancelled connection cleanup failed",
     "capturing trainer frames",
     "closing the ride's record failed",
     "command discarded while disconnected",
+    "cool",
     "disconnect after a failed setup failed",
     "empty trainer capture not removed",
+    "intent",
     "link phase",
     "menu: the first default menu item is not the application submenu; keeping the default menu",
     "menu: the last application menu item is not the built-in Quit; keeping the default menu",
@@ -176,7 +180,8 @@ pub const EVENTS: [&str; 40] = [
     "reconnecting trainer",
     "rejected FE-C notification",
     "ride released",
-    "strap connect timed out: riding without heart rate",
+    "ride_load",
+    "scan",
     "strap reconnect failed",
     "strap unavailable: riding without heart rate",
     "the core did not open",
@@ -186,6 +191,7 @@ pub const EVENTS: [&str; 40] = [
     "the engine did not stop the ride: ending it by force",
     "the engine did not take a window's close",
     "the engine ignores the abort: detaching it",
+    "the retry scan did not start",
     "the store did not close the ride's record in time",
     "the trainer did not confirm the end mode of a forced end",
     "the trainer's control channel took no disconnect",

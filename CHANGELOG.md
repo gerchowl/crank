@@ -22,6 +22,14 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   start (loading, connecting, ready, trainer missing, strap missing, a refused Start) with one row per device, the mode
   and how the ride starts; Start is disabled while the trainer link is connecting or lost, and focused once it can be
   pressed. Six design fixtures (`ready*`) ([#526](https://github.com/gerchowl/crank/issues/526))
+- Link keeper (ADR-0002 §5.1, no UI yet): `Core::links_intent` warms the paired trainer and strap up in parallel while a
+  ride is likely and lets them go after 5 min idle, 60 s in the background or at once on hide, sleep, Devices or
+  "Release trainer" (which latches the trainer); nothing is written while warm. `ride_load` takes warm links with no
+  Bluetooth work and awaits running attempts; a loaded ride that is not started is discarded after 10 min without
+  input or on sleep, and "Release trainer" on it unloads it (refused during a started ride); a `not_found` device is
+  retried on its advertisement in a capped scan (30 s continuous, then 4 s every 30 s); quitting releases the keeper's
+  links within the cap; the simulator gets a "not advertising" latency
+  ([#469](https://github.com/gerchowl/crank/issues/469))
 
 ### Changed
 
