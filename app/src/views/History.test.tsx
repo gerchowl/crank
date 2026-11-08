@@ -15,6 +15,8 @@ import { markForcedEnd, resetForcedEnds } from "../ride/forcedEnds";
 import { navigate, useRoute } from "../router";
 import { setTimeZone } from "../testTz";
 import { History, startedText, work } from "./History";
+import { axis, extent, ticks } from "./RideTraces";
+import { beginRide, releaseRide, type Point } from "../ride/session";
 
 // The start time renders in the rider's local time: pin it, so a date can be asserted literally.
 let restoreTimeZone: () => void;
@@ -134,7 +136,7 @@ test("a ride that is not stored says so and offers the way back", async () => {
   navigate("history", "ride-404");
   open();
   expect((await screen.findByRole("alert")).textContent).toBe(
-    "This ride isn’t in your history.",
+    "⚠ This ride isn’t in your history.",
   );
   expect(screen.queryByRole("region", { name: "Ride summary" })).toBeNull();
   await userEvent.click(
@@ -301,5 +303,128 @@ test("the list hides its old error while Retry is in flight, then shows the new 
   act(() => release());
   expect((await screen.findByRole("alert")).textContent).toContain(
     "disk is full",
+  );
+});
+
+/** The window's session of `rideId`, with `seconds` of samples at `hz` per series (power, heart rate, cadence). */
+function rode(rideId: string, seconds: number, hz = 4) {
+  const session = beginRide({ rideId, workoutId: null, hrLinked: true });
+  const of = (v: (t: number) => number): Point[] =>
+    Array.from({ length: seconds * hz }, (_, i) => {
+      const t = i / hz;
+      return { t, workoutS: t, v: v(t) };
+    });
+  // The series as `record` leaves them (a fresh array each), set at once: appending 43 200 samples one by one is
+  // #557's O(n²) and not what this test is about.
+  session.series = {
+    power: of((t) => 200 + (t % 60)),
+    hr: of((t) => 120 + (t % 30)),
+    cadence: of(() => 90),
+  };
+  return session;
+}
+
+test("Review draws the traces of the ride this window rode, one vertex per second", async () => {
+  install();
+  const session = rode("ride-3", 300);
+  navigate("history", "ride-3");
+  open();
+  const s = within(await screen.findByRole("region", { name: "Ride summary" }));
+  for (const name of ["Power", "Heart rate", "Cadence"])
+    expect(
+      s.getByRole("img", { name: new RegExp(`^${name} over the ride`) }),
+    ).toBeTruthy();
+  const power = s.getAllByTestId("review-power");
+  expect(power).toHaveLength(1);
+  expect(power[0]!.getAttribute("points")!.split(" ")).toHaveLength(300);
+  // heart rate is on the 80–200 bpm axis of DESIGN §5.5, whatever its samples
+  expect(
+    s.getByRole("img", { name: /^Heart rate/ }).getAttribute("aria-label"),
+  ).toBe("Heart rate over the ride, 80 to 200 bpm");
+  releaseRide(session);
+});
+
+test("a ride the window did not ride shows its figures and no traces", async () => {
+  install();
+  const session = rode("ride-3", 300);
+  navigate("history", "ride-1");
+  open();
+  const s = within(await screen.findByRole("region", { name: "Ride summary" }));
+  expect(s.queryByRole("img")).toBeNull();
+  expect(
+    s.getByText(/Traces show for the ride you have just ridden/),
+  ).toBeTruthy();
+  expect(s.getByText("Duration").nextElementSibling?.textContent).toBe("50:00");
+  releaseRide(session);
+});
+
+test("a 3 h ride at 4 Hz renders its traces whole", async () => {
+  install();
+  const session = rode("ride-1", 3 * 3600);
+  navigate("history", "ride-1");
+  open();
+  const s = within(await screen.findByRole("region", { name: "Ride summary" }));
+  for (const series of ["power", "hr", "cadence"]) {
+    const lines = s.getAllByTestId(`review-${series}`);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.getAttribute("points")!.split(" ")).toHaveLength(10_800);
+  }
+  // the axis ends at the last sample (3:00:00 less one 4 Hz step, shown rounded), past the summary's 50:00
+  expect(s.getByText("3:00:00")).toBeTruthy();
+  releaseRide(session);
+});
+
+test("a trace's range is found without spreading the samples into Math.max", () => {
+  // Far past any engine's argument limit: `Math.max(...values)` throws a RangeError here.
+  const points: Point[] = Array.from({ length: 500_000 }, (_, i) => ({
+    t: i / 4,
+    workoutS: i / 4,
+    v: i === 123_456 ? 612 : 150 + (i % 50),
+  }));
+  expect(() => Math.max(...points.map((p) => p.v))).toThrow(RangeError);
+  expect(extent(points)).toEqual([150, 612]);
+  expect(axis("power", points)).toEqual([0, 673]);
+  expect(axis("hr", points)).toEqual([80, 200]);
+  expect(axis("cadence", points)).toEqual([140, 622]);
+  expect(extent([])).toBeNull();
+  expect(axis("power", [])).toEqual([0, 110]);
+});
+
+test("time ticks are at most six and keep clear of the axis end", () => {
+  expect(ticks(300)).toEqual([60, 120, 180, 240]);
+  expect(ticks(3000)).toEqual([600, 1200, 1800, 2400]);
+  expect(ticks(10_800)).toEqual([1800, 3600, 5400, 7200, 9000]);
+  for (const end of [61, 300, 3000, 10_800, 43_200])
+    for (const t of ticks(end)) expect(t).toBeLessThan(end * 0.85);
+});
+
+test("the list is newest first, and marks the ride last opened on the way back", async () => {
+  install();
+  navigate("history", "ride-3");
+  open();
+  await screen.findByRole("region", { name: "Ride summary" });
+  await userEvent.click(screen.getByRole("button", { name: "All rides" }));
+  const list = within(await screen.findByRole("list", { name: "Rides" }));
+  const rows = list.getAllByRole("listitem");
+  // started 1_760_000_000, 1_759_000_000, 1_758_000_000
+  expect(rows.map((r) => within(r).getByRole("button").textContent)).toEqual([
+    expect.stringContaining("Sweet spot 3x12"),
+    expect.stringContaining("Free ride"),
+    expect.stringContaining("Spin"),
+  ]);
+  expect(rows.map((r) => r.getAttribute("aria-current"))).toEqual([
+    null,
+    null,
+    "true",
+  ]);
+  expect(within(rows[2]!).getByText("Last opened")).toBeTruthy();
+});
+
+test("a store failure of the list fails the summary too, as the core's ride_summary reads the list", async () => {
+  install({ fail: { rides_list: apiError("storage", "disk I/O error") } });
+  navigate("history", "ride-1");
+  open();
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "disk I/O error",
   );
 });

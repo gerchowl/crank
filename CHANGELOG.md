@@ -41,6 +41,10 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   block. Six new design fixtures (`workouts-empty`, `workouts-list-error`, `workouts-blocked`, `workouts-loading`,
   `workouts-load-error`, `workouts-long`) and a whole-screen no-clip check for Workouts
   ([#528](https://github.com/gerchowl/crank/issues/528))
+- Review and History in direction A (DESIGN §5.5, §5.6): Review shows the ride just ridden's power, heart-rate
+  (80–200 bpm) and cadence traces on one time axis beside its figures, then planned against ridden; History is a table
+  of rides, newest first, each with a 32 px Review button, marking the ride last opened. Eight new design fixtures
+  (`review-*`, `history-*`) ([#529](https://github.com/gerchowl/crank/issues/529))
 
 ### Changed
 
