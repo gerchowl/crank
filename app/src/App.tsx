@@ -14,6 +14,7 @@ import { History } from "./views/History";
 import { Placeholder } from "./views/Placeholder";
 import { RideLoadNotice } from "./views/RideLoadNotice";
 import { Settings } from "./views/Settings";
+import { Today } from "./views/Today";
 import { Workouts } from "./views/Workouts";
 
 export type ViewComponent = ComponentType<{ sub?: string }>;
@@ -23,7 +24,7 @@ const soon =
   (title: string): ViewComponent =>
   () => <Placeholder title={title} />;
 const DEFAULT_VIEWS: ViewRegistry = {
-  today: soon("Today"),
+  today: Today,
   workouts: Workouts,
   history: History,
   settings: Settings,

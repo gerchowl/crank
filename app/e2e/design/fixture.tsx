@@ -39,6 +39,8 @@ import {
   install as installWorkouts,
   type Backend as WorkoutsBackend,
 } from "../../src/views/workoutsBackend";
+import { install as installToday } from "../../src/views/todayBackend";
+import { startRideLoad } from "../../src/views/rideLoad";
 import { SCENARIOS, type ScenarioName } from "./scenarios";
 
 /** Mock answers (and fixture frames) in flight; see `settled()`. */
@@ -341,8 +343,85 @@ const MANY: RideRecord[] = Array.from({ length: 40 }, (_, i) => ({
   ...(i % 5 === 4 ? { outcome: "aborted" as const, summary: null } : {}),
 }));
 
+/** 2026-11-02T00:00Z, the day of the fixtures' frozen clock (design.pw.ts `FROZEN`), in Unix seconds. */
+const MIDNIGHT = 1_793_577_600;
+const HOUR = 3600;
+/** A week of rides up to the frozen clock: the newest yesterday evening, one aborted with no summary. */
+const WEEK: RideRecord[] = [
+  { ...RIDES[0], id: "w-1", startedAt: MIDNIGHT - 6.5 * HOUR },
+  {
+    ...RIDES[0],
+    id: "w-2",
+    startedAt: MIDNIGHT - 2 * 24 * HOUR + 7 * HOUR,
+    workoutName: "Endurance 90",
+    summary: RIDES[0].summary && { ...RIDES[0].summary, durationS: 5400 },
+  },
+  { ...RIDES[2], id: "w-3", startedAt: MIDNIGHT - 4 * 24 * HOUR + 18 * HOUR },
+  {
+    ...RIDES[0],
+    id: "w-4",
+    startedAt: MIDNIGHT - 6 * 24 * HOUR + 6 * HOUR,
+    workoutName: "Easy spin",
+    summary: RIDES[0].summary && { ...RIDES[0].summary, durationS: 1800 },
+  },
+  ...RIDES,
+];
+/** Today on the core's reads; `load` starts a ride load from Workouts first (the workouts backend answers it). */
+const today =
+  (
+    over: Parameters<typeof installToday>[0] = {},
+    load?: Partial<WorkoutsBackend>,
+  ) =>
+  () => {
+    navigate("today");
+    let others: Invoke | null = null;
+    if (load) {
+      installWorkouts(load);
+      others = internals().invoke;
+    }
+    installToday({
+      rides: WEEK,
+      paired: { trainer: neo, heart_rate: hrm },
+      others,
+      ...over,
+    });
+    if (load) void startRideLoad("w-long", LONG_NAME);
+  };
+const longLibrary = (
+  over: Partial<WorkoutsBackend> = {},
+): Partial<WorkoutsBackend> => ({
+  summaries: [
+    ...SUMMARIES,
+    { id: "w-long", name: LONG_NAME, totalS: 12420, tss: 251.6, ftp: 250 },
+  ],
+  compiled: { "w-long": LONG },
+  ...over,
+});
+
 const SETUPS: Record<ScenarioName, () => void> = {
-  today: () => navigate("today"),
+  today: today(),
+  "today-empty": today({ rides: [], paired: {} }),
+  "today-reading": today({
+    hold: {
+      rides_list: new Promise<void>(() => {}),
+      device_links: new Promise<void>(() => {}),
+    },
+  }),
+  "today-error": today({
+    fail: {
+      rides_list: { code: "storage", message: "disk I/O error" },
+      device_links: { code: "storage", message: "database is locked" },
+    },
+  }),
+  // The load never answers: Start reads "Loading ride…".
+  "today-ride-loading": today(
+    {},
+    longLibrary({ gate: new Promise<void>(() => {}) }),
+  ),
+  "today-ride-loaded": today(
+    { links: { trainer: "ready", heart_rate: "connecting" } },
+    longLibrary(),
+  ),
   // The library as the core lists it (the built-in one is never empty today; the store-backed one, #110, can be).
   "workouts-empty": workouts({ summaries: [] }),
   // The list cannot be read (Tauri's own rejection, or the store-backed library to come).

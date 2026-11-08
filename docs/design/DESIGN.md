@@ -184,6 +184,25 @@ keyboard access (`?` lists keys). Issue numbers and fixture notes never appear i
   ("Same as yesterday") or changes one; confirmed answers are filled.
 - **Last 7 days**: seven day cells (done / rest / today; the number is labelled "TSS") — context, not navigation.
 
+**In direction A** (#530, `app/src/views/Today.tsx`; what the contract carries today, the rest of §5.1 and §16.2 is
+#94): the page title with the date, then on the 12-column grid (§18.2) four panels in two rows, today's ride and the
+last 7 days in 7 columns beside the devices and the last ride in 5. Two columns at both sizes: §16.2 stacks below 1000 px
+for the wish matrix, which is not here yet (#86), so nothing needs the width. **Today's ride** is the ride load the rider
+started in Workouts (§5.7): "Nothing planned" with **Pick a workout** (32 px primary, §18.4) when none is loaded; while a
+load runs its name and a disabled **Start** that reads "Loading ride…"; once loaded its name and **Start** `⏎`, which
+opens the Ready check (§5.4). The loaded-ride notice (#320) does not repeat it on Today; a refused load stays the
+notice's. **Devices** lists each role (`device_links`): who is paired, and the loaded ride's link with ✓ ↻ ⚠ and its word
+(§18.7 rule 11); without a paired trainer it says a ride needs one, and **Pair a trainer** opens Settings → Devices
+(**Devices** when one is paired). **Last 7 days** is seven day cells, oldest first, today last and marked, each with its
+weekday, date, the minutes ridden (TSS is not in the contract) and "rest", "no ride yet" or the number of rides; the days
+are local calendar days. **Last ride** is the newest stored ride with its start, duration, work and outcome, and
+**Review**, named as History's row is (§5.6); "No rides yet" says where rides are saved. Each read shows "Loading…"
+while it runs, and a failed one is a notice with ⚠ and Retry (the rides' notice under Last ride; the week then says the
+rides could not be read). Not here yet, because the contract has none of it (#29): the check-in, the red-flag check and
+the gated Start (#94), the planner's proposal, its reasons and *Why?* (#119), the wish matrix (#86), the health cap
+(#244) and the model card (#18, #109). The key hints are drawn; binding them is the input dispatcher (#104), as on the
+ride. The start screen hands off to Today unchanged (BRAND.md §Start screen): focus lands on its main region.
+
 ### 5.2 Ride — *"Am I doing it right, how long, what next?"*
 
 Fixed anatomy at every size (geometry does not change between phases or states; only contents do, P4).
@@ -2034,7 +2053,7 @@ Numbers are never tweened: a value jumps to its new reading. The traces advance 
 | Ride overflows at 1024 and 1440 | the 12-column grid with `minmax(0, …)` (§18.2); rule 6 |
 | Target overlaps the power value | target in the power row's sub-line (§18.3); rule 6 |
 | 58–65 px controls | 32 px controls (§18.4); rules 2, 9 |
-| Today is a placeholder | #438 step 8 (Today), on these tokens |
+| Today is a placeholder | #438 step 8 (Today), on these tokens; built in #530 (§5.1 "In direction A") |
 | No Ready sheet | #438 step 4 (with #435), §5.4 at 32 px with keys; built in #526 (§5.4 "In direction A"), progress #471 |
 | Tokens are colour-only | space, radius, type and control-height tokens (§18.1, #453); rule 2 |
 

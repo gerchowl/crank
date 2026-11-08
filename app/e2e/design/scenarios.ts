@@ -19,7 +19,23 @@ export interface Scenario {
 }
 
 export const SCENARIOS = [
-  { name: "today", ready: "role=heading[name='Today']" },
+  // Today (§5.1 "In direction A", #530). `today` stays first: the gate's own tests inject into it.
+  { name: "today", ready: "role=list[name='Last 7 days']" },
+  // First run: no rides, nothing paired; the devices say a ride needs a trainer.
+  { name: "today-empty", ready: "text=No rides yet" },
+  // The reads are still on the wire: StrictMode runs each mount effect twice, so each read is asked twice.
+  { name: "today-reading", ready: "text=Loading…", held: 4 },
+  { name: "today-error", ready: "role=button[name='Retry']" },
+  // A load started in Workouts is in flight: Start names what it is doing.
+  {
+    name: "today-ride-loading",
+    ready: "role=button[name='Loading ride…'][disabled=true]",
+  },
+  // The ride is loaded (a long name): Start ⏎ leads to the ready check; the devices show its links.
+  {
+    name: "today-ride-loaded",
+    ready: "role=button[name='Start'][disabled=false]",
+  },
   // Workouts (§5.7, #528): the library and the picked workout, in each of their states.
   { name: "workouts-empty", ready: "text=No workouts yet" },
   { name: "workouts-list-error", ready: "role=button[name='Retry']" },
@@ -134,6 +150,16 @@ export const SCENARIOS = [
 ] as const satisfies readonly Scenario[];
 
 export type ScenarioName = (typeof SCENARIOS)[number]["name"];
+
+/** The fixtures of Today (#530): nothing on them is cut, and every control is inside the window. */
+export const TODAY_SCENARIOS: readonly ScenarioName[] = [
+  "today",
+  "today-empty",
+  "today-reading",
+  "today-error",
+  "today-ride-loading",
+  "today-ride-loaded",
+];
 
 /** The fixtures of Settings and Devices (#527): nothing on them is cut, and every control is inside the window. */
 export const SETTINGS_SCENARIOS: readonly ScenarioName[] = [
