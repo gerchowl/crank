@@ -281,6 +281,24 @@ const LONG_RIDE: RideRecord = (() => {
   };
 })();
 
+/** A 5-minute spin whose figures match the traces `rodeIt` draws for it. */
+const SHORT_RIDE: RideRecord = {
+  id: "ride-short",
+  startedAt: 1_761_100_000,
+  endedAt: 1_761_100_300,
+  outcome: "finished",
+  workoutId: null,
+  workoutName: "Free ride",
+  summary: {
+    durationS: 300,
+    avgPowerW: 140.2,
+    npW: 141.0,
+    avgHrBpm: 110.4,
+    kj: 42.1,
+    blocks: [],
+  },
+};
+
 /**
  * The window's session of `rideId` holding `seconds` of its traces, from fixed formulas (no randomness): power at
  * 4 Hz around a 6-minute pattern, heart rate and cadence at 2 Hz. Set at once, as `record` would leave them
@@ -458,8 +476,8 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "ride-free": ride({ ...active, blocks: [] }, RIDING, 200, null),
   review: history("ride-1"),
   "review-short": () => {
-    rodeIt("ride-3", 300);
-    history("ride-3")();
+    rodeIt("ride-short", 300);
+    history("ride-short", { rides: [SHORT_RIDE, ...RIDES] })();
   },
   "review-long": () => {
     rodeIt("ride-long", 10_800);
