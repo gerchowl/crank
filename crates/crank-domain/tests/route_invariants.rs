@@ -266,9 +266,13 @@ fn the_root_must_be_gpx_in_the_gpx_1_0_or_1_1_namespace() {
         "k:gpx",
         r#"k:gpx xmlns="http://www.topografix.com/GPX/1/1""#,
     ] {
+        // No body: a root wrongly accepted would give NoTrack, not this refusal of the root.
         let name = root.split(' ').next().unwrap_or(root);
-        let text = format!("<{root}>{body}</{name}>");
-        assert!(malformed(&text).contains("namespace"), "{root}");
+        let what = malformed(&format!("<{root}></{name}>"));
+        assert!(
+            what.contains("root") || what.contains("not declared"),
+            "{root}: {what}"
+        );
     }
 }
 
