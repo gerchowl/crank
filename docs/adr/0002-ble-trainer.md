@@ -1130,18 +1130,21 @@ backpressure). Its rules:
 - **`seq` is the state's number, and orders answers against frames (#561 review, architect decision 2026-11-08).**
   The keeper numbers its state: `seq` goes up by one per change (a phase or a sample), the same number for every
   window's frames and for every `links_intent` answer. A channel sends only on change, so its frames' `seq`s rise and
-  skip what it coalesced. An answer that waits for its releases can arrive after a frame of a newer state, so
-  **`LinkFrame` is authoritative**: the UI applies an answer only if its `seq` is at least the `seq` of the last frame
-  it applied, and drops an older one. A `u32` does not wrap within a process's uptime (the state changes a few times
+  skip what it coalesced. An answer that waits for its releases can arrive after a frame of a newer state, and after
+  the answer of a later intent, so **the UI applies a frame or an answer only if its `seq` is at least the highest
+  `seq` it has applied, from either source**, and drops an older one (#561 round 3, architect decision 2026-11-08:
+  comparing an answer only with the last frame let a release's answer, `seq` 11, overwrite a later `likely`'s, `seq`
+  12, that arrived before it). Equal `seq`s are the same state. A `u32` does not wrap within a process's uptime (the state changes a few times
   per second; 2^32 changes at 10 per second take 13 years).
 
 **Which channel reports link state, per device (#561 review, architect decision 2026-11-08).** At any moment each
 device has exactly one source. A device whose phase is `riding` is read from `StreamFrame.links` (and
 `device_links().link`); every other device is read from `LinkFrame`. A device is `riding` from the hand-over to a
-load on, before any ride stream exists: from the hand-over until `ride_load` answers, the device's progress is the
-load's (`ride_status().load`, `LoadProgress`); from `ride_load`'s answer on it is the ride stream's, once the page has
-opened it (its first frame is the complete state, ADR-0001 §4.3). In that window `LinkFrame` says only `riding`, and
-no second source exists. The rule is per device, not per ride: a ride
+load on, before any ride stream exists. From the hand-over until `ride_load` answers, `LinkFrame` says `riding` and so
+does `ride_status().load`: `LoadProgress` is the keeper's phases, so in that window it only repeats `riding` and adds
+no progress information. No source reports the device's progress then; the window lasts while the session is built,
+and `ride_load`'s answer (or its failure) ends it. From that answer on the device's live state is the ride stream's,
+once the page has opened it (its first frame is the complete state, ADR-0001 §4.3). The rule is per device, not per ride: a ride
 holds only the devices handed to it at `ride_load`, so a strap that was not `warm` then (`hr_linked: false`, for
 example one that did not advertise) stays the keeper's during the ride, and its frame keeps its own phase (`not_found`)
 beside the trainer's `riding`. While a ride holds a device the keeper's frame says only `riding` (no sample: the
@@ -1150,7 +1153,7 @@ the ride's end) the devices it held come back `cold`, with no sample, and a devi
 live link state (`connecting`, `ready`, `lost`, reconnecting) is the session's, and it already goes out in the ride
 stream, in the same frame as the status change it causes (ADR-0001 §4.3's ordering guarantee: a loss and the pause
 it brings cannot be reordered). Carrying it in `LinkFrame` too would need a second writer that copies the engine's
-state and would lose that ordering. `LoadProgress` (above) covers the load itself, before the ride stream exists.
+state and would lose that ordering. `LoadProgress` (above) covers the load itself until the hand-over; after it, it repeats `riding`.
 
 **Failure UX.** Failures show as quiet chips, never as modal errors or toasts:
 

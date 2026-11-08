@@ -143,8 +143,9 @@ pub struct DeviceLinkView {
 /// The rule is per device: during a ride whose strap missed the load, the trainer is `riding`
 /// and the strap keeps its own phase (e.g. `not_found`). It holds from the hand-over on: a
 /// device is `riding` as soon as a load is handed it, before any ride stream exists. Until
-/// `ride_load` answers, that load's progress is `ride_status().load` ([`LoadProgress`]); from
-/// its answer on, the ride's stream, once opened, carries the device's live state.
+/// `ride_load` answers, `ride_status().load` ([`LoadProgress`], the keeper's phases) only
+/// repeats `riding` and adds no progress information; from its answer on, the ride's
+/// stream, once opened, carries the device's live state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkView {
@@ -167,10 +168,11 @@ pub struct LinksId(pub u32);
 /// are coalesced into the next, which is again the complete state, so nothing is lost and
 /// there is no resync.
 ///
-/// **Frames are authoritative; answers are ordered by `seq`.** An intent's answer can arrive
-/// after a frame of a newer state. Apply an answer only if its `seq` is at least the `seq` of
-/// the last frame applied; an answer with a lower `seq` is older than that frame and is
-/// dropped.
+/// **Frames and answers are ordered by `seq`.** An intent's answer can arrive after a frame
+/// of a newer state, and after the answer of a later intent. Apply a frame or an answer only
+/// if its `seq` is at least the highest `seq` applied so far, from either source; one with a
+/// lower `seq` is older than a state already shown and is dropped. Equal `seq`s are the same
+/// state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkFrame {

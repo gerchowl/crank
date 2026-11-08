@@ -564,54 +564,145 @@ async fn a_page_stalled_across_a_ride_with_an_unlinked_strap_gets_one_frame() {
     );
 }
 
-/// §5.1.4 "answers are ordered by `seq`" (#561 review): an answer that waits for its releases
-/// can arrive after the frame of a newer state. Every answer carries its state's `seq`, the
-/// number a frame of that state carries, so the rule "apply an answer only if its `seq` is at
-/// least the last frame's" keeps the newest state whatever the arrival order.
+/// The UI's rule (§5.1.4): a frame or an answer is applied only if its `seq` is at least the
+/// highest applied so far, from either source.
+fn keep_newest(applied: Option<LinkFrame>, next: LinkFrame) -> LinkFrame {
+    match applied {
+        Some(applied) if next.seq < applied.seq => applied,
+        _ => next,
+    }
+}
+
+/// What reaches the page, in the order it arrives.
+#[derive(Clone, Copy, Debug)]
+enum Arrival {
+    Frame(LinkFrame),
+    Answer(&'static str, LinkFrame),
+}
+
+/// §5.1.4 "`seq` is the state's number, and orders answers against frames" (#561 rounds 2
+/// and 3): an answer that waits for its releases arrives after the answer of a later
+/// intent. Every arrival carries its state's `seq`, and the rule "apply a frame or an answer
+/// only if its `seq` is at least the highest applied so far" never steps back to an older
+/// state, applied in the order things arrive. Here the page is still busy with the warm
+/// frame (unacked) while both intents are in flight, so the answers arrive between frames:
+/// comparing an answer only with the last frame let the release's older answer overwrite the
+/// `likely`'s newer one.
 #[tokio::test(start_paused = true)]
-async fn an_answer_and_a_frame_of_the_same_state_share_its_seq_and_a_newer_frame_outranks_it() {
+async fn applied_in_arrival_order_the_newest_state_wins_an_answer_after_a_newer_answer_included() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _radio) =
+        latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
+    let (tx, mut arrivals) = mpsc::unbounded_channel();
+    let frames = tx.clone();
+    let id = core
+        .links_open(Some("main".into()), move |f| {
+            frames.send(Arrival::Frame(f)).map_err(|_| SinkClosed)
+        })
+        .await
+        .unwrap();
+    core.links_intent(likely(false)).await.unwrap();
+    let (mut log, mut applied, mut answers) = (Vec::new(), Vec::<LinkFrame>::new(), 0);
+    let (mut warm, mut unacked) = (false, None);
+    while let Ok(Some(arrival)) = tokio::time::timeout(S(1), arrivals.recv()).await {
+        let (Arrival::Frame(frame) | Arrival::Answer(_, frame)) = arrival;
+        log.push(arrival);
+        applied.push(keep_newest(applied.last().copied(), frame));
+        let Arrival::Frame(_) = arrival else {
+            answers += 1;
+            if answers == 2
+                && let Some(seq) = unacked.take()
+            {
+                // the page acks the warm frame only now: the channel's next frame is the
+                // latest state
+                core.links_ack(Some("main"), id, seq).await.unwrap();
+            }
+            continue;
+        };
+        if answers == 2 {
+            break;
+        }
+        if warm || phase(frame.links) != [Some(LinkPhase::Warm); 2] {
+            core.links_ack(Some("main"), id, frame.seq).await.unwrap();
+            continue;
+        }
+        // the page is busy with the warm frame until both answers are in. The release is
+        // applied first and answers once the links are let go; the `Likely` after it is
+        // applied next and answers at once
+        (warm, unacked) = (true, Some(frame.seq));
+        tokio::spawn({
+            let (core, tx) = (core.clone(), tx.clone());
+            async move {
+                let release = core.links_intent(LinkIntent::Release {
+                    reason: ReleaseReason::Devices,
+                });
+                let _ = tx.send(Arrival::Answer("release", release.await.unwrap()));
+            }
+        });
+        tokio::task::yield_now().await;
+        let newer = core.links_intent(likely(false)).await.unwrap();
+        let _ = tx.send(Arrival::Answer("likely", newer));
+    }
+    assert_eq!(answers, 2, "{log:?}");
+    let answer = |name| {
+        log.iter()
+            .position(|a| matches!(a, Arrival::Answer(n, _) if *n == name))
+            .unwrap()
+    };
+    let (likely_at, release_at) = (answer("likely"), answer("release"));
+    let (Arrival::Answer(_, newer), Arrival::Answer(_, older)) = (log[likely_at], log[release_at])
+    else {
+        unreachable!()
+    };
+    assert!(
+        likely_at < release_at && older.seq < newer.seq,
+        "the older answer arrives last: {log:?}"
+    );
+    assert_eq!(phase(older.links), [Some(LinkPhase::Cold); 2]);
+    assert_eq!(phase(newer.links), [Some(LinkPhase::Searching); 2]);
+    // one seq, one state, whichever source carried it
+    let carried = |a: &Arrival| match *a {
+        Arrival::Frame(f) | Arrival::Answer(_, f) => f,
+    };
+    for a in &log {
+        for b in &log {
+            let (a, b) = (carried(a), carried(b));
+            assert!(a.seq != b.seq || a == b, "one seq, one state: {a:?} {b:?}");
+        }
+    }
+    assert!(
+        applied.windows(2).all(|w| w[0].seq <= w[1].seq),
+        "never back to an older state: {applied:?}"
+    );
+    let newest = log.iter().map(carried).max_by_key(|f| f.seq).unwrap();
+    assert_eq!(applied.last(), Some(&newest), "{log:?}");
+}
+
+/// §5.1.4 (#561 round 3, M18): a discard's answer is the state of the step that takes the
+/// discard's end, with that state's `seq`, never a number ahead of it: the page's frames show
+/// that `seq` with the same state, and no later one.
+#[tokio::test(start_paused = true)]
+async fn a_discards_answer_carries_the_seq_of_its_own_state() {
     let dir = tempfile::tempdir().unwrap();
     let (core, _radio) =
         latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
     let mut page = page(&core, "main").await;
     core.links_intent(likely(false)).await.unwrap();
+    sleep(TICK).await;
+    core.ride_load(None).await.unwrap();
+    let discarded = core
+        .links_intent(LinkIntent::Release {
+            reason: ReleaseReason::RiderRelease,
+        })
+        .await
+        .unwrap();
+    assert_eq!(phase(discarded.links), [Some(LinkPhase::Cold); 2]);
     page.follow(&core, "main", S(1)).await;
     assert_eq!(
-        phase(page.seen.last().unwrap().links),
-        [Some(LinkPhase::Warm); 2]
+        page.seen.iter().find(|f| f.seq == discarded.seq),
+        Some(&discarded),
+        "{discarded:?} {:?}",
+        page.seen
     );
-    // the release is applied first and answers once the links are let go; the `Likely` after
-    // it is applied next and answers at once
-    let release = tokio::spawn({
-        let core = core.clone();
-        async move {
-            core.links_intent(LinkIntent::Release {
-                reason: ReleaseReason::Devices,
-            })
-            .await
-        }
-    });
-    tokio::task::yield_now().await;
-    let newer = core.links_intent(likely(false)).await.unwrap();
-    let older = release.await.unwrap().unwrap();
-    assert!(older.seq < newer.seq, "{older:?} {newer:?}");
-    assert_eq!(phase(older.links), [Some(LinkPhase::Cold); 2]);
-    assert_eq!(phase(newer.links), [Some(LinkPhase::Searching); 2]);
-    page.follow(&core, "main", TICK).await;
-    for answer in [older, newer] {
-        assert!(
-            page.seen
-                .iter()
-                .filter(|f| f.seq == answer.seq)
-                .all(|f| *f == answer),
-            "one seq, one state"
-        );
-    }
-    let last = *page.seen.last().unwrap();
-    assert!(last.seq >= newer.seq);
-    let applied = [last, older, newer]
-        .into_iter()
-        .reduce(|kept, next| if next.seq >= kept.seq { next } else { kept })
-        .unwrap();
-    assert_eq!(applied, last, "the frame is authoritative");
+    assert_eq!(page.seen.last(), Some(&discarded), "nothing changed since");
 }
