@@ -6,7 +6,8 @@
 // `--control-h*`), so the audit follows the tokens. Each rule names the §18.7 design rule it checks.
 // opts:
 //   controls  [{ selector, token }]: where a control may be another `--control-h*` height than `--control-h`
-//             (32 px, §18.4). Default: none; the spec passes the rail's 40 px.
+//             (32 px, §18.4). Default: none; the spec passes the rail's `--control-h-rail`. A control under an
+//             allowance is its own height variant (`<variant>@<token>`), so it never clashes with the default.
 //   keyed     selector of the ride and saddle actions that show their key in a `kbd` (rule 9). Default ".ride button".
 //   rail      selector inside which icons are 20 px instead of 16 (rule 4). Default ".rail".
 //   top       offenders kept per rule (default 3); full: keep every message under `rules`.
@@ -135,14 +136,16 @@
       const r = b.getBoundingClientRect();
       const cs = getComputedStyle(b);
       const h = Math.round(r.height);
+      const allowances = (opts.controls ?? []).filter((c) =>
+        b.matches(c.selector),
+      );
       const variant =
-        [...b.classList]
+        ([...b.classList]
           .filter((c) => /primary|ride-btn|secondary|ghost|icon/.test(c))
-          .join(".") || "default";
+          .join(".") || "default") +
+        allowances.map((c) => `@${c.token}`).join("");
       (heights[variant] ||= new Set()).add(h);
-      const allowed = (opts.controls ?? [])
-        .filter((c) => b.matches(c.selector))
-        .map((c) => control[c.token]);
+      const allowed = allowances.map((c) => control[c.token]);
       const want = allowed.length ? allowed : [control["--control-h"]];
       if (!want.includes(h))
         add("button.height", b, `${h}px not ${want.join("/")}`);

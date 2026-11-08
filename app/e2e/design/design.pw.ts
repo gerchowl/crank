@@ -27,9 +27,9 @@ import {
 import WarningsReporter, { WARNING } from "./warnings";
 
 const AUDIT = join(import.meta.dirname, "layout-audit.js");
-/** Direction A's allowances (§18.4): the rail's items are 40 px; every other control is `--control-h`. */
+/** Direction A's allowances (§18.4): the rail's items are `--control-h-rail`; every other control is `--control-h`. */
 const AUDIT_OPTS = {
-  controls: [{ selector: ".rail button", token: "--control-h-m" }],
+  controls: [{ selector: ".rail button", token: "--control-h-rail" }],
 };
 /** WCAG 2.2 A and AA (rule 7). */
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
@@ -341,13 +341,13 @@ test("an injected cut word on Settings fails the whole-screen check", async ({
   ]);
 });
 
-// The gate catches what it is for. No screen passes `button.height` today (rail 56 px, ride 65 px, section nav 40 px),
-// so a 48 px button shows two ways: over the baseline of a rule that is still a warning (`button.height`), and, with
-// padding off the `--space-*` scale, a first violation of a rule that passes on every screen (`button.padding`).
+// The gate catches what it is for. Every screen passes `button.height` and `button.padding` today (the rail is held
+// to its own token since #555), so a 48 px button with padding off the `--space-*` scale is a first violation of both.
 test("an injected 48 px button fails the gate", async ({ page }, info) => {
   test.skip(updating, "measures against the committed baseline");
   const s = SCENARIOS[0];
   const base = baseline[keyOf(s, info.project.name)] ?? {};
+  expect(base["button.height"], "button.height passes today").toBeUndefined();
   expect(base["button.padding"], "button.padding passes today").toBeUndefined();
   await open(page, s);
   await page.evaluate(() => {
@@ -361,6 +361,34 @@ test("an injected 48 px button fails the gate", async ({ page }, info) => {
   const failed = failures.map((f) => f.split(":")[0]);
   expect(failed).toContain("button.height");
   expect(failed).toContain("button.padding");
+});
+
+// The rail's allowance is its token, not the rail (#555, §18.4): one item off `--control-h-rail` is a `button.height`
+// violation, and the rail's items mixing heights is an `inconsistentHeight` one in the rail's own variant.
+test("a rail item off --control-h-rail fails the gate", async ({
+  page,
+}, info) => {
+  test.skip(updating, "measures against the committed baseline");
+  const s = SCENARIOS[0];
+  const base = baseline[keyOf(s, info.project.name)] ?? {};
+  await open(page, s);
+  const before = await measure(page);
+  expect(
+    before.counts["button.height"],
+    "the rail passes today",
+  ).toBeUndefined();
+  await page.evaluate(() => {
+    const item = document.querySelector<HTMLElement>(".rail button");
+    if (!item) throw new Error("no .rail button on the first fixture");
+    item.style.height = "calc(var(--control-h-rail) - 5px)";
+  });
+  const after = await measure(page);
+  const { failures } = compare(base, after.counts);
+  expect(failures).toContain("button.height: 1 > baseline 0");
+  expect(failures).toContain("button.inconsistentHeight: 1 > baseline 0");
+  expect(after.worst["button.inconsistentHeight"]).toEqual([
+    expect.stringMatching(/^variant default@--control-h-rail: \d+\/\d+px$/),
+  ]);
 });
 
 // The rail's words sit inside their buttons with room to spare (#506, DESIGN §16.3): the layout audit's 2 px
