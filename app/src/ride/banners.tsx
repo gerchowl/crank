@@ -32,6 +32,8 @@ export const BANNER_ORDER = [
   "free-ride",
 ] as const;
 export type BannerId = (typeof BANNER_ORDER)[number];
+/** The Ready sheet's banner (ReadySheet.tsx `readyBanner`): before Start the band holds its state. */
+export type SheetBannerId = "ready" | `ready-${string}`;
 
 /** One line: its text, an optional duration in the number face, a test hook, and whether End… sits on it. */
 export interface Line {
@@ -44,7 +46,7 @@ export interface Line {
 }
 
 export interface Banner {
-  id: BannerId;
+  id: BannerId | SheetBannerId;
   title: Line;
   /** What the rider is to do: shown whenever the state holds. */
   actions: Line[];

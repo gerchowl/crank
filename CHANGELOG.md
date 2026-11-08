@@ -18,6 +18,10 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   event name and typed allowlisted fields; messages and error text are never included, and identifier fields (names,
   serials, addresses, ids, paths) become placeholders by key; a privacy pinning test salts every leak spelling of #482
   ([#508](https://github.com/gerchowl/crank/issues/508))
+- Ready sheet in direction A (DESIGN §5.4): before Start the ride screen's traces column states whether the ride can
+  start (loading, connecting, ready, trainer missing, strap missing, a refused Start) with one row per device, the mode
+  and how the ride starts; Start is disabled while the trainer link is connecting or lost, and focused once it can be
+  pressed. Six design fixtures (`ready*`) ([#526](https://github.com/gerchowl/crank/issues/526))
 
 ### Changed
 

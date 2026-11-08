@@ -213,6 +213,86 @@
   stroke-width: 1;
 }
 
+/* The Ready sheet (ReadySheet.tsx, DESIGN §5.4): before Start the trace stack's cell holds the sheet's body at T3, below
+   the band's state banner. Every row is sized by the grid, so no state moves another: two device rows (the
+   connect-progress region of ADR-0002 §5.1.4, a 40 px T3 line and a 20 px hint each), the plan line, and the refusal's
+   row taking what is left (at 1024 × 768: 16 + 60 + 12 + 60 + 16 + 40 + 16 = 220 of the 329 px cell). */
+.ready-sheet {
+  display: grid;
+  grid-template-rows: auto 40px minmax(0, 1fr);
+  gap: var(--space-4);
+  padding-top: var(--space-4);
+  min-height: 0;
+}
+.ready-devices {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ready-device {
+  display: grid;
+  grid-template-rows: 40px 20px;
+  min-width: 0;
+}
+.ready-device-line,
+.ready-plan {
+  margin: 0;
+  font-size: var(--text-t3);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+/* The hint starts under the name: the 16 px icon and this gap are the hint's 32 px indent. */
+.ready-device-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+.ready-device-name {
+  font-weight: 600;
+}
+.ready-device[data-device="trainer"] svg {
+  color: var(--power);
+}
+.ready-device[data-device="hr"] svg {
+  color: var(--hr);
+}
+.ready-device-word {
+  color: var(--ink-2);
+}
+.ready-device[data-state="connected"] .ready-device-word {
+  color: var(--good);
+}
+.ready-device[data-state="connecting"] .ready-device-word {
+  color: var(--warn);
+}
+.ready-device[data-state="lost"] .ready-device-word {
+  color: var(--status-critical);
+}
+/* A missing strap does not hold the start (§5.4): a warning, not the trainer's critical state. */
+.ready-device[data-device="hr"][data-state="lost"] .ready-device-word {
+  color: var(--warn);
+}
+/* The sheet's banner says a warning only when something is missing or refused; ready and loading are plain facts. */
+.banner[data-state="ready"] .banner-line,
+.banner[data-state="ready-loading"] .banner-line {
+  color: var(--ink);
+}
+.ready-hint {
+  padding-left: var(--space-6);
+  font-size: var(--text-s);
+  line-height: 1.33;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+/* The refused command's reason, at T3 like the rest of the body (§5.4); it wraps within the row the grid leaves it. */
+.ready-refusal {
+  min-height: 0;
+  font-size: var(--text-t3);
+  line-height: 1.2;
+}
+
 /* Metric column (§18.2 budget at 1024: countdown 184 + power 88 + band 14 + heart rate 88 + cadence 88 = 462 px); the
    rows share the main row in that proportion, so they breathe at 1440 and never depend on their content. */
 .ride-metrics {
