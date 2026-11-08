@@ -59,7 +59,9 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   and Last ride the newest ride with Review. The ride-load notice leads the main region, styled with tokens and 32 px
   buttons. Eight new design fixtures (`today-*`, `settings-ride-loaded`)
   ([#530](https://github.com/gerchowl/crank/issues/530))
-- Link contract (ADR-0002 §5.1.4, no UI yet): the `links_intent` command answers the keeper's state (`LinkView`);
+- Link contract (ADR-0002 §5.1.4, no UI yet): the `links_intent` command answers the keeper's state with its number
+  (`LinkFrame`: `seq` is +1 per change, shared by every frame and answer, so an answer older than the last frame is
+  dropped);
   `links_open` opens the window's `Channel<LinkFrame>` (each frame the complete state: every paired device's phase and
   a warm device's latest sample), acked by `links_ack` with one frame in flight, changes coalesced into the next frame
   and at most 10 Hz; `device_links` reports the keeper's `phase`

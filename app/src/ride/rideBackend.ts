@@ -24,12 +24,16 @@
 //   every other ride_* command, engine task ended  internal  "engine stopped"  engine.rs `EngineHandle::send` (~226) via
 //               core.rs `ride_cmd` (~1676), mapped error.rs `ApiError` (~65), its `From<CommandError>`; checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
-//   links_intent (the link keeper, ADR-0002 §5.1; answers the keeper's state, `LinkView`), in the core's order:
-//               "Release trainer" during a started ride (or a finished one not yet ended)  conflict
-//                 "the ride holds the trainer: end the ride first"  core.rs `Core::links_intent` (~1245)
-//               the keeper's pairings cannot be read when it first starts  storage  core.rs `Core::keeper` (~1211)
-//               a release recorded while the links were handed to a load, superseded by a later rider action
-//                 ("Ride this", Retry; #520)  conflict  keeper/mod.rs `SUPERSEDED` (`world.supersedes`)
+//   links_intent (the link keeper, ADR-0002 §5.1; answers the keeper's state with its seq, `LinkFrame`), in the core's order:
+//               "Release trainer" while the ride's session is started: an active ride, or one that finished (its last
+//                 block skipped) and that the reaper has not taken yet (`world.unreaped`)  conflict
+//                 "the ride holds the trainer: end the ride first"  core.rs `Core::links_intent` (~1248), the session's
+//                 state is not `Idle`; after `ride_end` (which waits for the reap, core.rs `Core::end_ride` (~2197)) or
+//                 the reap, the ride is gone and it is accepted (keeper/mod.rs `Keeper::free_intent` (~540))
+//               the keeper's pairings cannot be read when it first starts  storage  core.rs `Core::keeper` (~1216)
+//               a release recorded while the links were handed to a load in flight (no ride loaded yet), superseded by a
+//                 later rider action ("Ride this", Retry; #520)  conflict  keeper/mod.rs `SUPERSEDED` (~316), recorded
+//                 only in `Ride::Handed` (keeper/mod.rs `Keeper::intent` (~458); `world.supersedes`)
 //               `likely` / `retry` after the quit  conflict  "the application is quitting"  keeper/mod.rs `QUITTING`
 //               a "Release trainer" whose discard raced a Start and found the ride started  conflict
 //                 "the ride was started or is gone: it was not discarded"  run.rs `Task::answer`; not reachable here (the
@@ -41,6 +45,8 @@
 //   links_ack   unknown or replaced channel  not_found  "unknown link channel"  keeper/channel.rs `Channels::ack`;
 //               one frame in flight: a change waits for the ack of the last frame sent, then goes out as one frame of
 //               the latest state; an ack of any other seq is ignored (the core's 10 Hz spacing is not modelled)
+//   seq         the keeper state's number, +1 per change, shared by every frame and every `links_intent` answer
+//               (keeper/run.rs `change`), so an answer older than the last frame has a lower seq
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type { Channel } from "@tauri-apps/api/core";
@@ -169,6 +175,12 @@ export interface RideWorld {
   engineUnresponsive: boolean;
   /** Publish the status frame after a command (the core does; false models the frame still on its way). */
   publishes: boolean;
+  /**
+   * The ride finished on its own (its last block skipped) and the reaper has not taken its session yet: it still holds
+   * its devices and refuses "Release trainer" (core.rs `Core::links_intent`). `ride_end` waits for the reap and
+   * `reap()` runs it (core.rs `Core::reap` (~1626)); a ride ended by `ride_end` is already reaped.
+   */
+  unreaped: boolean;
   blocks: WorkoutBlock[];
   /** The link keeper's state of the devices no ride holds (`links_intent`'s answer, the link channel's frames). */
   keeper: LinkView;
@@ -226,6 +238,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
     engineStopped: false,
     engineUnresponsive: false,
     publishes: true,
+    unreaped: false,
     blocks: BLOCKS,
     keeper: COLD_LINKS,
     strapHanded: true,
@@ -342,11 +355,15 @@ export function installRide(over: Partial<RideWorld> = {}) {
     base.truth.links = links();
     base.push({ status: base.truth.status, links: links() });
   };
+  /** The ride's session is started: an active ride, or a finished one the reaper has not taken yet. */
+  const started = () =>
+    world.phase === "active" || (world.phase === "finished" && world.unreaped);
   /**
    * A loaded or started ride holds the devices it was handed: the trainer, and the strap when `strapHanded`. A
-   * finished ride is reaped, and so is an unloaded one: its hold is gone (core.rs `Core::reap`).
+   * reaped ride (ended, or finished and taken by the reaper) and an unloaded one hold nothing: the hold is dropped
+   * with the session (core.rs `Core::reap`).
    */
-  const rideHolds = () => world.phase === "loaded" || world.phase === "active";
+  const rideHolds = () => world.phase === "loaded" || started();
   let held = rideHolds();
   /**
    * What the keeper reports, per device: one the ride holds is `riding` (its live state is the ride stream's), every
@@ -388,18 +405,26 @@ export function installRide(over: Partial<RideWorld> = {}) {
     due: boolean;
   } | null = null;
   let nextLinks = 1;
-  let lastView = "";
+  let numbered = { seq: 0, json: "" };
+  /** The keeper's state with its number: a change since the last look takes the next seq (keeper/run.rs `change`). */
+  const linkState = (): LinkFrame => {
+    const links = linkView();
+    const json = JSON.stringify(links);
+    if (json !== numbered.json)
+      numbered = { seq: (numbered.seq + 1) >>> 0, json };
+    return { seq: numbered.seq, links };
+  };
   const linkSend = () => {
     if (!linkCh) return;
-    linkCh.seq = (linkCh.seq + 1) >>> 0;
+    const frame = linkState();
+    linkCh.seq = frame.seq;
     linkCh.acked = false;
     linkCh.due = false;
-    lastView = JSON.stringify(linkView());
-    linkCh.ch.onmessage({ seq: linkCh.seq, links: linkView() });
+    linkCh.ch.onmessage(frame);
   };
   /** The keeper's state may have changed: a frame goes out now, or once the last one is acked. */
   const linksChanged = () => {
-    if (!linkCh || JSON.stringify(linkView()) === lastView) return;
+    if (!linkCh || linkState().seq === linkCh.seq) return;
     if (linkCh.acked) linkSend();
     else linkCh.due = true;
   };
@@ -455,13 +480,19 @@ export function installRide(over: Partial<RideWorld> = {}) {
         if (world.blockIdx >= world.blocks.length)
           throw err("conflict", "not valid in this state");
         world.blockIdx += 1;
-        if (world.blockIdx >= world.blocks.length) world.phase = "finished";
+        if (world.blockIdx >= world.blocks.length) {
+          world.phase = "finished";
+          world.unreaped = true;
+        }
         publish();
         return null;
       case "ride_end": {
         if (world.phase === "none" || world.phase === "finished") {
           const id = world.phase === "finished" ? world.rideId : world.lastId;
           if (id === null) throw err("conflict", "no ride loaded");
+          // an End of a ride that finished on its own waits for its reap (core.rs `Core::settle`)
+          world.unreaped = false;
+          settleLinks();
           return { rideId: id, forced: id !== null && id === world.lastForced };
         }
         if (world.engineStopped || world.engineUnresponsive) {
@@ -486,15 +517,14 @@ export function installRide(over: Partial<RideWorld> = {}) {
         if (intent === undefined)
           throw "missing required key intent for command `links_intent`";
         const release = intent.kind === "release" ? intent.reason : null;
-        const started = world.phase === "active" || world.phase === "finished";
-        if (release === "rider_release" && started)
+        if (release === "rider_release" && started())
           throw err(
             "conflict",
             "the ride holds the trainer: end the ride first",
           );
         if (world.keeperStorage)
           throw err("storage", "cannot read the pairings");
-        if (release !== null && world.supersedes) {
+        if (release !== null && world.supersedes && world.phase === "none") {
           world.supersedes = false;
           throw err("conflict", SUPERSEDED);
         }
@@ -504,7 +534,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
             world.phase = "none";
             publish();
           }
-        } else if (!started) {
+        } else if (!started()) {
           if (
             world.quitting &&
             (intent.kind === "likely" || intent.kind === "retry")
@@ -518,7 +548,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
             linksChanged();
           }
         }
-        return linkView();
+        return linkState();
       }
       case "links_open":
         linkCh = {
@@ -601,6 +631,11 @@ export function installRide(over: Partial<RideWorld> = {}) {
     calls,
     count: (cmd: string) => calls.filter((c) => c.cmd === cmd).length,
     publish,
+    /** The reaper takes a ride that finished on its own: its hold is dropped and its devices come back (core.rs `Core::reap`). */
+    reap(): void {
+      world.unreaped = false;
+      settleLinks();
+    },
     /** The keeper's phases or samples change (warm-up, cool-down): the link channel sends them as the core would. */
     setKeeper(view: LinkView): void {
       world.keeper = view;

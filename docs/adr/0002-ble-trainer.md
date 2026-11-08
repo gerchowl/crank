@@ -1106,7 +1106,8 @@ each phase changes, so a Ready sheet opened over a cold load shows per-device pr
 opens one window-scoped `Channel<LinkFrame>`. It follows the window lifecycle rules of the stream channel (ADR-0001
 §4.3): it belongs to the window's label and is dropped on destroy or reload. Each frame is the complete state, the
 phase plus the latest sample per device (`LinkFrame { seq, links: LinkView }`), so the latest frame wins.
-`links_intent` returns the same state (`LinkView`). `device_links`, which today reports a link only while a ride holds
+`links_intent` returns the same type (`LinkFrame`): the state its resolving step published, with that state's `seq`.
+`device_links`, which today reports a link only while a ride holds
 it, also reports the keeper's phase (`phase`), so the Devices view shows the live state too.
 
 **Flow control of the link channel (amendment, #470, architect decision 2026-11-08).** The channel follows ADR-0001
@@ -1126,10 +1127,21 @@ backpressure). Its rules:
   test against the 8 000-byte budget).
 - **Why its own channel.** It must work outside a ride; the ride stream (`open_stream`) exists only while a ride is
   loaded.
+- **`seq` is the state's number, and orders answers against frames (#561 review, architect decision 2026-11-08).**
+  The keeper numbers its state: `seq` goes up by one per change (a phase or a sample), the same number for every
+  window's frames and for every `links_intent` answer. A channel sends only on change, so its frames' `seq`s rise and
+  skip what it coalesced. An answer that waits for its releases can arrive after a frame of a newer state, so
+  **`LinkFrame` is authoritative**: the UI applies an answer only if its `seq` is at least the `seq` of the last frame
+  it applied, and drops an older one. A `u32` does not wrap within a process's uptime (the state changes a few times
+  per second; 2^32 changes at 10 per second take 13 years).
 
 **Which channel reports link state, per device (#561 review, architect decision 2026-11-08).** At any moment each
 device has exactly one source. A device whose phase is `riding` is read from `StreamFrame.links` (and
-`device_links().link`); every other device is read from `LinkFrame`. The rule is per device, not per ride: a ride
+`device_links().link`); every other device is read from `LinkFrame`. A device is `riding` from the hand-over to a
+load on, before any ride stream exists: from the hand-over until `ride_load` answers, the device's progress is the
+load's (`ride_status().load`, `LoadProgress`); from `ride_load`'s answer on it is the ride stream's, once the page has
+opened it (its first frame is the complete state, ADR-0001 §4.3). In that window `LinkFrame` says only `riding`, and
+no second source exists. The rule is per device, not per ride: a ride
 holds only the devices handed to it at `ride_load`, so a strap that was not `warm` then (`hr_linked: false`, for
 example one that did not advertise) stays the keeper's during the ride, and its frame keeps its own phase (`not_found`)
 beside the trainer's `riding`. While a ride holds a device the keeper's frame says only `riding` (no sample: the
