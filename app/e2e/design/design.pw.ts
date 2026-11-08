@@ -15,7 +15,12 @@ import {
   type Counts,
 } from "./baseline";
 import { focusWalk, inOrder, ORDER_TOLERANCE } from "./focus";
-import { RIDE_SCENARIOS, SCENARIOS, type Scenario } from "./scenarios";
+import {
+  RIDE_SCENARIOS,
+  SCENARIOS,
+  SETTINGS_SCENARIOS,
+  type Scenario,
+} from "./scenarios";
 import WarningsReporter, { WARNING } from "./warnings";
 
 const AUDIT = join(import.meta.dirname, "layout-audit.js");
@@ -166,17 +171,19 @@ const regionBoxes = (page: Page) =>
       }),
     ),
   );
-// No text on the ride screen is cut (§6.1, rule 6): no box that hides or ellipsizes its overflow holds more than it
-// shows, in any region (the banner band, the key row, the title, the next line …), and every control is wholly inside
-// the window; an action in the banner band (End…) is wholly inside the band. The audit's `layout.clipped` sees only a
-// box whose parent clips too; this names the text and the control.
-const rideFit = (page: Page) =>
-  page.evaluate(() => {
-    const ride = document.querySelector(".ride");
-    const band = document.querySelector("[data-region='banner']");
-    if (!ride || !band) return ["no ride screen"];
+// No text is cut (§6.1, rule 6): no box that hides or ellipsizes its overflow holds more than it shows, anywhere under
+// `root` (on the ride: the banner band, the key row, the title, the next line …), and every control is wholly inside
+// the window; on the ride an action in the banner band (End…) is wholly inside the band. The audit's `layout.clipped`
+// sees only a box whose parent clips too; this names the text and the control.
+const screenFit = (page: Page, root: string) =>
+  page.evaluate((root) => {
+    const screen = document.querySelector(root);
+    if (!screen) return [`no ${root}`];
+    const ride = root === ".ride";
+    const band = screen.querySelector("[data-region='banner']");
+    if (ride && !band) return ["no banner band on the ride screen"];
     const bad: string[] = [];
-    for (const e of ride.querySelectorAll<HTMLElement>("*")) {
+    for (const e of screen.querySelectorAll<HTMLElement>("*")) {
       if (e.closest("svg, .sr-only")) continue;
       const cs = getComputedStyle(e);
       // Each axis that hides its overflow must hold its content.
@@ -188,12 +195,13 @@ const rideFit = (page: Page) =>
           `cut: ${e.className || e.tagName} "${(e.textContent ?? "").slice(0, 60)}" ${e.scrollWidth}x${e.scrollHeight} > ${e.clientWidth}x${e.clientHeight}`,
         );
     }
-    const b = band.getBoundingClientRect();
-    for (const a of ride.querySelectorAll("button")) {
+    const b = band?.getBoundingClientRect();
+    for (const a of screen.querySelectorAll("button")) {
       const r = a.getBoundingClientRect();
-      const box = band.contains(a)
-        ? b
-        : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+      const box =
+        b && band?.contains(a)
+          ? b
+          : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
       if (
         r.left < box.left ||
         r.right > box.right ||
@@ -203,7 +211,7 @@ const rideFit = (page: Page) =>
         bad.push(`control outside its box: "${a.textContent}"`);
     }
     return bad;
-  });
+  }, root);
 test("the ride's region boxes are the same in every ride fixture", async ({
   page,
 }) => {
@@ -218,8 +226,48 @@ test("the ride's region boxes are the same in every ride fixture", async ({
     );
     first ??= boxes;
     expect(boxes, `${name} against ${RIDE_SCENARIOS[0]}`).toEqual(first);
-    expect(await rideFit(page), `${name}: cut text or controls`).toEqual([]);
+    expect(
+      await screenFit(page, ".ride"),
+      `${name}: cut text or controls`,
+    ).toEqual([]);
   }
+});
+
+// Settings and Devices (#527) pass the same whole-screen check: no cut text, every control inside the window, so no
+// state pushes an action below the fold at 1024×768.
+test("nothing on Settings or Devices is cut, in any of their fixtures", async ({
+  page,
+}) => {
+  for (const name of SETTINGS_SCENARIOS) {
+    const s = SCENARIOS.find((x) => x.name === name);
+    if (!s) throw new Error(`no fixture ${name}`);
+    await open(page, s);
+    expect(
+      await screenFit(page, "#root"),
+      `${name}: cut text or controls`,
+    ).toEqual([]);
+  }
+});
+
+// …and catches what it is for: a word cut by a box that hides its overflow, in the Settings panel.
+test("an injected cut word on Settings fails the whole-screen check", async ({
+  page,
+}) => {
+  const s = SCENARIOS.find((x) => x.name === "devices-paired");
+  if (!s) throw new Error("no fixture devices-paired");
+  await open(page, s);
+  await page.evaluate(() => {
+    const cut = document.createElement("span");
+    cut.className = "injected";
+    cut.textContent = "Heart-rate strap";
+    cut.style.display = "inline-block";
+    cut.style.width = "1em";
+    cut.style.overflow = "hidden";
+    document.querySelector(".settings-panel")?.append(cut);
+  });
+  expect(await screenFit(page, "#root")).toEqual([
+    expect.stringMatching(/^cut: injected "Heart-rate strap"/),
+  ]);
 });
 
 // The gate catches what it is for. No screen passes `button.height` today (rail 56 px, ride 65 px, section nav 40 px),

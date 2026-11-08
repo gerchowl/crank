@@ -1,7 +1,15 @@
-// Devices (DESIGN §5.9, #92 MVP subset): scan, pair and forget the trainer and the strap. It renders what the core
+// Devices (DESIGN §5.9, #92 MVP subset; direction A, §18 and #527): scan, pair and forget the trainer and the strap. It renders what the core
 // reports (`devices_scan`, `device_pair`, `device_forget`, `device_links`) and branches on `ApiError.code`, never on
 // `message` (ADR-0001 §4.4). Out of this subset, each with its issue: live W/rpm/bpm while pairing (#267),
 // "Release trainer" (the core has no release command, #314) and a distinct "another app holds the NEO" signal (#314).
+// Two tables in the Settings panel: Paired (one fixed row per role) and Nearby (the last scan). Forget asks first, in
+// place of the row's actions. Notices sit under the section head, each with a word and ⚠ (§18.7 rule 11).
+import {
+  Bluetooth,
+  BluetoothSearching,
+  Heart,
+  type LucideIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands } from "../bindings";
 import type {
@@ -75,7 +83,7 @@ function describeError(
       };
     case "storage":
       // The pairings live in the local database; the core reads it first on scan and forget, and writes it last on pair.
-      // A pair can fail after the row was written (core.rs `device_pair` (~1074)), so the wording does not say what was stored:
+      // A pair can fail after the row was written (core.rs `device_pair` (~1170)), so the wording does not say what was stored:
       // the view re-reads the pairings, and the list shows the truth.
       return during === "pair"
         ? {
@@ -100,8 +108,13 @@ function describeError(
 
 function Banner({ notice, onRetry }: { notice: Notice; onRetry: () => void }) {
   return (
-    <div className="device-notice" role="alert">
-      <strong>{notice.title}</strong>
+    <div className="device-notice" role="alert" data-state="error">
+      <strong>
+        <span data-state-label aria-hidden>
+          ⚠
+        </span>{" "}
+        {notice.title}
+      </strong>
       <p>{notice.body}</p>
       {notice.retry && (
         <button type="button" className="primary" onClick={onRetry}>
@@ -118,12 +131,77 @@ function pairedLine(d: NonNullable<DeviceLinkInfo["device"]>): string {
     .join(" · ");
 }
 
+const icon = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
+const ROLE_ICON: Record<DeviceRole, LucideIcon> = {
+  trainer: Bluetooth,
+  heart_rate: Heart,
+};
+
+/** The Forget waiting for its confirmation: the role, and the row that asked (`"paired"` or a nearby device's id). */
+interface Confirming {
+  role: DeviceRole;
+  row: string;
+}
+
+/**
+ * Forget's confirmation, in place of the row's actions (#438: on a dual-role row Forget sits next to "Pair as strap").
+ * Cancel is focused, never the destructive choice (as on the Ready sheet, §5.4); Esc cancels.
+ */
+function ConfirmForget({
+  what,
+  role,
+  onCancel,
+  onForget,
+}: {
+  what: string;
+  role: DeviceRole;
+  onCancel: () => void;
+  onForget: () => void;
+}) {
+  const roleName = ROLE_LABEL[role].toLowerCase();
+  const cancel = useRef<HTMLButtonElement>(null);
+  // Focus the safe choice once, when the question opens.
+  useEffect(() => cancel.current?.focus(), []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+  return (
+    <div
+      className="device-confirm"
+      role="group"
+      aria-label={`Forget ${roleName}?`}
+    >
+      <span className="device-confirm-text">
+        Forget {what} as the {roleName}? Pair it again to ride with it.
+      </span>
+      <span className="device-actions">
+        <button ref={cancel} type="button" onClick={onCancel}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="danger"
+          aria-label={`Yes, forget ${roleName}`}
+          onClick={onForget}
+        >
+          Yes, forget
+        </button>
+      </span>
+    </div>
+  );
+}
+
 export function Devices() {
   const [found, setFound] = useState<ScannedDevice[] | null>(null);
   // Every failure of the command in flight, in order: a forget that fails and a refresh that fails are both shown.
   const [notices, setNotices] = useState<Notice[]>([]);
   /** The pairing in flight: device id and role, so a dual-role device shows "Pairing…" on one button only. */
   const [pairing, setPairing] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<Confirming | null>(null);
   const getLinks = useCommand(commands.deviceLinks);
   const scan = useCommand(commands.devicesScan);
   const pair = useCommand(commands.devicePair);
@@ -131,6 +209,17 @@ export function Devices() {
   // `useCommand` drops its data on a failure: keep the last good list here, so a failed re-read leaves the rows.
   const [links, setLinks] = useState<DeviceLinkInfo[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  /** Scan gets focus after a confirmed Forget; Cancel gives it back to the row's Forget, once it is drawn again (`refocus`). */
+  const scanButton = useRef<HTMLButtonElement | null>(null);
+  const root = useRef<HTMLElement | null>(null);
+  const refocus = useRef<string | null>(null);
+  useEffect(() => {
+    if (refocus.current === null) return;
+    root.current
+      ?.querySelector<HTMLButtonElement>(`[data-forget="${refocus.current}"]`)
+      ?.focus();
+    refocus.current = null;
+  });
 
   // Re-read the pairings; a failure surfaces as a notice and the last good list stays.
   const load = getLinks.run;
@@ -155,6 +244,7 @@ export function Devices() {
   const exclusive = async (op: () => Promise<void>) => {
     if (running.current) return;
     running.current = true;
+    setConfirming(null);
     try {
       await op();
     } finally {
@@ -190,6 +280,8 @@ export function Devices() {
   const runForget = (role: DeviceRole) =>
     exclusive(async () => {
       setNotices([]);
+      // The row's buttons are gone with the question: the next likely step is a scan for the replacement.
+      scanButton.current?.focus();
       const r = await forget.run(role);
       // `not_found` is success: the role has no pairing, which is what the rider asked for. Both outcomes are settled
       // facts, so the row is cleared here and the refresh only reconciles: if it fails, the row must not go on
@@ -208,6 +300,19 @@ export function Devices() {
       // The refresh adds its own notice after the forget's: neither replaces the other.
       await refresh();
     });
+  const cancelForget = () => {
+    if (confirming) refocus.current = `${confirming.role}:${confirming.row}`;
+    setConfirming(null);
+  };
+  const confirmFor = (role: DeviceRole, row: string, what: string) =>
+    confirming?.role === role && confirming.row === row ? (
+      <ConfirmForget
+        what={what}
+        role={role}
+        onCancel={cancelForget}
+        onForget={() => void runForget(role)}
+      />
+    ) : null;
 
   const busy = scan.pending || pair.pending || forget.pending;
   // The core pairs by role: one trainer and one strap, each replaced by a new pairing, so a peripheral that offers
@@ -215,10 +320,14 @@ export function Devices() {
   const pairedIn = (d: ScannedDevice, role: DeviceRole) =>
     links?.find((l) => l.role === role)?.device?.id === d.id;
   return (
-    <div className="page devices">
-      <div className="page-head">
-        <h1>Devices</h1>
-        <p className="muted">
+    <section
+      ref={root}
+      className="settings-section devices"
+      aria-labelledby="devices-h"
+    >
+      <div className="section-head">
+        <h2 id="devices-h">Devices</h2>
+        <p className="settings-note">
           A trainer and a heart-rate strap connect one at a time: close other
           apps that use them.
         </p>
@@ -227,34 +336,49 @@ export function Devices() {
         <Banner key={n.id} notice={n} onRetry={() => void runScan()} />
       ))}
 
-      <section aria-labelledby="paired-h">
-        <h2 id="paired-h">Paired</h2>
+      <section className="device-group" aria-labelledby="paired-h">
+        <div className="device-group-head">
+          <h3 id="paired-h">Paired</h3>
+        </div>
         <ul className="device-list">
           {ROLES.map((role) => {
             const device = links?.find((l) => l.role === role)?.device ?? null;
+            const Icon = ROLE_ICON[role];
+            const confirm =
+              device &&
+              confirmFor(role, "paired", device.name ?? "this device");
             return (
               <li key={role} className="device-row">
-                <div>
+                <span className="device-role">
+                  <Icon {...icon} />
                   <strong>{ROLE_LABEL[role]}</strong>
-                  <div className="muted">
-                    {links === null
-                      ? loadFailed
-                        ? "Unknown"
-                        : "Loading…"
-                      : device
-                        ? pairedLine(device)
-                        : "Not paired"}
-                  </div>
-                </div>
-                {device && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    aria-label={`Forget ${ROLE_LABEL[role].toLowerCase()}`}
-                    onClick={() => void runForget(role)}
-                  >
-                    Forget
-                  </button>
+                </span>
+                {confirm || (
+                  <>
+                    <span className={device ? "device-line" : "muted"}>
+                      {links === null
+                        ? loadFailed
+                          ? "Unknown"
+                          : "Loading…"
+                        : device
+                          ? pairedLine(device)
+                          : "Not paired"}
+                    </span>
+                    {device && (
+                      <span className="device-actions">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          aria-busy={forget.pending || undefined}
+                          aria-label={`Forget ${ROLE_LABEL[role].toLowerCase()}`}
+                          data-forget={`${role}:paired`}
+                          onClick={() => setConfirming({ role, row: "paired" })}
+                        >
+                          Forget
+                        </button>
+                      </span>
+                    )}
+                  </>
                 )}
               </li>
             );
@@ -262,21 +386,33 @@ export function Devices() {
         </ul>
       </section>
 
-      <section aria-labelledby="scan-h">
-        <h2 id="scan-h">Nearby</h2>
-        <button
-          type="button"
-          className="primary"
-          disabled={busy}
-          onClick={() => void runScan()}
-        >
-          {scan.pending ? "Scanning…" : found ? "Scan again" : "Scan"}
-        </button>
+      <section className="device-group" aria-labelledby="scan-h">
+        <div className="device-group-head">
+          <h3 id="scan-h">Nearby</h3>
+          <button
+            ref={scanButton}
+            type="button"
+            className="primary"
+            disabled={busy}
+            aria-busy={scan.pending || undefined}
+            onClick={() => void runScan()}
+          >
+            <BluetoothSearching {...icon} />
+            {scan.pending ? "Scanning…" : found ? "Scan again" : "Scan"}
+          </button>
+        </div>
         <div aria-live="polite">
           {found?.length === 0 && (
-            <p className="muted">
+            <p className="device-hint">
               No trainer or strap found. Wake it up (pedal, or put the strap on)
               and scan again.
+            </p>
+          )}
+          {found === null && (
+            <p className="device-hint">
+              {scan.pending
+                ? "Looking for trainers and heart-rate straps nearby…"
+                : "Scan to find a trainer or a heart-rate strap. Wake it first: pedal, or put the strap on."}
             </p>
           )}
         </div>
@@ -287,50 +423,65 @@ export function Devices() {
               const roles = ROLES.filter((r) =>
                 r === "trainer" ? d.trainer : d.heartRate,
               );
+              const confirm = roles
+                .map((role) => confirmFor(role, d.id, name))
+                .find(Boolean);
               return (
                 <li key={d.id} className="device-row">
-                  <div>
-                    <strong>{name}</strong>
-                    <div className="muted">
-                      {roles.map((r) => ROLE_LABEL[r]).join(" · ")}
-                    </div>
-                  </div>
-                  <div className="device-actions">
-                    {roles.map((role) => {
-                      const roleName = role === "trainer" ? "trainer" : "strap";
-                      return pairedIn(d, role) ? (
-                        <span key={role} className="device-actions">
-                          <span className="muted">✓ Paired as {roleName}</span>
-                          <button
-                            type="button"
-                            disabled={busy}
-                            aria-label={`Forget ${name} as ${ROLE_LABEL[role].toLowerCase()}`}
-                            onClick={() => void runForget(role)}
-                          >
-                            Forget
-                          </button>
-                        </span>
-                      ) : (
-                        <button
-                          key={role}
-                          type="button"
-                          disabled={busy}
-                          aria-label={`Pair ${name} as ${ROLE_LABEL[role].toLowerCase()}`}
-                          onClick={() => void runPair(d, role)}
-                        >
-                          {pairing === `${d.id}:${role}` && pair.pending
-                            ? "Pairing…"
-                            : `Pair as ${roleName}`}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <strong className="device-name">{name}</strong>
+                  {confirm || (
+                    <>
+                      <span className="muted">
+                        {roles.map((r) => ROLE_LABEL[r]).join(" · ")}
+                      </span>
+                      <span className="device-actions">
+                        {roles.map((role) => {
+                          const roleName =
+                            role === "trainer" ? "trainer" : "strap";
+                          return pairedIn(d, role) ? (
+                            <span key={role} className="device-paired">
+                              <span className="device-paired-word">
+                                ✓ Paired as {roleName}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                aria-label={`Forget ${name} as ${ROLE_LABEL[role].toLowerCase()}`}
+                                data-forget={`${role}:${d.id}`}
+                                onClick={() =>
+                                  setConfirming({ role, row: d.id })
+                                }
+                              >
+                                Forget
+                              </button>
+                            </span>
+                          ) : (
+                            <button
+                              key={role}
+                              type="button"
+                              disabled={busy}
+                              aria-busy={
+                                pairing === `${d.id}:${role}` || undefined
+                              }
+                              // The name starts with the visible words (WCAG 2.5.3), then names the device.
+                              aria-label={`${pairing === `${d.id}:${role}` && pair.pending ? "Pairing" : "Pair"} as ${roleName}: ${name}`}
+                              onClick={() => void runPair(d, role)}
+                            >
+                              {pairing === `${d.id}:${role}` && pair.pending
+                                ? "Pairing…"
+                                : `Pair as ${roleName}`}
+                            </button>
+                          );
+                        })}
+                      </span>
+                    </>
+                  )}
                 </li>
               );
             })}
           </ul>
         )}
       </section>
-    </div>
+    </section>
   );
 }
