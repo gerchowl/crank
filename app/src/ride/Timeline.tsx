@@ -26,10 +26,12 @@ export const watts = (b: WorkoutBlock): string =>
 
 function Label({
   block,
+  index,
   left,
   width,
 }: {
   block: WorkoutBlock;
+  index: number;
   left: number;
   width: number;
 }) {
@@ -43,6 +45,7 @@ function Label({
     <span
       ref={ref}
       className="timeline-label num"
+      data-block-label={index}
       style={{ left: `${left}%`, width: `${width}%` }}
     >
       {text}
@@ -91,6 +94,7 @@ export function Timeline({ blocks, totalS, workoutS }: Props) {
             <path
               key={i}
               data-testid="chart-block"
+              data-block={i}
               className="timeline-block"
               data-ridden={
                 e <= workoutS ? "done" : s <= workoutS ? "now" : "ahead"
@@ -122,6 +126,7 @@ export function Timeline({ blocks, totalS, workoutS }: Props) {
           <Label
             key={i}
             block={b}
+            index={i}
             left={((b.startS ?? 0) / xMax) * 100}
             width={((b.durS ?? 0) / xMax) * 100}
           />

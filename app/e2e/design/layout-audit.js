@@ -10,6 +10,10 @@
 //             allowance is its own height variant (`<variant>@<token>`), so it never clashes with the default.
 //   keyed     selector of the ride and saddle actions that show their key in a `kbd` (rule 9). Default ".ride button".
 //   rail      selector inside which icons are 20 px instead of 16 (rule 4). Default ".rail".
+//   metrics   the metric column's grid (DESIGN §18.3 "Metric grid", rule 6): { slot, label, value, unit } selectors.
+//             Default: the ride's `.ride-metrics > .readout`, `.readout-head`, `[data-tier]`, `.readout-value > .tile-unit`.
+//   strip     the block strip's labels (§18.3 "Strip labels", rule 6): { label, block, bar } selectors; a label's
+//             `data-block-label` names the `data-block` it belongs to. Default: the ride's timeline.
 //   top       offenders kept per rule (default 3); full: keep every message under `rules`.
 (() => {
   const sel = (el) => {
@@ -408,6 +412,120 @@
           e,
           `transition ${cs.transitionDuration}, animation ${cs.animationName}`,
         );
+    }
+
+    // 9. The metric grid (§18.3 "Metric grid", #581): in every slot the label-to-value gap is the same, every unit
+    // starts in one column, and the gap from a slot's last line to the next slot's label is the same.
+    const mg = {
+      slot: ".ride-metrics > .readout",
+      label: ".readout-head",
+      value: "[data-tier]",
+      unit: ".readout-value > .tile-unit",
+      ...opts.metrics,
+    };
+    const slots = all.filter((e) => e.matches(mg.slot));
+    const spread = (xs) => Math.max(...xs) - Math.min(...xs);
+    const labelGaps = [],
+      unitXs = [],
+      slotGaps = [];
+    slots.forEach((slot, i) => {
+      const label = slot.querySelector(mg.label);
+      const value = slot.querySelector(mg.value);
+      if (label && value)
+        labelGaps.push([
+          slot,
+          value.getBoundingClientRect().top -
+            label.getBoundingClientRect().bottom,
+        ]);
+      const unit = slot.querySelector(mg.unit);
+      if (unit && visible(unit))
+        unitXs.push([slot, unit.getBoundingClientRect().left]);
+      const next = slots[i + 1]?.querySelector(mg.label);
+      const last = [...slot.children].filter(visible).at(-1);
+      if (next && last)
+        slotGaps.push([
+          slot,
+          next.getBoundingClientRect().top -
+            last.getBoundingClientRect().bottom,
+        ]);
+    });
+    for (const [name, list] of [
+      ["metrics.labelGap", labelGaps],
+      ["metrics.unitColumn", unitXs],
+      ["metrics.slotGap", slotGaps],
+    ])
+      if (list.length > 1 && spread(list.map(([, v]) => v)) > 1)
+        for (const [slot, v] of list)
+          add(
+            name,
+            slot,
+            `${Math.round(v * 10) / 10}px of ${list.map(([, x]) => Math.round(x)).join("/")}`,
+          );
+
+    // 10. The strip's labels (§18.3 "Strip labels", #581): each is flush left with its block (±1 px), its text stays
+    // inside the block's width, no two overlap, and every label sits one scale step under the bar.
+    const st = {
+      label: "[data-block-label]",
+      block: "[data-block]",
+      bar: ".ride-timeline svg",
+      ...opts.strip,
+    };
+    const bar = document.querySelector(st.bar)?.getBoundingClientRect();
+    const inked = [];
+    for (const l of all.filter((x) => x.matches(st.label))) {
+      const b = document
+        .querySelector(`${st.block}[data-block="${l.dataset.blockLabel}"]`)
+        ?.getBoundingClientRect();
+      if (!b) {
+        add("strip.label", l, "no block of its own");
+        continue;
+      }
+      // What the label draws: its text and its leaf boxes (a leader), never the accessible-only text.
+      const ink = [];
+      const walk = document.createTreeWalker(l, NodeFilter.SHOW_ALL);
+      for (let n = walk.currentNode; n; n = walk.nextNode()) {
+        if (n.nodeType === 1 && n.closest(".sr-only")) continue;
+        if (n.nodeType === 3 && !n.parentElement.closest(".sr-only")) {
+          const range = document.createRange();
+          range.selectNodeContents(n);
+          ink.push(...range.getClientRects());
+        } else if (
+          n !== l &&
+          n.nodeType === 1 &&
+          !n.children.length &&
+          visible(n)
+        )
+          ink.push(n.getBoundingClientRect());
+      }
+      ink.splice(0, ink.length, ...ink.filter((r) => r.width > 0));
+      if (!ink.length) continue;
+      const left = Math.min(...ink.map((r) => r.left));
+      const right = Math.max(...ink.map((r) => r.right));
+      const top = Math.min(...ink.map((r) => r.top));
+      if (Math.abs(left - b.left) > 1)
+        add(
+          "strip.label",
+          l,
+          `starts at ${Math.round(left)}, its block at ${Math.round(b.left)}`,
+        );
+      if (right > b.right + 1)
+        add(
+          "strip.label",
+          l,
+          `ends at ${Math.round(right)}, past its block's ${Math.round(b.right)}`,
+        );
+      if (bar && !SCALE.has(Math.round(top - bar.bottom)))
+        add(
+          "strip.label",
+          l,
+          `${Math.round(top - bar.bottom)}px under the bar, off the --space-* scale`,
+        );
+      if (bar && Math.round(top - bar.bottom) <= 0)
+        add("strip.label", l, "touches the bar");
+      for (const o of inked)
+        if (left < o.right && o.left < right)
+          add("strip.label", l, `overlaps the label of block ${o.block}`);
+      inked.push({ left, right, block: l.dataset.blockLabel });
     }
 
     // 8. Consistency: distinct colours, radii, shadows
