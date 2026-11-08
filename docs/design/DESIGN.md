@@ -356,6 +356,17 @@ Order follows the rider's questions:
 6. **Analytics**: time at power (axes: W bins, minutes, mid ticks), power–duration curve (5 s – 60 min, log x with
    ticks, W scale with a mid tick), each with *Show as table*. Point-by-point keyboard inspection of every chart: #71.
 
+**In direction A** (#529, `app/src/views/History.tsx`, `RideTraces.tsx`; the MVP subset of #106 and #256: items 1–3,
+the rest of 4, and 5–6 are not built yet, #106–#108): the ride's name with the way back (Back to Workouts, Today, All
+rides; 32 px, §18.4), its outcome and start, then on the 12-column grid (§18.2) the traces in an 8-column panel and the
+figures in 4 (duration, work, average and normalized power, average heart rate), then planned against ridden per
+block. The traces are item 4's panels as far as the contract carries them: power, heart rate on 80–200 bpm and cadence
+on one x axis of session time with time ticks, each series in its colour with its word, one vertex per second and a
+gap never bridged (§18.3, §18.7 rule 17). They come from the window's own ride session, so they show for the ride just
+ridden until the next load; the core returns no stored ride's samples, so a ride opened from the list says it shows
+its figures only (#107, #557). An aborted ride says no summary was recorded; one the core ended by force carries the
+note (#346). A failed read is a notice with ⚠ and Retry; an unknown ride says it is not in the history.
+
 ### 5.6 History — *"Am I improving, can I trust the numbers?"*
 - **Athlete model** card: CP, W′, HRmax, HR-recovery τ, each value ± sd, source, n, last update **and its age**;
   priors say "not measured yet"; an estimate older than 6 weeks is drawn stale (P7, spec/ONBOARDING §3). The
@@ -363,6 +374,13 @@ Order follows the rider's questions:
 - **CP trend** with dates on x, watts on y, the ± 1 sd band labelled in a legend; *Show as table*.
 - **PD curve**: latest ride / 90 days / all time (backend `mmp()`), with axes; *Show as table*.
 - **Rides**: list (date, name, duration, TSS, RPE, mini profile) → Review of that ride.
+
+**In direction A** (#529, `app/src/views/History.tsx`; the rides list only, the athlete model, CP trend and PD curve
+are #109): the page title, then a table of rides, newest first, with Started, Ride, Duration, Work and Outcome (TSS,
+RPE and the mini profile are not in the contract yet); a row is as tall as its name needs, and its control is a 32 px
+**Review** button named with the ride (a full-width row would be a full-width button, and a wrapping name breaks the
+32 px height, §18.4). Coming back from a Review, the ride last opened is marked ("Last opened", an accent edge) and
+scrolled into view. "No rides yet" says rides are saved here; a failed read is a notice with ⚠ and Retry.
 
 ### 5.7 Workouts (library + editor)
 Library on the left; the editor keeps the spike's strongest idea — **three synchronised views**: profile

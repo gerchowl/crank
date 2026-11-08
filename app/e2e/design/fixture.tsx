@@ -24,7 +24,13 @@ import {
   trainer,
   type DevicesState,
 } from "../../src/views/devicesBackend";
-import { install as installHistory } from "../../src/views/historyBackend";
+import { markForcedEnd } from "../../src/ride/forcedEnds";
+import {
+  RIDES,
+  install as installHistory,
+  type Backend as HistoryBackend,
+} from "../../src/views/historyBackend";
+import type { BlockSummary, RideRecord } from "../../src/bindings";
 import {
   ERROR_ISSUE,
   SUMMARIES,
@@ -214,6 +220,109 @@ const workouts =
     navigate("workouts");
   };
 
+/** A 3 h ride: a warm-up, 18 sets of 6 minutes at 240 W with 3 easy, a cool-down; 57 blocks, two short of plan. */
+const LONG_RIDE: RideRecord = (() => {
+  const blocks: BlockSummary[] = [
+    { index: 0, plannedS: 600, plannedW: 150, actualS: 600, actualW: 151 },
+  ];
+  for (let i = 0; i < 18; i++)
+    blocks.push(
+      {
+        index: 1 + 3 * i,
+        plannedS: 360,
+        plannedW: 240,
+        actualS: 360,
+        actualW: 238 + (i % 5),
+      },
+      {
+        index: 2 + 3 * i,
+        plannedS: 120,
+        plannedW: 140,
+        actualS: 120,
+        actualW: 141,
+      },
+      {
+        index: 3 + 3 * i,
+        plannedS: 60,
+        plannedW: 120,
+        actualS: i === 17 ? 40 : 60,
+        actualW: i === 17 ? null : 118,
+      },
+    );
+  blocks.push({
+    index: 55,
+    plannedS: 600,
+    plannedW: 140,
+    actualS: 600,
+    actualW: 139,
+  });
+  blocks.push({
+    index: 56,
+    plannedS: 480,
+    plannedW: 100,
+    actualS: 140,
+    actualW: 104,
+  });
+  return {
+    id: "ride-long",
+    startedAt: 1_761_000_000,
+    endedAt: 1_761_010_800,
+    outcome: "finished",
+    workoutId: "w-long",
+    workoutName: "Endurance 18×6 min at 240 W",
+    summary: {
+      durationS: 10_800,
+      avgPowerW: 196.8,
+      npW: 214.3,
+      avgHrBpm: 138.6,
+      kj: 2125.4,
+      blocks,
+    },
+  };
+})();
+
+/**
+ * The window's session of `rideId` holding `seconds` of its traces, from fixed formulas (no randomness): power at
+ * 4 Hz around a 6-minute pattern, heart rate and cadence at 2 Hz. Set at once, as `record` would leave them
+ * (appending each sample is #557's O(n²), not what a fixture shows).
+ */
+const rodeIt = (rideId: string, seconds: number) => {
+  const session = beginRide({ rideId, workoutId: null, hrLinked: true });
+  const at = (hz: number, v: (t: number) => number) =>
+    Array.from({ length: seconds * hz }, (_, i) => {
+      const t = i / hz;
+      return { t, workoutS: t, v: Math.round(v(t)) };
+    });
+  const work = (t: number) => (t % 540 < 360 && t > 600 ? 1 : 0);
+  session.series = {
+    power: at(
+      4,
+      (t) =>
+        140 + 100 * work(t) + 8 * Math.sin(t * 1.7) + 4 * Math.sin(t * 0.45),
+    ),
+    hr: at(
+      2,
+      (t) =>
+        110 + 35 * work(t) * Math.min(1, (t % 540) / 120) + 3 * Math.sin(t / 7),
+    ),
+    cadence: at(2, (t) => 88 + 3 * Math.sin(t * 1.3) + 2 * Math.sin(t * 0.31)),
+  };
+};
+const history =
+  (sub?: string, over: Partial<HistoryBackend> = {}) =>
+  () => {
+    installHistory(over);
+    navigate("history", sub);
+  };
+/** Forty rides, one a day back from 2026-11-01; every fifth was aborted and has no summary. */
+const MANY: RideRecord[] = Array.from({ length: 40 }, (_, i) => ({
+  ...RIDES[i % 2 === 0 ? 0 : 1],
+  id: `ride-${100 + i}`,
+  startedAt: 1_762_000_000 - i * 86_400,
+  endedAt: 1_762_003_000 - i * 86_400,
+  ...(i % 5 === 4 ? { outcome: "aborted" as const, summary: null } : {}),
+}));
+
 const SETUPS: Record<ScenarioName, () => void> = {
   today: () => navigate("today"),
   // The library as the core lists it (the built-in one is never empty today; the store-backed one, #110, can be).
@@ -347,14 +456,30 @@ const SETUPS: Record<ScenarioName, () => void> = {
     { ...RIDING, power: 40, cadence: 31 },
   ),
   "ride-free": ride({ ...active, blocks: [] }, RIDING, 200, null),
-  review: () => {
-    installHistory();
-    navigate("history", "ride-1");
+  review: history("ride-1"),
+  "review-short": () => {
+    rodeIt("ride-3", 300);
+    history("ride-3")();
   },
-  history: () => {
-    installHistory();
-    navigate("history");
+  "review-long": () => {
+    rodeIt("ride-long", 10_800);
+    history("ride-long", { rides: [LONG_RIDE, ...RIDES] })();
   },
+  "review-aborted": () => {
+    markForcedEnd("ride-2");
+    history("ride-2")();
+  },
+  "review-error": history("ride-1", {
+    fail: { ride_summary: { code: "storage", message: "database is locked" } },
+  }),
+  "history-empty": history(undefined, { rides: [] }),
+  "history-error": history(undefined, {
+    fail: { rides_list: { code: "storage", message: "disk I/O error" } },
+  }),
+  history: history(),
+  "history-long": history(undefined, { rides: MANY }),
+  // Opened from Review: "All rides" leads back to the list with this ride marked.
+  "history-selected": history("ride-3"),
   settings: () => navigate("settings"),
 };
 
