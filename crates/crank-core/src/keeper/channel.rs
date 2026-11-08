@@ -6,7 +6,7 @@
 //! changes:
 //!
 //! - **Ack window of 1.** After a frame the channel sends nothing until the window
-//!   acknowledges it (`links_ack`), so a stalled page queues at most one frame (ADR-0001
+//!   acknowledges it (`links_ack`: the UI acks every frame it receives, applied or dropped), so a stalled page queues at most one frame (ADR-0001
 //!   §4.3: Tauri's channel has no backpressure of its own).
 //! - **Latest wins.** Changes meanwhile are coalesced: the next frame is the state at the
 //!   time it is sent. Every frame is complete, so a coalesced state loses nothing and there is
@@ -93,7 +93,8 @@ impl Channels {
         self.lock().insert(window, Open { id, acks, task });
         id
     }
-    /// `window` has applied frame `seq` of channel `id`. Only the last frame sent is awaited:
+    /// `window` has received frame `seq` of channel `id`, applied or dropped by the `seq` order rule
+    /// (#577). Only the last frame sent is awaited:
     /// an ack of any other `seq` is ignored.
     ///
     /// # Errors

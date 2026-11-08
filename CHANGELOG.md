@@ -63,7 +63,7 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   (`LinkFrame`: `seq` is +1 per change, shared by every frame and answer, and a frame or answer is applied only if its `seq`
   is at least the highest applied so far, from either source);
   `links_open` opens the window's `Channel<LinkFrame>` (each frame the complete state: every paired device's phase and
-  a warm device's latest sample), acked by `links_ack` with one frame in flight, changes coalesced into the next frame
+  a warm device's latest sample), acked by `links_ack` (the UI acks every frame it receives, applied or dropped) with one frame in flight, changes coalesced into the next frame
   and at most 10 Hz; `device_links` reports the keeper's `phase`
   ([#470](https://github.com/gerchowl/crank/issues/470))
 

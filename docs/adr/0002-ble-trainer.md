@@ -1114,7 +1114,9 @@ it, also reports the keeper's phase (`phase`), so the Devices view shows the liv
 §4.3's rule that no channel may queue unbounded work when the page stalls (Tauri's `Channel::send` has no
 backpressure). Its rules:
 
-- **Ack window of 1.** The UI calls `links_ack(id, seq)` once it has applied a frame; the core sends nothing more on
+- **Ack window of 1.** The UI calls `links_ack(id, seq)` for every frame it receives, whether it applied the frame or dropped it by the `seq`
+  order rule (the ack means "received", not "applied"; a page that acked only applied frames would never ack a dropped
+  one and the channel would stall, #577); the core sends nothing more on
   that channel until the last frame sent is acknowledged. A stalled page therefore holds at most one frame. An ack of
   any other `seq` is ignored; an ack for a channel the window does not hold is `NotFound`.
 - **Latest wins, per device.** Changes while a frame is unacknowledged are coalesced: the next frame is the state when

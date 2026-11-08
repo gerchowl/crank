@@ -1299,7 +1299,8 @@ impl Core {
             .link_channels
             .open(window, view, self.0.clock.clone(), sink))
     }
-    /// The window has applied frame `seq` of its link channel `id`: the next frame may go.
+    /// The window has received frame `seq` of its link channel `id`, applied or dropped by the `seq`
+    /// order rule: the next frame may go.
     ///
     /// # Errors
     /// `NotFound` for a channel `window` does not have open (another window's, one dropped by

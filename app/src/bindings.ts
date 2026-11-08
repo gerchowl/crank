@@ -55,7 +55,7 @@ export const commands = {
 	 */
 	linksOpen: (channel: Channel<LinkFrame>) => typedError<LinksId, ApiError>(__TAURI_INVOKE("links_open", { channel })),
 	/**
-	 *  The window applied frame `seq` of its link channel.
+	 *  The window received frame `seq` of its link channel, applied or dropped by the `seq` order rule.
 	 * 
 	 *  # Errors
 	 *  As [`Core::links_ack`].
@@ -359,6 +359,9 @@ export type LinkDevice =
  *  if its `seq` is at least the highest `seq` applied so far, from either source; one with a
  *  lower `seq` is older than a state already shown and is dropped. Equal `seq`s are the same
  *  state.
+ * 
+ *  **Ack every frame received**, whether it was applied or dropped by that rule: the ack means
+ *  "received", not "applied". A frame that is never acked stalls the channel (window of 1).
  */
 export type LinkFrame = {
 	/**
