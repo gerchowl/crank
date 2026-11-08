@@ -3,9 +3,9 @@
 //! [`ApiError`] is the only error that crosses.
 use crate::logging::Logging;
 use crank_core::{
-    ApiError, Core, CoreInfo, DeviceLinkInfo, DeviceRole, FrameSink, PairedDevice, RideEnded,
-    RideLoaded, RideRecord, RideStatusView, ScannedDevice, SinkClosed, WorkoutDetail,
-    WorkoutSummary,
+    ApiError, Core, CoreInfo, DeviceLinkInfo, DeviceRole, FrameSink, LinkFrame, LinkIntent,
+    LinkSink, LinksId, PairedDevice, RideEnded, RideLoaded, RideRecord, RideStatusView,
+    ScannedDevice, SinkClosed, WorkoutDetail, WorkoutSummary,
 };
 use crank_engine::{MetricId, StreamFrame, StreamId, StreamSnapshot, SubId, SubscribeOpts};
 use tauri::{State, ipc::Channel};
@@ -14,6 +14,14 @@ use tauri::{State, ipc::Channel};
 struct ChannelSink(Channel<StreamFrame>);
 impl FrameSink for ChannelSink {
     fn send(&self, frame: StreamFrame) -> Result<(), SinkClosed> {
+        self.0.send(frame).map_err(|_| SinkClosed)
+    }
+}
+
+/// Link frames go to the window's IPC channel; a failed send drops it.
+struct LinkChannelSink(Channel<LinkFrame>);
+impl LinkSink for LinkChannelSink {
+    fn send(&self, frame: LinkFrame) -> Result<(), SinkClosed> {
         self.0.send(frame).map_err(|_| SinkClosed)
     }
 }
@@ -73,6 +81,50 @@ pub async fn device_forget(core: State<'_, Core>, role: DeviceRole) -> Result<()
 #[specta::specta]
 pub async fn device_links(core: State<'_, Core>) -> Result<Vec<DeviceLinkInfo>, ApiError> {
     core.device_links().await
+}
+
+/// The rider's likely next step, for the link keeper; answers the keeper's state with its
+/// `seq`, ordered with the link channel's frames.
+///
+/// # Errors
+/// As [`Core::links_intent`].
+#[tauri::command]
+#[specta::specta]
+pub async fn links_intent(
+    core: State<'_, Core>,
+    intent: LinkIntent,
+) -> Result<LinkFrame, ApiError> {
+    core.links_intent(intent).await
+}
+
+/// Open the calling window's link channel.
+///
+/// # Errors
+/// As [`Core::links_open`].
+#[tauri::command]
+#[specta::specta]
+pub async fn links_open<R: tauri::Runtime>(
+    core: State<'_, Core>,
+    window: tauri::Window<R>,
+    channel: Channel<LinkFrame>,
+) -> Result<LinksId, ApiError> {
+    core.links_open(Some(window.label().to_owned()), LinkChannelSink(channel))
+        .await
+}
+
+/// The window applied frame `seq` of its link channel.
+///
+/// # Errors
+/// As [`Core::links_ack`].
+#[tauri::command]
+#[specta::specta]
+pub async fn links_ack<R: tauri::Runtime>(
+    core: State<'_, Core>,
+    window: tauri::Window<R>,
+    id: LinksId,
+    seq: u32,
+) -> Result<(), ApiError> {
+    core.links_ack(Some(window.label()), id, seq).await
 }
 
 /// The workout library.

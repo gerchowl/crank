@@ -79,6 +79,125 @@ pub enum ReleaseReason {
     RiderRelease,
 }
 
+/// The link phase of one paired device (ADR-0002 §5.1.1), as the link keeper reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkPhase {
+    /// Not connected, no attempt running.
+    Cold,
+    /// Resolving the peripheral (adapter lookup, then the shared scan).
+    Searching,
+    /// GATT connect, discovery, subscribe, DIS read and identity check.
+    Connecting,
+    /// Trainer only: page 55 written, the page-54 reply awaited.
+    Handshake,
+    /// Connected and checked; the keeper holds the link and writes nothing.
+    Warm,
+    /// The last attempt failed (not seen, connect failed, identity mismatch, timeout), or
+    /// the warm link was lost; kept until the next attempt.
+    NotFound,
+    /// Handed to a ride: its live state is the ride stream's (`StreamFrame.links`,
+    /// `device_links().link`), not the keeper's. Only the devices handed over at `ride_load`
+    /// are `riding`; one that was not `warm` then stays the keeper's, in its own phase.
+    Riding,
+}
+
+/// The latest telemetry of a warm link (ADR-0002 §5.1.3: the keeper reads only telemetry
+/// while warm, for the chips).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum LinkSample {
+    /// The trainer's last sample: each field is the last value it reported.
+    Trainer {
+        /// Instantaneous power, W.
+        power_w: Option<u16>,
+        /// Cadence, rpm.
+        cadence_rpm: Option<u8>,
+    },
+    /// The strap's last sample.
+    HeartRate {
+        /// Heart rate, bpm; `null` when the strap reports none (no skin contact).
+        bpm: Option<u8>,
+    },
+}
+
+/// One paired device as the link keeper sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLinkView {
+    /// Its phase.
+    pub phase: LinkPhase,
+    /// Its latest sample while `warm` and since it became `warm`; `null` in every other phase.
+    pub sample: Option<LinkSample>,
+}
+
+/// The link keeper's complete state (ADR-0002 §5.1.4), as each [`LinkFrame`] carries it,
+/// `links_intent`'s answer included.
+///
+/// **One source per device.** A device in [`LinkPhase::Riding`] is held by the ride: read its
+/// live state from the ride stream (`StreamFrame.links`). Every other device is read from here.
+/// The rule is per device: during a ride whose strap missed the load, the trainer is `riding`
+/// and the strap keeps its own phase (e.g. `not_found`). It holds from the hand-over on: a
+/// device is `riding` as soon as a load is handed it, before any ride stream exists. Until
+/// `ride_load` answers, `ride_status().load` ([`LoadProgress`], the keeper's phases) only
+/// repeats `riding` and adds no progress information; from its answer on, the ride's
+/// stream, once opened, carries the device's live state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkView {
+    /// The trainer; `null` when none is paired.
+    pub trainer: Option<DeviceLinkView>,
+    /// The strap; `null` when none is paired.
+    pub strap: Option<DeviceLinkView>,
+}
+
+/// The window's link channel (`links_open`): unique per process, owned by the window that
+/// opened it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]
+pub struct LinksId(pub u32);
+
+/// The link keeper's state with its number: one frame of the window's link channel
+/// (`links_open`, ADR-0002 §5.1.4), and `links_intent`'s answer.
+///
+/// Each frame is the complete state, so the latest wins. At most one frame is
+/// unacknowledged (`links_ack`): while the window has not acknowledged the last one, changes
+/// are coalesced into the next, which is again the complete state, so nothing is lost and
+/// there is no resync.
+///
+/// **Frames and answers are ordered by `seq`.** An intent's answer can arrive after a frame
+/// of a newer state, and after the answer of a later intent. Apply a frame or an answer only
+/// if its `seq` is at least the highest `seq` applied so far, from either source; one with a
+/// lower `seq` is older than a state already shown and is dropped. Equal `seq`s are the same
+/// state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkFrame {
+    /// The state's number: +1 per change of the keeper's state (a phase or a sample), the
+    /// same for every window and for `links_intent`'s answers; `0` before the keeper has
+    /// published. A channel sends only on change, so its frames' `seq`s increase but can
+    /// skip the changes it coalesced. The state changes with the samples, a few times per
+    /// second (FE-C pages at 4 Hz, a strap at about 1 Hz), so a `u32` does not wrap within a
+    /// process's uptime: 2^32 changes at 10 per second take 13 years.
+    pub seq: u32,
+    /// The keeper's state.
+    pub links: LinkView,
+}
+
+/// The phases of a load in flight (`ride_status().load`, ADR-0002 §5.1.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadProgress {
+    /// The trainer's phase. A load with no trainer paired fails at once
+    /// (`device_unavailable`); until it answers the trainer reads `cold`.
+    pub trainer: LinkPhase,
+    /// The strap's phase; `null` when none is paired.
+    pub strap: Option<LinkPhase>,
+}
+
 /// A peripheral seen by a scan.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -135,6 +254,9 @@ pub struct DeviceLinkInfo {
     pub device: Option<PairedDevice>,
     /// Live link state of the loaded ride; `null` without a ride, and after it ends.
     pub link: Option<LinkStatus>,
+    /// The link keeper's phase of the paired device (`riding` while a ride holds it, whose
+    /// state is then `link`); `null` when none is paired.
+    pub phase: Option<LinkPhase>,
 }
 
 /// A library workout in a list.
@@ -300,13 +422,13 @@ pub struct RideEnded {
     pub forced: bool,
 }
 
-/// The ride's state (`ride_status`): the engine's status, and whether a ride is being
-/// loaded (devices connecting) right now.
+/// The ride's state (`ride_status`): the engine's status, and the load in flight, if any.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RideStatusView {
-    /// `ride_load` is connecting devices; the other commands answer as before.
-    pub loading: bool,
+    /// `ride_load` is under way (devices connecting, the ride being built), with each
+    /// device's phase; `null` otherwise. The other commands answer as before.
+    pub load: Option<LoadProgress>,
     /// The loaded ride's status, the last finished ride's, or idle.
     pub status: StreamStatus,
 }

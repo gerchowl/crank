@@ -226,9 +226,9 @@ export function Workouts() {
   // load DURING the first ("another ride is loading or loaded", core.rs `ride_load` (~1679)), and the page must never show a
   // workout other than the one being loaded: success would route into the old workout's ride, a refusal would
   // appear under the new one (#320). "In flight" is not this view's state: the app-scope controller (rideLoad.ts)
-  // knows a load this window started, and `ride_status().loading` (core.rs `ride_status` (~2382)) is the core's own answer for one
+  // knows a load this window started, and `ride_status().load` (core.rs `ride_status` (~2382)) is the core's own answer for one
   // that started anywhere (a window reloaded mid-load), asked when the view mounts and until it clears.
-  const coreLoading = status.data?.loading === true;
+  const coreLoading = (status.data?.load ?? null) !== null;
   useEffect(() => {
     void runStatus();
   }, [runStatus]);

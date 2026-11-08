@@ -1105,9 +1105,55 @@ each phase changes, so a Ready sheet opened over a cold load shows per-device pr
 **Phases outside a ride.** The chips on Today, Workouts and the Ready sheet read the keeper's phases. `links_open`
 opens one window-scoped `Channel<LinkFrame>`. It follows the window lifecycle rules of the stream channel (ADR-0001
 §4.3): it belongs to the window's label and is dropped on destroy or reload. Each frame is the complete state, the
-phase plus the latest sample per device, so the latest frame wins and no ack or resync is needed.
-`links_intent` returns the same state. `device_links`, which today reports a link only while a ride holds it,
-reports the keeper's phase when none does, so the Devices view shows the live state too.
+phase plus the latest sample per device (`LinkFrame { seq, links: LinkView }`), so the latest frame wins.
+`links_intent` returns the same type (`LinkFrame`): the state its resolving step published, with that state's `seq`.
+`device_links`, which today reports a link only while a ride holds
+it, also reports the keeper's phase (`phase`), so the Devices view shows the live state too.
+
+**Flow control of the link channel (amendment, #470, architect decision 2026-11-08).** The channel follows ADR-0001
+§4.3's rule that no channel may queue unbounded work when the page stalls (Tauri's `Channel::send` has no
+backpressure). Its rules:
+
+- **Ack window of 1.** The UI calls `links_ack(id, seq)` once it has applied a frame; the core sends nothing more on
+  that channel until the last frame sent is acknowledged. A stalled page therefore holds at most one frame. An ack of
+  any other `seq` is ignored; an ack for a channel the window does not hold is `NotFound`.
+- **Latest wins, per device.** Changes while a frame is unacknowledged are coalesced: the next frame is the state when
+  it is sent. Link state is a small "latest state per device", so a coalesced frame *is* the complete current state.
+  Nothing can be lost, which is why there is no resync flag and no re-query path, unlike `StreamFrame`, whose samples
+  and nudges are history.
+- **At most 10 Hz** per channel (ADR-0001 §4.3's frame emission), paced on the clock's unscaled axis. The first frame,
+  the state at `links_open`, goes out at once.
+- **Byte budget.** A frame has no string and no list, so its size has a fixed maximum (under 300 bytes, measured by a
+  test against the 8 000-byte budget).
+- **Why its own channel.** It must work outside a ride; the ride stream (`open_stream`) exists only while a ride is
+  loaded.
+- **`seq` is the state's number, and orders answers against frames (#561 review, architect decision 2026-11-08).**
+  The keeper numbers its state: `seq` goes up by one per change (a phase or a sample), the same number for every
+  window's frames and for every `links_intent` answer. A channel sends only on change, so its frames' `seq`s rise and
+  skip what it coalesced. An answer that waits for its releases can arrive after a frame of a newer state, and after
+  the answer of a later intent, so **the UI applies a frame or an answer only if its `seq` is at least the highest
+  `seq` it has applied, from either source**, and drops an older one (#561 round 3, architect decision 2026-11-08:
+  comparing an answer only with the last frame let a release's answer, `seq` 11, overwrite a later `likely`'s, `seq`
+  12, that arrived before it). Equal `seq`s are the same state. A `u32` does not wrap within a process's uptime (the state changes a few times
+  per second; 2^32 changes at 10 per second take 13 years).
+
+**Which channel reports link state, per device (#561 review, architect decision 2026-11-08).** At any moment each
+device has exactly one source. A device whose phase is `riding` is read from `StreamFrame.links` (and
+`device_links().link`); every other device is read from `LinkFrame`. A device is `riding` from the hand-over to a
+load on, before any ride stream exists. From the hand-over until `ride_load` answers, `LinkFrame` says `riding` and so
+does `ride_status().load`: `LoadProgress` is the keeper's phases, so in that window it only repeats `riding` and adds
+no progress information. No source reports the device's progress then; the window lasts while the session is built,
+and `ride_load`'s answer (or its failure) ends it. From that answer on the device's live state is the ride stream's,
+once the page has opened it (its first frame is the complete state, ADR-0001 §4.3). The rule is per device, not per ride: a ride
+holds only the devices handed to it at `ride_load`, so a strap that was not `warm` then (`hr_linked: false`, for
+example one that did not advertise) stays the keeper's during the ride, and its frame keeps its own phase (`not_found`)
+beside the trainer's `riding`. While a ride holds a device the keeper's frame says only `riding` (no sample: the
+session owns the link and the keeper sees none of its events); when the ride's hold is released (an unload, a discard,
+the ride's end) the devices it held come back `cold`, with no sample, and a device it never held keeps its phase. The ride's
+live link state (`connecting`, `ready`, `lost`, reconnecting) is the session's, and it already goes out in the ride
+stream, in the same frame as the status change it causes (ADR-0001 §4.3's ordering guarantee: a loss and the pause
+it brings cannot be reordered). Carrying it in `LinkFrame` too would need a second writer that copies the engine's
+state and would lose that ordering. `LoadProgress` (above) covers the load itself until the hand-over; after it, it repeats `riding`.
 
 **Failure UX.** Failures show as quiet chips, never as modal errors or toasts:
 

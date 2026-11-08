@@ -3,12 +3,25 @@
 //!
 //! A warm link is held by a drain task that reads its events and drops them (§5.1.3: the
 //! drivers `try_send` into bounded channels, so an unread link would fault) until the keeper
-//! takes it back, to hand it over or release it, or the link is lost. Nothing is ever sent on
-//! a warm trainer's control channel except the `Disconnect` that releases it. The task ends
+//! takes it back, to hand it over or release it, or the link is lost; it keeps the link's
+//! latest sample in the published state. Nothing is ever sent on a warm trainer's
+//! control channel except the `Disconnect` that releases it.
+//!
+//! **The published state.** After every step the task publishes the phases into a
+//! [`watch`] of [`LinkFrame`] ([`Handle::view`]), and only then answers the step's intents.
+//! Every change takes the next `seq` (the state's number, ADR-0002 §5.1.4), the samples'
+//! changes included. Each answer carries the state published by the step that resolves it,
+//! with its `seq` (the intent's own step; for a recorded intent the load's resolution; for a
+//! discard the step that takes the discard's end, which comes after its links' release), so
+//! an answer is never older than what it applied, and the UI can tell whether it is older
+//! than a frame it already has. `ride_status`, `device_links`,
+//! `links_intent` and the link channels ([`super::channel`]) read it. The task ends
 //! when the core drops its [`Handle`]: every link and attempt it holds is dropped with it,
 //! which the drivers' cleanup disconnects.
-use super::{Ack, Cool, Effect, Input, Keeper, Phase, SUPERSEDED};
-use crate::dto::LinkIntent;
+use super::{Ack, Cool, DEVICES, Effect, Input, Keeper, Phase, SUPERSEDED};
+use crate::dto::{
+    DeviceLinkView, LinkFrame, LinkIntent, LinkPhase, LinkSample, LinkView, LoadProgress,
+};
 use crate::error::{ApiError, ErrorCode};
 use crate::links::{self, Attempts, LinkDevice, Timeline};
 use crank_devices::{
@@ -72,8 +85,8 @@ pub(crate) enum Note {
     /// That ride started.
     Started(String),
 }
-/// Where an intent's answer goes.
-type Answer = oneshot::Sender<Result<(), ApiError>>;
+/// Where an intent's answer goes: the state published by the step that resolved it.
+type Answer = oneshot::Sender<Result<LinkFrame, ApiError>>;
 enum Msg {
     Intent(LinkIntent, Answer),
     Acquire(RiderConfig, oneshot::Sender<Result<Handed, ApiError>>),
@@ -114,6 +127,8 @@ pub(crate) type Setup = (
 pub(crate) struct Handle {
     tx: mpsc::UnboundedSender<Msg>,
     rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<Msg>>>,
+    /// The published state (module docs); no device, `seq` 0, until the task starts.
+    view: Arc<watch::Sender<LinkFrame>>,
 }
 impl Handle {
     pub(crate) fn new() -> Self {
@@ -121,6 +136,24 @@ impl Handle {
         Self {
             tx,
             rx: std::sync::Mutex::new(Some(rx)),
+            view: Arc::new(watch::Sender::new(LinkFrame::default())),
+        }
+    }
+    /// The keeper's state now.
+    pub(crate) fn links(&self) -> LinkView {
+        self.view.borrow().links
+    }
+    /// The keeper's state with its `seq`, as it changes.
+    pub(crate) fn view(&self) -> watch::Receiver<LinkFrame> {
+        self.view.subscribe()
+    }
+    /// The phases of a load in flight (ADR-0002 §5.1.4): a trainer with no pairing reads
+    /// `cold` (such a load fails at once).
+    pub(crate) fn load_progress(&self) -> LoadProgress {
+        let links = self.links();
+        LoadProgress {
+            trainer: links.trainer.map_or(LinkPhase::Cold, |t| t.phase),
+            strap: links.strap.map(|s| s.phase),
         }
     }
     /// Start the task, once; later calls do nothing. Messages sent before it are queued.
@@ -148,9 +181,10 @@ impl Handle {
             scan: None,
             direct: None,
             pending: Vec::new(),
-            discard_done: None,
+            discarding: Vec::new(),
             held: None,
             clock,
+            view: self.view.clone(),
         };
         task.apply(Input::Pairings(pairings));
         tokio::spawn(task.run(rx, internal_rx));
@@ -169,7 +203,7 @@ impl Handle {
     /// `Conflict` when it is refused (`RiderRelease` while the ride holds the trainer, a
     /// `Likely` after the quit), its discard found the ride started, or it was a recorded
     /// release that a rider action superseded; `Internal` without a keeper.
-    pub(crate) async fn intent(&self, intent: LinkIntent) -> Result<(), ApiError> {
+    pub(crate) async fn intent(&self, intent: LinkIntent) -> Result<LinkFrame, ApiError> {
         let gone = || ApiError::new(ErrorCode::Internal, "the link keeper is gone");
         let (ack, done) = oneshot::channel();
         self.tx.send(Msg::Intent(intent, ack)).map_err(|_| gone())?;
@@ -253,11 +287,13 @@ struct Task {
     direct: Option<(Answer, bool)>,
     /// The answers to intents recorded while the links are handed out.
     pending: Vec<(Answer, bool)>,
-    /// The discard under way: `Some(discarded)` once it ended.
-    discard_done: Option<watch::Receiver<Option<bool>>>,
+    /// The answers that wait for the discard under way.
+    discarding: Vec<Answer>,
     /// The resolutions a test holds back (`Handle::hold_resolutions`); always `None` outside
     /// tests.
     held: Option<Vec<Internal>>,
+    /// The published state (module docs).
+    view: Arc<watch::Sender<LinkFrame>>,
 }
 fn ms(from: MonoTime, to: MonoTime) -> u64 {
     to.0.saturating_sub(from.0) / 1000
@@ -277,23 +313,78 @@ async fn advertised(scan: &mut Option<ScanRun>) -> DiscoveredDevice {
     }
     std::future::pending().await
 }
-/// Read and drop a warm link's events until it is lost.
-async fn lost(link: &mut Link) {
+/// Read a warm link's events until it is lost, keeping its latest sample in `view` and
+/// dropping the rest.
+async fn lost(link: &mut Link, view: &watch::Sender<LinkFrame>) {
     match link {
         Link::Trainer(t) => {
             while let Some(event) = t.events.recv().await {
-                if event == TrainerEvent::Link(LinkState::Lost) {
-                    return;
+                match event {
+                    TrainerEvent::Link(LinkState::Lost) => return,
+                    // page 16 and page 25 arrive apart (interleaved): each field keeps the
+                    // last value reported
+                    TrainerEvent::Sample(s) => sample(view, LinkDevice::Trainer, |last| {
+                        let (power, cadence) = match last {
+                            Some(LinkSample::Trainer {
+                                power_w,
+                                cadence_rpm,
+                            }) => (power_w, cadence_rpm),
+                            _ => (None, None),
+                        };
+                        LinkSample::Trainer {
+                            power_w: s.power_w.or(power),
+                            cadence_rpm: s.cadence_rpm.or(cadence),
+                        }
+                    }),
+                    _ => {}
                 }
             }
         }
         Link::Strap(s) => {
             while let Some(event) = s.events.recv().await {
-                if event == HrEvent::Link(LinkState::Lost) {
-                    return;
+                match event {
+                    HrEvent::Link(LinkState::Lost) => return,
+                    HrEvent::Sample(s) => {
+                        sample(view, LinkDevice::Strap, |_| LinkSample::HeartRate {
+                            bpm: s.bpm,
+                        });
+                    }
+                    _ => {}
                 }
             }
         }
+    }
+}
+/// Set a device's latest sample, if it is `warm` (a drain task that is being stopped never
+/// writes into the phase that follows).
+fn sample(
+    view: &watch::Sender<LinkFrame>,
+    d: LinkDevice,
+    next: impl FnOnce(Option<LinkSample>) -> LinkSample,
+) {
+    change(view, |links| match device(links, d) {
+        Some(dev) if dev.phase == LinkPhase::Warm => {
+            let sample = Some(next(dev.sample));
+            std::mem::replace(&mut dev.sample, sample) != sample
+        }
+        _ => false,
+    });
+}
+/// Change the published state with `edit` (`true` when it changed anything): a change takes
+/// the next `seq` and wakes the readers, no change does neither.
+fn change(view: &watch::Sender<LinkFrame>, edit: impl FnOnce(&mut LinkView) -> bool) {
+    view.send_if_modified(|frame| {
+        let changed = edit(&mut frame.links);
+        if changed {
+            frame.seq = frame.seq.wrapping_add(1);
+        }
+        changed
+    });
+}
+fn device(links: &mut LinkView, d: LinkDevice) -> &mut Option<DeviceLinkView> {
+    match d {
+        LinkDevice::Trainer => &mut links.trainer,
+        LinkDevice::Strap => &mut links.strap,
     }
 }
 /// Release a link the keeper took back: the trainer's `Disconnect`, then its stream closing;
@@ -429,7 +520,26 @@ impl Task {
             Internal::Lost(d, era) => Input::Lost(d, era),
             Internal::Discarded(id, discarded) => {
                 tracing::info!(ride_id = id, discarded, "discard of an unstarted ride");
-                drop(self.apply(Input::Discarded(id, discarded)));
+                drop(self.apply(Input::Discarded(id.clone(), discarded)));
+                let result = if discarded {
+                    // The ride's release was taken first: `Devices::discard` reports a
+                    // discard only once it reaped the session, whose drop dropped the ride's
+                    // `Hold`, which sent `Released` before this on the same channel. So this
+                    // step's state is the one after the release, or a later one.
+                    debug_assert!(
+                        !self.keeper.is_loaded(&id),
+                        "a discard is reported after its ride's release"
+                    );
+                    Ok(*self.view.borrow())
+                } else {
+                    Err(ApiError::new(
+                        ErrorCode::Conflict,
+                        "the ride was started or is gone: it was not discarded",
+                    ))
+                };
+                for answer in std::mem::take(&mut self.discarding) {
+                    let _ = answer.send(result.clone());
+                }
                 return;
             }
             Internal::Returned(era, trainer, strap) => {
@@ -467,10 +577,28 @@ impl Task {
                 Effect::Ack(ack) => acks.push(ack),
             }
         }
+        self.publish();
         for ack in acks {
             self.answer(ack, &releases);
         }
         releases
+    }
+    /// Publish the phases (module docs): a device that is not `warm` has no sample.
+    fn publish(&self) {
+        let phases = DEVICES.map(|d| self.keeper.phase(d));
+        change(&self.view, |links| {
+            let before = *links;
+            for (d, phase) in DEVICES.into_iter().zip(phases) {
+                let dev = device(links, d);
+                *dev = phase.map(|phase| DeviceLinkView {
+                    phase: phase.into(),
+                    sample: dev
+                        .filter(|_| phase == Phase::Warm)
+                        .and_then(|dev| dev.sample),
+                });
+            }
+            *links != before
+        });
     }
     /// Answer the intent being applied or, at a resolution of `Handed`, every recorded one.
     fn answer(&mut self, ack: Ack, releases: &[watch::Receiver<bool>]) {
@@ -499,33 +627,19 @@ impl Task {
         if answers.is_empty() {
             return;
         }
+        let result = match ack {
+            // the state this step published (`apply` publishes before it answers)
+            Ack::Applied | Ack::Recorded | Ack::Superseded => Ok(*self.view.borrow()),
+            Ack::Refused(why) => Err(ApiError::new(ErrorCode::Conflict, why)),
+            Ack::AwaitDiscard => {
+                // answered by the step that takes the discard's end (`Internal::Discarded`)
+                self.discarding.extend(answers);
+                return;
+            }
+        };
         let releases = releases.to_vec();
-        let discard = (ack == Ack::AwaitDiscard)
-            .then(|| self.discard_done.clone())
-            .flatten();
         tokio::spawn(async move {
             released(releases).await;
-            let result = match ack {
-                Ack::Applied | Ack::Recorded | Ack::Superseded => Ok(()),
-                Ack::Refused(why) => Err(ApiError::new(ErrorCode::Conflict, why)),
-                Ack::AwaitDiscard => {
-                    let discarded = match discard {
-                        Some(mut done) => done
-                            .wait_for(Option::is_some)
-                            .await
-                            .is_ok_and(|d| *d == Some(true)),
-                        None => false,
-                    };
-                    if discarded {
-                        Ok(())
-                    } else {
-                        Err(ApiError::new(
-                            ErrorCode::Conflict,
-                            "the ride was started or is gone: it was not discarded",
-                        ))
-                    }
-                }
-            };
             for answer in answers {
                 let _ = answer.send(result.clone());
             }
@@ -533,13 +647,10 @@ impl Task {
     }
     /// Discard an unstarted ride through the core, and report how it ended.
     fn discard(&mut self, id: String) {
-        let (done_tx, done) = watch::channel(None);
-        self.discard_done = Some(done);
         let (discard, internal) = (self.devices.discard(id.clone()), self.internal.clone());
         tokio::spawn(async move {
             let discarded = discard.await;
             let _ = internal.send(Internal::Discarded(id, discarded));
-            done_tx.send_replace(Some(discarded));
         });
     }
     fn attempt(&mut self, d: LinkDevice, era: u32) {
@@ -612,12 +723,12 @@ impl Task {
     /// Spawn the drain task of a warm link.
     fn drain(&self, d: LinkDevice, era: u32, mut link: Link) -> Held {
         let (stop, mut stopped) = oneshot::channel::<()>();
-        let internal = self.internal.clone();
+        let (internal, view) = (self.internal.clone(), self.view.clone());
         let drain = tokio::spawn(async move {
             tokio::select! {
                 biased;
                 _ = &mut stopped => {}
-                () = lost(&mut link) => {
+                () = lost(&mut link, &view) => {
                     let _ = internal.send(Internal::Lost(d, era));
                 }
             }

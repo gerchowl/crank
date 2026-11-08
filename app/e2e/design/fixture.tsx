@@ -117,9 +117,14 @@ const ride =
   () => {
     const rig = installRide({ blocks: BLOCKS, ...over });
     const { trainer: t = "ready", hr = "ready" } = devices;
+    // a loaded or started ride holds both devices, which the keeper reports `riding`; after it they are `cold`
+    // (core.rs `Core::device_links`)
+    const held =
+      (over.phase ?? "loaded") === "loaded" || over.phase === "active";
+    const phase = held ? ("riding" as const) : ("cold" as const);
     rig.base.truth.infos = [
-      { role: "trainer", device: neo, link: t },
-      { role: "heart_rate", device: hrm, link: hr },
+      { role: "trainer", device: neo, link: t, phase },
+      { role: "heart_rate", device: hrm, link: hr, phase },
     ];
     rig.publish(workoutS);
     // Before Start the core reports the loaded ride's links in the snapshot as `device_links` does.

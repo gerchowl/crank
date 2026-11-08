@@ -520,7 +520,7 @@ async fn a_failed_load_leaves_the_previous_status_and_never_blocks_it() {
         code(&core.ride_load(None).await.unwrap_err()),
         ErrorCode::DeviceUnavailable
     );
-    assert!(!core.ride_status().await.unwrap().loading);
+    assert!(core.ride_status().await.unwrap().load.is_none());
     pair_both(&core).await;
     // A finished ride's status survives an unknown workout and a failed device load.
     core.ride_load(Some(SENSOR_CHECK.into())).await.unwrap();
