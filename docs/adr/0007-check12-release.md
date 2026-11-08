@@ -5,29 +5,40 @@
 - **Issue:** #516 (PR #521)
 - **Related:** #44 (HIL), #576, ADR-0002 §4.2, §5, §7.9, `docs/hil/part-b.md`, `docs/hil/part-b-runbook.md`
 
-A separate ADR rather than an ADR-0002 amendment: ADR-0002 decides the trainer stack the app ships. This ADR
-decides how a test tool (`hil_fec analyse`) reads its own captures. Number 0006 is taken by #580 (build cache).
+This is a separate ADR rather than an ADR-0002 amendment. ADR-0002 decides the trainer stack the app ships, and
+this ADR decides how a test tool (`hil_fec analyse`) reads its own captures. Number 0006 is taken by #580 (build
+cache).
 
 ## 1. The questions first
 
-**What is check 12 for?** Part B is a supervised session. The owner rides the NEO, and `hil_fec check12`
-runs ERG 200 W at 90 rpm, switches to `Free` (page 50 defaults, then page 51 grade 0), holds 90 rpm for 10 s, cues
-70 rpm for 15 s and releases (`rider.rs` `check12`). The check answers one question: when crank sends `Free`,
-does the NEO drop the ERG target? ERG holds 200 W when cadence falls, and a released trainer does not.
+**What is check 12 for?** Part B is a supervised session in which the owner rides the NEO. `hil_fec check12` runs
+ERG 200 W at 90 rpm, then switches to `Free` (page 50 defaults, then page 51 grade 0). The rider holds 90 rpm,
+then drops to 70 rpm on a cue, and the trainer is released (`rider.rs` `check12`). The check answers one
+question: when crank sends `Free`, does the NEO drop the ERG target?
 
-**Who writes the input?** Our stack writes it, to a file on the owner's disk, while the owner is on the bike. The
-only writer is `Capture`. Since #521 it reads a monotonic clock (`MonoTime`) and appends the line under the
-same lock (`Capture::record_now`, `record_aux_now`). Nobody else produces these bytes. So **a forged or replayed
-frame is not a fault this tool can meet.** There is no attacker. A hand-edited file is not evidence, and only the
-output of `redact` is committed. The forgeries of rounds 1 to 7 were byte sequences built by an adversarial
-reviewer. If our stack ever duplicated, reordered or replayed frames, that would be a stack bug. It would be found
-once, where the bytes enter the file, and the analyser would not try to out-guess it frame by frame. Section 3
-lists the stack bugs that are plausible and what each one does to the verdict.
+**Who writes the input?** Part B reads only captures that `hil_fec` writes. Each of their lines gets its stamp
+from a monotonic clock (`MonoTime`) and is appended under the same lock (`Capture::record_now`, `record_aux_now`,
+#521). There is no other writer and no attacker, so **a forged or replayed frame is not a fault this tool can
+meet**. A hand-edited file is not evidence, and only the output of `redact` is committed. The forgeries of
+#521's rounds 1–7 were byte sequences built by a reviewer. If our stack duplicated, reordered or replayed frames,
+that would be a stack bug, found once where the bytes enter the file. The analyser does not try to out-guess it
+frame by frame.
 
-**What is the simplest rule that is right on every capture we have?** No live capture of check 12 exists yet.
-The 7 committed live NEO captures are Part A runs, at 0 W and standing still, so no check 12 rule has ever run on
-real data. What they do show is the transport. The table counts the page-25 broadcast frames (byte 2 `0x4E`, page byte 0
-`0x19`) in each `docs/hil/captures/*.fecap` at PR #521's head `e066075`, with stamps in elapsed µs (counted 2026-11-09):
+**Scope (decided): Part B checks read `hil_fec` captures only.** `Capture::record(at, …)` is still public, and it
+takes a caller's stamp outside the lock. Two places use it:
+
+- the app driver (`crank-ble/src/driver.rs:294`, `record_capture`), which writes the desktop
+  `CRANK_CAPTURE_DIR/trainer-*.fecap`;
+- the test helper `write_capture` (`checks.rs:1351` at e066075), which writes from records already in order.
+
+Desktop captures therefore lack the one-lock guarantee. They stay inputs for Part A analyses (`hil_fec analyse
+--target`), which are no Part B check. Converting the driver to `record_now` would change the shipped app for
+a test tool's sake, so it is not done.
+
+**What do the real captures tell us?** No live capture of check 12 exists yet. The 7 committed live NEO captures
+are Part A runs, at 0 W and standing still, but they do show the transport. The table counts the page-25
+broadcast frames (byte 2 `0x4E`, page byte 0 `0x19`) in each `docs/hil/captures/*.fecap` at #521's head
+`e066075` (counted 2026-11-09):
 
 | capture | page 25 frames | interval min / median / max (ms) | update-count step 0 / 1 / 2 / 3–6 | step 0 = identical payload |
 |---|---|---|---|---|
@@ -39,182 +50,204 @@ real data. What they do show is the transport. The table counts the page-25 broa
 | latency | 916 | 208.9 / 269.0 / 1767.7 | 42 / 763 / 88 / 22 | 42 of 42 |
 | spacing | 488 | 210.0 / 268.7 / 1020.6 | 15 / 436 / 30 / 6 | 15 of 15 |
 
-Page 25 arrives at about 4 Hz. Updates get lost: the count steps by up to 6. When the count holds, the NEO is
-repeating its last update byte for byte. The 11 sim captures behave the same way at about 2.9 Hz: in check 12's
-window, 30 page-25 frames arrive in 10.3 s (`adv-k8-bad.fecap`).
+Page 25 arrives at about 4 Hz, and updates get lost: the count steps by up to 6. When the count holds, the NEO
+is repeating its last update byte for byte. The sim sends page 25 every 350 ms (`adv-k8-bad.fecap`).
 
-The rule that follows from this is the physical question the check asks. With cadence held near 70 rpm after
-`Free`, the NEO's reported power must fall well below the ERG target. It must also have held that target at 90 rpm
-before `Free`, or the run shows nothing (§2).
+**What does the physics tell us, whatever the gear?** ERG holds its target, so at 70 rpm it still gives about
+200 W. A released trainer simulates a flat road, where power depends on speed: P(v) = Crr·m·g·v + ½·Kw·v³ (FE-C
+page 50 defaults, Kw 0.51 kg/m; ADR-0005 §1). If the rider does not shift, speed is proportional to cadence. Going
+from 90 to 70 rpm then scales the rolling term by c = 70/90 and the air term by c³. The ratio r = P₇₀ / P₉₀
+therefore lies between c³ and c **in every gear** (Crr 0.004, m 85 kg):
 
-**What does the rider tell us?** Whether the pedals went light. A rider feels the change from ERG 200 W at 70 rpm
-to flat road at 70 rpm at once. That is an independent channel, and a forged frame cannot reach it. The check asks
-the question and records the answer. An honest disagreement between the rider and the power gives no result.
+| speed at 90 rpm | 10 km/h | 20 km/h | 30 km/h | 40 km/h | 65 km/h |
+|---|---|---|---|---|---|
+| P₉₀ / P₇₀ (W) | 15 / 10 | 62 / 35 | 175 / 91 | 387 / 193 | 1561 / 753 |
+| r at 70/90 rpm | 0.66 | 0.56 | 0.52 | 0.50 | 0.48 |
+| r at the worst band edges (75/85 rpm) | 0.81 | 0.75 | 0.72 | 0.71 | 0.69 |
 
-**Which of the seven rounds' rules are unnecessary?** All that defended against byte sequences our stack does not
-produce:
+Even at a standstill the limit is c = 75/85 = 0.88. Under ERG, r stays near 1.
 
-| round | rule | under this ADR |
-|---|---|---|
-| 1 | one writer, stamp and append under one lock (`record_now`) | **keep**: this is the capture-time guarantee |
-| 1 | stamps never go back in file order; ties follow file order | **keep**: one check of the writer, cheap |
-| 1 | one silence threshold for the live guard and `analyse` | keep (live-guard parity, not freshness) |
-| 2 | a record identical to another at the same µs is contradictory | delete |
-| 2 | per-check grammar: token alphabet, anchored shape regexes, exact control program | delete for check 12 (§4 for the others) |
-| 2 | saturating reply accounting (a panic) | keep (a bug fix) |
-| 4 | the vocabulary tokens `u q e ?`, other tx outside the grammar | delete |
-| 4 | a malformed line is no result | keep |
-| 4 | `PowerLag::Contradictory` (check 6 breaks its grammar) | delete with the grammar; `NotMeasured` stays |
-| 5 | page 25 count back is contradictory | delete |
-| 5 | page 16 counters back or moving alone are contradictory | delete; keep "elapsed time held = repeat" for check 8 |
-| 5 | CPS crank counters back are contradictory | delete |
-| 5/6 | a page-71 status answers the request just before it, naming the last command before that request | simplify: an echo is a status after the write's request, naming its page and bytes (informational in check 12) |
-| 6 | page 25 freshness as a pair (count, accumulated power); count held while power moves is contradictory; 0 W exemption | delete |
-| 6 | CPS byte-identical duplicate dropped | delete (not seen, and harmless to a mean) |
-| 7 | accumulated-power step ≤ count step × 4094 W | delete |
+**What does the rider tell us?** Whether the pedals went light. Compared with the 90 rpm part under `Free`, 70 rpm
+on a flat road is lighter in every gear, and 70 rpm under ERG 200 W is heavier per stroke. The rider's answer is
+an independent channel that no frame can reach.
 
-The accumulated power (page 25 bytes 3–4) is no longer read at all. It has never been seen moving on the NEO
-(part-b.md, "accumulated power at 0 W only"), and the round-6 0 W exemption existed only because of that.
+**Which of #521's rules go?** Every rule that defended against byte sequences our stack does not produce. The
+table, rule by rule, is in the PR #587 body.
 
-## 2. Decision: the check 12 rule (one page)
+## 2. Decision: the check 12 rule
 
-**Procedure change (`rider.rs` `check12`).** The procedure stamps the 70 rpm cue (`# 12 70rpm <µs>`). After the
-15 s hold, while the trainer is still in `Free`, it asks **"Since the switch, did pedalling at 70 rpm get clearly
-easier? (y/n)"** and records the answer with the existing answer note (`rider.rs` `answer`, `check10::Question`).
-Then it writes the closing release. A run with no answer did not complete.
+**Procedure (`rider.rs` `check12`):**
 
-**Reading.** The capture must be a timeline: stamps non-decreasing and every line a record (kept from #521).
-Otherwise there is no result. Check 12 reads:
+1. ERG 200 W at 90 rpm.
+2. `Free`, then hold 90 rpm for 15 s (was 10 s).
+3. Stamp the cue `# 12 70rpm <µs>` and hold 70 rpm for 15 s.
+4. Ask: **"Compared with the 90 rpm part right after the switch, did pedalling at 70 rpm get clearly easier? (y =
+   easier / n = not easier / s = I shifted gear)"**. Record the answer with the existing answer note (`rider.rs`
+   `answer`), which stamps it.
+5. Write the closing release.
 
-- `target`: the last page-49 write (200 W), then the page-50 write and the page-51 grade-0 write after it. `free`
-  is the stamp of the later of the two. If any of these, the cue stamp, the answer or the closing release is
-  missing, there is no result.
-- **updates**: the page-25 frames whose update event count (page byte 1) differs from the page 25 just before
-  them. A held count is the NEO repeating itself (§1 table, step 0 = identical payload in 68 of 68 cases).
-- `before` = median power of the updates in [`free` − 5 s, `free`) (rider at 90 rpm under ERG).
-- `after` = median power of the updates in [cue + 5 s, closing release) with cadence 60–79 rpm (page byte 2).
-  The 5 s skip covers the change of cadence and the trainer's power lag. The sim's τ is 0.8 s
-  (`sim.rs` `power_tau_s`), and the largest first echo of a SIM value on the NEO was 4.21 s (ADR-0002 §4.4.1,
-  `T_unknown`).
-- `n` = the number of those updates.
+The runbook says: do not shift during the check, and answer `s` if you did.
 
-**Verdict.**
+**Reading.** The capture must be a timeline: stamps never go back and every line is a record (#521, kept). Its
+control writes must equal check 12's fixed program, compared item by item (§4). The check reads:
+
+- **updates**: the page-25 frames whose update event count (page byte 1) differs from the page 25 before them. A
+  held count is a repeat (§1 table: in 68 of 68 cases the payload is identical).
+- **settle = 5 s.** The sim's power lag is first order with τ = 0.8 s (`sim.rs:163` at e066075), so 5 s is more
+  than 5τ = 4 s, which reaches 99.3 %. The NEO's own lag is not measured yet. Check 6 measures it in the same
+  session, and its t90 must be ≤ 2.3 s (`part-b.md`, check 9's conditions), so 5 s is also more than twice that.
+- **`erg`**: the median power of the updates in [page-50 write − 5 s, page-50 write). The rider is at 90 rpm under
+  ERG.
+- **`free90`**: the median power of the updates in [page-51 write + settle, cue) at 85–95 rpm.
+- **`free70`**: the median power of the updates in [t₇₀ + settle, answer stamp) at 65–75 rpm. t₇₀ is the first
+  update in that band after the cue. The band itself leaves out the rider's change of cadence.
+- **`r`** = `free70` / `free90`.
+
+**Verdict:**
 
 | condition (in this order) | result |
 |---|---|
-| no timeline, run not completed, a required write, stamp or answer missing | no result |
-| `before` outside 180–220 W (ERG never held the target, so a release cannot be seen) | no result |
-| `n` < 20 (fewer than 2 updates/s over the 10 s window; nominal ≈ 37 at 269 ms) | no result |
-| `after` < 0.9 × target **and** the answer is yes | **PASS** (`released: true`) |
-| `after` ≥ 0.9 × target **and** the answer is no | **FAIL** (`released: false`) |
-| power and rider disagree | no result, both reported |
+| no timeline; the program differs; the run is not completed; the cue or the answer is missing | no result |
+| `erg` outside 180–220 W (ERG never held, so a release cannot be seen) | no result |
+| fewer than 15 updates in `free90` or `free70` (fewer than 2 per second; about 37 are expected at 269 ms) | no result |
+| the answer is `s` | no result |
+| r ≤ 0.85 **and** the answer is `y` | **PASS** (`released: true`) |
+| r ≥ 0.95 **and** the answer is `n` | **FAIL** (`released: false`) |
+| r in (0.85, 0.95), or power and rider disagree | no result, with r and the answer reported |
 
-Median, not mean: a minority of wrong frames cannot move it, and nothing needs to be told apart. The 90 % bound is
-the existing one ("ERG would hold it"). A released NEO at 70 rpm in a gear that gives about 23 km/h needs about
-½·0.51·6.5³ + 0.004·85·9.81·6.5 ≈ 92 W (the page-50 default Kw 0.51 kg/m with FE-C's ½, ADR-0005 §1). That leaves
-88 W of margin below 180 W. The sim's road model omits the ½ and gives about 149 W (its CPS in
-`adv-k8-bad.fecap` at 77–86 s, 0x0095), still below 180 W.
+**Margins.**
 
-**Against the falsifier repros, without any freshness rule** (the falsifier artefacts of #521 rounds 6–7,
-evaluated by hand with the cue at `free` + 10 s, as the procedure runs it): the non-releasing captures `adv-k8-bad`, `b1-gtail-bad` and `b1-tail-bad` give `after`
-195 W, n 30. Their forged versions `adv-k8-forged` (round 7, count jumps of 7–10 and a 0 W chain), `b1-gtail-forged`
-(round 7 tail) and `b1-tail-insert-k8` (round 6 insert) all give `after` 195 W, n 25–30, so **not released**. The
-copies are standstill frames at 0 rpm, outside the cadence band. Round 6's substitution of every frame after
-`Free` by a standstill copy leaves only 0 rpm copies and the frames without one, so the result is no result or not
-released. None of them reaches PASS, and PASS would also need the rider's yes.
+- **Released:** r ≤ 0.81 at any speed from 10 to 65 km/h and any cadence in the bands, and ≤ 0.88 at the limit of
+  zero speed. So it is never ≥ 0.95, never FAIL, and PASS in every realistic gear.
+- **Held:** r ≈ 1. Only an ERG that sags by more than 15 % from 90 to 70 rpm could read ≤ 0.85. The rider then
+  feels it heavier and answers `n`, which gives no result, never PASS. Check 9 measures the NEO's ERG holding
+  down to its stall in the same session.
+- The median means that a minority of wrong frames cannot move the result.
 
-**No change to the capture format.** A writer sequence number would add nothing to the stamp taken under the
-lock. It would number a duplicated notification as faithfully as any other line. Upstream duplicates can only be
-recognised by the trainer's own counter, and the update-count rule above already does that.
+**#521's falsifier fixtures under this rule.** Evaluated by hand, with the cue at `free` + 10 s as those
+captures were made, and before the question existed:
 
-## 3. Fault model
+- **Forgeries change nothing.** `adv-k8-forged`, `b1-gtail-forged` and `b1-tail-insert-k8` give the same medians
+  as their honest bases (`erg` 200 W, `free90` 298 W, `free70` 195 W, r = 0.654). The copies are standstill frames
+  at 0 rpm, outside both bands.
+- **The bases do not hold.** Their `holding` transform rewrote only the frames below 80 rpm to 195 W, so at 90
+  rpm they still report the sim's road power of 298 W: ERG is not held there. Under this rule they read released
+  by power. They give no result for lack of an answer.
+- **A new fixture.** The non-releasing fixture for the new tests holds about 200 W in both `Free` phases (§3).
 
-| fault | real? | effect under §2 |
+**No change to the capture format.** A sequence number from our writer adds nothing to the stamp taken under the
+lock: it would number a duplicated notification as faithfully as any other line. Only the trainer's own count
+recognises upstream duplicates, and the update rule already uses it.
+
+## 3. Fault model and properties
+
+| fault | real? | effect |
 |---|---|---|
-| lost page 25 (BLE notification lost, NEO skips updates) | yes: count steps 2–6, gaps up to 1.77 s (§1) | fewer updates; n < 20 gives no result; the silence guard aborts at 2 s |
-| NEO repeats its last update | yes: 68 repeats, all byte-identical | dropped by the count rule |
-| pump stall: queued frames appended µs apart | yes, by design of the writer (#521) | none: no rule reads spacing |
-| duplicate delivery of one notification | not observed; would be a stack bug | an identical frame with a held count is dropped as a repeat |
-| reorder, stamp going back | impossible past the one-lock writer; Part A captures predating it show it | no result (`records out of time order`) |
-| clock jump | the clock is monotonic (`MonoTime`, tokio `Instant`) | out of scope |
-| rider stops pedalling or leaves 60–79 rpm | yes (#576: 0 rpm was counted as "below 80") | outside the band; too few updates gives no result |
-| rider in a big gear (released power near 180 W) | possible | power says held, rider says easier: no result. Runbook: stay in a middle gear |
-| stuck power sensor (NEO reports a frozen value) | not observed | the rider disagrees: no result |
-| NEO never fills accumulated power | likely (only 0 W observed) | not read |
-| forged, replayed or hand-edited bytes | not a fault of this tool (§1) | out of scope; only `redact` output is committed |
+| lost page 25 (a lost notification; the NEO skips updates) | yes: count steps 2–6, gaps up to 1.77 s (§1) | fewer updates; too few gives no result; the silence guard aborts at 2 s |
+| the NEO repeats its last update | yes: 68 repeats, all identical | dropped by the update rule |
+| pump stall: queued frames appended µs apart | yes, by the writer's design (#521) | none: no rule reads the spacing |
+| duplicate delivery of a notification | not observed; would be a stack bug | an identical frame with a held count is a repeat |
+| reorder, or a stamp going back | impossible in a `hil_fec` capture; the pre-#521 Part A captures show it | no result |
+| any gear | yes | none: the ratio does not depend on the gear (§1) |
+| the rider shifts gear during the check | possible | the rider answers `s`: no result (runbook) |
+| the rider stops pedalling or leaves a band | yes (#576: 0 rpm counted as "below 80") | outside the band; too few updates gives no result |
+| ERG sags at 70 rpm, or the power sensor is stuck | not observed | r out of its range or the rider disagrees: no result |
+| the NEO never fills accumulated power | likely (only 0 W observed) | not read |
+| forged, replayed or hand-edited bytes; desktop captures | outside this tool's input (§1) | out of scope |
 
-Every in-model doubt resolves to no result. None of them can yield PASS for a trainer that holds 200 W, because
-PASS needs both the median below 180 W in the cadence band and the rider's yes.
+**Properties, tested by a generator.**
 
-**Test generator (replaces round 7's battery for check 12).** Start from the sim check-12 capture, and from it
-made non-releasing (`holding`, 195 W after `Free`). Apply any sequence of the in-model operators:
-`drop(rx frame)`, `repeat(page 25, same bytes, next slot)`, `stall(compress a run of stamps to 1 µs steps)`,
-`cadence(set a span of updates to 0 rpm or out of the band)`, `answer(y|n|none)`. Two properties: a non-releasing
-capture is never PASS, and a releasing capture is never FAIL. The three falsifier repros are kept as fixed
-examples (forged input, expected: not PASS), not as operators, because they are outside the model.
+- **The base captures.** The sim's check-12 capture is releasing. A non-releasing one is made from it with ERG
+  200 W held through both `Free` phases. Both have the new stamps and an answer.
+- **The operators**, applied in any sequence:
+  - `drop(rx frame)`;
+  - `repeat(page 25, same bytes, next slot)`;
+  - `stall(compress a run of stamps to 1 µs steps)`;
+  - `cadence(move a span of updates to 0 rpm or out of the band)`;
+  - **`gear(g)`**: speed per rpm for the whole check, from 0.03 to 0.2 m/s per rpm (10–65 km/h at 90 rpm). The
+    sim's road power follows it, and ERG ignores it;
+  - `answer(y | n | s | none)`.
+- **The properties:**
+  - a releasing capture is never FAIL;
+  - a non-releasing capture is never PASS;
+  - when r and the answer disagree, the result is no result.
+- **The falsifier fixtures** (§2) are kept as fixed examples, not as operators: forged input, expected never PASS.
 
 ## 4. The other checks
 
-The freshness and grammar layer is shared, so its deletion reaches checks 5–11. The same principle applies:
-each check finds what its procedure wrote and gives no result when that is missing. It never adds rules against
-bytes our stack does not write.
+The shared freshness layer and the token grammars are deleted. Every check finds what its procedure wrote, and
+gives no result when that is missing.
 
-- **Check 5** (page 25 against CPS): reads CPS power readings as they come. `cps::parse` keeps pairing crank events
-  for cadence. No counter contradictions.
-- **Checks 6 and 9**: keep fail-closed ("exactly the procedure's steps, else `NotMeasured` and no result").
-  `PowerLag::Contradictory` goes with the grammar.
-- **Check 8**: keeps "page 16 elapsed time held = repeat" and "≥ 3 fresh speeds per segment, else no result". The
-  NEO reading 0/0 is a real fault (part-b.md, "page 16 at standstill only").
-- **Checks 10 and 11a/b/c**: keep the order conditions their results are computed from: the cue, the answer, the
-  drop, the reconnect and the closing release, each found once and in procedure order, else no result. They keep
-  check 10's 20 ms advert merge, which is a real scanner behaviour. The regex grammars and exact programs are
-  deleted.
-- **Updates** (count changed) stay the one freshness notion, used by checks 5, 7, 9 and 12.
+- **The control program stays.** It is a fixed list of the expected control writes per check and per way of
+  ending (`Step`, `follows`, the programs of the `GRAMMAR_*` constants, with the soft start expanded to ERG 0 W
+  and six 1 Hz steps). It is compared with the capture's writes item by item. Check 6's "exactly the four
+  `CHECK6_W` steps, else no result and `NotMeasured`" is this comparison. Check 9 relies on it through
+  `PowerLag::of_check6`, and check 12's program is `Release, SoftStart(200), Wind, Track(0), Release`. Only the
+  token alphabet (`tags`, `answers`, `records`) and the shape regexes go. `PowerLag::Contradictory` goes too: a
+  check 6 that breaks its program is `NotMeasured`.
+- **Check 5** reads CPS power readings as they come. `cps::parse` keeps pairing crank events for cadence.
+- **Check 8** keeps "page 16 elapsed time held = repeat" and "≥ 3 fresh speeds per segment, else no result". The
+  NEO reading 0/0 is real (part-b.md, "page 16 at standstill only").
+- **Checks 10 and 11a/b/c** keep the order conditions they compute from: the cue, the answer, the drop, the
+  reconnect and the closing release, each found once and in order, else no result. Check 10 also keeps its 20 ms
+  advert merge.
+- **Updates** (the count changed) are the one freshness notion, used by checks 5, 7, 9 and 12.
 
 ## 5. Implementation plan
 
-Delete from `timeline.rs`: `counters`, `Fresh`, `Break`, `MOST_W`, the bodies of `fresh_samples` (it becomes "count
-unchanged = repeat"), `fresh_speeds` (it becomes "elapsed unchanged = repeat") and `fresh_cps` (removed), the
-same-µs duplicate check, and `Grammar` with its shapes and programs (`follows`, `Step`, the `GRAMMAR_*`
-constants). Keep `parse` (order and malformed-line checks), the typed views, `drops`, `closing_release`,
-`index_at` and `checks_read_typed_events_only`.
+**`timeline.rs`:**
 
-In `partb.rs`, `check12` is rewritten to §2. In `rider.rs`, `check12` stamps the cue and asks the question.
+- Delete `counters`, `Fresh`, `Break`, `MOST_W`, `fresh_cps` and the same-µs duplicate check.
+- Reduce `fresh_samples` to "count unchanged = repeat" and `fresh_speeds` to "elapsed time unchanged = repeat".
+- In `Grammar`, delete `tags`, `answers`, `records` and `shapes`, and keep `programs` with `Step` and `follows`.
+- Keep `parse` (the order and malformed-line checks), the typed views, `drops`, `closing_release`, `index_at` and
+  `checks_read_typed_events_only`.
 
-Delete these tests: `check12_a_stale_page25_copy_with_the_same_count_is_no_result`,
-`check12_a_standstill_copy_past_half_the_accumulated_power_is_no_result`,
-`check12_a_standstill_copy_a_rollover_back_reads_as_its_update`,
-`page25_counters_back_at_half_their_range_and_move_together`,
-`page25_accumulated_power_gains_at_most_4094_w_per_update_and_moves_with_the_count`,
-`page16_backs_at_half_its_range_and_its_distance_never_moves_alone`,
-`cps_readings_between_crank_events_count_and_crank_data_never_goes_back` (the counter half),
-`check5_a_stale_cps_copy_is_no_result`, `check7_stale_page_25_copies_are_no_result`, and the copy, stale and
-insert families of `mutated_captures_never_gain_or_change_a_full_row`. Keep `check12_free_releases_erg` (plus a
-yes answer), the order and malformed-line tests, the fail-closed tests of checks 5, 6, 8 and 9, the 11a/b/c order
-tests, `the_live_neo_captures_are_timelines`, and the falsifier repros as fixed examples.
+**`partb.rs`:** rewrite `check12` to §2. **`rider.rs`:** `check12` holds 15 s, stamps the cue and asks the question.
 
-Add these tests: the §3 generator; one table test per verdict row; and the runbook text ("stay in a middle gear;
-answer y if pedalling got clearly easier").
+**Tests to delete:**
 
-Docs: replace part-b.md's "Freshness from the trainer's own counters", "Each check's records follow its grammar"
-and the three page-25/accumulated-power known limits with §3's table. Keep "plausible retiming", restated as
-"hand-edited captures are out of scope". #576's items are resolved by §2: the cadence band, and no accumulated-power
-reading after a drop.
+- `check12_a_stale_page25_copy_with_the_same_count_is_no_result`
+- `check12_a_standstill_copy_past_half_the_accumulated_power_is_no_result`
+- `check12_a_standstill_copy_a_rollover_back_reads_as_its_update`
+- `page25_counters_back_at_half_their_range_and_move_together`
+- `page25_accumulated_power_gains_at_most_4094_w_per_update_and_moves_with_the_count`
+- `page16_backs_at_half_its_range_and_its_distance_never_moves_alone`
+- the counter half of `cps_readings_between_crank_events_count_and_crank_data_never_goes_back`
+- `check5_a_stale_cps_copy_is_no_result`
+- `check7_stale_page_25_copies_are_no_result`
+- the copy, stale and insert families of `mutated_captures_never_gain_or_change_a_full_row`, which keeps its
+  program-breaking families
+
+**Tests to keep:**
+
+- `check12_free_releases_erg`, with a `y` answer
+- the order and malformed-line tests
+- the program tests, including `the_soft_start_is_erg_0_then_six_steps_on_the_line_to_its_target`
+- the fail-closed tests of checks 5, 6, 8 and 9
+- the 11a/b/c order tests
+- `the_live_neo_captures_are_timelines`
+
+**Tests to add:** the §3 generator, one table test per verdict row, and the runbook text.
+
+**Docs.** In part-b.md, replace "Freshness from the trainer's own counters", the shape half of "Each check's
+records follow its grammar", and the three page-25/accumulated-power known limits with §3's table. Keep "plausible
+retiming", restated as "hand-edited and desktop captures are out of scope". §2 resolves #576's items: the cadence
+bands, and no accumulated-power reading after a drop.
 
 ## 6. Alternatives considered
 
 - **Keep hardening freshness** (count step bounded by rate × Δt, accumulated-power bounds, runs of consistent
-  updates). Rejected: it defends against an attacker that does not exist. Each rule was a patch against the last
-  forgery, and none of them adds evidence that the trainer released.
-- **Cross-check against CPS power** (an independent meter). Rejected as a requirement, because it makes check 12
-  depend on a power meter being paired. Check 5 already validates page 25 against CPS in the same session.
-- **A writer sequence number in the capture format.** Rejected (§2): it detects nothing that the stamp under the
-  lock does not.
-- **No rider question, power only.** Rejected: a stuck sensor or a big gear would then decide the verdict alone,
-  and asking costs one keypress.
+  updates). Rejected: it defends against an attacker that does not exist, and adds no evidence of a release.
+- **An absolute bound (power < 0.9 × target at 70 rpm).** Rejected: it depends on the gear. A released NEO at
+  about 40 km/h at 70 rpm needs about 390 W.
+- **Cross-check against CPS power.** Rejected as a requirement, because it would need a paired power meter.
+  Check 5 already validates page 25 against CPS in the session.
+- **A writer sequence number, or `record_now` in the app driver.** Rejected (§1, §2).
+- **Power only, no rider question.** Rejected: a stuck sensor or a sagging ERG would then decide alone.
 
 ## 7. Open questions
 
 | Question | Issue | Milestone |
 |---|---|---|
-| Calibrate the 90 % bound and the 60–79 rpm band on the first live check 12 | #44 | Part B session 1 |
+| Calibrate the r thresholds (0.85 / 0.95), the bands and the 5 s settle on the first live check 12 | #44 | Part B session 1 |
