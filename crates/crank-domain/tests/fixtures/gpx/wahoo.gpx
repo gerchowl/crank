@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v2" xmlns:gpxx="http://www.garmin.com/xmlschemas/GpxExtensions/v3" creator="Wahoo" version="1.1">
+<metadata><name>Ride</name><time>2024-05-01T07:00:00Z</time></metadata>
+<trk><name>Ride</name><extensions><gpxx:TrackExtension><gpxx:DisplayColor>Blue</gpxx:DisplayColor></gpxx:TrackExtension></extensions><trkseg>
+<trkpt lat="47.3769" lon="8.5417"><ele>408</ele><time>2024-05-01T07:00:00Z</time><extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>5.1</gpxtpx:speed><gpxtpx:course>12</gpxtpx:course></gpxtpx:TrackPointExtension></extensions></trkpt>
+<trkpt lat="47.3779" lon="8.5427"><ele>409</ele><time>2024-05-01T07:00:05Z</time></trkpt>
+</trkseg></trk></gpx>

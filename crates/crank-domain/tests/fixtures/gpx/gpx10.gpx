@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.0" creator="GPSBabel - http://www.gpsbabel.org" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.topografix.com/GPX/1/0" xsi:schemaLocation="http://www.topografix.com/GPX/1/0 http://www.topografix.com/GPX/1/0/gpx.xsd">
+<time>2024-05-01T07:00:00Z</time>
+<bounds minlat="47.3769" minlon="8.5417" maxlat="47.3779" maxlon="8.5427"/>
+<trk>
+  <name>ACTIVE LOG</name>
+<trkseg>
+<trkpt lat="47.3769" lon="8.5417">
+  <ele>408.2</ele>
+  <time>2024-05-01T07:00:00Z</time>
+  <course>45.0</course>
+  <speed>5.1</speed>
+</trkpt>
+<trkpt lat="47.3779" lon="8.5427">
+  <ele>409.0</ele>
+  <time>2024-05-01T07:00:05Z</time>
+</trkpt>
+</trkseg>
+</trk>
+</gpx>

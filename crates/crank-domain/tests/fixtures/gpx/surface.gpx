@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="x" xmlns="http://www.topografix.com/GPX/1/1" xmlns:s="urn:x">
+ <trk><name>S</name><trkseg>
+  <trkpt lat="47.3769" lon="8.5417"><ele>408</ele><extensions><s:surface>gravel</s:surface></extensions></trkpt>
+  <trkpt lat="47.3779" lon="8.5427"><ele>409</ele><extensions><s:x><s:surface>asphalt</s:surface></s:x></extensions></trkpt>
+ </trkseg></trk>
+</gpx>
