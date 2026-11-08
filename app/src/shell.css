@@ -146,6 +146,14 @@ main.mode {
   max-width: 1364px; /* 1440 minus the 76 px rail */
   width: 100%;
 }
+.page-head {
+  margin-bottom: var(--space-5);
+}
+.page-head h1 {
+  font-size: var(--text-t3);
+  margin-bottom: var(--space-1);
+}
+
 .keys-scrim {
   position: fixed;
   inset: 0;
