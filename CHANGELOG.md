@@ -30,6 +30,11 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   retried on its advertisement in a capped scan (30 s continuous, then 4 s every 30 s); quitting releases the keeper's
   links within the cap; the simulator gets a "not advertising" latency
   ([#469](https://github.com/gerchowl/crank/issues/469))
+- Settings and Devices in direction A (DESIGN §5.9): the section list and one panel on the 12-column grid, 32 px controls;
+  Devices as two tables (Paired, Nearby) with a hint before the first scan, and Forget asks first, in place of the row
+  (Cancel focused, Esc cancels). Pair buttons' names start with their visible words (WCAG 2.5.3). Three new design
+  fixtures (`devices-found`, `devices-pairing`, `devices-forget-confirm`) and a whole-screen no-clip check for Settings
+  and Devices ([#527](https://github.com/gerchowl/crank/issues/527))
 
 ### Changed
 

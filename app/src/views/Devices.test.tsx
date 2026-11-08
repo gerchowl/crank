@@ -28,8 +28,16 @@ afterEach(() => {
   clearMocks();
 });
 
-const scan = async (user: ReturnType<typeof userEvent.setup>) =>
+type User = ReturnType<typeof userEvent.setup>;
+const scan = async (user: User) =>
   user.click(await screen.findByRole("button", { name: "Scan" }));
+/** Forget asks first (#527): the row's Forget, then "Yes, forget <role>". */
+const forgetIt = async (user: User, name: string, role = "trainer") => {
+  await user.click(await screen.findByRole("button", { name }));
+  await user.click(
+    await screen.findByRole("button", { name: `Yes, forget ${role}` }),
+  );
+};
 
 describe("Devices", () => {
   test("scan lists the candidates with their role", async () => {
@@ -59,7 +67,7 @@ describe("Devices", () => {
     await scan(user);
     await user.click(
       await screen.findByRole("button", {
-        name: "Pair Tacx Neo 55624 as trainer",
+        name: "Pair as trainer: Tacx Neo 55624",
       }),
     );
     expect(await screen.findByText(/S\/N 55624/)).toBeTruthy();
@@ -69,7 +77,7 @@ describe("Devices", () => {
     });
     expect(screen.getByText("✓ Paired as trainer")).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "Forget trainer" }));
+    await forgetIt(user, "Forget trainer");
     await waitFor(() =>
       expect(screen.getAllByText("Not paired").length).toBe(2),
     );
@@ -87,11 +95,11 @@ describe("Devices", () => {
     await scan(user);
     expect(await screen.findByText("✓ Paired as trainer")).toBeTruthy();
     expect(
-      screen.queryByRole("button", { name: "Pair Tacx Neo 55624 as trainer" }),
+      screen.queryByRole("button", { name: "Pair as trainer: Tacx Neo 55624" }),
     ).toBeNull();
     // The strap is not paired: it still offers pairing, and shows no paired state.
     expect(
-      screen.getByRole("button", { name: "Pair HRM-Dual as heart-rate strap" }),
+      screen.getByRole("button", { name: "Pair as strap: HRM-Dual" }),
     ).toBeTruthy();
     expect(screen.queryByText("✓ Paired as strap")).toBeNull();
   });
@@ -108,7 +116,7 @@ describe("Devices", () => {
     expect(await screen.findByText("✓ Paired as trainer")).toBeTruthy();
     expect(
       screen.getByRole("button", {
-        name: "Pair Dual Thing as heart-rate strap",
+        name: "Pair as strap: Dual Thing",
       }).textContent,
     ).toBe("Pair as strap");
   });
@@ -119,15 +127,11 @@ describe("Devices", () => {
     render(<Devices />);
     await screen.findByRole("button", { name: "Forget trainer" });
     await scan(user);
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Forget Tacx Neo 55624 as trainer",
-      }),
-    );
+    await forgetIt(user, "Forget Tacx Neo 55624 as trainer");
     expect(
       (
         await screen.findByRole("button", {
-          name: "Pair Tacx Neo 55624 as trainer",
+          name: "Pair as trainer: Tacx Neo 55624",
         })
       ).textContent,
     ).toBe("Pair as trainer");
@@ -143,7 +147,7 @@ describe("Devices", () => {
     expect(
       (
         await screen.findByRole("button", {
-          name: "Pair Tacx Neo 55624 as trainer",
+          name: "Pair as trainer: Tacx Neo 55624",
         })
       ).textContent,
     ).toBe("Pair as trainer");
@@ -210,7 +214,7 @@ describe("Devices", () => {
     await scan(user);
     await user.click(
       await screen.findByRole("button", {
-        name: "Pair Tacx Neo 55624 as trainer",
+        name: "Pair as trainer: Tacx Neo 55624",
       }),
     );
     const alert = await screen.findByRole("alert");
@@ -238,18 +242,66 @@ describe("Devices", () => {
     await screen.findByText("HRM-Dual");
     expect(screen.queryByRole("button", { name: /as trainer/ })).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Pair HRM-Dual as heart-rate strap" }),
+      screen.getByRole("button", { name: "Pair as strap: HRM-Dual" }),
     ).toBeTruthy();
   });
 
-  test("buttons are at least 48 px", () => {
-    const css = readFileSync("src/shell.css", "utf8");
+  test("buttons are the 32 px control height (DESIGN §18.4)", () => {
+    const css = readFileSync("src/views/settings.css", "utf8");
     expect(css).toMatch(
-      /\.devices button \{[^}]*min-height:\s*var\(--control-h-l\)/,
+      /\.settings button \{[^}]*\bheight:\s*var\(--control-h\);/,
     );
     expect(readFileSync("src/theme.css", "utf8")).toMatch(
-      /--control-h-l:\s*48px/,
+      /--control-h:\s*32px/,
     );
+  });
+
+  test("Forget asks first; Cancel and Esc keep the pairing", async () => {
+    const st = installDevices({ paired: { trainer: neo } });
+    const user = userEvent.setup();
+    render(<Devices />);
+    const forgetBtn = await screen.findByRole("button", {
+      name: "Forget trainer",
+    });
+    await user.click(forgetBtn);
+    const ask = screen.getByRole("group", { name: "Forget trainer?" });
+    expect(ask.textContent).toContain("Forget Tacx Neo 55624 as the trainer?");
+    // The safe choice is focused, never the destructive one.
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Cancel" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("group", { name: "Forget trainer?" })).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Forget trainer" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Forget trainer" }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("group", { name: "Forget trainer?" })).toBeNull();
+    expect(st.calls.some((c) => c.cmd === "device_forget")).toBe(false);
+    expect(st.paired.trainer).toBe(neo);
+    expect(screen.getByText("Tacx Neo 55624")).toBeTruthy();
+  });
+
+  test("a scan or a pair closes an open Forget question", async () => {
+    installDevices({ nearby: [trainer], paired: { trainer: neo } });
+    const user = userEvent.setup();
+    render(<Devices />);
+    await user.click(
+      await screen.findByRole("button", { name: "Forget trainer" }),
+    );
+    expect(screen.getByRole("group", { name: "Forget trainer?" })).toBeTruthy();
+    await scan(user);
+    await screen.findByText("Trainer", { selector: ".muted" });
+    expect(screen.queryByRole("group", { name: "Forget trainer?" })).toBeNull();
+  });
+
+  test("before a scan, Nearby says how to find a device", async () => {
+    installDevices();
+    render(<Devices />);
+    expect(
+      await screen.findByText(/Scan to find a trainer or a heart-rate strap/),
+    ).toBeTruthy();
   });
 
   test("a failed re-read keeps the last good list; an initial failure is shown", async () => {
@@ -272,7 +324,7 @@ describe("Devices", () => {
     st.linksError = { code: "storage", message: "disk" };
     await user.click(
       await screen.findByRole("button", {
-        name: "Pair Tacx Neo 55624 as trainer",
+        name: "Pair as trainer: Tacx Neo 55624",
       }),
     );
     expect((await screen.findByRole("alert")).textContent).toContain(
@@ -308,7 +360,7 @@ describe("Devices", () => {
     let openPair!: () => void;
     st.gate = new Promise<void>((r) => (openPair = r));
     await user.dblClick(
-      screen.getByRole("button", { name: "Pair Tacx Neo 55624 as trainer" }),
+      screen.getByRole("button", { name: "Pair as trainer: Tacx Neo 55624" }),
     );
     openPair();
     await screen.findByText(/S\/N 55624/);
@@ -333,16 +385,18 @@ describe("Devices", () => {
     await screen.findByText("Dual Thing");
     st.gate = new Promise<void>((r) => (open = r));
     await user.click(
-      await screen.findByRole("button", { name: "Pair Dual Thing as trainer" }),
+      await screen.findByRole("button", {
+        name: "Pair as trainer: Dual Thing",
+      }),
     );
     await waitFor(() => expect(screen.getAllByText("Pairing…").length).toBe(1));
     expect(
-      screen.getByRole("button", { name: "Pair Dual Thing as trainer" })
+      screen.getByRole("button", { name: "Pairing as trainer: Dual Thing" })
         .textContent,
     ).toBe("Pairing…");
     expect(
       screen.getByRole("button", {
-        name: "Pair Dual Thing as heart-rate strap",
+        name: "Pair as strap: Dual Thing",
       }).textContent,
     ).toBe("Pair as strap");
     open();
@@ -389,7 +443,7 @@ describe("Devices", () => {
     ).toHaveProperty("disabled", true);
     open();
     const pairBtn = () =>
-      screen.findByRole("button", { name: "Pair Tacx Neo 55624 as trainer" });
+      screen.findByRole("button", { name: "Pair as trainer: Tacx Neo 55624" });
     await pairBtn();
     expect(screen.getByRole("button", { name: "Scan again" })).toHaveProperty(
       "disabled",
@@ -399,7 +453,11 @@ describe("Devices", () => {
     st.gate = new Promise<void>((r) => (open = r));
     await user.click(await pairBtn());
     await waitFor(() => expect(screen.getByText("Pairing…")).toBeTruthy());
-    expect(await pairBtn()).toHaveProperty("disabled", true);
+    expect(
+      screen.getByRole("button", {
+        name: "Pairing as trainer: Tacx Neo 55624",
+      }),
+    ).toHaveProperty("disabled", true);
     expect(screen.getByRole("button", { name: "Scan again" })).toHaveProperty(
       "disabled",
       true,
@@ -416,7 +474,7 @@ describe("Devices", () => {
     );
     // A forget in flight.
     st.gate = new Promise<void>((r) => (open = r));
-    await user.click(screen.getByRole("button", { name: "Forget trainer" }));
+    await forgetIt(user, "Forget trainer");
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Scan again" })).toHaveProperty(
         "disabled",
@@ -480,7 +538,7 @@ describe("Devices", () => {
     st.store = { code: "storage", message: "disk is full" };
     await user.click(
       await screen.findByRole("button", {
-        name: "Pair Tacx Neo 55624 as trainer",
+        name: "Pair as trainer: Tacx Neo 55624",
       }),
     );
     const alert = await screen.findByRole("alert");
@@ -496,7 +554,7 @@ describe("Devices", () => {
     render(<Devices />);
     await screen.findByText("Tacx Neo 55624");
     st.store = { code: "storage", message: "disk is full" };
-    await user.click(screen.getByRole("button", { name: "Forget trainer" }));
+    await forgetIt(user, "Forget trainer");
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Could not forget trainer");
     expect(alert.textContent).toContain("disk is full");
@@ -510,7 +568,7 @@ describe("Devices", () => {
     render(<Devices />);
     await screen.findByText("Tacx Neo 55624");
     st.linksError = { code: "storage", message: "disk" };
-    await user.click(screen.getByRole("button", { name: "Forget trainer" }));
+    await forgetIt(user, "Forget trainer");
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Could not load the paired devices",
     );
@@ -527,7 +585,7 @@ describe("Devices", () => {
     await screen.findByText("Tacx Neo 55624");
     delete st.paired.trainer; // forgotten elsewhere since the last read
     st.linksError = { code: "storage", message: "disk" };
-    await user.click(screen.getByRole("button", { name: "Forget trainer" }));
+    await forgetIt(user, "Forget trainer");
     await waitFor(() =>
       expect(
         screen.queryByRole("button", { name: "Forget trainer" }),
@@ -546,7 +604,7 @@ describe("Devices", () => {
     await screen.findByText("Tacx Neo 55624");
     st.store = { code: "storage", message: "disk is full" };
     st.linksError = { code: "storage", message: "disk is full" };
-    await user.click(screen.getByRole("button", { name: "Forget trainer" }));
+    await forgetIt(user, "Forget trainer");
     await waitFor(() => expect(screen.getAllByRole("alert").length).toBe(2));
     const text = screen.getAllByRole("alert").map((a) => a.textContent);
     expect(text[0]).toContain("Could not forget trainer");
@@ -563,7 +621,7 @@ describe("Devices", () => {
     st.storeAfterWrite = { code: "storage", message: "disk is full" };
     await user.click(
       await screen.findByRole("button", {
-        name: "Pair Tacx Neo 55624 as trainer",
+        name: "Pair as trainer: Tacx Neo 55624",
       }),
     );
     expect((await screen.findByRole("alert")).textContent).toContain(
@@ -582,13 +640,13 @@ describe("Devices", () => {
       connect: { code: "device_unavailable", message: "connect failed" },
     });
     const { commands } = await import("../bindings");
-    // Pair connects first (core.rs `device_pair` (~1074)), so a connect failure wins over the store.
+    // Pair connects first (core.rs `device_pair` (~1170)), so a connect failure wins over the store.
     const p = await commands.devicePair("neo-1", "trainer");
     expect(p.status === "error" && p.error.code).toBe("device_unavailable");
     st.connect = null;
     const q = await commands.devicePair("neo-1", "trainer");
     expect(q.status === "error" && q.error.code).toBe("storage");
-    // Forget reads the store before it can find nothing (core.rs `device_forget` (~1152)).
+    // Forget reads the store before it can find nothing (core.rs `device_forget` (~1248)).
     const f = await commands.deviceForget("trainer");
     expect(f.status === "error" && f.error.code).toBe("storage");
     st.store = null;

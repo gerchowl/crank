@@ -1,107 +1,115 @@
 {
   "devices-denied@1024x768-dark": {
-    "button.height": 8,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 2,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-denied@1024x768-light": {
-    "button.height": 8,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 2,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-denied@1440x900-dark": {
-    "button.height": 8,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 2,
-    "layout.stretchedEmpty": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-denied@1440x900-light": {
-    "button.height": 8,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 2,
-    "layout.stretchedEmpty": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-empty@1024x768-dark": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-empty@1024x768-light": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-empty@1440x900-dark": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "layout.stretchedEmpty": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-empty@1440x900-light": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "layout.stretchedEmpty": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-forget-confirm@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-forget-confirm@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-forget-confirm@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-forget-confirm@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-found@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-found@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-found@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-found@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-paired@1024x768-dark": {
-    "button.height": 11,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-paired@1024x768-light": {
-    "button.height": 11,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-paired@1440x900-dark": {
-    "button.height": 11,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "layout.stretchedEmpty": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-paired@1440x900-light": {
-    "button.height": 11,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "layout.stretchedEmpty": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-pairing@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-pairing@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-pairing@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "devices-pairing@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-scanning@1024x768-dark": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-scanning@1024x768-light": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-scanning@1440x900-dark": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "layout.stretchedEmpty": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "devices-scanning@1440x900-light": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 1,
-    "layout.stretchedEmpty": 1,
-    "spacing.offScale": 1
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "history@1024x768-dark": {
     "button.fullWidth": 3,
@@ -216,26 +224,20 @@
   "ride-work-step@1440x900-dark": {},
   "ride-work-step@1440x900-light": {},
   "settings@1024x768-dark": {
-    "button.height": 6,
-    "button.inconsistentHeight": 1,
-    "spacing.offScale": 3
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "settings@1024x768-light": {
-    "button.height": 6,
-    "button.inconsistentHeight": 1,
-    "spacing.offScale": 3
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "settings@1440x900-dark": {
-    "button.height": 6,
-    "button.inconsistentHeight": 1,
-    "layout.stretchedEmpty": 1,
-    "spacing.offScale": 3
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "settings@1440x900-light": {
-    "button.height": 6,
-    "button.inconsistentHeight": 1,
-    "layout.stretchedEmpty": 1,
-    "spacing.offScale": 3
+    "button.height": 4,
+    "button.inconsistentHeight": 1
   },
   "today@1024x768-dark": {
     "button.height": 4,
