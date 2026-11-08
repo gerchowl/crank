@@ -1,5 +1,5 @@
 // The core's workout commands behind `mockIPC` (`workouts_list`, `workout_get`, `ride_load`, `ride_status`), for the
-// Workouts tests and the design fixtures (app/e2e/design/fixture.tsx, #457). Moved from Workouts.test.tsx unchanged.
+// Workouts tests and the design fixtures (app/e2e/design/fixture.tsx, #457).
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   CompiledView,
@@ -25,10 +25,14 @@ export const compiled = (over: Partial<CompiledView> = {}): CompiledView => ({
   issues: [],
   ...over,
 });
-export const detail = (id: string, c: CompiledView): WorkoutDetail => ({
+export const detail = (
+  id: string,
+  c: CompiledView,
+  summaries: readonly WorkoutSummary[] = SUMMARIES,
+): WorkoutDetail => ({
   workout: {
     id,
-    name: SUMMARIES.find((s) => s.id === id)?.name ?? id,
+    name: summaries.find((s) => s.id === id)?.name ?? id,
     ftp: 250,
     nodes: [],
   },
@@ -50,21 +54,27 @@ export const WARNING: WorkoutIssue = {
 
 export interface Backend {
   calls: { cmd: string; args: Record<string, unknown> }[];
-  /** Per-command failures, thrown when the call arrives. */
+  /**
+   * Per-command failures, thrown when the call arrives. `workouts_list` and `ride_status` never fail in the core today
+   * (core.rs `Core::workouts_list` (~1480), core.rs `Core::ride_status` (~2382)); a failure of either is the store-backed
+   * library to come (#110) or Tauri's own rejection, which the view shows all the same.
+   */
   fail: Record<string, unknown>;
+  /** The library, in its order (the built-in library is never empty today; the store-backed one of #110 can be). */
+  summaries: WorkoutSummary[];
   /** The compiled view each workout answers with. */
   compiled: Record<string, CompiledView>;
   /** A ride is already in progress. */
   rideActive: boolean;
-  /** A trainer is paired (core.rs `connect_links` (~1240)). */
+  /** A trainer is paired (core.rs `connect_links` (~1515)). */
   trainerPaired: boolean;
-  /** The trainer does not answer within the connect timeout (core.rs `connect_links`, `CONNECT_TIMEOUT`). */
+  /** The trainer does not answer within the connect timeout (run.rs `Task::attempt`, core.rs `CONNECT_TIMEOUT`). */
   connectTimesOut: boolean;
-  /** `ride_load` calls currently in flight (the core's `loading` flag, core.rs `ride_load` (~1395)). */
+  /** `ride_load` calls currently in flight (the core's `loading` flag, core.rs `ride_load` (~1679)). */
   loading: number;
   /** Hold the next `ride_load` answer until the gate opens. */
   gate: Promise<void> | null;
-  /** A load started elsewhere is in flight: `ride_status().loading` is true (core.rs `ride_status` (~1940)). */
+  /** A load started elsewhere is in flight: `ride_status().loading` is true (core.rs `ride_status` (~2382)). */
   coreLoading: boolean;
   /** A refusal raised at one stage of `ride_load` (see the doc below), while the load is in flight. */
   stage: Partial<
@@ -73,31 +83,46 @@ export interface Backend {
 }
 export type ApiErr = { code: string; message: string };
 /**
- * The core's workout commands behind `mockIPC`. `ride_load` refuses, in the core's order
- * (crates/crank-core/src/core.rs, symbols with `~line` hints):
- * - unknown id: `not_found` (`Library::get`, library.rs `get` (~75), via core.rs `resolve_workout` (~1349))
+ * The core's workout commands behind `mockIPC`, each refusing as the core does (crates/crank-core/src, symbols with
+ * `~line` hints):
+ * - `workouts_list` never fails (core.rs `Core::workouts_list` (~1480)); `fail` injects one (see `Backend.fail`).
+ * - `workout_get`: unknown id, `not_found` (library.rs `Library::detail` (~93), library.rs `Library::get` (~75)). Its
+ *   other refusal, `internal` from a block index that does not fit (dto.rs `WorkoutBlock` (~196)), is unreachable
+ *   through the API and not modelled.
+ * - `ride_status` never fails (core.rs `Core::ride_status` (~2382)).
+ *
+ * `ride_load` refuses, in the core's order (core.rs `Core::ride_load` (~1679)):
+ * - unknown id: `not_found` (library.rs `Library::get` (~75), via core.rs `Core::resolve_workout` (~1633))
  * - error-severity issue: `invalid_input` with the issue's message (`resolve_workout`)
  * - ride in progress: `conflict` (`ride_load`, "a ride is in progress")
- * - another load in flight: `conflict` (core.rs `Core::ride_load` (~1395), "another ride is loading or loaded")
- * - `stage.storage`: `store.devices()?` fails, `storage` (`connect_links`)
+ * - another load in flight: `conflict` (core.rs `Core::ride_load` (~1679), "another ride is loading or loaded")
+ * - `stage.storage`: `store.devices()?` fails, `storage` (core.rs `Core::connect_links` (~1515), or the keeper's start
+ *   reading the pairings, core.rs `Core::pairings` (~1201))
  * - no trainer paired: `device_unavailable` (`connect_links`, "no trainer paired")
- * - `stage.driver`: `backend.trainer(..)?` fails, e.g. `permission_denied` or Bluetooth off (`connect_links`, error.rs `ApiError` (~90), its `From<DeviceError>`)
- * - trainer connect timeout: `device_unavailable` (`connect_links`, "trainer connect timed out")
- * - `stage.connect`: the inner connect error, e.g. `device_unavailable` "connect failed: .." (`connect_links`, the `??`)
- * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (core.rs `build_session` (~1563), `bounded(handle.send(EngineCmd::Load(..)))`)
+ * - `stage.driver`: the trainer driver fails before connecting, e.g. `permission_denied` or Bluetooth off (the link
+ *   keeper's attempt, run.rs `Task::attempt` (~545), `devices.trainer()`; error.rs `ApiError` (~90), its `From<DeviceError>`)
+ * - trainer connect timeout: `device_unavailable` "trainer connect timed out" (run.rs `Task::attempt`, `timed_out`)
+ * - `stage.connect`: any other failure of the keeper's `acquire` (run.rs `Handle::acquire` (~180)): the inner connect
+ *   error, e.g. `device_unavailable` "connect failed: .."; `internal` "the trainer connect panicked" (run.rs
+ *   `Task::attempt`); `internal` "the warm trainer link was gone at the handover" (run.rs `Task::hand_over` (~688));
+ *   `device_unavailable` "the trainer was released" (run.rs `Task::fail_load` (~731)); `internal` "the link keeper is
+ *   gone" (`acquire`)
+ * - `stage.build`: `build_session` fails after connecting, e.g. `internal` "engine stopped" (core.rs `Core::build_session` (~1901), `bounded(handle.send(EngineCmd::Load(..)))`)
  * - `stage.build`: the new engine does not take the ride within 1 s, `engine_unresponsive`, its devices released
- *   (core.rs `build_session` (~1563), core.rs `bounded` (~601) and core.rs `REQUEST_TIMEOUT` (~81), #351)
- * - `stage.installed`: `internal` "built session missing" (core.rs `ride_load` (~1395))
- * Everything from the storage step on happens while the core's `loading` flag is set (core.rs `ride_load` (~1395)), so the mock raises
+ *   (core.rs `Core::build_session` (~1901), core.rs `bounded` (~676) and core.rs `REQUEST_TIMEOUT` (~84), #351)
+ * - `stage.build`: a quit while the load connects or builds, `conflict` "the application is quitting" (`ride_load`)
+ * - `stage.installed`: `internal` "built session missing" (core.rs `Core::ride_load` (~1679))
+ * Everything from the storage step on happens while the core's `loading` flag is set (`ride_load`), so the mock raises
  * those refusals after the load's delay (the gate), with the in-flight conflict active meanwhile.
- * (the strap driver `heart(..)?` in `connect_links` maps like `stage.driver`). core.rs `ensure_start_allowed` (~1236) always passes
- * today and is not modelled. A free ride (null id) skips the workout checks only. Tauri itself rejects a call
- * without its `workoutId` argument with a plain string.
+ * (The strap's failures never refuse a load: the ride runs without heart rate, `connect_links`.)
+ * core.rs `Core::ensure_start_allowed` (~1505) always passes today and is not modelled. A free ride (null id) skips the
+ * workout checks only. Tauri itself rejects a call without its `workoutId` argument with a plain string.
  */
 export function install(over: Partial<Backend> = {}): Backend {
   const b: Backend = {
     calls: [],
     fail: {},
+    summaries: SUMMARIES,
     compiled: { "w-ss": compiled(), "w-easy": compiled({ tss: 20 }) },
     rideActive: false,
     trainerPaired: true,
@@ -114,12 +139,12 @@ export function install(over: Partial<Backend> = {}): Backend {
     if (cmd in b.fail) throw b.fail[cmd];
     switch (cmd) {
       case "workouts_list":
-        return SUMMARIES;
+        return b.summaries;
       case "workout_get": {
         const id = args.id as string;
         const c = b.compiled[id];
         if (!c) throw apiError("not_found", `no workout ${id}`);
-        return detail(id, c);
+        return detail(id, c, b.summaries);
       }
       case "ride_load": {
         if (!("workoutId" in args))

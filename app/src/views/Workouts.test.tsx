@@ -15,6 +15,7 @@ import { currentSession } from "../ride/session";
 import { Workouts } from "./Workouts";
 import { RideLoadNotice } from "./RideLoadNotice";
 import { resetRideLoad, startRideLoad } from "./rideLoad";
+import { block } from "../ride/rideBackend";
 import {
   ERROR_ISSUE,
   WARNING,
@@ -50,11 +51,11 @@ test("the library list renders from the core's workouts command", async () => {
   install();
   open();
   expect(
-    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   ).toBeTruthy();
-  expect(screen.getByRole("button", { name: /Easy spin/ })).toBeTruthy();
+  expect(screen.getByRole("option", { name: /Easy spin/ })).toBeTruthy();
   // list rows carry the summary's duration and stress
-  const row = screen.getByRole("button", { name: /Sweet spot 3x12/ });
+  const row = screen.getByRole("option", { name: /Sweet spot 3x12/ });
   expect(row.textContent).toMatch(/50:00/);
   expect(row.textContent).toMatch(/TSS 52/);
 });
@@ -63,7 +64,7 @@ test("picking a workout shows the compiled summary from the core", async () => {
   const b = install();
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   );
   const s = within(await summary());
   expect(b.calls.find((c) => c.cmd === "workout_get")?.args).toEqual({
@@ -97,7 +98,7 @@ test("a validation warning renders with its message", async () => {
   });
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   );
   const s = within(await summary());
   const issue = await s.findByText(/W′ reserve drops below 15 percent/);
@@ -108,7 +109,7 @@ test("Ride this loads the picked workout and routes to the ride", async () => {
   const b = install();
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Easy spin/ }),
+    await screen.findByRole("option", { name: /Easy spin/ }),
   );
   await summary();
   await userEvent.click(
@@ -134,7 +135,7 @@ test("a failing library list shows the error and can be retried", async () => {
   delete b.fail.workouts_list;
   await userEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(
-    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   ).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
 });
@@ -143,7 +144,7 @@ test("a workout the core cannot give shows the error instead of a summary", asyn
   install({ compiled: { "w-easy": compiled() } }); // w-ss is listed but gone
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   );
   expect((await screen.findByRole("alert")).textContent).toMatch(
     /no workout w-ss/,
@@ -156,7 +157,7 @@ test("a refused ride-load shows the core's reason and stays on the page", async 
   install({ rideActive: true });
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   );
   await summary();
   await userEvent.click(
@@ -173,7 +174,7 @@ test("a load the core refuses for an error-severity issue shows its message and 
   const b = install();
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   );
   await summary();
   b.compiled["w-ss"] = compiled({ issues: [ERROR_ISSUE] });
@@ -190,7 +191,7 @@ test("with no trainer paired the load says so, points to Settings → Devices an
   install({ trainerPaired: false });
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Easy spin/ }),
+    await screen.findByRole("option", { name: /Easy spin/ }),
   );
   await summary();
   await userEvent.click(
@@ -206,7 +207,7 @@ test("a trainer that does not answer is refused with the core's message and stay
   install({ connectTimesOut: true });
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Easy spin/ }),
+    await screen.findByRole("option", { name: /Easy spin/ }),
   );
   await summary();
   await userEvent.click(
@@ -227,7 +228,7 @@ test("a workout with an error-severity issue cannot be ridden, and the reason is
   });
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   );
   await summary();
   const ride = screen.getByRole("button", { name: "Ride this" });
@@ -246,7 +247,7 @@ test("a warning alone does not block riding", async () => {
   });
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   );
   await summary();
   expect(
@@ -259,7 +260,7 @@ test("a stale refusal is cleared when another workout is picked", async () => {
   install({ trainerPaired: false });
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Easy spin/ }),
+    await screen.findByRole("option", { name: /Easy spin/ }),
   );
   await summary();
   await userEvent.click(
@@ -267,7 +268,7 @@ test("a stale refusal is cleared when another workout is picked", async () => {
   );
   await screen.findByRole("alert");
   await userEvent.click(
-    screen.getByRole("button", { name: /Sweet spot 3x12/ }),
+    screen.getByRole("option", { name: /Sweet spot 3x12/ }),
   );
   await summary();
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
@@ -279,7 +280,7 @@ test("a double click sends one ride_load while it is in flight", async () => {
   b.gate = new Promise<void>((resolve) => (release = resolve));
   open();
   await userEvent.click(
-    await screen.findByRole("button", { name: /Easy spin/ }),
+    await screen.findByRole("option", { name: /Easy spin/ }),
   );
   await summary();
   await userEvent.dblClick(
@@ -295,13 +296,16 @@ test("a double click sends one ride_load while it is in flight", async () => {
 
 // ---- #320: the selection is locked while a load is in flight ----
 
+// The library is a listbox (DESIGN §5.7 in direction A, #528): a picked row is selected, a locked one disabled.
 const pressed = (name: RegExp) =>
-  screen.getByRole("button", { name }).getAttribute("aria-pressed");
+  screen.getByRole("option", { name }).getAttribute("aria-selected");
+const locked = (row: HTMLElement) =>
+  row.getAttribute("aria-disabled") === "true";
 const startHeldLoad = async (b: Backend, first: RegExp) => {
   let release = () => {};
   b.gate = new Promise<void>((resolve) => (release = resolve));
   open();
-  await userEvent.click(await screen.findByRole("button", { name: first }));
+  await userEvent.click(await screen.findByRole("option", { name: first }));
   await summary();
   await userEvent.click(
     await screen.findByRole("button", { name: "Ride this" }),
@@ -315,11 +319,9 @@ test("picking another workout while a load is in flight is not possible, and the
   const release = await startHeldLoad(b, /Easy spin/);
   // the whole list is locked, with a visible reason
   for (const name of [/Easy spin/, /Sweet spot 3x12/])
-    expect(
-      (screen.getByRole("button", { name }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect(locked(screen.getByRole("option", { name }))).toBe(true);
   await userEvent.click(
-    screen.getByRole("button", { name: /Sweet spot 3x12/ }),
+    screen.getByRole("option", { name: /Sweet spot 3x12/ }),
   );
   expect(pressed(/Easy spin/)).toBe("true");
   expect(pressed(/Sweet spot 3x12/)).toBe("false");
@@ -343,7 +345,7 @@ test("a refusal that arrives after a pick attempt appears under the workout it w
   );
   const release = await startHeldLoad(b, /Easy spin/);
   await userEvent.click(
-    screen.getByRole("button", { name: /Sweet spot 3x12/ }),
+    screen.getByRole("option", { name: /Sweet spot 3x12/ }),
   );
   expect(pressed(/Easy spin/)).toBe("true");
 
@@ -354,13 +356,9 @@ test("a refusal that arrives after a pick attempt appears under the workout it w
   expect(screen.getByRole("heading", { name: "Easy spin" })).toBeTruthy();
   expect(pressed(/Easy spin/)).toBe("true");
   expect(screen.queryByText("Loading ride…")).toBeNull();
-  expect(
-    (
-      screen.getByRole("button", {
-        name: /Sweet spot 3x12/,
-      }) as HTMLButtonElement
-    ).disabled,
-  ).toBe(false);
+  expect(locked(screen.getByRole("option", { name: /Sweet spot 3x12/ }))).toBe(
+    false,
+  );
   expect(screen.getByTestId("route").textContent).toBe("workouts");
 });
 
@@ -405,13 +403,23 @@ const REFUSALS: [string, Partial<Backend["stage"]>, RegExp][] = [
     { installed: apiError("internal", "built session missing") },
     /built session missing/,
   ],
+  [
+    "a quit during the load",
+    { build: apiError("conflict", "the application is quitting") },
+    /the application is quitting/,
+  ],
+  [
+    "the link keeper",
+    { connect: apiError("internal", "the link keeper is gone") },
+    /the link keeper is gone/,
+  ],
 ];
 for (const [where, stage, message] of REFUSALS)
   test(`a refusal from ${where} shows the core's message and stays on the page`, async () => {
     install({ stage });
     open();
     await userEvent.click(
-      await screen.findByRole("button", { name: /Easy spin/ }),
+      await screen.findByRole("option", { name: /Easy spin/ }),
     );
     await summary();
     await userEvent.click(
@@ -434,11 +442,9 @@ test("leaving Workouts mid-load and coming back is still locked, and the load ro
   // the view is new, the lock and its reason are not gone
   expect(await screen.findByText("Loading ride…")).toBeTruthy();
   for (const name of [/Easy spin/, /Sweet spot 3x12/])
-    expect(
-      (await screen.findByRole("button", { name })) as HTMLButtonElement,
-    ).toHaveProperty("disabled", true);
+    expect(locked(await screen.findByRole("option", { name }))).toBe(true);
   await userEvent.click(
-    screen.getByRole("button", { name: /Sweet spot 3x12/ }),
+    screen.getByRole("option", { name: /Sweet spot 3x12/ }),
   );
   expect(b.calls.filter((c) => c.cmd === "workout_get")).toHaveLength(1);
 
@@ -454,17 +460,12 @@ test("a load the core reports as in flight locks a freshly mounted view, and unl
   const b = install({ coreLoading: true });
   open();
   expect(await screen.findByText("Loading ride…")).toBeTruthy();
-  expect(
-    (await screen.findByRole("button", {
-      name: /Easy spin/,
-    })) as HTMLButtonElement,
-  ).toHaveProperty("disabled", true);
+  expect(locked(await screen.findByRole("option", { name: /Easy spin/ }))).toBe(
+    true,
+  );
   b.coreLoading = false;
   await waitFor(() => expect(screen.queryByText("Loading ride…")).toBeNull());
-  expect(
-    (screen.getByRole("button", { name: /Easy spin/ }) as HTMLButtonElement)
-      .disabled,
-  ).toBe(false);
+  expect(locked(screen.getByRole("option", { name: /Easy spin/ }))).toBe(false);
 });
 
 test("a load that completes while the rider is elsewhere does not pull them out; the notice offers the ride", async () => {
@@ -521,11 +522,7 @@ test("a refusal that arrives while the rider is elsewhere is shown in the notice
   // back on the list nothing is stale, nothing is locked
   await comeBack();
   expect(
-    (
-      (await screen.findByRole("button", {
-        name: /Sweet spot 3x12/,
-      })) as HTMLButtonElement
-    ).disabled,
+    locked(await screen.findByRole("option", { name: /Sweet spot 3x12/ })),
   ).toBe(false);
   expect(screen.queryByRole("alert")).toBeNull();
 });
@@ -570,7 +567,7 @@ test("a refusal that arrives elsewhere is shown there, once on return, then clea
   expect(screen.queryByRole("alert")).toBeNull();
   await comeBack();
   expect(
-    await screen.findByRole("button", { name: /Sweet spot 3x12/ }),
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   ).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
 });
@@ -628,4 +625,90 @@ test("starting a load while one is in flight is a no-op at the controller", asyn
   expect(b.calls.filter((c) => c.cmd === "ride_load")).toHaveLength(1);
   release();
   await first;
+});
+
+// ---- #528: direction A, the library as a listbox and the picked workout's panel ----
+
+test("the library is one tab stop, and Up/Down/Home/End walk it and pick as they go", async () => {
+  const b = install();
+  open();
+  const ss = await screen.findByRole("option", { name: /Sweet spot 3x12/ });
+  const easy = screen.getByRole("option", { name: /Easy spin/ });
+  // nothing picked: the first row is the stop
+  expect(ss.tabIndex).toBe(0);
+  expect(easy.tabIndex).toBe(-1);
+  ss.focus();
+  await userEvent.keyboard("{ArrowDown}");
+  expect(document.activeElement).toBe(easy);
+  expect(pressed(/Easy spin/)).toBe("true");
+  expect(within(await summary()).getByText("0.78")).toBeTruthy();
+  expect(easy.tabIndex).toBe(0);
+  expect(ss.tabIndex).toBe(-1);
+  await userEvent.keyboard("{ArrowDown}"); // the last row stays
+  expect(document.activeElement).toBe(easy);
+  await userEvent.keyboard("{Home}");
+  expect(document.activeElement).toBe(ss);
+  expect(pressed(/Sweet spot 3x12/)).toBe("true");
+  await userEvent.keyboard("{End}");
+  await userEvent.keyboard("{ArrowUp}");
+  expect(pressed(/Sweet spot 3x12/)).toBe("true");
+  expect(
+    b.calls.filter((c) => c.cmd === "workout_get").map((c) => c.args.id),
+  ).toEqual(["w-easy", "w-ss", "w-easy", "w-ss"]);
+});
+
+test("while a load is in flight the keys move nothing and pick nothing", async () => {
+  const b = install();
+  const release = await startHeldLoad(b, /Easy spin/);
+  const easy = screen.getByRole("option", { name: /Easy spin/ });
+  easy.focus();
+  await userEvent.keyboard("{ArrowUp}{Home}{Enter}");
+  expect(document.activeElement).toBe(easy);
+  expect(pressed(/Easy spin/)).toBe("true");
+  expect(b.calls.filter((c) => c.cmd === "workout_get")).toHaveLength(1);
+  // Ride this says the load is its own while it is in flight
+  const ride = screen.getByRole("button", { name: "Ride this" });
+  expect(ride.getAttribute("aria-busy")).toBe("true");
+  expect((ride as HTMLButtonElement).disabled).toBe(true);
+  release();
+  await waitFor(() =>
+    expect(screen.getByTestId("route").textContent).toBe("ride"),
+  );
+});
+
+test("an empty library says so and offers no rows", async () => {
+  install({ summaries: [] });
+  open();
+  expect(await screen.findByText(/No workouts yet/)).toBeTruthy();
+  expect(screen.queryByRole("listbox")).toBeNull();
+});
+
+test("the picked workout shows its profile and every block with its length and watts", async () => {
+  install({
+    compiled: {
+      "w-ss": compiled({
+        blocks: [
+          block(0, 600, 110, 175, "warmup"),
+          block(600, 720, 225, 225, "work"),
+          block(1320, 300, 140, 100, "cooldown"),
+        ],
+      }),
+    },
+  });
+  open();
+  await userEvent.click(
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
+  );
+  await summary();
+  expect(
+    screen.getByRole("img", { name: "Profile: 3 blocks over 50:00" }),
+  ).toBeTruthy();
+  const rows = within(
+    screen.getByRole("region", { name: "Blocks" }),
+  ).getAllByRole("listitem");
+  expect(rows.map((r) => r.textContent)).toEqual([
+    "1Warm-up10:00110–175 W",
+    "2Work12:00225 W",
+    "3Cool-down5:00140–100 W",
+  ]);
 });

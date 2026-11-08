@@ -35,6 +35,12 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   (Cancel focused, Esc cancels). Pair buttons' names start with their visible words (WCAG 2.5.3). Three new design
   fixtures (`devices-found`, `devices-pairing`, `devices-forget-confirm`) and a whole-screen no-clip check for Settings
   and Devices ([#527](https://github.com/gerchowl/crank/issues/527))
+- Workouts in direction A (DESIGN §5.7): the library (7 columns) and the picked workout's panel (5) on the 12-column grid;
+  the library is a listbox (↑ / ↓ / Home / End pick, one tab stop) whose rows wrap a long name; the panel shows the
+  profile, Ride this (32 px, pending while its load is in flight), the compiled summary with time-in-zone bars, and every
+  block. Six new design fixtures (`workouts-empty`, `workouts-list-error`, `workouts-blocked`, `workouts-loading`,
+  `workouts-load-error`, `workouts-long`) and a whole-screen no-clip check for Workouts
+  ([#528](https://github.com/gerchowl/crank/issues/528))
 
 ### Changed
 
