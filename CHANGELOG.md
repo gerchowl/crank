@@ -45,6 +45,13 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   (80–200 bpm) and cadence traces on one time axis beside its figures, then planned against ridden; History is a table
   of rides, newest first, each with a 32 px Review button, marking the ride last opened. Eight new design fixtures
   (`review-*`, `history-*`) ([#529](https://github.com/gerchowl/crank/issues/529))
+- Today in direction A (DESIGN §5.1): the placeholder becomes four panels on the 12-column grid. Today's ride shows
+  the load started in Workouts, with Start ⏎ once it is loaded, or "Nothing planned" with Pick a workout. Devices shows
+  who is paired and the loaded ride's links, and leads to pairing when no trainer is paired. Last 7 days shows the
+  minutes ridden each local day (TSS once the summary has it, [#570](https://github.com/gerchowl/crank/issues/570)),
+  and Last ride the newest ride with Review. The ride-load notice leads the main region, styled with tokens and 32 px
+  buttons. Eight new design fixtures (`today-*`, `settings-ride-loaded`)
+  ([#530](https://github.com/gerchowl/crank/issues/530))
 
 ### Changed
 
