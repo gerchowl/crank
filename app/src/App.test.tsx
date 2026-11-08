@@ -21,6 +21,7 @@ import {
 import { App, type ViewRegistry } from "./App";
 import { navigate } from "./router";
 import { installDevices } from "./views/devicesBackend";
+import { install as installToday } from "./views/todayBackend";
 import { HANDOFF_MS, STATUS_AFTER_MS } from "./shell/StartScreen";
 import { reloadTheme } from "./theme";
 
@@ -66,8 +67,11 @@ beforeEach(() => {
   reloadTheme();
   navigate("today");
   stubMedia({ dark: true });
+  // Today is the hand-off's destination and reads the core (rides, devices).
+  installToday();
 });
 afterEach(() => {
+  clearMocks();
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -97,6 +101,17 @@ describe("rail", () => {
     act(() => navigate("history"));
     expect(screen.getByRole("navigation", { name: "Places" })).toBeTruthy();
     clearMocks();
+  });
+
+  test("Today is the real view: today's ride, the devices, the last 7 days and the last ride", async () => {
+    render(<App />);
+    await ready();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Today" }),
+    ).toBeTruthy();
+    for (const name of ["Today’s ride", "Devices", "Last 7 days", "Last ride"])
+      expect(screen.getByRole("region", { name })).toBeTruthy();
+    expect(await screen.findByText("Sweet spot 3x12")).toBeTruthy();
   });
 
   test("Devices is reachable under Settings", async () => {

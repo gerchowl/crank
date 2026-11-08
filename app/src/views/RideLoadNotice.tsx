@@ -24,7 +24,8 @@ export function RideLoadNotice() {
   useEffect(() => {
     if (view === "ride") dismissRideLoad();
   }, [view]);
-  if (load.phase === "loaded" && view !== "ride")
+  // Today shows a loaded ride as today's ride, with Start (Today.tsx), so the notice would say it twice there.
+  if (load.phase === "loaded" && view !== "ride" && view !== "today")
     return (
       <p role="status" className="ride-notice">
         Ride loaded: {load.name}{" "}

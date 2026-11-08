@@ -347,25 +347,97 @@
     "button.height": 4,
     "button.inconsistentHeight": 1
   },
+  "today-empty@1024x768-dark": {
+    "button.height": 4
+  },
+  "today-empty@1024x768-light": {
+    "button.height": 4
+  },
+  "today-empty@1440x900-dark": {
+    "button.height": 4
+  },
+  "today-empty@1440x900-light": {
+    "button.height": 4
+  },
+  "today-error@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-error@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-error@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-error@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-reading@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-reading@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-reading@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-reading@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-loaded@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-loaded@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-loaded@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-loaded@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-loading@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-loading@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-loading@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-loading@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
   "today@1024x768-dark": {
     "button.height": 4,
-    "layout.measureTooLong": 1,
-    "spacing.offScale": 1
+    "button.inconsistentHeight": 1
   },
   "today@1024x768-light": {
     "button.height": 4,
-    "layout.measureTooLong": 1,
-    "spacing.offScale": 1
+    "button.inconsistentHeight": 1
   },
   "today@1440x900-dark": {
     "button.height": 4,
-    "layout.measureTooLong": 1,
-    "spacing.offScale": 1
+    "button.inconsistentHeight": 1
   },
   "today@1440x900-light": {
     "button.height": 4,
-    "layout.measureTooLong": 1,
-    "spacing.offScale": 1
+    "button.inconsistentHeight": 1
   },
   "workouts-blocked@1024x768-dark": {
     "button.height": 4
