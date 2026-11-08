@@ -10,11 +10,14 @@
 // - `device_links`: `storage` the same way, core.rs `Core::device_links` (~1417) (`store.devices()?`); it has no other
 //   refusal, and none while a ride is loaded (it is not behind core.rs `Core::require_no_ride`). Each role is listed
 //   once, trainer then strap, `device: null` when nothing is paired for it, and `link` is the loaded ride's link,
-//   `null` without a ride or once it finished (core.rs `Core::device_links`).
+//   `null` without a ride or once it finished (core.rs `Core::device_links`). `phase` is the link keeper's phase of a
+//   paired device, `riding` while the loaded ride holds it, `null` when none is paired (keeper/run.rs `Handle::links`
+//   via core.rs `Core::device_links`); the mock gives a paired device without a link `cold`, as at launch.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   DeviceLinkInfo,
   DeviceRole,
+  LinkPhase,
   LinkStatus,
   PairedDevice,
   RideRecord,
@@ -48,6 +51,8 @@ export function install(over: Partial<Backend> = {}): Backend {
     others: null,
     ...over,
   };
+  const phaseOf = (role: DeviceRole): LinkPhase | null =>
+    b.paired[role] === undefined ? null : b.links[role] ? "riding" : "cold";
   const answer = (cmd: string) => {
     switch (cmd) {
       case "rides_list":
@@ -58,6 +63,7 @@ export function install(over: Partial<Backend> = {}): Backend {
             role,
             device: b.paired[role] ?? null,
             link: b.links[role] ?? null,
+            phase: phaseOf(role),
           }),
         );
       default:
