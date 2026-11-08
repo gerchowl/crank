@@ -121,6 +121,11 @@ export const SCENARIOS = [
     name: "ride-work-step",
     ready: "role=button[name='Pause'][disabled=false]",
   },
+  // An hour with a 30 s block: the strip's labels shed to a leader (DESIGN §18.3 "Strip labels", #581).
+  {
+    name: "ride-short-block",
+    ready: "role=button[name='Pause'][disabled=false]",
+  },
   { name: "ride-paused", ready: "[data-testid='paused']" },
   { name: "ride-hr-lost", ready: "[data-testid='loss-hr']" },
   { name: "ride-trainer-lost", ready: "[data-testid='loss-trainer']" },
@@ -224,6 +229,7 @@ export const RIDE_SCENARIOS: readonly ScenarioName[] = [
   "ready-error",
   "ride-soft-start",
   "ride-work-step",
+  "ride-short-block",
   "ride-paused",
   "ride-hr-lost",
   "ride-trainer-lost",
