@@ -259,54 +259,104 @@
     "layout.measureTooLong": 1,
     "spacing.offScale": 1
   },
+  "workouts-blocked@1024x768-dark": {
+    "button.height": 4
+  },
+  "workouts-blocked@1024x768-light": {
+    "button.height": 4
+  },
+  "workouts-blocked@1440x900-dark": {
+    "button.height": 4
+  },
+  "workouts-blocked@1440x900-light": {
+    "button.height": 4
+  },
+  "workouts-empty@1024x768-dark": {
+    "button.height": 4
+  },
+  "workouts-empty@1024x768-light": {
+    "button.height": 4
+  },
+  "workouts-empty@1440x900-dark": {
+    "button.height": 4
+  },
+  "workouts-empty@1440x900-light": {
+    "button.height": 4
+  },
+  "workouts-list-error@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "workouts-list-error@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "workouts-list-error@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "workouts-list-error@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "workouts-load-error@1024x768-dark": {
+    "button.height": 4
+  },
+  "workouts-load-error@1024x768-light": {
+    "button.height": 4
+  },
+  "workouts-load-error@1440x900-dark": {
+    "button.height": 4
+  },
+  "workouts-load-error@1440x900-light": {
+    "button.height": 4
+  },
+  "workouts-loading@1024x768-dark": {
+    "button.height": 4
+  },
+  "workouts-loading@1024x768-light": {
+    "button.height": 4
+  },
+  "workouts-loading@1440x900-dark": {
+    "button.height": 4
+  },
+  "workouts-loading@1440x900-light": {
+    "button.height": 4
+  },
+  "workouts-long@1024x768-dark": {
+    "button.height": 4
+  },
+  "workouts-long@1024x768-light": {
+    "button.height": 4
+  },
+  "workouts-long@1440x900-dark": {
+    "button.height": 4
+  },
+  "workouts-long@1440x900-light": {
+    "button.height": 4
+  },
   "workouts-selected@1024x768-dark": {
-    "a11y.contrast": 1,
-    "axe.color-contrast": 1,
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "spacing.offScale": 3,
-    "type.offScale": 1
+    "button.height": 4
   },
   "workouts-selected@1024x768-light": {
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "spacing.offScale": 3,
-    "type.offScale": 1
+    "button.height": 4
   },
   "workouts-selected@1440x900-dark": {
-    "a11y.contrast": 1,
-    "axe.color-contrast": 1,
-    "button.fullWidth": 2,
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 10,
-    "spacing.offScale": 3,
-    "type.offScale": 1
+    "button.height": 4
   },
   "workouts-selected@1440x900-light": {
-    "button.fullWidth": 2,
-    "button.height": 7,
-    "button.inconsistentHeight": 1,
-    "layout.measureTooLong": 10,
-    "spacing.offScale": 3,
-    "type.offScale": 1
+    "button.height": 4
   },
   "workouts@1024x768-dark": {
-    "button.height": 6,
-    "button.inconsistentHeight": 1
+    "button.height": 4
   },
   "workouts@1024x768-light": {
-    "button.height": 6,
-    "button.inconsistentHeight": 1
+    "button.height": 4
   },
   "workouts@1440x900-dark": {
-    "button.fullWidth": 2,
-    "button.height": 6,
-    "button.inconsistentHeight": 1
+    "button.height": 4
   },
   "workouts@1440x900-light": {
-    "button.fullWidth": 2,
-    "button.height": 6,
-    "button.inconsistentHeight": 1
+    "button.height": 4
   }
 }
