@@ -73,8 +73,9 @@ p.history-forced {
   max-width: 70ch;
 }
 
-/* The ride table: one grid, its column heads and its rows on a subgrid, so the columns line up from row to row. A row
-   is as tall as its ride's name needs (a long name wraps, never cut); its Review button is the row's control. */
+/* The ride table (ARIA table roles: the cells are named by their column heads): one grid, its row groups and rows on
+   a subgrid, so the columns line up from row to row. A row is as tall as its ride's name needs (a long name wraps,
+   never cut); its Review button is the row's control. */
 .history-table {
   display: grid;
   grid-template-columns:
@@ -82,9 +83,9 @@ p.history-forced {
     max-content;
   column-gap: var(--space-5);
 }
+.history-rows,
 .history-columns,
-.history-list,
-.history-list li {
+.history-row {
   grid-column: 1 / -1;
   display: grid;
   grid-template-columns: subgrid;
@@ -100,21 +101,16 @@ p.history-forced {
 }
 .history-columns span:nth-child(3),
 .history-columns span:nth-child(4),
-.history-list li > span:nth-child(3),
-.history-list li > span:nth-child(4) {
+.history-row > span:nth-child(3),
+.history-row > span:nth-child(4) {
   text-align: right;
 }
-.history-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.history-list li {
+.history-row {
   align-items: center;
   padding: var(--space-1) var(--space-3);
   border-bottom: 1px solid var(--line);
 }
-.history-list li[aria-current="true"] {
+.history-row[aria-current="true"] {
   background: var(--panel-2);
   box-shadow: inset 2px 0 0 var(--accent);
 }
@@ -126,7 +122,7 @@ p.history-forced {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.history-list li[aria-current="true"] .history-name > span:first-child {
+.history-row[aria-current="true"] .history-name > span:first-child {
   font-weight: 600;
 }
 .history-tag {

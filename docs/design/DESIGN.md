@@ -378,9 +378,11 @@ note (#346). A failed read is a notice with ⚠ and Retry; an unknown ride says 
 **In direction A** (#529, `app/src/views/History.tsx`; the rides list only, the athlete model, CP trend and PD curve
 are #109): the page title, then a table of rides, newest first, with Started, Ride, Duration, Work and Outcome (TSS,
 RPE and the mini profile are not in the contract yet); a row is as tall as its name needs, and its control is a 32 px
-**Review** button named with the ride (a full-width row would be a full-width button, and a wrapping name breaks the
-32 px height, §18.4). Coming back from a Review, the ride last opened is marked ("Last opened", an accent edge) and
-scrolled into view. "No rides yet" says rides are saved here; a failed read is a notice with ⚠ and Retry.
+**Review** button named with the ride, its start, outcome and duration (a full-width row would be a full-width button,
+and a wrapping name breaks the 32 px height, §18.4). It is a table to assistive technology too: each cell is named by
+its column head, the ride's name heads its row. Coming back from a Review, the ride last opened is marked ("Last
+opened", an accent edge) and scrolled into view; History remembers it while it stays the view, and forgets it once
+the rider leaves for another. "No rides yet" says rides are saved here; a failed read is a notice with ⚠ and Retry.
 
 ### 5.7 Workouts (library + editor)
 Library on the left; the editor keeps the spike's strongest idea — **three synchronised views**: profile

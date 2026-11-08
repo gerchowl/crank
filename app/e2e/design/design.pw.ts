@@ -272,10 +272,11 @@ test("nothing on Workouts is cut, in any of its fixtures", async ({ page }) => {
   }
 });
 
-// History and Review (#529) too: a long ride, a long list scrolled to its end, a long name; nothing is cut, and every
-// control but a ride row's Review (in a list as long as the history) is in the window. A fixture scrolled on purpose
-// (`scrollTo`) has the rail and the head above the window by construction (the shell scrolls with the page): there
-// only the horizontal half applies to every control.
+// History and Review (#529) too: a long ride, a long list, a long name; nothing is cut, and every control but a ride
+// row's Review (in a list as long as the history) is in the window, the rail and the head included. A fixture scrolled
+// on purpose (`scrollTo`, the end of a long list) is checked from the top: the shell scrolls with the page (#566), so
+// scrolled down the rail and the head are above the window by construction, and the cut and horizontal checks do not
+// depend on where the page is scrolled.
 test("nothing on History or Review is cut, in any of their fixtures", async ({
   page,
 }) => {
@@ -283,8 +284,9 @@ test("nothing on History or Review is cut, in any of their fixtures", async ({
     const s = SCENARIOS.find((x) => x.name === name);
     if (!s) throw new Error(`no fixture ${name}`);
     await open(page, s);
+    if ("scrollTo" in s) await page.evaluate(() => scrollTo(0, 0));
     expect(
-      await screenFit(page, "#root", "scrollTo" in s ? "*" : ".history-list"),
+      await screenFit(page, "#root", ".history-list"),
       `${name}: cut text or controls`,
     ).toEqual([]);
   }
