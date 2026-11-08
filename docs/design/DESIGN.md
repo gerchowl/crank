@@ -295,7 +295,8 @@ unusable layout at 1024 (#7); `ride-focus` and `ride-detail` show both. The ride
 here too (§6.2).
 
 ### 5.4 Ready check (pre-ride)
-A sheet over Today: workout name + duration, **NEO** (FE-C, connected / reconnecting / not found → Retry,
+The ride screen in its pre-start state (owner decision 2026-11-08, #526): from "Ride this" the ride is loaded and the
+screen shows, before Start, workout name + duration, **NEO** (FE-C, connected / reconnecting / not found → Retry,
 "close other apps using the NEO"), **HR** (connected / not found → keeps scanning, **Retry now** focused —
 never the riskier choice — and *Start without HR* with the consequence: "it joins as soon as it's found; until
 then HR-guided recoveries run to their maximum and the coach can't push"), mode (ERG), the health cap if
@@ -303,18 +304,25 @@ active, "starts with 8:00 warm-up". **Start** is enabled when the trainer is con
 saddle, so it uses the ride tiers (T3+ title, T3 rows, ~~72 px buttons~~ superseded by §18.4: 32 px controls) and every button shows its bound key or
 remote button; the usual choice is primary and focused, "Start without HR" never is. A free ride says so.
 
-**In direction A (#526)** the sheet is the ride screen before Start (`app/src/ride/ReadySheet.tsx`): the ride anatomy
-of §18.2 stays, so no region moves when the ride starts (§18.7 rule 10). The status bar names the workout and its
-duration, the metric column shows the first block's countdown and the next block, the block timeline shows the plan,
-and the key row holds Start `⏎` (primary, focused once it can be pressed) and End `Esc` (unloads the unstarted ride,
-after the End dialog). The traces column, empty before the first sample, holds the sheet: its state as one banner in the
-band (§6.1: "Ready to ride", "Loading the ride…", "Connecting the NEO…", "NEO not found" with "close apps using the
-NEO", "HR not found" with "this ride runs without HR", "Could not start"), then at T3 one fixed row per device (word and
-glyph ✓ ↻ ⚠, a hint line) — the connect-progress region of ADR-0002 §5.1.4, in its final geometry — the mode and how
-the ride starts ("ERG · starts with 3:00 warm-up", "Free ride · no targets"), and the row of a refused command's reason.
-Start is disabled while the trainer link is connecting or lost. Still to come: the sheet over the load in flight and
-over a failed load with per-device `LoadProgress`, Retry and "Retry now" before "Start without HR" (#471, on #470's
-contract); the health cap row (#244); the sheet over Today (#438 step 8).
+The ride anatomy of §18.2 stays, so no region moves when the ride starts (§18.7 rule 10; `app/src/ride/ReadySheet.tsx`).
+The status bar names the workout and its duration, the metric column shows the first block's countdown and the next
+block, the block timeline shows the plan, and the key row holds Start `⏎` (primary, focused once it can be pressed),
+End `Esc` and one state line: what Start waits for, from the devices ("Start is enabled once the NEO is connected",
+"Start needs the NEO connected", "Press Start; the trainer waits for you to pedal"), never the sheet's words again and
+never the trainer's mode, which nothing commands before Start. The traces column, empty before the first sample, holds
+the sheet: its state as one banner in the band (§6.1: "Ready to ride", "Loading the ride…", "Connecting the NEO…",
+"NEO not found" with "close apps using the NEO", "HR not found" with "this ride runs without HR"; a refusal is titled by
+the refused command, "Could not start" or "Could not unload the ride"), then at T3 one fixed row per device (word and
+glyph ✓ ↻ ⚠, and a reserved hint line) — the connect-progress region of ADR-0002 §5.1.4, in its final geometry — the
+mode and how the ride starts ("ERG · starts with 3:00 warm-up", "Free ride · no targets"), and the refused command's
+reason. Start is disabled while the trainer link is connecting or lost. #471 fills the rows with `LoadProgress` (#470)
+and adds Retry, and "Retry now" before "Start without HR"; opening the screen from Today is #471 / #530; the health
+cap row is #244.
+
+**Release trainer is End on an unstarted ride** (owner decision 2026-11-08): there is no separate button. End, after
+the End dialog ("The ride has not started; it will be unloaded"), unloads the ride (`ride_end`), which releases its
+devices. Once the link keeper lands (#520), End on an unstarted ride releases the trainer through the keeper and
+latches it (ADR-0002 §5.1.3 `RiderRelease`): no automatic warm-up until the rider asks for a ride again.
 
 ### 5.5 Review — *"Did it work, and was the coach right?"*
 Order follows the rider's questions:

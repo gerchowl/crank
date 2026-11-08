@@ -12,7 +12,7 @@
 // and one hint line. What #471 plugs in once #470's `LoadProgress` exists is listed in `DEVICE_WORD`'s comment.
 import { Bluetooth, Heart } from "lucide-react";
 import type { ReactNode } from "react";
-import type { ApiError, LinkStatus, WorkoutBlock } from "../bindings";
+import type { LinkStatus, WorkoutBlock } from "../bindings";
 import { Num } from "../Num";
 import type { Links } from "../stream/state";
 import type { Banner } from "./banners";
@@ -27,6 +27,9 @@ export type ReadyState =
   | "strap-missing"
   | "ready";
 
+/** The ride commands of the screen; before Start only Start and End reach the core. */
+export type RideCommand = "start" | "pause" | "resume" | "skip" | "end";
+
 /** One device row's phase, from the links of the loaded ride and the load's answer. */
 export type DevicePhase = "checking" | "connected" | "connecting" | "lost";
 
@@ -36,16 +39,23 @@ export interface ReadyInput {
   links: Links;
   /** `RideLoaded.hrLinked`: the strap linked at the load. */
   hrLinked: boolean;
-  /** The refusal of the last command, shown until the next one. */
-  refusal: ApiError | null;
+  /** The command whose refusal is shown (until the next command), `null` without one. */
+  refused: RideCommand | null;
 }
 
 export interface ReadyView {
   state: ReadyState;
   trainer: DevicePhase;
   hr: DevicePhase;
+  /** The refused command, for the error state's title. */
+  refused: RideCommand | null;
   /** Start may be pressed: the trainer is not known to be anything but connected (§5.4: "Start is enabled when the trainer is connected"). */
   canStart: boolean;
+  /**
+   * The key row's state line beside Start: what Start does or waits for, from the devices' state (a refusal does not
+   * change it). The band says the state and the rows say each device, so the line never repeats either of them.
+   */
+  line: string;
 }
 
 /**
@@ -68,54 +78,73 @@ function phase(
 export function readyView(i: ReadyInput): ReadyView {
   const trainer = phase(i.status, i.links.trainer, true);
   const hr = phase(i.status, i.links.hr, i.hrLinked);
-  const state: ReadyState =
-    i.refusal !== null
-      ? "error"
-      : !i.status
-        ? "loading"
-        : trainer === "lost"
-          ? "trainer-missing"
-          : trainer === "connecting"
-            ? "connecting"
-            : hr !== "connected"
-              ? "strap-missing"
-              : "ready";
+  const devices: ReadyState = !i.status
+    ? "loading"
+    : trainer === "lost"
+      ? "trainer-missing"
+      : trainer === "connecting"
+        ? "connecting"
+        : hr !== "connected"
+          ? "strap-missing"
+          : "ready";
   return {
-    state,
+    state: i.refused !== null ? "error" : devices,
     trainer,
     hr,
+    refused: i.refused,
     canStart: trainer !== "lost" && trainer !== "connecting",
+    line: LINE[devices],
   };
 }
+
+/** The key row's line per devices' state (`ReadyView.line`); `error` never comes from the devices. */
+const LINE: Record<ReadyState, string> = {
+  error: "",
+  loading: "Start is enabled once the ride has loaded",
+  connecting: "Start is enabled once the NEO is connected",
+  "trainer-missing": "Start needs the NEO connected",
+  "strap-missing": "Press Start; the trainer waits for you to pedal",
+  ready: "Press Start; the trainer waits for you to pedal",
+};
+
+/** The error state's title, by the command the core refused: End on an unstarted ride unloads it (§5.4). */
+const REFUSED_TITLE: Record<RideCommand, string> = {
+  start: "Could not start",
+  end: "Could not unload the ride",
+  pause: "Not possible right now",
+  resume: "Not possible right now",
+  skip: "Not possible right now",
+};
 
 const text = (t: string) => ({ text: t });
 
 /**
  * The sheet's banner for the band (§6.1: a bold line and at most two short lines of ≤ 26 characters). Only the
- * trainer-missing state asks the rider to act; the others are the state and its consequence.
+ * trainer-missing state asks the rider to act; a missing strap states its consequence. What Start waits for is the key
+ * row's line (`ReadyView.line`), never repeated here.
  */
-export function readyBanner(state: ReadyState): Banner {
-  switch (state) {
+export function readyBanner(view: ReadyView): Banner {
+  switch (view.state) {
     case "error":
       return {
         id: "ready-error",
-        title: text("Could not start"),
+        title: text(REFUSED_TITLE[view.refused ?? "start"]),
         actions: [],
-        status: [text("the reason is below")],
+        status: [],
       };
     case "loading":
       return {
         id: "ready-loading",
         title: text("Loading the ride…"),
         actions: [],
-        status: [text("Start waits for it")],
+        status: [],
       };
     case "trainer-missing":
       return {
         id: "ready-trainer-missing",
         title: text("NEO not found"),
         actions: [text("close apps using the NEO")],
-        status: [text("Start waits for it")],
+        status: [],
         compact: "NEO not found: close apps",
       };
     case "connecting":
@@ -123,7 +152,7 @@ export function readyBanner(state: ReadyState): Banner {
         id: "ready-connecting",
         title: text("Connecting the NEO…"),
         actions: [],
-        status: [text("Start waits for it")],
+        status: [],
       };
     case "strap-missing":
       return {
@@ -137,7 +166,7 @@ export function readyBanner(state: ReadyState): Banner {
         id: "ready",
         title: text("Ready to ride"),
         actions: [],
-        status: [text("the trainer waits for you")],
+        status: [],
       };
   }
 }
@@ -146,7 +175,7 @@ export function readyBanner(state: ReadyState): Banner {
  * A device row's word and glyph (rule 11: never colour alone). The words for `LoadProgress`'s phases, which #471 maps
  * onto these rows once #470 reports them in `ride_status` (ADR-0002 §5.1.4): `searching` "searching…" ↻,
  * `connecting`/`handshake` as `connecting` here, `warm`/`riding` as `connected`, `not_found` "not found" ⚠ with the
- * same hint as `lost`. #471 also adds Retry (the `Retry` intent) to a row that is not found, and "Retry now" before
+ * hint line "keeps looking" (reserved and empty today: the band and the key row say what a missing device means). #471 also adds Retry (the `Retry` intent) to a row that is not found, and "Retry now" before
  * "Start without HR" on the HR row (DESIGN §5.4); no command for either exists today.
  */
 const DEVICE_WORD: Record<DevicePhase, { glyph: string; word: string }> = {
@@ -163,13 +192,11 @@ function Device({
   name,
   Icon,
   at,
-  hint,
 }: {
   device: "trainer" | "hr";
   name: string;
   Icon: typeof Heart;
   at: DevicePhase;
-  hint: string;
 }) {
   const w = DEVICE_WORD[at];
   return (
@@ -181,7 +208,7 @@ function Device({
           {w.glyph} {w.word}
         </span>
       </span>
-      <span className="ready-hint">{hint}</span>
+      <span className="ready-hint" />
     </li>
   );
 }
@@ -218,13 +245,6 @@ export function ReadyBody({
   clock: (s: number | null) => string;
   refusal: ReactNode;
 }) {
-  const trainerHint =
-    view.trainer === "lost"
-      ? "close other apps using the NEO"
-      : view.trainer === "connecting"
-        ? "Start waits until it is connected"
-        : "";
-  const hrHint = view.hr === "lost" ? "this ride runs without heart rate" : "";
   return (
     <section
       className="ready-sheet"
@@ -237,9 +257,8 @@ export function ReadyBody({
           name="NEO"
           Icon={Bluetooth}
           at={view.trainer}
-          hint={trainerHint}
         />
-        <Device device="hr" name="HR" Icon={Heart} at={view.hr} hint={hrHint} />
+        <Device device="hr" name="HR" Icon={Heart} at={view.hr} />
       </ul>
       <p className="ready-plan" data-testid="ready-plan">
         {free ? (

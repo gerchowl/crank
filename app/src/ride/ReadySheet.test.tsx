@@ -13,13 +13,16 @@ import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { LinkChange } from "../bindings";
 import { navigate } from "../router";
-import { readyBanner, readyView, type ReadyState } from "./ReadySheet";
+import {
+  readyBanner,
+  readyView,
+  type ReadyState,
+  type RideCommand,
+} from "./ReadySheet";
 import { LINE_MAX } from "./banners";
 import { Ride } from "./Ride";
 import { installRide, type RideWorld } from "./rideBackend";
 import { beginRide } from "./session";
-
-const refused = { code: "storage", message: "cannot open the record" } as const;
 
 describe("readyView", () => {
   const view = (over: Partial<Parameters<typeof readyView>[0]> = {}) =>
@@ -27,15 +30,16 @@ describe("readyView", () => {
       status: true,
       links: {},
       hrLinked: true,
-      refusal: null,
+      refused: null,
       ...over,
     });
 
   test("with no link reported the load's answer holds: the trainer linked, the strap as hrLinked says", () => {
-    expect(view()).toEqual({
+    expect(view()).toMatchObject({
       state: "ready",
       trainer: "connected",
       hr: "connected",
+      refused: null,
       canStart: true,
     });
     expect(view({ hrLinked: false })).toMatchObject({
@@ -74,7 +78,7 @@ describe("readyView", () => {
 
   test("most urgent first: a refusal, then loading, then the trainer, then the strap", () => {
     const all = { trainer: "lost", hr: "lost" } as const;
-    expect(view({ refusal: refused, links: all }).state).toBe("error");
+    expect(view({ refused: "start", links: all }).state).toBe("error");
     expect(view({ status: false, links: all }).state).toBe("loading");
     expect(view({ links: all }).state).toBe("trainer-missing");
     expect(view({ links: { trainer: "connecting", hr: "lost" } }).state).toBe(
@@ -82,19 +86,67 @@ describe("readyView", () => {
     );
   });
 
-  test("every banner line fits the band's 26 characters (§6.1)", () => {
-    const states: ReadyState[] = [
-      "error",
-      "loading",
-      "trainer-missing",
-      "connecting",
-      "strap-missing",
-      "ready",
+  test("a refusal is titled by the command the core refused, and the line keeps the devices' state", () => {
+    const title = (refused: RideCommand) =>
+      readyBanner(view({ refused })).title.text;
+    expect(title("start")).toBe("Could not start");
+    expect(title("end")).toBe("Could not unload the ride");
+    const lost = view({ refused: "end", links: { trainer: "lost" } });
+    expect(lost.state).toBe("error");
+    expect(lost.canStart).toBe(false);
+    expect(lost.line).toBe(view({ links: { trainer: "lost" } }).line);
+  });
+
+  test("the key row's line follows the devices and never repeats the band", () => {
+    const cases: [Parameters<typeof view>[0], ReadyState, string][] = [
+      [
+        { status: false },
+        "loading",
+        "Start is enabled once the ride has loaded",
+      ],
+      [
+        { links: { trainer: "connecting" } },
+        "connecting",
+        "Start is enabled once the NEO is connected",
+      ],
+      [
+        { links: { trainer: "lost" } },
+        "trainer-missing",
+        "Start needs the NEO connected",
+      ],
+      [
+        { hrLinked: false },
+        "strap-missing",
+        "Press Start; the trainer waits for you to pedal",
+      ],
+      [{}, "ready", "Press Start; the trainer waits for you to pedal"],
     ];
-    for (const s of states) {
-      const b = readyBanner(s);
+    for (const [over, state, line] of cases) {
+      const v = view(over);
+      expect(v.state).toBe(state);
+      expect(v.line).toBe(line);
+      const b = readyBanner(v);
       for (const l of [b.title, ...b.actions, ...b.status])
-        expect(l.text.length, `${s}: ${l.text}`).toBeLessThanOrEqual(LINE_MAX);
+        expect(line.toLowerCase()).not.toContain(l.text.toLowerCase());
+    }
+  });
+
+  test("every banner line fits the band's 26 characters (§6.1)", () => {
+    const views = [
+      view({ refused: "start" }),
+      view({ refused: "end" }),
+      view({ status: false }),
+      view({ links: { trainer: "lost" } }),
+      view({ links: { trainer: "connecting" } }),
+      view({ hrLinked: false }),
+      view(),
+    ];
+    for (const v of views) {
+      const b = readyBanner(v);
+      for (const l of [b.title, ...b.actions, ...b.status])
+        expect(l.text.length, `${v.state}: ${l.text}`).toBeLessThanOrEqual(
+          LINE_MAX,
+        );
       if (b.compact !== undefined)
         expect(b.compact.length).toBeLessThanOrEqual(LINE_MAX);
     }
@@ -137,6 +189,8 @@ const links = (rig: Rig, l: LinkChange[]) =>
 const sheet = () => screen.getByRole("region", { name: "Ready check" });
 const band = () =>
   document.querySelector("[data-region='banner']")?.textContent ?? "";
+/** The key row's state line, whole: before Start nothing follows it (no trainer mode, no "following"). */
+const keyLine = () => document.querySelector(".ride-status")?.textContent ?? "";
 const start = () =>
   screen.getByRole("button", { name: "Start" }) as HTMLButtonElement;
 
@@ -145,6 +199,7 @@ describe("the ride screen before Start is the Ready sheet", () => {
     await open();
     await waitFor(() => expect(sheet().dataset.ready).toBe("ready"));
     expect(band()).toContain("Ready to ride");
+    expect(keyLine()).toBe("Press Start; the trainer waits for you to pedal");
     const rows = within(sheet()).getAllByRole("listitem");
     expect(rows.map((r) => r.dataset.state)).toEqual([
       "connected",
@@ -172,6 +227,7 @@ describe("the ride screen before Start is the Ready sheet", () => {
     );
     expect(sheet().dataset.ready).toBe("loading");
     expect(band()).toContain("Loading the ride…");
+    expect(keyLine()).toBe("Start is enabled once the ride has loaded");
     expect(within(sheet()).getAllByText(/checking…/)).toHaveLength(2);
     expect(start().disabled).toBe(true);
     // The metric column does not call a plan it has no status for "done".
@@ -186,7 +242,7 @@ describe("the ride screen before Start is the Ready sheet", () => {
     await links(rig, [{ device: "trainer", state: "connecting" }]);
     expect(sheet().dataset.ready).toBe("connecting");
     expect(band()).toContain("Connecting the NEO…");
-    expect(sheet().textContent).toContain("Start waits until it is connected");
+    expect(keyLine()).toBe("Start is enabled once the NEO is connected");
     expect(start().disabled).toBe(true);
     await links(rig, [{ device: "trainer", state: "ready" }]);
     rig.world.trainer = "ready";
@@ -203,6 +259,8 @@ describe("the ride screen before Start is the Ready sheet", () => {
     expect(
       sheet().querySelector("[data-device='trainer']")?.textContent,
     ).toContain("⚠ not found");
+    // Never "the trainer waits for you" or "following" beside a trainer that is not there.
+    expect(keyLine()).toBe("Start needs the NEO connected");
     expect(start().disabled).toBe(true);
     await userEvent.click(start());
     expect(rig.count("ride_start")).toBe(0);
@@ -212,9 +270,8 @@ describe("the ride screen before Start is the Ready sheet", () => {
     const rig = await open({}, { hrLinked: false });
     await waitFor(() => expect(sheet().dataset.ready).toBe("strap-missing"));
     expect(band()).toContain("HR not found");
-    expect(sheet().querySelector("[data-device='hr']")?.textContent).toContain(
-      "this ride runs without heart rate",
-    );
+    expect(band()).toContain("this ride runs without HR");
+    expect(keyLine()).toBe("Press Start; the trainer waits for you to pedal");
     expect(start().disabled).toBe(false);
     await userEvent.click(start());
     await waitFor(() => expect(rig.world.phase).toBe("active"));
@@ -229,10 +286,26 @@ describe("the ride screen before Start is the Ready sheet", () => {
     );
     expect(sheet().dataset.ready).toBe("error");
     expect(band()).toContain("Could not start");
+    // The reason is T3, like the rest of the body (§5.4).
+    expect(alert.closest(".ready-refusal")).not.toBeNull();
+    expect(keyLine()).toBe("Press Start; the trainer waits for you to pedal");
     rig.world.recordFails = false;
     await userEvent.click(start());
     await waitFor(() => expect(rig.world.phase).toBe("active"));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("error: a refused End (unloading the unstarted ride) is not called a failed start", async () => {
+    const rig = await open();
+    // The core no longer holds the ride: `ride_end` answers "no ride loaded" (core.rs `Core::end_ride`).
+    rig.world.phase = "none";
+    await userEvent.click(screen.getByRole("button", { name: "End" }));
+    await userEvent.click(screen.getByRole("button", { name: "End ride" }));
+    const alert = await within(sheet()).findByRole("alert");
+    expect(alert.textContent).toContain("no ride loaded");
+    expect(sheet().dataset.ready).toBe("error");
+    expect(band()).toContain("Could not unload the ride");
+    expect(band()).not.toContain("Could not start");
   });
 
   test("a free ride says so instead of a plan", async () => {
