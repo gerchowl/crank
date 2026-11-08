@@ -1,0 +1,4 @@
+{
+  "git+https://github.com/gerchowl/squelch?rev=4f0d0640e4dbf941b87b5cc5dc59e5e60dc86816#0.1.0": "0daar7cb19j8lfvlg6x5d2c82czmqnqc15v5f84fzbb943fzknqr",
+  "git+https://github.com/vig-os/vigil?tag=0.2.0#vigil-telemetry@0.2.0": "1ixlhczklj3q6q3224sh1i53fjmd4hrnn0s6qs4nphilb5adphd5"
+}
