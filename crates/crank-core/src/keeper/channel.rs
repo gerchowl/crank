@@ -2,7 +2,8 @@
 //!
 //! Each window has at most one channel; opening another from the same window drops the old
 //! one (a reload), and so do the window's destruction ([`Channels::close`]) and a failed send.
-//! A frame is the keeper's complete state ([`LinkView`]), sent when it changes:
+//! A frame is the keeper's complete state with its number ([`LinkFrame`]), sent when it
+//! changes:
 //!
 //! - **Ack window of 1.** After a frame the channel sends nothing until the window
 //!   acknowledges it (`links_ack`), so a stalled page queues at most one frame (ADR-0001
@@ -14,7 +15,7 @@
 //! - **Bounded size.** A frame has no strings or lists, so its size has a fixed maximum, far
 //!   under the 8 000-byte budget (measured by a test).
 use crate::core::SinkClosed;
-use crate::dto::{LinkFrame, LinkView, LinksId};
+use crate::dto::{LinkFrame, LinksId};
 use crate::error::{ApiError, ErrorCode};
 use crank_devices::{Clock, MonoTime};
 use std::{
@@ -77,7 +78,7 @@ impl Channels {
     pub(crate) fn open(
         &self,
         window: Option<String>,
-        view: watch::Receiver<LinkView>,
+        view: watch::Receiver<LinkFrame>,
         clock: Arc<dyn Clock>,
         sink: impl LinkSink,
     ) -> LinksId {
@@ -118,18 +119,17 @@ impl Channels {
 
 /// One channel: send the state, await its ack and a change, keep the spacing, repeat.
 async fn run(
-    mut view: watch::Receiver<LinkView>,
+    mut view: watch::Receiver<LinkFrame>,
     mut acked: watch::Receiver<(u32, bool)>,
     acks: Arc<Acks>,
     clock: Arc<dyn Clock>,
     sink: impl LinkSink,
 ) {
-    let mut seq = 0u32;
     loop {
-        let links = *view.borrow_and_update();
-        seq = seq.wrapping_add(1);
+        let frame = *view.borrow_and_update();
+        let seq = frame.seq;
         acks.send_replace((seq, false));
-        if sink.send(LinkFrame { seq, links }).is_err() {
+        if sink.send(frame).is_err() {
             return;
         }
         let sent = clock.pacing_now();
@@ -146,7 +146,7 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dto::{DeviceLinkView, LinkPhase, LinkSample};
+    use crate::dto::{DeviceLinkView, LinkPhase, LinkSample, LinkView};
     use crank_engine::VirtualClock;
     use tokio::{sync::mpsc, time::sleep};
 
@@ -164,13 +164,16 @@ mod tests {
     }
     struct Rig {
         channels: Channels,
-        view: watch::Sender<LinkView>,
+        view: watch::Sender<LinkFrame>,
         frames: mpsc::UnboundedReceiver<LinkFrame>,
         id: LinksId,
     }
     fn rig() -> Rig {
         let channels = Channels::new();
-        let view = watch::Sender::new(state(LinkPhase::Cold, None));
+        let view = watch::Sender::new(LinkFrame {
+            seq: 1,
+            links: state(LinkPhase::Cold, None),
+        });
         let (tx, frames) = mpsc::unbounded_channel();
         let id = channels.open(
             Some("main".into()),
@@ -184,6 +187,13 @@ mod tests {
             frames,
             id,
         }
+    }
+    /// The keeper's state changes to `links`: the next `seq`.
+    fn set(view: &watch::Sender<LinkFrame>, links: LinkView) {
+        view.send_modify(|frame| {
+            frame.seq += 1;
+            frame.links = links;
+        });
     }
     /// Long enough for every frame that is due, spacing included.
     const SETTLE: Duration = Duration::from_millis(150);
@@ -214,7 +224,7 @@ mod tests {
         sleep(SETTLE).await;
         assert_eq!(drain(&mut rig.frames).len(), 1);
         for bpm in 60..160 {
-            rig.view.send_replace(state(LinkPhase::Warm, Some(bpm)));
+            set(&rig.view, state(LinkPhase::Warm, Some(bpm)));
             sleep(Duration::from_millis(10)).await;
         }
         sleep(Duration::from_mins(1)).await;
@@ -224,10 +234,10 @@ mod tests {
         assert_eq!(
             drain(&mut rig.frames),
             [LinkFrame {
-                seq: 2,
+                seq: 101,
                 links: state(LinkPhase::Warm, Some(159))
             }],
-            "one frame: the latest state"
+            "one frame: the latest state, with its number"
         );
     }
 
@@ -238,7 +248,7 @@ mod tests {
         let mut rig = rig();
         sleep(SETTLE).await;
         drain(&mut rig.frames);
-        rig.view.send_replace(state(LinkPhase::Searching, None));
+        set(&rig.view, state(LinkPhase::Searching, None));
         for seq in [0, 2, 7] {
             rig.channels.ack(Some("main"), rig.id, seq).unwrap();
         }
@@ -260,7 +270,7 @@ mod tests {
         let mut rig = rig();
         let mut got = Vec::new();
         for bpm in 0..40 {
-            rig.view.send_replace(state(LinkPhase::Warm, Some(bpm)));
+            set(&rig.view, state(LinkPhase::Warm, Some(bpm)));
             sleep(Duration::from_millis(25)).await;
             for f in drain(&mut rig.frames) {
                 rig.channels.ack(Some("main"), rig.id, f.seq).unwrap();
@@ -272,13 +282,18 @@ mod tests {
         for pair in got.windows(2) {
             assert!(pair[1].0 - pair[0].0 >= SPACING);
         }
+        assert!(got.windows(2).all(|p| p[1].1.seq > p[0].1.seq));
         let last = got.last().unwrap().1.seq;
         sleep(Duration::from_secs(5)).await;
         let after = drain(&mut rig.frames);
         assert!(after.len() <= 1, "the last change, then nothing");
-        assert!(after.iter().all(|f| f.seq == last + 1));
+        assert!(
+            after
+                .iter()
+                .all(|f| *f == *rig.view.borrow() && f.seq > last)
+        );
         rig.channels
-            .ack(Some("main"), rig.id, last + u32::from(!after.is_empty()))
+            .ack(Some("main"), rig.id, after.last().map_or(last, |f| f.seq))
             .unwrap();
         sleep(Duration::from_secs(5)).await;
         assert!(drain(&mut rig.frames).is_empty(), "no change, no frame");

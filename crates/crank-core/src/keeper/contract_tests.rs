@@ -2,9 +2,9 @@
 //! `links_intent`'s answer, `ride_status().load` and `device_links().phase`, on the
 //! simulator's latency model under paused tokio time. Each test names the §5.1.4 or §5.1.8
 //! bullet it covers.
-use super::tests::{TICK, latency, latent_core};
+use super::tests::{TICK, fake, latency, latent_core, open};
 use super::*;
-use crate::dto::{DeviceLinkView, LinkFrame, LinkPhase, LinkSample, LoadProgress};
+use crate::dto::{DeviceLinkView, LinkFrame, LinkPhase, LinkSample, LinkView, LoadProgress};
 use crate::keeper::{T_COOL, channel::SPACING};
 use crank_devices::sim::SimLatency;
 use tokio::{sync::mpsc, time::sleep};
@@ -89,7 +89,7 @@ async fn the_link_channel_shows_every_phase_from_cold_to_riding() {
     );
     let answered = core.links_intent(likely(false)).await.unwrap();
     assert_eq!(
-        phase(answered),
+        phase(answered.links),
         [Some(LinkPhase::Searching), Some(LinkPhase::Searching)],
         "links_intent answers the state it applied"
     );
@@ -107,8 +107,13 @@ async fn the_link_channel_shows_every_phase_from_cold_to_riding() {
             LinkPhase::Riding
         ]
     );
+    // the state's numbers: rising, and skipping only what the channel coalesced
     let seqs: Vec<u32> = page.seen.iter().map(|f| f.seq).collect();
-    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
+    assert!(seqs.windows(2).all(|w| w[1] > w[0]), "{seqs:?}");
+    assert!(
+        page.seen.iter().any(|f| f == &answered),
+        "the answer's state is a frame's"
+    );
 }
 
 /// ADR-0001 §4.3 through the core (ack window of 1, round 2 of #470): a page that stalls
@@ -128,7 +133,7 @@ async fn a_stalled_page_receives_only_the_latest_state_when_it_acks() {
     sleep(TICK).await;
     let got = page.take(&core, "main", false).await;
     assert_eq!(got.len(), 1, "{got:?}");
-    assert_eq!(got[0].seq, 2);
+    assert!(got[0].seq > 1, "a newer state: {got:?}");
     // the state when it was sent: both warm, with samples (that it is the latest is the
     // channel's own test; the samples move on at 4 Hz meanwhile)
     assert_eq!(
@@ -291,7 +296,7 @@ async fn links_intent_answers_riding_and_refuses_release_trainer_in_a_started_ri
     sleep(TICK).await;
     core.ride_load(None).await.unwrap();
     let riding = core.links_intent(likely(true)).await.unwrap();
-    assert_eq!(phase(riding), [Some(LinkPhase::Riding); 2]);
+    assert_eq!(phase(riding.links), [Some(LinkPhase::Riding); 2]);
     core.ride_start().await.unwrap();
     let refused = core
         .links_intent(LinkIntent::Release {
@@ -301,7 +306,7 @@ async fn links_intent_answers_riding_and_refuses_release_trainer_in_a_started_ri
         .unwrap_err();
     assert_eq!(refused.code, ErrorCode::Conflict);
     assert_eq!(
-        phase(core.links_intent(likely(false)).await.unwrap()),
+        phase(core.links_intent(likely(false)).await.unwrap().links),
         [Some(LinkPhase::Riding); 2]
     );
 }
@@ -370,7 +375,7 @@ async fn each_device_has_one_source_an_unlinked_strap_stays_the_keepers() {
 
 /// §5.1.1 "A ride's end leaves the phase `cold`" as a stalled page sees it: frames held
 /// across a load and the ride's end arrive, after the ack, as one frame of `cold` devices
-/// with no sample, in the next seq.
+/// with no sample: the keeper's state now, with its number.
 #[tokio::test(start_paused = true)]
 async fn a_page_stalled_across_a_load_and_its_end_gets_cold_after_its_ack() {
     let dir = tempfile::tempdir().unwrap();
@@ -396,10 +401,12 @@ async fn a_page_stalled_across_a_load_and_its_end_gets_cold_after_its_ack() {
         phase: LinkPhase::Cold,
         sample: None,
     });
+    let now = *core.0.keeper.view().borrow();
+    assert!(now.seq > first[0].seq);
     assert_eq!(
         got,
         [LinkFrame {
-            seq: first[0].seq + 1,
+            seq: now.seq,
             links: LinkView {
                 trainer: cold,
                 strap: cold
@@ -417,7 +424,7 @@ async fn links_intent_answers_the_state_its_resolving_step_published() {
     let (core, _radio) =
         latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
     let started = core.links_intent(likely(false)).await.unwrap();
-    assert_eq!(phase(started), [Some(LinkPhase::Searching); 2]);
+    assert_eq!(phase(started.links), [Some(LinkPhase::Searching); 2]);
     sleep(TICK).await;
     core.ride_load(None).await.unwrap();
     let discarded = core
@@ -426,7 +433,7 @@ async fn links_intent_answers_the_state_its_resolving_step_published() {
         })
         .await
         .unwrap();
-    assert_eq!(phase(discarded), [Some(LinkPhase::Cold); 2]);
+    assert_eq!(phase(discarded.links), [Some(LinkPhase::Cold); 2]);
     assert!(!core.ride_status().await.unwrap().status.loaded);
 }
 
@@ -455,4 +462,156 @@ async fn a_close_issued_before_a_reopen_never_drops_the_new_channel() {
         !new.take(&core, "main", true).await.is_empty(),
         "and it keeps sending"
     );
+}
+
+/// §5.1.3 "Release trainer" after the ride's end (#561 review): `ride_end` waits for the reap,
+/// so the ended ride holds nothing and the release is accepted, both devices `cold`.
+#[tokio::test(start_paused = true)]
+async fn release_trainer_after_the_end_of_a_started_ride_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _radio) =
+        latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
+    core.ride_load(None).await.unwrap();
+    core.ride_start().await.unwrap();
+    core.ride_end().await.unwrap();
+    let released = core
+        .links_intent(LinkIntent::Release {
+            reason: ReleaseReason::RiderRelease,
+        })
+        .await
+        .unwrap();
+    assert_eq!(phase(released.links), [Some(LinkPhase::Cold); 2]);
+}
+
+/// §5.1.3 with #269 (#561 review): a ride that finished on its own (its last block skipped)
+/// keeps its session until the reaper takes it, once the engine drops the ride-active gate
+/// after the end mode (delivered here 1 s late). Until then the ride holds the trainer:
+/// "Release trainer" is `Conflict` and the trainer is `riding`; after the reap it is `cold`
+/// and the release is accepted.
+#[tokio::test(start_paused = true)]
+async fn a_ride_that_finished_on_its_own_holds_its_devices_until_the_reap() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut radio = fake(vec![], false);
+    radio.mode_delay = S(1);
+    let core = open(dir.path(), &radio);
+    core.device_pair("neo".into(), DeviceRole::Trainer)
+        .await
+        .unwrap();
+    core.ride_load(Some("builtin-sensor-check".into()))
+        .await
+        .unwrap();
+    core.ride_start().await.unwrap();
+    for _ in 0..3 {
+        sleep(S(2)).await;
+        core.ride_skip().await.unwrap();
+    }
+    assert_eq!(
+        core.ride_status().await.unwrap().status.state,
+        crank_engine::StreamRideState::Finished
+    );
+    let release = || {
+        core.links_intent(LinkIntent::Release {
+            reason: ReleaseReason::RiderRelease,
+        })
+    };
+    let held = release().await.unwrap_err();
+    assert_eq!(
+        (held.code, held.message.as_str()),
+        (
+            ErrorCode::Conflict,
+            "the ride holds the trainer: end the ride first"
+        )
+    );
+    assert_eq!(phase(core.0.keeper.links())[0], Some(LinkPhase::Riding));
+    sleep(S(3)).await;
+    assert_eq!(
+        phase(core.0.keeper.links())[0],
+        Some(LinkPhase::Cold),
+        "reaped: the hold is gone with the session"
+    );
+    let released = release().await.unwrap();
+    assert_eq!(phase(released.links), [Some(LinkPhase::Cold), None]);
+}
+
+/// §5.1.4, one source per device, as a stalled page sees it (#561 review): with a strap that
+/// missed the load, a page stalled across the ride gets one frame after its ack, the trainer
+/// `cold` and the strap still `not_found`.
+#[tokio::test(start_paused = true)]
+async fn a_page_stalled_across_a_ride_with_an_unlinked_strap_gets_one_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let absent = SimLatency {
+        not_advertising: true,
+        ..latency(1, 0, 0)
+    };
+    let (core, _radio) = latent_core(dir.path(), SimLatency::default(), absent).await;
+    let mut page = page(&core, "main").await;
+    sleep(TICK).await;
+    let first = page.take(&core, "main", false).await;
+    assert!(!core.ride_load(None).await.unwrap().hr_linked);
+    core.ride_start().await.unwrap();
+    core.ride_end().await.unwrap();
+    sleep(S(1)).await;
+    assert!(page.take(&core, "main", false).await.is_empty(), "stalled");
+    core.links_ack(Some("main"), page.id, first[0].seq)
+        .await
+        .unwrap();
+    sleep(TICK).await;
+    let got = page.take(&core, "main", false).await;
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(
+        phase(got[0].links),
+        [Some(LinkPhase::Cold), Some(LinkPhase::NotFound)]
+    );
+}
+
+/// §5.1.4 "answers are ordered by `seq`" (#561 review): an answer that waits for its releases
+/// can arrive after the frame of a newer state. Every answer carries its state's `seq`, the
+/// number a frame of that state carries, so the rule "apply an answer only if its `seq` is at
+/// least the last frame's" keeps the newest state whatever the arrival order.
+#[tokio::test(start_paused = true)]
+async fn an_answer_and_a_frame_of_the_same_state_share_its_seq_and_a_newer_frame_outranks_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _radio) =
+        latent_core(dir.path(), SimLatency::default(), SimLatency::default()).await;
+    let mut page = page(&core, "main").await;
+    core.links_intent(likely(false)).await.unwrap();
+    page.follow(&core, "main", S(1)).await;
+    assert_eq!(
+        phase(page.seen.last().unwrap().links),
+        [Some(LinkPhase::Warm); 2]
+    );
+    // the release is applied first and answers once the links are let go; the `Likely` after
+    // it is applied next and answers at once
+    let release = tokio::spawn({
+        let core = core.clone();
+        async move {
+            core.links_intent(LinkIntent::Release {
+                reason: ReleaseReason::Devices,
+            })
+            .await
+        }
+    });
+    tokio::task::yield_now().await;
+    let newer = core.links_intent(likely(false)).await.unwrap();
+    let older = release.await.unwrap().unwrap();
+    assert!(older.seq < newer.seq, "{older:?} {newer:?}");
+    assert_eq!(phase(older.links), [Some(LinkPhase::Cold); 2]);
+    assert_eq!(phase(newer.links), [Some(LinkPhase::Searching); 2]);
+    page.follow(&core, "main", TICK).await;
+    for answer in [older, newer] {
+        assert!(
+            page.seen
+                .iter()
+                .filter(|f| f.seq == answer.seq)
+                .all(|f| *f == answer),
+            "one seq, one state"
+        );
+    }
+    let last = *page.seen.last().unwrap();
+    assert!(last.seq >= newer.seq);
+    let applied = [last, older, newer]
+        .into_iter()
+        .reduce(|kept, next| if next.seq >= kept.seq { next } else { kept })
+        .unwrap();
+    assert_eq!(applied, last, "the frame is authoritative");
 }

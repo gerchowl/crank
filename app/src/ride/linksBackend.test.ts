@@ -38,7 +38,9 @@ describe("links_intent", () => {
     const sleep = await api(
       commands.linksIntent({ kind: "release", reason: "sleep" }),
     );
-    expect(sleep.status === "ok" && sleep.data.trainer?.phase).toBe("riding");
+    expect(sleep.status === "ok" && sleep.data.links.trainer?.phase).toBe(
+      "riding",
+    );
     expect(rig.world.phase).toBe("active");
   });
 
@@ -46,7 +48,7 @@ describe("links_intent", () => {
     for (const reason of ["rider_release", "sleep"] as const) {
       const rig = installRide({ phase: "loaded", keeper: WARM });
       const done = await api(commands.linksIntent({ kind: "release", reason }));
-      expect(done).toEqual({ status: "ok", data: COLD_LINKS });
+      expect(done.status === "ok" && done.data.links).toEqual(COLD_LINKS);
       expect(rig.world.phase).toBe("none");
       clearMocks();
     }
@@ -63,7 +65,7 @@ describe("links_intent", () => {
       { kind: "release", reason: "devices" },
     ] as const) {
       const r = await api(commands.linksIntent(intent));
-      expect(r.status === "ok" && r.data.strap?.phase).toBe("riding");
+      expect(r.status === "ok" && r.data.links.strap?.phase).toBe("riding");
     }
     expect(rig.world.phase).toBe("loaded");
   });
@@ -127,11 +129,12 @@ describe("links_open / links_ack", () => {
     await api(commands.linksAck(opened.data, 7));
     expect(frames).toHaveLength(1);
     await api(commands.linksAck(opened.data, 1));
+    // the seq is the state's number: the coalesced `searching` state took 2
     expect(frames).toEqual([
       { seq: 1, links: COLD_LINKS },
-      { seq: 2, links: WARM },
+      { seq: 3, links: WARM },
     ]);
-    const stale = await api(commands.linksAck(opened.data + 1, 2));
+    const stale = await api(commands.linksAck(opened.data + 1, 3));
     expect(stale).toEqual({
       status: "error",
       error: { code: "not_found", message: "unknown link channel" },
@@ -155,7 +158,7 @@ describe("links_open / links_ack", () => {
 // The core's frames in the same flows (crank-core keeper/contract_tests.rs, the
 // `a_page_stalled_across_a_load_and_its_end_gets_cold_after_its_ack` and
 // `each_device_has_one_source_an_unlinked_strap_stays_the_keepers` tests): `riding` while the ride holds a device,
-// then `cold` with no sample, in consecutive seqs.
+// then `cold` with no sample, in the next frame.
 describe("the ride's hold on the links", () => {
   async function open() {
     const frames: LinkFrame[] = [];
@@ -164,7 +167,7 @@ describe("the ride's hold on the links", () => {
     const opened = await api(commands.linksOpen(channel));
     if (opened.status !== "ok") throw new Error("open failed");
     const ack = () => api(commands.linksAck(opened.data, frames.at(-1)!.seq));
-    return { frames, ack };
+    return { frames, ack, id: opened.data };
   }
   const seqs = (frames: LinkFrame[]) => frames.map((f) => f.seq);
 
@@ -204,9 +207,10 @@ describe("the ride's hold on the links", () => {
     await api(commands.rideEnd());
     expect(frames).toHaveLength(1);
     await ack();
+    // `riding` (seq 2) was coalesced away
     expect(frames).toEqual([
       { seq: 1, links: WARM },
-      { seq: 2, links: COLD_LINKS },
+      { seq: 3, links: COLD_LINKS },
     ]);
   });
 
@@ -227,5 +231,118 @@ describe("the ride's hold on the links", () => {
       trainer: { phase: "cold", sample: null },
       strap: { phase: "not_found", sample: null },
     });
+  });
+
+  // The core (keeper/contract_tests.rs `release_trainer_after_the_end_of_a_started_ride_is_accepted`): `ride_load`,
+  // `ride_start`, `ride_end`, then `links_intent(RiderRelease)` answers `Ok` with both devices `cold`
+  // (core.rs `Core::links_intent` (~1248) finds no session: core.rs `Core::end_ride` (~2197) waited for the reap).
+  test("Release trainer after End is accepted: the ended ride holds nothing", async () => {
+    installRide({ phase: "active", keeper: WARM });
+    const { frames, ack } = await open();
+    await ack();
+    await api(commands.rideEnd());
+    const r = await api(commands.linksIntent(releaseTrainer));
+    expect(r.status === "ok" && r.data.links).toEqual(COLD_LINKS);
+    expect(r.status === "ok" && r.data.seq).toBe(frames.at(-1)?.seq);
+  });
+
+  // The core (keeper/contract_tests.rs `a_ride_that_finished_on_its_own_holds_its_devices_until_the_reap`): a ride
+  // whose last block was skipped is `Finished` with its session still there; "Release trainer" is refused (the
+  // session's state is not `Idle`) and its devices stay `riding` until the reaper takes it.
+  test("a ride that finished by skipping its last block holds its devices until it is reaped", async () => {
+    const rig = installRide({ phase: "active", keeper: WARM });
+    const { frames, ack } = await open();
+    await ack();
+    while (rig.world.phase === "active") await api(commands.rideSkip());
+    expect(rig.world.phase).toBe("finished");
+    expect(frames.at(-1)?.links.trainer?.phase).toBe("riding");
+    const refused = await api(commands.linksIntent(releaseTrainer));
+    expect(refused.status === "error" && refused.error.message).toBe(
+      "the ride holds the trainer: end the ride first",
+    );
+    rig.reap();
+    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
+    await ack();
+    const r = await api(commands.linksIntent(releaseTrainer));
+    expect(r.status).toBe("ok");
+  });
+
+  test("End of a ride that finished on its own waits for its reap: the devices come back cold", async () => {
+    const rig = installRide({ phase: "active", keeper: WARM });
+    const { frames, ack } = await open();
+    await ack();
+    while (rig.world.phase === "active") await api(commands.rideSkip());
+    expect(await api(commands.rideEnd())).toEqual({
+      status: "ok",
+      data: { rideId: "ride-1", forced: false },
+    });
+    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
+    expect((await api(commands.linksIntent(releaseTrainer))).status).toBe("ok");
+  });
+
+  // The core (keeper/contract_tests.rs `a_page_stalled_across_a_ride_with_an_unlinked_strap_gets_one_frame`).
+  test("a page stalled across a ride whose strap missed the load gets the trainer cold, the strap not_found", async () => {
+    const keeper: LinkView = {
+      trainer: WARM.trainer,
+      strap: { phase: "not_found", sample: null },
+    };
+    const rig = installRide({ phase: "none", keeper, strapHanded: false });
+    const { frames, ack } = await open();
+    rig.world.phase = "loaded";
+    rig.publish();
+    rig.world.phase = "active";
+    rig.publish();
+    await api(commands.rideEnd());
+    expect(frames).toHaveLength(1);
+    await ack();
+    expect(frames).toEqual([
+      { seq: 1, links: keeper },
+      {
+        seq: 3,
+        links: {
+          trainer: { phase: "cold", sample: null },
+          strap: { phase: "not_found", sample: null },
+        },
+      },
+    ]);
+  });
+
+  // The ride's end releases its hold whether or not the engine's status frame goes out (core.rs `Core::reap` drops the
+  // hold with the session; the status is the engine's).
+  test("the hold is released even when no status frame is published", async () => {
+    installRide({ phase: "active", keeper: WARM, publishes: false });
+    const { frames, ack } = await open();
+    await ack();
+    await api(commands.rideEnd());
+    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
+  });
+});
+
+// ADR-0002 §5.1.4: the frames are authoritative and an answer is applied only if its seq is at least the last frame's
+// (keeper/contract_tests.rs `an_answer_and_a_frame_of_the_same_state_share_its_seq_and_a_newer_frame_outranks_it`).
+describe("answers and frames are ordered by seq", () => {
+  test("an answer has its state's seq; a later change outranks it", async () => {
+    const rig = installRide({ phase: "none", keeper: WARM });
+    const frames: LinkFrame[] = [];
+    const channel = new Channel<LinkFrame>();
+    channel.onmessage = (f) => frames.push(f);
+    const opened = await api(commands.linksOpen(channel));
+    if (opened.status !== "ok") throw new Error("open failed");
+    const answer = await api(commands.linksIntent({ kind: "left" }));
+    if (answer.status !== "ok") throw new Error("intent failed");
+    expect(answer.data).toEqual(frames.at(-1));
+    await api(commands.linksAck(opened.data, answer.data.seq));
+    rig.setKeeper(COLD_LINKS);
+    const newer = frames.at(-1)!;
+    expect(newer.seq).toBeGreaterThan(answer.data.seq);
+    // a UI that applies the rule keeps the frame
+    const applied = [newer, answer.data].reduce((a, b) =>
+      b.seq >= a.seq ? b : a,
+    );
+    expect(applied.links).toEqual(COLD_LINKS);
+    const released = await api(
+      commands.linksIntent({ kind: "release", reason: "hidden" }),
+    );
+    expect(released.status === "ok" && released.data.seq).toBe(newer.seq);
   });
 });

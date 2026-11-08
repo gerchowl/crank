@@ -4,20 +4,24 @@
 //! A warm link is held by a drain task that reads its events and drops them (§5.1.3: the
 //! drivers `try_send` into bounded channels, so an unread link would fault) until the keeper
 //! takes it back, to hand it over or release it, or the link is lost; it keeps the link's
-//! latest sample in the published [`LinkView`]. Nothing is ever sent on a warm trainer's
+//! latest sample in the published state. Nothing is ever sent on a warm trainer's
 //! control channel except the `Disconnect` that releases it.
 //!
 //! **The published state.** After every step the task publishes the phases into a
-//! [`watch`] of [`LinkView`] ([`Handle::view`]), and only then answers the step's intents.
-//! Each answer carries the state published by the step that resolves it (the intent's own
-//! step; for a recorded intent the load's resolution; for a discard the step that took the
-//! discard's end, after its links' release), so an answer is never older than what it
-//! applied. `ride_status`, `device_links`,
+//! [`watch`] of [`LinkFrame`] ([`Handle::view`]), and only then answers the step's intents.
+//! Every change takes the next `seq` (the state's number, ADR-0002 §5.1.4), the samples'
+//! changes included. Each answer carries the state published by the step that resolves it,
+//! with its `seq` (the intent's own step; for a recorded intent the load's resolution; for a
+//! discard the step that takes the discard's end, which comes after its links' release), so
+//! an answer is never older than what it applied, and the UI can tell whether it is older
+//! than a frame it already has. `ride_status`, `device_links`,
 //! `links_intent` and the link channels ([`super::channel`]) read it. The task ends
 //! when the core drops its [`Handle`]: every link and attempt it holds is dropped with it,
 //! which the drivers' cleanup disconnects.
 use super::{Ack, Cool, DEVICES, Effect, Input, Keeper, Phase, SUPERSEDED};
-use crate::dto::{DeviceLinkView, LinkIntent, LinkPhase, LinkSample, LinkView, LoadProgress};
+use crate::dto::{
+    DeviceLinkView, LinkFrame, LinkIntent, LinkPhase, LinkSample, LinkView, LoadProgress,
+};
 use crate::error::{ApiError, ErrorCode};
 use crate::links::{self, Attempts, LinkDevice, Timeline};
 use crank_devices::{
@@ -82,7 +86,7 @@ pub(crate) enum Note {
     Started(String),
 }
 /// Where an intent's answer goes: the state published by the step that resolved it.
-type Answer = oneshot::Sender<Result<LinkView, ApiError>>;
+type Answer = oneshot::Sender<Result<LinkFrame, ApiError>>;
 enum Msg {
     Intent(LinkIntent, Answer),
     Acquire(RiderConfig, oneshot::Sender<Result<Handed, ApiError>>),
@@ -123,8 +127,8 @@ pub(crate) type Setup = (
 pub(crate) struct Handle {
     tx: mpsc::UnboundedSender<Msg>,
     rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<Msg>>>,
-    /// The published state (module docs); no device until the task starts.
-    view: Arc<watch::Sender<LinkView>>,
+    /// The published state (module docs); no device, `seq` 0, until the task starts.
+    view: Arc<watch::Sender<LinkFrame>>,
 }
 impl Handle {
     pub(crate) fn new() -> Self {
@@ -132,15 +136,15 @@ impl Handle {
         Self {
             tx,
             rx: std::sync::Mutex::new(Some(rx)),
-            view: Arc::new(watch::Sender::new(LinkView::default())),
+            view: Arc::new(watch::Sender::new(LinkFrame::default())),
         }
     }
     /// The keeper's state now.
     pub(crate) fn links(&self) -> LinkView {
-        *self.view.borrow()
+        self.view.borrow().links
     }
-    /// The keeper's state, as it changes.
-    pub(crate) fn view(&self) -> watch::Receiver<LinkView> {
+    /// The keeper's state with its `seq`, as it changes.
+    pub(crate) fn view(&self) -> watch::Receiver<LinkFrame> {
         self.view.subscribe()
     }
     /// The phases of a load in flight (ADR-0002 §5.1.4): a trainer with no pairing reads
@@ -178,7 +182,6 @@ impl Handle {
             direct: None,
             pending: Vec::new(),
             discarding: Vec::new(),
-            discarded: Vec::new(),
             held: None,
             clock,
             view: self.view.clone(),
@@ -200,7 +203,7 @@ impl Handle {
     /// `Conflict` when it is refused (`RiderRelease` while the ride holds the trainer, a
     /// `Likely` after the quit), its discard found the ride started, or it was a recorded
     /// release that a rider action superseded; `Internal` without a keeper.
-    pub(crate) async fn intent(&self, intent: LinkIntent) -> Result<LinkView, ApiError> {
+    pub(crate) async fn intent(&self, intent: LinkIntent) -> Result<LinkFrame, ApiError> {
         let gone = || ApiError::new(ErrorCode::Internal, "the link keeper is gone");
         let (ack, done) = oneshot::channel();
         self.tx.send(Msg::Intent(intent, ack)).map_err(|_| gone())?;
@@ -286,14 +289,11 @@ struct Task {
     pending: Vec<(Answer, bool)>,
     /// The answers that wait for the discard under way.
     discarding: Vec<Answer>,
-    /// The discard went through, but the ride's release has not been taken yet: these
-    /// answers go out with the state of the step that takes it.
-    discarded: Vec<Answer>,
     /// The resolutions a test holds back (`Handle::hold_resolutions`); always `None` outside
     /// tests.
     held: Option<Vec<Internal>>,
     /// The published state (module docs).
-    view: Arc<watch::Sender<LinkView>>,
+    view: Arc<watch::Sender<LinkFrame>>,
 }
 fn ms(from: MonoTime, to: MonoTime) -> u64 {
     to.0.saturating_sub(from.0) / 1000
@@ -315,7 +315,7 @@ async fn advertised(scan: &mut Option<ScanRun>) -> DiscoveredDevice {
 }
 /// Read a warm link's events until it is lost, keeping its latest sample in `view` and
 /// dropping the rest.
-async fn lost(link: &mut Link, view: &watch::Sender<LinkView>) {
+async fn lost(link: &mut Link, view: &watch::Sender<LinkFrame>) {
     match link {
         Link::Trainer(t) => {
             while let Some(event) = t.events.recv().await {
@@ -358,16 +358,27 @@ async fn lost(link: &mut Link, view: &watch::Sender<LinkView>) {
 /// Set a device's latest sample, if it is `warm` (a drain task that is being stopped never
 /// writes into the phase that follows).
 fn sample(
-    view: &watch::Sender<LinkView>,
+    view: &watch::Sender<LinkFrame>,
     d: LinkDevice,
     next: impl FnOnce(Option<LinkSample>) -> LinkSample,
 ) {
-    view.send_if_modified(|links| match device(links, d) {
+    change(view, |links| match device(links, d) {
         Some(dev) if dev.phase == LinkPhase::Warm => {
             let sample = Some(next(dev.sample));
             std::mem::replace(&mut dev.sample, sample) != sample
         }
         _ => false,
+    });
+}
+/// Change the published state with `edit` (`true` when it changed anything): a change takes
+/// the next `seq` and wakes the readers, no change does neither.
+fn change(view: &watch::Sender<LinkFrame>, edit: impl FnOnce(&mut LinkView) -> bool) {
+    view.send_if_modified(|frame| {
+        let changed = edit(&mut frame.links);
+        if changed {
+            frame.seq = frame.seq.wrapping_add(1);
+        }
+        changed
     });
 }
 fn device(links: &mut LinkView, d: LinkDevice) -> &mut Option<DeviceLinkView> {
@@ -509,24 +520,25 @@ impl Task {
             Internal::Lost(d, era) => Input::Lost(d, era),
             Internal::Discarded(id, discarded) => {
                 tracing::info!(ride_id = id, discarded, "discard of an unstarted ride");
-                drop(self.apply(Input::Discarded(id, discarded)));
-                let waiting = std::mem::take(&mut self.discarding);
-                if !discarded {
-                    for answer in waiting {
-                        let _ = answer.send(Err(ApiError::new(
-                            ErrorCode::Conflict,
-                            "the ride was started or is gone: it was not discarded",
-                        )));
-                    }
-                } else if self.keeper.is_free() {
-                    // the ride's release was taken first (one channel: the hold's drop
-                    // precedes the discard's end)
-                    let links = *self.view.borrow();
-                    for answer in waiting {
-                        let _ = answer.send(Ok(links));
-                    }
+                drop(self.apply(Input::Discarded(id.clone(), discarded)));
+                let result = if discarded {
+                    // The ride's release was taken first: `Devices::discard` reports a
+                    // discard only once it reaped the session, whose drop dropped the ride's
+                    // `Hold`, which sent `Released` before this on the same channel. So this
+                    // step's state is the one after the release, or a later one.
+                    debug_assert!(
+                        !self.keeper.is_loaded(&id),
+                        "a discard is reported after its ride's release"
+                    );
+                    Ok(*self.view.borrow())
                 } else {
-                    self.discarded.extend(waiting);
+                    Err(ApiError::new(
+                        ErrorCode::Conflict,
+                        "the ride was started or is gone: it was not discarded",
+                    ))
+                };
+                for answer in std::mem::take(&mut self.discarding) {
+                    let _ = answer.send(result.clone());
                 }
                 return;
             }
@@ -539,14 +551,7 @@ impl Task {
                 }
                 Input::Refused
             }
-            Internal::Released => {
-                drop(self.apply(Input::Released));
-                let links = *self.view.borrow();
-                for answer in std::mem::take(&mut self.discarded) {
-                    let _ = answer.send(Ok(links));
-                }
-                return;
-            }
+            Internal::Released => Input::Released,
         };
         drop(self.apply(input));
     }
@@ -581,7 +586,7 @@ impl Task {
     /// Publish the phases (module docs): a device that is not `warm` has no sample.
     fn publish(&self) {
         let phases = DEVICES.map(|d| self.keeper.phase(d));
-        self.view.send_if_modified(|links| {
+        change(&self.view, |links| {
             let before = *links;
             for (d, phase) in DEVICES.into_iter().zip(phases) {
                 let dev = device(links, d);

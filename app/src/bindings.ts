@@ -40,12 +40,13 @@ export const commands = {
 	 */
 	deviceLinks: () => typedError<DeviceLinkInfo[], ApiError>(__TAURI_INVOKE("device_links")),
 	/**
-	 *  The rider's likely next step, for the link keeper; answers the keeper's state.
+	 *  The rider's likely next step, for the link keeper; answers the keeper's state with its
+	 *  `seq`, ordered with the link channel's frames.
 	 * 
 	 *  # Errors
 	 *  As [`Core::links_intent`].
 	 */
-	linksIntent: (intent: LinkIntent) => typedError<LinkView, ApiError>(__TAURI_INVOKE("links_intent", { intent })),
+	linksIntent: (intent: LinkIntent) => typedError<LinkFrame, ApiError>(__TAURI_INVOKE("links_intent", { intent })),
 	/**
 	 *  Open the calling window's link channel.
 	 * 
@@ -345,14 +346,28 @@ export type LinkDevice =
 "hr";
 
 /**
- *  One frame of the window's link channel (`links_open`, ADR-0002 §5.1.4). Each frame is
- *  the complete state, so the latest wins. At most one frame is unacknowledged
- *  (`links_ack`): while the window has not acknowledged the last one, changes are coalesced
- *  into the next, which is again the complete state, so nothing is lost and there is no
- *  resync.
+ *  The link keeper's state with its number: one frame of the window's link channel
+ *  (`links_open`, ADR-0002 §5.1.4), and `links_intent`'s answer.
+ * 
+ *  Each frame is the complete state, so the latest wins. At most one frame is
+ *  unacknowledged (`links_ack`): while the window has not acknowledged the last one, changes
+ *  are coalesced into the next, which is again the complete state, so nothing is lost and
+ *  there is no resync.
+ * 
+ *  **Frames are authoritative; answers are ordered by `seq`.** An intent's answer can arrive
+ *  after a frame of a newer state. Apply an answer only if its `seq` is at least the `seq` of
+ *  the last frame applied; an answer with a lower `seq` is older than that frame and is
+ *  dropped.
  */
 export type LinkFrame = {
-	/**  Per channel, from 1, +1 per frame (wrapping). */
+	/**
+	 *  The state's number: +1 per change of the keeper's state (a phase or a sample), the
+	 *  same for every window and for `links_intent`'s answers; `0` before the keeper has
+	 *  published. A channel sends only on change, so its frames' `seq`s increase but can
+	 *  skip the changes it coalesced. The state changes with the samples, a few times per
+	 *  second (FE-C pages at 4 Hz, a strap at about 1 Hz), so a `u32` does not wrap within a
+	 *  process's uptime: 2^32 changes at 10 per second take 13 years.
+	 */
 	seq: number,
 	/**  The keeper's state. */
 	links: LinkView,
@@ -435,13 +450,16 @@ export type LinkStatus =
 "lost";
 
 /**
- *  The link keeper's complete state (ADR-0002 §5.1.4): what `links_intent` answers and what
- *  each [`LinkFrame`] carries.
+ *  The link keeper's complete state (ADR-0002 §5.1.4), as each [`LinkFrame`] carries it,
+ *  `links_intent`'s answer included.
  * 
  *  **One source per device.** A device in [`LinkPhase::Riding`] is held by the ride: read its
  *  live state from the ride stream (`StreamFrame.links`). Every other device is read from here.
  *  The rule is per device: during a ride whose strap missed the load, the trainer is `riding`
- *  and the strap keeps its own phase (e.g. `not_found`).
+ *  and the strap keeps its own phase (e.g. `not_found`). It holds from the hand-over on: a
+ *  device is `riding` as soon as a load is handed it, before any ride stream exists. Until
+ *  `ride_load` answers, that load's progress is `ride_status().load` ([`LoadProgress`]); from
+ *  its answer on, the ride's stream, once opened, carries the device's live state.
  */
 export type LinkView = {
 	/**  The trainer; `null` when none is paired. */

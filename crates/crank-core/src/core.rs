@@ -12,7 +12,7 @@
 //! loaded ride's engine and to a window label; they end with the ride.
 use crate::backend::{Backend, DeviceMode};
 use crate::dto::{
-    CoreInfo, DeviceLinkInfo, DeviceRole, KnownDevice, LinkIntent, LinkPhase, LinkView, LinksId,
+    CoreInfo, DeviceLinkInfo, DeviceRole, KnownDevice, LinkFrame, LinkIntent, LinkPhase, LinksId,
     PairedDevice, ReleaseReason, RideLoaded, RideOutcome, RideRecord, RideStatusView, RideSummary,
     ScannedDevice, WorkoutDetail, WorkoutSummary,
 };
@@ -1236,16 +1236,18 @@ impl Core {
     /// started ride it is refused, because the ride owns the trainer: end the ride first.
     ///
     /// It answers the keeper's state as published by the step that resolved the intent
-    /// (ADR-0002 §5.1.4): the intent's own step, the load's resolution for an intent recorded
-    /// while the links were handed out, or, for a discard, the step after its links' release.
-    /// It is the state a [`LinkFrame`](crate::LinkFrame) carries.
+    /// (ADR-0002 §5.1.4), with that state's `seq`: the intent's own step, the load's
+    /// resolution for an intent recorded while the links were handed out, or, for a discard,
+    /// the step that takes its end, after its links' release. It is a
+    /// [`LinkFrame`], ordered with the link channel's frames by `seq`: a
+    /// frame of a newer state can arrive first, and then the answer is older than it.
     ///
     /// # Errors
     /// `Conflict` for `RiderRelease` while a ride is started or starting, or when its discard
     /// finds the ride started; `Conflict` for `Likely` or `Retry` after the quit; `Conflict` for a
     /// release recorded while the links were handed out that a later rider action ("Ride this",
     /// Retry) superseded, so it was never applied; `Storage`.
-    pub async fn links_intent(&self, intent: LinkIntent) -> Result<LinkView, ApiError> {
+    pub async fn links_intent(&self, intent: LinkIntent) -> Result<LinkFrame, ApiError> {
         if intent
             == (LinkIntent::Release {
                 reason: ReleaseReason::RiderRelease,
@@ -1273,7 +1275,10 @@ impl Core {
     /// It works with and without a ride. Each device has one source: while a ride holds a
     /// device its phase is `riding` and its live state is the ride stream's
     /// (`StreamFrame.links`); every other device, a strap that missed the load included, is
-    /// read from these frames.
+    /// read from these frames. A device is `riding` from the hand-over to a load on, before
+    /// the stream exists: until `ride_load` answers, `ride_status().load` is its progress.
+    /// The frames are authoritative: [`Core::links_intent`]'s answer is applied only if its
+    /// `seq` is at least the last frame's.
     ///
     /// # Errors
     /// `Storage` when the pairings cannot be read to start the keeper.

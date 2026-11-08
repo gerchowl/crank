@@ -229,19 +229,28 @@ async fn the_link_commands_carry_the_keepers_state() {
     let answered = cmd::links_intent(core.clone(), LinkIntent::Likely { ready: false })
         .await
         .unwrap();
-    assert!(answered.trainer.is_some_and(|t| t.phase != LinkPhase::Cold));
+    assert!(
+        answered
+            .links
+            .trainer
+            .is_some_and(|t| t.phase != LinkPhase::Cold)
+    );
+    assert!(answered.seq > first[0].seq, "the answer's state is newer");
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(frames.lock().unwrap().len(), 1, "one frame in flight");
-    let refused = cmd::links_ack(core.clone(), other, id, 1)
+    let refused = cmd::links_ack(core.clone(), other, id, first[0].seq)
         .await
         .unwrap_err();
     assert_eq!(refused.code, ErrorCode::NotFound);
-    cmd::links_ack(core.clone(), main.clone(), id, 1)
+    cmd::links_ack(core.clone(), main.clone(), id, first[0].seq)
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
     let latest = *frames.lock().unwrap().last().unwrap();
-    assert_eq!(latest.seq, 2);
+    assert!(
+        latest.seq > answered.seq,
+        "the latest state outranks the answer"
+    );
     assert_eq!(latest.links.trainer.map(|t| t.phase), Some(LinkPhase::Warm));
 
     cmd::ride_load(core.clone(), None).await.unwrap();
