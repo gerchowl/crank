@@ -352,6 +352,10 @@ impl Keeper {
     pub(crate) fn rider(&self) -> RiderConfig {
         self.rider
     }
+    /// No ride holds the links: the keeper is active (ride state `Free`).
+    pub(crate) fn is_free(&self) -> bool {
+        self.ride == Ride::Free
+    }
     /// Whether attempt `era` is the device's current one.
     pub(crate) fn current(&self, device: LinkDevice, era: u32) -> bool {
         self.devs[device as usize].era == era

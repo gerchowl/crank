@@ -97,7 +97,8 @@ pub enum LinkPhase {
     /// the warm link was lost; kept until the next attempt.
     NotFound,
     /// Handed to a ride: its live state is the ride stream's (`StreamFrame.links`,
-    /// `device_links().link`), not the keeper's.
+    /// `device_links().link`), not the keeper's. Only the devices handed over at `ride_load`
+    /// are `riding`; one that was not `warm` then stays the keeper's, in its own phase.
     Riding,
 }
 
@@ -136,6 +137,11 @@ pub struct DeviceLinkView {
 
 /// The link keeper's complete state (ADR-0002 §5.1.4): what `links_intent` answers and what
 /// each [`LinkFrame`] carries.
+///
+/// **One source per device.** A device in [`LinkPhase::Riding`] is held by the ride: read its
+/// live state from the ride stream (`StreamFrame.links`). Every other device is read from here.
+/// The rule is per device: during a ride whose strap missed the load, the trainer is `riding`
+/// and the strap keeps its own phase (e.g. `not_found`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkView {

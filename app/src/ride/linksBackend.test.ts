@@ -151,3 +151,81 @@ describe("links_open / links_ack", () => {
     expect(frames.at(-1)?.links.trainer?.phase).toBe("riding");
   });
 });
+
+// The core's frames in the same flows (crank-core keeper/contract_tests.rs, the
+// `a_page_stalled_across_a_load_and_its_end_gets_cold_after_its_ack` and
+// `each_device_has_one_source_an_unlinked_strap_stays_the_keepers` tests): `riding` while the ride holds a device,
+// then `cold` with no sample, in consecutive seqs.
+describe("the ride's hold on the links", () => {
+  async function open() {
+    const frames: LinkFrame[] = [];
+    const channel = new Channel<LinkFrame>();
+    channel.onmessage = (f) => frames.push(f);
+    const opened = await api(commands.linksOpen(channel));
+    if (opened.status !== "ok") throw new Error("open failed");
+    const ack = () => api(commands.linksAck(opened.data, frames.at(-1)!.seq));
+    return { frames, ack };
+  }
+  const seqs = (frames: LinkFrame[]) => frames.map((f) => f.seq);
+
+  test("cancelling a loaded ride (End before Start) gives the devices back cold", async () => {
+    installRide({ phase: "loaded", keeper: WARM });
+    const { frames, ack } = await open();
+    expect(frames.at(-1)?.links.trainer?.phase).toBe("riding");
+    await ack();
+    expect(await api(commands.rideEnd())).toEqual({
+      status: "ok",
+      data: { rideId: null, forced: false },
+    });
+    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
+    expect(seqs(frames)).toEqual([1, 2]);
+  });
+
+  test("ending a started ride gives the devices back cold", async () => {
+    installRide({ phase: "active", keeper: WARM });
+    const { frames, ack } = await open();
+    await ack();
+    await api(commands.rideEnd());
+    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
+    // the finished ride is reaped: a repeated End changes nothing
+    await ack();
+    await api(commands.rideEnd());
+    expect(frames).toHaveLength(2);
+  });
+
+  test("a page stalled across a load and its end gets one cold frame after its ack", async () => {
+    const rig = installRide({ phase: "none", keeper: WARM });
+    const { frames, ack } = await open();
+    expect(frames).toEqual([{ seq: 1, links: WARM }]);
+    rig.world.phase = "loaded";
+    rig.publish();
+    rig.world.phase = "active";
+    rig.publish();
+    await api(commands.rideEnd());
+    expect(frames).toHaveLength(1);
+    await ack();
+    expect(frames).toEqual([
+      { seq: 1, links: WARM },
+      { seq: 2, links: COLD_LINKS },
+    ]);
+  });
+
+  test("a strap that missed the load stays the keeper's: not_found beside the riding trainer", async () => {
+    const keeper: LinkView = {
+      trainer: WARM.trainer,
+      strap: { phase: "not_found", sample: null },
+    };
+    installRide({ phase: "active", keeper, strapHanded: false });
+    const { frames, ack } = await open();
+    expect(frames.at(-1)?.links).toEqual({
+      trainer: { phase: "riding", sample: null },
+      strap: { phase: "not_found", sample: null },
+    });
+    await ack();
+    await api(commands.rideEnd());
+    expect(frames.at(-1)?.links).toEqual({
+      trainer: { phase: "cold", sample: null },
+      strap: { phase: "not_found", sample: null },
+    });
+  });
+});
