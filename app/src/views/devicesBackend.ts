@@ -1,12 +1,12 @@
 // A stand-in for the core's device commands behind `mockIPC`, for the Devices tests only. It enforces what the core
 // does (crank-core `Core::devices_scan` / `device_pair` / `device_forget` / `device_links`), not more permissive:
-// every one of them is `conflict` while a ride is loaded (core.rs `require_no_ride` (~1008)); pair refuses an empty
-// id (`invalid_input`, core.rs `device_pair` (~1074)), and, on the SIM core only (`core: "sim"`), any id but the sim's fixed one for the
-// role, `trainer` / `strap` (`invalid_input`; backend.rs `Backend::accepts` (~151), `SIM_TRAINER` / `SIM_STRAP`). The
+// every one of them is `conflict` while a ride is loaded (core.rs `require_no_ride` (~1104)); pair refuses an empty
+// id (`invalid_input`, core.rs `device_pair` (~1170)), and, on the SIM core only (`core: "sim"`), any id but the sim's fixed one for the
+// role, `trainer` / `strap` (`invalid_input`; backend.rs `Backend::accepts` (~206), `SIM_TRAINER` / `SIM_STRAP`). The
 // RADIO core (the default) accepts any id and role and fails at connect (`device_unavailable`), so the UI must not
 // rely on the sim's early refusal. Pair replaces the role's earlier pairing, and answers the adapter's failures;
-// forget of an empty role is `not_found` (core.rs `device_forget` (~1152)); a scan lists a peripheral once and marks `paired` for any
-// role. `storage` (`store`): scan and forget read the store first (core.rs `devices_scan` (~1029), `device_forget`), so they fail before
+// forget of an empty role is `not_found` (core.rs `device_forget` (~1248)); a scan lists a peripheral once and marks `paired` for any
+// role. `storage` (`store`): scan and forget read the store first (core.rs `devices_scan` (~1125), `device_forget`), so they fail before
 // anything else happens; pair writes it after the connect succeeded (core.rs `device_pair`): `store` then leaves nothing paired,
 // `storeAfterWrite` models the later reads and forgets of the replaced pairing failing (core.rs `device_pair`, `device_forget`), after the
 // new row was written.
@@ -43,7 +43,7 @@ export const both: ScannedDevice = {
   paired: false,
 };
 
-/** The sim core's only devices (`SIM_TRAINER`, `SIM_STRAP`, backend.rs `SIM_TRAINER` (~74)). */
+/** The sim core's only devices (`SIM_TRAINER`, `SIM_STRAP`, backend.rs `SIM_TRAINER` (~128)). */
 export const simTrainer: ScannedDevice = {
   id: "trainer",
   name: "Simulated trainer",
@@ -75,6 +75,8 @@ export interface DevicesState {
   storeAfterWrite: ApiError | null;
   /** When set, `devices_scan`, `device_pair` and `device_forget` wait for it before answering (a command in flight). */
   gate: Promise<void> | null;
+  /** When set, `device_pair` alone also waits for it (a pair in flight after a scan that answered). */
+  pairGate: Promise<void> | null;
   /** Which core answers: the seeded simulator or the Bluetooth radio (default). */
   core: "sim" | "radio";
   paired: Partial<Record<DeviceRole, PairedDevice>>;
@@ -91,6 +93,7 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
     store: null,
     storeAfterWrite: null,
     gate: null,
+    pairGate: null,
     core: "radio",
     paired: {},
     calls: [],
@@ -126,6 +129,7 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
         if (st.core === "sim" && id !== simId)
           fail("invalid_input", `device "${id}" cannot be paired as ${role}`);
         await st.gate;
+        await st.pairGate;
         if (st.adapter) throw st.adapter;
         if (st.connect) throw st.connect;
         // The radio finds out at connect; the sim's device always exists.

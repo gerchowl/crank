@@ -165,7 +165,15 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "devices-empty": devices({}),
   // The scan never answers: the button stays "Scanning…".
   "devices-scanning": devices({ gate: new Promise<void>(() => {}) }),
+  // The scan answered and nothing is paired: each device offers its role.
+  "devices-found": devices({}),
+  // The pair never answers: its button stays "Pairing…" and every other is disabled.
+  "devices-pairing": devices({ pairGate: new Promise<void>(() => {}) }),
   "devices-paired": devices({ paired: { trainer: neo, heart_rate: hrm } }),
+  // Forget asks first: the trainer row holds the question.
+  "devices-forget-confirm": devices({
+    paired: { trainer: neo, heart_rate: hrm },
+  }),
   "devices-denied": devices({
     adapter: { code: "permission_denied", message: "Bluetooth denied" },
   }),

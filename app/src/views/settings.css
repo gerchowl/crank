@@ -1,0 +1,234 @@
+/* Settings and Devices, direction A (DESIGN §5.9, §18; #527): the page title, then the 12-column grid (§18.2) with the
+   section list in 3 columns and the open section's panel in 9; one elevation, panel on background (§18.1). Desk chrome
+   is 13 px with 12 px captions; controls are the 32 px family of the ride's key row (§18.4, ride.css `.ride button`). */
+.settings {
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+  font-size: var(--text-s);
+}
+.settings h1 {
+  margin: 0;
+  font-size: var(--text-l);
+}
+.settings-body {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+.settings-nav {
+  grid-column: span 3;
+  display: grid;
+  gap: var(--space-1);
+}
+.settings-panel {
+  grid-column: span 9;
+  min-width: 0;
+  padding: var(--space-5);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+}
+
+/* The 32 px button family (§18.4): default, primary, danger; disabled reads as disabled, a pending one says so. */
+.settings button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h);
+  min-height: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-m);
+  background: var(--panel-2);
+  font-size: var(--text-s);
+  white-space: nowrap;
+}
+.settings button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.settings button.danger {
+  color: var(--status-critical);
+}
+.settings button:disabled {
+  cursor: default;
+  color: var(--ink-3);
+}
+.settings button.primary:disabled {
+  background: var(--panel-2);
+  border-color: var(--edge);
+}
+.settings button[aria-busy="true"] {
+  cursor: progress;
+}
+.settings-nav button {
+  justify-content: flex-start;
+  width: 100%;
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-2);
+}
+.settings-nav button[aria-current="true"] {
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* A section: its head, then its rows or tables. */
+.settings-section {
+  display: grid;
+  gap: var(--space-5);
+}
+.settings-section h2 {
+  margin: 0;
+  font-size: var(--text-m);
+}
+.section-head {
+  display: grid;
+  gap: var(--space-1);
+}
+.settings-note {
+  margin: 0;
+  max-width: 70ch;
+  color: var(--ink-2);
+}
+/* A setting: its label and its control, on one line. */
+.setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.setting-label {
+  font-weight: 600;
+}
+.theme-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+}
+.theme-choice label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h);
+}
+.theme-choice input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* Devices: Paired (a fixed row per role) and Nearby (the last scan), as tables of 48 px rows. */
+.device-group {
+  display: grid;
+  gap: var(--space-2);
+}
+.device-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  height: var(--control-h);
+}
+.device-group h3 {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+/* One grid per table, its rows on a subgrid, so the columns line up from row to row. */
+.device-list {
+  display: grid;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr) max-content;
+  column-gap: var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.device-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-auto-rows: minmax(var(--control-h), auto);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.device-role {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.device-role svg {
+  flex: none;
+  color: var(--ink-2);
+}
+.device-name,
+.device-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.device-paired {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.device-paired-word {
+  color: var(--good);
+}
+/* Forget's question, in place of the row's device line and actions. */
+.device-confirm {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.device-confirm-text {
+  min-width: 0;
+  font-weight: 600;
+}
+.device-confirm .device-actions {
+  flex: none;
+}
+.device-hint {
+  margin: 0;
+  max-width: 70ch;
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-2);
+}
+.device-notice {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-left: 4px solid var(--status-warning);
+  border-radius: var(--radius-m);
+}
+.device-notice [data-state-label] {
+  color: var(--status-warning);
+}
+.device-notice p {
+  margin: 0;
+  max-width: 70ch;
+  color: var(--ink-2);
+}

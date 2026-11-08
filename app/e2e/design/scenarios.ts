@@ -30,9 +30,26 @@ export const SCENARIOS = [
     held: 1,
   },
   {
+    name: "devices-found",
+    ready: "role=list[name='Nearby devices']",
+    clicks: ["Scan"],
+  },
+  {
+    name: "devices-pairing",
+    ready:
+      "role=button[name='Pairing as trainer: Tacx Neo 55624'][disabled=true]",
+    clicks: ["Scan", "Pair as trainer: Tacx Neo 55624"],
+    held: 1,
+  },
+  {
     name: "devices-paired",
     ready: "role=list[name='Nearby devices']",
     clicks: ["Scan"],
+  },
+  {
+    name: "devices-forget-confirm",
+    ready: "role=group[name='Forget trainer?']",
+    clicks: ["Forget trainer"],
   },
   {
     name: "devices-denied",
@@ -66,6 +83,18 @@ export const SCENARIOS = [
 ] as const satisfies readonly Scenario[];
 
 export type ScenarioName = (typeof SCENARIOS)[number]["name"];
+
+/** The fixtures of Settings and Devices (#527): nothing on them is cut, and every control is inside the window. */
+export const SETTINGS_SCENARIOS: readonly ScenarioName[] = [
+  "settings",
+  "devices-empty",
+  "devices-scanning",
+  "devices-found",
+  "devices-pairing",
+  "devices-paired",
+  "devices-forget-confirm",
+  "devices-denied",
+];
 
 /** The fixtures of the ride screen: their region boxes are the same at each size (DESIGN §18.7 rule 10, #498). */
 export const RIDE_SCENARIOS: readonly ScenarioName[] = [

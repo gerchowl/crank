@@ -465,6 +465,20 @@ Sections: **Devices** (trainer + HR, protocol, status, battery, pair / forget; o
 §7.1), **Controls & sound** (the five actions and their bindings with *Learn* for a remote, §7.2; tones and
 volume, §7.3), **Health** (§5.8: clearance record and log, over-45 advisory, pregnancy answer), **Ride screen** (§5.3), **Appearance** (mode dark / light / auto, preset, classic zones), **Background** (§15.3).
 
+**In direction A** (#527, `app/src/views/Settings.tsx`, `Devices.tsx`): the page title, then on the 12-column grid
+(§18.2) the section list (3 columns, one 32 px item per section with its Lucide icon) and the open section in one
+panel (9 columns). A section is its heading and its rows, a row a label and its control, so a later setting is one
+more row and a later section one more list entry. Desk chrome is 13 px with 12 px captions; every control is the 32 px
+family of §18.4 (default, primary, danger; disabled reads as disabled, a pending one names what it is doing:
+"Scanning…", "Pairing…"). Desk screens bind no keys, so their buttons show none (§18.7 rule 9 covers ride and saddle
+actions). **Devices** is two tables: **Paired** (one fixed row per role: icon and role, the device's name, model and
+serial or "Not paired", Forget) and **Nearby** (the last scan: name, the roles it offers, then per role "✓ Paired as
+…" with Forget, or "Pair as …", #442); before the first scan a hint says how to wake a device. **Forget asks first**, in
+place of the row's device line and actions ("Forget Tacx Neo 55624 as the trainer? Pair it again to ride with it.",
+Cancel focused, Esc cancels; #438's note that Forget sits beside "Pair as strap" on a dual-role row). A failed command
+is a notice under the section head: ⚠ and its title, what to do, and "Try again" where a retry is the fix. Live
+readings while pairing (#267) are not in this screen yet; Release trainer is End on an unstarted ride (§5.4).
+
 ---
 
 ## 6. Ride screen specification
