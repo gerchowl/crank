@@ -21,8 +21,10 @@ pub const MIN_GRADE_PCT: f64 = -25.0;
 pub const MAX_GRADE_PCT: f64 = 30.0;
 /// The name of a grade profile without a non-blank label.
 pub const UNLABELLED_NAME: &str = "Grade profile";
-/// Longest grade-profile text, UTF-8 bytes (ADR-0005 §2.2.4): a 1 000 km profile written out
-/// without repeats at 100 m per segment is 10 000 segments of about 15 bytes, 150 KB.
+/// Longest grade-profile text, UTF-8 bytes, for the input and for its canonical form
+/// ([`print_grade_profile`]), so every accepted profile prints to text that parses again
+/// (ADR-0005 §2.2.4): a 1 000 km profile written out without repeats at 100 m per segment is
+/// 10 000 segments of about 15 bytes, 150 KB.
 pub const MAX_PROFILE_TEXT_BYTES: usize = 256 * 1024;
 /// Longest label, characters (ADR-0005 §2.2.4): a climb's or a stretch's name for the ride
 /// screen, where a few words fit.
@@ -165,6 +167,9 @@ pub enum RouteDslErrorKind {
     Empty,
     /// The text is longer than [`MAX_PROFILE_TEXT_BYTES`].
     TextTooLong,
+    /// The text's canonical form ([`print_grade_profile`]) would be longer than
+    /// [`MAX_PROFILE_TEXT_BYTES`], so it could not be parsed back.
+    CanonicalTooLong,
     /// A label longer than [`MAX_LABEL_CHARS`].
     LabelTooLong,
     /// The expanded route's labels exceed [`MAX_EXPANDED_LABEL_BYTES`].
@@ -653,7 +658,8 @@ fn segment_length(t: &Token) -> RouteDslError {
 ///
 /// # Errors
 /// The first lexical or grammatical error, a workout token where a distance or grade belongs
-/// (`500m` names the km form), or a limit: segment length, grade range, nesting, 1 000 km in all.
+/// (`500m` names the km form), or a limit: segment length, grade range, nesting, 1 000 km in all,
+/// a label over [`MAX_LABEL_CHARS`], or the text or its canonical form over [`MAX_PROFILE_TEXT_BYTES`].
 pub fn parse_grade_profile(text: &str) -> Result<Vec<GradeProfileItem>, RouteDslError> {
     if text.len() > MAX_PROFILE_TEXT_BYTES {
         return Err(RouteDslError {
@@ -676,7 +682,22 @@ pub fn parse_grade_profile(text: &str) -> Result<Vec<GradeProfileItem>, RouteDsl
         offset: e.offset,
         length: e.length,
     })?;
-    Parser { tokens, i: 0 }.seq(None, 0)
+    let items = Parser { tokens, i: 0 }.seq(None, 0)?;
+    // Every accepted profile must print to text that parses again (ADR-0005 §2.1 round trip):
+    // the canonical form can be longer than the input (`,` becomes `, `), so bound it too.
+    let canonical = print_grade_profile(&items).len();
+    if canonical > MAX_PROFILE_TEXT_BYTES {
+        return Err(RouteDslError {
+            kind: RouteDslErrorKind::CanonicalTooLong,
+            message: format!(
+                "Written out canonically this profile is {canonical} bytes, more than {} KiB",
+                MAX_PROFILE_TEXT_BYTES / 1024
+            ),
+            offset: 0,
+            length: text.encode_utf16().count(),
+        });
+    }
+    Ok(items)
 }
 
 fn print_label(label: Option<&String>) -> String {
@@ -891,7 +912,7 @@ pub fn parse_route_dsl(text: &str) -> Result<Route, RouteDslError> {
 /// route from a file. `parse_route_dsl(print_route_dsl(r))` equals `r`.
 #[must_use]
 pub fn print_route_dsl(route: &Route) -> Option<String> {
-    match &route.source {
+    match route.source() {
         RouteSource::GradeProfile { dsl } => Some(dsl.clone()),
         _ => None,
     }

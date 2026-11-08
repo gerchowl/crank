@@ -204,4 +204,12 @@ workout durations, step ends and power targets are refused naming the workout fo
 writes one top-level item per line, lower-case keywords, km with at most three decimals and grades
 in their shortest exact form, so parse → print → parse is equal and printing is idempotent
 (`crank_domain::route::{parse_grade_profile, print_grade_profile, parse_route_dsl, print_route_dsl}`,
-property-tested in `crates/crank-domain/tests/route_dsl.rs`).
+property-tested in `crates/crank-domain/tests/route_dsl.rs` and, near the size limits, `route_r3.rs`).
+
+Input limits (ADR-0005 §2.2.4, the same numbers): the text is at most 256 KiB (UTF-8 bytes,
+`MAX_PROFILE_TEXT_BYTES`), a label at most 100 characters (`MAX_LABEL_CHARS`), and the labels of the
+expanded route (each repeated segment carrying its own or its repeat's label) at most 1 MiB
+(`MAX_EXPANDED_LABEL_BYTES`), computed from the repeat counts before anything is expanded. The
+canonical form is bounded too: a profile whose canonical text would exceed 256 KiB is refused when it
+is parsed (`CanonicalTooLong`), even if the text as given fits, so every profile the parser accepts
+prints to text it accepts again.

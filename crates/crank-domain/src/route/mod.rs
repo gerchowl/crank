@@ -47,10 +47,48 @@ pub const MAX_TRACKS: usize = 1_000;
 pub const DEFAULT_ROUTE_NAME: &str = "Route";
 
 /// A road to ride: points along it plus labelled stretches (ADR-0005 §2.1).
+///
+/// Every `Route` satisfies the §2.1 invariants ([`Route::check`]): its fields are private, so the
+/// only ways to get one are [`Route::new`], [`Route::from_parts`] and deserialising, and all
+/// three check. A struct literal does not compile outside this module:
+///
+/// ```compile_fail
+/// use crank_domain::route::{ElevationKind, Route, RouteSource, SurfaceProvenance};
+/// let r = Route {
+///     name: String::new(),
+///     source: RouteSource::GpxTrack,
+///     points: Vec::new(),
+///     segments: Vec::new(),
+///     elevation: ElevationKind::None,
+///     surface: SurfaceProvenance::default(),
+/// };
+/// ```
+///
+/// and deserialising a route that breaks an invariant fails:
+///
+/// ```
+/// let broken = r#"{"name":"","source":{"kind":"gpx_track"},"points":[],"segments":[],
+///     "elevation":"none","surface":{"osm":null,"fromFile":false}}"#;
+/// assert!(serde_json::from_str::<crank_domain::route::Route>(broken).is_err());
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase", try_from = "RouteParts")]
+pub struct Route {
+    name: String,
+    source: RouteSource,
+    points: Vec<RoutePoint>,
+    segments: Vec<RouteSegment>,
+    elevation: ElevationKind,
+    surface: SurfaceProvenance,
+}
+
+/// The parts of a [`Route`], unchecked: what [`Route::from_parts`] checks and
+/// [`Route::into_parts`] returns, and the shape a route is deserialised from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
-pub struct Route {
+pub struct RouteParts {
     /// From the file (`<name>`, the FIT course name) or the grade profile's first label.
     pub name: String,
     /// Where the route came from.
@@ -63,6 +101,14 @@ pub struct Route {
     pub elevation: ElevationKind,
     /// Where the points' surfaces came from.
     pub surface: SurfaceProvenance,
+}
+
+impl TryFrom<RouteParts> for Route {
+    type Error = RouteInvariantError;
+
+    fn try_from(parts: RouteParts) -> Result<Self, Self::Error> {
+        Self::from_parts(parts)
+    }
 }
 
 /// The kind of input a route was imported from.
@@ -287,6 +333,70 @@ impl Route {
         };
         route.check()?;
         Ok(route)
+    }
+
+    /// [`Route::new`] from its parts.
+    ///
+    /// # Errors
+    /// The first invariant the parts break.
+    pub fn from_parts(p: RouteParts) -> Result<Self, RouteInvariantError> {
+        Self::new(
+            p.name,
+            p.source,
+            p.points,
+            p.segments,
+            p.elevation,
+            p.surface,
+        )
+    }
+
+    /// The route's parts, to change and rebuild through [`Route::from_parts`].
+    #[must_use]
+    pub fn into_parts(self) -> RouteParts {
+        RouteParts {
+            name: self.name,
+            source: self.source,
+            points: self.points,
+            segments: self.segments,
+            elevation: self.elevation,
+            surface: self.surface,
+        }
+    }
+
+    /// From the file (`<name>`, the FIT course name) or the grade profile's first label; never blank.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Where the route came from.
+    #[must_use]
+    pub fn source(&self) -> &RouteSource {
+        &self.source
+    }
+
+    /// At least two; `dist_m` strictly increasing from 0. A grade profile's are its segment ends.
+    #[must_use]
+    pub fn points(&self) -> &[RoutePoint] {
+        &self.points
+    }
+
+    /// Labelled stretches (FIT course points, profile labels); a grade profile's carry its grades.
+    #[must_use]
+    pub fn segments(&self) -> &[RouteSegment] {
+        &self.segments
+    }
+
+    /// Whether the points carry elevation and how it was obtained.
+    #[must_use]
+    pub fn elevation(&self) -> ElevationKind {
+        self.elevation
+    }
+
+    /// Where the points' surfaces came from.
+    #[must_use]
+    pub fn surface(&self) -> &SurfaceProvenance {
+        &self.surface
     }
 
     /// Check the invariants of ADR-0005 §2.1: a non-blank name; at least two points; `dist_m`
