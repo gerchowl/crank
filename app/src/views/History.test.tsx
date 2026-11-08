@@ -10,6 +10,7 @@ import {
   expect,
   test,
 } from "vitest";
+import { commands } from "../bindings";
 import { apiError, install } from "./historyBackend";
 import { markForcedEnd, resetForcedEnds } from "../ride/forcedEnds";
 import { navigate, useRoute } from "../router";
@@ -172,14 +173,14 @@ test("the way back leads to Workouts, Today or the ride list", async () => {
     await screen.findByRole("button", { name: "All rides" }),
   );
   expect(screen.getByTestId("route").textContent).toBe("history");
-  expect(await screen.findByRole("list", { name: "Rides" })).toBeTruthy();
+  expect(await screen.findByRole("table", { name: "Rides" })).toBeTruthy();
 });
 
 test("the list links each ride to its summary", async () => {
   install();
   navigate("history");
   open();
-  const list = within(await screen.findByRole("list", { name: "Rides" }));
+  const list = within(await screen.findByRole("table", { name: "Rides" }));
   expect(list.getAllByRole("button")).toHaveLength(3);
   await userEvent.click(list.getByRole("button", { name: /Free ride/ }));
   expect(
@@ -214,7 +215,7 @@ test("Loading shows while the summary and the list are being fetched", async () 
   open();
   expect(await screen.findByText("Loading…")).toBeTruthy();
   act(() => release());
-  expect(await screen.findByRole("list", { name: "Rides" })).toBeTruthy();
+  expect(await screen.findByRole("table", { name: "Rides" })).toBeTruthy();
   expect(screen.queryByText("Loading…")).toBeNull();
 });
 
@@ -227,7 +228,7 @@ test("the list's Retry asks again", async () => {
   await screen.findByRole("alert");
   delete b.fail.rides_list;
   await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-  expect(await screen.findByRole("list", { name: "Rides" })).toBeTruthy();
+  expect(await screen.findByRole("table", { name: "Rides" })).toBeTruthy();
   expect(b.calls.filter((c) => c.cmd === "rides_list")).toHaveLength(2);
 });
 
@@ -404,14 +405,17 @@ test("the list is newest first, and marks the ride last opened on the way back",
   open();
   await screen.findByRole("region", { name: "Ride summary" });
   await userEvent.click(screen.getByRole("button", { name: "All rides" }));
-  const list = within(await screen.findByRole("list", { name: "Rides" }));
-  const rows = list.getAllByRole("listitem");
+  const list = within(await screen.findByRole("table", { name: "Rides" }));
+  // The rows after the column heads'.
+  const rows = list.getAllByRole("row").slice(1);
   // started 1_760_000_000, 1_759_000_000, 1_758_000_000
-  expect(rows.map((r) => within(r).getByRole("button").textContent)).toEqual([
-    expect.stringContaining("Sweet spot 3x12"),
-    expect.stringContaining("Free ride"),
-    expect.stringContaining("Spin"),
-  ]);
+  expect(rows.map((r) => within(r).getByRole("rowheader").textContent)).toEqual(
+    [
+      expect.stringContaining("Sweet spot 3x12"),
+      expect.stringContaining("Free ride"),
+      expect.stringContaining("Spin"),
+    ],
+  );
   expect(rows.map((r) => r.getAttribute("aria-current"))).toEqual([
     null,
     null,
@@ -427,4 +431,63 @@ test("a store failure of the list fails the summary too, as the core's ride_summ
   expect((await screen.findByRole("alert")).textContent).toContain(
     "disk I/O error",
   );
+});
+
+test("a ride's cells are named by their column heads, and its Review button by the ride", async () => {
+  install();
+  navigate("history");
+  open();
+  const table = within(await screen.findByRole("table", { name: "Rides" }));
+  expect(table.getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
+    "Started",
+    "Ride",
+    "Duration",
+    "Work",
+    "Outcome",
+    "Review",
+  ]);
+  const [, first] = table.getAllByRole("row");
+  const row = within(first!);
+  expect(row.getByRole("rowheader").textContent).toBe("Sweet spot 3x12");
+  expect(row.getAllByRole("cell").map((c) => c.textContent)).toEqual([
+    startedText(1_760_000_000),
+    "50:00",
+    "540 kJ",
+    "Finished",
+    "Review",
+  ]);
+  // Each name in full: a screen reader hears the ride, its start, its outcome and its duration on the button.
+  for (const name of [
+    `Review Sweet spot 3x12, ${startedText(1_760_000_000)}, Finished, 50:00`,
+    `Review Free ride, ${startedText(1_759_000_000)}, Aborted, —`,
+    `Review Spin, ${startedText(1_758_000_000)}, Finished, 5:00`,
+  ])
+    expect(table.getByRole("button", { name })).toBeTruthy();
+  expect(table.getAllByRole("button")).toHaveLength(3);
+});
+
+test("the ride last opened is History's: a new History, or one left for another view, marks none", async () => {
+  install();
+  navigate("history", "ride-3");
+  open();
+  await screen.findByRole("region", { name: "Ride summary" });
+  cleanup();
+  navigate("history");
+  open();
+  const table = within(await screen.findByRole("table", { name: "Rides" }));
+  expect(table.queryByText("Last opened")).toBeNull();
+  await userEvent.click(table.getByRole("button", { name: /^Review Spin/ }));
+  await userEvent.click(await screen.findByRole("button", { name: "Today" }));
+  navigate("history");
+  await screen.findByRole("table", { name: "Rides" });
+  expect(screen.queryByText("Last opened")).toBeNull();
+});
+
+test("an unknown id is refused as the core words it, the id in Rust's debug quoting", async () => {
+  const b = install();
+  await expect(commands.rideSummary('a"b\\c\n')).resolves.toEqual({
+    status: "error",
+    error: { code: "not_found", message: 'no ride "a\\"b\\\\c\\n"' },
+  });
+  expect(b.calls).toHaveLength(1);
 });

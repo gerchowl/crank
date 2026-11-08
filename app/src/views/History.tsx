@@ -7,7 +7,7 @@
 // row with a 32 px Review button (§18.4); the ride last opened is marked when the rider comes back to the list.
 // Review: the title with the way back, the outcome and start, then on the 12-column grid the recorded traces in 8
 // columns (RideTraces.tsx, the ride session's history) and the summary figures in 4, then planned against ridden.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   commands,
   type ApiError,
@@ -52,9 +52,6 @@ export function startedText(startedAt: number | null): string {
     timeStyle: "short",
   });
 }
-
-/** The ride whose Review was open last: the list marks it on the way back. Window scope, like the route. */
-let lastOpened: string | null = null;
 
 /** A failed command, as a notice: ⚠ and the core's message (§18.7 rule 11), and Retry where it helps. */
 function ErrorLine({
@@ -211,7 +208,6 @@ export function RideSummaryView({ id }: { id: string }) {
   const get = useCommand(commands.rideSummary);
   const { run } = get;
   useEffect(() => {
-    lastOpened = id;
     void run(id);
   }, [run, id]);
   const ride = get.data?.id === id ? get.data : null;
@@ -236,7 +232,44 @@ export function RideSummaryView({ id }: { id: string }) {
   );
 }
 
-function RideList() {
+/** One ride's row: its cells named by the column heads (a table, not a list), its Review button by everything that
+ * tells the ride apart, so the row reads the same to a screen reader as to the eye. */
+function RideRow({ ride: r, last }: { ride: RideRecord; last: boolean }) {
+  const started = startedText(r.startedAt);
+  const duration = formatDuration(r.summary?.durationS ?? null);
+  return (
+    <>
+      <span role="cell" className="num">
+        {started}
+      </span>
+      <span role="rowheader" className="history-name">
+        <span>{r.workoutName}</span>
+        {last && <span className="history-tag">Last opened</span>}
+      </span>
+      <span role="cell" className="num">
+        {duration}
+      </span>
+      <span role="cell" className="num">
+        {work(r.summary?.kj ?? null)}
+      </span>
+      <span role="cell" data-state={r.outcome}>
+        <span data-state-label>{OUTCOME[r.outcome]}</span>
+      </span>
+      <span role="cell">
+        <button
+          type="button"
+          // The visible word first (WCAG 2.5.3), then what tells this ride apart from the next.
+          aria-label={`Review ${r.workoutName}, ${started}, ${OUTCOME[r.outcome]}, ${duration}`}
+          onClick={() => navigate("history", r.id)}
+        >
+          Review
+        </button>
+      </span>
+    </>
+  );
+}
+
+function RideList({ lastOpened }: { lastOpened: string | null }) {
   const list = useCommand(commands.ridesList);
   const { run } = list;
   useEffect(() => {
@@ -246,7 +279,7 @@ function RideList() {
   const error = list.pending ? null : list.error;
   const rides = list.data ?? [];
   // The ride last opened stays in view when the rider comes back to a long list.
-  const marked = useRef<HTMLLIElement>(null);
+  const marked = useRef<HTMLDivElement>(null);
   const hasMarked = rides.some((r) => r.id === lastOpened);
   useEffect(() => {
     if (hasMarked) marked.current?.scrollIntoView?.({ block: "nearest" });
@@ -265,59 +298,53 @@ function RideList() {
         </div>
       )}
       {rides.length > 0 && (
-        <div className="history-table">
-          <div className="history-columns" aria-hidden>
-            <span>Started</span>
-            <span>Ride</span>
-            <span>Duration</span>
-            <span>Work</span>
-            <span>Outcome</span>
-            <span />
+        <div role="table" aria-label="Rides" className="history-table">
+          <div role="rowgroup" className="history-rows">
+            <div role="row" className="history-columns">
+              <span role="columnheader">Started</span>
+              <span role="columnheader">Ride</span>
+              <span role="columnheader">Duration</span>
+              <span role="columnheader">Work</span>
+              <span role="columnheader">Outcome</span>
+              <span role="columnheader">
+                <span className="sr-only">Review</span>
+              </span>
+            </div>
           </div>
-          <ul className="history-list" aria-label="Rides">
+          <div role="rowgroup" className="history-rows history-list">
             {rides.map((r) => {
               const last = r.id === lastOpened;
               return (
-                <li
+                <div
+                  role="row"
                   key={r.id}
                   ref={last ? marked : undefined}
+                  className="history-row"
                   aria-current={last || undefined}
                 >
-                  <span className="num">{startedText(r.startedAt)}</span>
-                  <span className="history-name">
-                    <span>{r.workoutName}</span>
-                    {last && <span className="history-tag">Last opened</span>}
-                  </span>
-                  <span className="num">
-                    {formatDuration(r.summary?.durationS ?? null)}
-                  </span>
-                  <span className="num">{work(r.summary?.kj ?? null)}</span>
-                  <span data-state={r.outcome}>
-                    <span data-state-label>{OUTCOME[r.outcome]}</span>
-                  </span>
-                  <span>
-                    <button
-                      type="button"
-                      onClick={() => navigate("history", r.id)}
-                    >
-                      Review
-                      <span className="sr-only">
-                        {" "}
-                        {r.workoutName}, {startedText(r.startedAt)}
-                      </span>
-                    </button>
-                  </span>
-                </li>
+                  <RideRow ride={r} last={last} />
+                </div>
               );
             })}
-          </ul>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-/** `history` is the list; `history/<rideId>` is that ride's Review. */
+/**
+ * `history` is the list; `history/<rideId>` is that ride's Review. History holds the ride whose Review was open last,
+ * so the list marks it on the way back; it lives as long as History is the view (App keys the view by its name), so
+ * leaving History for another view forgets it.
+ */
 export function History({ sub }: { sub?: string }) {
-  return sub ? <RideSummaryView id={sub} /> : <RideList />;
+  const [lastOpened, setLastOpened] = useState<string | null>(sub ?? null);
+  // Set while rendering, not in an effect: the list's first render already marks the ride.
+  if (sub !== undefined && sub !== lastOpened) setLastOpened(sub);
+  return sub ? (
+    <RideSummaryView id={sub} />
+  ) : (
+    <RideList lastOpened={lastOpened} />
+  );
 }

@@ -118,11 +118,11 @@ export const SCENARIOS = [
   // History (§5.6, #529): the ride list in each of its states.
   { name: "history-empty", ready: "text=No rides yet." },
   { name: "history-error", ready: "role=button[name='Retry']" },
-  { name: "history", ready: "role=list[name='Rides']" },
+  { name: "history", ready: "role=table[name='Rides']" },
   {
     name: "history-long",
-    ready: "role=list[name='Rides']",
-    scrollTo: ".history-list li:last-child",
+    ready: "role=table[name='Rides']",
+    scrollTo: ".history-row:last-child",
   },
   // Back from a ride's Review: the list marks the ride last opened.
   {
