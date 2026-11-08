@@ -144,6 +144,8 @@ fn a_profile_whose_canonical_form_is_too_long_is_refused_and_one_that_fits_round
     );
 }
 
+/// Texts whose length lands within 2 000 bytes under the limit, so their canonical form (`,` and
+/// `;` and newlines become `, `; case and `+` change) is often over it.
 fn near_limit() -> impl Strategy<Value = String> {
     let segment = proptest::sample::select(vec![
         "0.01km 1%",
@@ -153,7 +155,8 @@ fn near_limit() -> impl Strategy<Value = String> {
         "0.01KM +3% gravel",
     ]);
     let sep = proptest::sample::select(vec![",", ", ", ";", "\n", " ,  "]);
-    (20_000usize..27_000, segment, sep, any::<bool>()).prop_map(|(n, seg, sep, wrap)| {
+    (segment, sep, 0usize..2_000, any::<bool>()).prop_map(|(seg, sep, slack, wrap)| {
+        let n = (MAX_PROFILE_TEXT_BYTES - slack - 5) / (seg.len() + sep.len());
         let body = vec![seg; n].join(sep);
         if wrap { format!("2x({body})") } else { body }
     })
