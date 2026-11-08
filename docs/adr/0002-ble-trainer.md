@@ -1130,8 +1130,10 @@ Each device entry is `DeviceView { paired, phase, link, sample }` (ADR-0001 §4.
 - When the ride's hold is released (an unload, a discard, the ride's end), the devices it held come back `cold`, with
   no sample. A device it never held keeps its phase.
 
-From the hand-over until `ride_load` answers, a device reads `riding` with `link: ready`: the link was handed over
-`Ready`.
+From the hand-over until the ride's session is installed, there is no engine status yet. The core then takes `link`
+from the keeper: `ready`, the state in which the link was handed over (§5.1.4, "Details of the implementation"). From
+the installation on, `link` is the session's (the engine status's `trainer_link` / `hr_link`). In the snapshot of
+ADR-0001 §4.3 that window is `loading: true` with `ride: null`.
 
 This replaces the rule of #561, under which a riding device was read from `StreamFrame.links` and
 `device_links().link`, every other device from `LinkFrame`, and the Ready sheet combined both with
@@ -1160,7 +1162,8 @@ acks every frame (ADR-0001 §4.3.2's client rule).
 - **Latest wins.** Each frame is the complete state when it is sent, so coalescing loses nothing.
 - **At most 10 Hz**, paced on the unscaled clock. The first frame goes out at once.
 - **Size.** A frame is under 300 bytes (`keeper/channel.rs:337-358`).
-- **`seq`** stays the keeper state's number. After step 2 it only names the frame in the ack.
+- **`seq`** is the keeper state's number until step 2. From step 2 it is a per-channel frame counter that only names
+  the frame in the ack: with the overlay, a frame can change while the keeper's state does not.
 
 Step 3 replaces the channel with ADR-0001 §4.3's snapshot channel, which has the same rules for all live data, and
 deletes `links_open`, `links_ack`, `LinkFrame` and `device_links`. `device_links` already reports the overlaid view
