@@ -1,6 +1,7 @@
 // Today, direction A (DESIGN §5.1 "In direction A", §16.2, §18; #530): the home screen, on what the core can answer
 // today. The page title and the date, then on the 12-column grid (§18.2) four panels: today's ride (7 columns) beside
-// the devices (5), the last 7 days (7) beside the last ride (5). Not here yet, because the contract has none of it
+// the devices (5), the last 7 days (7) beside the last ride (5). The days show minutes ridden, not §5.1's TSS: the stored
+// summary has none yet (#570). Not here yet, because the contract has none of it
 // (#29): the check-in and red-flag check, the planner's proposal with its reasons, the wish matrix and the health cap
 // (#94, #119, #86); the athlete model card (#18, #109). The key hints are drawn; binding them is #104, as on the ride.
 // Today's ride is the ride load the rider started in Workouts (rideLoad.ts): while it runs Start reads "Loading ride…",
@@ -206,7 +207,10 @@ export function lastSevenDays(rides: RideRecord[], nowMs: number) {
       start: d.start,
       today: i === 6,
       rides: d.rides.length,
-      /** Minutes ridden by the day's rides with a summary; `null` when none has one. */
+      /**
+       * Minutes ridden by the day's rides with a summary; `null` when none has one. §5.1 wants TSS here, which the
+       * stored summary does not carry yet (dto.rs `RideSummary`, #570).
+       */
       minutes:
         timed.length === 0
           ? null
@@ -244,8 +248,20 @@ function Week({ rides, now }: { rides: RideRecord[]; now: number }) {
               })}
             </span>
             <span className="today-day-value num">
-              {d.minutes ?? "—"}
-              {d.minutes !== null && <span className="today-unit"> min</span>}
+              {d.minutes === null ? (
+                // A dash alone is skipped or read as "em dash": say what it stands for.
+                <>
+                  <span aria-hidden>—</span>
+                  <span className="sr-only">
+                    {d.rides === 0 ? "no ride" : "no time recorded"}
+                  </span>
+                </>
+              ) : (
+                <>
+                  {d.minutes}
+                  <span className="today-unit"> min</span>
+                </>
+              )}
             </span>
             <span className="today-day-state" data-state-label>
               {state === "ridden"

@@ -48,7 +48,9 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 - Today in direction A (DESIGN §5.1): the placeholder becomes four panels on the 12-column grid. Today's ride shows
   the load started in Workouts, with Start ⏎ once it is loaded, or "Nothing planned" with Pick a workout. Devices shows
   who is paired and the loaded ride's links, and leads to pairing when no trainer is paired. Last 7 days shows the
-  minutes ridden each local day, and Last ride the newest ride with Review. Five new design fixtures (`today-*`)
+  minutes ridden each local day (TSS once the summary has it, [#570](https://github.com/gerchowl/crank/issues/570)),
+  and Last ride the newest ride with Review. The ride-load notice leads the main region, styled with tokens and 32 px
+  buttons. Eight new design fixtures (`today-*`, `settings-ride-loaded`)
   ([#530](https://github.com/gerchowl/crank/issues/530))
 
 ### Changed

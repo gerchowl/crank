@@ -331,6 +331,22 @@
   "ride-work-step@1024x768-light": {},
   "ride-work-step@1440x900-dark": {},
   "ride-work-step@1440x900-light": {},
+  "settings-ride-loaded@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "settings-ride-loaded@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "settings-ride-loaded@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "settings-ride-loaded@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
   "settings@1024x768-dark": {
     "button.height": 4,
     "button.inconsistentHeight": 1
@@ -372,6 +388,22 @@
     "button.inconsistentHeight": 1
   },
   "today-error@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-link-lost@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-link-lost@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-link-lost@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-link-lost@1440x900-light": {
     "button.height": 4,
     "button.inconsistentHeight": 1
   },
@@ -420,6 +452,22 @@
     "button.inconsistentHeight": 1
   },
   "today-ride-loading@1440x900-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-refused@1024x768-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-refused@1024x768-light": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-refused@1440x900-dark": {
+    "button.height": 4,
+    "button.inconsistentHeight": 1
+  },
+  "today-ride-refused@1440x900-light": {
     "button.height": 4,
     "button.inconsistentHeight": 1
   },

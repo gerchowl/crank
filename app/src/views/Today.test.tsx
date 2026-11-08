@@ -83,6 +83,12 @@ function Routed() {
   );
 }
 const open = () => render(<Routed />);
+/** `el`'s text without the nodes `skip` selects (drawn: no `.sr-only`; read aloud: no `[aria-hidden]`). */
+const text = (el: Element, skip: string) => {
+  const copy = el.cloneNode(true) as Element;
+  for (const n of copy.querySelectorAll(skip)) n.remove();
+  return copy.textContent;
+};
 const route = () => screen.getByTestId("route").textContent;
 const panel = (name: string) => within(screen.getByRole("region", { name }));
 
@@ -309,13 +315,24 @@ test("the week reads each day's cells: its name, date, minutes ridden and state"
     name: "Last 7 days",
   });
   const days = within(week).getAllByRole("listitem");
-  expect(days.map((d) => d.textContent)).toEqual([
+  // What is drawn: the screen-reader-only words are not.
+  expect(days.map((d) => text(d, ".sr-only"))).toEqual([
     "TueOct 27—rest",
     "WedOct 28—rest",
     "ThuOct 29—1 ride",
     "FriOct 30—rest",
     "SatOct 3170 min2 rides",
     "SunNov 1—rest",
+    "TodayNov 250 min1 ride",
+  ]);
+  // What a screen reader reads: an empty day's dash is a word, never a bare "—".
+  expect(days.map((d) => text(d, "[aria-hidden]"))).toEqual([
+    "TueOct 27no riderest",
+    "WedOct 28no riderest",
+    "ThuOct 29no time recorded1 ride",
+    "FriOct 30no riderest",
+    "SatOct 3170 min2 rides",
+    "SunNov 1no riderest",
     "TodayNov 250 min1 ride",
   ]);
   expect(days[6].getAttribute("aria-current")).toBe("date");
