@@ -150,7 +150,7 @@ ascent, and the surface sources. Nothing is dropped or filled silently.
 | Distance between consecutive points | ≤ 10 km | A larger jump is a corrupt file or a teleport; the import is refused and the report names the position |
 | Repeated position, by accumulated distance | merged, counted | A move too small to change the along-route distance in f64 (sub-micrometre near the poles) is a repeat too, so `dist_m` strictly increases (#539) |
 | Tracks and routes per GPX file | 1 000 | A year of daily tracks is 366; the cap keeps 32 MiB of empty `<trk/>` from listing millions (#539) |
-| Grade-profile text | 256 KiB | 1 000 km at 100 m per segment, written without repeats, is about 150 KB (#539) |
+| Grade-profile text, as given and as printed canonically | 256 KiB each | 1 000 km at 100 m per segment, written without repeats, is about 150 KB. The canonical form can be longer than the input (`,` is printed `, `), so a profile whose canonical form exceeds the limit is refused when parsed (`CanonicalTooLong`): every accepted profile prints to text that parses back (§2.1 round trip) (#539) |
 | Grade-profile label | 100 characters | A name for the ride screen, a few words (#539) |
 | Grade-profile labels after expanding repeats | 1 MiB, checked before expanding | Each expanded segment carries its label; without it `100000x("<10 000 chars>" 0.01km 0%)`, 10 KB of text, would allocate about 1 GB (#539). 10 000 labelled segments of 100 bytes fit |
 

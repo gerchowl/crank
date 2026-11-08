@@ -3,8 +3,9 @@
 use crank_domain::route::{
     ElevationKind, GradeProfileItem as Item, GradeProfileRepeat, GradeProfileSegment,
     MAX_EXPANDED_LABEL_BYTES, MAX_LABEL_CHARS, MAX_PROFILE_SEGMENTS, MAX_PROFILE_TEXT_BYTES,
-    MAX_ROUTE_M, MIN_SEGMENT_M, ProfileGrade, RouteDslErrorKind as K, RouteSource, SegmentGrade,
-    Surface, parse_grade_profile, parse_route_dsl, print_grade_profile, print_route_dsl,
+    MAX_ROUTE_M, MIN_SEGMENT_M, ProfileGrade, RawPoint, RouteDslErrorKind as K, RouteSource,
+    SegmentGrade, Surface, parse_grade_profile, parse_route_dsl, print_grade_profile,
+    print_route_dsl, route_from_points,
 };
 use proptest::prelude::*;
 use std::fmt::Write as _;
@@ -62,14 +63,14 @@ fn the_adr_example_parses_and_prints_canonically() {
 #[test]
 fn the_route_carries_points_elevation_segments_and_the_canonical_text() {
     let r = parse_route_dsl(ADR_EXAMPLE).expect("the ADR's example");
-    assert_eq!(r.name, "Flat start");
-    assert_eq!(r.elevation, ElevationKind::Exact);
-    assert!(r.surface.from_file && r.surface.osm.is_none());
+    assert_eq!(r.name(), "Flat start");
+    assert_eq!(r.elevation(), ElevationKind::Exact);
+    assert!(r.surface().from_file && r.surface().osm.is_none());
     // 2 + 5 + 3 + 3 × (0.4 + 0.6) + 4 km, one point per segment end plus the start.
-    assert_eq!(r.segments.len(), 10);
-    assert_eq!(r.points.len(), 11);
-    assert_eq!(r.points.last().map(|p| p.dist_m), Some(17_000.0));
-    let ele: Vec<f64> = r.points.iter().filter_map(|p| p.ele_m).collect();
+    assert_eq!(r.segments().len(), 10);
+    assert_eq!(r.points().len(), 11);
+    assert_eq!(r.points().last().map(|p| p.dist_m), Some(17_000.0));
+    let ele: Vec<f64> = r.points().iter().filter_map(|p| p.ele_m).collect();
     let expected = [
         0.0,
         0.0,
@@ -86,24 +87,24 @@ fn the_route_carries_points_elevation_segments_and_the_canonical_text() {
     for (got, want) in ele.iter().zip(expected) {
         assert!((got - want).abs() < 1e-9, "{ele:?}");
     }
-    assert!(r.points.iter().all(|p| p.lat_lon.is_none()));
-    assert_eq!(r.segments[1].label.as_deref(), Some("Col"));
-    assert_eq!(r.segments[2].label, None);
+    assert!(r.points().iter().all(|p| p.lat_lon.is_none()));
+    assert_eq!(r.segments()[1].label.as_deref(), Some("Col"));
+    assert_eq!(r.segments()[2].label, None);
     assert_eq!(
-        r.segments[2].grade,
+        r.segments()[2].grade,
         SegmentGrade::Ramp {
             from_pct: 6.5,
             to_pct: 9.0
         }
     );
     assert_eq!(
-        (r.segments[3].start_m, r.segments[3].end_m),
+        (r.segments()[3].start_m, r.segments()[3].end_m),
         (10_000.0, 10_400.0)
     );
-    assert_eq!(r.segments[3].surface, Some(Surface::Cobbles));
-    assert_eq!(r.segments[9].surface, Some(Surface::Gravel));
-    let RouteSource::GradeProfile { dsl } = &r.source else {
-        panic!("{:?}", r.source)
+    assert_eq!(r.segments()[3].surface, Some(Surface::Cobbles));
+    assert_eq!(r.segments()[9].surface, Some(Surface::Gravel));
+    let RouteSource::GradeProfile { dsl } = r.source() else {
+        panic!("{:?}", r.source())
     };
     assert_eq!(
         dsl,
@@ -115,20 +116,20 @@ fn the_route_carries_points_elevation_segments_and_the_canonical_text() {
 #[test]
 fn a_repeat_label_names_its_unlabelled_segments_and_an_unlabelled_profile_has_a_default_name() {
     let r = parse_route_dsl("\"Hills\" 2x(1km 5%, \"Top\" 0.5km 0%)").expect("parses");
-    let labels: Vec<_> = r.segments.iter().map(|s| s.label.as_deref()).collect();
+    let labels: Vec<_> = r.segments().iter().map(|s| s.label.as_deref()).collect();
     assert_eq!(
         labels,
         [Some("Hills"), Some("Top"), Some("Hills"), Some("Top")]
     );
-    assert_eq!(r.name, "Hills");
+    assert_eq!(r.name(), "Hills");
     assert_eq!(
-        parse_route_dsl("1km 1%").expect("parses").name,
+        parse_route_dsl("1km 1%").expect("parses").name(),
         "Grade profile"
     );
     assert_eq!(
         parse_route_dsl("1km 1%, \"Late\" 1km 0%")
             .expect("parses")
-            .name,
+            .name(),
         "Late"
     );
 }
@@ -254,7 +255,7 @@ fn expanded_labels_are_bounded_before_expanding() {
     let fits = MAX_EXPANDED_LABEL_BYTES / 64;
     assert_eq!(fits * 64, MAX_EXPANDED_LABEL_BYTES);
     let r = parse_route_dsl(&rep(fits)).expect("just under the bound");
-    assert_eq!(u64::try_from(r.segments.len()).ok(), Some(fits));
+    assert_eq!(u64::try_from(r.segments().len()).ok(), Some(fits));
     let over = parse_route_dsl(&rep(fits + 1)).expect_err("just over the bound");
     assert_eq!(over.kind, K::LabelsTooLarge);
     // An inherited repeat label counts once per segment it names.
@@ -283,7 +284,7 @@ fn the_segment_bound_is_the_route_bound() {
     );
     let r = parse_route_dsl("100000x(0.01km 0%)").expect("1 000 km of 10 m segments");
     assert_eq!(
-        u64::try_from(r.segments.len()).ok(),
+        u64::try_from(r.segments().len()).ok(),
         Some(MAX_PROFILE_SEGMENTS)
     );
 }
@@ -293,23 +294,33 @@ fn a_blank_first_label_does_not_name_the_route() {
     assert_eq!(
         parse_route_dsl("\"\" 1km 1%, \" \" 1km 0%")
             .expect("parses")
-            .name,
+            .name(),
         "Grade profile"
     );
     assert_eq!(
         parse_route_dsl("\" \" 1km 1%, \"Top\" 1km 0%")
             .expect("parses")
-            .name,
+            .name(),
         "Top"
     );
 }
 
 #[test]
 fn print_route_dsl_is_none_for_a_file_route() {
-    let mut r = parse_route_dsl("1km 1%").expect("parses");
+    let r = parse_route_dsl("1km 1%").expect("parses");
     assert_eq!(print_route_dsl(&r).as_deref(), Some("1km 1%"));
-    r.source = RouteSource::GpxTrack;
-    assert_eq!(print_route_dsl(&r), None);
+    let raw: Vec<RawPoint> = [46.0, 46.01]
+        .iter()
+        .map(|&lat| RawPoint {
+            at: 0,
+            lat,
+            lon: 8.0,
+            ele_m: None,
+            surface: None,
+        })
+        .collect();
+    let file = route_from_points("f".into(), RouteSource::GpxTrack, &raw).expect("imports");
+    assert_eq!(print_route_dsl(&file.route), None);
 }
 
 // --- property tests: every text round-trips ---
@@ -507,10 +518,10 @@ proptest! {
     fn route_points_are_strictly_increasing_from_zero(items in profile()) {
         prop_assume!(!items.is_empty() && total_m(&items) <= 1_000_000);
         let route = parse_route_dsl(&print_grade_profile(&items)).map_err(|e| TestCaseError::fail(e.to_string()))?;
-        prop_assert_eq!(route.points[0].dist_m.to_bits(), 0f64.to_bits());
-        prop_assert!(route.points.windows(2).all(|w| w[1].dist_m > w[0].dist_m));
-        prop_assert_eq!(route.points.len(), route.segments.len() + 1);
+        prop_assert_eq!(route.points()[0].dist_m.to_bits(), 0f64.to_bits());
+        prop_assert!(route.points().windows(2).all(|w| w[1].dist_m > w[0].dist_m));
+        prop_assert_eq!(route.points().len(), route.segments().len() + 1);
         let total = u32::try_from(total_m(&items)).map(f64::from).map_err(|e| TestCaseError::fail(e.to_string()))?;
-        prop_assert_eq!(route.points.last().map(|p| p.dist_m), Some(total));
+        prop_assert_eq!(route.points().last().map(|p| p.dist_m), Some(total));
     }
 }

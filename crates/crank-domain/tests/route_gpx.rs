@@ -83,9 +83,9 @@ fn malformed_what(text: &str) -> String {
 #[test]
 fn a_plain_track_imports_with_haversine_distance_and_its_name() {
     let r = imported(&track(&line(11, 100.0, |i| Some(500.0 + n(i)))));
-    assert_eq!(r.route.name, "Test");
-    assert_eq!(r.route.source, RouteSource::GpxTrack);
-    assert_eq!(r.route.elevation, ElevationKind::Recorded);
+    assert_eq!(r.route.name(), "Test");
+    assert_eq!(r.route.source(), &RouteSource::GpxTrack);
+    assert_eq!(r.route.elevation(), ElevationKind::Recorded);
     assert_eq!(r.report.points_kept, 11);
     assert!(
         (r.report.distance_m - 1000.0).abs() < 1e-6,
@@ -93,8 +93,8 @@ fn a_plain_track_imports_with_haversine_distance_and_its_name() {
         r.report.distance_m
     );
     assert!((r.report.ascent_m - 10.0).abs() < 1e-9);
-    assert!(r.route.segments.is_empty());
-    let d: Vec<f64> = r.route.points.iter().map(|p| p.dist_m).collect();
+    assert!(r.route.segments().is_empty());
+    let d: Vec<f64> = r.route.points().iter().map(|p| p.dist_m).collect();
     assert_eq!(d[0].to_bits(), 0f64.to_bits());
     assert!(d.windows(2).all(|w| w[1] > w[0]), "strictly increasing");
 }
@@ -200,7 +200,7 @@ fn an_entity_other_than_xmls_five_is_not_expanded() {
     assert!(malformed_what(&text).contains("&ext;"));
     let ok = gpx(r#"<trk><name>A &amp; B &#x263A;</name><trkseg>
 <trkpt lat="46" lon="8"/><trkpt lat="46.01" lon="8"/></trkseg></trk>"#);
-    assert_eq!(imported(&ok).route.name, "A & B ☺");
+    assert_eq!(imported(&ok).route.name(), "A & B ☺");
 }
 
 /// A track whose first point holds `extra` nested elements inside `<extensions>`.
@@ -232,13 +232,13 @@ fn a_400_m_gap_is_filled_linearly_and_counted() {
     let r = imported(&track(&line(11, 100.0, |i| {
         (!(2..=4).contains(&i)).then_some(n(i) * 10.0)
     })));
-    assert_eq!(r.route.elevation, ElevationKind::Recorded);
+    assert_eq!(r.route.elevation(), ElevationKind::Recorded);
     assert_eq!(r.report.gaps_filled.len(), 1);
     let gap = r.report.gaps_filled[0];
     assert_eq!(gap.points, 3);
     assert!((gap.from_m - 100.0).abs() < 1e-6 && (gap.to_m - 500.0).abs() < 1e-6);
     for i in 2..=4 {
-        let e = r.route.points[i].ele_m.expect("filled");
+        let e = r.route.points()[i].ele_m.expect("filled");
         assert!((e - n(i) * 10.0).abs() < 1e-6, "point {i}: {e}");
     }
 }
@@ -262,7 +262,7 @@ fn a_missing_start_or_end_takes_the_nearest_value_under_the_same_rule() {
     let r = imported(&track(&line(11, 100.0, |i| {
         (2..=8).contains(&i).then_some(7.0)
     })));
-    assert!(r.route.points.iter().all(|p| p.ele_m == Some(7.0)));
+    assert!(r.route.points().iter().all(|p| p.ele_m == Some(7.0)));
     assert_eq!(r.report.gaps_filled.len(), 2);
     assert!(matches!(
         refusal(&track(&line(11, 100.0, |i| (i >= 6).then_some(7.0)))),
@@ -277,9 +277,9 @@ fn a_missing_start_or_end_takes_the_nearest_value_under_the_same_rule() {
 #[test]
 fn no_elevation_at_all_is_elevation_none() {
     let r = imported(&track(&line(11, 100.0, |_| None)));
-    assert_eq!(r.route.elevation, ElevationKind::None);
+    assert_eq!(r.route.elevation(), ElevationKind::None);
     assert_eq!(r.report.elevation, ElevationKind::None);
-    assert!(r.route.points.iter().all(|p| p.ele_m.is_none()));
+    assert!(r.route.points().iter().all(|p| p.ele_m.is_none()));
     assert!(r.report.gaps_filled.is_empty());
 }
 
@@ -294,7 +294,7 @@ fn an_implausible_elevation_is_a_missing_one_counted() {
     })));
     assert_eq!(r.report.elevation_out_of_range, 2);
     assert_eq!(r.report.gaps_filled.len(), 1);
-    assert!(r.route.points.iter().all(|p| p.ele_m == Some(100.0)));
+    assert!(r.route.points().iter().all(|p| p.ele_m == Some(100.0)));
 }
 
 // --- the rest of §2.2.1 and §2.2.4 ---
@@ -404,8 +404,8 @@ fn a_route_imports_and_waypoints_and_extensions_are_ignored() {
     }
     body.push_str("</rte>");
     let r = imported(&gpx(&body));
-    assert_eq!(r.route.source, RouteSource::GpxRoute);
-    assert_eq!(r.route.name, "R");
+    assert_eq!(r.route.source(), &RouteSource::GpxRoute);
+    assert_eq!(r.route.name(), "R");
     assert_eq!(r.report.points_kept, 3);
 }
 
@@ -417,18 +417,18 @@ fn a_surface_extension_in_any_namespace_sets_the_point_surface() {
 <trkpt lat="46.002" lon="8"><extensions><surface>moon dust</surface></extensions></trkpt>
 </trkseg></trk>"#);
     let r = imported(&text);
-    let s: Vec<_> = r.route.points.iter().map(|p| p.surface).collect();
+    let s: Vec<_> = r.route.points().iter().map(|p| p.surface).collect();
     assert_eq!(s, [Some(Surface::Gravel), Some(Surface::Cobbles), None]);
     assert_eq!(r.report.surfaces_from_file, 2);
     assert_eq!(r.report.unknown_surfaces, 1);
-    assert!(r.route.surface.from_file);
+    assert!(r.route.surface().from_file);
 }
 
 #[test]
 fn gpx_1_0_names_come_from_the_file_then_the_file_name() {
-    let one_oh = r#"<gpx version="1.0"><name>Old</name><trk><trkseg>
+    let one_oh = r#"<gpx version="1.0" xmlns="http://www.topografix.com/GPX/1/0"><name>Old</name><trk><trkseg>
 <trkpt lat="46" lon="8"/><trkpt lat="46.01" lon="8"/></trkseg></trk></gpx>"#;
-    assert_eq!(imported(one_oh).route.name, "Old");
+    assert_eq!(imported(one_oh).route.name(), "Old");
     let unnamed =
         gpx(r#"<trk><trkseg><trkpt lat="46" lon="8"/><trkpt lat="46.01" lon="8"/></trkseg></trk>"#);
     match import_gpx(
@@ -436,7 +436,7 @@ fn gpx_1_0_names_come_from_the_file_then_the_file_name() {
         "dir/Col du Test.gpx",
         &RouteImportOptions::default(),
     ) {
-        Ok(GpxImport::Imported(r)) => assert_eq!(r.route.name, "Col du Test"),
+        Ok(GpxImport::Imported(r)) => assert_eq!(r.route.name(), "Col du Test"),
         other => panic!("{other:?}"),
     }
 }
@@ -481,7 +481,7 @@ fn a_multi_track_file_lists_its_tracks_and_imports_the_chosen_one() {
     };
     match pick(1) {
         Ok(GpxImport::Imported(r)) => {
-            assert_eq!(r.route.name, "Day 2");
+            assert_eq!(r.route.name(), "Day 2");
             assert!((r.report.distance_m - 2_000.0).abs() < 1e-6);
         }
         other => panic!("{other:?}"),
@@ -529,7 +529,7 @@ fn the_route_grade_model_fixture_imports_to_the_models_distance() {
             rel <= 1e-12,
             "{segment}: same formula, so equal to rounding: {rel:e}"
         );
-        assert_eq!(r.route.elevation, ElevationKind::Recorded);
+        assert_eq!(r.route.elevation(), ElevationKind::Recorded);
         assert_eq!(r.report.dropped_null_island + r.report.merged_repeats, 0);
     }
 }

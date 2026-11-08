@@ -66,10 +66,15 @@ fn moves_too_small_to_add_distance_are_merged_not_kept_at_the_same_distance() {
     let r = imported(&track(&pts));
     assert_eq!(r.report.merged_repeats, 2);
     assert_eq!(r.report.points_kept, 2);
-    assert!(r.route.points.windows(2).all(|w| w[1].dist_m > w[0].dist_m));
     assert!(
         r.route
-            .points
+            .points()
+            .windows(2)
+            .all(|w| w[1].dist_m > w[0].dist_m)
+    );
+    assert!(
+        r.route
+            .points()
             .iter()
             .all(|p| p.ele_m.is_some_and(f64::is_finite))
     );
@@ -153,10 +158,10 @@ proptest! {
         prop_assert!(!matches!(result, Err(RouteImportError::Invariant { .. })), "{:?}", result);
         if let Ok(r) = result {
             prop_assert!(r.route.check().is_ok(), "{:?}", r.route.check());
-            let p = &r.route.points;
+            let p = &r.route.points();
             prop_assert_eq!(p[0].dist_m.to_bits(), 0f64.to_bits());
             prop_assert!(p.windows(2).all(|w| w[1].dist_m > w[0].dist_m));
-            match r.route.elevation {
+            match r.route.elevation() {
                 ElevationKind::None => prop_assert!(p.iter().all(|q| q.ele_m.is_none())),
                 _ => prop_assert!(p.iter().all(|q| q.ele_m.is_some_and(f64::is_finite))),
             }
@@ -178,13 +183,13 @@ fn a_blank_name_becomes_the_default() {
         })
         .collect();
     let r = route_from_points("  ".into(), RouteSource::GpxTrack, &raw).expect("imports");
-    assert_eq!(r.route.name, DEFAULT_ROUTE_NAME);
+    assert_eq!(r.route.name(), DEFAULT_ROUTE_NAME);
     let blank = gpx(
         r#"<metadata><name> </name></metadata><trk><name></name><trkseg>
 <trkpt lat="46" lon="8"/><trkpt lat="46.01" lon="8"/></trkseg></trk>"#,
     );
     match import_gpx(blank.as_bytes(), "", &RouteImportOptions::default()) {
-        Ok(GpxImport::Imported(r)) => assert_eq!(r.route.name, DEFAULT_ROUTE_NAME),
+        Ok(GpxImport::Imported(r)) => assert_eq!(r.route.name(), DEFAULT_ROUTE_NAME),
         other => panic!("{other:?}"),
     }
 }
@@ -241,20 +246,21 @@ fn a_utf8_bom_is_skipped() {
 }
 
 #[test]
-fn the_root_must_be_in_no_namespace_or_gpx_1_0_or_1_1() {
+fn the_root_must_be_gpx_in_the_gpx_1_0_or_1_1_namespace() {
     let body =
         r#"<trk><trkseg><trkpt lat="46" lon="8"/><trkpt lat="46.01" lon="8"/></trkseg></trk>"#;
     for root in [
-        "gpx",
         r#"gpx xmlns="http://www.topografix.com/GPX/1/0""#,
         r#"gpx xmlns="http://www.topografix.com/GPX/1/1""#,
-        r#"g:gpx xmlns:g="http://www.topografix.com/GPX/1/1""#,
     ] {
-        let name = root.split(' ').next().unwrap_or(root);
-        let text = format!("<{root}>{body}</{name}>");
+        let text = format!("<{root}>{body}</gpx>");
         assert_eq!(imported(&text).report.points_kept, 2, "{root}");
     }
+    let prefixed = r#"<g:gpx xmlns:g="http://www.topografix.com/GPX/1/1"><g:trk><g:trkseg>
+<g:trkpt lat="46" lon="8"/><g:trkpt lat="46.01" lon="8"/></g:trkseg></g:trk></g:gpx>"#;
+    assert_eq!(imported(prefixed).report.points_kept, 2);
     for root in [
+        "gpx",
         r#"gpx xmlns="urn:not-gpx""#,
         r#"k:gpx xmlns:k="http://www.opengis.net/kml/2.2""#,
         "k:gpx",
