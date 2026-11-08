@@ -1,7 +1,8 @@
 //! GPX 1.0 and 1.1 import (ADR-0005 §2.2.1): a streaming reader that expands no entity, refuses a
 //! DOCTYPE and stops at a depth of [`MAX_XML_DEPTH`].
 use super::{
-    MAX_FILE_BYTES, MAX_XML_DEPTH, RouteSource, Surface, haversine_m,
+    DEFAULT_ROUTE_NAME, MAX_FILE_BYTES, MAX_TRACKS, MAX_XML_DEPTH, RouteSource, Surface,
+    haversine_m,
     import::{ImportedRoute, RawPoint, RouteImportError, RouteImportOptions, route_from_points},
 };
 use quick_xml::{
@@ -125,7 +126,12 @@ pub fn import_gpx(
 fn stem(file_name: &str) -> String {
     let base = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
     let stem = base.rsplit_once('.').map_or(base, |(s, _)| s).trim();
-    if stem.is_empty() { "Route" } else { stem }.to_owned()
+    if stem.is_empty() {
+        DEFAULT_ROUTE_NAME
+    } else {
+        stem
+    }
+    .to_owned()
 }
 
 fn listed_distance(points: &[RawPoint]) -> f64 {
@@ -187,8 +193,11 @@ impl Walk {
             ));
         }
         let name = e.local_name().as_ref().to_owned();
-        if self.stack.is_empty() && name != "gpx" {
-            return Err(malformed(at, "the root element is not <gpx>"));
+        if self.stack.is_empty() {
+            if name != "gpx" {
+                return Err(malformed(at, "the root element is not <gpx>"));
+            }
+            root_namespace(e, at)?;
         }
         self.stack.push(name);
         let depth = self.stack.len();
@@ -196,6 +205,9 @@ impl Walk {
         let in_point = self.point.is_some();
         let field = match name {
             "trk" | "rte" if depth == 2 => {
+                if self.doc.candidates.len() == MAX_TRACKS {
+                    return Err(RouteImportError::TooManyTracks { max: MAX_TRACKS });
+                }
                 let kind = if name == "trk" {
                     TrackKind::Track
                 } else {
@@ -294,10 +306,50 @@ impl Walk {
         Ok(())
     }
 
-    fn text(&mut self, s: &str) {
+    /// Character data; outside the root element only whitespace is allowed.
+    fn text(&mut self, s: &str, at: u64) -> Result<(), RouteImportError> {
+        if self.stack.is_empty() && !s.chars().all(char::is_whitespace) {
+            return Err(malformed(at, "text outside the <gpx> element"));
+        }
         if let Some((_, _, t)) = &mut self.capture {
             t.push_str(s);
         }
+        Ok(())
+    }
+}
+
+/// The GPX 1.0 and 1.1 namespaces; a root in any other namespace is not GPX.
+const GPX_NAMESPACES: [&str; 2] = [
+    "http://www.topografix.com/GPX/1/0",
+    "http://www.topografix.com/GPX/1/1",
+];
+
+/// The root's namespace, from its own declaration (a root has no ancestors), must be none or GPX's.
+fn root_namespace(e: &BytesStart<'_>, at: u64) -> Result<(), RouteImportError> {
+    let qname = e.name();
+    let prefix = qname.as_ref().split_once(':').map(|(p, _)| p);
+    let key = prefix.map_or_else(|| "xmlns".to_owned(), |p| format!("xmlns:{p}"));
+    let mut namespace = None;
+    for attr in e.attributes() {
+        let attr = attr.map_err(|err| malformed(at, err.to_string()))?;
+        if attr.key.as_ref() == key {
+            let value = attr
+                .normalized_value(XmlVersion::Implicit1_0)
+                .map_err(|err| malformed(at, err.to_string()))?;
+            namespace = Some(value.into_owned());
+        }
+    }
+    match (prefix, namespace.as_deref()) {
+        (None, None | Some("")) => Ok(()),
+        (_, Some(ns)) if GPX_NAMESPACES.contains(&ns) => Ok(()),
+        (Some(p), None) => Err(malformed(
+            at,
+            format!("namespace prefix '{p}' is not declared"),
+        )),
+        (_, Some(ns)) => Err(malformed(
+            at,
+            format!("the root is in namespace '{ns}', not GPX 1.0 or 1.1"),
+        )),
     }
 }
 
@@ -372,21 +424,28 @@ fn read(bytes: &[u8]) -> Result<Doc, RouteImportError> {
                 walk.close(at)?;
             }
             Event::End(_) => walk.close(at)?,
-            Event::Text(t) => walk.text(&t.xml10_content()),
-            Event::CData(t) => walk.text(&t.xml10_content()),
+            Event::Text(t) => walk.text(&t.xml10_content(), at)?,
+            Event::CData(t) => walk.text(&t.xml10_content(), at)?,
             Event::GeneralRef(r) => {
                 if let Some(c) = r
                     .resolve_char_ref()
                     .map_err(|e| malformed(at, e.to_string()))?
                 {
-                    walk.text(c.encode_utf8(&mut [0; 4]));
+                    walk.text(c.encode_utf8(&mut [0; 4]), at)?;
                 } else if let Some(s) = resolve_predefined_entity(&r) {
-                    walk.text(s);
+                    walk.text(s, at)?;
                 } else {
                     return Err(malformed(at, format!("entity '&{};' is not expanded", &*r)));
                 }
             }
-            Event::Eof => break,
+            Event::Eof => {
+                // quick-xml does not report elements left open at the end; a truncated file
+                // must not import what it kept (ADR-0005 §2.2: nothing is dropped silently).
+                if let Some(open) = walk.stack.last() {
+                    return Err(malformed(at, format!("the file ends inside <{open}>")));
+                }
+                break;
+            }
             Event::Comment(_) | Event::Decl(_) | Event::PI(_) => {}
         }
     }

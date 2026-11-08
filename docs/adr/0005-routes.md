@@ -148,10 +148,17 @@ ascent, and the surface sources. Nothing is dropped or filled silently.
 | Elevation | −500 m to 9 000 m | Below the Dead Sea shore (−430 m) or above Everest (8 849 m) is a sensor fault |
 | Repeated point (distance 0 to the previous) | merged, counted | Keeps distance strictly increasing |
 | Distance between consecutive points | ≤ 10 km | A larger jump is a corrupt file or a teleport; the import is refused and the report names the position |
+| Repeated position, by accumulated distance | merged, counted | A move too small to change the along-route distance in f64 (sub-micrometre near the poles) is a repeat too, so `dist_m` strictly increases (#539) |
+| Tracks and routes per GPX file | 1 000 | A year of daily tracks is 366; the cap keeps 32 MiB of empty `<trk/>` from listing millions (#539) |
+| Grade-profile text | 256 KiB | 1 000 km at 100 m per segment, written without repeats, is about 150 KB (#539) |
+| Grade-profile label | 100 characters | A name for the ride screen, a few words (#539) |
+| Grade-profile labels after expanding repeats | 1 MiB, checked before expanding | Each expanded segment carries its label; without it `100000x("<10 000 chars>" 0.01km 0%)`, 10 KB of text, would allocate about 1 GB (#539). 10 000 labelled segments of 100 bytes fit |
 
 Every refusal is a typed `RouteImportError` (`TooLarge`, `TooManyPoints`, `TooShort`, `TooLong`, `Malformed { at,
-what }`, `MissingElevation { from_m, to_m }`, `Jump { at_m, len_m }`, `NotACourse`, `NoTrack`), mapped to
-`ApiError::InvalidInput` with the position (ADR-0001 §4.4).
+what }`, `MissingElevation { from_m, to_m }`, `Jump { at_m, len_m }`, `NotACourse`, `NoTrack`, `TooManyTracks`), mapped to
+`ApiError::InvalidInput` with the position (ADR-0001 §4.4). A truncated file (an element still open at the end) and
+text outside the root element are `Malformed`. `Invariant { what }` is not a property of the file: it reports a route that
+breaks §2.1, which `Route::new` refuses, and is a bug (#539).
 
 #### 2.2.5 Grade-profile text
 
