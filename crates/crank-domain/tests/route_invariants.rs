@@ -86,41 +86,61 @@ fn walk() -> impl Strategy<Value = Vec<RawPoint>> {
         Just((0.0, 0.0)),
     ];
     let step = (0u8..9, 0.0..=1.0f64, 0u8..5, -600.0..=9_500.0f64);
-    (start, proptest::collection::vec(step, 0..48)).prop_map(|((mut lat, mut lon), steps)| {
-        let mut out = Vec::new();
-        for (i, (kind, x, ele_kind, ele)) in steps.into_iter().enumerate() {
-            let (mut plat, mut plon) = (lat, lon);
-            // Metre steps go towards the equator, so a walk from near a pole stays valid there.
-            let towards_equator = if lat > 0.0 { -1.0 } else { 1.0 };
-            match kind {
-                0 => lat += towards_equator * x * 0.000_3,
-                1 => lon += x * 0.000_3,
-                2 => lon = lon.next_up(),
-                3 => lat = lat.next_down(),
-                4 => {}
-                5 => (plat, plon) = (0.0, 0.0),
-                6 => lat += towards_equator * x * 0.2,
-                7 => plat = f64::NAN,
-                _ => lon = -lon,
+    let prefix = any::<bool>();
+    (start, prefix, proptest::collection::vec(step, 0..48)).prop_map(
+        |((mut lat, mut lon), prefix, steps)| {
+            let mut out = Vec::new();
+            // Optionally a valid 200 m first, so the hostile steps that follow land on a route that
+            // would otherwise import (sub-ULP moves only matter once distance has accumulated).
+            if prefix {
+                for i in 0..=5u8 {
+                    let towards_equator = if lat > 0.0 { -1.0 } else { 1.0 };
+                    if i > 0 {
+                        lat += towards_equator * 0.000_36;
+                    }
+                    out.push(RawPoint {
+                        at: 0,
+                        lat,
+                        lon,
+                        ele_m: Some(100.0),
+                        surface: None,
+                    });
+                }
             }
-            if !matches!(kind, 5 | 7) {
-                (plat, plon) = (lat, lon);
+            for (i, (kind, x, ele_kind, ele)) in steps.into_iter().enumerate() {
+                let (mut plat, mut plon) = (lat, lon);
+                // Metre steps go towards the equator, so a walk from near a pole stays valid there.
+                let towards_equator = if lat > 0.0 { -1.0 } else { 1.0 };
+                match kind {
+                    0 => lat += towards_equator * x * 0.000_3,
+                    1 => lon += x * 0.000_3,
+                    2 => lon = lon.next_up(),
+                    3 => lat = lat.next_down(),
+                    4 => {}
+                    5 => (plat, plon) = (0.0, 0.0),
+                    6 => lat += towards_equator * x * 0.2,
+                    7 => plat = f64::NAN,
+                    _ => lon = -lon,
+                }
+                if !matches!(kind, 5 | 7) {
+                    (plat, plon) = (lat, lon);
+                }
+                let ele_m = match ele_kind {
+                    0 | 1 => None,
+                    2 => Some(f64::NAN),
+                    _ => Some(ele),
+                };
+                out.push(RawPoint {
+                    at: u64::try_from(i).unwrap_or(u64::MAX),
+                    lat: plat,
+                    lon: plon,
+                    ele_m,
+                    surface: None,
+                });
             }
-            let ele_m = match ele_kind {
-                0 | 1 => None,
-                2 => Some(f64::NAN),
-                _ => Some(ele),
-            };
-            out.push(RawPoint {
-                at: u64::try_from(i).unwrap_or(u64::MAX),
-                lat: plat,
-                lon: plon,
-                ele_m,
-                surface: None,
-            });
-        }
-        out
-    })
+            out
+        },
+    )
 }
 
 proptest! {
