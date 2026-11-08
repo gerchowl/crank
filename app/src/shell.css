@@ -118,8 +118,10 @@ kbd {
   justify-content: center;
   background: none;
   border-color: transparent;
-  padding: var(--space-2) var(--space-1);
-  min-height: var(--control-h-m);
+  /* The token holds the stack and its --space-2 inset above and below (theme.css), so the stack is centred, not padded. */
+  height: var(--control-h-rail);
+  min-height: 0;
+  padding: 0 var(--space-1);
 }
 .rail .rail-icon {
   font-size: var(--text-l);
