@@ -1,89 +1,57 @@
+# MEASUREMENT BRANCH for ADR-0006 (#580): never merged. Times a cold build and a one-line crank-core edit
+# of crank-cli in today's crane layout and in the per-crate prototype (crate2nix), serialized (--max-jobs 1).
 name: CI
-
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-    branches: [dev, main]
-  push:
-    branches: [dev, main]
-  # prepare-release.yml dispatches CI on release/<version>: a push made with GITHUB_TOKEN starts no
-  # workflow, and the release PR needs `CI Summary` on its head (RELEASING.md).
   workflow_dispatch:
     inputs:
       macos:
-        description: 'Also run the macOS gate (it always runs on release/* branches)'
+        description: unused
         required: false
         default: false
         type: boolean
-
 permissions:
   contents: read
-
-# A PR's new head supersedes its old run. A push to dev is not cancelled by the next one (that would starve
-# the post-merge macOS run on a busy day); GitHub still collapses queued runs to the latest.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-# GitHub-hosted runners (the repo is public; no self-hosted runners, #25). Both platforms run the locked
-# flake gate (#28, #57). The required gate on PRs is Linux; macOS runs on release candidates, release PRs,
-# after every merge into dev (post-merge, never gating a PR) and on request (ADR-0001 §9.6, #480). A red
-# post-merge macOS run on dev is triaged per RELEASING.md. BLE hardware is checked on sage.
 jobs:
-  plan:
-    name: Plan
-    runs-on: ubuntu-latest
-    outputs:
-      macos: ${{ steps.plan.outputs.macos }}
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04-arm, system: aarch64-linux }
+          - { os: macos-latest, system: aarch64-darwin }
+    runs-on: ${{ matrix.os }}
     steps:
-      - id: plan
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - name: Measure
         env:
-          MACOS: >-
-            ${{ (github.event_name == 'push' && github.ref == 'refs/heads/dev')
-            || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release/'))
-            || (github.event_name == 'workflow_dispatch' && (inputs.macos || startsWith(github.ref, 'refs/heads/release/'))) }}
+          SYS: ${{ matrix.system }}
         run: |
-          echo "macos=$MACOS"
-          echo "macos=$MACOS" >> "$GITHUB_OUTPUT"
-
-  linux:
-    needs: plan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          set -uo pipefail
+          step() {
+            name=$1; shift
+            start=$(date +%s)
+            nix build --no-link --max-jobs 1 --log-format internal-json -v "$@" 2>&1 \
+              | python3 -I scripts/nix-build-profile.py --json "prof-$name.json" > "prof-$name.txt"
+            rc=$?
+            echo "== $name: exit=$rc elapsed=$(( $(date +%s) - start ))s"
+            grep -E '^(wall|compiles)' "prof-$name.txt"; sed -n '2,30p' "prof-$name.txt" | grep -v '^compiles' | head -25
+          }
+          step crane-cold ".#packages.$SYS.crank-cli"
+          step crane-edit ".#packages.$SYS.crank-cli-edit"
+          step c2n-cold ".#packages.$SYS.crank-cli-c2n"
+          step c2n-edit ".#packages.$SYS.crank-cli-c2n-edit"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
         with:
-          persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
-      - run: nix flake check -L
-
-  macos:
-    needs: plan
-    if: needs.plan.outputs.macos == 'true'
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
-      - run: nix flake check -L
-
+          name: profiles-${{ matrix.system }}
+          path: prof-*
   ci-summary:
     name: CI Summary
     if: always()
-    needs: [plan, linux, macos]
+    needs: [measure]
     runs-on: ubuntu-latest
     steps:
-      - name: Require linux, and macos where it is wanted
-        env:
-          LINUX: ${{ needs.linux.result }}
-          MACOS: ${{ needs.macos.result }}
-          MACOS_WANTED: ${{ needs.plan.outputs.macos }}
-        run: |
-          echo "linux=$LINUX macos=$MACOS macos wanted=$MACOS_WANTED"
-          [ "$LINUX" = success ] || exit 1
-          if [ "$MACOS_WANTED" = true ]; then
-            [ "$MACOS" = success ]
-          else
-            [ "$MACOS" = skipped ]
-          fi
+      - run: echo measurement only
