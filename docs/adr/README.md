@@ -7,8 +7,8 @@ result).
 
 | ADR | Title | Status | Issue |
 |---|---|---|---|
-| [0001](0001-architecture.md) | Architecture, crate layout, Rust↔UI contract, persistence, testing | Proposed, Amended (#414) | #26, #414 |
-| [0002](0002-ble-trainer.md) | Bluetooth stack and Trainer abstraction (FE-C first) | Proposed, Amended (#54, #435) | #27, #54, #435 |
+| [0001](0001-architecture.md) | Architecture, crate layout, Rust↔UI contract, persistence, testing | Proposed, Amended (#414, #588) | #26, #414, #588 |
+| [0002](0002-ble-trainer.md) | Bluetooth stack and Trainer abstraction (FE-C first) | Proposed, Amended (#54, #435, #588) | #27, #54, #435, #588 |
 | [0003](0003-bug-report.md) | In-app bug reports with squelch | Proposed | #431 |
 | [0005](0005-routes.md) | Routes: GPX/FIT/grade-profile import, SIM-mode ride, speed model, OSM surface from a local regional extract | Accepted (owner, 2026-11-06) | #523 |
 

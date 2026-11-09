@@ -1,6 +1,6 @@
 # ADR-0001: Architecture, crate layout, Rust↔UI contract, persistence, testing
 
-- **Status:** Proposed
+- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10)
 - **Date:** 2026-10-13
 - **Issue:** #26
 - **Related:** ADR-0002 (BLE + `Trainer`), #24 (first-principles UX), #28 (scaffold), #2 #4 #12–#19
@@ -41,7 +41,7 @@ One Cargo workspace (edition 2024, toolchain pinned in `rust-toolchain.toml` by 
 | `crank-devices` | lib | `TrainerDriver` / `HeartRateDriver` traits and their types (ADR-0002), `sim` module: simulated rider + trainer + HR strap (port of `sim.ts`) | `crank-domain`, `tokio` (sync, time), `futures-util`, `smallvec`, `thiserror` |
 | `crank-fec` | lib, pure | ANT message framing + FE-C page codec (ADR-0002 §4) | none |
 | `crank-ble` | lib | btleplug discovery, FE-C trainer driver, HRS driver, reconnect, raw-frame capture (ADR-0002) | `crank-devices`, `crank-fec`, `btleplug` |
-| `crank-engine` | lib | ride engine actor: tick clock, ride state machine, metric bus, subscriptions + filter chains, ride record, laps, status, ERG policy, judge hook | `crank-domain`, `crank-devices` |
+| `crank-engine` | lib | ride engine actor: tick clock, ride state machine, metric bus, display series (§4.3.3; subscriptions + filter chains until #588 step 3), ride record, laps, status, ERG policy, judge hook | `crank-domain`, `crank-devices` |
 | `crank-store` | lib | SQLite schema, migrations, repositories | `crank-domain`, `rusqlite` (bundled: pinned SQLite engine), `rusqlite_migration` (forward-only schema versions), `serde`/`serde_json` (validated JSON envelopes), `thiserror` (typed store errors) |
 | `crank-coach` | lib | `RulesJudge` (knowledge-pack rules, implements `crank_domain::Judge`), `Planner` trait + Claude API client | `crank-domain`, `reqwest` |
 | `crank-intervals` | lib | intervals.icu client + mapping into domain types | `crank-domain`, `reqwest` |
@@ -148,119 +148,314 @@ are what Tauri itself uses for download progress and child-process output
 
 | Mechanism | Used for |
 |---|---|
-| **Commands** (request/response, async) | every query and mutation: `history`, `histogram`, `heatmap`, `mmp`, `hr_recovery`, `streams`, `recoveries`, `laps`, `compile_workout`, `parse_dsl`, `print_dsl`, ride control (`ride_load/start/pause/resume/stop/adjust/skip_block`), `ride_status`, `coach_decisions`, `device_links`, `stream_ack`, `stream_snapshot`, layouts, snippets, workouts, athlete model, coach respond/rate, planner propose/rewrite, devices, settings |
-| **One `Channel<StreamFrame>` per window** | all live data: subscribed samples, ride status, nudge changes, device link changes |
-| **One `Channel<LinkFrame>` per window** (ADR-0002 §5.1.4, #470) | the link keeper's state with or without a ride (phases and the latest sample per warm device); a device in `riding` (held by a ride) is read from `StreamFrame.links` instead, per device. Acked with a window of 1, latest wins, no resync (§4.3's flow-control rule) |
+| **Commands** (request/response, async) | every query and mutation: `history`, `histogram`, `heatmap`, `mmp`, `hr_recovery`, `streams`, `recoveries`, `laps`, `compile_workout`, `parse_dsl`, `print_dsl`, ride control (`ride_load/start/pause/resume/stop/adjust/skip_block`), `coach_decisions`, `ui_ack`, layouts, snippets, workouts, athlete model, coach respond/rate, planner propose/rewrite, devices, settings |
+| **One `Channel<UiFrame>` per window** (§4.3, amendment #588) | all live data, with or without a ride: the full UI state (ride, devices, nudges) and the series points not yet acknowledged. Acked with a window of 1. Until #588 step 3 the code has two channels instead: `Channel<StreamFrame>` (subscribed samples, ride status, link changes) and `Channel<LinkFrame>` (the link keeper's state, ADR-0002 §5.1.4) |
 | **Events** | only low-rate, app-wide invalidation hints for multiple windows: `store_changed { table }` |
 
-Queries become async (they were synchronous in the mock). The polling budget in `shared/README.md`
+Commands mutate or query durable data. They answer `()`, an id or an error, never live state that the page would
+have to merge with the channel (§4.3.8). Queries become async (they were synchronous in the mock). The polling budget in `shared/README.md`
 stays (history ≤ 1 Hz per chart, distributions ≤ 0.5 Hz, MMP ≤ 0.2 Hz); the UI animates between polls.
 Spec text update: #36.
 
-### 4.3 Streaming
+### 4.3 Live data: one snapshot channel per window (amendment 2026-11-09, #588)
 
-The mock's per-widget subscription semantics stay (rate 0.1–10 Hz per subscription, a filter chain per
-subscription running on every source sample, delivery only when a new source sample arrived). The
-transport changes: instead of one callback/channel per widget, the window opens **one multiplexed
-channel** and registers subscriptions on it.
+**Status.** Owner decision of 2026-11-09 (#588, which holds the reasons). It replaces the original §4.3 (the multiplexed
+`Channel<StreamFrame>` with per-widget subscriptions: #219, #34, #89) and ADR-0002 §5.1.4's `Channel<LinkFrame>` (#470,
+#561); `dev` keeps them until steps 2 and 3 (§4.3.10). "Today" cites `dev` at 2de24c5.
+
+#### 4.3.1 The design (normative)
+
+The rest of §4.3 defines what these sentences name. Where they disagree, this list wins.
+
+1. Each window opens one ordered snapshot channel to the core.
+2. The core keeps each loaded ride's series in an append-only store; the engine appends to it and publishes its status
+   under the store's lock.
+3. At most every 100 ms, and only when the last frame has been acked, the core sends a `UiFrame`: the full current state
+   plus up to 256 new points per series from that channel's cursor. It sends one at least every second.
+4. Sending moves the cursor; the ack only opens the window.
+5. The page replaces its state, appends the points (or replaces a series when `from` is 0), and acks.
+6. A stalled page holds one frame and catches up without loss when it acks.
+7. A sent frame can still be lost (§4.3.4). If no frame arrives for 2 s, the page opens a new channel, and the core
+   closes the old one.
+8. A new channel or a ride load starts the cursors at 0, so the traces backfill while the live numbers and safety state
+   show at once.
+9. With one frame of ≤ 32 KB in flight, a safety change reaches the page within about 200 ms.
+10. Commands answer only `()`, an error or the ride id, and never feed what is drawn. A page load closes the window's
+    old channels by id; the core sets `engine_unresponsive` itself.
+
+#### 4.3.2 Types and the client rule
 
 ```rust
-#[tauri::command] #[specta::specta]
-async fn open_stream(core: State<'_, Core>, ch: Channel<StreamFrame>) -> Result<StreamId, ApiError>;
-#[tauri::command] #[specta::specta]
-async fn subscribe(core: State<'_, Core>, stream: StreamId, metric: MetricId, opts: SubscribeOpts)
-    -> Result<SubId, ApiError>;
-#[tauri::command] #[specta::specta]
-async fn unsubscribe(core: State<'_, Core>, stream: StreamId, sub: SubId) -> Result<(), ApiError>;
+// commands: #[tauri::command] #[specta::specta]; types: #[derive(Serialize, specta::Type)], camelCase on the wire
+async fn ui_open(core: State<'_, Core>, window: Window, channel: Channel<UiFrame>) -> Result<UiChannelId, ApiError>;
+async fn ui_ack(core: State<'_, Core>, window: Window, channel: UiChannelId, seq: u32) -> Result<(), ApiError>;
 
-#[derive(Serialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamFrame {
-    pub seq: u64,                        // per stream, +1 per frame
-    pub resync: bool,                    // frames were coalesced: re-query discrete state (below)
-    pub samples: Vec<SubSample>,         // latest value of each subscription that is due
-    pub status: Option<RideStatus>,      // on change, and every 500 ms while riding
-    pub nudges: Vec<CoachNudge>,         // latest state per callId changed since last frame
-    pub links: Vec<LinkChange>,          // latest trainer / HR link state, if changed
+pub struct UiFrame {
+    pub channel: UiChannelId,    // the channel the frame belongs to; the page acks with it
+    pub seq: u32,                // per channel, from 0, +1 per frame; the ack names it
+    pub ride: Option<RideView>,  // the loaded ride, or the last ended one; null before any, after an unload, and
+                                 // from the start of a load until it installs its ride (§4.3.3)
+    pub loading: bool,           // a `ride_load` is under way; its per-device progress is `devices`
+    pub devices: DevicesView,    // both roles, always
+    // pub nudges: Vec<NudgeView>, added by #248: the live nudges, latest per call id, at most 8
+    pub series: SeriesDelta,     // the points from this channel's cursor
 }
-pub struct SubSample { pub sub: SubId, pub t: f64, pub v: Option<f64> }  // t = session seconds (§5)
-
-#[tauri::command] #[specta::specta]
-async fn stream_ack(core: State<'_, Core>, stream: StreamId, seq: u32) -> Result<(), ApiError>;
+pub struct RideView {
+    pub id: String,                  // the id `ride_load` answered
+    pub workout_id: Option<String>,  // null for a free ride
+    pub status: StreamStatus,        // the engine's status (§4.3.6)
+    pub live: LiveValues,            // this tick's values, for the big numbers (§4.3.3)
+    pub ended: Option<RideEnding>,   // null until the ride is over
+    pub engine_unresponsive: bool,   // §4.3.5
+}
+pub enum RideEnding { Finished, Forced }  // snake_case; forced: the core ended it, the engine stuck or gone (#331)
+pub struct LiveValues { pub power_w: Option<u16>, pub cadence_rpm: Option<u16>, pub hr_bpm: Option<u16> }
+                                     // null: paused, lost, a gap, or not riding
+pub struct DevicesView { pub trainer: DeviceView, pub strap: DeviceView }
+pub struct DeviceView {
+    pub paired: Option<PairedDevice>,  // null when nothing is paired for the role; strings cut (§4.3.3)
+    pub phase: Option<LinkPhase>,      // the keeper's phase (ADR-0002 §5.1.1); null exactly when not paired
+    pub link: Option<LinkStatus>,      // the ride's link state; set exactly when `phase` is `riding`
+    pub sample: Option<LinkSample>,    // the keeper's latest sample while `warm`; null otherwise
+}
+pub struct SeriesDelta { pub power: Points, pub cadence: Points, pub hr: Points }
+pub struct Points {
+    pub from: u32,                               // index of the first point; 0 starts the series again
+    pub t: Vec<f64>, pub w: Vec<f64>, pub v: Vec<u16>,  // session s (§5), workout s, and W, rpm or bpm
+}
 ```
 
-**Flow control.** Tauri's `Channel::send` has no consumer backpressure: payloads under 8 KiB of JSON are
-pushed with `webview.eval`, larger ones are parked in a pending map until the page fetches them
-(`crates/tauri/src/ipc/channel.rs`, tauri-v2.12.3, `MAX_JSON_DIRECT_EXECUTE_THRESHOLD = 8192`). Throttling
-the send rate therefore does not bound queued work if the page stalls (busy main thread, hidden window,
-devtools pause). crank bounds it explicitly:
+**The one client rule.** For each frame of the channel it holds, in arrival order, the page (1) replaces `ride`,
+`loading` and `devices` (and `nudges`, once #248 adds it); (2) per series, replaces its points when `from` is 0 and
+appends them otherwise; (3) calls `ui_ack(frame.channel, frame.seq)`. It compares no `seq`, runs no re-query, merges no
+command's answer, keeps nothing from an earlier frame but the series, and drops the frames of a channel it replaced. It
+routes on the frame's `ride`, never on `ride_load`'s id. **Watchdog:** no frame for 2 s on an open channel, and it calls
+`ui_open` again (§4.3.4). The core guarantees `from` equals the length the page holds (tested, §4.3.9); a mismatch is a
+core bug, reported as `internal`, not repaired.
 
-- The UI calls `stream_ack(stream, seq)` after it has applied a frame. The core keeps **at most 3
-  unacknowledged frames** per stream. While the window is full it sends nothing and **coalesces** into
-  bounded pending state: per subscription only the latest sample, the latest status, the latest state of
-  each of the two links, and **at most 8** changed nudges (latest per `callId`).
-- **Byte budget, measured.** Every frame is serialized to JSON first and its length **in bytes** is checked
-  against a budget of **8 000 bytes** (below Tauri's 8 192-byte direct-eval threshold, leaving headroom for
-  the IPC envelope). Counts and character limits are not the guarantee; the measured bytes are.
-  1. Fits → send.
-  2. Over budget → **split samples first**: discrete state (status, links, nudges) goes in the first frame,
-     samples fill that frame and the following frames (consecutive `seq`), each re-measured; split frames
-     count against the ack window.
-  3. Discrete state alone over budget → send the **fixed-size resync frame** (`{seq, resync: true}` with
-     empty payload, < 100 bytes) and drop the pending discrete state; the UI then queries the full state.
-- **Resync path.** The next frame after the ack window reopens carries the coalesced state with
-  `resync: true`, subject to the same byte budget (so it may itself be the bare resync frame). On any
-  `resync` or `seq` gap the UI re-reads the durable state by query: `ride_status()`, `coach_decisions()`,
-  `device_links()`, and `stream_snapshot(stream)` (latest sample per subscription). Discrete state lives in
-  the engine and store, so a coalesced, bare or missed frame never loses information.
-- **Bounded inputs** (for memory and to keep step 3 rare, not as the size proof): ≤ 64 subscriptions per
-  stream (`subscribe` returns `Conflict` beyond that), at most one sample per subscription per frame, ≤ 8
-  pending nudges (beyond that the pending nudges are dropped and step 3 applies). Nudge `message` is capped
-  at **512 UTF-8 bytes, enforced when the nudge is created** (`CoachNudge::new` returns
-  `Err(MessageTooLong)`; judge and planner templates must produce shorter text, and a template that doesn't
-  fails its unit test).
-- **Required test** (#34): a property test feeds the frame builder arbitrary states at and beyond every
-  cap (64 subscriptions, 8 nudges of 512 bytes of 4-byte UTF-8 characters, maximal status) and asserts that
-  every emitted frame serializes to ≤ 8 000 bytes, that split frames together carry every sample, and that
-  the resync frame is the fixed shape.
-- **Cleanup:** streams belong to a window label. `open_stream` from a window drops that window's previous
-  streams (page reload); the window's `Destroyed` event drops them; a failed `send` drops the stream.
-  Subscriptions die with their stream.
+#### 4.3.3 Series, size and rate
 
-Rates:
+**Series.** One append-only series per metric for the loaded ride, in memory, on session time: `power` (W) every tick (4
+Hz), `cadence` (rpm) and `hr` (bpm) every second tick (2 Hz), today's rates (`app/src/ride/Ride.tsx:357-359`, DESIGN
+§6.4). It is display data; the 1 Hz record (§6) stays the truth. A tick appends a point only while riding and when the
+value is present and finite: gaps are absent (§5), as the page skips them today (`Ride.tsx:398-401`). The big numbers
+read `ride.live`, the latest tick (`null` while paused, lost, in a gap or not riding, as subscriptions deliver today,
+`crates/crank-engine/src/engine.rs:1216-1237`). A 6 h ride is about 3 MB per process (18 B a point).
 
-| Stream | Rate | Why |
+**Store and lock.** The core owns the store (behind a `std` mutex). The engine appends and `send_replace`s the tick's
+status under its lock (`engine.rs:1597-1607`), and the frame builder reads both under it, so a frame's status and points
+are one tick's. The engine's wait is bounded, not zero: one builder's section (a status clone, ≤ 256 points per series).
+It never sees a channel or awaits a page and publishes its status on its `watch` as now (`EngineHandle::subscribe`,
+`engine.rs:351`).
+
+**Ride lifetime.** From the start of `ride_load`, `loading` is true, `ride` is `null` and the series are dropped, so the
+next frame carries `from: 0` and no points (today the core keeps the previous status until the new session is installed,
+`crates/crank-core/src/core.rs:1834`). A failed load leaves `ride` `null`; an unload makes it `null`; an ended ride
+stays, with `ended` set, until the next load.
+
+**Frame bound.** Each bound is measured by a test with every part at its cap:
+
+| Part | Bound |
+|---|---|
+| State (`ride`, `loading`, `devices`) | ≤ 4 000 B. The worst status is 1 080 B (`crates/crank-engine/src/stream/tests.rs:1257-1271`). Each `PairedDevice` string is cut to 64 B on a character boundary, as `record_error` is (§4.3.6) |
+| Nudges (#248, with its own size test) | ≤ 6 000 B: 8 messages of ≤ 512 B plus their fields |
+| Series | ≤ 256 points per series, oldest first. A point is ≤ 26 B of JSON up to 999 999.75 s, so ≤ 20 KB |
+| Whole frame | ≤ 32 KB. A live frame (no backlog, no nudges) is 1–2 KB |
+
+Tauri sends a frame under 8 192 B by `eval`; a larger one is parked and fetched by the page, one more round trip, in
+index order (tauri 2.12.3 `src/ipc/channel.rs:36`, `:284`, `:293-320`). **Why 256:** a safety change (trainer lost, ERG
+released, a pause) waits at most for the frame in flight and the 100 ms spacing, and ≤ 32 KB keeps a round trip ≤ 100
+ms, so it reaches the page within about 200 ms during a backfill. #598 measures the round trip on sage, failing above
+100 ms.
+
+**Rate.** A frame is **due** when the state differs from the last frame sent, when points are past the cursor, or 1 s
+after the last frame (the **heartbeat**); the first goes out at once on `ui_open`. A due frame is **sent** once the last
+is acked and ≥ 100 ms after it on the unscaled pacing axis (`Clock::pacing_now`), so ≤ 10 Hz at any simulated speed. The
+newest state wins; points accumulate. A ride sends at its 4 Hz tick; outside one, on a change or the heartbeat.
+
+#### 4.3.4 Flow control and recovery
+
+- **Ack window of 1.** After a frame the channel sends nothing until `ui_ack(channel, seq)` names that frame. An ack of
+  any other `seq` is ignored. An ack for a channel the calling window does not hold (another window's, or a closed one)
+  is `NotFound`. The link channel works this way today (`crates/crank-core/src/keeper/channel.rs:96-113`, `:121-144`).
+- **Cursor.** There is one cursor per channel and series: the index of the first point not yet sent. A frame carries the
+  points from `cursor` up to `min(len, cursor + 256)`, and **sending it moves the cursor** past them. A load starting
+  resets every cursor to 0.
+- **Stall.** A stalled page (busy, hidden, paused in devtools) holds one frame and costs one cursor. Its ack brings the
+  state now and the points after its last frame. No channel has a buffer; nothing is re-queried.
+- **Lost frame.** A successful send does not guarantee delivery. A frame of 8 192 B or more is fetched in a promise that
+  ends in `.catch(console.error)`, so a failed fetch loses it silently (`channel.rs:306-320`), and a send to a page
+  being replaced returns `Ok` and delivers nothing (`:310-316`). Unacked, the channel would stall for good. The
+  heartbeat means a frame at least every second, so after 2 s without one the page's watchdog calls `ui_open`; the core
+  closes the older channel (§4.3.5), and the new one backfills from 0. No resend, no cursor on the ack. A watchdog
+  firing after a suspension (a hidden window) costs only a backfill.
+- **Backfill.** A new channel starts every cursor at 0, so its first frames carry the ride's whole series, oldest first,
+  256 points per series per frame, with the current state in each. A 3 h ride (43 200 power points) takes 169 frames,
+  about 17 s at 10 Hz, until #599 downsamples the backfill to the trace's vertices.
+
+#### 4.3.5 Channel lifecycle, by channel id (#564)
+
+- **Id.** `ui_open` answers a `UiChannelId`: a per-process `u32` counter from 1, never reused within a process. The
+  channel belongs to the calling window.
+- **End.** A channel ends (1) when a send fails; (2) when its window starts loading a page (`PageLoadEvent::Started`) or
+  is destroyed: the handler closes the ids the window holds **at the event**, synchronously in the core's channel map (a
+  `std` mutex), never one the next page opens; (3) when the same window opens another (a remount, the watchdog). Nothing
+  is closed by label after the fact, so #564's race (a deferred close by label removing a newer stream,
+  `core.rs:2615-2635`, `app/src-tauri/src/lifecycle.rs:276-290`) cannot occur.
+- A channel opens with or without a ride. At most 16 are open per process, `Conflict` beyond that, as for streams today
+  (`crates/crank-engine/src/stream/hub.rs:23`).
+- **Engine unresponsive (#351).** Today acks go through the engine (`core.rs:2583-2595`), so a wedge shows within 1 s.
+  Now the core sets `ride.engine_unresponsive` when a bounded engine request times out (`REQUEST_TIMEOUT`,
+  `core.rs:85`), or when a ride in progress has not written its status watch for `REQUEST_TIMEOUT`. A paused ride writes
+  it: a pause stays `Active` and ticks (`engine.rs:868-872`, `:1552-1556`), and every wake ends in `publish` (`:863`),
+  whose `send_replace` (`:1607`) marks the watch changed. The flag stays until the ride ends; an unstarted ride does not
+  tick, so there Start answers `engine_unresponsive`, as today.
+
+#### 4.3.6 What the core computes into the snapshot
+
+- **One source per device.** A device a ride holds has `phase: riding` and the ride's `link` (`connecting`, `ready`,
+  `lost`), from the same engine status as `ride.status` (`RideStatus` carries both, `engine.rs:52-78`), so a loss and
+  its pause share a frame. Every other device is the keeper's (ADR-0002 §5.1.4).
+- **`loading`** replaces `RideStatusView.load` (`crates/crank-core/src/dto.rs:193-199`, `:428-434`); per-device progress
+  is in `devices`.
+- **`ride.ended`** replaces `RideEnded.forced` (`dto.rs:417-423`) and `app/src/ride/forcedEnds.ts`, which a reload loses
+  (`forcedEnds.ts:1-5`); the core keeps it until the next load (`core.rs:736`, `:2229-2233`).
+- **Laps** stay a query (`laps`, #243 part c). `status.laps_closed` tells the page when to read it again.
+
+**Status notes** (#219, #243, #324, #329) stay in force, documented on each field of `StreamStatus`
+(`crates/crank-engine/src/stream/types.rs:293-364`) and in `git show 2de24c5:docs/adr/0001-architecture.md`.
+Thresholds and flags (#243 part b) and nudges (#248) enter later, each a field with its own size test.
+
+#### 4.3.7 Per-widget rates or filters
+
+If a widget ever needs its own rate or filter, the core computes it into the snapshot.
+
+#### 4.3.8 Commands, and what else is affected
+
+| Command | Today (`dev` 2de24c5) | New | Step |
+|---|---|---|---|
+| `links_intent(intent)` | `LinkFrame`, the keeper state its resolving step published (`app/src-tauri/src/commands.rs:93-98`, `core.rs:1251-1270`) | `Result<(), ApiError>`, answered at the same moment and with the same refusals; the effect shows in the next frame | 2 |
+| `ride_load(workout_id)` | `RideLoaded { ride_id, workout_id, hr_linked }` (`commands.rs:156-161`, `dto.rs:405-412`) | `Result<String, ApiError>`, the ride id, for logs and tests. `hr_linked` is `devices.strap`, `workout_id` is `ride.workout_id` | 3 |
+| `ride_end()` | `RideEnded { ride_id, forced }` (`commands.rs:210-219`, `dto.rs:417-423`) | `Result<(), ApiError>`; the end is `ride.ended` | 3 |
+| `device_pair(id, role)` | `PairedDevice` (`commands.rs:58-64`) | `Result<(), ApiError>`; the pairing is `devices.<role>.paired` | 3 |
+| `ride_status()` | `RideStatusView { load, status }` (`commands.rs:227-229`, `core.rs:2460-2476`) | deleted: `ride` and `loading` | 3 |
+| `device_links()` | `Vec<DeviceLinkInfo>` (`commands.rs:82-84`, `core.rs:1479-1520`) | deleted: `devices` | 3 |
+| `open_stream(channel)`, `stream_subscribe`, `stream_unsubscribe`, `stream_ack`, `stream_snapshot` | the stream, its subscriptions, acks and re-query (`commands.rs:237-305`) | deleted: `ui_open`, `ui_ack` | 3 |
+| `links_open(channel)`, `links_ack` | the link channel (`commands.rs:106-128`) | deleted: `ui_open`, `ui_ack` | 3 |
+
+Unchanged: `core_ready`, `display_width_mm`, `devices_scan` (its scan's result), the `()` commands (`device_forget`,
+`ride_start`, `ride_pause`, `ride_resume`, `ride_skip`) and the durable queries (§4.2). The facade keeps a one-shot
+`Core::snapshot()`, the frame's state without the series, for tests and for the CLI and MCP; it is not a command.
+
+**Unaffected.** **hil / Part B (#44)** reads the `.fecap` captures (`crates/crank-ble/examples/hil_fec/partb.rs:1-7`),
+`<dir>/logs.jsonl` under `CRANK_CAPTURE_DIR` (`AGENTS.md:54`, `:63`) and the `crank_core::links` log lines (ADR-0002
+§5.1.6), never a channel. **The recorder**'s 1 Hz record (`crates/crank-engine/src/record.rs`,
+`crates/crank-core/src/recorder.rs:1-2`) is written on the engine's task, apart from the streams (`hub.rs:4-7`). **FIT
+export** (#257, #548) is not built and will read the record, not the series. **The CLI and MCP** are scaffolds
+(`crates/crank-cli/src/main.rs:1-3`, `crates/crank-mcp/src/lib.rs:1`); with #40 they read `Core::snapshot()` or a
+`UiSink`, which replaces `FrameSink` (`core.rs:201-212`) and `LinkSink` (`keeper/channel.rs:35-46`).
+
+#### 4.3.9 Deletion list, and what replaces each test's intent
+
+| Code, by crate | Deleted | Kept or changed |
 |---|---|---|
-| Engine tick / trainer source | **4 Hz** (250 ms) | FE-C native rate; Tacx recommends 4 Hz in both directions (ADR-0002 §4) |
-| HR source | per notification (~1 Hz), RR per beat | Heart Rate Service |
-| Frame emission | **≤ 10 Hz**, only when something is due | 10 Hz is the maximum display rate; bounds IPC to ≤ 10 messages/s per window regardless of widget count. One exception: a batch that exceeds the frame budget is split into up to 3 consecutive frames sent at the same instant (unreachable below 8 000 bytes of pending state) |
-| Status heartbeat | 2 Hz while riding, immediately on change | same as mock |
-| Ride record | 1 Hz per-second means | `streams()` and persistence |
+| `crank-engine` | `src/stream/flow.rs`, `hub.rs` (the series append replaces `on_source`) and `work.rs`. In `src/stream/types.rs`: `StreamId`, `SubId`, `MetricId`, `SubscribeOpts` and its caps, `SubSample`, `LinkChange`, `StreamFrame`, `StreamSnapshot`, `StreamError`, `StreamStatus::same_discrete`. In `engine.rs`: the stream variants of `StreamReq` (`:214-226`) and their handling (`:1513-1535`), the hub calls (`:1236`, `:1597-1606`), and `EngineHandle::open_stream` … `stream_snapshot` (`:262-334`). `hold_tests.rs`'s use of the hub | `StreamStatus` and its parts, `LinkStatus`, and `StreamStatus::in_progress` (`core.rs:1769`). The `Laps` request (`EngineHandle::laps`, `:336-343`) |
+| `crank-core` | `keeper/channel.rs`, whose run loop becomes the model for the new `ui` module. In `core.rs`: `open_stream`, `owned`, `subscribe`, `unsubscribe`, `stream_ack`, `stream_snapshot`, `close_streams`, `links_open`, `links_ack`, `ride_status`, `device_links` (`:1291-1320`, `:1479-1520`, `:2460-2635`) and `FrameSink`. In `dto.rs`: `LinkFrame`, `LinksId`, `DeviceLinkInfo`, `RideLoaded`, `RideEnded`, `RideStatusView` | `LoadProgress`, for the log and the keeper |
+| `crank-desktop` | `ChannelSink`, `LinkChannelSink`, the commands of §4.3.8 and their registry entries (`app/src-tauri/src/lib.rs:31-58`) | `lifecycle.rs` `drop_streams` closes channel ids (§4.3.5) |
+| App | `app/src/stream/state.ts`, `app/src/ride/linkOrder.ts`, `app/src/ride/forcedEnds.ts`. In `app/src/stream/client.ts`, `Requery`, the subscriptions and the ack pump; it becomes a client of about 60 lines: open, apply, ack, watchdog. In `hooks.tsx`: `useSubscribe`, `useLinks`. The protocol half of `app/src/ride/rideBackend.ts` (`:27-51`, `:517-572`). `RideSession.record`, `Ride.tsx` `useRecord` and the page-built history. The `device_links` polling (`app/src/views/Today.tsx:144`, `app/src/views/Devices.tsx:205`) | `StreamProvider` becomes app-scoped. `app/src/stream/lint.test.ts` (the `structuredClone` ban) applies to the new client |
 
-At 10× / 60× simulated speed the source rates scale with simulated session time, frame emission does not.
-Ordering guarantee: everything in one frame happened before everything in the next; a status change
-and the samples that follow it can't be reordered, which events could not promise.
+**Docs**, each updated by the step that changes its subject: AGENTS.md (the streams, link-channel and `app/src/stream/`
+paragraphs), `spec/UX-SPEC.md:18-21`, `:76-78`, `spec/VIEWS.md:7`, `:42-43`, DESIGN §6.4 and DESIGN.md:621,
+`docs/safety/FMEA.md` FM-STEADY-21 to 24, and the doc comments in `dto.rs` and `bindings.ts`. ADR-0002 §5.1.4 is updated
+by this amendment.
 
-**Implementation notes (#219, `crank-engine::stream`).** Conventions the rules above leave open, fixed by code and tests:
+**Tests.** Each replacement fails on `dev` today, or on the step before it.
 
-- **Layers.** `flow` is a pure per-stream state machine over microsecond monotonic time (ack window, coalescing, resync, byte budget, 10 Hz spacing); `hub` owns subscriptions, filter chains and window cleanup; the engine calls the hub synchronously from `publish` and once per tick, never awaits a consumer, and sends frames with `try_send` on a channel larger than the ack window. A failed send (closed or full) drops the stream, and a closed receiver is reaped on every poll whether or not the stream has anything to send; at most 16 streams are live (`TooManyStreams`, `Conflict`).
-- **Acks are cumulative**: `stream_ack(seq)` acknowledges every frame up to and including `seq`; a `seq` that was never sent is ignored.
-- **Resync flag.** A frame carries `resync: true` iff a pending sample, status or link state was replaced while the window was full (an intermediate state was lost), or the discrete state alone exceeded the budget (bare frame). Replacement before the window fills is ordinary latest-wins and sets nothing.
-- **Status "on change"** compares everything but the clock fields (`session_s`, `workout_s`, `block_elapsed_s`), which advance every tick and ride on the 500 ms heartbeat. The heartbeat runs while a ride is in progress (`riding` or `paused`), not in `idle`/`finished`, and is not offered while the window is full.
-- **Subscription rate** (0.1–10 Hz) is in session time: the chain sees every 4 Hz source sample, a value is offered when `1/rate` of session time has passed since the last offered one. Frame spacing (≥ 100 ms) and the heartbeat are paced on the clock's *unscaled* pacing axis (`Clock::pacing_now`; `VirtualClock` returns timer time), so at 10×/60× the source values advance in session time and frame emission does not (the sentence above). Paused or lost ticks feed `null`, like the record.
-- **Chain caps** (validated on `subscribe`, `InvalidFilter`): ≤ 4 filters, SMA window and EMA τ ≤ 300 s, median n ≤ 256. The spike's longest display filter is 10 s (`shared/src/layouts.ts`); no ADR or DESIGN figure exists, so the caps are 30× that and bound a tick's work at the caps (tested).
-- **Non-finite values are gaps.** NaN/±∞ serialize to `null`, indistinguishable from a gap, and a NaN would poison an EMA for the rest of the ride; per §5 (gaps are null, never interpolated) a non-finite source value enters the chain as a missing sample and a non-finite chain output is delivered as `null`.
-- **Source metrics** are the record's catalogue (`power`, `cadence`, `speed`, `hr`, `workout_s`) and `power_lap` (#243): the mean power of the open lap's record seconds so far, so its last value is the closed lap's `avgPowerW`; it is not recorded. Other derived metrics are not subscribable yet.
-- **Status DTO.** `StreamStatus` is `RideStatus` in wire form; `record_error` is cut to 256 bytes on a character boundary (the full text stays in `RideStatus`).
-- **Trainer-loss fields** (#329): `user_paused`, `trainer_lost_since_s`, `reconnect_attempt`, `soft_start_target_w`, `last_gap_s`, `reconnected_at_s`. The engine knows each; none is inferred in the UI. They are discrete: each changes only at a transition (a loss, a reconnect attempt, the trainer back, the soft start ending, a rider pause), so they count as a status change and go out at once (`same_discrete`), and add no heartbeat churn. "Lost for how long" is deliberately not a field: a ticking counter would change the status every tick, so the loss is a **timestamp on the session clock** (`trainer_lost_since_s`) and the consumer subtracts it from the `session_s` the heartbeat already refreshes. The worst status measures 909 bytes against the 8 000-byte frame budget (tested). They describe the running ride only: a finished ride reports none of them. After the trainer returns while the rider is not pedalling, `state` is still `paused(trainer_lost)` while `trainer_lost_since_s` is `null` and `last_gap_s` is set, so a consumer keys "the trainer is lost" on `trainer_lost_since_s`. `soft_start_target_w` follows the block's target line and can change up to once per tick, for the soft start's 20 ticks at most. `soft_start_target_w` is set only for the soft start after a recovered loss, not for the one every ride begins with (§7.5, #250) nor one owed on resume from a rider pause.
-- **Commanded target** (#324): `commanded`, a typed mode: `{kind: "erg", watts}` | `{kind: "resistance", pct}` | `{kind: "free"}` | `{kind: "sim"}`, or `null`. It is the engine's own `last_sent`, the mode it handed to the trainer driver in the current link epoch, so it is what the policy decided after the soft start, the health cap and rounding, never the plan (the UI shows the plan as the secondary line). Why there is no ERG number is read from flags the status already has, not from more variants: `resistance` with `ergReleased` is a release (§7.4), with `userPaused` a rider pause, and with neither the end mode. It is `null` outside a running ride (loaded, finished), and from a link transition or a silence epoch until the engine re-issues the mode (a lost trainer is told nothing). It is the queued command, not an echo; whether the trainer follows is `trainerFollowing`. **Churn:** it changes at most when the engine sends a mode, and the engine sends at most one per tick. Measured (`the_commanded_target_changes_at_most_once_a_second_on_a_ramp_after_the_soft_start`): on a steady ERG block it is one value; on a ramp block it moves once per second (the plan moves in 1 Hz steps, §7.3), 1 frame/s of ~600 B; the soft start adds at most 8 changes in its first 6 s on a ramp block (at most 4/s, two adjacent ticks at the end of the ramp), and the same after a release or a rider pause. Each change is a status frame under the usual coalescing; the worst status measures 964 bytes against the 8 000-byte budget (tested). It counts as a status change (`same_discrete`).
-- **Live cursor and laps** (#243 part a; decisions in the #243 comments). `block_start_session_s` / `block_start_workout_s` are the session and workout time at which the current block actually began (the ride's start, its predecessor's end or the skip); pauses and dropouts after it move neither, and `block_start_workout_s + block_elapsed_s = workout_s` always; both are `null` exactly when `block_index` is. Laps are not a frame lane: one lap per block as ridden (a free ride is one lap, where the lap/skip action opens the next), served by the `laps` query (`EngineHandle::laps`; the command over it is #243 part c), and the status carries `laps_closed` so a consumer re-queries when it changes (also after a resync). A lap's span is in session time (pauses included); its statistics (mean and normalized power, mean HR and cadence, `paused_s`, per-sensor `gap_s`, compliance) come from its 1 Hz record seconds, so paused and lost seconds are excluded (normalized power drops paused and missing-power seconds and joins the rest end to end, so a 30 s window can span a pause or a gap); a second split by a boundary belongs to the lap of its last riding tick, and the laps' compliance tallies add up to the ride's (tested). All three fields are discrete (`same_discrete`); the worst status measures 1 080 bytes (tested).
-- **Not in this part:** thresholds and flags (#243 part b), the nudges lane (#248).
+| Test today | Intent | Replaced by |
+|---|---|---|
+| `flow_control_holds_over_arbitrary_interleavings`, `the_generator_reaches_the_split_and_bare_paths`, `a_full_window_sends_nothing_and_coalesces_to_the_latest`, `an_ack_for_a_frame_never_sent_is_ignored`, `seq_wraps_at_u32_max_and_the_ack_window_follows`, `a_split_across_the_wrap…` (`stream/tests.rs:303-445`, `:1426-1472`) | flow control is bounded and loses nothing it promises | **one property test** of the `ui` channel over arbitrary interleavings of ticks, keeper changes, ride loads and ends, and acks (right, stale, foreign, none for a long time). It asserts: at most one frame unacked; each frame's state equals `Core::snapshot()` at its send; the received chunks, applied by the client rule, equal the core's series exactly (no hole, no duplicate, `from` always the page's length, also when a load starts while a frame is in flight or a channel closes mid-backfill); `ride.live` equals the engine's latest tick; frames ≥ 100 ms apart; every frame within the bound |
+| (none: a new risk) | a lost frame does not stall the page | **a dropped frame is recovered**: drop one frame mid-ride; the page reopens and, within 3 s, holds the current state and a complete series |
+| `every_frame_stays_under_the_byte_budget_at_every_cap`, `oversized_samples_split…`, `a_split_stops_at_the_window…`, `discrete_state_over_budget_becomes_the_bare_resync_frame` (`:482-618`), `the_largest_frame_is_under_the_byte_budget` (`keeper/channel.rs:337-358`) | a frame has a known size | **the frame-bound test** (§4.3.3) |
+| `subscription_chain…`, `each_subscription_has_its_own_chain`, `subscriptions_are_bounded_and_validated`, `unsubscribe_drops_the_pending_sample`, `filter_chains_are_capped…`, `subscribe_opts_wire_contract_for_the_ui_mock`, `ids_skip_zero…`, `stream_and_subscription_ids_stay_unique…` (`:633-741`, `:1018-1065`, `:1473-1608`) | subscriptions and chains | deleted with subscriptions |
+| `the_tick_cost_stays_bounded_at_every_cap` (`:1066-1144`) | a tick's work is bounded | **the series append costs one push per series per tick, however many channels are open** |
+| `non_finite_values_are_gaps…`, `a_chain_that_overflows_to_infinity_emits_a_gap` (`:1180-1239`) | a NaN never reaches the page | **a non-finite or absent value appends no point** |
+| `frames_never_exceed_ten_per_second…` (`stream/tests.rs:742-770`), `frames_are_spaced_and_sent_only_on_change` (`keeper/channel.rs:266-300`) | ≤ 10 Hz, only on change | the same on the `ui` channel, with the series and the heartbeat |
+| `status_is_sent_on_change_and_otherwise_at_two_hertz`, `the_block_start_and_the_lap_count_are_sent_on_change`, `no_heartbeat_while_idle_or_finished`, `a_blocked_stream_does_not_beat_into_resync`, `a_status_change_restarts_the_heartbeat_period`, `a_blocked_stream_neither_beats_nor_flags_resync_after_the_ack`, `the_loss_fields_are_discrete…`, `a_hub_sends_a_status_when_only_a_loss_field_changed` (`stream/tests.rs:788-880`, `:955-1017`, `:1609-1668`) | no status change is missed; the heartbeat is cheap | **a change visible at an ack is in the next frame**, and **an idle core sends one frame a second, no more** |
+| `a_new_stream_starts_with_the_current_status_and_links` (`stream/tests.rs:881-892`), `the_first_frame_is_the_state_at_the_open` (`keeper/channel.rs:204-216`) | a new page starts from the truth | **the first frame is `Core::snapshot()` at the open, sent at once**, and **a channel opened mid-ride backfills the series from index 0, contiguously** (fails today: a new page's trace starts empty) |
+| `a_consumer_that_never_reads_or_acks_is_bounded`, `a_stalled_page_gets_only_the_latest_state_once_it_acks` (`keeper/channel.rs:221-242`), `a_stalled_consumer_never_blocks_the_ride_or_the_record` (`crates/crank-engine/tests/streams.rs:189`) | a stalled page costs nothing and loses nothing | **the page converges after a stall**: it stalls 60 s mid-ride, then acks; its next frames carry the current state and series that start exactly where its own ended. The ride and the record are unaffected (fails today: a hole in the trace, #557 item 4) |
+| `window_cleanup_drops_streams_and_dead_sinks`, `closed_receivers_are_reaped…`, `a_blocked_dead_stream_is_reaped`, `opening_a_stream_frees_the_closed_ones…`, `unlabelled_streams_never_evict_each_other` (`stream/tests.rs:909-985`, `:1145-1255`), `reopen_close_and_a_failed_send_drop_the_channel`, `a_close_issued_before_a_reopen_never_drops_the_new_channel` (`keeper/contract_tests.rs:443-468`) | lifecycle | **lifecycle by id**: a failed send, a page-load event and a reopen each close exactly the channels of §4.3.5. The #564 reproduction: the close is issued, the new page opens, the close runs, and the new channel is alive and acks (fails today: `NotFound`) |
+| `keeper/contract_tests.rs`: `each_device_has_one_source_an_unlinked_strap_stays_the_keepers` (`:351`) and the other phase tests (`:77-290`, `:379-568`) | the devices' state | **the overlay test**: a riding device shows the ride's link, a lost trainer shows `lost` in the same frame as `trainer_lost_since_s`, and an unlinked strap keeps its own phase. The phase tests move to `devices` |
+| `keep_newest`, `applied_in_arrival_order_the_newest_state_wins…`, `a_discards_answer_carries_the_seq_of_its_own_state`, `links_intent_answers_the_state_its_resolving_step_published` (`:421-441`, `:569-708`), `app/src/ride/linksBackend.test.ts:350-410` | ordering two sources | deleted: one source. **The client acks every frame it receives** replaces #577's concern |
+| `app/src/stream/stream.test.tsx` | the client applies frames and re-queries | **client tests** (mockIPC): applies every frame in order, acks each, replaces the state, appends the series, replaces on `from: 0`, drops a replaced channel's frames, reopens after 2 s of silence |
+| `app/e2e/specs/stream.e2e.mjs` | no status is lost across a 1 s webview freeze | **the same freeze on the real app**: afterwards the page's state equals `Core::snapshot()`, and the series have no hole |
+| `app/src-tauri/tests/commands.rs:97-190`, `app/src-tauri/tests/lifecycle.rs:61-94` | the stream through the commands, and window cleanup | `ui_open` and `ui_ack` through the commands; a page load closes the old page's channel and never the new one |
+| FMEA FM-STEADY-21 to 24 | stalled consumer; filter cost; frame over budget; non-finite value | 21 → the stall test; 22 → retired with the chains; 23 → the frame-bound test; 24 → the non-finite test |
 
-Rejected: **a channel per subscription** (30 widgets × 10 Hz = 300 IPC messages/s and no cross-widget
-ordering); **events for telemetry** (JSON-only, unordered under load, per the Tauri docs above);
-**fixed-rate full snapshots** (sends everything to every widget; per-widget rates are a product
-requirement).
+The status wire tests stay beside the type (`the_worst_status_with_the_erg_fields_has_a_measured_size` and the other
+wire-status tests). The design fixtures (`app/e2e/design/fixture.tsx`) send frames; the baseline PNGs must not change.
+
+#### 4.3.10 Migration, in PR-sized steps (sub-issues of #588: #597, #598, #599)
+
+**Step 2 (#597): link commands return nothing.** `links_intent` answers `()`; the ordering rule (ADR-0002 §5.1.4) and
+`linkOrder.ts` are deleted; `LinkFrame.seq` keeps its meaning, used only by `links_ack`; #577 (closed) is superseded.
+After an intent the UI changes on the next link frame (within about 100 ms plus one IPC hop), not on the answer, and
+#561's per-device split stays until step 3, since the overlay needs the status and the devices in one frame.
+
+- **Acceptance:** the mocks model every refusal of `links_intent`; the bindings are regenerated; AGENTS.md's
+  link-channel paragraph is updated.
+- **Fails before it:** `links_intent` through the commands answers `null` for every intent, with unchanged refusals.
+
+**Step 3 (#598): the snapshot channel replaces the ride stream and the link channel.** It covers §4.3.2 to §4.3.9, one
+source per device included (the overlay; `StreamFrame.links` and `RideLoaded.hr_linked` deleted), in up to three PRs
+that each leave `dev` working: (3a) the core's `ui` channel and its tests beside the old channels; (3b) the app switches
+(client, hooks, mocks, design fixtures, e2e); (3c) the deletions and docs.
+
+- **Acceptance:** §4.3.9's replacement tests pass, including a dropped frame recovered within 3 s with a complete
+  series; `just e2e`'s freeze spec passes on sage; a 32 KB frame's round trip on sage is ≤ 100 ms; the design baselines
+  are unchanged; the bindings and the docs of §4.3.9 are updated; the mocks model every refusal (`ui_ack`: `NotFound`;
+  `ui_open`: `Conflict` beyond 16 channels, `Storage` when the keeper cannot start).
+- **Fail before it:** the #564 reproduction; the page converging after a stall; the mid-ride backfill; a forced end that
+  survives a reload; a lost trainer as `{phase: riding, link: lost}` in the same frame as `trainer_lost_since_s`; the
+  Ready sheet's strap row following `devices.strap` (today `hrLinked` decides it, `app/src/ride/ReadySheet.tsx:65-80`).
+
+**Step 4 (#599): what is left of #557.** The UI's own chunked append-only series store, so an append does not copy the
+history (`app/src/ride/session.ts:47-55` today); incremental trace rendering without the `Math.max(...values)` spread
+(`app/src/ride/Trace.tsx:75`; a 6 h ride can exceed JavaScriptCore's argument limit); a pixel-downsampled backfill; a
+`since` cursor on `ui_open`.
+
+- **Acceptance:** an append costs O(1), counted; a 6 h synthetic ride renders and backfills in a few frames; the drawn
+  vertices equal those of the full series at one per second.
+- **Fails before it:** the 6 h ride's trace throws `RangeError` at `Trace.tsx:75`.
+
+**Order.** Each step leaves `dev` working, with no lost data and no regressed screen. #471 starts after step 2, ideally
+after step 3. #248 adds `nudges`; #309 reads them.
+
+#### 4.3.11 Risks
+
+- **Re-render per frame.** Components that compare by reference re-render at the frame rate; `spec/UX-SPEC.md:78` asks
+  never to re-render the whole tree per frame. Step 3 measures it on the ride screen; too high a cost changes this
+  section, not the client.
+- **Lost intermediate states.** Coalescing loses a state shorter than a frame or a stall (one reconnect attempt before
+  the next). What the page must not miss is a counter or timestamp in the snapshot (`laps_closed`, `last_gap_s`,
+  `reconnected_at_s`) or durable data, never an edge.
+- **Lost frames.** Each costs up to 2 s of frozen state and a backfill. The core logs each reopen that closes an older
+  channel, so the logs show how often it happens on real hardware.
+- **Memory and growth.** About 3 MB per 6 h ride, nothing per channel (integer ticks would make a point 10 B). A new
+  snapshot field that does not fit the frame-bound test is durable data and a query.
+
+#### 4.3.12 Alternatives
+
+| Alternative | Why rejected |
+|---|---|
+| Keep the multiplexed subscription stream (the original §4.3) | Ack window 3, split frames, a re-query merged through a "touched" set, and still holes after a stall (#557 item 4), for rates and filters no widget uses |
+| State deltas instead of full state | The page must merge again, and a lost delta needs a resync path. The full state is about 1.5 KB |
+| Live state by polling queries | Unordered against the commands, and either late or wasteful |
+| A channel per widget; events for telemetry | IPC volume and no ordering; events are JSON and unordered |
+| Fixed-rate full snapshots without acks | A stalled page queues unbounded work: Tauri's `Channel::send` has no backpressure (`channel.rs:293-320`) |
+| A resend or a cursor that moves on the ack, for lost frames | More state in the core for a rare fault the watchdog already recovers |
+
+**Reversed.** The original §4.3 rejected fixed-rate full snapshots because "per-widget rates are a product requirement".
+The owner reversed this on 2026-11-09 (#588): no widget uses them, and §4.3.7 covers one that would.
 
 ### 4.4 Errors across the boundary
 
@@ -363,8 +558,8 @@ Engine sketch:
 ```rust
 pub enum EngineCmd {
     Load(Workout), Start, Pause, Resume, Stop, Adjust { pct: f64 }, SkipBlock,
-    SetSpeed(SimSpeed), Subscribe { stream: StreamId, metric: MetricId, opts: SubscribeOpts, reply: oneshot::Sender<SubId> },
-    Unsubscribe { stream: StreamId, sub: SubId }, RespondNudge { call_id: CallId, accept: bool },
+    SetSpeed(SimSpeed), RespondNudge { call_id: CallId, accept: bool },
+    // Subscribe / Unsubscribe are gone with the subscriptions (§4.3, #588): the engine appends display series.
 }
 pub struct Engine<C: Clock> { clock: C, session: Option<RideSession>, trainer: Option<TrainerLink>, hr: Option<HeartRateLink>, judge: Box<dyn Judge> }
 impl<C: Clock> Engine<C> { pub async fn run(self, cmds: mpsc::Receiver<EngineCmd>, out: EngineOutputs); }
@@ -923,7 +1118,7 @@ agent assumes a hardware result it did not see.
 | Rust core in workspace crates | single crate | can't enforce purity / BLE-free engine |
 | Engine + BLE in the app process, ride lock | separate daemon | extra signed process for a single-user app; revisit in #40 |
 | tauri-specta generated bindings | ts-rs; TauRPC; hand-written TS | types-only drift; extra router; caused #2 |
-| One multiplexed `Channel<StreamFrame>` | channel per widget; events | IPC volume, no ordering; events are JSON and unordered |
+| One `Channel<UiFrame>` of full UI snapshots per window, ack window 1 (§4.3, #588) | the multiplexed subscription stream (the original §4.3); state deltas; channel per widget; events | machinery for rates and filters no widget uses, and the page merging two sources; deltas need merging and resync; IPC volume, no ordering; events are JSON and unordered |
 | Integer 250 ms ticks on a monotonic clock | wall-clock timers; float time | drift and non-determinism |
 | rusqlite + rusqlite_migration, chunked 1 Hz | sqlx; KV store; row per sample; files | see §6 |
 | WebdriverIO embedded provider | tauri-driver; Playwright on the web build only | no macOS driver; would not exercise WKWebView (kept as the #35 alternative, §8.3) |
