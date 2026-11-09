@@ -1108,66 +1108,39 @@ looking".
   phases (`UiFrame.devices`, ADR-0001 §4.3.6). `LoadProgress` stays for the `ride_load` log line (§5.1.6) and the
   keeper's own use.
 
-**Phases outside a ride, and one source per device (amendment 2026-11-09, #588).** The chips on Today, Workouts, the
-Ready sheet and Settings → Devices read each device's state from **one** place:
+**Phases outside a ride, and one source per device (amendment 2026-11-09, #588).** From #588 step 3 the chips on
+Today, Workouts, the Ready sheet and Settings → Devices read each device from **one** place: the `devices` of the
+window's snapshot channel (ADR-0001 §4.3). Each entry is `DeviceView { paired, phase, link, sample }`:
 
-- the window's link channel until #588 step 3;
-- after it, the `devices` of the window's snapshot channel (ADR-0001 §4.3).
-
-Each device entry is `DeviceView { paired, phase, link, sample }` (ADR-0001 §4.3.2):
-
-- `phase` is the keeper's phase (§5.1.1).
-- A device a ride holds has `phase: riding`. The **core overlays** the ride's link state onto it (`link`:
-  `connecting`, `ready` or `lost`), read from the engine status that also carries the ride's `status`. From step 3, a
-  loss and the pause it brings are therefore in the same frame. In step 2 they still travel on two channels (ADR-0001
-  §4.3.10, step 2's interim limit).
-- Every other device carries the keeper's phase and, while `warm`, its latest sample.
-- The rule is per device. A ride holds only the devices handed to it at `ride_load`, so a strap that was not `warm`
-  then (for example, one that did not advertise) stays the keeper's during the ride and keeps its own phase
-  (`not_found`) beside the trainer's `riding`.
-- While a ride holds a device, the keeper sees none of its events and has no sample of it. The ride's values reach the
-  page as the snapshot's series.
+- `phase` is the keeper's phase (§5.1.1); a device that is not `warm` has no sample.
+- A device a ride holds has `phase: riding`, and the **core overlays** the ride's link state onto it (`link`:
+  `connecting`, `ready` or `lost`). It reads it from the engine status that the same frame's `ride.status` comes from,
+  so a loss and the pause it brings are in the same frame. From the hand-over until the session is installed there is
+  no engine status yet: `link` is then `ready`, the state the link was handed over in, and the frame says
+  `loading: true`, `ride: null`. The ride's values reach the page as the snapshot's series, not as a sample.
+- The rule is per device: a strap that was not `warm` at `ride_load` stays the keeper's during the ride, in its own
+  phase (`not_found`), beside the trainer's `riding`.
 - When the ride's hold is released (an unload, a discard, the ride's end), the devices it held come back `cold`, with
-  no sample. A device it never held keeps its phase.
+  no sample; a device it never held keeps its phase.
 
-From the hand-over until the ride's session is installed, there is no engine status yet. The core then takes `link`
-from the keeper: `ready`, the state in which the link was handed over (§5.1.4, "Details of the implementation"). From
-the installation on, `link` is the session's (the engine status's `trainer_link` / `hr_link`). In the snapshot of
-ADR-0001 §4.3 that window is `loading: true` with `ride: null`.
+Until step 3 the code follows #561's rule: a riding device is read from `StreamFrame.links` and
+`device_links().link`, every other device from `LinkFrame`, and the Ready sheet combines both with
+`RideLoaded.hr_linked` (`app/src/ride/ReadySheet.tsx:65-80`). The second writer the old text feared is not needed:
+the core computes the overlay from the two inputs it already has (the keeper's view and the session's status watch).
 
-This replaces the rule of #561, under which a riding device was read from `StreamFrame.links` and
-`device_links().link`, every other device from `LinkFrame`, and the Ready sheet combined both with
-`RideLoaded.hr_linked` (`app/src/ride/ReadySheet.tsx:65-80`). The code follows that rule until step 2 lands. The second writer that the old text feared is not
-needed: the core computes the overlay from the two inputs it already has (the keeper's view and the session's status
-watch). The UI copies nothing.
-
-**`links_intent` answers nothing (#588 step 2, #597).** `links_intent(intent)` returns `Result<(), ApiError>`:
-
-- It is answered at the same moment as today, once the intent is applied and what it releases is released ("What
-  `links_intent` answers", §5.1.3).
-- Its refusals are unchanged (`Conflict`, `Storage`).
-- Its effect shows in the next frame.
-
-Today it answers the `LinkFrame` its resolving step published (`app/src-tauri/src/commands.rs:93-98`). The page had to
-order those answers against the channel's frames by `seq` (`app/src/ride/linkOrder.ts:7-10`), and that is how #577
-arose. With one source there is nothing to order: the **ordering rule is deleted**. The page applies every frame and
-acks every frame (ADR-0001 §4.3.2's client rule).
+**`links_intent` answers nothing (#588 step 2, #597).** `links_intent(intent)` returns `Result<(), ApiError>`. It is
+answered at the same moment as today, once the intent is applied and what it releases is released ("What
+`links_intent` answers", §5.1.3), with the same refusals (`Conflict`, `Storage`). Today it answers the `LinkFrame` its
+resolving step published (`app/src-tauri/src/commands.rs:93-98`), and the page had to order those answers against the
+channel's frames by `seq` (`app/src/ride/linkOrder.ts:7-10`), which is how #577 arose. With no state in the answer the
+**ordering rule is deleted**: the page applies and acks every frame.
 
 **The link channel until #588 step 3.** `links_open` opens one `Channel<LinkFrame>` per window (#561,
-`crates/crank-core/src/keeper/channel.rs`):
-
-- **Ack window of 1.** The page calls `links_ack(id, seq)` for **every** frame it receives. The core sends nothing more
-  until the last frame sent is acknowledged. An ack of any other `seq` is ignored; an ack for a channel the window does
-  not hold is `NotFound`.
-- **Latest wins.** Each frame is the complete state when it is sent, so coalescing loses nothing.
-- **At most 10 Hz**, paced on the unscaled clock. The first frame goes out at once.
-- **Size.** A frame is under 300 bytes (`keeper/channel.rs:337-358`).
-- **`seq`** is the keeper state's number until step 2. From step 2 it is a per-channel frame counter that only names
-  the frame in the ack: with the overlay, a frame can change while the keeper's state does not.
-
-Step 3 replaces the channel with ADR-0001 §4.3's snapshot channel, which has the same rules for all live data, and
-deletes `links_open`, `links_ack`, `LinkFrame` and `device_links`. `device_links` already reports the overlaid view
-after step 2.
+`crates/crank-core/src/keeper/channel.rs`): an ack window of 1 (`links_ack(id, seq)` for every frame received; an ack
+of another `seq` is ignored, one for a channel the window does not hold is `NotFound`); each frame the complete state
+when sent, so coalescing loses nothing; at most 10 Hz on the unscaled clock, the first frame at once; under 300 bytes
+(`keeper/channel.rs:337-358`); `seq` the keeper state's number. Step 3 replaces it with ADR-0001 §4.3's snapshot
+channel and deletes `links_open`, `links_ack`, `LinkFrame` and `device_links`.
 
 **Failure UX.** Failures show as quiet chips, never as modal errors or toasts:
 
@@ -1224,10 +1197,10 @@ cold warm-up per phase. No timing is derived from the UI.
    for athlete inputs (#247, #518): until then the configuration is the constant `RIDER`, and a load passes it.
 3. **Contract.** `LoadProgress` in `ride_status`, `links_open` / `LinkFrame`, and the regenerated bindings (shipped,
    #561). **Amended 2026-11-09 (#588):** the contract is ADR-0001 §4.3's snapshot channel, reached in #588's steps:
-   - step 2 (#597): `links_intent` answers `()`, there is one source per device (the core's overlay, §5.1.4), and
-     `RideLoaded.hr_linked` is deleted;
+   - step 2 (#597): `links_intent` answers `()`, and the `seq` ordering rule is deleted;
    - step 3 (#598): `UiFrame.devices` and `loading` replace `links_open` / `LinkFrame`, `device_links` and
-     `ride_status().load`.
+     `ride_status().load`, with one source per device (the core's overlay, §5.1.4); `RideLoaded.hr_linked` is
+     deleted.
 4. **UI** (#471). Intent reporting (warm views, focus, visibility, throttled input), `crank-desktop`'s sleep observer, the
    chips, and Ready-sheet progress, styled per #438. It reads devices from their one source (§5.1.4). It starts after
    #588 step 2, and preferably after step 3, so that it is written once, against `UiFrame.devices`.
