@@ -24,6 +24,11 @@ export const watts = (b: WorkoutBlock): string =>
       ? `${b.powerFrom} W`
       : `${b.powerFrom}–${b.powerTo} W`;
 
+/**
+ * A block's label in the lane under the strip (DESIGN §18.3 "Strip labels"): flush left with the block as drawn, never
+ * wider than it. It sheds per §16.1: the name, then the watts; a block too short for its watts gets a leader, a 2 px
+ * mark at its start, and its label in the accessible text only.
+ */
 function Label({
   block,
   index,
@@ -36,11 +41,8 @@ function Label({
   width: number;
 }) {
   const w = watts(block);
-  const [ref, text] = useFit<HTMLSpanElement>([
-    `${PHASE_NAME[block.phase]} ${w}`.trim(),
-    w,
-    "",
-  ]);
+  const full = `${PHASE_NAME[block.phase]} ${w}`.trim();
+  const [ref, text] = useFit<HTMLSpanElement>([full, w, ""]);
   return (
     <span
       ref={ref}
@@ -48,7 +50,14 @@ function Label({
       data-block-label={index}
       style={{ left: `${left}%`, width: `${width}%` }}
     >
-      {text}
+      {text === "" ? (
+        <>
+          <span className="timeline-leader" aria-hidden />
+          <span className="sr-only">{full}</span>
+        </>
+      ) : (
+        text
+      )}
     </span>
   );
 }
@@ -70,6 +79,11 @@ export function Timeline({ blocks, totalS, workoutS }: Props) {
   const x = (s: number) => (s / xMax) * W;
   const y = (w: number) => H - (w / top) * H * 0.95;
   const shown = blocks.filter((b) => b.startS !== null && b.durS !== null);
+  // Each block is drawn 1 unit inside its span, so neighbours keep a gap; its label takes the same box.
+  const span = (b: WorkoutBlock) =>
+    [b.startS ?? 0, (b.startS ?? 0) + (b.durS ?? 0)] as const;
+  const left = (s: number) => x(s) + 1;
+  const right = (e: number) => x(e) - 1;
   return (
     <>
       <div className="timeline-head">
@@ -88,7 +102,7 @@ export function Timeline({ blocks, totalS, workoutS }: Props) {
         preserveAspectRatio="none"
       >
         {shown.map((b, i) => {
-          const [s, e] = [b.startS ?? 0, (b.startS ?? 0) + (b.durS ?? 0)];
+          const [s, e] = span(b);
           const [from, to] = [b.powerFrom ?? 0, b.powerTo ?? b.powerFrom ?? 0];
           return (
             <path
@@ -99,7 +113,7 @@ export function Timeline({ blocks, totalS, workoutS }: Props) {
               data-ridden={
                 e <= workoutS ? "done" : s <= workoutS ? "now" : "ahead"
               }
-              d={`M${x(s) + 1},${H} L${x(s) + 1},${y(from)} L${x(e) - 1},${y(to)} L${x(e) - 1},${H} Z`}
+              d={`M${left(s)},${H} L${left(s)},${y(from)} L${right(e)},${y(to)} L${right(e)},${H} Z`}
               vectorEffect="non-scaling-stroke"
             />
           );
@@ -122,15 +136,18 @@ export function Timeline({ blocks, totalS, workoutS }: Props) {
         />
       </svg>
       <div className="timeline-labels">
-        {shown.map((b, i) => (
-          <Label
-            key={i}
-            block={b}
-            index={i}
-            left={((b.startS ?? 0) / xMax) * 100}
-            width={((b.durS ?? 0) / xMax) * 100}
-          />
-        ))}
+        {shown.map((b, i) => {
+          const [s, e] = span(b);
+          return (
+            <Label
+              key={i}
+              block={b}
+              index={i}
+              left={(left(s) / W) * 100}
+              width={(Math.max(right(e) - left(s), 0) / W) * 100}
+            />
+          );
+        })}
       </div>
     </>
   );
