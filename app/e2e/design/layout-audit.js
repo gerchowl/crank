@@ -196,8 +196,13 @@
           break;
         }
       }
+      // A data graphic's marks (a trace's plan blocks) are drawn at their data's positions, not laid out.
       const kids = [...e.children].filter(visible);
-      if (kids.length >= 3 && /flex|grid/.test(cs.display) === false) {
+      if (
+        kids.length >= 3 &&
+        /flex|grid/.test(cs.display) === false &&
+        !e.closest("svg[data-graphic]")
+      ) {
         const gaps = [];
         for (let i = 1; i < kids.length; i++)
           gaps.push(
@@ -501,7 +506,6 @@
       if (!ink.length) continue;
       const left = Math.min(...ink.map((r) => r.left));
       const right = Math.max(...ink.map((r) => r.right));
-      const top = Math.min(...ink.map((r) => r.top));
       if (Math.abs(left - b.left) > 1)
         add(
           "strip.label",
@@ -514,14 +518,12 @@
           l,
           `ends at ${Math.round(right)}, past its block's ${Math.round(b.right)}`,
         );
-      if (bar && !SCALE.has(Math.round(top - bar.bottom)))
-        add(
-          "strip.label",
-          l,
-          `${Math.round(top - bar.bottom)}px under the bar, off the --space-* scale`,
-        );
-      if (bar && Math.round(top - bar.bottom) <= 0)
-        add("strip.label", l, "touches the bar");
+      // The gap is the label's lane box to the bar (the glyphs' own extent is the font's).
+      const gap = Math.round(
+        l.getBoundingClientRect().top - (bar?.bottom ?? 0),
+      );
+      if (bar && (gap <= 0 || !SCALE.has(gap)))
+        add("strip.label", l, `${gap}px under the bar, not a --space-* step`);
       for (const o of inked)
         if (left < o.right && o.left < right)
           add("strip.label", l, `overlaps the label of block ${o.block}`);
