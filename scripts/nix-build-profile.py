@@ -9,8 +9,15 @@ Reads the log from stdin, stamps each event with its arrival time and prints:
 the wall time, every derivation built (name, wall seconds, how many workspace
 crates cargo compiled, checked or documented in it), the number of paths
 substituted (by cache) and, per workspace crate, how many times it was compiled
-across the whole build. For every derivation an error names, it also prints the
-last 30 lines of its build log. Workspace crates are the `crank-*` packages cargo
+across the whole build. Nix's error messages (level 0, text starting with
+`error:`) are printed, and for every derivation an error names, the last 30
+lines of its build log. Level-0 warnings (Lix reports e.g. "warning: error:
+SQLite database … is busy" at that level) are counted, not printed. Lines on stdin that are not `@nix` JSON (output Nix writes before or outside
+its logger) are counted, not printed.
+
+Exit status: 1 if Nix reported an error (a failed build, a failed evaluation),
+otherwise 0. With `set -o pipefail` the pipeline's status is then the build's
+status even when Nix's own exit code is lost in the pipe. Workspace crates are the `crank-*` packages cargo
 reports from a path inside the build tree (`Compiling crank-core v0.1.0
 (/build/...)`); dependencies come from the vendor directory and do not count.
 """
@@ -41,11 +48,13 @@ def main() -> int:
     activity = {}  # activity id -> drv path (a remote build reports one drv under two activities)
     substituted = collections.Counter()  # cache uri -> paths
     errors = []
+    warnings = 0
+    other_lines = 0
     for raw in sys.stdin:
         now = time.monotonic() - start
         if not raw.startswith("@nix "):
             if raw.strip():
-                errors.append(raw.rstrip("\n"))
+                other_lines += 1
             continue
         try:
             event = json.loads(raw[5:])
@@ -71,7 +80,11 @@ def main() -> int:
             if match:
                 builds[activity[event["id"]]]["cargo"][match.group(2)] += 1
         elif action == "msg" and event.get("level", 9) <= 0:
-            errors.append(event.get("msg", ""))
+            text = ANSI.sub("", str(event.get("msg", "")))
+            if text.startswith("error:"):
+                errors.append(text)
+            else:
+                warnings += 1
     wall = time.monotonic() - start
 
     per_crate = collections.Counter()
@@ -88,8 +101,12 @@ def main() -> int:
     for row in rows:
         print(f"{row['seconds']:9.1f} s  {row['name']}  (workspace crates compiled: {row['crank_compiles']})")
     print("compiles per workspace crate:", ", ".join(f"{k} {v}" for k, v in sorted(per_crate.items())) or "none")
+    if warnings:
+        print(f"warnings: {warnings} (not shown)")
+    if other_lines:
+        print(f"non-JSON stderr lines: {other_lines} (not shown)")
     for line in errors[-20:]:
-        print("log:", line)
+        print(line)
     failed = {drv for drv in builds for line in errors if drv in line}
     for drv in sorted(failed):
         print(f"--- last log lines of {builds[drv]['name']}:")
@@ -98,8 +115,8 @@ def main() -> int:
     if args.json:
         with open(args.json, "w", encoding="utf-8") as out:
             json.dump({"wall_seconds": round(wall, 1), "builds": rows, "substituted": dict(substituted),
-                       "compiles_per_crate": dict(per_crate)}, out, indent=1)
-    return 0
+                       "compiles_per_crate": dict(per_crate), "errors": errors}, out, indent=1)
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":
