@@ -93,7 +93,8 @@
       c2n = extra: (import ./Cargo.nix {
         inherit pkgs;
         buildRustCrateForPkgs = p: p.buildRustCrate.override { rustc = toolchain; cargo = toolchain; };
-        defaultCrateOverrides = pkgs.defaultCrateOverrides // extra;
+        # buildRustCrate leaves CARGO_PKG_README empty unless the crate says; this build script reads it.
+        defaultCrateOverrides = pkgs.defaultCrateOverrides // { rusqlite_migration = _: { readme = "README.md"; }; } // extra;
       }).workspaceMembers.crank-cli.build;
       rustCheck = common // {
         inherit cargoArtifacts;
