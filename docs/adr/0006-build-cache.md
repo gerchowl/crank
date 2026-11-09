@@ -90,7 +90,7 @@ to 14 times (`Compiling|Checking|Documenting crank-… v` lines; that count incl
 | warm, one line in `app/src/main.tsx` | 0 | 2055 s | crank-app-dist 1220 s, crank-desktop 208 s, crank-app 1 s | 10: the desktop embeds the frontend bundle (`TAURI_CONFIG` names `appDist`), so a frontend-only edit recompiles every crate crank-desktop depends on |
 | `nix flake check --keep-going`, cold | 0 | 4010 s | 24 built; the longest: crank-nextest 784 s, crank-desktop (`build`, `build-e2e`) 605 s and 520 s, crank-deps 434 s, vectors-drift 422 s, app-lint 113 s | 114 outside `crank-deps` |
 | the same, after one line in crank-core | 0 | 1146 s | 18 built: crank-desktop 342 s and 108 s, crank-nextest 297 s, crank-doctest 74 s, the `crank` checks 73 + 40 + 31 s, crank-cli 60 s, crank-doc 27 s, crank-clippy 26 s | 103: every Rust check recompiles the workspace; only `crank-deps` is reused |
-| the same, after one line in `app/src/main.tsx` | 0 | 1469 s | 15 built: crank-desktop 449 s and 204 s, the frontend checks 21–149 s each | 20: both desktop builds, for the embedded bundle |
+| the same, after one line in `app/src/main.tsx` | 0 | 1469 s | 15 built: crank-desktop 449 s and 204 s, the frontend checks 21–149 s each | 21: both desktop builds (10 each), for the embedded bundle, and crank-domain once more in a `crank` check |
 
 The `crank-app-dist` row is inflated by the host: its `pnpm install` alone took 4 min 30 s ("Done in 4m 30.2s",
 814 packages) and vite 8.25 s, where the cold build of the same derivation took 110 s, and on GitHub-hosted runners
