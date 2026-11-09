@@ -80,19 +80,28 @@ between first and last log line), crank-nextest (818 s), crank-deps (337 s), cra
 `crank` mkCargoDerivation checks (269 s); per workspace crate, the job compiled, checked or documented each one 7
 to 14 times (`Compiling|Checking|Documenting crank-… v` lines; that count includes `crank-deps`' dummies).
 
-**Table 2. Local builds, baseline layout** (`nix build .#crank-app`, profile as above).
+**Table 2. Local builds, baseline layout** (profile as above; `crank-app` steps salt `a2`, flake-check steps salt
+`b2`, so the two series do not share derivations).
 
 | Step | Exit | Wall | Derivations built | Workspace compiles |
 |---|---|---|---|---|
 | cold | 0 | 2222 s | crank-deps 1367 s, crank-desktop 256 s, crank-app-dist 110 s, crank-cli 67 s, crank-app 1 s | crank-deps 36 (3 dummy passes × 12 crates), crank-desktop 10, crank-cli 11 |
 | warm, one line in crank-core | 0 | 379 s | crank-desktop 262 s, crank-cli 84 s, crank-app 4 s | 21: every crate crank-desktop and crank-cli depend on, twice, where 4 crates (crank-core, crank-mcp, crank-cli, crank-desktop) depend on crank-core |
+| warm, one line in `app/src/main.tsx` | 0 | 2055 s | crank-app-dist 1220 s, crank-desktop 208 s, crank-app 1 s | 10: the desktop embeds the frontend bundle (`TAURI_CONFIG` names `appDist`), so a frontend-only edit recompiles every crate crank-desktop depends on |
+| `nix flake check --keep-going`, cold | 0 | 4010 s | 24 built; the longest: crank-nextest 784 s, crank-desktop (`build`, `build-e2e`) 605 s and 520 s, crank-deps 434 s, vectors-drift 422 s, app-lint 113 s | 114 outside `crank-deps` |
+| the same, after one line in crank-core | 0 | 1146 s | 18 built: crank-desktop 342 s and 108 s, crank-nextest 297 s, crank-doctest 74 s, the `crank` checks 73 + 40 + 31 s, crank-cli 60 s, crank-doc 27 s, crank-clippy 26 s | 103: every Rust check recompiles the workspace; only `crank-deps` is reused |
+| the same, after one line in `app/src/main.tsx` | 0 | 1469 s | 15 built: crank-desktop 449 s and 204 s, the frontend checks 21–149 s each | 20: both desktop builds, for the embedded bundle |
 
-The rest of the local steps (a frontend-only edit, `nix flake check` cold and warm, the prototypes) did not run
-on this host: from 2026-11-09 00:56 the host's job wrapper refused every heavy job, because a shared build volume
-held other tasks' files and fell below its 25 GiB free floor (`heavy: REFUSED: … has 24 GiB free (< 25 GiB,
-g-fleet#952 rule 4)`). They were measured instead on GitHub-hosted runners, where they need no lock (Tables 3, 4).
-An earlier attempt at the cold build hung for 20 min with cargo idle at 0.6 s of CPU and no log; it was
-interrupted and re-run with a new salt, and is reported as tooling friction in the PR.
+The `crank-app-dist` row is inflated by the host: its `pnpm install` alone took 4 min 30 s ("Done in 4m 30.2s",
+814 packages) and vite 8.25 s, where the cold build of the same derivation took 110 s, and on GitHub-hosted runners
+each of the 11 frontend derivations installs in 1.4–14.3 s (run 42541163301). The repeated installs are therefore
+not worth a shared `node_modules` derivation; the embedded bundle is the layout cost a frontend edit pays.
+
+From 2026-11-09 00:56 to about 03:20 the host's job wrapper refused every heavy job (a shared build volume fell
+below its 25 GiB free floor, `heavy: REFUSED: … has 24 GiB free (< 25 GiB, g-fleet#952 rule 4)`), so the layout
+prototypes were measured on GitHub-hosted runners, which need no lock (Tables 3, 4); the local rows after the warm
+crank-core edit ran once the wrapper admitted jobs again. An earlier attempt at the cold build hung for 20 min with
+cargo idle at 0.6 s of CPU and no log; it was interrupted and re-run with a new salt (g-fleet#1460).
 
 **Table 3. `nix flake check -L`, baseline against the shared-layer prototypes** (workflow-dispatched CI on
 branches `docs/580-base-measure`, `docs/580-p1-measure`, `docs/580-p1r-measure`, all at `dev` 2de24c5 plus the
@@ -190,6 +199,10 @@ workspace's dependencies, Tauri included, so that comparison flatters crate2nix)
   shipped binaries would be built differently from the tested ones (§2.2 keeps the default until that is measured);
 - checks keep needing cargo, so the flake has two Rust build systems: crate2nix for what ships, crane for what is
   checked.
+
+The embedded frontend makes the same point from the other side: a frontend-only edit costs a full desktop
+workspace compile today (208 s for `crank-app`, 653 s for the two desktop builds of the flake check, Table 2); per
+crate it would rebuild crank-desktop alone, whose build script takes the new bundle.
 
 L2 goes ahead only if its sub-issue shows crank-desktop and crank-app building per-crate on both systems and a
 crank-core edit to `crank-app` at no more than half of L1's time; otherwise L1 stays. A crate at the bottom of the
