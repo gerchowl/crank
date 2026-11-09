@@ -224,7 +224,7 @@ const icon = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
 /** The status-bar chrome above and the timeline, key row and main padding below the main row (DESIGN §18.2). */
 export const CHROME_PX = 236;
 /** The metric column's minimum content (§18.2 budget): a shorter main row cannot hold the tiers (§6.2 too-small rule). */
-export const MAIN_MIN_PX = 465;
+export const MAIN_MIN_PX = 453;
 /** The T2 values' one slot width (§18.3 "Metric grid"): the widest power, "2000", so every unit starts in one column. */
 const T2_CH = 4;
 const TOO_SMALL = "Window too small to read targets";
@@ -732,8 +732,7 @@ function Screen({ session }: { session: RideSession }) {
               />
               <span className="tile-unit">W</span>
             </span>
-            {/* Reserved for the ERG band (§5.2): its marker and Δ hide while the trainer settles, which the status does not carry yet (#97). */}
-            <span className="readout-band" aria-hidden />
+            {/* The ERG band under the value comes with its content (#97, §18.3 "Metric grid"); an empty strip is not drawn. */}
           </div>
           <div className="readout" data-tile="hr" data-series="hr">
             <span className="readout-head">
