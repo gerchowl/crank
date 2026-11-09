@@ -9,7 +9,8 @@ Reads the log from stdin, stamps each event with its arrival time and prints:
 the wall time, every derivation built (name, wall seconds, how many workspace
 crates cargo compiled, checked or documented in it), the number of paths
 substituted (by cache) and, per workspace crate, how many times it was compiled
-across the whole build. Workspace crates are the `crank-*` packages cargo
+across the whole build. For every derivation an error names, it also prints the
+last 30 lines of its build log. Workspace crates are the `crank-*` packages cargo
 reports from a path inside the build tree (`Compiling crank-core v0.1.0
 (/build/...)`); dependencies come from the vendor directory and do not count.
 """
@@ -56,7 +57,8 @@ def main() -> int:
             match = DRV.search(fields[0])
             activity[event["id"]] = fields[0]
             builds.setdefault(fields[0], {"name": match.group(1) if match else fields[0], "start": now,
-                                          "stop": None, "cargo": collections.Counter()})
+                                          "stop": None, "cargo": collections.Counter(),
+                                          "tail": collections.deque(maxlen=30)})
         elif action == "start" and event.get("type") == SUBSTITUTE:
             fields = event.get("fields") or ["", ""]
             substituted[fields[1] if len(fields) > 1 else ""] += 1
@@ -64,6 +66,7 @@ def main() -> int:
             builds[activity[event["id"]]]["stop"] = now
         elif action == "result" and event.get("type") == BUILD_LOG_LINE and event.get("id") in activity:
             line = ANSI.sub("", str((event.get("fields") or [""])[0]))
+            builds[activity[event["id"]]]["tail"].append(line)
             match = CARGO.match(line)
             if match:
                 builds[activity[event["id"]]]["cargo"][match.group(2)] += 1
@@ -87,6 +90,11 @@ def main() -> int:
     print("compiles per workspace crate:", ", ".join(f"{k} {v}" for k, v in sorted(per_crate.items())) or "none")
     for line in errors[-20:]:
         print("log:", line)
+    failed = {drv for drv in builds for line in errors if drv in line}
+    for drv in sorted(failed):
+        print(f"--- last log lines of {builds[drv]['name']}:")
+        for line in builds[drv]["tail"]:
+            print("   ", line)
     if args.json:
         with open(args.json, "w", encoding="utf-8") as out:
             json.dump({"wall_seconds": round(wall, 1), "builds": rows, "substituted": dict(substituted),

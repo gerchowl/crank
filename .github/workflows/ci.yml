@@ -29,7 +29,7 @@ jobs:
         env:
           SYS: ${{ matrix.system }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           step() {
             name=$1; shift
             start=$(date +%s)
@@ -37,7 +37,7 @@ jobs:
               | python3 -I scripts/nix-build-profile.py --json "prof-$name.json" > "prof-$name.txt"
             rc=$?
             echo "== $name: exit=$rc elapsed=$(( $(date +%s) - start ))s"
-            grep -E '^(wall|compiles)' "prof-$name.txt"; sed -n '2,30p' "prof-$name.txt" | grep -v '^compiles' | head -25
+            grep -E '^(wall|compiles)' "prof-$name.txt"; sed -n '2,30p' "prof-$name.txt" | grep -v '^compiles' | head -25; grep -A31 '^--- last log lines' "prof-$name.txt" | head -64; true
           }
           step crane-cold ".#packages.$SYS.crank-cli"
           step crane-edit ".#packages.$SYS.crank-cli-edit"
