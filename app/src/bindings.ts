@@ -181,6 +181,9 @@ export const commands = {
 	displayWidthMm: () => __TAURI_INVOKE<number | null>("display_width_mm"),
 };
 
+/* Constants */
+export const TUNING_DEFAULT = {"erg":{"reengageAfterS":1.5,"reengageRpm":45,"releaseAfterS":5.0,"releaseEnabled":true,"releaseRpm":30},"v":1} as const;
+
 /* Types */
 /**  A failed command: a code plus a human-readable message. */
 export type ApiError = {
@@ -269,6 +272,41 @@ export type DeviceRole =
 "trainer" | 
 /**  The heart-rate strap. */
 "heart_rate";
+
+/**
+ *  The ERG low-cadence release and its re-engagement (ADR-0002 §7.4, amended 2026-11-09,
+ *  #589). Defaults and the reasons for them are in the ADR; [`ErgBounds`] the ranges.
+ */
+export type ErgTuning = {
+	/**
+	 *  Release ERG at low cadence at all. Default on. Off, ERG is never released for low
+	 *  cadence: the rider's explicit choice; the rider's pause and the ride end still command
+	 *  0 % resistance (ADR-0002 §7.4).
+	 */
+	releaseEnabled: boolean,
+	/**
+	 *  Cadence below which ERG is released, in rpm (strictly below; no cadence counts as 0).
+	 *  Default 30.
+	 */
+	releaseRpm: number,
+	/**
+	 *  How long cadence must stay below [`release_rpm`](Self::release_rpm), with a non-zero ERG
+	 *  target applied, before ERG is released: seconds, on the 0.25 s tick grid. Default 5 s,
+	 *  longer than a saddle readjustment (ADR-0002 §7.4).
+	 */
+	releaseAfterS: number | null,
+	/**
+	 *  Cadence at or above which a release is left (then the §7.5 soft start), in rpm. Must be
+	 *  above [`release_rpm`](Self::release_rpm). Default 45.
+	 */
+	reengageRpm: number,
+	/**
+	 *  How long cadence must stay at or above [`reengage_rpm`](Self::reengage_rpm) to leave a
+	 *  release: seconds, on the 0.25 s tick grid, judged on the held cadence. Default 1.5 s,
+	 *  longer than one held sample, so one stray value never re-engages (ADR-0002 §7.4).
+	 */
+	reengageAfterS: number | null,
+};
 
 /**  Machine-readable failure class; the UI branches on this, never on `message`. */
 export type ErrorCode = 
@@ -1001,6 +1039,21 @@ export type SubscribeOpts = {
 	 *  every source sample, whatever the delivery rate.
 	 */
 	filters: Filter[],
+};
+
+/**
+ *  Rider tuning for one ride (ADR-0001 §7.2). Frozen at `ride_load`: a change takes effect
+ *  at the next load.
+ */
+export type Tuning = {
+	/**
+	 *  Format version of this struct; [`Tuning::VERSION`] is the only one accepted. A change
+	 *  of meaning or unit of a field bumps it. Serialised as `v`, the store's JSON envelope
+	 *  (ADR-0001 §6), so the stored setting is the tuning itself.
+	 */
+	v: number,
+	/**  The ERG low-cadence release (ADR-0002 §7.4). */
+	erg: ErgTuning,
 };
 
 /**  Machine-readable prescription diagnostics; messages retain reference wording. */

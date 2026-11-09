@@ -5,8 +5,10 @@
 //! 0. **User pause** (DESIGN §5.2, #264): `Resistance { 0 }`, the same 0 % resistance command
 //!    as a release (ADR-0002 §7.4); a soft start is owed on resume.
 //! 1. **Free / no block** (§7.9): `Free` (explicit flat-road SIM). Leaving it owes a soft start.
-//! 2. **Release** (§7.4): cadence < 40 rpm for 2 s with a target > 0 → `Resistance { 0 }`;
-//!    cadence ≥ 60 rpm for 2 s re-engages with a soft start. The block timer is not touched.
+//! 2. **Release** (§7.4): cadence < `release_rpm` for `release_after_s` with a target > 0 →
+//!    `Resistance { 0 }`; cadence ≥ `reengage_rpm` for `reengage_after_s` re-engages with a soft
+//!    start. The block timer is not touched. The four values and the switch are the ride's
+//!    [`ErgTuning`] (ADR-0001 §7.2; defaults 30 rpm / 5 s and 45 rpm / 1.5 s, #589).
 //! 3. **Soft start** (§7.5, #231): owed at ride start (#250: a start is a reconnect), after a
 //!    loss epoch, after leaving free/SIM, after a release and after a user pause. Until a pedalling sample: `Erg { 0 }`; then five 1 Hz steps from the 3 s power
 //!    to the block target. A running ramp holds its last step while samples are missing and
@@ -19,15 +21,19 @@
 use crate::control::{PolicyContext, PolicyStatus, SOFT_START_TICKS, TargetPolicy};
 use crate::erg::compliance::{Accumulator, BLOCK_SETTLE_TICKS, ENGAGE_SETTLE_TICKS, TickFacts};
 use crate::ticks::TICKS_PER_SECOND;
+use crate::tuning::{ErgTuning, ticks};
 use crank_devices::ControlMode;
 use crank_domain::workout::Phase;
 
-/// Cadence below which ERG is released (rpm).
-pub const RELEASE_RPM: u8 = 40;
-/// Cadence at or above which a release re-engages (rpm).
-pub const REENGAGE_RPM: u8 = 60;
-/// Both conditions must hold this long: 2 s.
-pub const RELEASE_TICKS: u64 = 8;
+/// The §7.4 release criteria of one ride, from its [`ErgTuning`], in ticks.
+#[derive(Clone, Copy, Debug)]
+struct Release {
+    enabled: bool,
+    below_rpm: u8,
+    below_ticks: u64,
+    reengage_rpm: u8,
+    reengage_ticks: u64,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Ramp {
@@ -44,6 +50,7 @@ pub struct ErgPolicy {
     /// one is owed and cleared at the start of every `desired` (#329).
     soft_target: Option<u16>,
     ramp: Option<Ramp>,
+    release: Release,
     released: bool,
     low: u64,
     high: u64,
@@ -67,8 +74,9 @@ fn seconds(ticks: u64) -> f64 {
 }
 
 impl Default for ErgPolicy {
+    /// A policy with the default tuning.
     fn default() -> Self {
-        Self::new()
+        Self::new(&ErgTuning::default())
     }
 }
 
@@ -78,13 +86,23 @@ impl ErgPolicy {
     /// is held until the first pedalling sample, then the 5 s ramp runs from the 3 s power,
     /// and the 10 s of settle are excluded from compliance. A first block that is free or
     /// SIM sends no ERG; the debt is repaid at the next ERG block (§7.5 item 5).
+    ///
+    /// `tuning` sets the §7.4 release; it is expected validated
+    /// ([`Tuning::validate`](crate::tuning::Tuning::validate), which the engine's `Load` does).
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(tuning: &ErgTuning) -> Self {
         Self {
             link_epoch: 0,
             owed: true,
             soft_target: None,
             ramp: None,
+            release: Release {
+                enabled: tuning.release_enabled,
+                below_rpm: tuning.release_rpm,
+                below_ticks: ticks(tuning.release_after_s),
+                reengage_rpm: tuning.reengage_rpm,
+                reengage_ticks: ticks(tuning.reengage_after_s),
+            },
             released: false,
             low: 0,
             high: 0,
@@ -98,7 +116,7 @@ impl ErgPolicy {
     pub(crate) fn settled() -> Self {
         Self {
             owed: false,
-            ..Self::new()
+            ..Self::default()
         }
     }
     /// A discontinuity: ticks `from..until` are settle, joined to a window still running.
@@ -112,39 +130,42 @@ impl ErgPolicy {
     /// Release / re-engage on held cadence (§7.4). The release criterion is judged against
     /// what is *applied on the trainer*, not against the policy's own target, owed or flow
     /// state: whenever the last command is a non-zero `Erg` and cadence (unknown counts as
-    /// 0) stays < 40 rpm for 2 s, release (architect decision, round 5; ADR-0002 §7.4,
-    /// §7.5 "no torque on a rider who is not pedalling"). A release is left only by 60 rpm
-    /// for 2 s, in any block kind, and then by the §7.5 soft start.
+    /// 0) stays below the release cadence for the release dwell, release (architect decision,
+    /// round 5; ADR-0002 §7.4, §7.5 "no torque on a rider who is not pedalling"). A release is
+    /// left only by the re-engage cadence held for its dwell, in any block kind, and then by
+    /// the §7.5 soft start. With the release switched off (`release_enabled = false`) it never
+    /// starts.
     fn update_release(&mut self, ctx: &PolicyContext<'_>, in_erg: bool) {
         let cadence = ctx.cadence_rpm;
+        let r = self.release;
         if self.released {
-            self.high = if cadence.is_some_and(|c| c >= REENGAGE_RPM) {
+            self.high = if cadence.is_some_and(|c| c >= r.reengage_rpm) {
                 self.high + 1
             } else {
                 0
             };
-            if self.high >= RELEASE_TICKS {
+            if self.high >= r.reengage_ticks {
                 self.released = false;
                 self.owed = true;
                 self.ramp = None;
                 self.low = 0;
             }
-        } else if in_erg {
+        } else if in_erg && r.enabled {
             let torque =
                 matches!(ctx.last_sent, Some(ControlMode::Erg { target_w }) if target_w > 0);
-            self.low = if torque && cadence.is_none_or(|c| c < RELEASE_RPM) {
+            self.low = if torque && cadence.is_none_or(|c| c < r.below_rpm) {
                 self.low + 1
             } else {
                 0
             };
-            if self.low >= RELEASE_TICKS {
+            if self.low >= r.below_ticks {
                 self.released = true;
                 self.high = 0;
             }
         }
     }
     /// Leaving ERG (a free or SIM block) owes a soft start on return. A release is *kept*:
-    /// it is left only through §7.4 (60 rpm for 2 s).
+    /// it is left only through §7.4 (the re-engage criterion).
     fn leave_erg(&mut self) {
         self.owed = true;
         self.ramp = None;
@@ -174,7 +195,7 @@ impl TargetPolicy for ErgPolicy {
         // A link epoch (any applied transition, or 8 silent ticks) forgets what was learned
         // on the old link and owes a soft start (#231: 0 W until a new-epoch sample with
         // cadence > 0, then five steps). It never re-engages by itself: a release is left
-        // only by the §7.4 criteria (60 rpm for 2 s), and then by the §7.5 soft start.
+        // only by the §7.4 re-engage criterion, and then by the §7.5 soft start.
         if ctx.link_epoch != self.link_epoch {
             self.link_epoch = ctx.link_epoch;
             self.owed = true;
