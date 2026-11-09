@@ -92,8 +92,8 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   in every slot, T2 values right-aligned so W, bpm and rpm share one column, and the target written "250 W" like the
   plan; the block strip's labels sit `--space-1` under the bar, flush left with their block, and shed the name, then
   the watts, then to a leader on a block too short for them. The layout audit checks both (`metrics.*`,
-  `strip.label`), with a 30 s-block fixture, and the §18.2 minimum is re-counted to 465 px with the column's borders
-  ([#581](https://github.com/gerchowl/crank/issues/581))
+  `strip.label`), with a 30 s-block fixture, and the §18.2 minimum is re-counted to 453 px with the column's borders
+  (465 px once #97 brings the power band back) ([#581](https://github.com/gerchowl/crank/issues/581))
 - The workout DSL printer escapes a newline inside a label (`\` then the newline), so every label it prints reads
   back as the same label ([#539](https://github.com/gerchowl/crank/issues/539))
 - serde_json parses floats exactly (`float_roundtrip`, workspace-wide), so a value read back from JSON has the bits
