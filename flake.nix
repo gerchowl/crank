@@ -8,7 +8,7 @@
     advisory-db = { url = "github:rustsec/advisory-db"; flake = false; };
   };
   outputs = { self, nixpkgs, crane, rust-overlay, advisory-db }: let
-    systems = [ "aarch64-darwin" "x86_64-linux" ];
+    systems = [ "aarch64-darwin" "x86_64-linux" "aarch64-linux" ];
     eachSystem = nixpkgs.lib.genAttrs systems;
     project = system: let
       pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
@@ -88,6 +88,13 @@
         cargoExtraArgs = "--workspace --locked";
       };
       cargoArtifacts = craneLib.buildDepsOnly (common // { src = source cargoFiles; });
+      editLine = "\necho '// measure: one-line edit (ADR-0006)' >> crates/crank-core/src/lib.rs\n";
+      editCore = { crank-core = _: { postPatch = "echo '// measure: one-line edit (ADR-0006)' >> src/lib.rs"; }; };
+      c2n = extra: (import ./Cargo.nix {
+        inherit pkgs;
+        buildRustCrateForPkgs = p: p.buildRustCrate.override { rustc = toolchain; cargo = toolchain; };
+        defaultCrateOverrides = pkgs.defaultCrateOverrides // extra;
+      }).workspaceMembers.crank-cli.build;
       rustCheck = common // {
         inherit cargoArtifacts;
         nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.python3 ];
@@ -325,13 +332,9 @@
         crank-desktop-e2e = desktop ",e2e";
         crank-cli = cli;
         # P2 prototype (ADR-0006): one derivation per crate (crate2nix + buildRustCrate), same toolchain.
-        crank-cli-c2n = (import ./Cargo.nix {
-          inherit pkgs;
-          buildRustCrateForPkgs = p: p.buildRustCrate.override { rustc = toolchain; cargo = toolchain; };
-          defaultCrateOverrides = pkgs.defaultCrateOverrides // {
-            crank-domain = _: { CRANK_MEASURE_SALT = builtins.getEnv "SALT"; };
-          };
-        }).workspaceMembers.crank-cli.build;
+        crank-cli-c2n = c2n { }; crank-cli-c2n-edit = c2n editCore;
+        # Today's crane layout, the same one-line edit (ADR-0006 warm-edit measurement).
+        crank-cli-edit = cli.overrideAttrs (o: { postPatch = (o.postPatch or "") + editLine; });
       } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin { crank-app = crankApp; }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           design-screenshots = designHarness "design-screenshots"
