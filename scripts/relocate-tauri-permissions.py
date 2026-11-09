@@ -13,6 +13,10 @@ for marker in Path(os.environ.get("CARGO_TARGET_DIR", "target")).glob("*/build/t
     current = (marker.parent / "out").resolve()
     for manifest in current.glob("*-permission-files"):
         paths = [Path(p) for p in json.loads(manifest.read_text())]
-        relocated = [current / p.relative_to(previous) if p.is_relative_to(previous) else p for p in paths]
+        # A path is rebased by its part after "<tauri-hash>/out/", so artifacts inherited over several layers
+        # (each one rewrote the list, while root-output still names the first) land in this OUT_DIR too.
+        tail = f"{marker.parent.name}/out/"
+        relocated = [current / p.relative_to(previous) if p.is_relative_to(previous)
+                     else current / str(p).split(tail, 1)[1] if tail in str(p) else p for p in paths]
         assert all(p.is_file() for p in relocated), f"Missing cached Tauri permission: {manifest}"
         manifest.write_text(json.dumps([str(p) for p in relocated]))
