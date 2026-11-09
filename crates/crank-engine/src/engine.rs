@@ -12,6 +12,7 @@ use crate::ticks::{
     HR_HOLD_TICKS, Hold, LOSS_TICKS, SPEED_HOLD_TICKS, STOPPED_TICKS, SessionTicks,
     TICKS_PER_SECOND, TRAINER_HOLD_TICKS, TickWindow, WorkoutTicks, ticks_to_seconds,
 };
+use crate::tuning::{Tuning, TuningError};
 use crank_devices::{
     Clock, CommandSeq, ControlMode, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime, Reading,
     SeqSource, TrainerCommand, TrainerEvent, TrainerLink, TrainerObservation, TrainerSample,
@@ -148,6 +149,9 @@ pub struct RideSetup {
     /// (DESIGN §15.2); `None` when no cap applies. The engine owns the clamp and the
     /// refusal, not the derivation (#244); detecting `CapExceeded` is #245.
     pub cap_w: Option<u16>,
+    /// The ride's rider tuning, resolved by core (ADR-0001 §7.2); `Load` refuses one that
+    /// does not [`validate`](Tuning::validate). The engine reads no other source.
+    pub tuning: Tuning,
 }
 /// The mode a ride ends in: 0 % resistance, one control page, the same mode as the user
 /// pause (DESIGN §5.2) and the §7.4 release (ADR-0002 §7.9 as amended: "an FE-C trainer
@@ -158,6 +162,8 @@ const END_MODE: ControlMode = ControlMode::Resistance { pct: 0.0 };
 /// writer ticks of the 4 Hz control slot (ADR-0002 §4.4).
 const END_DELIVERY_US: u64 = 2_000_000;
 
+/// Builds a ride's control policy from its tuning (called on every `Load`).
+type PolicyFactory = dyn Fn(&Tuning) -> Box<dyn TargetPolicy> + Send;
 /// Engine commands (ADR-0001 §5 sketch, the part of it this crate implements).
 pub enum EngineCmd {
     /// Load a ride and mark the ride active.
@@ -202,6 +208,9 @@ pub enum CommandError {
     /// The record could not be opened.
     #[error(transparent)]
     Record(#[from] RecordError),
+    /// The ride's tuning is outside [`Tuning::BOUNDS`] or inconsistent (`Load`).
+    #[error(transparent)]
+    Tuning(#[from] TuningError),
     /// The engine task has ended.
     #[error("engine stopped")]
     EngineStopped,
@@ -682,7 +691,7 @@ pub struct Engine {
     activity: Arc<dyn RideActivity>,
     /// Builds one policy per loaded ride: nothing a ride's policy learned can reach the
     /// next (a policy is owned by its [`Session`]).
-    policy_factory: Box<dyn Fn() -> Box<dyn TargetPolicy> + Send>,
+    policy_factory: Box<PolicyFactory>,
     trainer_events: Option<mpsc::Receiver<TrainerEvent>>,
     trainer_control: Option<mpsc::Sender<TrainerCommand>>,
     /// The trainer link's command sequences: a `Delivered` confirms only its own `SetMode`.
@@ -727,7 +736,7 @@ impl Engine {
         let engine = Self {
             clock,
             activity,
-            policy_factory: Box::new(|| Box::new(ErgPolicy::new())),
+            policy_factory: Box::new(|t: &Tuning| Box::new(ErgPolicy::new(&t.erg))),
             trainer_events,
             trainer_control,
             trainer_seq,
@@ -778,12 +787,12 @@ impl Engine {
         };
         (engine, handle)
     }
-    /// Replace the control policy: `factory` is called on every `Load`, so a ride's policy
-    /// state cannot outlive the ride (see [`TargetPolicy`]).
+    /// Replace the control policy: `factory` is called on every `Load` with the ride's
+    /// tuning, so a ride's policy state cannot outlive the ride (see [`TargetPolicy`]).
     #[must_use]
     pub fn with_policy_factory(
         mut self,
-        factory: impl Fn() -> Box<dyn TargetPolicy> + Send + 'static,
+        factory: impl Fn(&Tuning) -> Box<dyn TargetPolicy> + Send + 'static,
     ) -> Self {
         self.policy_factory = Box::new(factory);
         self
@@ -1397,6 +1406,7 @@ impl Engine {
                 if active {
                     return Err(CommandError::WrongState);
                 }
+                setup.tuning.validate()?;
                 // The previous ride's end mode (`self.ending`) stays owed across a `Load`: its
                 // delivery or its deadline settle it, and a link loss only while no ride is
                 // running (a link event of an active ride is queued; #279, #288). Until then
@@ -1425,7 +1435,7 @@ impl Engine {
                     flow_start: None,
                     link_epoch: 0,
                     cap_w: setup.cap_w,
-                    policy: (self.policy_factory)(),
+                    policy: (self.policy_factory)(&setup.tuning),
                     following: Machine::new(),
                     observations: BTreeMap::new(),
                     observed: 0,

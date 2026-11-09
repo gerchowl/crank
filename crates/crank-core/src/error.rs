@@ -70,6 +70,7 @@ impl From<CommandError> for ApiError {
             | CommandError::CapExceededTarget => ErrorCode::Conflict,
             CommandError::NoTrainer | CommandError::TrainerNotReady => ErrorCode::DeviceUnavailable,
             CommandError::Record(_) => ErrorCode::Storage,
+            CommandError::Tuning(_) => ErrorCode::InvalidInput,
             CommandError::EngineStopped => ErrorCode::Internal,
         };
         Self::new(code, e.to_string())

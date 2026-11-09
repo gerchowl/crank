@@ -6,11 +6,18 @@
 //! completed gives a result; any other run (or a capture without an outcome line) reports
 //! "no result" and no verdict.
 use crate::frames::{Cps, Note, Record, page_of, parse_capture};
-use crank_engine::erg::policy::{REENGAGE_RPM, RELEASE_RPM};
 use crank_fec::{Page, decode};
 use serde_json::{Value, json};
 
 pub(crate) const SEC: u64 = 1_000_000;
+/// The ADR-0002 §7.4 release cadence Part B was designed and recorded against (40 rpm), from
+/// before #589 made the release rider tuning with gentler defaults. Part B reads the ride's
+/// recorded tuning instead of these copies in #593.
+pub const RELEASE_RPM: u8 = 40;
+/// The re-engage cadence of the same values (60 rpm); #593 as [`RELEASE_RPM`].
+pub const REENGAGE_RPM: u8 = 60;
+/// The release dwell of the same values: 8 ticks (2 s); #593 as [`RELEASE_RPM`].
+pub const RELEASE_TICKS: u64 = 8;
 
 /// Prefix of the comment line `hil_fec` appends to a Part B capture once the link is closed.
 pub const OUTCOME: &str = "# hil_fec procedure: ";

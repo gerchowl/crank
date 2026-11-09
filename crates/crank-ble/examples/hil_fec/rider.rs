@@ -4,21 +4,17 @@
 //! Safety (ADR-0002 §7): every run connects into page 48 at 0 %, the release state; ERG is
 //! engaged as the engine does at a ride start (§7.5: 0 W until the first sample with cadence,
 //! then a 5 s ramp in 1 Hz steps from the 3 s power); targets never exceed [`MAX_ERG_W`] and
-//! grades [`MAX_GRADE_PCT`]; while ERG is applied the §7.4 release rule (cadence below
-//! 40 rpm for 2 s) and a 2 s telemetry silence (§6) stop the procedure, also while a write is
+//! grades [`MAX_GRADE_PCT`]; while ERG is applied the pre-#589 §7.4 release rule (cadence below
+//! 40 rpm for 2 s, `partb::RELEASE_RPM`; #593) and a 2 s telemetry silence (§6) stop the procedure, also while a write is
 //! pending, and a write not acknowledged within [`WRITE_WAIT`] fails it. Whatever ends it
 //! (completion, a guard, an error, a panic, SIGINT/SIGTERM/SIGHUP) the trainer is
 //! released with page 48 at 0 %, the ride-end mode of §7.9, before the link is closed.
 use crate::{
     frames::{Cps, Note, Record, page_of},
-    partb::{Descent, STALL_FLOOR_RPM, Sample},
+    partb::{Descent, RELEASE_RPM, RELEASE_TICKS, STALL_FLOOR_RPM, Sample},
     session::Session,
 };
-use crank_engine::{
-    control::SOFT_START_TICKS,
-    erg::policy::{RELEASE_RPM, RELEASE_TICKS},
-    ticks::TICKS_PER_SECOND,
-};
+use crank_engine::{control::SOFT_START_TICKS, ticks::TICKS_PER_SECOND};
 use crank_fec::{ControlPage, encode};
 use futures_util::{FutureExt, StreamExt, stream::BoxStream};
 use serde_json::{Value, json};
