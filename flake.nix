@@ -90,9 +90,9 @@
       cargoArtifacts = craneLib.buildDepsOnly (common // { src = source cargoFiles; });
       # P1 prototype (ADR-0006): checks build in the dev profile, once, with CI's feature set.
       testFeatures = "--features crank-ble/replay,crank-ble/hil";
-      devArgs = { CARGO_PROFILE = "dev"; };
-      cargoArtifactsDev = craneLib.buildDepsOnly (common // devArgs // { pname = "crank-dev"; src = source cargoFiles;
-        cargoExtraArgs = "--workspace --locked ${testFeatures}"; });
+      # P1r: the shared layer stays in the release profile (tests run 6.8x slower in dev, ADR-0006 §1.1).
+      devArgs = { };
+      cargoArtifactsDev = cargoArtifacts;
       rustCheck = common // {
         inherit cargoArtifacts;
         nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.python3 ];
