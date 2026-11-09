@@ -27,8 +27,9 @@ in which a small edit is cheap. Today:
   per-repository limit. (5) sccache, the RUSTC_WRAPPER on owner Macs outside Nix (not usable inside a
   derivation).
 - **CI.** GitHub-hosted runners (`ubuntu-latest` on every PR, `macos-latest` after every merge into `dev`
-  and on release branches, ADR-0001 §9.6). They cannot reach the fleet attic. The last release dry run
-  (2026-11-05) took 27.5 min, 24.6 of them in the macOS gate (#580).
+  and on release branches, ADR-0001 §9.6). They cannot reach the fleet attic. Release dry runs: run
+  42104438450 (2026-11-05), build job 27.5 min of which the macOS gate 24.6 min; run 42529294719 (2026-11-08),
+  build job 36.8 min of which the gate 34.5 min (step times from `gh api repos/gerchowl/crank/actions/jobs/<id>`).
 - **Owner decision (2026-11-08, on this ADR's first round).** CI and Release move to the fleet's self-hosted
   runners, next to the agents, with **the fleet attic as the one shared cache**: under sustained load that is
   cheaper than a paid cloud cache. No Cachix push, no R2 bucket, no paid cache. Most CI runs on the host's
@@ -174,8 +175,9 @@ outside the deps layer. Two changes, in order:
     `env!("CARGO_MANIFEST_DIR")` at compile time (8 uses in 7 files), so `sim_parity` failed with `NotFound` in the
     derivation that ran it. Both pass on Linux by luck of the fixed path. One derivation per compile-and-run has
     neither problem.
-  - **Release profile, not dev.** Prototyped in the dev profile, the suite ran in 249.6 s instead of 36.7 s on the
-    same hosted Linux runner (nextest `Summary`, Table 3), which spends the compile time it saves. The dev profile
+  - **Release profile, not dev.** Prototyped in the dev profile, the suite ran in 181.2 s (run 42545971862) and
+    249.6 s (run 42541165442), 4.9× to 6.8× the release profile's 36.7 s (run 42541163301) on the same hosted Linux
+    runner class (nextest `Summary`, Table 3), which spends the compile time it saves. The dev profile
     would also need a second deps layer (425–571 s cold, Table 3, and in the attic about as much again as the release
     layer's 348 MB per system).
 - **Kept separate.** `clippy` (clippy-driver's metadata cannot be shared with rustc's), `doc` (rustdoc), `build-e2e`
@@ -221,12 +223,14 @@ on binary size and start-up time. The dev profile keeps `debug = "line-tables-on
 The fleet's CI design is g-fleet ADR-032 (the k3s doc) and the runner pool (the pool design). crank uses it as designed:
 
 - **The Linux lane.** One-shot JIT runner pods on the host's aarch64-linux k3s guest, created per queued job by
-  the runner pool, the fleet's single dispatcher ("Layout inside the VM": *Runner engine: `sage-runner-pool` as
-  the JIT dispatcher, not ARC*). The owner's message of 2026-11-08 names ARC runner scale sets; the fleet replaced
+  the runner pool, the fleet's single dispatcher (k3s doc, "Layout inside the VM", the "Runner engine" bullet: the pool
+  is the JIT dispatcher, not ARC). The owner's message of 2026-11-08 names ARC runner scale sets; the fleet replaced
   ARC on this cluster on 2026-10-25/26 because ARC cannot filter `workflow_job` events by event name, ref or head
   repository, which a public repository needs (ADR-032 "Why a broker, not ARC"). crank's jobs request exactly one
-  label, `sage-pool-k3s-<s|m|l>` (2/4, 4/8, 8/16 CPU/GiB; limits equal requests), in the `runners-crank`
-  namespace that the lane's PR 7 adds (g-fleet#858). Pods are admitted by Kueue (one ClusterQueue,
+  role label, `crank-linux-<s|m|l>` (2/4, 4/8, 8/16 CPU/GiB; limits equal requests), in the `runners-crank`
+  namespace that the lane's PR 7 adds (g-fleet#858). The pool's own label names include the host's name, which
+  stays out of this public repository: the mapping from crank's role labels to the pool's lanes and sizes lives in
+  crank's row of the pool's policy table in g-fleet (g-fleet#1445). Pods are admitted by Kueue (one ClusterQueue,
   10 CPU / 30 GiB, `lane_max` 5), bind-mount the guest's `/nix` read-only and its nix-daemon socket, and
   substitute from the fleet attic. Horizontal scaling is the pool's job: as many pods as the queue and the
   budget admit.
@@ -244,7 +248,8 @@ The fleet's CI design is g-fleet ADR-032 (the k3s doc) and the runner pool (the 
   Mach-O files), `install-app` (`renamex_np`), and `clippy` and `rust-tests` (nextest) for the Darwin `cfg` code
   and the Darwin stdenv's linker. Everything else is platform-independent and runs once, on Linux. The flake's
   `checks.aarch64-darwin` shrinks to that set (#602).
-- **Where macOS work runs: the macOS guest as a Nix builder, not a runner VM (Recommended).** Every item in that
+- **Where macOS work runs: the macOS guest as a Nix builder, not a runner VM (Recommended; this departs from
+  the owner's topology of a macOS tart VM as Release builder, so it is the owner's decision, #615).** Every item in that
   list is a Nix derivation for `aarch64-darwin`. It needs a Darwin *builder*, not a GitHub job on macOS. The
   host's macOS compute guest is already the fleet's aarch64-darwin remote builder; the Linux guest's nix-daemon
   gets it as a builder for `aarch64-darwin`, and the crank job on the Linux lane runs
@@ -252,7 +257,7 @@ The fleet's CI design is g-fleet ADR-032 (the k3s doc) and the runner pool (the 
   store and are pushed to the attic from there (§2.5). This uses **no additional macOS VM**: the host's two
   macOS guest slots are taken by the agent workspace and the compute guest (g-fleet's tart
   guest module, "THE 2-GUEST LIMIT"), which is why the per-job macOS runner VMs are off
-  and why the pool's macOS lane (`sage-pool-macos-<size>`, its tart backend still unbuilt, "wave 2") would have
+  and why the pool's macOS lane (role label `crank-macos-<size>`; its tart backend still unbuilt, "wave 2") would have
   no slot to start in. The release packaging that today calls `ditto`, `plutil` and `shasum` on a macOS runner
   moves into a derivation and Python (`crank-app-zip`: `zip -X -r`, the plist read with `plistlib`), so the
   Release job itself runs on Linux too.
@@ -269,7 +274,7 @@ ADR-0001 §9.4 ("self-hosted runners must never serve a public repository") is a
 
 - **Fork PRs never run on them.** Four independent layers, each failing closed:
   1. **Workflows.** No job that can be started by `pull_request` or `pull_request_target` requests a
-     `sage-pool-*` label. The self-hosted jobs live in workflows whose triggers are `push` (to `dev`, `main`),
+     self-hosted role label (`crank-linux-*`, `crank-macos-*`). The self-hosted jobs live in workflows whose triggers are `push` (to `dev`, `main`),
      `merge_group` (base `dev`) and `workflow_dispatch` (refs `dev` and `release/*`). There is no expression that
      picks the runner from event data: a job is self-hosted by its workflow's triggers, so a fork cannot reach one
      through a crafted event.
@@ -316,11 +321,11 @@ ADR-0001 §9.4 ("self-hosted runners must never serve a public repository") is a
   across the two; sizing is g-fleet#845. The repository's `heavy` wrapper governs agent jobs on the workspace
   guest only. Cached builds are the mitigation that matters: with the layout of §2.1 and the attic, a merge
   rebuilds the changed crates, not the workspace.
-- **When the runners are offline.** A job for `sage-pool-*` waits in GitHub's queue (24 h, then it fails); a
+- **When the runners are offline.** A job for a self-hosted role label waits in GitHub's queue (24 h, then it fails); a
   merge queue with no runner blocks merges, it never merges unchecked. Fallback, chosen by the owner with one
   repository variable: `CRANK_RUNNERS=github` makes the workflows request `ubuntu-24.04-arm` (free for public
   repositories since 2025-08-07, the same aarch64-linux as the lane, so the same visual baselines) and
-  `macos-latest` for the Darwin set, with only cache.nixos.org (no attic, no Actions cache); `CRANK_RUNNERS=sage`
+  `macos-latest` for the Darwin set, with only cache.nixos.org (no attic, no Actions cache); `CRANK_RUNNERS=self-hosted`
   (the default) is the lane. The variable is read in `runs-on` from `vars`, which a fork cannot set. Times on the
   fallback are today's (§1.1), not the lane's. An outage of the attic alone slows the lane, it does not stop it:
   Nix skips an unreachable substituter and builds (attic's known wedge, g-fleet#759).
@@ -360,7 +365,7 @@ No agent creates, reads or stores a secret. The owner:
 2. **Fork PR policy.** Settings → Actions → General → "Fork pull request workflows from outside collaborators":
    **"Require approval for all outside collaborators"**; "Send secrets to workflows from fork pull requests" stays
    off; "Send write tokens" stays off.
-3. **Repository variable.** `gh variable set CRANK_RUNNERS -R gerchowl/crank --body sage` once the lane serves
+3. **Repository variable.** `gh variable set CRANK_RUNNERS -R gerchowl/crank --body self-hosted` once the lane serves
    crank; set it to `github` to fall back (§2.4).
 4. **g-fleet decisions.** Merge the g-fleet changes of §2.9 (crank's row with `workflow_dispatch`, the Darwin
    builder for the Linux guest, the pool's trusted attic push) when their PRs come; g-fleet merges are the
@@ -369,8 +374,8 @@ No agent creates, reads or stores a secret. The owner:
    `--deny-self-hosted-runners` and keep `--signer-workflow` and `--source-ref`.
 6. **Attic push from a Mac.** Run `just cache-push` from an infra-domain Mac after a local build worth sharing.
 
-No Cachix token, no R2 bucket and no runner registration token are needed: the GitHub App
-(`gerchowl-sage-ci`) is already installed on crank (g-fleet#858).
+No Cachix token, no R2 bucket and no runner registration token are needed: the fleet's CI GitHub App is
+already installed on crank (g-fleet#858).
 
 ### 2.8 Implementation order
 
@@ -379,10 +384,10 @@ Each sub-issue's acceptance is tied to a number measured here.
 | # | Issue | What | Waits for | Target (baseline) |
 |---|---|---|---|---|
 | 1 | #601 | L1: `crank-bins` and `rust-tests`; the profiler's test | — | Linux workspace events ≤ 83 (92); local warm `crank-app` ≤ 290 s (379 s) |
-| 2 | #602 | aarch64-linux system, Darwin check set, `just check` on both systems | — | macOS job ≤ 20 min (35.2 min) |
+| 2 | #602 | aarch64-linux system, Darwin check set, `just check` on both systems | — | macOS job ≤ 20 min (35.2 min, run 42541163301) |
 | 3 | #606 | `just cache-push` (owner) | — | a second Mac builds nothing |
-| 4 | #603 | the gate on the lane through a merge queue, attic only, hosted fallback, `magic-nix-cache` removed | g-fleet#858, #1445, #1446, #1447; owner actions 1–3 | `crank-deps` substituted, not built (built in 10 of 10 jobs); gate ≤ 12 min (21.6 / 35.2 min) |
-| 5 | #605 | Release on the lane: `crank-app-zip`, provenance | #603, #604 (owner), g-fleet#1445, #1446 | release ≤ 15 min (27.5 min) |
+| 4 | #603 | the gate on the lane through a merge queue, attic only, hosted fallback, `magic-nix-cache` removed | g-fleet#858, #1445, #1446, #1447; owner actions 1–3 | `crank-deps` substituted, not built (built in 10 of 10 jobs, Table 1); gate ≤ 12 min (21.6 / 35.2 min, run 42541163301) |
+| 5 | #605 | Release on the lane: `crank-app-zip`, provenance | #603, #604 and #615 (owner), g-fleet#1445, #1446 | release build job ≤ 15 min (27.5 min, run 42104438450; 36.8 min, run 42529294719) |
 | 6 | #607 | L2: per-crate shipped binaries, go/no-go | #601 | warm `crank-app` ≤ 50 % of L1 |
 
 1–3 speed up every build today and do not wait for g-fleet.
@@ -419,7 +424,8 @@ a lower layer can be taken as fresh for the real source in a higher one; plus th
 
 ### 3.3 The dev profile for checks
 
-Measured slower (§2.1): tests ran 6.8× longer, and it needs a second deps layer.
+Measured slower (§2.1): tests ran 4.9× to 6.8× longer (runs 42545971862, 42541165442), and it needs a second
+deps layer.
 
 ### 3.4 sccache inside the build
 
@@ -448,9 +454,11 @@ it: ARC cannot filter `workflow_job` by event, ref or head repository, which is 
 repository; the pool's JIT pods do (k3s doc, "Runner engine"; "Divergence from ADR-030": the fleet's other ARC
 installation stays for private repositories).
 
-### 3.8 A macOS runner VM for the Darwin gate and the release build
+### 3.8 A macOS runner VM for the Darwin gate and the release build (the owner's topology; pending #615)
 
-The pool's macOS lane (one-shot tart clones, `sage-pool-macos-<size>`) for the Darwin set. Rejected for now: the
+The owner's topology of 2026-11-08: a local macOS tart VM is the final Release builder and runs the macOS-only
+checks, with the same caches. Its advantages are real: one VM per job, destroyed after, and a release built on
+macOS by the job itself. The pool's macOS lane (one-shot tart clones, role label `crank-macos-<size>`) for the Darwin set. Not recommended for now, the owner decides (#615): the
 host's two macOS guest slots are taken, so it would wait for a slot that never frees; its tart backend is
 unbuilt; and every Darwin item is a Nix derivation a builder can build. It is the right home for #426's signing
 job. A persistent runner inside the compute guest was rejected outright: a long-lived runner on a public
@@ -498,6 +506,7 @@ break the Darwin build and land green (ADR-0001 §9.6's known risk).
 | The owner named ARC; the fleet's lane is the runner pool, not ARC. This ADR follows the fleet (§3.7). Confirm, or reopen ADR-032 in g-fleet | #608 | — |
 | Release provenance from a self-hosted runner before #426, or keep Release on GitHub-hosted until signing lands? | #604 | — |
 | Does L2 (per-crate) pass its go/no-go, crank-desktop's Tauri build script included? | #607 | — |
+| macOS work on the compute guest as a Nix builder (recommended: no free guest slot, no tart backend yet, every macOS item is a derivation; cost: unsandboxed Darwin builds shared with agents, a builder key on the Linux guest) or the owner's macOS runner VM (cleaner one-VM-per-job isolation; needs a freed guest slot, the pool's tart backend and g-fleet#1448)? | #615 | — |
 
 ## 6. References
 
