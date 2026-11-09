@@ -111,6 +111,7 @@ dev profile with its own dev deps layer; P1r = the same in the release profile o
 | P1r 42546036516 | linux | success | 19.0 | 83 | compiles nothing | 47.4 s |
 | P1 42541165442 | macos | failure: `Missing cached Tauri permission` (relocation across two layers) | — | — | — | — |
 | P1r 42546036516 | macos | failure: `sim_parity` `NotFound` (`CARGO_MANIFEST_DIR` of the layer's build dir) | — | 87 | — | 600 of 1103 run, 1 failed |
+| P1 42545971862 | macos | failure: the same `sim_parity` `NotFound`, in the dev profile | — | — | — | test 596 of 1103 failed |
 
 In the same runs: `crank-bins` (both binaries, one cargo invocation) compiled 12 workspace crates where `build` and
 `crank-cli` compiled 10 + 11; the dev deps layer took 425–571 s cold on top of the release one (275–848 s).
