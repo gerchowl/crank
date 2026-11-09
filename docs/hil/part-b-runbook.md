@@ -94,7 +94,7 @@ Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10, 11a, 11b and 11c), w
 | 7 | `hil_fec check7 --out "$OUT"` | 90 rpm at 150 W; the harness stays silent for 40 s | 1 min |
 | 8 | `hil_fec check8 --out "$OUT"` | Easy gear, steady; grades 0 / 5 / 5 / 10 %, shift down when steep | 2.5 min |
 | 9 | `hil_fec check9 --out "$OUT"` | 90 rpm at 250 W, then follow the cue down about 5 rpm every 10 s; keep turning | up to 3 min |
-| 12 | `hil_fec check12 --out "$OUT"` | 90 rpm at 200 W; it switches to Free; at the cue go to 70 rpm | 1 min |
+| 12 | `hil_fec check12 --out "$OUT"` | 90 rpm at 200 W; it switches to Free; at the cue go to 70 rpm. **Stay in this gear from the switch until the question** (ADR-0007; until that procedure lands, to the end of the check) | 1 min |
 
 - Each run waits until you type **`y`** (or `yes`) and Enter in its window. Anything else aborts.
 - Follow the on-screen cues. A run that stops early exits with status 4 and gives no result. Read its last line:
