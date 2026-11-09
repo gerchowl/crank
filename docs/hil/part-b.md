@@ -132,6 +132,11 @@ fool it into a full row. A live run cannot produce any of these captures:
 - **N1:** the 11a silence boundary is 1 µs looser than the live guard. The analyser accepts a release exactly
   `SILENCE_US` after the last page 25; the live guard needs strictly more.
 
+- **Check 12 and gear shifts (ADR-0007):** check 12 judges release from the ratio of power at 70 rpm to power at 90 rpm
+  under `Free`, which does not depend on the gear only if the rider does not shift. A shift between the switch and the
+  question that the rider does not report is not detected (no speed guard), so a releasing trainer reads FAIL only
+  under such a shift. Stay in one gear from the switch until the question.
+
 Until gerchowl/crank#516 lands (one validated, time-ordered capture timeline that every check reads), results
 come only from **unedited live captures**. #516 blocks the live Part B session (#44).
 
