@@ -1133,7 +1133,9 @@ answered at the same moment as today, once the intent is applied and what it rel
 `links_intent` answers", §5.1.3), with the same refusals (`Conflict`, `Storage`). Today it answers the `LinkFrame` its
 resolving step published (`app/src-tauri/src/commands.rs:93-98`), and the page had to order those answers against the
 channel's frames by `seq` (`app/src/ride/linkOrder.ts:7-10`), which is how #577 arose. With no state in the answer the
-**ordering rule is deleted**: the page applies and acks every frame.
+**ordering rule is deleted**: the page applies and acks every frame. After an intent the UI changes on the next link
+frame (within about 100 ms plus one IPC hop), not on the answer; #561's per-device split (`StreamFrame.links` for a
+riding device, `LinkFrame` for the others) stays until step 3.
 
 **The link channel until #588 step 3.** `links_open` opens one `Channel<LinkFrame>` per window (#561,
 `crates/crank-core/src/keeper/channel.rs`): an ack window of 1 (`links_ack(id, seq)` for every frame received; an ack
