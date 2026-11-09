@@ -286,7 +286,7 @@ test = [
   "crates/crank-engine/src/erg_tests.rs::stopping_during_a_post_release_ramp_releases_again",
 ]
 pr = 249
-wanted.trainer = "Resistance{pct: 0} within 8 ticks (2 s) of cadence < 40 rpm while the last sent command is Erg{w>0}"
+wanted.trainer = "Resistance{pct: 0} within the release dwell (default 20 ticks = 5 s; ErgTuning, #589) of cadence below the release cadence (default 30 rpm) while the last sent command is Erg{w>0}"
 wanted.engine = "ergReleased=true; block timer runs; released seconds excluded"
 wanted.ui = "ergReleased=true (\"ERG released, spin up\")"
 
@@ -472,8 +472,8 @@ test = [
   "crates/crank-engine/src/erg_tests.rs::a_zero_target_is_never_released",
 ]
 pr = 249
-wanted.trainer = "Resistance{pct: 0} after 8 ticks < 40 rpm with target > 0; on ≥ 60 rpm for 8 ticks: soft start, 5 steps at 1 Hz from the 3 s power to the target"
-wanted.engine = "ergReleased=true; block timer runs; released seconds excluded; 40 rpm exactly is not low; a 0 W target is never released"
+wanted.trainer = "Resistance{pct: 0} after the release dwell below the release cadence with target > 0 (defaults 5 s < 30 rpm, ErgTuning, #589); on ≥ the re-engage cadence for its dwell (defaults 45 rpm, 1.5 s): soft start, 5 steps at 1 Hz from the 3 s power to the target"
+wanted.engine = "ergReleased=true; block timer runs; released seconds excluded; the release cadence exactly is not low; a 0 W target is never released"
 wanted.ui = "ergReleased=true then false"
 
 [[row]]
@@ -489,7 +489,7 @@ status = "missing"
 test = "missing"
 issue = 258
 question = "Q1"
-wanted.trainer = "Resistance{pct: 0} after 8 ticks < 40 rpm with target > 0 (§7.4)"
+wanted.trainer = "Resistance{pct: 0} after the release dwell below the release cadence with target > 0 (§7.4; ErgTuning)"
 wanted.engine = "UNDECIDED"
 wanted.ui = "UNDECIDED"
 
@@ -864,6 +864,48 @@ wanted.engine = "session time scales; frame spacing ≥ 100 ms and 2 Hz heartbea
 wanted.ui = "≤ 10 frames/s, status 2 Hz"
 
 [[row]]
+id = "FM-STEADY-26"
+phase = "steady"
+severity = "S2"
+failure_mode = "A saddle readjustment releases ERG and strands the rider below the target"
+cause = "release too eager (40 rpm for 2 s) and re-engage cadence (60 rpm) above the rider's recovery cadence (owner's ride, 2026-11-09)"
+fault_plan = "engine trace: 70 rpm, 3 s at 0 rpm and 0 W, back at 58-60 rpm in a 137 W block"
+detection = "release counter against ErgTuning"
+guard = "ADR-0002 §7.4 (amendment 2026-11-09, #589)"
+status = "pending-merge"
+test = [
+  "crates/crank-engine/src/erg_tests.rs::a_saddle_readjustment_never_releases_with_the_defaults_and_power_returns_to_target",
+  "crates/crank-engine/src/erg_tests.rs::the_same_readjustment_released_under_the_pre_589_values",
+  "crates/crank-engine/src/erg_tests.rs::a_real_stop_releases_after_five_s_below_30_and_45_for_one_and_a_half_s_re_engages",
+]
+pr = 613
+wanted.trainer = "Erg{137} held through the dip; never Resistance{pct: 0}"
+wanted.engine = "ergReleased stays false; a real stop still releases after 5 s below 30 rpm"
+wanted.ui = "no ERG-released banner"
+
+[[row]]
+id = "FM-STEADY-27"
+phase = "steady"
+severity = "S1"
+failure_mode = "A rider tuning that disables or weakens the spiral guard reaches the engine"
+cause = "stored setting out of bounds or inconsistent (re-engage at or below release), or silently replaced"
+fault_plan = "stored setting \"tuning\" with out-of-bounds, off-grid, unknown or inconsistent fields; every in-bounds tuning against a sustained stop"
+detection = "Tuning::validate at ride_load and at the engine's Load"
+guard = "ADR-0001 §7.2; ADR-0002 §7.4"
+status = "pending-merge"
+test = [
+  "crates/crank-engine/src/tuning.rs::validate_refuses_out_of_bounds_off_grid_and_inconsistent_values",
+  "crates/crank-engine/src/erg_tests.rs::every_in_bounds_tuning_releases_a_sustained_stop",
+  "crates/crank-engine/src/erg_tests.rs::a_tuning_out_of_bounds_is_refused_at_load",
+  "crates/crank-engine/src/erg_tests.rs::with_the_release_switched_off_a_stop_never_releases",
+  "crates/crank-core/src/core.rs::a_stored_tuning_that_does_not_resolve_refuses_the_load_and_a_valid_one_loads",
+]
+pr = 613
+wanted.trainer = "no ride runs a tuning outside the bounds; every in-bounds tuning with the release on releases a stop within at most 8 s"
+wanted.engine = "Load refused InvalidInput; ride_load refused Storage naming the field; never the defaults in place of a bad value"
+wanted.ui = "the load error names the stored setting"
+
+[[row]]
 id = "FM-REL-01"
 phase = "released"
 severity = "S1"
@@ -880,7 +922,7 @@ test = [
   "crates/crank-engine/src/erg_tests.rs::old_link_cadence_does_not_count_toward_re_engagement",
 ]
 pr = 249
-wanted.trainer = "no Erg{w>0}: Erg{0} until §7.4 re-engage (≥ 60 rpm for 8 ticks), then soft start from the 3 s power"
+wanted.trainer = "no Erg{w>0}: Erg{0} until §7.4 re-engage (≥ the re-engage cadence for its dwell; defaults 45 rpm, 1.5 s), then soft start from the 3 s power"
 wanted.engine = "epoch change keeps released, owes a soft start, resets counters"
 wanted.ui = "ergReleased stays true"
 
@@ -890,7 +932,7 @@ phase = "released"
 severity = "S1"
 failure_mode = "Leaving release jumps to the block target"
 cause = "release exit keeps the old ramp state"
-fault_plan = "ErgSpiral then recovery to ≥ 60 rpm"
+fault_plan = "ErgSpiral then recovery to ≥ the re-engage cadence"
 detection = "ramp-step monitor"
 guard = "ADR-0002 §7.4, §7.5, §7.8(c)"
 status = "pending-merge"
@@ -918,7 +960,7 @@ test = [
   "crates/crank-engine/src/erg_tests.rs::the_re_engagement_criteria_are_evaluated_in_a_free_block_too",
 ]
 pr = 249
-wanted.trainer = "no Erg{w>0} until ≥ 60 rpm for 8 ticks (counted in Free too), then soft start"
+wanted.trainer = "no Erg{w>0} until ≥ the re-engage cadence for its dwell (counted in Free too), then soft start"
 wanted.engine = "released persists across Free; left only via §7.4"
 wanted.ui = "ergReleased stays true through the Free block"
 
@@ -1203,7 +1245,7 @@ test = [
   "crates/crank-engine/src/tests.rs::stopped_pedalling_pauses_after_twelve_zero_ticks_and_resumes_on_cadence",
   "crates/crank-engine/src/tests.rs::one_nonzero_tick_resets_the_stopped_run",
 ]
-wanted.trainer = "release first: Resistance{pct: 0} after 8 ticks < 40 rpm with target > 0 (§7.4)"
+wanted.trainer = "Resistance{pct: 0} after the release dwell below the release cadence with target > 0 (§7.4); with the default 5 s dwell the 3 s auto-pause comes first and the release follows during it"
 wanted.engine = "paused(stopped_pedalling) after 12 zero ticks (no rollback); resume on cadence > 0; one non-zero tick resets the run"
 wanted.ui = "state.kind=paused reason stopped_pedalling; ergReleased=true"
 
