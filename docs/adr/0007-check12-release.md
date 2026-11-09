@@ -1,6 +1,6 @@
 # ADR-0007: Check 12 judges release from physics and the rider, not from frame forensics
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-09)
 - **Date:** 2026-11-09
 - **Issue:** #516 (PR #521)
 - **Related:** #44 (HIL), #576, ADR-0002 §4.2, §5, §7.9, `docs/hil/part-b.md`, `docs/hil/part-b-runbook.md`
@@ -57,7 +57,9 @@ is repeating its last update byte for byte. The sim sends page 25 every 350 ms (
 200 W. A released trainer simulates a flat road, where power depends on speed: P(v) = Crr·m·g·v + ½·Kw·v³ (FE-C
 page 50 defaults, Kw 0.51 kg/m; ADR-0005 §1). If the rider does not shift, speed is proportional to cadence. Going
 from 90 to 70 rpm then scales the rolling term by c = 70/90 and the air term by c³. The ratio r = P₇₀ / P₉₀
-therefore lies between c³ and c **in every gear** (Crr 0.004, m 85 kg):
+therefore lies between c³ and c **in every gear** (Crr 0.004, m 85 kg). The watt figures are illustrative, for the FE-C road
+model a real NEO is expected to apply. The sim's model differs (`sim.rs:474` at e066075: `0.51·v³`, no ½, speed =
+cadence × 0.09 m/s, `sim.rs:461`), but it has the same form, so its r also lies between c³ and c:
 
 | speed at 90 rpm | 10 km/h | 20 km/h | 30 km/h | 40 km/h | 65 km/h |
 |---|---|---|---|---|---|
@@ -79,14 +81,15 @@ table, rule by rule, is in the PR #587 body.
 **Procedure (`rider.rs` `check12`):**
 
 1. ERG 200 W at 90 rpm.
-2. `Free`, then hold 90 rpm for 15 s (was 10 s).
+2. `Free`, with the cue **"stay in this gear from now until the question"**, then hold 90 rpm for 15 s (was 10 s).
 3. Stamp the cue `# 12 70rpm <µs>` and hold 70 rpm for 15 s.
 4. Ask: **"Compared with the 90 rpm part right after the switch, did pedalling at 70 rpm get clearly easier? (y =
    easier / n = not easier / s = I shifted gear)"**. Record the answer with the existing answer note (`rider.rs`
    `answer`), which stamps it.
 5. Write the closing release.
 
-The runbook says: do not shift during the check, and answer `s` if you did.
+The runbook says the same: stay in this gear from the switch until the question, and answer `s` if you shifted.
+No speed guard checks it; the owner rejected one as extra machinery (2026-11-09).
 
 **Reading.** The capture must be a timeline: stamps never go back and every line is a record (#521, kept). Its
 control writes must equal check 12's fixed program, compared item by item (§4). The check reads:
@@ -99,7 +102,8 @@ control writes must equal check 12's fixed program, compared item by item (§4).
 - **`erg`**: the median power of the updates in [page-50 write − 5 s, page-50 write). The rider is at 90 rpm under
   ERG.
 - **`free90`**: the median power of the updates in [page-51 write + settle, cue) at 85–95 rpm.
-- **`free70`**: the median power of the updates in [t₇₀ + settle, answer stamp) at 65–75 rpm. t₇₀ is the first
+- **`free70`**: the median power of the updates in [t₇₀ + settle, answer stamp) at 65–75 rpm. The question has no
+  stamp of its own: it is asked at the end of the 15 s hold, and the window ends at the answer note's stamp. t₇₀ is the first
   update in that band after the cue. The band itself leaves out the rider's change of cadence.
 - **`r`** = `free70` / `free90`.
 
@@ -149,7 +153,7 @@ recognises upstream duplicates, and the update rule already uses it.
 | duplicate delivery of a notification | not observed; would be a stack bug | an identical frame with a held count is a repeat |
 | reorder, or a stamp going back | impossible in a `hil_fec` capture; the pre-#521 Part A captures show it | no result |
 | any gear | yes | none: the ratio does not depend on the gear (§1) |
-| the rider shifts gear during the check | possible | the rider answers `s`: no result (runbook) |
+| the rider shifts gear during the check | possible | reported: the rider answers `s`, no result; unreported: out of model (the don't-shift rule, runbook and part-b.md) |
 | the rider stops pedalling or leaves a band | yes (#576: 0 rpm counted as "below 80") | outside the band; too few updates gives no result |
 | ERG sags at 70 rpm, or the power sensor is stuck | not observed | r out of its range or the rider disagrees: no result |
 | the NEO never fills accumulated power | likely (only 0 W observed) | not read |
@@ -165,10 +169,12 @@ recognises upstream duplicates, and the update rule already uses it.
   - `stall(compress a run of stamps to 1 µs steps)`;
   - `cadence(move a span of updates to 0 rpm or out of the band)`;
   - **`gear(g)`**: speed per rpm for the whole check, from 0.03 to 0.2 m/s per rpm (10–65 km/h at 90 rpm). The
-    sim's road power follows it, and ERG ignores it;
+    sim's road power follows it, and ERG ignores it. This needs a `sim.rs` change: today speed is fixed at
+    `cadence * 0.09` (`sim.rs:461`) under the road model `0.51·v³` (`sim.rs:474`), and the plan needs a speed per rpm;
   - `answer(y | n | s | none)`.
 - **The properties:**
-  - a releasing capture is never FAIL;
+  - a releasing capture is never FAIL, **assuming no unreported gear shift** (a shift to a harder gear between the
+    switch and the question can raise r; this is the don't-shift rule, not a guard);
   - a non-releasing capture is never PASS;
   - when r and the answer disagree, the result is no result.
 - **The falsifier fixtures** (§2) are kept as fixed examples, not as operators: forged input, expected never PASS.
@@ -203,7 +209,9 @@ gives no result when that is missing.
 - Keep `parse` (the order and malformed-line checks), the typed views, `drops`, `closing_release`, `index_at` and
   `checks_read_typed_events_only`.
 
-**`partb.rs`:** rewrite `check12` to §2. **`rider.rs`:** `check12` holds 15 s, stamps the cue and asks the question.
+**`partb.rs`:** rewrite `check12` to §2. **`rider.rs`:** `check12` holds 15 s, gives the don't-shift cue, stamps the 70 rpm
+cue and asks the question. **`sim.rs`:** a `Plan` field for speed per rpm, replacing the fixed `0.09` at `sim.rs:461`, for the
+`gear(g)` operator (§3).
 
 **Tests to delete:**
 
