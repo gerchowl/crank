@@ -280,12 +280,11 @@ It does nothing else:
 - it never merges a command's answer with a frame;
 - it keeps nothing from an earlier frame except the series.
 
-A command's answer never feeds what is drawn. After `ride_start`, the page shows "riding" when a frame says so.
+A command's answer never feeds what is drawn, nor where the page goes. After `ride_start`, the page shows "riding"
+when a frame says so, and it routes on the frame's `ride`, never on the id `ride_load` answered.
 
 The core guarantees that `from` equals the length of the series the page holds, and a test asserts it (§4.3.9). A
-mismatch is a core bug: the client reports it as an `internal` error and does not repair it. The client may keep an
-earlier object where the frame's value is deep-equal to it, so that React need not re-render. That is an optimisation:
-its output must equal the frame, a test checks this, and it is never a merge.
+mismatch is a core bug: the client reports it as an `internal` error and does not repair it.
 
 #### 4.3.3 Series, size and rate
 
@@ -314,9 +313,10 @@ These are today's rates (`Ride.tsx:357-359`, DESIGN §6.4), now fixed in the cor
 **Who owns the series, and consistency.** The series store belongs to the core (one per loaded ride, behind a `std`
 mutex). The engine appends to it on its own task, in the same step in which it publishes the tick's status
 (`engine.rs:1597-1607`): the append and the status `send_replace` happen under the store's lock, and the frame builder
-reads the status and the series lengths under that lock. So a frame never holds a status newer than its points, or
-points newer than its status, and the old §4.3's ordering guarantee holds for the series too. The engine holds the
-lock only for the push; it never waits on a channel.
+reads the status and copies its points under that lock. So a frame never holds a status newer than its points, or
+points newer than its status, and the old §4.3's ordering guarantee holds for the series too. The engine's wait for
+the lock is bounded, not zero: at most one frame builder's critical section (a status clone and a copy of at most
+256 points per series). It never waits on a channel or a page.
 
 **Ride lifetime.** `ride_load` sets `loading` and, from its start, the frame's `ride` is `null` and the series are
 dropped: the next frame carries every series with `from: 0` and no points, so the page clears the previous ride's
@@ -333,18 +333,22 @@ with `ended` set, until the next load starts.
   64 bytes on a character boundary, and the store keeps the full text. This is the rule the status already follows for
   `record_error` (§4.3.6). Test: ≤ 4 000 B.
 - **Nudges:** at most 8, each 512 B of message plus its fields. #248 adds them, with its size test: ≤ 6 000 B.
-- **Series:** at most 2 048 points per series per frame, oldest first. Session and workout times up to 999 999.75 s
-  (11.5 days) keep a point within 26 B of JSON, so the series are at most 160 KB.
-- **A whole frame** is therefore at most 176 KB. The test fills every part to its cap.
+- **Series:** at most 256 points per series per frame, oldest first. Session and workout times up to 999 999.75 s
+  (11.5 days) keep a point within 26 B of JSON, so the series are at most 20 KB.
+- **A whole frame** is therefore at most 32 KB. The test fills every part to its cap.
 - **A live frame** (no backlog, no nudges) is about 1–2 KB. That is under Tauri's 8 192-byte direct-eval threshold
   (tauri 2.12.3, `crates/tauri/src/ipc/channel.rs:36`, `:293-301`).
 - **A larger frame** (catch-up, backfill, nudges) goes through Tauri's fetch path (`channel.rs:306-320`). That costs one
   more IPC round trip. It is still in order (each message carries its index, `channel.rs:284`), and still the only
   frame in flight.
+- **Why 256.** A safety change (trainer lost, ERG released, a pause) waits at most for the frame in flight to be
+  acknowledged and for the 100 ms spacing, then goes out in the next frame. The chunk keeps every frame at ≤ 32 KB, so
+  one frame's round trip (send, fetch, parse, apply, ack) stays ≤ 100 ms, and such a change reaches the page within
+  about 200 ms even during a backfill. #598 measures that round trip for a 32 KB frame on sage (`just e2e`) and fails
+  above 100 ms.
 
-The old 8 000-byte budget split frames so that no frame left the direct-eval path. What it protected was bounded work
-when the page stalls. With one frame in flight, a larger frame bounds that work as well: one parked payload. So the
-ack window now does that job, and the budget is gone.
+The old 8 000-byte budget, which split frames, is gone: what it protected (bounded work when the page stalls) is the
+ack window's job, and one parked payload is as bounded as one eval.
 
 **Rate.**
 
@@ -359,7 +363,7 @@ ack window now does that job, and the budget is gone.
   Outside a ride a frame goes only on a change: a phase, a keeper sample, a pairing. An idle app with nothing warm
   sends nothing.
 - Frames are coalesced: the state in a frame is the state when it is sent (the newest wins), and points accumulate
-  until they are acknowledged.
+  until they are sent.
 
 #### 4.3.4 Flow control
 
@@ -371,26 +375,22 @@ ack window now does that job, and the budget is gone.
   The link channel already works this way (`crates/crank-core/src/keeper/channel.rs:96-113`, `:121-144`); now all
   live data does.
 - **A stalled page** (a busy main thread, a hidden window, a devtools pause) holds one frame. It costs the core one
-  cursor and nothing else.
-  - When it acks, its next frame carries the state now and the points since its last acknowledged frame, up to 2 048
-    per series.
-  - The rest follow in the next frames, at ≤ 10 Hz, each with the state at its send.
-  - Nothing is lost and nothing is re-queried. The state is complete in every frame. The points are read from the
-    ride's series by cursor; no channel has a buffer of its own.
-- **Cursor.** There is one cursor per channel and series: the index of the first point not yet acknowledged.
-  - A frame carries the points from `cursor` up to `min(len, cursor + 2 048)`.
-  - Its ack moves the cursor to the end of what it carried, **only if the series it carried are still the current
-    ones**. Each series store has an epoch (+1 per load), the channel remembers the epoch of the frame in flight, and
-    an ack of a frame from an earlier epoch moves no cursor. Otherwise a late ack of ride A's frame would move ride
-    B's cursor to A's length, and B's points would be appended to A's trace.
-  - A new epoch (a load starting) resets every cursor to 0, so the channel's next frame says `from: 0`.
+  cursor and nothing else. When it acks, its next frame carries the state now and the points after its last frame, up to 256 per series; the
+  rest follow at ≤ 10 Hz, each frame with the state at its send. Nothing is lost or re-queried: the state is complete
+  in every frame, and the points are read from the ride's series by cursor (no channel has a buffer).
+- **Cursor.** There is one cursor per channel and series: the index of the first point not yet sent.
+  - A frame carries the points from `cursor` up to `min(len, cursor + 256)`, and **sending it moves the cursor** to
+    the end of what it carried. Tauri delivers a channel's messages in order, and a failed send closes the channel, so
+    a sent frame reaches the page unless the channel ends (a reload or a destroyed window ends it, and its successor starts
+    at 0); the ack only opens the window.
+  - A load starting resets every cursor to 0, so the channel's next frame says `from: 0`.
 - **Reload, or a new window.** A new channel starts every cursor at 0, so its first frames **backfill the ride's whole
-  series**: oldest first, 2 048 points per series per frame, with the current state in each. The traces fill in while
-  the numbers (`ride.live`) are already live. A 3 h ride (43 200 power points) backfills in 22 frames, at least 2.2 s
-  (each such frame takes Tauri's fetch path and a ~160 KB JSON parse). Downsampling the
-  backfill to the trace's pixels is #599 (step 4, §4.3.10).
-- **Ordering.** Frames cannot overtake one another, because only one is ever in flight. Tauri also delivers a
-  channel's messages in index order. Everything in one frame happened before everything in the next.
+  series**: oldest first, 256 points per series per frame, with the current state in each. The traces fill in while
+  the numbers (`ride.live`) and every safety state are already live. A 3 h ride (43 200 power points) backfills in
+  169 frames, about 17 s at 10 Hz. #599 (step 4, §4.3.10) downsamples the backfill to the trace's vertices, about
+  one per pixel, which makes it a few frames.
+- **Ordering.** Only one frame is ever in flight, and Tauri delivers a channel in index order: everything in one frame
+  happened before everything in the next.
 - **The engine never sees a channel.** It appends to the series and publishes its status on a `watch` as now
   (`crates/crank-engine/src/engine.rs:1607`; `EngineHandle::subscribe`, `:351`). It never awaits a consumer. The
   channels live in the core (§4.3.5).
@@ -415,8 +415,11 @@ ack window now does that job, and the budget is gone.
   engine shows up as an `engine_unresponsive` ack within 1 s while frames flow. Acks now go to the core, so the core
   sets `ride.engine_unresponsive` itself, in two cases:
   - any of its bounded engine requests times out (`REQUEST_TIMEOUT`, `core.rs:85`);
-  - while the ride is in progress (riding or paused), its status watch has not changed for `REQUEST_TIMEOUT` on the
-    pacing clock. In progress, the engine ticks at 4 Hz and publishes every tick (`engine.rs:793-866`).
+  - while the ride is in progress (riding or paused), its status watch has not been written for `REQUEST_TIMEOUT` on
+    the pacing clock. That holds on every paused tick too: a pause keeps the session `Active`, whose ticks stay due
+    (`engine.rs:868-872`; paused is a state of `Active`, `:1552-1556`), and every wake ends in `publish`
+    (`engine.rs:863`), which calls `send_replace` (`:1607`). `send_replace` marks the watch changed whether or not the
+    value differs, and the session clock advances on each tick anyway, so a healthy paused ride writes it at 4 Hz.
 
   The flag stays set until the ride is ended. A loaded, unstarted ride does not tick, so there a wedge shows on the
   next command (Start answers `engine_unresponsive`), as today.
@@ -493,22 +496,9 @@ ack window now does that job, and the budget is gone.
 - **Not yet in it:** thresholds and flags (#243 part b), nudges (#248). Each enters the snapshot as a field, within
   the state bound of §4.3.3, with its own size test.
 
-#### 4.3.7 When per-widget rates or filters come back
+#### 4.3.7 Per-widget rates or filters
 
-The original §4.3 rejected full snapshots because "per-widget rates are a product requirement". That reason is
-withdrawn: no shipped widget uses a rate other than the series' or any filter (§4.3.1). If one ever needs them, the
-**core computes them into the snapshot**:
-
-- The layout (persisted data, §6; `spec/UX-SPEC.md:59`) tells the core which derived values exist: per widget, a
-  metric, a filter chain and a display rate, for at most 64 widgets.
-- The core computes them with `crank-domain`'s filters (`crank_domain::filters`, kept) on session time.
-- It puts the latest value of each into a `widgets` field keyed by the layout's widget id, held between the widget's
-  due times.
-- The page still only replaces: it never filters, rate-limits or subscribes.
-
-The trigger is a widget, designed in DESIGN or UX-SPEC, that needs a rate or a filter the series do not give. It is
-decided in an amendment to this section, with the field's size bound, a cost test per tick at the caps (the old
-`the_tick_cost_stays_bounded_at_every_cap` is the model) and the layout command (`layout_set`, answering `()`).
+If a widget ever needs its own rate or filter, the core computes it into the snapshot.
 
 #### 4.3.8 Commands, and what else is affected
 
@@ -517,11 +507,11 @@ decided in an amendment to this section, with the field's size bound, a cost tes
 | Command | Today (`dev` 2de24c5) | New | Step |
 |---|---|---|---|
 | `links_intent(intent)` | `LinkFrame`, the keeper state its resolving step published (`commands.rs:93-98`, `core.rs:1251-1270`) | `Result<(), ApiError>`, answered at the same moment and with the same refusals as today; the effect shows in the next frame | 2 |
-| `ride_load(workout_id)` | `RideLoaded { ride_id, workout_id, hr_linked }` (`commands.rs:156-161`, `dto.rs:405-412`) | step 2 drops `hr_linked`: the strap's state is `devices.strap`. Step 3 answers `Result<String, ApiError>`, the ride id, and `workout_id` is `ride.workout_id` | 2, 3 |
+| `ride_load(workout_id)` | `RideLoaded { ride_id, workout_id, hr_linked }` (`commands.rs:156-161`, `dto.rs:405-412`) | `Result<String, ApiError>`, the ride id (for logs and tests; the page does not route on it). `hr_linked` is `devices.strap`, `workout_id` is `ride.workout_id` | 3 |
 | `ride_end()` | `RideEnded { ride_id, forced }` (`commands.rs:210-219`, `dto.rs:417-423`) | `Result<(), ApiError>`. The ride's id and `ended` (`finished` or `forced`) are in `ride` | 3 |
 | `device_pair(id, role)` | `PairedDevice` (`commands.rs:58-64`) | `Result<(), ApiError>`. The pairing is `devices.<role>.paired` | 3 |
 | `ride_status()` | `RideStatusView { load, status }` (`commands.rs:227-229`, `core.rs:2460-2476`) | deleted: `ride` and `loading` | 3 |
-| `device_links()` | `Vec<DeviceLinkInfo>`: pairing, the ride's link, the keeper's phase (`commands.rs:82-84`, `core.rs:1479-1520`) | step 2 makes it report the overlaid view; step 3 deletes it: `devices` | 2, 3 |
+| `device_links()` | `Vec<DeviceLinkInfo>`: pairing, the ride's link, the keeper's phase (`commands.rs:82-84`, `core.rs:1479-1520`) | deleted: `devices` | 3 |
 | `open_stream(channel)`, `stream_subscribe`, `stream_unsubscribe`, `stream_ack`, `stream_snapshot` | the stream, its subscriptions, its acks and its re-query (`commands.rs:237-305`) | deleted: `ui_open`, `ui_ack` | 3 |
 | `links_open(channel)`, `links_ack` | the link channel (`commands.rs:106-128`) | deleted: `ui_open`, `ui_ack` | 3 |
 
@@ -601,7 +591,7 @@ When #40 gives them a live ride, they read `Core::snapshot()` or a `UiSink` with
 **Docs**, each updated by the step that changes its subject:
 
 - AGENTS.md: the streams, link-channel and `app/src/stream/` paragraphs;
-- `spec/UX-SPEC.md:18-21` and `:76-78`, which point to §4.3.7;
+- `spec/UX-SPEC.md:18-21` and `:76-78`, which point to §4.3;
 - `spec/VIEWS.md:7`, `:42-43`;
 - DESIGN §6.4 and DESIGN.md:621 ("re-subscribes from a snapshot");
 - `docs/safety/FMEA.md` rows FM-STEADY-21 to 24 (their mitigations and tests, below);
@@ -612,9 +602,9 @@ When #40 gives them a live ride, they read `Core::snapshot()` or a `UiSink` with
 
 | Test today | Intent | Replaced by |
 |---|---|---|
-| `flow_control_holds_over_arbitrary_interleavings`, `the_generator_reaches_the_split_and_bare_paths`, `a_full_window_sends_nothing_and_coalesces_to_the_latest`, `an_ack_for_a_frame_never_sent_is_ignored`, `seq_wraps_at_u32_max_and_the_ack_window_follows`, `a_split_across_the_wrap…` (`stream/tests.rs:303-445`, `:1426-1472`) | flow control is bounded and loses nothing it promises | **one property test** of the `ui` channel over arbitrary interleavings of ticks, keeper changes, ride loads and ends, acks (right, stale, foreign, none for a long time). It asserts: at most one frame unacknowledged; each frame's state equals `Core::snapshot()` at its send; the series chunks received, applied by the client rule, equal the core's series exactly (no hole, no duplicate, `from` always the page's length, also when a load starts while a frame is in flight); `ride.live` equals the engine's latest tick; frames ≥ 100 ms apart; every frame within the bound |
+| `flow_control_holds_over_arbitrary_interleavings`, `the_generator_reaches_the_split_and_bare_paths`, `a_full_window_sends_nothing_and_coalesces_to_the_latest`, `an_ack_for_a_frame_never_sent_is_ignored`, `seq_wraps_at_u32_max_and_the_ack_window_follows`, `a_split_across_the_wrap…` (`stream/tests.rs:303-445`, `:1426-1472`) | flow control is bounded and loses nothing it promises | **one property test** of the `ui` channel over arbitrary interleavings of ticks, keeper changes, ride loads and ends, acks (right, stale, foreign, none for a long time). It asserts: at most one frame unacknowledged; each frame's state equals `Core::snapshot()` at its send; the series chunks received, applied by the client rule, equal the core's series exactly (no hole, no duplicate, `from` always the page's length, also when a load starts while a frame is in flight or a channel closes mid-backfill); `ride.live` equals the engine's latest tick; frames ≥ 100 ms apart; every frame within the bound |
 | `every_frame_stays_under_the_byte_budget_at_every_cap`, `oversized_samples_split…`, `a_split_stops_at_the_window…`, `discrete_state_over_budget_becomes_the_bare_resync_frame` (`:482-618`), `the_largest_frame_is_under_the_byte_budget` (`keeper/channel.rs:337-358`) | a frame has a known size | **the frame-bound test** (§4.3.3): every part at its cap |
-| `subscription_chain…`, `each_subscription_has_its_own_chain`, `subscriptions_are_bounded_and_validated`, `unsubscribe_drops_the_pending_sample`, `filter_chains_are_capped…`, `subscribe_opts_wire_contract_for_the_ui_mock`, `ids_skip_zero…`, `stream_and_subscription_ids_stay_unique…` (`:633-741`, `:1018-1065`, `:1473-1608`) | subscriptions and chains | deleted with subscriptions. Chains return only under §4.3.7, with its tests |
+| `subscription_chain…`, `each_subscription_has_its_own_chain`, `subscriptions_are_bounded_and_validated`, `unsubscribe_drops_the_pending_sample`, `filter_chains_are_capped…`, `subscribe_opts_wire_contract_for_the_ui_mock`, `ids_skip_zero…`, `stream_and_subscription_ids_stay_unique…` (`:633-741`, `:1018-1065`, `:1473-1608`) | subscriptions and chains | deleted with subscriptions |
 | `the_tick_cost_stays_bounded_at_every_cap` (`:1066-1144`) | a tick's work is bounded | **the series append costs one push per series per tick, however many channels are open** (the engine holds no channel) |
 | `non_finite_values_are_gaps…`, `a_chain_that_overflows_to_infinity_emits_a_gap` (`:1180-1239`) | a NaN never reaches the page | **a non-finite or absent value appends no point** |
 | `frames_never_exceed_ten_per_second…` (`stream/tests.rs:742-770`), `frames_are_spaced_and_sent_only_on_change` (`keeper/channel.rs:266-300`) | ≤ 10 Hz, only on change | the same on the `ui` channel, with the series |
@@ -627,7 +617,7 @@ When #40 gives them a live ride, they read `Core::snapshot()` or a `UiSink` with
 | `app/src/stream/stream.test.tsx` (643 lines) | the client applies frames and re-queries | **client tests** (mockIPC): applies every frame in order, acks each, replaces the state, appends the series, replaces on `from: 0`, keeps no state from a closed channel |
 | `app/e2e/specs/stream.e2e.mjs` | no status is lost across a 1 s webview freeze | **the same freeze on the real app**: after it, the state the page shows equals `Core::snapshot()`, and the received series have no hole |
 | `app/src-tauri/tests/commands.rs:97-190`, `app/src-tauri/tests/lifecycle.rs:61-94` | the stream through the commands, and window cleanup | `ui_open` and `ui_ack` through the commands; a page load closes the old page's channel and never the new one |
-| FMEA FM-STEADY-21 to 24 | stalled consumer; filter cost; frame over budget; non-finite value | 21 → the stall test above; 22 → retired with the chains (it returns with §4.3.7); 23 → the frame-bound test; 24 → the non-finite test |
+| FMEA FM-STEADY-21 to 24 | stalled consumer; filter cost; frame over budget; non-finite value | 21 → the stall test above; 22 → retired with the chains; 23 → the frame-bound test; 24 → the non-finite test |
 
 The status wire tests stay, moved beside the type: `the_worst_status_with_the_erg_fields_has_a_measured_size`,
 `the_commanded_mode_is_typed_on_the_wire_and_absent_as_null` and `the_wire_status_carries_the_erg_fields_with_their_meaning`.
@@ -638,39 +628,26 @@ commands, and the baseline PNGs must not change.
 
 Each step leaves `dev` working, with no lost data and no regressed screen.
 
-**Step 2 (#597): link commands return nothing; one source per device.**
+**Step 2 (#597): link commands return nothing.** `links_intent` answers `()`; the ordering rule between answers and
+frames (ADR-0002 §5.1.4) and `linkOrder.ts` are deleted; `LinkFrame.seq` keeps its meaning, now used only by
+`links_ack`. Supersedes #577 (closed). One source per device waits for step 3, because the overlay needs the status
+and the devices in one frame, and on today's two channels it would need a throwaway client and a skew between them.
 
-- `links_intent` answers `()`. The ordering rule between answers and frames is deleted (ADR-0002 §5.1.4), and so is
-  `linkOrder.ts`. `LinkFrame.seq` becomes a **per-channel frame counter** (+1 per frame sent), the number `links_ack`
-  names. It can no longer be the keeper state's number: with the overlay a frame can change because the ride's link
-  changed while the keeper's state did not, and two frames with one `seq` would let an ack match the wrong one.
-- The core overlays the ride's link state onto the link channel's device view (`DeviceView.link`, §4.3.2), and
-  `device_links` reports the same view. `StreamFrame.links` is deleted, and so is the hub's links lane.
-- `RideLoaded.hr_linked` is deleted. The Ready sheet and the ride screen read each device from the link channel only,
-  through an app-scoped link client: open, apply every frame, ack every frame. That client is the shape of step 3's
-  client.
-- This supersedes #577 (closed).
-- **Acceptance:**
-  - every device has one source in the UI: `git grep` finds no `StreamFrame.links`, `hrLinked` or `keepNewest`;
-  - the mocks model every refusal of `links_intent`;
-  - the bindings are regenerated.
-- **Tests that fail before it:**
-  - (core) during a sim ride the trainer link is lost: the link channel's next frame shows the trainer
-    `{phase: riding, link: lost}`. Today it shows `riding` with nothing else;
-  - (UI) with the strap `not_found` in the link frame, the Ready sheet's strap row is "lost", whatever the load
-    answered. Today `hrLinked` decides it (`ReadySheet.tsx:65-80`).
-- **Interim limit, closed by step 3:** the status still comes on the ride stream while the links come on the link
-  channel. On the ride screen they can be one frame apart (≤ 100 ms plus one IPC hop). That touches only the
-  "reconnecting" wording of the loss banner (`Ride.tsx:171-190`), which is neutral while a link is unknown.
+- **Acceptance:** the mocks model every refusal of `links_intent`; the bindings are regenerated; AGENTS.md's
+  link-channel paragraph is updated.
+- **Test that fails before it:** `links_intent` through the commands answers `null` for every intent, and its refusals
+  are unchanged (today it answers a `LinkFrame`).
 
 **Step 3 (#598): the snapshot channel replaces the ride stream and the link channel.**
 
-- Everything in §4.3.2 to §4.3.6, and the deletions and commands of §4.3.8 and §4.3.9.
+- Everything in §4.3.2 to §4.3.6, and the deletions and commands of §4.3.8 and §4.3.9, including one source per
+  device: the overlay, and the deletion of `StreamFrame.links` and `RideLoaded.hr_linked`.
 - It may land as three PRs under #598, each leaving `dev` working: (3a) the core's `ui` channel, `ui_open`/`ui_ack`
   and their tests, beside the old channels; (3b) the app switches to it (client, hooks, mocks, design fixtures, e2e);
   (3c) the deletions of §4.3.9 and the doc updates.
 - The series store is a plain append-only vector per series in the core. The cursors need it: a stalled page's next
-  frame must carry every point since its ack. A new channel backfills from index 0 (§4.3.4). This makes #564 moot.
+  frame must carry every point since its last frame. A new channel backfills from index 0 (§4.3.4). This makes #564
+  moot.
 - **Acceptance:**
   - all of §4.3.9's replacement tests pass;
   - `just e2e`'s freeze spec passes on sage;
@@ -678,12 +655,15 @@ Each step leaves `dev` working, with no lost data and no regressed screen.
   - the bindings are regenerated;
   - the docs of §4.3.9 are updated;
   - the mocks model every refusal of `ui_ack` (`NotFound`) and `ui_open` (`Conflict` beyond 16, and `Storage` when
-    the keeper cannot start).
+    the keeper cannot start);
+  - a 32 KB frame's round trip on sage is ≤ 100 ms (§4.3.3).
 - **Tests that fail before it:**
   - the #564 reproduction as a test;
   - "the page converges after a stall" (a hole in the trace today);
   - the mid-ride backfill (an empty trace today);
-  - a forced end that survives a reload (`forcedEnds.ts` loses it today).
+  - a forced end that survives a reload (`forcedEnds.ts` loses it today);
+  - the overlay: a lost trainer shows `{phase: riding, link: lost}` in the same frame as `trainer_lost_since_s`, and
+    the Ready sheet's strap row follows `devices.strap` (today `hrLinked` decides it, `ReadySheet.tsx:65-80`).
 
 **Step 4 (#599): #557, narrowed.** What is left of #557:
 
@@ -711,25 +691,20 @@ the UI) reads `nudges` from the snapshot, and `coach_decisions` stays a history 
 
 - **Re-render per frame.** Each frame replaces the state, so components that compare by reference re-render at the
   frame rate (≤ 10 Hz, about 1–2 KB). `spec/UX-SPEC.md:78` asks never to re-render the whole tree per frame. Measure on
-  the ride screen in step 3. If it is too costly, the client keeps deep-equal objects (§4.3.2); that is allowed
-  because its output equals the frame.
+  the ride screen in step 3; a cost that is too high is a change to this section, not a client optimisation.
 - **Lost intermediate states.** Coalescing loses a state that lasted less than a frame (≤ 100 ms) or a stall, for
   example reconnect attempt n before n + 1. Today's flow loses it too when its window is full. The rule for new
   fields: what the page must not miss is a counter or a timestamp in the snapshot (`laps_closed`, `last_gap_s`,
   `reconnected_at_s`) or durable data, never an edge the page has to observe.
-- **Large frames.** Catch-up and backfill frames exceed 8 192 bytes and take Tauri's fetch path. That is ordered and
-  bounded by the ack window, but each such frame costs one more round trip. #599's downsampling makes backfill small.
+- **Large frames.** Catch-up and backfill frames (≤ 32 KB) take Tauri's fetch path: ordered and bounded by the ack
+  window, one more round trip each. A 3 h backfill takes about 17 s until #599 downsamples it.
 - **Memory.** About 3 MB of series per 6 h ride, per process, and nothing grows per channel. A longer ride grows
   linearly. If that ever matters, the core can store a point as integer ticks (`u32` session and workout ticks and a
   `u16`, 10 B instead of 18 B) and convert to seconds only on the wire.
-- **More windows.** Each channel builds its own frames, so the cost grows with the number of windows: a handful, and at
-  most 16.
-- **Hidden windows.** WKWebView may suspend a hidden page's JavaScript. Its channel then holds one frame, and catches
-  up in a few frames when the page is shown again.
+- **More or hidden windows.** Each channel builds its own frames (at most 16 channels). A hidden page whose JavaScript
+  WKWebView suspends holds one frame and catches up when shown.
 - **The snapshot grows.** Every new field enters the frame-bound test. A field that cannot fit the state bound is
   durable data and becomes a query, not part of the snapshot.
-- **Per-widget rates and filters** come back only through §4.3.7, never in the page.
-- **Step 2's interim:** see step 2's interim limit.
 
 #### 4.3.12 Alternatives
 
@@ -743,7 +718,7 @@ the UI) reads `nudges` from the snapshot, and `coach_decisions` stays a history 
 
 **Reversed:** the original §4.3 rejected **fixed-rate full snapshots** because they "send everything to every widget;
 per-widget rates are a product requirement". The owner reversed this on 2026-11-09 (#588). Everything is about 1.5 KB,
-and no widget uses per-widget rates. If one ever does, §4.3.7 applies.
+and no widget uses per-widget rates; if one ever does, the core computes it into the snapshot (§4.3.7).
 
 ### 4.4 Errors across the boundary
 
