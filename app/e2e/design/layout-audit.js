@@ -419,117 +419,6 @@
         );
     }
 
-    // 9. The metric grid (§18.3 "Metric grid", #581): in every slot the label-to-value gap is the same, every unit
-    // starts in one column, and the gap from a slot's last line to the next slot's label is the same.
-    const mg = {
-      slot: ".ride-metrics > .readout",
-      label: ".readout-head",
-      value: "[data-tier]",
-      unit: ".readout-value > .tile-unit",
-      ...opts.metrics,
-    };
-    const slots = all.filter((e) => e.matches(mg.slot));
-    const spread = (xs) => Math.max(...xs) - Math.min(...xs);
-    const labelGaps = [],
-      unitXs = [],
-      slotGaps = [];
-    slots.forEach((slot, i) => {
-      const label = slot.querySelector(mg.label);
-      const value = slot.querySelector(mg.value);
-      if (label && value)
-        labelGaps.push([
-          slot,
-          value.getBoundingClientRect().top -
-            label.getBoundingClientRect().bottom,
-        ]);
-      const unit = slot.querySelector(mg.unit);
-      if (unit && visible(unit))
-        unitXs.push([slot, unit.getBoundingClientRect().left]);
-      const next = slots[i + 1]?.querySelector(mg.label);
-      const last = [...slot.children].filter(visible).at(-1);
-      if (next && last)
-        slotGaps.push([
-          slot,
-          next.getBoundingClientRect().top -
-            last.getBoundingClientRect().bottom,
-        ]);
-    });
-    for (const [name, list] of [
-      ["metrics.labelGap", labelGaps],
-      ["metrics.unitColumn", unitXs],
-      ["metrics.slotGap", slotGaps],
-    ])
-      if (list.length > 1 && spread(list.map(([, v]) => v)) > 1)
-        for (const [slot, v] of list)
-          add(
-            name,
-            slot,
-            `${Math.round(v * 10) / 10}px of ${list.map(([, x]) => Math.round(x)).join("/")}`,
-          );
-
-    // 10. The strip's labels (§18.3 "Strip labels", #581): each is flush left with its block (±1 px), its text stays
-    // inside the block's width, no two overlap, and every label sits one scale step under the bar.
-    const st = {
-      label: "[data-block-label]",
-      block: "[data-block]",
-      bar: ".ride-timeline svg",
-      ...opts.strip,
-    };
-    const bar = document.querySelector(st.bar)?.getBoundingClientRect();
-    const inked = [];
-    for (const l of all.filter((x) => x.matches(st.label))) {
-      const b = document
-        .querySelector(`${st.block}[data-block="${l.dataset.blockLabel}"]`)
-        ?.getBoundingClientRect();
-      if (!b) {
-        add("strip.label", l, "no block of its own");
-        continue;
-      }
-      // What the label draws: its text and its leaf boxes (a leader), never the accessible-only text.
-      const ink = [];
-      const walk = document.createTreeWalker(l, NodeFilter.SHOW_ALL);
-      for (let n = walk.currentNode; n; n = walk.nextNode()) {
-        if (n.nodeType === 1 && n.closest(".sr-only")) continue;
-        if (n.nodeType === 3 && !n.parentElement.closest(".sr-only")) {
-          const range = document.createRange();
-          range.selectNodeContents(n);
-          ink.push(...range.getClientRects());
-        } else if (
-          n !== l &&
-          n.nodeType === 1 &&
-          !n.children.length &&
-          visible(n)
-        )
-          ink.push(n.getBoundingClientRect());
-      }
-      ink.splice(0, ink.length, ...ink.filter((r) => r.width > 0));
-      if (!ink.length) continue;
-      const left = Math.min(...ink.map((r) => r.left));
-      const right = Math.max(...ink.map((r) => r.right));
-      if (Math.abs(left - b.left) > 1)
-        add(
-          "strip.label",
-          l,
-          `starts at ${Math.round(left)}, its block at ${Math.round(b.left)}`,
-        );
-      if (right > b.right + 1)
-        add(
-          "strip.label",
-          l,
-          `ends at ${Math.round(right)}, past its block's ${Math.round(b.right)}`,
-        );
-      // The gap is the label's lane box to the bar (the glyphs' own extent is the font's).
-      const gap = Math.round(
-        l.getBoundingClientRect().top - (bar?.bottom ?? 0),
-      );
-      if (bar && (gap <= 0 || !SCALE.has(gap)))
-        add("strip.label", l, `${gap}px under the bar, not a --space-* step`);
-      for (const o of inked)
-        if (left < o.right && o.left < right)
-          add("strip.label", l, `overlaps the label of block ${o.block}`);
-      inked.push({ left, right, block: l.dataset.blockLabel });
-    }
-
     // 8. Consistency: distinct colours, radii, shadows
     const colours = new Set(),
       radii = new Set(),
@@ -555,6 +444,138 @@
       ];
     if (!Object.keys(space).length)
       out.rules["tokens.noSpacingTokens"] = ["no --space-* tokens"];
+
+    // What an element draws: its text and its leaf boxes (a leader), never the accessible-only text.
+    const inkOf = (el) => {
+      const ink = [];
+      const walk = document.createTreeWalker(el, NodeFilter.SHOW_ALL);
+      for (let n = walk.currentNode; n; n = walk.nextNode()) {
+        if (n.nodeType === 1 && n.closest(".sr-only")) continue;
+        if (n.nodeType === 3 && !n.parentElement.closest(".sr-only")) {
+          const range = document.createRange();
+          range.selectNodeContents(n);
+          ink.push(...range.getClientRects());
+        } else if (
+          n !== el &&
+          n.nodeType === 1 &&
+          !n.children.length &&
+          visible(n)
+        )
+          ink.push(n.getBoundingClientRect());
+      }
+      return ink.filter((r) => r.width > 0 && r.height > 0);
+    };
+
+    // 9. The metric grid (§18.3 "Metric grid", #581): in every slot the label-to-value gap is the same, every unit
+    // starts in one column, and the gap from a slot's last inked line to the next slot's label is the same.
+    const mg = {
+      slot: ".ride-metrics > .readout",
+      label: ".readout-head",
+      value: "[data-tier]",
+      unit: ".readout-value > .tile-unit",
+      ...opts.metrics,
+    };
+    const slots = all.filter((e) => e.matches(mg.slot));
+    const spread = (xs) => Math.max(...xs) - Math.min(...xs);
+    const labelGaps = [],
+      unitXs = [],
+      slotGaps = [];
+    slots.forEach((slot, i) => {
+      const label = slot.querySelector(mg.label);
+      const value = slot.querySelector(mg.value);
+      if (label && value)
+        labelGaps.push([
+          slot,
+          value.getBoundingClientRect().top -
+            label.getBoundingClientRect().bottom,
+        ]);
+      const unit = slot.querySelector(mg.unit);
+      if (unit && visible(unit))
+        unitXs.push([slot, unit.getBoundingClientRect().left]);
+      const next = slots[i + 1]?.querySelector(mg.label);
+      // From the last line that draws ink: an empty box (a reserved strip) cannot hide an unequal gap.
+      const last = [...slot.children].filter((c) => inkOf(c).length).at(-1);
+      if (next && last)
+        slotGaps.push([
+          slot,
+          next.getBoundingClientRect().top -
+            last.getBoundingClientRect().bottom,
+        ]);
+    });
+    for (const [name, list] of [
+      ["metrics.labelGap", labelGaps],
+      ["metrics.unitColumn", unitXs],
+      ["metrics.slotGap", slotGaps],
+    ])
+      if (list.length > 1 && spread(list.map(([, v]) => v)) > 1)
+        for (const [slot, v] of list)
+          add(
+            name,
+            slot,
+            `${Math.round(v * 10) / 10}px of ${list.map(([, x]) => Math.round(x)).join("/")}`,
+          );
+
+    // 10. The strip's labels (§18.3 "Strip labels", #581): each is flush left with its block (±1 px), its text stays
+    // inside the block's width, no two overlap, every label sits one scale step under the bar, and a label too long for
+    // its block is a leader with the full label in the accessible text.
+    const st = {
+      label: "[data-block-label]",
+      block: "[data-block]",
+      bar: ".ride-timeline svg",
+      leader: ".timeline-leader",
+      full: ".sr-only",
+      ...opts.strip,
+    };
+    const bar = document.querySelector(st.bar)?.getBoundingClientRect();
+    const inked = [];
+    // Every label, drawn or not: an empty one has no box, so it is not among the visible elements.
+    const labels = [...document.querySelectorAll(st.label)];
+    for (const b of document.querySelectorAll(st.block))
+      if (!labels.some((l) => l.dataset.blockLabel === b.dataset.block))
+        add("strip.label", b, `block ${b.dataset.block} has no label`);
+    for (const l of labels) {
+      const b = document
+        .querySelector(`${st.block}[data-block="${l.dataset.blockLabel}"]`)
+        ?.getBoundingClientRect();
+      if (!b) {
+        add("strip.label", l, "no block of its own");
+        continue;
+      }
+      const ink = inkOf(l);
+      // A label with no text draws the leader and carries its full label in the accessible text; neither is a hole.
+      if (!ink.length || l.querySelector(st.leader)) {
+        const leader = l.querySelector(st.leader);
+        if (!leader || !visible(leader))
+          add("strip.label", l, "draws neither its text nor a leader");
+        if (!l.querySelector(st.full)?.textContent.trim())
+          add("strip.label", l, "no full label in the accessible text");
+        if (!ink.length) continue;
+      }
+      const left = Math.min(...ink.map((r) => r.left));
+      const right = Math.max(...ink.map((r) => r.right));
+      if (Math.abs(left - b.left) > 1)
+        add(
+          "strip.label",
+          l,
+          `starts at ${Math.round(left)}, its block at ${Math.round(b.left)}`,
+        );
+      if (right > b.right + 1)
+        add(
+          "strip.label",
+          l,
+          `ends at ${Math.round(right)}, past its block's ${Math.round(b.right)}`,
+        );
+      // The gap is the label's lane box to the bar (the glyphs' own extent is the font's).
+      const gap = Math.round(
+        l.getBoundingClientRect().top - (bar?.bottom ?? 0),
+      );
+      if (bar && (gap <= 0 || !SCALE.has(gap)))
+        add("strip.label", l, `${gap}px under the bar, not a --space-* step`);
+      for (const o of inked)
+        if (left < o.right && o.left < right)
+          add("strip.label", l, `overlaps the label of block ${o.block}`);
+      inked.push({ left, right, block: l.dataset.blockLabel });
+    }
 
     for (const [k, v] of Object.entries(out.rules)) {
       out.counts[k] = v.length;

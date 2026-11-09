@@ -577,7 +577,7 @@ windows (1440×900 less ≈ 50 px of menu and title bars ≈ 850 px: T2 101 px =
 = 11.7 %) must not warn, and 1200×700 @ 1.0 m (14.4 %) must.~~ Superseded by §18.2: with fixed tokens a height share
 no longer measures anything (64 px is 7.5 % of 850 px and would only reach 13 % below 492 px, under the 768 px
 minimum window). The window is too small when the ride's main row is shorter than the metric column's minimum
-content, ~~**462 px**~~ **465 px** (§18.2 budget, re-counted with the column's borders by #581). The main row is the inner height less 236 px (status bar 48, timeline 112, key row
+content, ~~**462 px**~~ **453 px** (§18.2 budget, re-counted with the column's borders by #581, without the power band until #97). The main row is the inner height less 236 px (status bar 48, timeline 112, key row
 44, main padding 32). Calibration, same windows as before: 1440×900 ≈ 850 px → main 614 px and 1024×768 ≈ 715 px →
 main 479 px must not warn; 1200×700 ≈ 650 px → main 414 px must. The share constant goes with the ride-screen work
 (#438). The warning (and the unknown-screen-size notice)
@@ -1988,10 +1988,13 @@ detail). Same anatomy at 1024 and 1440 (§8); no breakpoint reflows the ride scr
 
 **Height budget.** The main row is the inner height less 236 px: 614 px at 1440×900 and 479 px at 1024×768 (the §6.2
 calibration windows). The metric column's minimum content must fit the smaller one: the T1 row 184 px (label 16, the
-"next" line at T3+ 48, T1 112, padding 8) plus three T2 rows of 88 px (label 16, T2 64, padding 8) plus the power band
-~~14 px = **462 px**~~ 12 px (`--space-3`), three 1 px dividers and the panel's 2 px border = **465 px** (#581: the
-dividers and the border were drawn but not counted; the "padding 8" of each row is the metric grid's `--space-1` above
-the label and `--space-1` from the label to the value, §18.3). ~~Padding above the minimum comes from the 1fr rows~~
+"next" line at T3+ 48, T1 112, padding 8) plus three T2 rows of 88 px (label 16, T2 64, padding 8) ~~plus the power
+band 14 px = **462 px**~~, three 1 px dividers and the panel's 2 px border = **453 px** (#581: the dividers and the
+border were drawn but not counted; the "padding 8" of each row is the metric grid's `--space-1` above the label and
+`--space-1` from the label to the value, §18.3). The power band (§5.2) is not drawn until #97 gives it content: an
+empty reserved strip under the power value made that slot's gap to the next label larger than the others (#581).
+#97 brings it back as a fixed line of the power slot (`--space-3`, the minimum then 465 px) and keeps the metric
+grid's equal slot gap. ~~Padding above the minimum comes from the 1fr rows~~
 The room above the minimum is shared equally by the four rows (§18.3 "Metric grid"), so the column breathes at 1440
 and is tight at 1024. At 1024 the 4-column metric column is ≈ 320 px wide, so the T3+ "next" line holds ≈ 14 characters and sheds per
 §16.1 (the word "next", then the watts).
@@ -2025,13 +2028,14 @@ and is tight at 1024. At 1024 the 4-column metric column is ≈ 320 px wide, so 
 - **Metric grid (#581).** Every slot of the metric column is one grid, top to bottom: `--space-1`, the label line
   (12 px chrome at line-height 1.33, its sub-line right-aligned on the same line), `--space-1` (the label-to-value
   gap), the value (T1 112 px or T2 64 px, line-height 1), then the slot's own fixed lines (the countdown's "next" at
-  T3+, the power band at `--space-3`). The rows are sized by that content, never by a value, and the room above the
+  T3+; the power band at `--space-3` once #97 gives it content). The rows are sized by that content, never by a value, and the room above the
   minimum (§18.2) is shared equally and goes below each slot's last line, so the gap from a slot's last line to the
   next slot's label is the same in every slot. The T2 values are right-aligned in one slot width, the widest power
   ("2000", 4 characters), and their unit follows after `--space-2` on the value's baseline, so every unit (W, bpm,
   rpm) starts in one column. A value with its unit is written with a space everywhere: "TARGET 250 W · Plan 250 W".
   Check: the layout audit's `metrics.labelGap`, `metrics.unitColumn` and `metrics.slotGap` (rule 6; ±1 px across
-  the slots).
+  the slots; `metrics.slotGap` measures from the last line that draws ink, so an empty box cannot hide an unequal
+  gap).
 - **Block timeline:** the workout's blocks by height, the ridden part dimmed, a "now" marker, block names and watts
   in the number face. It replaces the road-ahead and overview rows of §16.1. **Coach marks** (§7.1) are drawn on it:
   a dashed outline at the proposed height for a proposed change, a solid one for an applied change, each with its
@@ -2040,7 +2044,9 @@ and is tight at 1024. At 1024 the 4-column metric column is ≈ 320 px wide, so 
   with the block as drawn (±1 px) and never wider than it: no label overflows its block or overlaps another. A block
   too short for its label sheds as "next" does (§16.1): the name first ("Work 250 W" → "250 W"), then the watts.
   Where even the watts don't fit, the label is a **leader**: a 2 px mark `--space-2` tall at the block's start, the
-  label kept in the accessible text only. The strip has no free room beside a short block (its neighbours own their
+  label kept in the accessible text only. The leader is never wider than its block: on a block narrower than 2 px it
+  takes the block's width. A label that draws no text must draw the leader and carry the full label in the accessible
+  text; a block with neither fails the check. The strip has no free room beside a short block (its neighbours own their
   lanes), so the §16.1 form that sets the label beside the notch does not apply here. Check: the layout audit's
   `strip.label` (rule 6) and the `ride-short-block` fixture (a 30 s block in an hour).
 - **State banners** (§5.2 States, §6.5: trainer lost, ERG released, reconnected, paused, free ride) sit at the **top

@@ -285,10 +285,10 @@
   line-height: 1.2;
 }
 
-/* Metric column (§18.2 budget at 1024: countdown 184 + power 88 + band 12 + heart rate 88 + cadence 88, three 1 px
-   dividers and the panel's 2 px border = 465 px). One grid for every slot (§18.3 "Metric grid", #581): `--space-1`
-   above the label, `--space-1` from the label to the value, the value, then the slot's own lines (the countdown's
-   "next", the power band). Every line has a fixed height, so a slot's content height never depends on a value; the
+/* Metric column (§18.2 budget at 1024: countdown 184 + power 88 + heart rate 88 + cadence 88, three 1 px dividers
+   and the panel's 2 px border = 453 px; the power band's 12 px returns with its content, #97). One grid for every slot
+   (§18.3 "Metric grid", #581): `--space-1` above the label, `--space-1` from the label to the value, the value, then
+   the slot's own lines (the countdown's "next"). Every line has a fixed height, so a slot's content height never depends on a value; the
    rows are `auto` and the column stretches them by equal shares, so the room above the minimum goes below each slot's
    last line and the gap from it to the next slot's label is the same in every slot. */
 .ride-metrics {
@@ -363,10 +363,6 @@
 .readout-sub .tile-unit {
   font-size: var(--text-xs);
   color: var(--ink-2);
-}
-.readout-band {
-  grid-column: 1 / -1;
-  height: var(--space-3);
 }
 .hero {
   background: var(--panel-2);
@@ -447,12 +443,13 @@
   color: var(--ink-2);
   white-space: nowrap;
 }
-/* A block too short for its watts (§18.3 "Strip labels"): a 2 px mark at its start instead of text. */
+/* A block too short for its watts (§18.3 "Strip labels"): a 2 px mark at its start instead of text, never wider than
+   the block (the label's box is the block's width). */
 .timeline-leader {
   display: block;
-  width: 0;
+  width: min(2px, 100%);
   height: var(--space-2);
-  border-left: 2px solid var(--ink-2);
+  background: var(--ink-2);
 }
 
 /* Key row (§18.3, §18.4): 32 px controls, each with its key. */
