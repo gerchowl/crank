@@ -103,7 +103,7 @@
       devCheck = rustCheck // devArgs // { cargoArtifacts = testWs; };
       # P1: desktop and cli in one release build (one compile of the shared workspace crates).
       bins = craneLib.buildPackage (rustCheck // {
-        pname = "crank-bins"; cargoExtraArgs = "--locked -p crank-desktop --bin crank-desktop -p crank-cli --features crank-desktop/custom-protocol";
+        pname = "crank-bins"; cargoExtraArgs = "--locked -p crank-desktop -p crank-cli --bin crank-desktop --bin crank --features crank-desktop/custom-protocol";
         doCheck = false;
         preBuild = ''export TAURI_CONFIG='{"build":{"frontendDist":"${appDist}"}}' '';
       });
