@@ -805,7 +805,7 @@ grade**. crank chose that grade, so it is known exactly.
 
 | Constant | Value | Source or rationale |
 |---|---|---|
-| `RELIEF_RPM` relief cadence | 30 | Below it the crank turns at most once in 2 s: the pedal stroke is a standing push, not pedalling. ERG's release uses 40 rpm against the ERG spiral (ADR-0002 §7.4); SIM has no spiral, because the force does not rise as cadence falls |
+| `RELIEF_RPM` relief cadence | 30 | Below it the crank turns at most once in 2 s: the pedal stroke is a standing push, not pedalling. ERG's release (rider tuning, default 30 rpm for 5 s since #589) is against the ERG spiral (ADR-0002 §7.4); SIM has no spiral, because the force does not rise as cadence falls |
 | `RELIEF_HOLD_S` | 3 | Longer than one slow pedal stroke at 30 rpm (2 s), so a single dead spot never arms it; the same 3 s as `stopped_pedalling` (ADR-0001 §5) |
 | `RETURN_RPM` return cadence | 50 | Clearly pedalling again. The 20 rpm gap to `RELIEF_RPM` is the cadence hysteresis |
 | `RETURN_HOLD_S` | 2 | ERG's re-engagement hold (ADR-0002 §7.4) |

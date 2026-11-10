@@ -1341,6 +1341,38 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    from compliance. "Cadence ≥ 60 rpm for 2 s" is judged on the held cadence (ADR-0001 §5: a trainer value is
    usable for its tick and the next 4), so four real samples and four silent ticks satisfy it (architect ruling,
    #250 round 2). Thresholds are initial values checked in HIL check 9.
+   **Amendment 2026-11-09 (#589): gentler defaults, and the thresholds are rider tuning.** The four numbers
+   and an on/off switch are `ErgTuning` (ADR-0001 §7.2): `release_enabled`, `release_rpm`, `release_after_s`,
+   `reengage_rpm`, `reengage_after_s`. The rule above is unchanged in form; its **defaults** become:
+   release when cadence < **30 rpm** for **5 s** with a target > 0; re-engage when cadence ≥ **45 rpm** for
+   **1.5 s**, then the soft start (§7.5, unchanged; #585 will replace it). `release_enabled` defaults to on.
+   *Evidence (the owner's ride of 2026-11-09, #589).* Six cadence dips to 0 rpm for 1–3 s in the recovery
+   blocks (137 W), the flywheel keeping 12–13 km/h: saddle readjustments, no Bluetooth loss. Each released
+   ERG under the old 40 rpm / 2 s rule; re-engaging needed ≥ 60 rpm for 2 s plus the 5 s soft start, so power
+   sat at 0–60 W for 5–18 s. Once the rider came back at 58–60 rpm, just under 60, and ERG stayed released
+   for ~17 s. The release was too eager, and the re-engage cadence sat above this rider's recovery cadence.
+   *Why these values.* A readjustment is up to ~3 s at 0 rpm plus well under 1 s on each side of it below
+   30 rpm (cadence fell from ~70 to 0 within 1 s): about 4 s, inside the 5 s dwell, so it never releases. A
+   rider back at a recovery cadence (the owner's 58–60 rpm) is above 45 rpm, so a release that did happen is
+   left. The 15 rpm gap between 30 and 45 keeps hysteresis. 1.5 s (6 ticks) is longer than one held sample (5
+   ticks), so re-engaging needs at least two trainer samples at ≥ 45 rpm, never one stray value.
+   *Safety argument.* A held ERG target on a rider who stops is a torque τ = P/ω that rises without limit as
+   cadence falls: a rider who stopped for good and pushes off again from a standing crank meets the full
+   target at near-zero cadence (the §7.5 low-cadence hazard), and a rider fading under load is pushed further
+   into the spiral. The release exists for both. With the new defaults a real stop (cadence 0, or no cadence,
+   which counts as 0) still releases, 5 s after cadence fell below 30 rpm instead of 2 s after it fell below
+   40: a rider who has stopped for good gets 0 % resistance after 5 s, before a dismount or a deliberate
+   restart. A restart inside those 5 s is the readjustment case, and the evidence shows it on a moving
+   flywheel at the rider's normal cadence. The cost is in the spiral: a fading rider is now held from 40 down
+   to 30 rpm and then for 5 s instead of 2. That is accepted on the owner's judgement that the NEO's ERG is
+   not harsh, and the bounds keep it limited: `release_rpm` 20–50, `release_after_s` 1–8 s (so no tuning holds
+   a stopped rider under ERG for more than 8 s), `reengage_rpm` 30–90 and above `release_rpm`,
+   `reengage_after_s` 1.5–5 s; durations on the 0.25 s tick grid (`ErgTuning::BOUNDS`, `Tuning::validate`).
+   Every in-bounds tuning with the release on releases a sustained stop (a property test). With
+   `release_enabled = false` the release never happens: that is the rider's explicit choice, and the rider's
+   pause (DESIGN §5.2) and the ride end (§7.9) still command `Resistance { pct: 0 }`.
+   HIL Part B's copies of the old values (`hil_fec` `RELEASE_WAIT`, `STALL_FLOOR_RPM`) move to the recorded
+   tuning in #593.
 5. **Soft start** is also used when ERG is (re-)engaged after a reconnect or after leaving `free`/`sim`.
    **Ride start and user pause (amendment, #250 / #264, 2026-10-14).** A ride start is treated as a
    reconnect: on the NEO, ERG at the target torque with a stopped flywheel is the low-cadence hazard of §7.4
@@ -1350,9 +1382,10 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    next ERG block (the paragraph below). A block change inside a running soft start continues the ramp at its progress towards the new target (DESIGN §17.3). Resuming from a **user pause** is the same engagement: while paused the
    engine commands `Resistance { pct: 0 }` (DESIGN §5.2 "Paused (user)": "the trainer is at 0 % resistance"),
    and the resume owes the soft start with the 0 W hold until cadence. A release in force at the pause
-   stays in force after the resume until §7.4 leaves it (60 rpm for 2 s). Stopped pedalling (auto-pause, ADR-0001 §5)
-   needs nothing of its own: cadence 0 for 3 s is past the 2 s release of §7.4, which already commands
-   `Resistance { pct: 0 }`.
+   stays in force after the resume until §7.4 leaves it (its re-engage criterion). Stopped pedalling (auto-pause, ADR-0001 §5)
+   needs nothing of its own: it changes no command, and the §7.4 release commands `Resistance { pct: 0 }`
+   once its dwell has passed. (Amended 2026-11-09, #589: with the 5 s default dwell the 3 s auto-pause comes
+   first and the release follows during the pause; under the old 2 s dwell the release came first.)
    **Origin and 0 W (amendment, #231).** The origin is the 3 s power (12 ticks, pruned by tick time, so
    nothing older than 3 s counts) at the tick the first trainer sample with cadence > 0 of the new link
    epoch arrives. After `Link(Ready)`, or after a loss detected by silence, until that sample the engine

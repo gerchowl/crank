@@ -264,8 +264,8 @@ colour + ▲; inside: neutral, no arrow.
 **Cadence** (the ERG lever) is a slot like any other but always carries a state: *✓ in range*, *▲ spin
 faster*, *▼ ease cadence*, or *no target*, from the core's cadence band (#13, #29), with a mini band like
 power's. If the rider chose slots without cadence, or Focus density, a cadence state that is not *in range*
-appears as a chip in row 1. **ERG released** (cadence < 40 rpm for 2 s, ADR-0002 §7.4) takes row 4: "ERG
-released — spin up to 60 rpm to re-engage", with a warning tone; re-engagement shows "easing back in"
+appears as a chip in row 1. **ERG released** (cadence < 30 rpm for 5 s, the default rider tuning of ADR-0002 §7.4) takes row 4: "ERG
+released — spin up to 45 rpm to re-engage", with a warning tone; re-engagement shows "easing back in"
 during the 5 s soft start.
 
 **Stale values (P6, P7).** A value whose input is lost is never shown as live: it becomes "—" with what is
@@ -296,7 +296,7 @@ target ("90rpm") counts as 85–95 (#13).
 | Trainer lost at a block boundary | The block shown is the one the core paused in (transitions inside the 2 s detection window stand, ADR-0001 §5): "paused at 0:00" of the new interval; on reconnect the soft start goes to *that* block's target | — |
 | HR lost | Chip ⚠ HR "lost"; HR slot "—" + "HR strap lost"; lane: "HR lost: coach can't push" | — |
 | Both lost | Row 4: "⚠ Trainer + HR lost · paused at m:ss"; stays paused until the trainer is back and cadence > 0 | — |
-| ERG released (cadence < 40 rpm 2 s) | Row 4: "⚠ ERG released · spin up to 60 rpm" / "timer runs · target returns at 60 rpm" (the block timer keeps running, ADR-0002 §7.4); cadence slot "▲ spin faster" | — |
+| ERG released (cadence < 30 rpm 5 s, default tuning) | Row 4: "⚠ ERG released · spin up to 45 rpm" / "timer runs · target returns at 45 rpm" (the block timer keeps running, ADR-0002 §7.4); cadence slot "▲ spin faster" | — |
 | Paused (user) | The plan dims (countdown, next, road); **the body stays live** (HR, cadence); row 4: "Paused 0:42" / "Resume continues the plan · trainer free". While paused the trainer is at 0 % resistance; ERG re-engages with the soft start. **A pause ≥ 2 min goes through the re-entry policy** (§6.6): "Paused 6:10" / "Resume: 3-min re-warm-up first" / "then this interval from its start" | Pause |
 | "How did that feel?" (calibrating, after a hard block) | Lane: "How was that?" with **nothing preselected**. **One mapping, no inversion:** a click or tap selects exactly the word it shows; the Coach button (key or remote) steps easy → right → hard; Keep skips. The choice **saves 3 s after the last input**, with a live countdown ("saves “hard” in 2 s") and the confirmation tone; no input within 12 s records nothing. Feeds the athlete model (#18) | click = that word · Coach = next · Keep = skip |
 | Symptom reported (§5.8) | The ride screen is replaced by "Workout stopped · trainer released": "Stop riding and rest", the emergency line, what to do, the ride is saved; the only action is **Save and close the ride**. The medical stop is now active everywhere | Report symptom (binding) or End dialog |
@@ -609,7 +609,7 @@ transitions. Deadlines and undo windows count down in whole seconds, as numbers 
 | Lost across a block boundary | transitions inside the 2 s window stand; the soft start targets the block the ride paused in | as above; the block name in row 1 tells which interval resumes |
 | HR lost | ride keeps going; HR `null`; `hr<` blocks fall back to their maximum; the judge gets no HR features (cannot push) | chip ⚠ HR; HR slot "—"; lane note; in `hr<` blocks the caption switches to "HR lost · block ends at its maximum" |
 | Both lost | `paused(trainer_lost)` as above | one banner for both |
-| ERG released (cadence < 40 rpm 2 s) | `Resistance 0 %`; re-engage at ≥ 60 rpm for 2 s with soft start; released seconds excluded from compliance | warning tone; row 4 "ERG released — spin up to 60 rpm" |
+| ERG released (cadence < 30 rpm 5 s, default tuning) | `Resistance 0 %`; re-engage at ≥ 45 rpm for 1.5 s with soft start (thresholds: rider tuning, ADR-0002 §7.4); released seconds excluded from compliance | warning tone; row 4 "ERG released — spin up to 45 rpm" |
 The UI never infers these states: `RideStatus` carries the pause reason, reconnect attempt, gap length,
 soft-start and released flags (ADR-0001 §5, #29).
 

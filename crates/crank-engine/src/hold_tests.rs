@@ -4,7 +4,7 @@
 //! page 25 inside one tick in five (two samples in the same tick).
 use crate::engine::{PauseReason, RideState};
 use crate::stream::{MetricId, StreamFrame, StreamId, SubId, SubscribeOpts};
-use crate::tests::{Rig, block, rig};
+use crate::tests::{PRE_589, Rig, block, rig};
 use crank_devices::ControlMode;
 use crank_domain::workout::Phase;
 use tokio::sync::mpsc;
@@ -65,6 +65,13 @@ fn ride(target_w: f64) -> Rig {
     r.start();
     r
 }
+/// [`ride`] with the pre-#589 release values, for the release tests written in ticks of them.
+fn ride_pre_589(target_w: f64) -> Rig {
+    let mut r = rig();
+    r.load_tuned(vec![block(600.0, target_w, target_w, Phase::Work)], PRE_589);
+    r.start();
+    r
+}
 fn positive_erg(modes: &[ControlMode]) -> Vec<u16> {
     modes
         .iter()
@@ -91,7 +98,7 @@ fn page_16_never_blanks_power_or_cadence_in_the_stream() {
 
 #[test]
 fn erg_re_engages_after_a_low_cadence_release_with_page_16_interleaved() {
-    let mut r = ride(200.0);
+    let mut r = ride_pre_589(200.0);
     neo(&r, 0, 8, 190, 90);
     neo(&r, 8, 16, 120, 39);
     r.through(15);
@@ -206,7 +213,7 @@ fn cadence_zero_is_a_value_and_a_missing_cadence_is_not() {
 /// The tick ERG is released on when, from tick 20, page 25 reports `cadence` (page 16 still
 /// interleaved).
 fn release_tick(cadence: Option<u8>) -> u64 {
-    let mut r = ride(200.0);
+    let mut r = ride_pre_589(200.0);
     neo(&r, 0, 20, 200, 90);
     for k in 20..40 {
         if k % 5 != 4 {

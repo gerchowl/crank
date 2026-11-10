@@ -762,6 +762,44 @@ spans. vigil logs-only: loses span correlation entirely (spike).
   stderr, so crank calls `Guard::flush()` when a ride ends. If the flush returns a `FlushError`,
   crank writes its `lost(Signal::Logs)` count as a WARN record.
 
+### 7.2 Amendment 2026-11-09: rider tuning (#589, #590)
+
+*Adds a **configuration** decision to §7, which until now covered only the environment variables above. The
+mechanism is the one the #590 audit proposed; #589 is its first consumer.*
+
+**Context.** Values a rider feels were constants in code (#590 lists them): the ERG release thresholds of
+ADR-0002 §7.4 first. A rider must be able to change them without a build, and a ride must say which values it
+ran with.
+
+**Decision.**
+
+- **One typed struct.** `crank_engine::tuning::Tuning { version, erg: ErgTuning }`. Later groups (auto-pause #594,
+  coach #596, smoothing #585) are new fields of `Tuning`, each a struct of its own. Durations are **seconds** and
+  cadences **rpm**, never ticks: the tick is an engine detail (§5). A duration must lie on the 0.25 s tick grid,
+  so the engine never rounds a rider's value; `validate()` refuses one that does not.
+- **Documented in code.** Every field has rustdoc with its unit, what it does and the decision behind its default.
+  `Tuning::default()` is the decided default (for `erg`: ADR-0002 §7.4); a test pins it to the ADR's numbers.
+  `ErgTuning::BOUNDS` is the table of inclusive ranges per field, and `Tuning::validate()` checks the ranges and
+  the cross-field rules (ADR-0002 §7.4: re-engage cadence above release cadence).
+- **The engine is given it.** The core passes the ride's tuning in `RideSetup.tuning`; the engine builds its policy
+  from it and never reads the store, the environment or a file. The tuning is frozen for the ride: a change takes
+  effect at the next load.
+- **The core resolves it** at `ride_load`, before anything is touched, as layers over the defaults: the JSON of
+  `Tuning::default()`, then the stored setting `"tuning"` (table `setting`, §6) if present, merged field by field
+  (an object merges into an object, any other value replaces). The stored layer may be partial; it carries the store's
+  integer envelope `v` (§6), which is the tuning's `version` (serialised as `v`) and must be `Tuning::VERSION`. The result is deserialised with unknown fields refused and validated. A
+  stored value that fails is not ignored: the load is refused with `Storage` and a message that names the field,
+  so a bad setting is never ridden silently with other values. Nothing writes the setting yet (Settings UI #595).
+- **Seams.** The merge takes a list of layers (`Tuning::resolve`), so the `CRANK_TUNING` environment layer (#592)
+  is one more entry after the stored one, and recording the effective values with a source tag per field (#591)
+  reads which layer set each leaf. hil_fec reads the recorded values instead of its own copies (#593).
+- **No config files.** Settings live in SQLite (§6, table `setting`); the environment stays for process-level
+  configuration (above).
+
+**Alternatives.** A config file (TOML) next to the database: a second source of truth that a ride does not record,
+rejected. Ticks in the struct: ties a rider's setting to the engine's sampling, rejected. Falling back to the
+defaults on a bad stored value: hides a misconfiguration behind other values, rejected.
+
 ## 8. Decision: testing strategy and definition of done
 
 ### 8.1 Definition of done (owner, 2026-10-13)

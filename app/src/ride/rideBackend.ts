@@ -133,7 +133,8 @@ export interface RideWorld {
   hrLost: boolean;
   /**
    * ERG released for low cadence; the engine passes `policy.released` through (engine.rs `publish` (~1398)) and it
-   * stays set until 60 rpm is held for 2 s (erg/policy.rs `ErgPolicy::update_release` (~118)), so it can accompany a pause.
+   * stays set until the re-engage cadence is held for its dwell (`TUNING_DEFAULT.erg`;
+   * erg/policy.rs `ErgPolicy::update_release` (~138)), so it can accompany a pause.
    */
   ergReleased: boolean;
   /** The session clock the published status carries (the heartbeat refreshes it in the core). */

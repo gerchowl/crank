@@ -159,6 +159,7 @@ async fn launch_with(
             blocks,
             recorder: recorder.unwrap_or_else(|| Box::new(Recorder(rec.clone()))),
             cap_w: None,
+            tuning: crank_engine::Tuning::default(),
         }))
         .await
         .expect("sim setup");

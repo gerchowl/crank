@@ -100,6 +100,7 @@ async fn load(handle: &crank_engine::EngineHandle, dur_s: f64) {
             blocks: vec![block(dur_s)],
             recorder: Box::new(NullRecord),
             cap_w: None,
+            tuning: crank_engine::Tuning::default(),
         }))
         .await
         .unwrap();
@@ -139,7 +140,8 @@ async fn run(end: End, supervised: bool) -> (Arc<Fake>, bool) {
             g.set_active(active);
         }),
     );
-    let engine = engine.with_policy_factory(move || Box::new(Scripted { release_at }));
+    let engine = engine
+        .with_policy_factory(move |_: &crank_engine::Tuning| Box::new(Scripted { release_at }));
     let task = tokio::spawn(engine.run());
     let short = matches!(end, End::Natural | End::ReleaseOnLastTick);
     // a busy radio: the next ride's first command is queued before page 48 is written, and

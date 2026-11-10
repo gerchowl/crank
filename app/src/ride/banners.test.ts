@@ -136,7 +136,7 @@ describe("the banner band (DESIGN §5.2, §6.5, §18.3)", () => {
     ).toEqual({
       "engine-unresponsive": "Engine silent: End works",
       "loss-trainer": "NEO lost: pedal or stop",
-      "loss-erg": "ERG off: spin up to 60 rpm",
+      "loss-erg": "ERG off: spin up to 45 rpm",
     });
   });
 

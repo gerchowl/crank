@@ -8,12 +8,17 @@
 // whose title and first action do not both fit folds them into one compact line (`compact`), and only the room left
 // takes the titles of action-free states and status lines, most urgent first.
 import type { ReactNode } from "react";
-import type { StreamCommanded } from "../bindings";
+import { TUNING_DEFAULT, type StreamCommanded } from "../bindings";
 
 /** Lines in the band (§18.2: one bold line and two short lines, 3 × 48 px). */
 export const BAND_LINES = 3;
 /** Characters per banner line (§6.1). */
 export const LINE_MAX = 26;
+/**
+ * The cadence that leaves an ERG release (ADR-0002 §7.4), from the Rust default (`TUNING_DEFAULT`, ADR-0001 §7.2). The
+ * ride's own value, when a stored tuning changes it, is #611.
+ */
+const REENGAGE_RPM = TUNING_DEFAULT.erg.reengageRpm;
 
 /**
  * Most urgent first (§5.2, §6.5). The engine not answering comes first: every other value on screen may be stale.
@@ -177,9 +182,9 @@ export function banners(i: BannerInput): Banner[] {
       id: "loss-erg",
       sep: " — ",
       title: text("ERG released"),
-      actions: [text("spin up to 60 rpm")],
+      actions: [text(`spin up to ${REENGAGE_RPM} rpm`)],
       status: [text("the block timer runs on")],
-      compact: "ERG off: spin up to 60 rpm",
+      compact: `ERG off: spin up to ${REENGAGE_RPM} rpm`,
     });
   if (i.userPaused) {
     // The rider's own pause: its action is the key row's Resume, so these lines are context.

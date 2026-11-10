@@ -8,8 +8,8 @@ use crank_devices::{
 };
 use crank_domain::workout::{FlatBlock, Phase};
 use crank_engine::{
-    Component, Engine, EngineCmd, EngineHandle, METRICS, RecordError, RideRecorder, RideSetup,
-    RideState, SecondRow, TrainerFollowing, VirtualClock,
+    Component, Engine, EngineCmd, EngineHandle, ErgTuning, METRICS, RecordError, RideRecorder,
+    RideSetup, RideState, SecondRow, TrainerFollowing, Tuning, VirtualClock,
 };
 use std::{
     sync::{Arc, Mutex},
@@ -73,6 +73,17 @@ fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
 }
 async fn launch(blocks: Vec<FlatBlock>, faults: Vec<SimFault>) -> Ride {
+    launch_tuned(blocks, faults, ErgTuning::default()).await
+}
+/// The ADR-0002 §7.4 release values before #589 (40 rpm / 2 s, 60 rpm / 2 s).
+const PRE_589: ErgTuning = ErgTuning {
+    release_enabled: true,
+    release_rpm: 40,
+    release_after_s: 2.0,
+    reengage_rpm: 60,
+    reengage_after_s: 2.0,
+};
+async fn launch_tuned(blocks: Vec<FlatBlock>, faults: Vec<SimFault>, erg: ErgTuning) -> Ride {
     let clock = Arc::new(VirtualClock::new(1));
     let rig = SimRig::new(
         SimConfig {
@@ -118,6 +129,10 @@ async fn launch(blocks: Vec<FlatBlock>, faults: Vec<SimFault>) -> Ride {
             blocks,
             recorder: Box::new(Null),
             cap_w: None,
+            tuning: Tuning {
+                erg,
+                ..Tuning::default()
+            },
         }))
         .await
         .expect("sim setup");
@@ -247,13 +262,15 @@ async fn a_silent_page_71_goes_unknown_after_t_unknown_and_recovers() {
 
 #[tokio::test(start_paused = true)]
 async fn an_erg_spiral_is_released_and_re_engaged_with_a_soft_start() {
-    // 4 s at 30 rpm in ERG spirals in the sim until the mode leaves ERG (§7.4)
-    let r = launch(
+    // 4 s at 30 rpm in ERG spirals in the sim until the mode leaves ERG (§7.4); the timing
+    // below is that of the pre-#589 values
+    let r = launch_tuned(
         vec![block(300.0, 200.0, 200.0, Phase::Work)],
         vec![SimFault::ErgSpiral {
             from: secs(60),
             dip_rpm: 30.0,
         }],
+        PRE_589,
     )
     .await;
     sleep(secs(59)).await;
@@ -287,6 +304,36 @@ async fn an_erg_spiral_is_released_and_re_engaged_with_a_soft_start() {
         r.handle.status().trainer_following,
         TrainerFollowing::Following
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_erg_spiral_is_released_with_the_default_tuning_too() {
+    // the same spiral under the #589 defaults (30 rpm / 5 s, 45 rpm / 1.5 s): it is still
+    // released, once, and re-engaged when cadence is back
+    let r = launch(
+        vec![block(300.0, 200.0, 200.0, Phase::Work)],
+        vec![SimFault::ErgSpiral {
+            from: secs(60),
+            dip_rpm: 30.0,
+        }],
+    )
+    .await;
+    sleep(secs(59)).await;
+    assert!(!r.handle.status().erg_released);
+    let mut released_at = None;
+    for s in 59..90 {
+        if r.handle.status().erg_released {
+            released_at = Some(s);
+            break;
+        }
+        sleep(secs(1)).await;
+    }
+    assert!(released_at.is_some(), "the spiral is released");
+    assert_eq!(r.count(|m| matches!(m, ControlMode::Resistance { .. })), 1);
+    sleep(secs(20)).await;
+    let st = r.handle.status();
+    assert!(!st.erg_released, "cadence is back: re-engaged");
+    assert_eq!(r.erg_targets().last(), Some(&200));
 }
 
 #[tokio::test(start_paused = true)]
