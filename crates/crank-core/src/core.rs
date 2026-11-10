@@ -29,9 +29,9 @@ use crank_devices::{
 use crank_domain::workout::{CompiledWorkout, Severity, Workout};
 use crank_engine::{
     CommandError, Engine, EngineCmd, EngineHandle, MetricId, MonotonicClock, RideSetup, RideState,
-    StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts,
+    StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts, Tuning,
 };
-use crank_store::{Device, RideListing, Store};
+use crank_store::{Device, JsonColumn, RideListing, SettingJson, Store};
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use std::{
     collections::BTreeMap,
@@ -51,6 +51,8 @@ use tracing::Instrument;
 /// Longest a connect may take before the command fails, so the UI never waits on a
 /// device indefinitely.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Key of the stored rider tuning in table `setting` (ADR-0001 §7.2).
+pub(crate) const TUNING_SETTING: &str = "tuning";
 /// How long a released link may take to close before pairing stops waiting.
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Longest an ending engine may take to drop the ride-active signal after it was told to
@@ -1706,6 +1708,23 @@ impl Core {
         }
     }
 
+    /// The ride's tuning (ADR-0001 §7.2): the defaults, then the stored setting `"tuning"`.
+    /// The environment layer (#592) goes after the stored one. A stored value that does not
+    /// resolve refuses the load; it is never replaced by the defaults.
+    fn resolve_tuning(&self) -> Result<Tuning, ApiError> {
+        let stored = self.0.store.load_json::<SettingJson>(&[TUNING_SETTING])?;
+        let layers = stored
+            .map(|s| serde_json::from_str::<serde_json::Value>(s.as_str()))
+            .transpose()
+            .map_err(|e| ApiError::new(ErrorCode::Storage, e.to_string()))?;
+        Tuning::resolve(layers.as_ref()).map_err(|e| {
+            ApiError::new(
+                ErrorCode::Storage,
+                format!("the stored setting \"{TUNING_SETTING}\" is invalid: {e}"),
+            )
+        })
+    }
+
     /// The workout and compiled timeline to ride; `None` is a free ride.
     fn resolve_workout(&self, id: Option<&str>) -> Result<(Workout, CompiledWorkout), ApiError> {
         let Some(id) = id else {
@@ -1751,12 +1770,14 @@ impl Core {
     ///
     /// # Errors
     /// `Conflict` if a ride is in progress; `NotFound` for an unknown workout;
-    /// `DeviceUnavailable` without a paired or reachable trainer; `EngineUnresponsive` if the
+    /// `DeviceUnavailable` without a paired or reachable trainer; `Storage` if the stored
+    /// setting `"tuning"` does not resolve (ADR-0001 §7.2); `EngineUnresponsive` if the
     /// new engine does not take the ride within 1 s (its devices are then released).
     pub async fn ride_load(&self, workout_id: Option<String>) -> Result<RideLoaded, ApiError> {
         // Nothing is touched until the request is known to be good: a failed load leaves
         // the previous status as it was.
         let (workout, compiled) = self.resolve_workout(workout_id.as_deref())?;
+        let tuning = self.resolve_tuning()?;
         self.ensure_start_allowed()?;
         // A loaded-but-unstarted or finished ride is replaced, but only once it has
         // released its devices.
@@ -1814,7 +1835,7 @@ impl Core {
         let mut quits = self.0.quits.subscribe();
         let asked = tokio::time::Instant::now();
         let built = tokio::select! {
-            built = self.build_session(workout, compiled) => built,
+            built = self.build_session(workout, compiled, tuning) => built,
             _ = quits.changed() => Err(ApiError::new(
                 ErrorCode::Conflict,
                 "the application is quitting",
@@ -1979,6 +2000,7 @@ impl Core {
         &self,
         workout: Workout,
         compiled: CompiledWorkout,
+        tuning: Tuning,
     ) -> Result<(Session, bool, [&'static str; 2]), ApiError> {
         let ride_id = format!(
             "ride-{:x}",
@@ -1988,7 +2010,7 @@ impl Core {
         );
         let spans = RideSpans::new(&ride_id);
         let span = spans.ride.clone();
-        self.build_session_in(ride_id, spans, workout, compiled)
+        self.build_session_in(ride_id, spans, workout, compiled, tuning)
             .instrument(span)
             .await
     }
@@ -1998,6 +2020,7 @@ impl Core {
         mut spans: RideSpans,
         workout: Workout,
         compiled: CompiledWorkout,
+        tuning: Tuning,
     ) -> Result<(Session, bool, [&'static str; 2]), ApiError> {
         let Links {
             handed,
@@ -2060,6 +2083,7 @@ impl Core {
             recorder: Box::new(recorder),
             // The health cap is derived from the athlete profile (#244).
             cap_w: None,
+            tuning,
         })))
         .await;
         if let Err(e) = loaded {
@@ -3306,6 +3330,41 @@ mod tests {
             Some(ControlMode::Resistance { pct: 0.0 }),
             "{commands:?}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stored_tuning_that_does_not_resolve_refuses_the_load_and_a_valid_one_loads() {
+        // ADR-0001 §7.2: defaults, then the stored setting "tuning"; a bad value is never
+        // replaced by the defaults
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = open(dir.path(), &radio);
+        core.device_pair("neo".into(), DeviceRole::Trainer)
+            .await
+            .unwrap();
+        let store = |json: &str| {
+            core.0
+                .store
+                .put_setting(TUNING_SETTING, SettingJson::parse(json).unwrap())
+                .unwrap();
+        };
+        for (json, field) in [
+            (r#"{"v":1,"erg":{"reengageRpm":30}}"#, "erg.reengageRpm"),
+            (r#"{"v":1,"erg":{"releaseAfterS":20}}"#, "erg.releaseAfterS"),
+            (r#"{"v":1,"erg":{"releaseRmp":25}}"#, "releaseRmp"),
+            (r#"{"v":2}"#, "v = 2"),
+        ] {
+            store(json);
+            let e = core.ride_load(None).await.unwrap_err();
+            assert_eq!(e.code, ErrorCode::Storage, "{json}");
+            assert!(e.message.contains(field), "{json}: {}", e.message);
+            assert!(e.message.contains("\"tuning\""), "{}", e.message);
+            assert!(core.ride_status().await.unwrap().load.is_none());
+        }
+        // a partial stored layer over the defaults
+        store(r#"{"v":1,"erg":{"releaseRpm":25,"releaseEnabled":true}}"#);
+        core.ride_load(None).await.unwrap();
+        core.ride_end().await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

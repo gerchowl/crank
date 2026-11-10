@@ -12,6 +12,7 @@
 //!   compliance and the health-cap clamp (#218).
 //! * [`record`]: the 1 Hz record sink; core adapts it to `crank-store`.
 //! * [`lap`]: laps, one per block as ridden, with their statistics (#12, #243).
+//! * [`tuning`]: the rider tuning a ride runs with (ADR-0001 §7.2): the ERG release (#589).
 //!
 //! * [`stream`]: subscriptions with filter chains, the multiplexed `StreamFrame`, flow
 //!   control and the status heartbeat (#219).
@@ -25,6 +26,7 @@ pub mod lap;
 pub mod record;
 pub mod stream;
 pub mod ticks;
+pub mod tuning;
 
 pub use clock::{MonotonicClock, VirtualClock};
 pub use control::{PolicyContext, PolicyStatus, RideActivity, TargetPolicy};
@@ -44,6 +46,7 @@ pub use stream::{
     StreamSnapshot, StreamStatus, SubId, SubSample, SubscribeOpts,
 };
 pub use ticks::{SessionTicks, WorkoutTicks};
+pub use tuning::{ErgTuning, Tuning, TuningError};
 
 #[cfg(test)]
 mod erg_tests;

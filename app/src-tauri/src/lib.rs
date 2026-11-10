@@ -29,33 +29,38 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 /// Registry shared by the desktop and export binary to prevent drift.
 #[must_use]
 pub fn bindings() -> tauri_specta::Builder<tauri::Wry> {
-    tauri_specta::Builder::new().commands(tauri_specta::collect_commands![
-        core_ready,
-        devices_scan,
-        device_pair,
-        device_forget,
-        device_links,
-        links_intent,
-        links_open::<tauri::Wry>,
-        links_ack::<tauri::Wry>,
-        workouts_list,
-        workout_get,
-        ride_load,
-        ride_start,
-        ride_pause,
-        ride_resume,
-        ride_skip,
-        ride_end,
-        ride_status,
-        open_stream::<tauri::Wry>,
-        stream_subscribe::<tauri::Wry>,
-        stream_unsubscribe::<tauri::Wry>,
-        stream_ack::<tauri::Wry>,
-        stream_snapshot::<tauri::Wry>,
-        rides_list,
-        ride_summary,
-        display_width_mm::<tauri::Wry>,
-    ])
+    tauri_specta::Builder::new()
+        .commands(tauri_specta::collect_commands![
+            core_ready,
+            devices_scan,
+            device_pair,
+            device_forget,
+            device_links,
+            links_intent,
+            links_open::<tauri::Wry>,
+            links_ack::<tauri::Wry>,
+            workouts_list,
+            workout_get,
+            ride_load,
+            ride_start,
+            ride_pause,
+            ride_resume,
+            ride_skip,
+            ride_end,
+            ride_status,
+            open_stream::<tauri::Wry>,
+            stream_subscribe::<tauri::Wry>,
+            stream_unsubscribe::<tauri::Wry>,
+            stream_ack::<tauri::Wry>,
+            stream_snapshot::<tauri::Wry>,
+            rides_list,
+            ride_summary,
+            display_width_mm::<tauri::Wry>,
+        ])
+        // The rider tuning and its defaults (ADR-0001 §7.2), so the UI and its test backends
+        // take the ADR-0002 §7.4 values from Rust instead of copying them (#589).
+        .typ::<crank_engine::Tuning>()
+        .constant("TUNING_DEFAULT", crank_engine::Tuning::default())
 }
 
 /// The devices `config` asks for: the simulator, or Bluetooth with the capture directory

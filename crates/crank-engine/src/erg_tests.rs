@@ -6,8 +6,9 @@ use crate::erg::following::{
     Class, Comp, Component as C, ComponentState, Machine, REPLY_ROWS, SEC, TABLE_ORDER,
     reply_component,
 };
-use crate::tests::{Recorder, Rig, block, erg, rig};
+use crate::tests::{PRE_589, Recorder, Rig, block, erg, rig};
 use crate::ticks::TICK_US;
+use crate::tuning::ErgTuning;
 use crank_devices::{
     CommandStatus, ControlMode, LinkState, MonoTime, ObservationSource, ObservedControl,
     TrainerEvent, TrainerObservation, Wind,
@@ -702,8 +703,9 @@ fn the_ramp_follows_a_target_that_changes_mid_ramp() {
 
 #[test]
 fn low_cadence_for_two_seconds_releases_and_sixty_for_two_seconds_re_engages() {
+    // the mechanics, with the pre-#589 values
     let mut r = rig();
-    r.load(vec![work(200.0)]);
+    r.load_tuned(vec![work(200.0)], PRE_589);
     r.start();
     pedal(&r, 0, 8, 190, 90);
     r.through(7);
@@ -754,6 +756,177 @@ fn a_zero_target_is_never_released() {
     assert!(!r.status().erg_released);
 }
 
+// -- the #589 defaults (ADR-0002 §7.4, amendment 2026-11-09) --
+
+/// The owner's ride of 2026-11-09 (#589), at 4 Hz in a 137 W recovery block: 60 s at 70 rpm,
+/// a saddle readjustment (cadence 70 → 0 within 1 s, 3 s at 0 rpm and 0 W, back up within
+/// 1 s) and 60 s at 58–60 rpm, just under the old re-engage cadence. Returns the tick after it.
+fn readjustment(r: &Rig) -> u64 {
+    pedal(r, 0, 240, 137, 70);
+    pedal(r, 240, 242, 90, 40);
+    pedal(r, 242, 244, 40, 20);
+    pedal(r, 244, 256, 0, 0);
+    pedal(r, 256, 258, 40, 20);
+    pedal(r, 258, 260, 90, 40);
+    for k in 260..500 {
+        r.sample(k, 137, if k % 3 == 0 { 58 } else { 60 });
+    }
+    500
+}
+#[test]
+fn a_saddle_readjustment_never_releases_with_the_defaults_and_power_returns_to_target() {
+    let mut r = rig();
+    r.load(vec![block(600.0, 137.0, 137.0, Phase::Work)]);
+    r.start();
+    let end = readjustment(&r);
+    for k in 0..end {
+        r.through(k);
+        assert!(!r.status().erg_released, "k={k}: released");
+    }
+    let modes = r.modes();
+    assert!(
+        !modes
+            .iter()
+            .any(|m| matches!(m, ControlMode::Resistance { .. })),
+        "{modes:?}"
+    );
+    assert_eq!(modes.last(), Some(&erg(137)), "{modes:?}");
+}
+#[test]
+fn the_same_readjustment_released_under_the_pre_589_values() {
+    // what the owner rode: released, and kept released at 58–60 rpm to the end
+    let mut r = rig();
+    r.load_tuned(vec![block(600.0, 137.0, 137.0, Phase::Work)], PRE_589);
+    r.start();
+    let end = readjustment(&r);
+    r.through(end - 1);
+    assert!(r.status().erg_released);
+    assert_eq!(
+        r.modes().last(),
+        Some(&ControlMode::Resistance { pct: 0.0 })
+    );
+}
+#[test]
+fn a_real_stop_releases_after_five_s_below_30_and_45_for_one_and_a_half_s_re_engages() {
+    let mut r = rig();
+    r.load(vec![work(200.0)]);
+    r.start();
+    pedal(&r, 0, 40, 200, 90);
+    r.through(39);
+    assert_eq!(
+        r.modes().last(),
+        Some(&erg(200)),
+        "the start's ramp is done"
+    );
+    // 30 rpm is not below 30
+    pedal(&r, 40, 80, 200, 30);
+    r.through(79);
+    assert!(!r.status().erg_released);
+    // stopped: 0 rpm for 20 ticks = 5 s releases on the twentieth, during the auto-pause
+    pedal(&r, 80, 99, 0, 0);
+    r.through(98);
+    assert!(!r.status().erg_released, "19 ticks are not 5 s");
+    assert_eq!(
+        r.state(),
+        crate::RideState::Paused(crate::PauseReason::StoppedPedalling)
+    );
+    pedal(&r, 99, 100, 0, 0);
+    r.through(99);
+    assert!(r.status().erg_released);
+    assert_eq!(r.modes(), vec![ControlMode::Resistance { pct: 0.0 }]);
+    // 44 rpm never re-engages; 45 for 6 ticks (1.5 s) does, with a ramp from the current power
+    pedal(&r, 100, 140, 100, 44);
+    r.through(139);
+    assert!(r.status().erg_released);
+    pedal(&r, 140, 145, 100, 45);
+    r.through(144);
+    assert!(r.status().erg_released, "5 ticks are not 1.5 s");
+    pedal(&r, 145, 146, 100, 45);
+    r.through(145);
+    assert!(!r.status().erg_released);
+    pedal(&r, 146, 170, 100, 90);
+    r.through(169);
+    let sent: Vec<u16> = r
+        .modes()
+        .into_iter()
+        .filter_map(|m| match m {
+            ControlMode::Erg { target_w } => Some(target_w),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, vec![100, 120, 140, 160, 180, 200]);
+}
+#[test]
+fn with_the_release_switched_off_a_stop_never_releases() {
+    let mut r = rig();
+    r.load_tuned(
+        vec![work(200.0)],
+        ErgTuning {
+            release_enabled: false,
+            ..ErgTuning::default()
+        },
+    );
+    r.start();
+    pedal(&r, 0, 40, 200, 90);
+    for k in 40..400 {
+        r.sample_opt(k, Some(0), if k % 2 == 0 { Some(0) } else { None });
+    }
+    for k in 0..400 {
+        r.through(k);
+        assert!(!r.status().erg_released, "k={k}");
+    }
+    assert!(
+        !r.modes()
+            .iter()
+            .any(|m| matches!(m, ControlMode::Resistance { .. }))
+    );
+}
+#[test]
+fn a_tuning_out_of_bounds_is_refused_at_load() {
+    let mut r = rig();
+    let mut tuning = crate::Tuning::default();
+    tuning.erg.reengage_rpm = tuning.erg.release_rpm;
+    assert!(matches!(
+        r.engine.command(EngineCmd::Load(RideSetup {
+            blocks: vec![work(200.0)],
+            recorder: Box::new(Recorder(Arc::default())),
+            cap_w: None,
+            tuning,
+        })),
+        Err(CommandError::Tuning(crate::TuningError::Hysteresis { .. }))
+    ));
+    assert!(!r.status().loaded);
+}
+mod sustained_stop {
+    use super::*;
+    use proptest::prelude::*;
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+        /// Every in-bounds tuning with the release on releases a sustained stop (cadence 0,
+        /// or no cadence) exactly after its dwell (ADR-0002 §7.4 amendment).
+        #[test]
+        fn every_in_bounds_tuning_releases_a_sustained_stop(
+            erg in crate::tuning::tests::in_bounds(),
+            unknown in any::<bool>(),
+        ) {
+            let mut r = rig();
+            r.load_tuned(vec![work(200.0)], erg);
+            r.start();
+            pedal(&r, 0, 40, 200, 90);
+            let dwell = crate::tuning::ticks(erg.release_after_s);
+            for k in 40..40 + dwell + 4 {
+                r.sample_opt(k, Some(0), if unknown { None } else { Some(0) });
+            }
+            r.through(40 + dwell - 2);
+            prop_assert!(!r.status().erg_released, "before the dwell");
+            r.through(40 + dwell - 1);
+            prop_assert!(r.status().erg_released, "after the dwell");
+            let modes = r.modes();
+            prop_assert_eq!(modes.last(), Some(&ControlMode::Resistance { pct: 0.0 }));
+        }
+    }
+}
+
 // -- health cap --
 
 fn capped(
@@ -766,6 +939,7 @@ fn capped(
             blocks,
             recorder: Box::new(Recorder(Arc::default())),
             cap_w: cap,
+            tuning: crate::Tuning::default(),
         }))
         .expect("load");
     let started = r.engine.command(EngineCmd::Start);
@@ -847,7 +1021,10 @@ fn the_policy_clamps_a_target_above_the_cap_even_if_a_ride_got_through() {
         max_target_w: 2000,
         cap_w: Some(180),
     };
-    assert_eq!(crate::erg::ErgPolicy::new().desired(&ctx), Some(erg(180)));
+    assert_eq!(
+        crate::erg::ErgPolicy::default().desired(&ctx),
+        Some(erg(180))
+    );
 }
 
 // -- compliance --
@@ -935,7 +1112,7 @@ fn an_engagement_settles_the_ramp_plus_five_seconds() {
 #[test]
 fn paused_and_released_seconds_are_excluded() {
     let mut r = rig();
-    r.load(vec![work(200.0)]);
+    r.load_tuned(vec![work(200.0)], PRE_589);
     r.start();
     // the ride start's 10 s settle (#250), then 4 counted seconds
     pedal(&r, 0, 56, 200, 90);
@@ -955,7 +1132,7 @@ fn a_ready_event_restarts_the_release_count() {
     // 6 low-cadence ticks, a `Ready` event (no loss), 2 more: 8 ticks in a row would
     // release, but nothing sampled on the old link counts across the event (§7.5 spirit).
     let mut r = rig();
-    r.load(vec![work(200.0)]);
+    r.load_tuned(vec![work(200.0)], PRE_589);
     r.start();
     pedal(&r, 0, 8, 190, 90);
     pedal(&r, 8, 14, 150, 39);
@@ -1007,7 +1184,7 @@ fn ctx_at(b: &crank_domain::workout::FlatBlock, k: u64) -> crate::control::Polic
 fn the_cap_clamps_every_erg_command_of_a_ramp() {
     use crate::control::TargetPolicy;
     let b = block(600.0, 100.0, 300.0, Phase::Work);
-    let mut p = crate::erg::ErgPolicy::new();
+    let mut p = crate::erg::ErgPolicy::default();
     let mut sent = vec![];
     for k in 0..2400 {
         if let Some(ControlMode::Erg { target_w }) = p.desired(&ctx_at(&b, k)) {
@@ -1138,7 +1315,7 @@ fn a_ride_stopped_mid_soft_start_leaves_nothing_to_the_next() {
 #[test]
 fn a_ride_that_ends_released_leaves_the_next_unreleased() {
     let mut r = rig();
-    r.load(vec![work(200.0)]);
+    r.load_tuned(vec![work(200.0)], PRE_589);
     r.start();
     pedal(&r, 0, 8, 190, 90);
     pedal(&r, 8, 24, 100, 20);
@@ -1201,7 +1378,7 @@ fn resuming_after_exactly_t_unknown_keeps_the_episode_and_one_microsecond_later_
 /// tick 16 with `erg_released` and the commands drained.
 fn released_rig() -> Rig {
     let mut r = rig();
-    r.load(vec![work(300.0)]);
+    r.load_tuned(vec![work(300.0)], PRE_589);
     r.start();
     pedal(&r, 0, 8, 200, 90);
     pedal(&r, 8, 16, 150, 20);
@@ -1326,7 +1503,7 @@ fn seconds_waiting_at_zero_watts_do_not_count_against_the_block_target() {
 #[test]
 fn exactly_forty_rpm_is_not_low_cadence() {
     let mut r = rig();
-    r.load(vec![work(200.0)]);
+    r.load_tuned(vec![work(200.0)], PRE_589);
     r.start();
     pedal(&r, 0, 40, 150, 40);
     r.through(39);
@@ -1409,7 +1586,7 @@ fn stopping_during_a_post_loss_soft_start_releases() {
 fn stopping_at_every_ramp_step_releases_within_two_seconds() {
     for stop in 9..8 + 26 {
         let mut r = rig();
-        r.load(vec![work(300.0)]);
+        r.load_tuned(vec![work(300.0)], PRE_589);
         r.start();
         pedal(&r, 0, 8, 100, 90);
         r.through(7);
@@ -1470,11 +1647,14 @@ fn stopping_during_a_post_release_ramp_releases_again() {
 fn a_release_survives_a_free_block() {
     // released → Free → ERG at 20 rpm: stays released, no ERG torque (§7.4 leaves only by 60 rpm)
     let mut r = rig();
-    r.load(vec![
-        work(300.0),
-        block(600.0, 0.0, 0.0, Phase::Free),
-        work(300.0),
-    ]);
+    r.load_tuned(
+        vec![
+            work(300.0),
+            block(600.0, 0.0, 0.0, Phase::Free),
+            work(300.0),
+        ],
+        PRE_589,
+    );
     r.start();
     pedal(&r, 0, 8, 200, 90);
     pedal(&r, 8, 16, 150, 20);
@@ -1495,7 +1675,7 @@ fn a_release_survives_a_free_block() {
 fn leaving_a_release_resets_the_ramp_so_the_target_is_never_a_jump() {
     // ramp started, cut by a release, re-engaged ≥ 20 ticks after it started: it restarts
     let mut r = rig();
-    r.load(vec![work(300.0)]);
+    r.load_tuned(vec![work(300.0)], PRE_589);
     r.start();
     pedal(&r, 0, 8, 100, 90);
     r.through(7);
@@ -1550,11 +1730,14 @@ fn the_re_engagement_criteria_are_evaluated_in_a_free_block_too() {
     // released, then 14 ticks ≥ 60 rpm inside a Free block: the release is left there
     // (§7.4), so the next ERG block opens with the soft start, not with Resistance.
     let mut r = rig();
-    r.load(vec![
-        work(300.0),
-        block(600.0, 0.0, 0.0, Phase::Free),
-        work(300.0),
-    ]);
+    r.load_tuned(
+        vec![
+            work(300.0),
+            block(600.0, 0.0, 0.0, Phase::Free),
+            work(300.0),
+        ],
+        PRE_589,
+    );
     r.start();
     pedal(&r, 0, 8, 200, 90);
     pedal(&r, 8, 16, 150, 20);
@@ -1665,7 +1848,7 @@ fn a_release_survives_a_user_pause_and_is_left_only_by_sixty_rpm() {
     // #249 ruling: a release is left only through §7.4, also across a pause (#264). The
     // pause is applied by ticks (a pause and resume between two ticks change nothing).
     let mut r = rig();
-    r.load(vec![work(200.0)]);
+    r.load_tuned(vec![work(200.0)], PRE_589);
     r.start();
     pedal(&r, 0, 8, 190, 90);
     pedal(&r, 8, 24, 100, 20);
@@ -1694,7 +1877,7 @@ fn stopped_pedalling_leaves_no_torque_on_the_trainer() {
     // auto-pause (cadence and power 0 for 3 s): the §7.4 release is out before the pause
     // begins, so DESIGN §5.2's 0 % resistance already holds (#264)
     let mut r = rig();
-    r.load(vec![work(200.0)]);
+    r.load_tuned(vec![work(200.0)], PRE_589);
     r.start();
     pedal(&r, 0, 24, 200, 90);
     r.through(23);
@@ -1774,7 +1957,7 @@ fn an_unapplied_link_transition_owes_the_end_mode_again() {
     // a transition wipes the trainer's mode (ADR-0002 §6): the end mode is sent although the
     // engine's last command is the same 0 % resistance (a release)
     let mut r = rig();
-    r.load(vec![work(200.0)]);
+    r.load_tuned(vec![work(200.0)], PRE_589);
     r.start();
     pedal(&r, 0, 8, 190, 90);
     pedal(&r, 8, 24, 100, 20);

@@ -6,6 +6,7 @@ use crate::engine::{CommandError, Engine, EngineCmd, PauseReason, RideSetup, Rid
 use crate::erg::{ErgPolicy, TrainerFollowing};
 use crate::record::{RecordError, RideRecorder, SecondRow};
 use crate::ticks::{Hold, SessionTicks, TICK_US, TickWindow};
+use crate::tuning::ErgTuning;
 use crank_devices::{
     Clock, CommandSeq, ControlMode, DeviceInfo, HeartRateLink, HrEvent, HrSample, LinkState,
     MonoTime, TargetLimit, TrainerCaps, TrainerCommand, TrainerEvent, TrainerLink, TrainerSample,
@@ -117,14 +118,31 @@ pub(crate) fn rig() -> Rig {
         gate,
     }
 }
+/// The ADR-0002 §7.4 release values before #589 (40 rpm / 2 s, 60 rpm / 2 s), in bounds: the
+/// tests of the release mechanics written against them keep their tick arithmetic.
+pub(crate) const PRE_589: ErgTuning = ErgTuning {
+    release_enabled: true,
+    release_rpm: 40,
+    release_after_s: 2.0,
+    reengage_rpm: 60,
+    reengage_after_s: 2.0,
+};
 impl Rig {
     pub(crate) fn load(&mut self, blocks: Vec<FlatBlock>) {
+        self.load_tuned(blocks, ErgTuning::default());
+    }
+    /// Load `blocks` with the ERG tuning `erg`.
+    pub(crate) fn load_tuned(&mut self, blocks: Vec<FlatBlock>, erg: ErgTuning) {
         let rec = Box::new(Recorder(self.log.clone()));
         self.engine
             .command(EngineCmd::Load(RideSetup {
                 blocks,
                 recorder: rec,
                 cap_w: None,
+                tuning: crate::Tuning {
+                    erg,
+                    ..crate::Tuning::default()
+                },
             }))
             .unwrap();
     }
@@ -728,6 +746,7 @@ fn commands_are_checked_against_the_state() {
             blocks: vec![],
             recorder: Box::new(Recorder(r.log.clone())),
             cap_w: None,
+            tuning: crate::Tuning::default(),
         })),
         Err(CommandError::WrongState)
     );
@@ -783,7 +802,7 @@ fn ramp_target_moves_once_per_second_and_clamps_to_the_trainer_maximum() {
     assert_eq!(at(4 * 100, 2000), Some(erg(200)));
     assert_eq!(at(4 * 100, 120), Some(erg(120)));
     assert_eq!(
-        ErgPolicy::new().desired(&ctx(0, 2000)),
+        ErgPolicy::default().desired(&ctx(0, 2000)),
         Some(ControlMode::Free),
         "no block: explicit free ride"
     );
@@ -925,6 +944,7 @@ fn start_needs_a_ready_trainer() {
         blocks: vec![],
         recorder: Box::new(Recorder(Arc::default())),
         cap_w: None,
+        tuning: crate::Tuning::default(),
     };
     engine.command(EngineCmd::Load(setup())).unwrap();
     assert_eq!(
@@ -1308,6 +1328,8 @@ mod soft_start_property {
     struct Model {
         blocks: Vec<Blk>,
         cap: Option<u16>,
+        /// The ride's §7.4 release tuning, restated in ticks.
+        rel: Rel,
         block: usize,
         /// Session ticks since the current block was entered (an upper bound of its timer).
         age: u64,
@@ -1325,11 +1347,45 @@ mod soft_start_property {
         /// The last mode the engine sent in this epoch (the engine forgets it at an epoch).
         current: Option<ControlMode>,
     }
+    /// ADR-0002 §7.4's release criteria of a tuning, in ticks (0.25 s each).
+    #[derive(Clone, Copy)]
+    struct Rel {
+        enabled: bool,
+        below: u8,
+        below_ticks: u32,
+        reengage: u8,
+        reengage_ticks: u32,
+    }
+    impl Rel {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "validated durations: small multiples of 0.25 s"
+        )]
+        fn of(t: &ErgTuning) -> Self {
+            Self {
+                enabled: t.release_enabled,
+                below: t.release_rpm,
+                below_ticks: (t.release_after_s * 4.0) as u32,
+                reengage: t.reengage_rpm,
+                reengage_ticks: (t.reengage_after_s * 4.0) as u32,
+            }
+        }
+    }
+    /// The default tuning, or any in-bounds one with the release on or off.
+    fn tuning() -> impl Strategy<Value = ErgTuning> {
+        prop_oneof![
+            2 => Just(ErgTuning::default()),
+            3 => (crate::tuning::tests::in_bounds(), any::<bool>())
+                .prop_map(|(t, on)| ErgTuning { release_enabled: on, ..t }),
+        ]
+    }
     impl Model {
-        fn new(blocks: Vec<Blk>, cap: Option<u16>) -> Self {
+        fn new(blocks: Vec<Blk>, cap: Option<u16>, tuning: &ErgTuning) -> Self {
             Self {
                 blocks,
                 cap,
+                rel: Rel::of(tuning),
                 block: 0,
                 age: 0,
                 ready: true,
@@ -1358,7 +1414,7 @@ mod soft_start_property {
         }
         /// A link epoch (§7.5, #231): an applied link transition or 8 silent ticks. What
         /// was sampled before it is forgotten and a soft start is owed. Nothing re-engages
-        /// ERG by itself: a release is kept (§7.4 leaves it only after 60 rpm for 2 s).
+        /// ERG by itself: a release is kept (§7.4 leaves it only by its re-engage criterion).
         fn new_epoch(&mut self) {
             self.epoch.clear();
             self.flow = None;
@@ -1482,15 +1538,16 @@ mod soft_start_property {
                 return Want::Nothing;
             }
             let cadence = self.held_cadence(k);
-            // §7.4: a release is left only by 60 rpm for 2 s (in any block kind, and it
-            // survives link epochs and free blocks), and then the §7.5 soft start is owed.
+            // §7.4: a release is left only by the re-engage cadence for its dwell (in any
+            // block kind, and it survives link epochs and free blocks), and then the §7.5
+            // soft start is owed.
             if self.released {
-                self.high = if cadence.is_some_and(|c| c >= 60) {
+                self.high = if cadence.is_some_and(|c| c >= self.rel.reengage) {
                     self.high + 1
                 } else {
                     0
                 };
-                if self.high >= 8 {
+                if self.high >= self.rel.reengage_ticks {
                     self.released = false;
                     self.armed = true;
                     self.ramp = None;
@@ -1513,16 +1570,17 @@ mod soft_start_property {
             };
             let _ = hi;
             // §7.4 (architect decision, round 5): judged against what is applied on the
-            // trainer. A non-zero ERG on the trainer and cadence < 40 rpm (unknown is 0)
-            // for 2 s releases, whatever the policy's own target, debt or flow.
-            if !self.released {
+            // trainer. A non-zero ERG on the trainer and cadence below the release cadence
+            // (unknown is 0) for the release dwell releases, whatever the policy's own
+            // target, debt or flow; never with the release switched off.
+            if !self.released && self.rel.enabled {
                 let torque = matches!(applied, Some(ControlMode::Erg { target_w }) if target_w > 0);
-                self.low = if torque && cadence.is_none_or(|c| c < 40) {
+                self.low = if torque && cadence.is_none_or(|c| c < self.rel.below) {
                     self.low + 1
                 } else {
                     0
                 };
-                if self.low >= 8 {
+                if self.low >= self.rel.below_ticks {
                     self.released = true;
                     self.high = 0;
                 }
@@ -1582,6 +1640,7 @@ mod soft_start_property {
     )]
     struct Monitor {
         cap: Option<u16>,
+        rel: Rel,
         ready: bool,
         applied: Option<ControlMode>,
         /// Power and cadence of the last page-25 sample, each with its tick; an invalid one
@@ -1621,9 +1680,10 @@ mod soft_start_property {
         }
     }
     impl Monitor {
-        fn new(cap: Option<u16>) -> Self {
+        fn new(cap: Option<u16>, tuning: &ErgTuning) -> Self {
             Self {
                 cap,
+                rel: Rel::of(tuning),
                 ready: true,
                 applied: None,
                 power_hold: None,
@@ -1731,13 +1791,15 @@ mod soft_start_property {
         /// What must hold on the trainer after the tick, whatever was sent in it.
         fn judge_state(&self, k: u64, paused: bool) -> Result<(), TestCaseError> {
             let torque = |m: Option<ControlMode>| matches!(m, Some(ControlMode::Erg { target_w }) if target_w > 0);
-            // 1: 2 s below 40 rpm with torque applied ⇒ released by the end of the window
-            if self.low >= 8 {
+            // 1: the release dwell below the release cadence with torque applied ⇒ released
+            // by the end of the window, when the release is on
+            if self.rel.enabled && self.low >= self.rel.below_ticks {
                 prop_assert!(
                     !torque(self.applied),
-                    "k={k}: {:?} still applied after {} ticks below 40 rpm",
+                    "k={k}: {:?} still applied after {} ticks below {} rpm",
                     self.applied,
-                    self.low
+                    self.low,
+                    self.rel.below
                 );
             }
             // 6: a pause (the rider's or the stopped rider's) leaves no torque on a ready
@@ -1788,20 +1850,20 @@ mod soft_start_property {
             let before = self.applied;
             // rule 1 bookkeeping: ticks on which non-zero ERG was applied at low cadence
             let torque = |m: Option<ControlMode>| matches!(m, Some(ControlMode::Erg { target_w }) if target_w > 0);
-            self.low = if torque(before) && cadence < 40 {
+            self.low = if torque(before) && cadence < self.rel.below {
                 self.low + 1
             } else {
                 0
             };
             // the engine judges a release only on ticks with a ready link (§7.4): cadence
             // that arrives while the link is down is not counted
-            self.high = if cadence >= 60 && self.ready {
+            self.high = if cadence >= self.rel.reengage && self.ready {
                 self.high + 1
             } else {
                 0
             };
             let was_released = self.released;
-            if self.released && self.high >= 8 {
+            if self.released && self.high >= self.rel.reengage_ticks {
                 self.released = false;
             }
             let origin = self.origin(k);
@@ -1826,7 +1888,7 @@ mod soft_start_property {
                 {
                     // 6 (DESIGN §5.2, #264): no torque while paused
                     prop_assert!(!paused, "k={k}: {m:?} while paused");
-                    // 5: while released, nothing until 60 rpm for 2 s
+                    // 5: while released, nothing until the re-engage criterion
                     prop_assert!(
                         !self.released,
                         "k={k}: {m:?} while released ({was_released})"
@@ -1899,15 +1961,17 @@ mod soft_start_property {
     fn state(i: u8) -> LinkState {
         [LinkState::Lost, LinkState::Connecting, LinkState::Ready][usize::from(i)]
     }
+    /// One generated ride: its blocks, health cap, ERG tuning and ops.
+    type GenRide = (Vec<Blk>, Option<u16>, ErgTuning, Vec<Op>);
     /// Run several rides on one engine, so nothing may leak from one to the next.
     #[expect(
         clippy::too_many_lines,
         reason = "one pass over a ride's ops, with the oracle and the monitor beside the engine"
     )]
-    fn execute(rides: &[(Vec<Blk>, Option<u16>, Vec<Op>)]) -> Result<(), TestCaseError> {
+    fn execute(rides: &[GenRide]) -> Result<(), TestCaseError> {
         let mut r = rig();
         let mut k = 0_u64; // absolute tick, kept across rides
-        for (blocks, cap, ops) in rides {
+        for (blocks, cap, erg, ops) in rides {
             r.link(LinkState::Ready);
             r.at(k * TICK_US);
             r.engine
@@ -1915,6 +1979,10 @@ mod soft_start_property {
                     blocks: blocks.iter().map(|b| b.flat_block()).collect(),
                     recorder: Box::new(Recorder(r.log.clone())),
                     cap_w: *cap,
+                    tuning: crate::Tuning {
+                        erg: *erg,
+                        ..crate::Tuning::default()
+                    },
                 }))
                 .expect("load");
             let expected = match cap {
@@ -1933,8 +2001,8 @@ mod soft_start_property {
                 r.engine.command(EngineCmd::Stop).expect("unload");
                 continue;
             }
-            let mut m = Model::new(blocks.clone(), *cap);
-            let mut mon = Monitor::new(*cap);
+            let mut m = Model::new(blocks.clone(), *cap, erg);
+            let mut mon = Monitor::new(*cap, erg);
             // `valid`: the tick's valid sample, which the monitor sees as an input
             let step = |r: &mut Rig,
                         m: &mut Model,
@@ -2068,8 +2136,8 @@ mod soft_start_property {
         #[test]
         fn the_soft_start_never_jumps_and_never_uses_old_epoch_power(
             rides in prop::collection::vec(
-                (ride(), prop::collection::vec(op(), 1..60))
-                    .prop_map(|((b, c), o)| (b, c, o)),
+                (ride(), tuning(), prop::collection::vec(op(), 1..60))
+                    .prop_map(|((b, c), t, o)| (b, c, t, o)),
                 1..=3,
             )
         ) {
@@ -2469,8 +2537,11 @@ struct Commanded {
 }
 impl Commanded {
     fn new(blocks: Vec<FlatBlock>) -> Self {
+        Self::tuned(blocks, ErgTuning::default())
+    }
+    fn tuned(blocks: Vec<FlatBlock>, erg: ErgTuning) -> Self {
         let mut r = rig();
-        r.load(blocks);
+        r.load_tuned(blocks, erg);
         Self {
             r,
             sent: None,
@@ -2571,7 +2642,7 @@ fn the_commanded_target_is_not_the_plan_during_the_soft_start() {
 
 #[test]
 fn a_release_commands_resistance_zero_and_a_reengage_soft_starts_again() {
-    let mut c = Commanded::new(vec![block(600.0, 200.0, 200.0, Phase::Work)]);
+    let mut c = Commanded::tuned(vec![block(600.0, 200.0, 200.0, Phase::Work)], PRE_589);
     c.r.start();
     c.ticks(40, 150, 90);
     assert_eq!(c.r.status().commanded, Some(erg(200)));
