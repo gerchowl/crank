@@ -1,8 +1,8 @@
 # ADR-0002: Bluetooth stack and Trainer abstraction (FE-C first)
 
-- **Status:** Proposed, Amended (#54, #250, #264, #266, #435, #588)
+- **Status:** Proposed, Amended (#54, #250, #264, #266, #435, #588, #589, #585)
 - **Date:** 2026-10-13
-- **Issue:** #27 (decides the design questions of #23); amendment #54 (trainer-following state machine, §4.4.1); amendment #435 (connection lifecycle, §5.1)
+- **Issue:** #27 (decides the design questions of #23); amendment #54 (trainer-following state machine, §4.4.1); amendment #435 (connection lifecycle, §5.1); amendment #585 (eased ERG target, §7.10)
 - **Related:** ADR-0001 (crate layout, clock, testing), `spec/TRAINER-BLE.md`
 
 ## 1. Context
@@ -636,7 +636,7 @@ only §7.8 settle uses the class. The following machine ignores it (see Desired 
 | Block boundary whose start target differs from the previous block's end target (§7.8 a) | `Transition` |
 | Manual ± or coach change (§7.8 b) | `Transition` |
 | Rider-set SIM grade or resistance from the free-ride/sim control (§7.9) | `Transition` |
-| Ramp update inside a block (§7.3), soft-start update after its engagement (§7.4–7.5), HR-steering update (§7.7) | `Continuous` |
+| Ramp update inside a block (§7.3), soft-start update after its engagement (§7.4–7.5), HR-steering update (§7.7), every eased update of the commanded target (§7.10, #585) | `Continuous` |
 | Block boundary with an equal target, keep-alive re-send, `SetRider` (page 55) | none (the desired mode is unchanged) |
 
 **Tests required.** These are listed on #32 (machine and engine) and #43 (driver), and form the acceptance
@@ -1327,8 +1327,11 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
 1. **Controlled target** = block target × (1 + manual offset + coach change), rounded to 1 W, clamped to
    `[0, caps.max_target_w]` with the clamp shown as a validation warning in the editor (compile time) and a
    status flag in the ride. The controlled target is never smoothed and never derived from measured power.
+   (Amended 2026-11-11, #585: what is *sent* is the **commanded** target, the controlled target eased by §7.10;
+   the controlled target itself stays as stated here and is what compliance compares against.)
 2. **Steps:** the new target is sent on the block-boundary tick (coalescing in the `control` slot,
-   §4.4, means the newest mode always wins). Smoothing a step is the trainer's job; its
+   §4.4, means the newest mode always wins). ~~Smoothing a step is the trainer's job~~ superseded by §7.10 (#585):
+   the controlled target changes on that tick and the commanded target eases towards it from that tick. The trainer's
    response time (t90 for 100→150→250→100 W) is measured in HIL check 6. A "lead" (send the next target L
    seconds early) defaults to 0 and is set to the measured trainer latency only by an ADR amendment
    backed by the HIL numbers.
@@ -1345,7 +1348,7 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    and an on/off switch are `ErgTuning` (ADR-0001 §7.2): `release_enabled`, `release_rpm`, `release_after_s`,
    `reengage_rpm`, `reengage_after_s`. The rule above is unchanged in form; its **defaults** become:
    release when cadence < **30 rpm** for **5 s** with a target > 0; re-engage when cadence ≥ **45 rpm** for
-   **1.5 s**, then the soft start (§7.5, unchanged; #585 will replace it). `release_enabled` defaults to on.
+   **1.5 s**, then the soft start (§7.5; its ramp is now the eased engagement of §7.10.3, #585). `release_enabled` defaults to on.
    *Evidence (the owner's ride of 2026-11-09, #589).* Six cadence dips to 0 rpm for 1–3 s in the recovery
    blocks (137 W), the flywheel keeping 12–13 km/h: saddle readjustments, no Bluetooth loss. Each released
    ERG under the old 40 rpm / 2 s rule; re-engaging needed ≥ 60 rpm for 2 s plus the 5 s soft start, so power
@@ -1374,6 +1377,8 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    HIL Part B's copies of the old values (`hil_fec` `RELEASE_WAIT`, `STALL_FLOOR_RPM`) move to the recorded
    tuning in #593.
 5. **Soft start** is also used when ERG is (re-)engaged after a reconnect or after leaving `free`/`sim`.
+   **Amended 2026-11-11 (#585):** the ramp is the §7.10 limiter started at the origin (§7.10.3); the "five 1 Hz
+   steps" and "over 5 s" below are superseded by it. The hold, origin and reset rules below are unchanged.
    **Ride start and user pause (amendment, #250 / #264, 2026-10-14).** A ride start is treated as a
    reconnect: on the NEO, ERG at the target torque with a stopped flywheel is the low-cadence hazard of §7.4
    (the rider pushes off against the full target at near-zero cadence). So the engine holds `Erg { target_w: 0 }`
@@ -1410,7 +1415,8 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    *settle* seconds. Settle is triggered only by **discontinuities**, never by continuous target updates:
    (a) the first 5 s of each block whose start target differs from the previous block's end target (the
    mock's per-block settle); (b) a manual ± or coach change: 5 s; (c) an ERG (re-)engagement: the soft
-   start's 5 s plus 5 s (**amended, #250 / #264, 2026-10-14:** a ride start and a resume from a user pause are
+   start's 5 s plus 5 s (**amended, #585, 2026-11-11:** each of (a), (b) and (c) runs from its discontinuity or
+   engagement until the commanded target has caught up with the controlled one, plus 5 s, §7.10.5; **amended, #250 / #264, 2026-10-14:** a ride start and a resume from a user pause are
    (re-)engagements, §7.5; the first block has no previous block for (a), but its start is an engagement under (c):
    the 0 W hold, then 10 s from the first pedalling sample are settle). These are the `Transition` class of §4.4.1, which only settle uses (the
    trainer-following machine ignores the class). Within `ramp` blocks and HR-steered steps the target moves continuously
@@ -1554,6 +1560,292 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
    caller then gets the typed `engine_unresponsive` (outcome unknown, the request may still apply). The
    ride view says the engine is not answering and offers End; nothing is retried. A `Load` the new engine
    does not take releases the devices it was built with, as a forced end does. FMEA row FM-FIN-05.
+
+### 7.10 Amendment 2026-11-11 (#585): the commanded ERG target is eased (rate and ease limit)
+
+*Amends items 1, 2, 5 and 8 above and the class table of §4.4.1. Implementation: #620–#624 (§7.10.10).*
+
+**Context.** After a real ride on 2026-11-09 (Sweet Spot 2×10, #589) the owner found the step from the end of a ramp
+into the next, higher block abrupt. Item 2 left smoothing a step to the trainer, and the only ramp crank sends is
+the §7.5 soft start, used only on (re-)engagement: five 1 Hz steps over 5 s, whatever the step's size. The owner's
+direction (#585, 2026-11-09): separate rising and falling rate limits as rider settings, the falling rate twice the
+rising by default; a limit on the second derivative as well, an S-curve that eases into and out of the ramp so a step
+never feels like "falling off the stairs"; and one mechanism with the soft start, not two.
+
+**Terms.** The **controlled target** `T` is item 1's, unchanged: block target × (1 + manual offset + coach change),
+rounded to 1 W and clamped. It is never smoothed and never derived from measured power, and compliance compares
+against it. The **commanded target** `y` is new: the value sent in `Erg { target_w }`, the output of a limiter fed
+with `T`. Item 2's "the new target is sent on the block-boundary tick" now means: the controlled target changes on
+that tick, and the commanded target starts towards it on that tick.
+
+#### 7.10.1 Feed-forward on the target, never a loop on measured power
+
+**Decision:** the limiter shapes the setpoint (feed-forward). It reads only the controlled target and its own state,
+never measured power, except for the engagement origin (§7.10.3), which is item 5's 3 s power as today.
+
+**Why not a closed loop.** The NEO already closes the power loop in ERG: it sets brake torque τ = P/ω to hold the
+page-49 target. An outer loop on measured power (a PID that moves the target until page-25 power follows a smooth
+reference) would be a cascade around an inner loop whose dynamics are not yet measured (check 6's t90, #44 Part B, has
+not been run), fed by a 4 Hz page-25 signal that lags by up to the 2 s of `L` (§4.4.1). Two loops on one quantity
+with unknown inner bandwidth can fight and oscillate. Worse, it is unsafe in the one situation that matters: when a
+rider fades, measured power falls below the target, and an outer loop would *raise* the command to catch up. That is
+the §7 spiral, driven by crank. Item 1's rule exists against that; a feed-forward ramp keeps it. The one closed loop
+crank has, HR steering (item 7), is slow (5 s, ±5 W) on a different quantity and stays as it is; its updates are eased
+like any other target change.
+
+**Write rate.** The limiter runs on every engine tick (4 Hz) and the engine sends `Erg { round(y) }` whenever the
+rounded value differs from the last one sent, as today. The writer (§4.4) bounds what reaches the NEO: at most one
+message per tick at Tacx's 4 Hz rate, the newest value replacing an unsent one in the `control` slot, and the
+reserved page-71 poll taking its tick each second. During an ease page 49 is therefore written on about three ticks
+in four (the poll's tick defers the value by one tick, within the two-tick bound of §4.4), and the 2 s keep-alive is
+not needed. Nothing new is queued and no rate above the writer's exists. 1 Hz updates (the rate of ramps, item 3) were
+rejected: at the default rates (§7.10.4) they are 20–40 W steps every second, the staircase the trainer would render
+as steps. The NEO accepting page 49 at that rate for the length of an ease is checked on hardware in #624 (the writer's
+4 Hz is a premise of §4.4 from the Tacx document, not yet measured sustained). A failure there amends this section;
+there is no fallback in code.
+
+**Following (§4.4.1).** The desired mode the following machine sees is the commanded one. Desired changes are not
+inputs to it (guarantee 3: "desired changes in between, at any rate, change nothing"), and an echo agrees with any
+value desired within `L` = 2 s, so an echo of a value written up to two ticks earlier agrees. The desired history
+gains at most one value per tick. The class table is amended: every eased update is `Continuous`; only the
+discontinuities of the controlled target and the engagement are `Transition` (unchanged rows).
+
+#### 7.10.2 The shape: rate limit up and down, ease limit, on the 4 Hz tick grid
+
+A second-order limiter: the commanded target `y` (W, real) moves with a slope `v` (W/s, real) towards `T`. The slope
+is at most `r↑` rising and `r↓` falling, and it changes by at most `j = r/τ` per second, so it takes the **ease time**
+`τ` to reach full rate and `τ` to come back to 0 before `y` arrives. The result is an S-curve: a parabola in, a
+straight line at the full rate, a parabola out. A short step that never reaches full rate is two parabolas.
+
+Constants: Δt = 0.25 s (one tick), ε = 0.5 W (half the 1 W resolution). Parameters, from the rider's tuning
+(§7.10.4) and the transition's compression `κ ≥ 1` (§7.10.4, 1 outside a compressed transition):
+`r↑ = κ·rise`, `r↓ = κ·rise·factor`, `τ = ease/κ`, `j↑ = r↑/τ`, `j↓ = r↓/τ`. `M = min(max_target_w, cap)` with the
+health cap when active.
+
+Per tick, with state `(y, v)` from the previous tick and the tick's controlled target `T`:
+
+1. **Ceiling.** If `y > M`: `y ← M`, `v ← 0`. The cap is never eased.
+2. **Arrived.** `e = T − y`. If `|e| ≤ ε`: `y ← T`, `v ← 0`; done.
+3. **Direction.** `σ = sign(e)`; `(r, j) = (r↑, j↑)` if `σ > 0`, else `(r↓, j↓)`.
+4. **Reversal.** `a = max(0, σ·v)`. A slope away from the target is dropped to 0 at once.
+5. **Braking slope.** `b = j·(√(Δt² + 2|e|/j) − Δt)`: the largest slope `u` with `u·Δt + u²/(2j) ≤ |e|`, from which
+   one more tick and an ease-out at `j` still stop at `T`.
+6. **Slope.** `u = min(r, a + j·Δt, b)`.
+7. **Step.** If `|e| − u·Δt ≤ ε`: `y ← T`, `v ← 0` (lands). Else `y ← y + σ·u·Δt`, `v ← σ·u`.
+8. **Command.** `Erg { target_w: round(y) }`.
+
+Duration of a step of size `Δ` from rest (continuous form; the discrete one is within +0.75 s, §7.10.6 P4):
+
+```text
+d(Δ; r, τ) = |Δ|/r + τ           if |Δ| ≥ r·τ   (reaches full rate)
+           = 2·√(|Δ|·τ/r)        otherwise      (two parabolas)
+```
+
+With the defaults (rise 20 W/s, factor 2, ease 2 s), the discrete limiter catches up in:
+
+| Step | Rising (20 W/s) | Falling (40 W/s) |
+|---|---|---|
+| 20 W (150 ↔ 170) | 2.75 s | 2.0 s |
+| 83 W (137 ↔ 220) | 6.0 s | 4.0 s |
+| 150 W (100 ↔ 250) | 9.5 s | 5.75 s |
+| 300 W (100 ↔ 400) | 17.0 s | 9.5 s |
+| 0 → 137 W, 0 → 250 W (engagement) | 8.75 s, 14.5 s | — |
+
+(Computed by iterating steps 1–8; the implementation's golden vectors, #620, are the authority.)
+
+A moving controlled target needs nothing special. A ramp block's 1 Hz line (item 3) is followed within a tick or
+two of each 1 s step; a target change mid-ease (a skip, a ± press, the coach, an edit) re-aims the same state; a
+reversal stops the slope at once and eases into the new direction.
+
+#### 7.10.3 The soft start is the limiter's engagement
+
+An ERG (re-)engagement (item 5: ride start, resume from a user pause, leaving a release, leaving `Free`/`Sim`, a new
+link epoch) is the limiter started from `(y, v) = (origin, 0)`, with `origin` item 5's 3 s power at the first
+pedalling sample of the epoch (0 W without a power value), clamped to `[0, M]`, and `κ = 1`. Everything else of item 5
+is unchanged: `Erg { 0 }` from the engagement until that sample, so no torque reaches a rider who is not pedalling;
+while samples are missing the limiter holds its state and the last command; when they return it restarts from the
+then-current 3 s power; all engagement state is reset on every applied link transition and every 8-tick silence, and
+pre-loss power is never an origin. The engagement ends (the soft start is no longer owed) when the commanded target
+has **caught up**: `|T − y| ≤ max(1 W, 1 % of T)`. `SOFT_START_TICKS` and the five 1 Hz steps go.
+
+So the soft start is no longer "5 s whatever the step": it takes `d(T − origin; rise, ease)`, 8.75 s from 0 to 137 W
+with the defaults instead of 5 s. That is gentler at the start (the first second adds 6 W with the defaults, against
+27 W, a fifth of 137 W, today) and longer overall. A block change during an engagement continues it
+towards the new target, as DESIGN §17.3 5a requires, now without a rule of its own.
+
+#### 7.10.4 Settings, defaults, bounds, short blocks
+
+A new tuning group (ADR-0001 §7.2), `Tuning.slew: SlewTuning`, frozen at `ride_load` like `erg`:
+
+| Field (JSON) | Meaning | Default | Bounds |
+|---|---|---|---|
+| `slew.riseWPerS` | full rising rate `rise`, W/s | 20 | 5–50 |
+| `slew.fallFactor` | falling rate = rise × factor | 2.0 | 1–4 |
+| `slew.easeS` | ease time `τ` in and out, s, on the 0.25 s grid | 2.0 | 1–4 |
+
+Cross-field rule (`Tuning::validate`): `rise × factor ≥ 20 W/s`, the falling rate's floor, which is what bounds the
+time above the plan (§7.10.6).
+
+*Evidence and status of the defaults.* The ride of 2026-11-09 (#589: recovery blocks at 137 W, no Bluetooth loss,
+the step at the end of the ramp felt abrupt) shows that a step was felt; it does not give the step's size or a rate
+that would have felt right, the record has no target column yet (#622), and the NEO's own step response (check 6) is
+not measured. **The three defaults are guesses to tune from rides (#624):** 20 W/s makes the 83 W step of a
+recovery-to-work transition a 6 s S-curve, slow enough to feel as a ramp next to a trainer step; the factor 2 is the
+owner's; 2 s of ease gives each corner a parabola long enough to feel at 90 rpm. The bounds are design choices:
+`rise ≤ 50` and `ease ≥ 1 s` keep every engagement a ramp (the first second adds at most 31 W); `rise ≥ 5` and
+`ease ≤ 4` keep a 300 W rise to about a minute (64 s); the factor is at least 1, so a fall is never slower than a rise.
+
+*No off switch.* The engagement is the same mechanism and must stay a ramp; a rider who wants crisper steps sets
+50 W/s and 1 s (a 200 W step in 5 s).
+
+**Short blocks: compression.** At the default rates a 30/30 at 100 ↔ 400 W would spend 17 s of each 30 s rep rising.
+So each discontinuity of the controlled target (the `Transition` rows of §4.4.1 other than an engagement: a block
+boundary whose targets differ, a skip, an edit's block entry, a manual ±, a coach change) computes
+
+```text
+Δ = T − y                   (at the discontinuity tick, before the step)
+D = planned seconds left of the block current at that tick
+    (a boundary: the block's planned length; an open-ended block: its minimum; no minimum or no block: κ = 1)
+κ = max(1, d(Δ; r, ease) / (EASE_SHARE · max(D, Δt)))      r = rise or rise·factor by sign(Δ)
+EASE_SHARE = 0.25
+```
+
+and runs the limiter with `κ` until it has caught up or the next discontinuity recomputes it. Scaling the rates by `κ`
+and the ease time by `1/κ` is the same S-curve played `κ` times faster, so the transition takes `d/κ`, a quarter of the
+block: a 30 s rep at 100 → 400 W rises in 7.5 s (κ = 2.27, 45 W/s). An engagement is never compressed (`κ = 1`, also for a
+discontinuity that falls inside it, until it has caught up): a re-engagement late in a block is a safety ramp, not a
+plan transition. `EASE_SHARE` is a design constant, not tuning:
+nobody has asked to tune it, and an amendment can promote it.
+
+#### 7.10.5 Interactions: compliance, block time, mode changes, status
+
+- **Block time.** Unchanged. The block timer and workout time are the plan's; the eased seconds belong to the block
+  they are in. A rise therefore costs the entered block some work (about `Δ·d/2` J for a step of `Δ` taking `d` s),
+  and a fall gives the previous block's load a little longer (bounded, §7.10.6). The ease starts at the event, never
+  before it (no lead, item 2's "lead" stays 0).
+- **Compliance (item 8, amended).** Settle (a), (b) and (c) no longer last a fixed time. Each runs **from the
+  discontinuity (or the engagement) until the commanded target has caught up, plus 5 s**. For (c) that replaces "the
+  soft start's 5 s plus 5 s"; for (a) and (b) it replaces "5 s". Compliance still compares `power_3s` with the
+  controlled target. Besides those windows, **every tick at which the commanded target has not caught up is settle**,
+  whatever the cause: a ramp block steeper than the rate, entered without a discontinuity, is never caught up while
+  it lasts, so it stays settle. That is correct: the trainer is not being asked for the plan. Released, paused, `suspect` and `not_following` seconds are
+  excluded as before.
+- **Mode changes bypass the limiter.** A user pause, a §7.4 release, a `Free` or `Sim` block, the ride end (§7.9) and a
+  trainer loss are mode changes: `Resistance { pct: 0 }` or `Free` is the desired mode on the tick it is decided,
+  exactly as today. The limiter is not consulted, its state is dropped, and the return to ERG is an engagement
+  (§7.10.3). **A downward step towards a release, a pause or a stop is never delayed by a ramp.** The release criterion
+  is unchanged: it reads the last command sent (`Erg` above 0 counts as torque, eased or not), so an ease never hides
+  a stall.
+- **Skip, edits, ±, coach.** A target change with `κ` from the entered block, eased in both directions. An edit that
+  enters ERG from `Free` (DESIGN §17.3 5b) is an engagement. A manual − mid-rise reverses at once (step 4).
+- **Status (#622).** `easingToW`: the controlled target while the commanded target has not caught up, else `null`.
+  `softStartTargetW` keeps its meaning (an engagement after a recovered loss) and comes from the same state. The
+  commanded target is streamed and recorded per second as the metric `target` (W, the last tick of the second,
+  `null` outside ERG).
+- **Drawing.** The power trace draws the commanded target (the S-curve as ridden) behind "now" and the plan eased by
+  the same limiter ahead of it; the strip stays blocks (DESIGN §19).
+
+#### 7.10.6 Properties and the safety argument
+
+Properties of steps 1–8 for every in-bounds tuning and any target sequence (property tests in #620; checked
+numerically for this amendment over random tunings, targets and slopes):
+
+- **P1 between.** `y_k` lies between `y'` and `T_k` (`y'` after step 1): the command never overshoots and never moves
+  away from the target.
+- **P2 rate.** `|v_k| ≤ r` of its direction.
+- **P3 ease.** `|v_k − v_{k−1}| ≤ j·Δt` except where the slope is cut: a reversal or the ceiling (to 0), a target that
+  moved towards the command (braking harder than `j` rather than overshoot), and the landing tick (at most
+  `j·Δt + 4 W/s`).
+- **P4 duration.** For a held target, from rest or moving towards it: caught up within `d(Δ; r, τ) + 0.75 s` (three ticks of
+  discretisation), also for compressed parameters.
+- **P5 monotone descent.** While `T_k ≤ y_{k−1}`, `y_k ≤ y_{k−1}`.
+- **P6 ceiling.** `y_k ≤ max(y_{k−1}, T_k)` and `y_k ≤ M`.
+
+**Claim: no eased target holds the rider above the plan for longer than the documented bound.**
+
+1. *A rise never commands more than the plan.* By P1 and P6, while `T` rises the command is at or below `T`.
+2. *A fall never commands more than the rider was just riding, and ends in bounded time.* When the controlled target
+   falls to `T*` at tick `k₀` and stays at or below it, the command never rises (P5) above `y_{k₀−1}`, the load the
+   rider was already holding, and reaches `T*` within `d(Δ; r↓, τ) + 0.75 s` with `Δ = y_{k₀−1} − T*` (P4). With the
+   bounds (`r↓ ≥ 20 W/s`, `τ ≤ 4 s`) that is at most `Δ/20 + 4.75 s` (`d ≤ Δ/r + τ` for every `Δ`): 19.75 s for a
+   300 W drop with the slowest tuning, 10.25 s with the defaults, and at a block boundary never more than
+   `EASE_SHARE` of the entered block plus 0.75 s when that is shorter (compression). At constant cadence the torque falls with the command throughout.
+3. *The cap is never exceeded:* step 1 clamps before every step (P6).
+4. *Stopping never waits.* Pause, release, end and every non-ERG block are mode changes sent on the tick they are
+   decided (§7.10.5); ride end keeps §7.9 unchanged. A fading rider in a slow descent is released by §7.4 exactly as
+   under a held target, since the release reads the last command.
+5. *Engagement adds no torque before pedalling:* the `Erg { 0 }` hold and the origin rules of item 5 are unchanged,
+   and the limiter starts at the origin with slope 0.
+
+Against today, the change is a bounded extension of the previous block's load on a fall (item 2) and a slower rise.
+The rider was riding the higher load the moment before, it only decreases, and every exit is immediate.
+
+#### 7.10.7 What the safety falsifier must probe (#621)
+
+1. Every path to `Resistance { 0 }` or `Free` mid-ease and mid-engagement (pause, release, end, symptom stop, a `Free`
+   block, a trainer loss): the mode is desired on the same tick, and no later `Erg` write overtakes it (the newest
+   mode wins the `control` slot, §4.4; the end mode ordering of §7.9).
+2. Reversals: a skip into a lower block, a manual −, a coach decrease mid-rise. The command never rises after the tick
+   on which `T` fell below it.
+3. A cap that appears or drops mid-ease: the command is at or below it on that tick.
+4. Engagement: no torque before the first pedalling sample; no origin from an old epoch; a link epoch mid-ease resets
+   the state; a release during an engagement still fires on its dwell.
+5. P1–P6 and the duration bound for the corners of the bounds (rise 5 × factor 4, ease 4; rise 50 × factor 1, ease 1),
+   and `validate` refusing a falling rate under 20 W/s.
+6. Compression: zero-length, sub-tick and open-ended blocks (`max(D, Δt)`, `κ = 1` without a minimum); `κ` never on
+   an engagement; no NaN or infinity for any input (`j > 0`, the square root's argument ≥ Δt²).
+7. Following: eased updates every tick keep a healthy trainer `following` (the executable model, `just model`); the
+   writer still serves the reserved poll on time during an ease (§4.4).
+8. Compliance: settle never ends before caught up; a tick that is not caught up is never counted, so a steep ramp is
+   excluded, never counted as a miss.
+
+#### 7.10.8 HIL Part B checks 6, 7 and 12
+
+`hil_fec` writes its procedures to the trainer itself through `crank-ble`; the engine's policy is not in its path.
+The checks measure the trainer, and check 6 measures the trainer's own step response (`t90`), so its steps must stay
+raw. **The Part B programs are unchanged**: `PROGRAM_6`, `PROGRAM_9` and `PROGRAM_12` of #521, and #616's check 12
+(`Release, SoftStart(200), Wind, Track(0), Release`, ADR-0007 §4), keep their own soft start, ERG 0 W and then six
+writes 1 s apart on a line. Today `rider::SOFT_START_STEPS` is derived from the engine's `SOFT_START_TICKS`; #621 makes
+it hil_fec's own constant (5) when the engine's goes, so neither the programs nor ADR-0007's tests
+(`the_soft_start_is_erg_0_then_six_steps_on_the_line_to_its_target`) change. Check 7 (no keep-alive, from the 150 W
+write at the end of that soft start) is unaffected for the same reason. The eased command is checked on hardware by a
+new check in #624.
+
+#### 7.10.9 Alternatives considered
+
+| Alternative | Why rejected |
+|---|---|
+| Leave smoothing to the trainer (item 2 as it was) | The owner felt the step on the NEO (#585) |
+| Close the loop on measured power (outer PID) | Fights the NEO's own ERG loop through an unmeasured inner response and a lagging page 25; raises the command when a rider fades, which is the spiral (§7.10.1) |
+| Rate limit only (W/s), no ease | Corners at both ends of the ramp: "falling off the stairs" in the owner's words |
+| A fixed ramp time per step, or a ramp as a share of the step | The rate then grows with the step (a 300 W step as steep as it is long), and a change mid-ramp has no defined continuation |
+| Soft start and slew as two mechanisms | The owner's direction; two ramps would need rules for meeting each other (DESIGN §17.3 5a was one) |
+| Lead or centre the ease on the boundary | Raises the load before the plan does, needs future targets, and is impossible for a skip, a ±, the coach or an edit |
+| Keep the ease through a reversal | The command would keep rising after the plan lowered it |
+| Ease mode changes (pause, release, end) | Would delay the stop; stopping resistance must never wait on a ramp |
+| 1 Hz (item 3's ramp rate) or 2 Hz updates | 20–40 W (or 10–20 W) staircase steps at the default rates; the writer already caps writes at 4 Hz and coalesces |
+| An explicit falling rate instead of a factor | The owner described a factor; with `factor ≥ 1` a fall is structurally never slower than a rise |
+| An off switch, or unbounded rates | The engagement is the same mechanism and must stay a ramp |
+| No compression for short blocks | A 30/30 at 100 ↔ 400 W would spend 17 s of each 30 s rep rising |
+| `EASE_SHARE` as rider tuning | One more number nobody has asked for; an amendment can promote it |
+| Compliance against the commanded (eased) target | The trainer lags a 20 W/s ramp, so seconds would miss spuriously; compliance is about the plan |
+| Counting eased seconds against the controlled target | Punishes the smoothing the rider asked for |
+| Stretch the block by the ease | Changes the workout's length and every later block's time |
+
+#### 7.10.10 Implementation plan (sub-issues of #585, in order)
+
+1. **#620** `crank_engine::slew`: the limiter of §7.10.2–7.10.4 and `SlewTuning` (Default, BOUNDS, validate), property
+   tests P1–P6, golden vectors. No wiring.
+2. **#621** The ERG policy commands the eased target; the soft start becomes the engagement; compression; settle as
+   amended; mode changes bypass; hil_fec's own soft-start constant; §4.4.1 classes and the model; FMEA rows; golden
+   engine traces (#357); **safety falsifier review** (§7.10.7).
+3. **#622** Stream and record the commanded target (`target`); `easingToW`; bindings.
+4. **#623** The app: the power trace draws the eased target, the TARGET sub-line, banners, the mock from the golden
+   vectors (#357).
+5. **#624** HIL: eased steps on the NEO (page 49 at the tick rate) and an owner ride to tune the defaults; a
+   contradiction amends this section.
+
+The Settings rows (rise, fall factor, ease) are #595, beside the release rows.
 
 ## 8. Decision: macOS TCC and the dev-time BLE path
 
