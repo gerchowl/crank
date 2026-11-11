@@ -806,8 +806,8 @@ the reasons are in the ADR section named:
 | `erg.releaseAfterS` | s, 0.25 s grid | 5 | 1–8 | ADR-0002 §7.4 |
 | `erg.reengageRpm` | rpm, above `releaseRpm` | 45 | 30–90 | ADR-0002 §7.4 |
 | `erg.reengageAfterS` | s, 0.25 s grid | 1.5 | 1.5–5 | ADR-0002 §7.4 |
-| `slew.riseWPerS` | W/s | 20 | 5–50 | ADR-0002 §7.10.4 (#585) |
-| `slew.fallFactor` | × `riseWPerS`; the product ≥ 20 W/s | 2.0 | 1–4 | ADR-0002 §7.10.4 |
+| `slew.riseWPerS` | W/s, integer | 20 | 5–50 | ADR-0002 §7.10.4 (#585) |
+| `slew.fallFactor` | × `riseWPerS`, on a 0.25 grid; the product ≥ 20 W/s | 2.0 | 1–4 | ADR-0002 §7.10.4 |
 | `slew.easeS` | s, 0.25 s grid | 2 | 1–4 | ADR-0002 §7.10.4 |
 
 `slew` is implemented by #620. A new group changes no existing field's meaning or unit, so `Tuning::VERSION` stays
