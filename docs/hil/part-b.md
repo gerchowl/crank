@@ -101,7 +101,7 @@ hil_fec analyse --target docs/hil/captures/check6.fecap --out docs/hil/captures 
 ```
 
 `analyse` keeps the reply accounting it always wrote and adds `part_b` (the same `result`) for a capture
-named `check5`, `check6`, `check7`, `check8`, `check9`, `check10`, `check11b` or `check12`, and prints the row again.
+named `check5`, `check6`, `check7`, `check8`, `check9`, `check10`, `check11a`, `check11b`, `check11c` or `check12`, and prints the row again.
 
 | Check | What `result` reports (method text is in the JSON) | ADR-0002 |
 |---|---|---|
@@ -119,26 +119,77 @@ named `check5`, `check6`, `check7`, `check8`, `check9`, `check10`, `check11b` or
 Every result also carries `release`: whether page 48 at 0 % was the last control write and whether a
 page-71 reply echoed it.
 
-### Known limits (#516)
+### Capture integrity (#516, ADR-0007)
 
-The offline `analyse` validates each check's evidence separately. A capture built or edited by hand can still
-fool it into a full row. A live run cannot produce any of these captures:
+`analyse` (and the live summary, which reads the same file) reads a capture once into one timeline
+(`timeline.rs`, `Timeline::parse`) and every Part B check reads only that timeline. The fault model is ADR-0007's:
+Part B reads only captures that `hil_fec` writes, so forged, replayed or hand-edited bytes are outside this tool's
+input (ADR-0007 §1, §3), and so are desktop captures (`Capture::record` in the app driver); commit only the output
+of `redact`.
 
-- **B1:** a control write stamped at the silence guard's release µs is checked by neither window. File order
-  decides the tie.
-- **B2:** records out of time order. `parse_capture` does not sort them, so the 11a silence check reads the last
-  page 25 in file order.
-- **B3:** with a drop, an unplug answer after the closing release is not rejected.
-- **N1:** the 11a silence boundary is 1 µs looser than the live guard. The analyser accepts a release exactly
-  `SILENCE_US` after the last page 25; the live guard needs strictly more.
+- **File order is time order.** A live capture has one writer, which takes each line's stamp and appends the
+  line under one lock (`Capture::record_now` and `record_aux_now`: rx frames when the pump appends them, tx
+  writes, `# link`, cue, answer and `# cps` lines). Stamps must not go back in file order; a capture whose stamps
+  do is no result, `contradictory: records out of time order (line N)`, and no check runs on it. The Part A
+  captures predate this writer and are not in time order as committed (`check1.fecap`); read in stamp order they
+  are timelines (`timeline::tests::the_live_neo_captures_are_timelines`).
+- **Ties are ordered by the file.** Lines with the same µs happened in file order: a write after a release at its
+  µs is after the release, a frame after a drop stamp at its µs is after the drop. Windows bounded by events
+  (a cue, an answer, a release, a drop, a write) are positions on the timeline; only windows that start a
+  duration after an event (the 5 s left out after a cue, the 15 s before it) are measured in µs.
+- **No malformed line.** A line that is neither a record nor a comment (a frame or a `# tag <µs>` note whose fields
+  do not read) is `contradictory: line N is no record`: a record lost, never one to skip.
+- **Checks read typed events only.** The frames are private to `Timeline`; a check reads page-25 samples (`Sample`,
+  with FE state, status bits and their position), page-16 speeds, control writes, page-70 requests, page-71
+  command statuses, page-81 serials, Cycling Power measurements and the stamps, never raw records
+  (`timeline::tests::checks_read_typed_events_only`).
+- **Updates** (ADR-0007 §2, §4), the one freshness notion: a page 25 whose update event count (page byte 1) equals
+  the one before is a repeat of the trainer's last update (in the committed live captures always byte for byte).
+  Checks 5, 7 and 9's bins read power and cadence from updates only (`Timeline::updates`; ADR-0007 §4: "used by
+  checks 5, 7, 9 and 12"). Checks 6, 8, 11a/b/c and 12 read every page 25 as before: check 12's updates-only
+  reading comes with ADR-0007 §2's rule ([#616](https://github.com/gerchowl/crank/issues/616)), since the old
+  threshold read from updates alone can call a held ERG released. The live guards' readings — link alive, silence
+  evidence, check 9's descent — count every frame, as the live run does. Check 8 reads a page 16
+  whose elapsed time (page byte 2) is unchanged as a repeat and needs at least 3 fresh speeds in each SIM segment,
+  else it gives no result: "page 16 counters did not advance (no fresh speed samples)". Cycling Power measurements
+  are read as they come (`cps::parse` pairs crank events for cadence).
+- **Echoes, as before.** A page-71 status at or after a control write's stamp that names its page and bytes 4–7
+  (ANT+ FE-C Command Status page 71) is its echo. `release` and check 12's `page71_echoed_*` read echoes so; they
+  are informational.
+- **Exact control program for checks 6, 9 and 12** (ADR-0007 §4, `Step`, `follows`, `Timeline::program`): a
+  completed run's control writes must equal the procedure's, item by item, with the soft start as ERG 0 W and six
+  1 Hz writes on a line to its target (`CHECK6_W`, `MAX_ERG_W`, `CHECK12_W`); else `contradictory: control write N
+  (…) is not the procedure's`, and the check does not read it. A check 6 that breaks its program measures no
+  power lag (`PowerLag::NotMeasured`), so check 9 beside it is conditional on check 6, as without one. The other
+  checks find what their procedure wrote and give no result when it is missing: checks 10 and 11a/b/c keep the
+  order of the cue, the answer, the drop, the reconnect and the closing release, each found once and in order
+  (11a: one answer, after the cue and, with a drop, before the closing release; no trainer frame after the drop;
+  the drop before the closing release), and check 10 its 20 ms advert merge.
+- **Fail closed.** A derived result that misses part of the procedure gives no result rather than a result from
+  the rest: check 6 needs exactly the procedure's four ERG steps, check 5 exactly its held targets, check 10 a connect
+  answer whenever the phone listed the NEO; any check that cannot find what its procedure writes (its `error`)
+  gives no result. A malformed control write, or a capture without its closing release, is no result.
+- **One silence threshold.** The silence guard stops a run when strictly more than `SILENCE_US` (2 s) passed
+  without page 25 (`rider::silent`); `analyse` accepts a release before an 11a drop as the guard's only on that same
+  condition, from the last page 25 before it in the timeline.
+
+**Known limit: page 16 at standstill only.** Page 16's elapsed time (page byte 2, 0.25 s, rollover 64 s; ANT+ FE-C
+General FE Data) was only observed at standstill (0) on fw 0.7.4; freshness while riding is verified in the first
+Part B session. If the NEO leaves it at 0 while ridden, check 8 gives no result ("page 16 counters did not
+advance"), never a speed from repeated frames.
+
+**Known limit: plausible retiming.** A record retimed within what a live run could show (e.g. check 6's step writes
+moved 0.4 s later, past frames only and in time order, which shortens t90 and can change check 9's verdict) is a
+different capture that no rule can tell from a live one. The guarantee is the writer: a capture `hil_fec` wrote is
+the order and timing the run saw; hand-edited and desktop captures are out of scope (ADR-0007 §1).
 
 - **Check 12 and gear shifts (ADR-0007):** check 12 judges release from the ratio of power at 70 rpm to power at 90 rpm
   under `Free`, which does not depend on the gear only if the rider does not shift. A shift between the switch and the
   question that the rider does not report is not detected (no speed guard), so a releasing trainer reads FAIL only
   under such a shift. Stay in one gear from the switch until the question.
 
-Until gerchowl/crank#516 lands (one validated, time-ordered capture timeline that every check reads), results
-come only from **unedited live captures**. #516 blocks the live Part B session (#44).
+Check 12 still reads release as before ADR-0007 (the mean power below 80 rpm after `Free` against the ERG
+target) until #616 implements ADR-0007 §2; #616 blocks check 12 of the live Part B session (#44).
 
 ### Check 9: what counts as a stall
 
