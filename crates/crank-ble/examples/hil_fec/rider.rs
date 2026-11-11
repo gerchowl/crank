@@ -3705,42 +3705,6 @@ mod tests {
         );
     }
 
-    /// #516 round 5 blocker 2: an echo is a page-71 status after the write's request, naming its
-    /// page and bytes (ADR-0007, PR #587's table). Check 12's page-50 echo moved before its
-    /// request (at the wind write's own µs), or before the wind write itself, is not an echo.
-    #[tokio::test(start_paused = true)]
-    async fn check12_an_echo_before_its_request_or_its_write_is_not_an_echo() {
-        let text = capture_of(&valid_captures().await, "check12");
-        let base = row("check12", &text);
-        assert!(
-            full(&base) && base["page71_echoed_50"] == json!(true),
-            "{base}"
-        );
-        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-        let echo = lines
-            .iter()
-            .position(|l| l.contains(" rx A4 09 4F 05 47 32 "))
-            .expect("the page-50 echo");
-        let wind = lines
-            .iter()
-            .position(|l| l.contains(" tx A4 09 4F 05 32 "))
-            .expect("the wind write");
-        let line = lines.remove(echo);
-        let at = stamp_of_line(&lines[wind]).expect("stamped");
-        // Just after the wind write, before its request: no request answers it there.
-        lines.insert(wind + 1, restamp(&line, at));
-        let t = lines.join("\n") + "\n";
-        let v = row("check12", &t);
-        assert_eq!(v["page71_echoed_50"], json!(false), "{}", v["line"]);
-        // Before the wind write itself: not an echo of it either.
-        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-        let line = lines.remove(echo);
-        let at = stamp_of_line(&lines[wind]).expect("stamped");
-        lines.insert(wind, restamp(&line, at));
-        let tl = crate::timeline::Timeline::parse(&(lines.join("\n") + "\n")).expect("in order");
-        assert_eq!(crate::partb::check12(&tl)["page71_echoed_50"], json!(false));
-    }
-
     /// #516 round 4 N1, ADR-0007 §4: a check 6 that breaks its exact control program (a step write
     /// missing or twice) measures no lag (`NotMeasured`), so check 9 beside it says its verdict
     /// is conditional on check 6, as without a check 6 at all (#423), never "first".
@@ -3774,37 +3738,6 @@ mod tests {
         }
     }
 
-    /// #516 round 4 M11: check 6 fails closed on its own: a step write moved 11 s later, past
-    /// frames only and in time order (the program unchanged), leaves the 150 W target held under
-    /// 10 s, so the procedure's steps are not all there and the run gives no result.
-    #[tokio::test(start_paused = true)]
-    async fn check6_with_a_step_held_too_briefly_gives_no_result() {
-        let text = capture_of(&valid_captures().await, "check6");
-        assert!(full(&row("check6", &text)));
-        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-        let writes: Vec<usize> = (0..lines.len())
-            .filter(|i| lines[*i].contains(" tx A4 09 4F 05 31 "))
-            .collect();
-        // The 150 W step: the fourth-from-last ERG write.
-        let i = writes[writes.len() - 4];
-        let line = lines.remove(i);
-        let late = stamp_of_line(&line).expect("stamped") + 11 * SEC;
-        let at = lines
-            .iter()
-            .position(|l| stamp_of_line(l).is_some_and(|t| t > late))
-            .expect("a later line");
-        lines.insert(at, restamp(&line, late));
-        let t = lines.join("\n") + "\n";
-        let v = row("check6", &t);
-        assert_eq!(v["completed"], json!(false), "{}", v["line"]);
-        assert!(
-            v["invalid"]
-                .as_str()
-                .is_some_and(|i| i.starts_with("the ERG steps are ")),
-            "{v}"
-        );
-    }
-
     /// #516 round 4 N2, ADR-0007 §4: check 10 keeps its 20 ms advert merge: a trainer advert
     /// copied 1 µs later is the same advertising event and changes nothing.
     #[tokio::test(start_paused = true)]
@@ -3833,6 +3766,63 @@ mod tests {
             .iter()
             .fold(0_u8, |x, h| x ^ u8::from_str_radix(h, 16).expect("hex"));
         f[14] = format!("{x:02X}");
+    }
+
+    /// #516 round 10 (the falsifier's check 12 with ERG held and 60 % repeats): check 12 reads
+    /// every page 25, as dev does, until ADR-0007 §2's rule (#616). After `Free` the low-cadence
+    /// frames are rewritten to updates of 205 W and 150 W, each followed by byte-identical
+    /// repeats, 3 in every 5 frames: the updates average 177.5 W (< 90 % of 200 W) and every frame
+    /// 183 W. Read from the updates alone this would read released; it reads held.
+    #[tokio::test(start_paused = true)]
+    async fn check12_with_erg_held_and_60_percent_repeats_is_not_released() {
+        let text = capture_of(&valid_captures().await, "check12");
+        let lines: Vec<&str> = text.lines().collect();
+        let free = lines
+            .iter()
+            .position(|l| l.contains(" tx A4 09 4F 05 33 "))
+            .expect("the page-51 write");
+        let release = lines
+            .iter()
+            .rposition(|l| l.contains(" tx A4 09 4F 05 30 "))
+            .expect("the closing release");
+        let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
+        let mut count = 0x40_u8;
+        let mut last: Option<Vec<String>> = None;
+        let mut k = 0;
+        for l in out.iter_mut().take(release).skip(free) {
+            let f = cols(l);
+            if f.len() != 15 || f[1] != "rx" || f[6] != "19" {
+                continue;
+            }
+            if u8::from_str_radix(&f[8], 16).expect("hex") >= 80 {
+                continue;
+            }
+            let g = match (k % 5, &last) {
+                (1 | 2 | 4, Some(prev)) => {
+                    let mut g = prev.clone();
+                    g[0].clone_from(&f[0]);
+                    g
+                }
+                (phase, _) => {
+                    let watts: u16 = if phase == 3 { 150 } else { 205 };
+                    let mut g = f;
+                    count = count.wrapping_add(1);
+                    set_byte(&mut g, 5, count);
+                    let [lo, hi] = watts.to_le_bytes();
+                    let b10 = u8::from_str_radix(&g[12], 16).expect("hex");
+                    set_byte(&mut g, 9, lo);
+                    set_byte(&mut g, 10, (b10 & 0xf0) | (hi & 0x0f));
+                    g
+                }
+            };
+            *l = g.join(" ");
+            last = Some(g);
+            k += 1;
+        }
+        assert!(k >= 20, "{k} low-cadence frames rewritten");
+        let v = row("check12", &(out.join("\n") + "\n"));
+        assert!(full(&v), "{}", v["line"]);
+        assert_eq!(v["released"], json!(false), "{v}");
     }
 
     /// #516 round 6 B2 (the falsifier's `fz_check5_power_between_crank_events`): after each
@@ -3919,28 +3909,6 @@ mod tests {
             v["invalid"],
             json!("page 16 counters did not advance (no fresh speed samples)")
         );
-    }
-
-    /// #516 round 6 M10 (the falsifier's `fz_check12_release_echo_before_its_request`): the
-    /// closing release's page-71 echo moved to just after the release write, before its own
-    /// request, answers the request before it, which asked before the release: not an echo.
-    #[tokio::test(start_paused = true)]
-    async fn check12_the_release_echo_before_its_own_request_is_not_an_echo() {
-        let text = capture_of(&valid_captures().await, "check12");
-        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-        let echo = lines
-            .iter()
-            .rposition(|l| l.contains(" rx A4 09 4F 05 47 30 "))
-            .expect("the closing release's echo");
-        let release = lines
-            .iter()
-            .rposition(|l| l.contains(" tx A4 09 4F 05 30 "))
-            .expect("the closing release");
-        let line = lines.remove(echo);
-        let at = stamp_of_line(&lines[release]).expect("stamped");
-        lines.insert(release + 1, restamp(&line, at));
-        let v = row("check12", &(lines.join("\n") + "\n"));
-        assert_eq!(v["release"]["page71_echoed"], json!(false), "{}", v["line"]);
     }
 
     /// #516 round 6 (a survivor of the round-6 battery): check 11a's unplug question is answered

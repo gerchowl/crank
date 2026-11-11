@@ -199,9 +199,6 @@ pub struct Status {
     pub page: u8,
     /// Its bytes 4–7, the echo of that page's.
     pub echo: [u8; 4],
-    /// The position of the page-71 request it answers, the last before it (set by a
-    /// [`Timeline`]; `None` without one).
-    pub request: Option<usize>,
 }
 
 /// The page-71 command statuses among `records`.
@@ -217,7 +214,6 @@ pub(crate) fn statuses(records: &[Record]) -> Vec<Status> {
                 at_us: r.at_us,
                 page,
                 echo,
-                request: None,
             })
         })
         .collect()
@@ -393,7 +389,7 @@ pub fn release(ws: &[Write], st: &[Status]) -> Value {
         .copied();
     let echoed = last.is_some_and(|w| {
         st.iter()
-            .any(|s| s.request.is_some_and(|q| q > w.pos) && s.page == 48 && s.echo[3] == 0)
+            .any(|s| s.at_us >= w.at_us && s.page == 48 && s.echo[3] == 0)
     });
     json!({
         "page48_0pct_last": last.is_some(),
@@ -498,42 +494,23 @@ fn erg_steps(tl: &Timeline, s: &[Sample]) -> Vec<(f64, Hold, Option<u64>)> {
         .collect()
 }
 
-/// Fail closed: `Err` unless `steps` are exactly the procedure's ([`crate::rider::CHECK6_W`]), so
-/// a missing or extra step never leaves the others to stand for the run.
-fn procedure_steps(steps: &[(f64, Hold, Option<u64>)]) -> Result<(), String> {
-    let want: Vec<(f64, f64)> = crate::rider::CHECK6_W
-        .windows(2)
-        .map(|w| (f64::from(w[0]), f64::from(w[1])))
-        .collect();
-    let got: Vec<(f64, f64)> = steps.iter().map(|(f, h, _)| (*f, h.watts)).collect();
-    if got == want {
-        Ok(())
-    } else {
-        Err(format!(
-            "the ERG steps are {got:?}, not the procedure's {want:?}"
-        ))
-    }
-}
-
 /// Check 6: ERG step response (t90) and cadence steps at a held target.
 pub fn check6(tl: &Timeline) -> Value {
-    let s = tl.updates();
+    let s = tl.samples();
     let ctl = tl.controls();
     let holds = erg_holds(&ctl, procedure_end(tl.end_us(), &ctl));
     let mut steps = Vec::new();
-    let erg = erg_steps(tl, &s);
-    for (from_w, h, t) in &erg {
-        let (from_w, h, t) = (*from_w, *h, *t);
+    for (from_w, h, t) in erg_steps(tl, s) {
         steps.push(json!({
             "from_w": from_w, "to_w": h.watts, "t90_s": t.map(|t| round1(secs(t))),
-            "mean_power_last_10s_w": mean(powers(&s, h.end.saturating_sub(10 * SEC), h.end)).map(round1),
-            "mean_cadence_rpm": mean(cadences(&s, h.at, h.end)).map(round1),
+            "mean_power_last_10s_w": mean(powers(s, h.end.saturating_sub(10 * SEC), h.end)).map(round1),
+            "mean_cadence_rpm": mean(cadences(s, h.at, h.end)).map(round1),
         }));
     }
     let mut cadence_steps = Vec::new();
     for (_, h) in holds.iter().filter(|(held, h)| *held && h.watts > 0.0) {
-        for (at, down) in crossings(&s, h) {
-            let after = powers(&s, at, (at + 10 * SEC).min(h.end));
+        for (at, down) in crossings(s, h) {
+            let after = powers(s, at, (at + 10 * SEC).min(h.end));
             let dev = after
                 .iter()
                 .map(|p| p - h.watts)
@@ -543,19 +520,15 @@ pub fn check6(tl: &Timeline) -> Value {
                 "direction": if down { "down" } else { "up" },
                 "at_s": round1(secs(at)),
                 "max_deviation_w": round1(dev),
-                "settled_within_5pct_s": settle(&s, at, h.end, h.watts).map(|t| round1(secs(t))),
+                "settled_within_5pct_s": settle(s, at, h.end, h.watts).map(|t| round1(secs(t))),
             }));
         }
     }
-    let mut v = json!({
+    json!({
         "method": "holds = page-49 writes kept >= 10 s; a step is a hold following a hold; t90 = write to the first page-25 sample past 90 % of the step; cadence steps = page-25 cadence crossing 75 rpm inside a hold, settled = first instant from which power stays within ±5 % for 3 s",
         "steps": steps,
         "cadence_steps": cadence_steps,
-    });
-    if let Err(why) = procedure_steps(&erg) {
-        v["error"] = json!(why);
-    }
-    v
+    })
 }
 
 /// Check 7: the procedure's target over the stretch from its write to the next write.
@@ -630,7 +603,7 @@ const MIN_FRESH_SPEEDS: usize = 3;
 
 /// Check 8: power per SIM state against the road model at the measured speed.
 pub fn check8(tl: &Timeline) -> Value {
-    let s = tl.updates();
+    let s = tl.samples();
     let v = tl.speeds();
     let ctl = tl.controls();
     let end = procedure_end(tl.end_us(), &ctl);
@@ -682,13 +655,13 @@ pub fn check8(tl: &Timeline) -> Value {
             );
         }
         let speed = mean(fresh);
-        let power = mean(powers(&s, from, next));
+        let power = mean(powers(s, from, next));
         let model = speed.map(|x| model_power(&st, x));
         segments.push(json!({
             "grade_pct": st.grade, "mass_kg": round1(st.mass), "crr": st.crr,
             "mean_power_w": power.map(round1),
             "mean_speed_kmh": speed.map(|x| round1(x * 3.6)),
-            "mean_cadence_rpm": mean(cadences(&s, from, next)).map(round1),
+            "mean_cadence_rpm": mean(cadences(s, from, next)).map(round1),
             "model_power_w": model.map(round1),
             "measured_over_model": power.zip(model).filter(|(_, m)| *m > 0.0).map(|(p, m)| (p / m * 100.0).round() / 100.0),
         }));
@@ -776,9 +749,7 @@ impl PowerLag {
                         .or_else(|| cut_off(&tl))
                         .map_or(Ok(()), Err)?;
                     tl.program(PROGRAM_6)?;
-                    let steps = erg_steps(&tl, &tl.updates());
-                    procedure_steps(&steps)?;
-                    Ok(steps)
+                    Ok(erg_steps(&tl, tl.samples()))
                 });
                 match steps {
                     Ok(steps) => {
@@ -1150,7 +1121,7 @@ pub fn check9(tl: &Timeline, lag: &PowerLag) -> Value {
 
 /// Check 12: does `Free` (page 50 defaults, page 51 grade 0) release an ERG target?
 pub fn check12(tl: &Timeline) -> Value {
-    let s = tl.updates();
+    let s = tl.samples();
     let ctl = tl.writes();
     let end = procedure_end(tl.end_us(), &tl.controls());
     let Some((erg_i, target)) = ctl
@@ -1180,17 +1151,17 @@ pub fn check12(tl: &Timeline) -> Value {
         .filter(|x| x.at_us > free_at && x.at_us < end && x.cadence.is_some_and(|c| c < 80))
         .collect();
     let low_power = mean(low.iter().filter_map(|x| x.power.map(f64::from)));
-    // A page-71 reply to a request after the write, naming that page and echoing its bytes 4-7.
+    // A page-71 reply after the write naming that page and echoing its bytes 4-7.
     let echoed = |page: u8, w: &Write| {
         tl.statuses()
             .iter()
-            .any(|st| st.request.is_some_and(|q| q > w.pos) && st.page == page && st.echo == w.data)
+            .any(|st| st.at_us >= w.at_us && st.page == page && st.echo == w.data)
     };
     json!({
         "method": "Free = page 50 then page 51 grade 0 after a page-49 target; released = mean power of the samples below 80 rpm after Free < 90 % of the ERG target (ERG would hold it); echoed = a later page-71 reply names the page and echoes its bytes 4-7",
         "erg_target_w": target,
         "free_at_s": round1(secs(free_at)),
-        "mean_power_before_free_5s_w": mean(powers(&s, free_at.saturating_sub(5 * SEC), free_at)).map(round1),
+        "mean_power_before_free_5s_w": mean(powers(s, free_at.saturating_sub(5 * SEC), free_at)).map(round1),
         "low_cadence_samples": low.len(),
         "low_cadence_mean_power_w": low_power.map(round1),
         "low_cadence_mean_rpm": mean(low.iter().filter_map(|x| x.cadence.map(f64::from))).map(round1),

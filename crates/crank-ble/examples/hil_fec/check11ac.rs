@@ -71,10 +71,11 @@ const MIN_SAMPLES: usize = 10;
 const CADENCE_TOL: f64 = 10.0;
 const HONOURED: f64 = 0.8;
 
-/// The page-25 updates at frame indices `from..to` (none when `from` is past `to`).
+/// The page-25 samples at frame indices `from..to` (none when `from` is past `to`).
 fn span(tl: &Timeline, from: usize, to: usize) -> Vec<Sample> {
-    tl.updates()
-        .into_iter()
+    tl.samples()
+        .iter()
+        .copied()
         .filter(|s| s.pos >= from && s.pos < to)
         .collect()
 }

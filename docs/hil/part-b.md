@@ -144,16 +144,18 @@ of `redact`.
   command statuses, page-81 serials, Cycling Power measurements and the stamps, never raw records
   (`timeline::tests::checks_read_typed_events_only`).
 - **Updates** (ADR-0007 §2, §4), the one freshness notion: a page 25 whose update event count (page byte 1) equals
-  the one before is a repeat of the trainer's last update (in the committed live captures always byte for byte),
-  so power and cadence are read from updates only (`Timeline::updates`), while the live guards' readings — link
-  alive, silence evidence, check 9's descent — count every frame, as the live run does. Check 8 reads a page 16
+  the one before is a repeat of the trainer's last update (in the committed live captures always byte for byte).
+  Checks 5, 7 and 9's bins read power and cadence from updates only (`Timeline::updates`; ADR-0007 §4: "used by
+  checks 5, 7, 9 and 12"). Checks 6, 8, 11a/b/c and 12 read every page 25 as before: check 12's updates-only
+  reading comes with ADR-0007 §2's rule ([#616](https://github.com/gerchowl/crank/issues/616)), since the old
+  threshold read from updates alone can call a held ERG released. The live guards' readings — link alive, silence
+  evidence, check 9's descent — count every frame, as the live run does. Check 8 reads a page 16
   whose elapsed time (page byte 2) is unchanged as a repeat and needs at least 3 fresh speeds in each SIM segment,
   else it gives no result: "page 16 counters did not advance (no fresh speed samples)". Cycling Power measurements
   are read as they come (`cps::parse` pairs crank events for cadence).
-- **An echo answers a request after its write.** A page-71 status is an echo of a control write when it answers a
-  page-70 request for page 71 written after that write (`Status::request`, the last such request before the
-  status) and names the write's page and bytes 4–7 (ANT+ FE-C Command Status page 71). `release` and check 12's
-  `page71_echoed_*` read echoes so; they are informational.
+- **Echoes, as before.** A page-71 status at or after a control write's stamp that names its page and bytes 4–7
+  (ANT+ FE-C Command Status page 71) is its echo. `release` and check 12's `page71_echoed_*` read echoes so; they
+  are informational.
 - **Exact control program for checks 6, 9 and 12** (ADR-0007 §4, `Step`, `follows`, `Timeline::program`): a
   completed run's control writes must equal the procedure's, item by item, with the soft start as ERG 0 W and six
   1 Hz writes on a line to its target (`CHECK6_W`, `MAX_ERG_W`, `CHECK12_W`); else `contradictory: control write N

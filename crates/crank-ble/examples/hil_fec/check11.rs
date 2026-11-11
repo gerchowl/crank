@@ -274,7 +274,7 @@ fn after(tl: &Timeline, first: usize) -> Value {
     // Settled: from 5 s after the last ramp write to the final release.
     let held = erg.and_then(|at| {
         mean(
-            tl.updates()
+            tl.samples()
                 .iter()
                 .filter(|s| s.at_us >= at + 5_000_000 && s.at_us < end)
                 .filter_map(|s| s.power.map(f64::from)),
