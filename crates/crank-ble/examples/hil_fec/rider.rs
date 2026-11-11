@@ -3986,7 +3986,7 @@ mod tests {
             seed ^= seed << 17;
             usize::try_from(seed % u64::try_from(n.max(1)).expect("small")).expect("small")
         };
-        let mut seen = std::collections::BTreeMap::<String, usize>::new();
+        let mut outcomes = std::collections::BTreeMap::<String, usize>::new();
         let mut bad = Vec::new();
         for gear in [0.03, 0.06, 0.09, 0.14, 0.2] {
             for held in [false, true] {
@@ -4017,13 +4017,13 @@ mod tests {
                     if released == Some(held) || !agrees {
                         bad.push(format!("{gear} held {held} k={k} {ops:?}: {}", v["line"]));
                     }
-                    *seen
+                    *outcomes
                         .entry(format!("held {held}: {released:?}"))
                         .or_default() += 1;
                 }
             }
         }
-        println!("check 12 generator: {seen:?}");
+        println!("check 12 generator: {outcomes:?}");
         assert!(
             bad.is_empty(),
             "{} breaches:\n{}",
@@ -4036,7 +4036,10 @@ mod tests {
             "held false: None",
             "held true: None",
         ] {
-            assert!(seen.get(kind).is_some_and(|n| *n >= 50), "{kind}: {seen:?}");
+            assert!(
+                outcomes.get(kind).is_some_and(|n| *n >= 50),
+                "{kind}: {outcomes:?}"
+            );
         }
     }
 
