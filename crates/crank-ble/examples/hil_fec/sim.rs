@@ -4,7 +4,7 @@
 //! a page-71 reply 100 ms after a page-70 request echoing the last control page. Power
 //! follows the applied control with a first-order lag (0.8 s by default): ERG holds the
 //! target down to 35 rpm and collapses below it, page 48 and SIM follow cadence (SIM through the road model, at the rider's
-//! speed per rpm, [`Plan::speed_per_rpm`]). The
+//! speed per rpm, [`Road::speed_per_rpm`]). The
 //! rider moves cadence towards the last cue at 30 rpm/s; after `Descend` towards [`Pattern`].
 //! A scan beside the connection (check 10) reports the trainer and another peripheral in turn.
 use crate::{
@@ -74,15 +74,30 @@ pub struct Plan {
     pub answer_at_us: u64,
     /// The connect question's answer comes this much later than `answer_at_us`.
     pub connect_answer_after_us: u32,
-    /// The rider's gear: road speed per rpm, m/s (ADR-0007 §3 `gear(g)`: 0.03 to 0.2, 10 to
-    /// 65 km/h at 90 rpm). The road model follows it; ERG and page 48 ignore it.
+    /// The rider's gear and how the trainer takes `Free` (by reference, so `Plan` stays small).
+    pub road: &'static Road,
+}
+
+/// The rider's gear and how the trainer takes `Free` (check 12, ADR-0007 §3).
+#[derive(Clone, Copy, Debug)]
+pub struct Road {
+    /// Road speed per rpm, m/s (`gear(g)`: 0.03 to 0.2, 10 to 65 km/h at 90 rpm). The road model
+    /// follows it; ERG and page 48 ignore it.
     pub speed_per_rpm: f64,
     /// At the cue to this cadence the rider shifts to this speed per rpm (a gear shift).
     pub shift_at_cue: Option<(u8, f64)>,
     /// The trainer ignores pages 50 and 51 and keeps what was applied before them: check 12's
-    /// non-releasing trainer (ADR-0007 §3).
+    /// non-releasing trainer.
     pub ignores_free: bool,
 }
+
+/// The default [`Road`]: 0.09 m/s per rpm (29 km/h at 90 rpm), no shift, a trainer that
+/// takes `Free`.
+pub const ROAD: Road = Road {
+    speed_per_rpm: 0.09,
+    shift_at_cue: None,
+    ignores_free: false,
+};
 
 /// Check 11b's scripted dropout ([`Sim::with_dropout`]): unplugged, the trainer powers off once
 /// the rider has stopped and boots when pedalling resumes.
@@ -179,9 +194,7 @@ impl Default for Plan {
             answers: &["seen", "stuck"],
             answer_at_us: 20_000_000,
             connect_answer_after_us: 0,
-            speed_per_rpm: 0.09,
-            shift_at_cue: None,
-            ignores_free: false,
+            road: &ROAD,
         }
     }
 }
@@ -245,7 +258,7 @@ struct State {
     mass: f64,
     power: f64,
     cadence: f64,
-    /// Speed per rpm, m/s: [`Plan::speed_per_rpm`] until a shift.
+    /// Speed per rpm, m/s: [`Road::speed_per_rpm`] until a shift.
     gear: f64,
     goal: f64,
     descend_from: Option<u64>,
@@ -335,7 +348,7 @@ impl Sim {
                 mass: 85.0,
                 power: plan.warm_w,
                 cadence: if plan.warm_w > 0.0 { 90.0 } else { 0.0 },
-                gear: plan.speed_per_rpm,
+                gear: plan.road.speed_per_rpm,
                 goal: if plan.warm_w > 0.0 { 90.0 } else { 0.0 },
                 descend_from: None,
                 accumulated: 0,
@@ -707,7 +720,7 @@ impl Sim {
             Ok(Page::BasicResistance { pct }) => {
                 s.applied = Applied::Resistance(pct.map_or(0.0, f64::from));
             }
-            Ok(Page::Track { .. } | Page::Wind { .. }) if self.plan.ignores_free => {}
+            Ok(Page::Track { .. } | Page::Wind { .. }) if self.plan.road.ignores_free => {}
             Ok(Page::Track { grade_pct, .. }) => {
                 s.applied = Applied::Sim;
                 s.grade = grade_pct.map_or(0.0, f64::from);
@@ -746,7 +759,7 @@ impl Operator for Sim {
             Cue::Start | Cue::Steady | Cue::ColdStart => s.goal = s.goal.max(90.0),
             Cue::Cadence(rpm) => {
                 (s.goal, s.descend_from) = (f64::from(rpm), None);
-                if let Some((_, g)) = self.plan.shift_at_cue.filter(|(at, _)| *at == rpm) {
+                if let Some((_, g)) = self.plan.road.shift_at_cue.filter(|(at, _)| *at == rpm) {
                     s.gear = g;
                 }
             }
