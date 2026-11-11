@@ -1142,7 +1142,50 @@ const BAND70: std::ops::RangeInclusive<u8> = 65..=75;
 fn median(mut v: Vec<f64>) -> Option<f64> {
     v.sort_by(f64::total_cmp);
     let n = v.len();
-    (n > 0).then(|| (v[(n - 1) / 2] + v[n / 2]) / 2.0)
+    (n > 0).then(|| f64::midpoint(v[(n - 1) / 2], v[n / 2]))
+}
+
+/// Check 12's one answer, after the cue (the note at index `cue_seq`): its note and its text.
+fn answer12(tl: &Timeline, cue_seq: usize) -> Result<(crate::frames::Note, String), String> {
+    let tag = crate::check10::answer_tag(EASIER.key);
+    // The answer notes, with their index among the notes (file order).
+    let answers: Vec<(usize, &crate::frames::Note)> = tl
+        .notes()
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.tag == tag)
+        .collect();
+    let [(seq, answer)] = answers[..] else {
+        return Err(format!(
+            "{} answers to the check 12 question, not one",
+            answers.len()
+        ));
+    };
+    let said = String::from_utf8_lossy(&answer.bytes).into_owned();
+    if seq < cue_seq || !EASIER.options.contains(&said.as_str()) {
+        return Err(format!(
+            "the answer {said:?} is not one to the check 12 question after its cue"
+        ));
+    }
+    Ok((answer.clone(), said))
+}
+
+/// Why check 12 gives no result (ADR-0007 §2's verdict, in order), `None` for PASS or FAIL;
+/// `updates` is the smaller window's count.
+fn verdict12(erg: Option<f64>, updates: usize, r: Option<f64>, said: &str) -> Option<&'static str> {
+    if !erg.is_some_and(|e| (180.0..=220.0).contains(&e)) {
+        Some("ERG did not hold 180-220 W before Free, so no release can be seen")
+    } else if updates < MIN_UPDATES12 {
+        Some("fewer than 15 updates in the 90 or the 70 rpm window")
+    } else if said == "s" {
+        Some("the rider shifted gear")
+    } else if (r.is_some_and(|r| r <= 0.85) && said == "y")
+        || (r.is_some_and(|r| r >= 0.95) && said == "n")
+    {
+        None
+    } else {
+        Some("power and rider disagree, or r is between 0.85 and 0.95")
+    }
 }
 
 /// Check 12 (ADR-0007 §2): does `Free` (page 50 defaults, page 51 grade 0) release an ERG target?
@@ -1179,21 +1222,10 @@ pub fn check12(tl: &Timeline) -> Value {
     let Some(cue) = cue.filter(|c| c.before > track.pos) else {
         return json!({"error": "no 70 rpm cue stamp after page 51"});
     };
-    let tag = crate::check10::answer_tag(EASIER.key);
-    // The answer notes, with their index among the notes (file order).
-    let answers: Vec<(usize, &crate::frames::Note)> = tl
-        .notes()
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| n.tag == tag)
-        .collect();
-    let [(seq, answer)] = answers[..] else {
-        return json!({"error": format!("{} answers to the check 12 question, not one", answers.len())});
+    let (answer, said) = match answer12(tl, cue.seq) {
+        Ok(a) => a,
+        Err(why) => return json!({ "error": why }),
     };
-    let said = String::from_utf8_lossy(&answer.bytes).into_owned();
-    if seq < cue.seq || !EASIER.options.contains(&said.as_str()) {
-        return json!({"error": format!("the answer {said:?} is not one to the check 12 question after its cue")});
-    }
     let ups = tl.updates();
     let power = |from: usize, to: usize, band: Option<&std::ops::RangeInclusive<u8>>| {
         let p: Vec<f64> = ups
@@ -1222,19 +1254,7 @@ pub fn check12(tl: &Timeline) -> Value {
         )
     });
     let r = free70.zip(free90).map(|(a, b)| a / b);
-    let no_result = if !erg.is_some_and(|e| (180.0..=220.0).contains(&e)) {
-        Some("ERG did not hold 180-220 W before Free, so no release can be seen")
-    } else if n90 < MIN_UPDATES12 || n70 < MIN_UPDATES12 {
-        Some("fewer than 15 updates in the 90 or the 70 rpm window")
-    } else if said == "s" {
-        Some("the rider shifted gear")
-    } else if (r.is_some_and(|r| r <= 0.85) && said == "y")
-        || (r.is_some_and(|r| r >= 0.95) && said == "n")
-    {
-        None
-    } else {
-        Some("power and rider disagree, or r is between 0.85 and 0.95")
-    };
+    let no_result = verdict12(erg, n90.min(n70), r, &said);
     let released = if no_result.is_some() {
         Value::Null
     } else {
@@ -1527,30 +1547,33 @@ fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'static
             ),
             "§7.4",
         ),
-        _ => {
-            let read = format!(
-                "r = {} (Free {} W at 90 rpm over {} updates, {} W at 70 rpm over {}; ERG {} W), rider: {}; page 71 echoed 50/51: {}/{}",
-                num(&v["r"]),
-                num(&v["free90_w"]),
-                num(&v["free90_updates"]),
-                num(&v["free70_w"]),
-                num(&v["free70_updates"]),
-                num(&v["erg_w"]),
-                v["answer"].as_str().unwrap_or("?"),
-                v["page71_echoed_50"],
-                v["page71_echoed_51"]
-            );
-            let result = match v["released"].as_bool() {
-                Some(true) => format!("PASS, released: {read}"),
-                Some(false) => format!("FAIL, not released: {read}"),
-                None => format!(
-                    "no result: {}; {read}",
-                    v["no_result"].as_str().unwrap_or("?")
-                ),
-            };
-            ("12", "ERG 200 W → Free", result, "§7.9")
-        }
+        _ => cells12(v),
     }
+}
+
+/// Check 12's row cells: PASS, FAIL or no result with why, and r and the answer either way.
+fn cells12(v: &Value) -> (&'static str, &'static str, String, &'static str) {
+    let read = format!(
+        "r = {} (Free {} W at 90 rpm over {} updates, {} W at 70 rpm over {}; ERG {} W), rider: {}; page 71 echoed 50/51: {}/{}",
+        num(&v["r"]),
+        num(&v["free90_w"]),
+        num(&v["free90_updates"]),
+        num(&v["free70_w"]),
+        num(&v["free70_updates"]),
+        num(&v["erg_w"]),
+        v["answer"].as_str().unwrap_or("?"),
+        v["page71_echoed_50"],
+        v["page71_echoed_51"]
+    );
+    let result = match v["released"].as_bool() {
+        Some(true) => format!("PASS, released: {read}"),
+        Some(false) => format!("FAIL, not released: {read}"),
+        None => format!(
+            "no result: {}; {read}",
+            v["no_result"].as_str().unwrap_or("?")
+        ),
+    };
+    ("12", "ERG 200 W → Free", result, "§7.9")
 }
 
 #[cfg(test)]
