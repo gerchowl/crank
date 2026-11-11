@@ -71,13 +71,6 @@ impl Timeline {
         tl.writes = writes(&tl.records);
         tl.requests = requests(&tl.records);
         tl.statuses = statuses(&tl.records);
-        for st in &mut tl.statuses {
-            st.request = tl
-                .requests
-                .iter()
-                .rfind(|q| q.page == 71 && q.pos < st.pos)
-                .map(|q| q.pos);
-        }
         // Page 16 with the elapsed time (page byte 2) of the page 16 before it repeats it.
         let mut last = None;
         for s in page16 {
@@ -278,8 +271,9 @@ fn follows(ws: &[Write], program: &[Step]) -> Result<(), usize> {
             (Step::Wind, Some(Control::Wind(cw, v, d))) => {
                 near(cw, 0.51) && v == 0.0 && near(d, 1.0)
             }
+            // Crr to half its page-51 resolution (5·10⁻⁵): 0.004 is 80 of its units.
             (Step::Track(g), Some(Control::Track(grade, crr))) => {
-                near(grade, f64::from(g)) && near(crr, 0.004)
+                near(grade, f64::from(g)) && (crr - 0.004).abs() < 2.5e-5
             }
             _ => false,
         };
@@ -391,6 +385,52 @@ mod tests {
         );
     }
 
+    /// Each step is matched on its values, not only its page (ADR-0007 §4): the ERG wattage, the
+    /// page-51 grade and Crr (check 12's `Track(0)`), page 50's fields and page 48's percentage.
+    #[test]
+    fn each_step_fits_only_its_own_values() {
+        let ws = |c: &[Control]| {
+            c.iter()
+                .enumerate()
+                .map(|(pos, control)| Write {
+                    data: [0; 4],
+                    pos,
+                    at_us: u64::try_from(pos).expect("small"),
+                    control: *control,
+                })
+                .collect::<Vec<_>>()
+        };
+        let program = [
+            Step::Release,
+            Step::Erg(150),
+            Step::Wind,
+            Step::Track(0),
+            Step::Release,
+        ];
+        let good = [
+            Control::Resistance(0.0),
+            Control::Erg(150.0),
+            Control::Wind(0.51, 0.0, 1.0),
+            Control::Track(0.0, 0.004),
+            Control::Resistance(0.0),
+        ];
+        assert_eq!(follows(&ws(&good), &program), Ok(()));
+        for (i, bad) in [
+            (0, Control::Resistance(5.0)),
+            (1, Control::Erg(200.0)),
+            (2, Control::Wind(0.6, 0.0, 1.0)),
+            (2, Control::Wind(0.51, 3.0, 1.0)),
+            (2, Control::Wind(0.51, 0.0, 0.5)),
+            (3, Control::Track(2.0, 0.004)),
+            (3, Control::Track(0.0, 0.005)),
+            (4, Control::Resistance(100.0)),
+        ] {
+            let mut c = good;
+            c[i] = bad;
+            assert_eq!(follows(&ws(&c), &program), Err(i), "{bad:?}");
+        }
+    }
+
     /// #516 round 4 N3: a line that is neither a record nor a comment is a lost record, so the
     /// capture is contradictory; comments (header, outcome, finished, redact header) are not.
     #[test]
@@ -473,8 +513,9 @@ mod tests {
 
     /// Every committed live capture of the real NEO, read in stamp order, is a timeline in which
     /// the NEO repeats updates (a held count, ADR-0007 §1). Part A's captures predate the one
-    /// stamping writer (#516), and ADR-0007 §3 says they show reordering: check 1's file is not
-    /// in time order as committed, so it is no timeline as it is; check 4's is.
+    /// stamping writer (#516), and ADR-0007 §3 says they show reordering: `check1.fecap`,
+    /// `latency.fecap` and `spacing.fecap` each have one stamp going back, so as committed none
+    /// is a timeline; `check4.fecap` is.
     #[test]
     fn the_live_neo_captures_are_timelines() {
         for (name, text) in [
@@ -522,11 +563,25 @@ mod tests {
         }
         Timeline::parse(include_str!("../../../../docs/hil/captures/check4.fecap"))
             .expect("check 4");
-        assert!(
-            Timeline::parse(include_str!("../../../../docs/hil/captures/check1.fecap"))
-                .is_err_and(|e| e.contains("records out of time order")),
-            "check 1 as committed is out of time order"
-        );
+        for (name, text) in [
+            (
+                "check1",
+                include_str!("../../../../docs/hil/captures/check1.fecap"),
+            ),
+            (
+                "latency",
+                include_str!("../../../../docs/hil/captures/latency.fecap"),
+            ),
+            (
+                "spacing",
+                include_str!("../../../../docs/hil/captures/spacing.fecap"),
+            ),
+        ] {
+            assert!(
+                Timeline::parse(text).is_err_and(|e| e.contains("records out of time order")),
+                "{name} as committed is out of time order"
+            );
+        }
     }
 
     /// A trainer frame line at `at` µs: `A4 09 4E 05` and the 8 page bytes, its checksum fixed.
@@ -570,44 +625,5 @@ mod tests {
         let cps = |at: u64| format!("# cps {at} 20 00 96 00 0A 00 E8 03\n");
         let tl = Timeline::parse(&[cps(0), cps(300), cps(600)].concat()).expect("a timeline");
         assert_eq!(tl.cps().len(), 3);
-    }
-
-    /// An echo is a page-71 status after the write's request, naming its page and bytes
-    /// (ADR-0007, PR #587's table): `release` counts only a status whose page-71 request came
-    /// after the closing release, so the opening release's echo is none.
-    #[test]
-    fn an_echo_answers_a_request_after_its_write() {
-        use crate::partb::{Control, Write, release};
-        use serde_json::json;
-        let w = |pos: usize, control: Control, d: u8| Write {
-            pos,
-            at_us: 0,
-            control,
-            data: [0xff, 0xff, 0xff, d],
-        };
-        let st = |pos: usize, request: Option<usize>| Status {
-            pos,
-            at_us: 0,
-            page: 48,
-            echo: [0xff, 0xff, 0xff, 0],
-            request,
-        };
-        let ws = [
-            w(0, Control::Resistance(0.0), 0),
-            w(3, Control::Erg(150.0), 0x10),
-            w(6, Control::Resistance(0.0), 0),
-        ];
-        // Answering a request before the closing release (the opening one's echo): not echoed.
-        for (status, echoed) in [
-            (st(2, Some(1)), false),
-            (st(8, Some(7)), true),
-            (st(8, None), false),
-        ] {
-            assert_eq!(
-                release(&ws, &[status])["page71_echoed"],
-                json!(echoed),
-                "{status:?}"
-            );
-        }
     }
 }
