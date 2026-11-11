@@ -285,22 +285,25 @@
   line-height: 1.2;
 }
 
-/* Metric column (§18.2 budget at 1024: countdown 184 + power 88 + band 14 + heart rate 88 + cadence 88 = 462 px); the
-   rows share the main row in that proportion, so they breathe at 1440 and never depend on their content. */
+/* Metric column (§18.2 budget at 1024: countdown 184 + power 88 + heart rate 88 + cadence 88, three 1 px dividers
+   and the panel's 2 px border = 453 px; the power band's 12 px returns with its content, #97). One grid for every slot
+   (§18.3 "Metric grid", #581): `--space-1` above the label, `--space-1` from the label to the value, the value, then
+   the slot's own lines (the countdown's "next"). Every line has a fixed height, so a slot's content height never depends on a value; the
+   rows are `auto` and the column stretches them by equal shares, so the room above the minimum goes below each slot's
+   last line and the gap from it to the next slot's label is the same in every slot. */
 .ride-metrics {
   display: grid;
-  grid-template-rows:
-    minmax(0, 184fr) minmax(0, 102fr) minmax(0, 88fr)
-    minmax(0, 88fr);
+  grid-template-rows: repeat(4, auto);
+  align-content: stretch;
 }
 .readout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: auto auto;
-  align-content: space-between;
+  grid-auto-rows: auto;
+  align-content: start;
   column-gap: var(--space-2);
   min-height: 0;
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-1) var(--space-3) 0;
   border-bottom: 1px solid var(--line);
 }
 .readout:last-child {
@@ -333,16 +336,25 @@
   text-align: right;
   white-space: nowrap;
 }
+/* The label-to-value gap, the same in every slot (the countdown's T1 too). */
+.readout-value,
+.hero-t1 {
+  margin-top: var(--space-1);
+}
 .readout-value {
   grid-column: 1 / -1;
+  height: var(--tier-t2);
   display: flex;
   align-items: baseline;
-  gap: var(--space-1);
+  gap: var(--space-2);
   white-space: nowrap;
 }
+/* Every T2 value is right-aligned in one slot width (`T2_CH`, Ride.tsx), so the units of all slots start in one column
+   and sit on the value's baseline. */
 .readout-value [data-tier="t2"] {
   font-size: var(--tier-t2);
   line-height: 1;
+  text-align: right;
 }
 .tile-unit {
   font-size: var(--text-l);
@@ -352,17 +364,13 @@
   font-size: var(--text-xs);
   color: var(--ink-2);
 }
-.readout-band {
-  grid-column: 1 / -1;
-  height: var(--space-3);
-}
 .hero {
   background: var(--panel-2);
   border-radius: var(--radius-l) var(--radius-l) 0 0;
-  grid-template-rows: auto auto auto;
 }
 .hero-t1 {
   grid-column: 1 / -1;
+  height: var(--tier-t1);
   font-size: var(--tier-t1);
   font-weight: 700;
   line-height: 1;
@@ -390,9 +398,11 @@
 }
 
 /* Block timeline (§18.3) */
+/* The strip's labels sit `--space-1` under the bar (§18.3 "Strip labels"), as the head sits above it. */
 .ride-timeline {
   display: grid;
   grid-template-rows: 16px minmax(0, 1fr) 16px;
+  row-gap: var(--space-1);
   padding: var(--space-3) var(--space-4);
   margin: 0 var(--space-5);
 }
@@ -432,6 +442,14 @@
   line-height: 1.33;
   color: var(--ink-2);
   white-space: nowrap;
+}
+/* A block too short for its watts (§18.3 "Strip labels"): a 2 px mark at its start instead of text, never wider than
+   the block (the label's box is the block's width). */
+.timeline-leader {
+  display: block;
+  width: min(2px, 100%);
+  height: var(--space-2);
+  background: var(--ink-2);
 }
 
 /* Key row (§18.3, §18.4): 32 px controls, each with its key. */

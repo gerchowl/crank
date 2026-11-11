@@ -173,6 +173,20 @@ const ride =
   };
 const active = { phase: "active", blockIdx: 1, sessionS: 200 } as const;
 
+/**
+ * An hour with blocks of every label width (DESIGN §18.3 "Strip labels"): a 30 s block too short even for its watts
+ * (a leader), a 2-minute one that sheds its name at 1024, and long ones that show both.
+ */
+const SHORT_BLOCKS = [
+  block(0, 600, 100, 180, "warmup"),
+  block(600, 30, 400, 400, "work"),
+  block(630, 270, 120, 120, "recovery"),
+  block(900, 120, 300, 300, "work"),
+  block(1020, 180, 120, 120, "recovery"),
+  block(1200, 1800, 250, 250, "work"),
+  block(3000, 600, 120, 100, "cooldown"),
+];
+
 /** Sweet spot 3x12 as the core compiles it: a warm-up ramp, three 12-minute sets at 90 % with 2 minutes easy, a cool-down. */
 const SWEET_SPOT = compiled({
   blocks: [
@@ -514,6 +528,13 @@ const SETUPS: Record<ScenarioName, () => void> = {
     rampStep: 2,
   }),
   "ride-work-step": ride(active),
+  "ride-short-block": ride({
+    phase: "active",
+    blockIdx: 0,
+    sessionS: 200,
+    blocks: SHORT_BLOCKS,
+    workoutName: "Hour with a sprint",
+  }),
   "ride-paused": ride(
     { ...active, userPause: true },
     { ...RIDING, power: 0, cadence: 0 },
