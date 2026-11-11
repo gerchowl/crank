@@ -2162,10 +2162,11 @@ input rules say otherwise.
 
 ## 19. Amendment (#585): the eased ERG target
 
-The engine eases every ERG target change into an S-curve (ADR-0002 §7.10): the **commanded** target, what the trainer
-is told, moves towards the **controlled** target, what the plan says after ± and the coach, at the rider's rise rate,
-falls at twice that by default, and eases in and out over 2 s. The soft start is the same curve started from the
-rider's current power. This section says what the rider sees of it. It amends §5.2, §5.9, §6.5, §17.3 and §18.3,
+The engine eases every jump of the ERG target into an S-curve (ADR-0002 §7.10): the **commanded** target, what the
+trainer is told, moves towards the **plan line**, what the plan says after ± and the coach, at the rider's rise rate,
+falls at twice that by default, and eases in and out over 2 s. A ramp within those rates is followed exactly, on the
+line. The soft start is the same curve started from the rider's current power. "Caught up" below means the command is
+on the plan line. This section says what the rider sees of it. It amends §5.2, §5.9, §6.5, §17.3 and §18.3,
 which point here.
 
 ### 19.1 The power readout
@@ -2188,15 +2189,22 @@ One target line, the one the trainer is asked to hold:
   The app computes it with a port of the limiter (`app/src/ride/ease.ts`, #623) pinned tick for tick to the engine's
   golden vectors (#620); the parity check fails if either side changes alone (the #357 rule: the UI is never looser
   than the engine).
-- **The ±5 % band** is drawn around that line. The plan's raw step is not drawn as a second line: the strip shows the
-  plan's blocks (§19.3).
+- **The ±5 % band** is drawn around that drawn line, the commanded target. That is consistent with §5.2 and with
+  compliance: compliance counts a second only while the command is on the plan line (ADR-0002 §7.10.5), where the
+  commanded target and the controlled target agree within 0.5 W, so wherever compliance counts the band is the
+  compliance band; off the line the band is hidden from judgement (Δ hidden, "settling", §5.2) and only shows the
+  ease. The plan's raw step is not drawn as a second line: the strip shows the plan's blocks (§19.3).
+- **Ramps** draw on the plan line (the command follows a ramp within the rider's rates exactly). A ramp steeper than
+  the rider's rate draws the command behind it, as it will be ridden.
 
 ### 19.3 The strip (block timeline) and the road
 
 Unchanged: blocks by height, the plan's targets, done dimmed. In direction A the road of §5.2 is this strip (§18.3).
 An ease is a few seconds of an hour-wide strip (6 s is under 2 px at 1024 px), and the strip answers "what is the
-plan", not "what is the trainer doing now". Short blocks are eased within a quarter of their length (ADR-0002
-§7.10.4), so a 30 s rep still draws, and rides, as a rep.
+plan", not "what is the trainer doing now". **Short blocks** keep their planned height on the strip even when the
+rider's rates cannot reach it (ADR-0002 §7.10.4: the rates are limits, a 30/30 at 100 ↔ 400 W rides a mean of 317 W per
+rep at the defaults); the power trace shows the hump the command really makes, ahead of "now" as the limiter's
+prediction and behind it as ridden. Whether the editor warns about such blocks is an owner question (PR #625, #627).
 
 ### 19.4 Banners and states
 
