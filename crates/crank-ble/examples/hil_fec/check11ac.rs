@@ -11,10 +11,10 @@
 use crate::{
     check10::{Question, answer, answer_tag},
     check11::{DETECTED, LINK, READY, SEEN, TARGET_W},
-    frames::{Note, Record, command_status, page_of, stamp, stamps},
-    partb::{Control, SEC, controls, mean, released_at, round1, secs, share_within},
+    frames::{Note, Stamp, stamp_of, stamps},
+    partb::{Control, SEC, Sample, Write, mean, round1, secs, share_within},
+    timeline::Timeline,
 };
-use crank_fec::{Page, TrainerData, decode};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -71,172 +71,175 @@ const MIN_SAMPLES: usize = 10;
 const CADENCE_TOL: f64 = 10.0;
 const HONOURED: f64 = 0.8;
 
-/// Page 25 in `from..to`.
-fn trainer(records: &[Record], from: u64, to: u64) -> Vec<TrainerData> {
-    records
+/// The page-25 samples at frame indices `from..to` (none when `from` is past `to`).
+fn span(tl: &Timeline, from: usize, to: usize) -> Vec<Sample> {
+    tl.samples()
         .iter()
-        .filter(|r| r.rx && r.at_us >= from && r.at_us < to)
-        .filter_map(|r| match decode(&r.bytes).ok()?.page {
-            Page::Trainer(t) => Some(t),
-            _ => None,
-        })
+        .copied()
+        .filter(|s| s.pos >= from && s.pos < to)
         .collect()
 }
 
-/// What page 25 reported in `from..to`: the FE states, target-limit codes and status bits seen,
+/// What page 25 reported in `samples`: the FE states, target-limit codes and status bits seen,
 /// and the power and cadence against `target`.
-fn window(records: &[Record], from: u64, to: u64) -> Value {
-    let t = trainer(records, from, to);
-    let codes = |f: fn(&TrainerData) -> u8| {
-        let mut v: Vec<u8> = t.iter().map(f).collect();
+fn window(samples: &[Sample]) -> Value {
+    let codes = |f: fn(&Sample) -> u8| {
+        let mut v: Vec<u8> = samples.iter().map(f).collect();
         v.sort_unstable();
         v.dedup();
         v
     };
-    let power: Vec<f64> = t.iter().filter_map(|d| d.power_w.map(f64::from)).collect();
+    let power: Vec<f64> = samples
+        .iter()
+        .filter_map(|d| d.power.map(f64::from))
+        .collect();
     json!({
-        "samples": t.len(),
+        "samples": samples.len(),
         "fe_states": codes(|d| d.state),
         "target_limits": codes(|d| d.target_limit),
         "status_bits": codes(|d| d.status),
         "mean_power_w": mean(power.iter().copied()).map(round1),
         "within_10pct": share_within(&power, f64::from(TARGET_W), 0.10).map(|x| round1(x * 100.0)),
-        "mean_cadence_rpm": mean(t.iter().filter_map(|d| d.cadence_rpm.map(f64::from))).map(round1),
+        "mean_cadence_rpm": mean(samples.iter().filter_map(|d| d.cadence.map(f64::from))).map(round1),
     })
 }
 
-/// The first control write in `from..to`, the release included, as an error naming it.
-fn quiet(ctl: &[(u64, Control)], (from, to): (u64, u64), inside: &str) -> Result<(), String> {
-    match ctl.iter().find(|(at, _)| *at >= from && *at < to) {
-        Some((at, c)) => Err(format!(
-            "{c:?} written at {} s, {inside}",
-            round1(secs(*at))
+/// The first control write at a frame index in `from..to`, the release included, as an error.
+fn quiet(ctl: &[Write], (from, to): (usize, usize), inside: &str) -> Result<(), String> {
+    match ctl.iter().find(|w| (from..to).contains(&w.pos)) {
+        Some(w) => Err(format!(
+            "{:?} written at {} s, {inside}",
+            w.control,
+            round1(secs(w.at_us))
         )),
         None => Ok(()),
     }
 }
 
-/// With a drop at `d`, the writes and frames around it must be those of a run: the closing
-/// release comes at or after the drop (a write at the drop's µs is after its stamp), and a
-/// release before the drop (`end < d`) is the silence guard's, so it follows at least the guard's
-/// [`crate::rider::SILENCE_US`] without a page-25 frame and nothing is written from it to the
-/// drop. Anything else is no result.
-fn drop_evidence(
-    records: &[Record],
-    ctl: &[(u64, Control)],
-    end: u64,
-    d: u64,
-) -> Result<(), String> {
-    use crate::rider::SILENCE_US;
-    if released_at(ctl).is_some_and(|closing| d > closing) {
+/// With a drop `d` (after the cue, checked by [`check11a`]), the closing release comes after it,
+/// and a release `end` before it in the timeline is the silence guard's: [`crate::rider::silent`] held
+/// from the last page 25 before it, and nothing is written from it to the drop. Anything else is
+/// no result.
+fn drop_evidence(tl: &Timeline, end: &Write, d: &Stamp) -> Result<(), String> {
+    if tl.closing_release().is_some_and(|c| c.pos < d.before) {
         return Err("contradictory: the drop is stamped after the closing release".into());
     }
-    if end < d {
-        quiet(
-            ctl,
-            (end + 1, d),
-            "between the silence guard's release and the drop",
-        )?;
-        if let Some(r) = records
-            .iter()
-            .rev()
-            .find(|r| r.rx && r.at_us <= end && page_of(&r.bytes) == Some(25))
-            .filter(|r| r.at_us + SILENCE_US > end)
-        {
-            return Err(format!(
-                "the release before the drop, at {} s, is not the silence guard's: page 25 came {} s before it (the guard waits {} s)",
-                round1(secs(end)),
-                round1(secs(end - r.at_us)),
-                round1(secs(SILENCE_US))
-            ));
-        }
+    // The stamp is written when the drop is reported: the trainer's frames ended before it.
+    if let Some(at) = tl
+        .samples()
+        .iter()
+        .map(|s| (s.pos, s.at_us))
+        .chain(tl.page16().iter().map(|(s, _)| (s.pos, s.at_us)))
+        .chain(tl.statuses().iter().map(|s| (s.pos, s.at_us)))
+        .find(|(pos, _)| *pos >= d.before)
+        .map(|(_, at)| at)
+    {
+        return Err(format!(
+            "contradictory: the trainer still sent a frame {} s after the stamped drop",
+            round1(secs(at.saturating_sub(d.at_us)))
+        ));
+    }
+    let ctl = tl.writes();
+    if end.pos >= d.before {
+        return Ok(());
+    }
+    quiet(
+        ctl,
+        (end.pos + 1, d.before),
+        "between the silence guard's release and the drop",
+    )?;
+    // Every page 25 counts, a repeat too: the live guard sees it.
+    if let Some(r) = tl
+        .samples()
+        .iter()
+        .rfind(|s| s.pos < end.pos)
+        .filter(|s| !crate::rider::silent(s.at_us, end.at_us))
+    {
+        return Err(format!(
+            "the release before the drop, at {} s, is not the silence guard's: page 25 came {} s before it (the guard waits more than {} s)",
+            round1(secs(end.at_us)),
+            round1(secs(end.at_us - r.at_us)),
+            round1(secs(crate::rider::SILENCE_US))
+        ));
     }
     Ok(())
 }
 
-/// When the operator answered [`UNPLUGGED`] with `unplugged`, once and after the `cue`; any
-/// other answer, none or a second one is no result (decision table).
-fn unplugged_at(notes: &[Note], cue: u64) -> Result<u64, String> {
-    let answers = notes
-        .iter()
-        .filter(|n| n.tag == answer_tag(UNPLUGGED.key))
-        .count();
-    if answers > 1 {
+/// The operator's answer to [`UNPLUGGED`], once and after the `cue`; only `unplugged` makes 11a a
+/// result, and any other answer, none or a second one is no result (decision table).
+fn unplugged<'a>(notes: &'a [Note], cue: &Stamp) -> Result<&'a Note, String> {
+    let tag = answer_tag(UNPLUGGED.key);
+    let answers: Vec<usize> = (0..notes.len()).filter(|i| notes[*i].tag == tag).collect();
+    if answers.len() > 1 {
         return Err(format!(
-            "contradictory: the unplug question is answered {answers} times"
+            "contradictory: the unplug question is answered {} times",
+            answers.len()
         ));
+    }
+    if answers.first().is_some_and(|i| *i < cue.seq) {
+        return Err("contradictory: the unplug is answered before its cue".into());
     }
     match answer(notes, &UNPLUGGED).as_deref() {
         Ok("unplugged") => {}
         Ok(_) => return Err("the operator could not unplug the trainer".into()),
         Err(why) => return Err(format!("{why} to whether the trainer was unplugged")),
     }
-    let at = answered_at(notes, &UNPLUGGED).unwrap_or(cue);
-    if at < cue {
-        return Err("contradictory: the unplug is answered before its cue".into());
-    }
-    Ok(at)
+    notes
+        .iter()
+        .find(|n| n.tag == tag)
+        .ok_or_else(|| "no answer to whether the trainer was unplugged".into())
 }
 
-/// When the operator answered `q` (the last answer, as [`answer`] reads it).
-fn answered_at(notes: &[Note], q: &Question) -> Option<u64> {
-    let tag = answer_tag(q.key);
-    notes.iter().rev().find(|n| n.tag == tag).map(|n| n.at_us)
-}
-
-/// The result of check 11a from the capture's records and notes.
-pub fn check11a(records: &[Record], notes: &[Note]) -> Value {
-    let method = "stamps validated first (the unplug cue once, at most one drop after it and no trainer frame at or after the drop, the drop at or before the closing release, a release before the drop only as the silence guard's (at least 2 s after the last page 25, nothing written from it to the drop), one answer, ERG 100 W in force before the windows, no control write from 15 s before the cue to the first release, which comes after the cue (none: the capture is cut off, unknown); the after window ends at that release; at least 30 page-25 samples before; without a drop the answer before the release and at least 40 samples over 20 s after), else unknown; unplugged = the operator's answer (decision table); drop = a link 01 stamp after the cue; before = page 25 in the 15 s up to the cue; after = page 25 from 5 s after the answer to the release; each: FE states, target-limit codes, status bits, mean power and share within ±10 % of the ERG target";
+/// The result of check 11a from the capture's timeline.
+pub fn check11a(tl: &Timeline) -> Value {
+    let method = "stamps validated first, in timeline order (the unplug cue once, at most one drop after it and no trainer frame after the drop, the drop before the closing release, a release before the drop only as the silence guard's (more than 2 s after the last page 25 before it, nothing written from it to the drop), one answer after the cue and before the closing release, ERG 100 W in force before the windows, no control write from 15 s before the cue to the first release, which comes after the cue (none: the capture is cut off, unknown); the after window ends at that release; at least 30 page-25 samples before; without a drop the answer before the release and at least 40 samples over 20 s after), else unknown; unplugged = the operator's answer (decision table); drop = a link 01 stamp after the cue; before = page 25 in the 15 s up to the cue; after = page 25 from 5 s after the answer to the release; each: FE states, target-limit codes, status bits, mean power and share within ±10 % of the ERG target";
     let unknown = |why: String| json!({ "method": method, "verdict": format!("unknown: {why}") });
     let run = || -> Result<Value, String> {
-        let cue = stamp(&stamps(notes, WINDOW_A, &[UNPLUG])?, UNPLUG)
+        let notes = tl.notes();
+        let cue = stamp_of(&stamps(notes, WINDOW_A, &[UNPLUG])?, UNPLUG)
             .ok_or("the capture has no unplug cue")?;
-        let link = stamps(notes, LINK, &[DETECTED])?;
-        let drop = stamp(&link, DETECTED);
-        if drop.is_some_and(|d| d < cue) {
+        let drop = stamp_of(&stamps(notes, LINK, &[DETECTED])?, DETECTED);
+        if drop.is_some_and(|d| d.seq < cue.seq) {
             return Err("contradictory: the drop is stamped before the unplug cue".into());
         }
-        let at = unplugged_at(notes, cue)?;
-        let ctl = controls(records);
-        let from = cue.saturating_sub(BEFORE_US);
+        let at = unplugged(notes, &cue)?;
+        let ctl = tl.writes();
+        let from = tl.index_at(cue.at_us.saturating_sub(BEFORE_US));
         // The target in force through both windows: the last write before them.
-        let target = ctl.iter().rev().find(|(t, _)| *t < from).map(|(_, c)| *c);
+        let target = ctl.iter().rev().find(|w| w.pos < from).map(|w| w.control);
         if target != Some(Control::Erg(f64::from(TARGET_W))) {
             return Err(format!(
                 "the target in force was {target:?}, not ERG {TARGET_W} W"
             ));
         }
         // The first release from the window start ends the after window: the run's own, or the
-        // silence guard's, both after the cue. One at or before the cue changed the target inside
-        // the before window; none at all means the capture was cut off before the run's end
-        // (every release is recorded before it is written, a failed one too).
+        // silence guard's, both after the cue. One before the cue changed the target inside the
+        // before window; none at all means the capture was cut off before the run's end (every
+        // release is recorded before it is written, a failed one too).
         let end = ctl
             .iter()
-            .find(|(t, c)| *t >= from && *c == Control::Resistance(0.0))
-            .map(|(t, _)| *t)
+            .find(|w| w.pos >= from && w.control == Control::Resistance(0.0))
+            .copied()
             .ok_or("no release write after the unplug cue: the capture is cut off before the run's end")?;
-        if end <= cue {
+        if end.pos < cue.before {
             return Err(format!(
-                "Resistance(0.0) written at {} s, at or before the unplug cue",
-                round1(secs(end))
+                "Resistance(0.0) written at {} s, before the unplug cue",
+                round1(secs(end.at_us))
             ));
         }
-        quiet(&ctl, (from, end), "inside the compared windows")?;
+        quiet(ctl, (from, end.pos), "inside the compared windows")?;
         if let Some(d) = drop {
-            drop_evidence(records, &ctl, end, d)?;
+            drop_evidence(tl, &end, &d)?;
+            // The answer before the closing release (ADR-0007 §4: each in order); without a drop
+            // the after window ends at that release, and the answer must come before it (below).
+            if tl.closing_release().is_some_and(|c| at.before > c.pos) {
+                return Err(
+                    "contradictory: the unplug is answered after the closing release".into(),
+                );
+            }
         }
-        // An rx frame at the drop's own µs counts as after it: the stamp is written when the
-        // drop is reported, so the trainer's frames must have ended before it.
-        if let Some(d) = drop
-            && let Some(r) = records.iter().find(|r| r.rx && r.at_us >= d)
-        {
-            return Err(format!(
-                "contradictory: the trainer still sent a frame {} s after the stamped drop",
-                round1(secs(r.at_us - d))
-            ));
-        }
-        let before = window(records, from, cue);
-        let after = window(records, at + SETTLE_US, end);
+        let before = window(&span(tl, from, cue.before));
+        let after = window(&span(tl, tl.index_at(at.at_us + SETTLE_US), end.pos));
         let count = |w: &Value| w["samples"].as_u64().unwrap_or(0);
         if count(&before) < MIN_BEFORE_SAMPLES {
             return Err(format!(
@@ -245,10 +248,10 @@ pub fn check11a(records: &[Record], notes: &[Note]) -> Value {
             ));
         }
         if drop.is_none() {
-            if at >= end {
-                return Err("the unplug is answered at or after the release".into());
+            if at.before > end.pos {
+                return Err("the unplug is answered after the release".into());
             }
-            let span = end.saturating_sub(at + SETTLE_US);
+            let span = end.at_us.saturating_sub(at.at_us + SETTLE_US);
             if span < MIN_AFTER_US || count(&after) < MIN_AFTER_SAMPLES {
                 return Err(format!(
                     "{} page-25 samples over {} s after the unplug (at least {MIN_AFTER_SAMPLES} over {} s)",
@@ -262,13 +265,13 @@ pub fn check11a(records: &[Record], notes: &[Note]) -> Value {
             || {
                 format!(
                     "no link drop in {} s unplugged",
-                    round1(secs(end.saturating_sub(at)))
+                    round1(secs(end.at_us.saturating_sub(at.at_us)))
                 )
             },
             |d| {
                 format!(
                     "link dropped {} s after the unplug cue",
-                    round1(secs(d - cue))
+                    round1(secs(d.at_us - cue.at_us))
                 )
             },
         );
@@ -308,74 +311,86 @@ fn honoured(w: &Value, rpm: u8) -> String {
     }
 }
 
-/// The result of check 11c from the capture's records and notes.
-pub fn check11c(records: &[Record], notes: &[Note]) -> Value {
+/// Check 11c's stamps before the link: the start cue, then the advertisement within
+/// [`ADVERT_WAIT`] and the connect within [`CONNECT_WAIT`] of it, and no frame before the
+/// advertisement. `(cues, cold, seen, ready)`.
+fn cold_stamps(tl: &Timeline) -> Result<(Vec<Stamp>, Stamp, Stamp, Stamp), String> {
+    let notes = tl.notes();
+    let cues = stamps(notes, WINDOW_C, &[COLD, LOW, NORMAL])?;
+    let cold = stamp_of(&cues, COLD).ok_or("the capture has no start cue")?;
+    let link = stamps(notes, LINK, &[SEEN, READY])
+        .map_err(|_| "contradictory link stamps: 02 and 04 only, once each, in order")?;
+    let seen = stamp_of(&link, SEEN).ok_or("the capture has no advertisement stamp")?;
+    let ready = stamp_of(&link, READY).ok_or("the capture has no connect stamp")?;
+    if seen.seq < cold.seq {
+        return Err("contradictory: the advertisement is stamped before the start cue".into());
+    }
+    let late = |at: u64, from: u64, bound: Duration, what: &str| {
+        (at > from + bound.as_secs() * SEC + STAMP_SLACK_US).then(|| {
+            format!(
+                "{what} is stamped {} s after, past the {} s bound",
+                round1(secs(at - from)),
+                bound.as_secs()
+            )
+        })
+    };
+    if let Some(e) = late(seen.at_us, cold.at_us, ADVERT_WAIT, "the advertisement")
+        .or_else(|| late(ready.at_us, seen.at_us, CONNECT_WAIT, "the connect"))
+    {
+        return Err(e);
+    }
+    // Nothing was recorded before the advertisement: the cold trainer has no link (the times
+    // below are read from the start cue on).
+    if seen.before > 0 {
+        return Err("contradictory: a frame is recorded before the trainer advertised".into());
+    }
+    Ok((cues, cold, seen, ready))
+}
+
+/// The result of check 11c from the capture's timeline.
+pub fn check11c(tl: &Timeline) -> Value {
     let method = "stamps validated first (the start cue, then link 02 seen within 60 s and 04 connected within 30 s of it, the low and 90 rpm cues in order; no frame before the advertisement; the first control write the release, and a release ends the run (none: the capture is cut off)), else unknown; times from the start cue: advertising = 02, connected = 04, first page 25, first ERG echo = the first page 71 naming page 49 after the first page-49 write; low/90 rpm = page 25 from 5 s after each cue to the next cue or the release: honoured when >= 10 samples, the cadence within 10 rpm of the cue and >= 80 % within ±10 % of the ERG target";
     let unknown = |why: String| json!({ "method": method, "verdict": format!("unknown: {why}") });
     let run = || -> Result<Value, String> {
-        let cues = stamps(notes, WINDOW_C, &[COLD, LOW, NORMAL])?;
-        let cold = stamp(&cues, COLD).ok_or("the capture has no start cue")?;
-        let link = stamps(notes, LINK, &[SEEN, READY])
-            .map_err(|_| "contradictory link stamps: 02 and 04 only, once each, in order")?;
-        let seen = stamp(&link, SEEN).ok_or("the capture has no advertisement stamp")?;
-        let ready = stamp(&link, READY).ok_or("the capture has no connect stamp")?;
-        if seen < cold {
-            return Err("contradictory: the advertisement is stamped before the start cue".into());
-        }
-        let late = |at: u64, from: u64, bound: Duration, what: &str| {
-            (at > from + bound.as_secs() * SEC + STAMP_SLACK_US).then(|| {
-                format!(
-                    "{what} is stamped {} s after, past the {} s bound",
-                    round1(secs(at - from)),
-                    bound.as_secs()
-                )
-            })
-        };
-        if let Some(e) = late(seen, cold, ADVERT_WAIT, "the advertisement")
-            .or_else(|| late(ready, seen, CONNECT_WAIT, "the connect"))
+        let (cues, cold, seen, ready) = cold_stamps(tl)?;
+        let ctl = tl.writes();
+        if let Some(w) = ctl
+            .first()
+            .filter(|w| w.control != Control::Resistance(0.0))
         {
-            return Err(e);
-        }
-        if let Some(r) = records.iter().find(|r| r.at_us < seen) {
             return Err(format!(
-                "contradictory: a frame is recorded at {} s, before the trainer advertised",
-                round1(secs(r.at_us))
+                "the first write was {:?} at {} s, not the release",
+                w.control,
+                round1(secs(w.at_us))
             ));
         }
-        let ctl = controls(records);
-        if let Some((at, c)) = ctl.first().filter(|(_, c)| *c != Control::Resistance(0.0)) {
-            return Err(format!(
-                "the first write was {c:?} at {} s, not the release",
-                round1(secs(*at))
-            ));
-        }
-        let page25 = records
+        let page25 = tl.samples().first().map(|s| s.at_us);
+        let erg = ctl
             .iter()
-            .find(|r| r.rx && page_of(&r.bytes) == Some(25))
-            .map(|r| r.at_us);
-        let erg = records
-            .iter()
-            .find(|r| !r.rx && page_of(&r.bytes) == Some(49))
-            .map(|r| r.at_us);
-        let echo = erg.and_then(|t| {
-            records
+            .find(|w| matches!(w.control, Control::Erg(_)))
+            .copied();
+        let echo = erg.and_then(|w| {
+            tl.statuses()
                 .iter()
-                .find(|r| {
-                    r.rx && r.at_us > t && command_status(&r.bytes).is_some_and(|c| c.0 == 49)
-                })
-                .map(|r| r.at_us)
+                .find(|s| s.pos > w.pos && s.page == 49)
+                .map(|s| s.at_us)
         });
-        let end = released_at(&ctl)
+        let end = tl
+            .closing_release()
             .ok_or("no release write ends the run: the capture is cut off before the run's end")?;
-        let judged = |code: u8, next: Option<u64>, rpm: u8| {
-            let Some(at) = stamp(&cues, code) else {
+        let judged = |code: u8, next: Option<Stamp>, rpm: u8| {
+            let Some(at) = stamp_of(&cues, code) else {
                 return (Value::Null, format!("unknown: no {rpm} rpm cue"));
             };
-            let to = next.unwrap_or(end).min(end);
-            // The procedure writes, then stamps the cue: a write at the cue's own µs came first.
-            let target = ctl.iter().rev().find(|(t, _)| *t <= at).map(|(_, c)| *c);
-            let w = window(records, at + SETTLE_US, to);
-            let verdict = match quiet(&ctl, (at + 1, to), "inside the window") {
+            let to = next.map_or(end.pos, |n| n.before.min(end.pos));
+            // The procedure writes, then stamps the cue: a write before the cue came first.
+            let target = ctl
+                .iter()
+                .rev()
+                .find(|w| w.pos < at.before)
+                .map(|w| w.control);
+            let w = window(&span(tl, tl.index_at(at.at_us + SETTLE_US), to));
+            let verdict = match quiet(ctl, (at.before, to), "inside the window") {
                 Err(why) => format!("unknown: {why}"),
                 Ok(()) if target != Some(Control::Erg(f64::from(TARGET_W))) => {
                     format!("unknown: the target in force was {target:?}, not ERG {TARGET_W} W")
@@ -384,21 +399,21 @@ pub fn check11c(records: &[Record], notes: &[Note]) -> Value {
             };
             (w, verdict)
         };
-        let (low_w, low) = judged(LOW, stamp(&cues, NORMAL), LOW_RPM);
+        let (low_w, low) = judged(LOW, stamp_of(&cues, NORMAL), LOW_RPM);
         let (normal_w, normal) = judged(NORMAL, None, 90);
         let echo = match echo.zip(erg) {
             Some((e, w)) => format!(
                 "first ERG echo +{} s ({} s after its page 49)",
-                round1(secs(e - cold)),
-                round1(secs(e - w))
+                round1(secs(e - cold.at_us)),
+                round1(secs(e - w.at_us))
             ),
             None => "no ERG echo (no page 71 naming page 49)".into(),
         };
         let times = format!(
             "from the start cue: advertising +{} s, connected +{} s, first page 25 +{} s, {echo}",
-            round1(secs(seen - cold)),
-            round1(secs(ready - cold)),
-            page25.map_or("–".into(), |t| round1(secs(t - cold)).to_string()),
+            round1(secs(seen.at_us - cold.at_us)),
+            round1(secs(ready.at_us - cold.at_us)),
+            page25.map_or("–".into(), |t| round1(secs(t - cold.at_us)).to_string()),
         );
         Ok(json!({
             "method": method,
@@ -424,13 +439,37 @@ pub fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frames::{Record, page_of};
     use crank_fec::ControlPage;
+
+    fn check11a(r: &[Record], n: &[Note]) -> Value {
+        super::check11a(&Timeline::of_parts(r, &[], n))
+    }
+
+    /// Check 11a's verdict.
+    fn verdict_of(r: &[Record], n: &[Note]) -> String {
+        verdict(&check11a(r, n)).to_string()
+    }
+
+    /// The start of a verdict that is no result.
+    const NO_RESULT: &str = "unknown: ";
+
+    fn check11c(r: &[Record], n: &[Note]) -> Value {
+        super::check11c(&Timeline::of_parts(r, &[], n))
+    }
+
+    fn analyse(stem: &str, r: &[Record], n: &[Note], outcome: &str) -> Value {
+        let none = crate::partb::PowerLag::NotMeasured("test".into());
+        let text = crate::timeline::text_of(r, &[], n);
+        crate::partb::analyse(stem, &text, Some(outcome), &none).expect("stem")
+    }
 
     fn note(tag: &str, at_ms: u64, bytes: &[u8]) -> Note {
         Note {
             tag: tag.into(),
             at_us: at_ms * 1000,
             bytes: bytes.to_vec(),
+            before: 0,
         }
     }
 
@@ -454,6 +493,8 @@ mod tests {
     /// Page 25 at `at_ms`: cadence, power, status bits, target-limit code; FE state 3 (in use).
     fn p25(at_ms: u64, rpm: u8, watts: u16, status: u8, limit: u8) -> Record {
         let w = watts.to_le_bytes();
+        // The update event count, which moves with each update the trainer sends.
+        let count = u8::try_from(at_ms / 250 % 256).expect("a byte");
         rx(
             at_ms,
             [
@@ -462,7 +503,7 @@ mod tests {
                 0x4e,
                 5,
                 25,
-                0,
+                count,
                 rpm,
                 0,
                 0,
@@ -481,16 +522,36 @@ mod tests {
         v["verdict"].as_str().unwrap_or("")
     }
 
-    /// 11a: ERG 100 W from 5 s, the unplug cue at 30 s, `unplugged` at 31 s, the release at 61.5 s;
+    /// 11a: ERG 100 W from 5 s (the soft start from 0.5 s), the unplug cue at 30 s, `unplugged` at 31 s, the release at 61.5 s;
     /// page 25 every 0.5 s, from 36 s with `after`'s fields.
+    /// `Rig::engage` from 0 W to `target` W as the soft start writes it, its last write at `end_ms`.
+    fn soft_start(end_ms: u64, target: f32) -> Vec<Record> {
+        let erg = |watts| ControlPage::TargetPower { watts };
+        let mut v = vec![tx(end_ms - 4_500, &erg(0.0))];
+        v.extend((0..=5_u8).map(|k| {
+            tx(
+                end_ms - u64::from(5 - k) * 800,
+                &erg(target * f32::from(k) / 5.0),
+            )
+        }));
+        v
+    }
+
+    /// The page-70 requests every run writes: for page 81 after its opening release, for page 71
+    /// after its closing one.
+    const SERIAL: ControlPage = ControlPage::Request { page: 81, times: 1 };
+    const REQUEST: ControlPage = ControlPage::Request { page: 71, times: 1 };
+
     fn ride11a(after: (u16, u8, u8)) -> (Vec<Record>, Vec<Note>) {
-        let mut r = vec![tx(0, &RELEASE), tx(5_000, &ERG)];
+        let mut r = vec![tx(0, &RELEASE), tx(300, &SERIAL)];
+        r.extend(soft_start(5_000, 100.0));
         r.extend((0..123).map(|k| {
             let at = k * 500;
             let (w, status, limit) = if at >= 36_000 { after } else { (100, 0, 0) };
             p25(at, 90, w, status, limit)
         }));
         r.push(tx(61_500, &RELEASE));
+        r.push(tx(61_800, &REQUEST));
         let n = vec![
             note(WINDOW_A, 30_000, &[UNPLUG]),
             note(&answer_tag("unplugged"), 31_000, b"unplugged"),
@@ -553,10 +614,6 @@ mod tests {
                 "the capture has no unplug cue",
             ),
             (
-                vec![cue.clone(), answer(b"unplugged", 29_000)],
-                "contradictory: the unplug is answered before its cue",
-            ),
-            (
                 vec![
                     cue.clone(),
                     answer(b"unplugged", 31_000),
@@ -587,6 +644,14 @@ mod tests {
                 "{why}: {v}"
             );
         }
+        // #516 round 4 M25: no answer, no drop: no result (the procedure answers before it rides
+        // on).
+        assert!(verdict_of(&base.0, std::slice::from_ref(&cue)).starts_with(NO_RESULT));
+        // Answered before the cue: no result (ADR-0007 §4: each found once and in order).
+        assert!(
+            verdict_of(&base.0, &[answer(b"unplugged", 29_000), cue.clone()])
+                .starts_with(NO_RESULT)
+        );
         let track = ControlPage::Track {
             grade_pct: 5.0,
             crr: 0.004,
@@ -661,7 +726,7 @@ mod tests {
             (
                 r.clone(),
                 late_answer,
-                "the unplug is answered at or after the release",
+                "the unplug is answered after the release",
             ),
             (
                 release_at(45_000),
@@ -673,15 +738,12 @@ mod tests {
                 n.clone(),
                 "39 page-25 samples over 19.5 s after the unplug (at least 40 over 20 s)",
             ),
-            (
-                r.clone(),
-                with_drop(40_000),
-                "contradictory: the trainer still sent a frame 0 s after the stamped drop",
-            ),
         ] {
             let v = check11a(&records, &notes);
             assert_eq!(verdict(&v), format!("unknown: {why}"), "{why}");
         }
+        // Trainer frames after the stamped drop: no result.
+        assert!(verdict_of(&r, &with_drop(40_000)).starts_with(NO_RESULT));
         // The floors' edges hold: 30 samples before (the ride's own), 40 samples over 20 s after,
         // and a drop at the cue's own microsecond.
         assert!(
@@ -747,27 +809,28 @@ mod tests {
                     vec![at_us(30_000_001, &RELEASE), tx(41_000, &RELEASE)],
                 ),
                 drop_at(40_000),
-                "the release before the drop, at 30 s, is not the silence guard's: page 25 came 0 s before it (the guard waits 2 s)",
+                "the release before the drop, at 30 s, is not the silence guard's: page 25 came 0 s before it (the guard waits more than 2 s)",
             ),
             (
                 guarded(SILENCE_US - 1, vec![]),
                 drop_at(50_000),
-                "the release before the drop, at 46.5 s, is not the silence guard's: page 25 came 2 s before it (the guard waits 2 s)",
+                "the release before the drop, at 46.5 s, is not the silence guard's: page 25 came 2 s before it (the guard waits more than 2 s)",
+            ),
+            // #516 N1: exactly SILENCE_US is not yet silent for the live guard either.
+            (
+                guarded(SILENCE_US, vec![]),
+                drop_at(50_000),
+                "the release before the drop, at 46.5 s, is not the silence guard's: page 25 came 2 s before it (the guard waits more than 2 s)",
             ),
             (
-                guarded(SILENCE_US, vec![at_us(49_999_999, &ERG)]),
+                guarded(SILENCE_US + 1, vec![at_us(49_999_999, &ERG)]),
                 drop_at(50_000),
                 "Erg(100.0) written at 50 s, between the silence guard's release and the drop",
             ),
             (
-                guarded(SILENCE_US, vec![p25(46_500, 90, 100, 0, 0)]),
+                guarded(SILENCE_US + 1, vec![p25(46_500, 90, 100, 0, 0)]),
                 drop_at(50_000),
-                "the release before the drop, at 46.5 s, is not the silence guard's: page 25 came 0 s before it (the guard waits 2 s)",
-            ),
-            (
-                r.clone(),
-                drop_at(70_000),
-                "contradictory: the drop is stamped after the closing release",
+                "the release before the drop, at 46.5 s, is not the silence guard's: page 25 came 0 s before it (the guard waits more than 2 s)",
             ),
         ] {
             assert_eq!(
@@ -776,23 +839,25 @@ mod tests {
                 "{why}"
             );
         }
-        // The edges that are valid: the guard's release exactly 2 s after the last page 25 (other
-        // pages may come), a write at the drop's own µs (after its stamp), a drop at the closing
-        // release's µs.
+        // A drop after the closing release: no result.
+        assert!(verdict_of(&r, &drop_at(70_000)).starts_with(NO_RESULT));
+        // The edges that are valid: the guard's release 1 µs past the silence bound after the last
+        // page 25 (other pages may come), a write after the drop's stamp at its own µs, a drop
+        // stamped before the closing release at its µs.
         let page71 = rx(46_000, [0xa4, 9, 0x4e, 5, 0x47, 48, 0, 0, 0, 0, 0, 0, 0]);
         for (records, notes, link) in [
             (
-                guarded(SILENCE_US, vec![page71]),
+                guarded(SILENCE_US + 1, vec![page71]),
                 drop_at(50_000),
                 "link dropped 20 s",
             ),
             (
-                guarded(SILENCE_US, vec![]),
+                guarded(SILENCE_US + 1, vec![]),
                 drop_at(50_000),
                 "link dropped 20 s",
             ),
             (
-                guarded(SILENCE_US, vec![tx(50_000, &ERG)]),
+                guarded(SILENCE_US + 1, vec![tx(50_000, &ERG)]),
                 drop_at(50_000),
                 "link dropped 20 s",
             ),
@@ -830,20 +895,14 @@ mod tests {
                 answer(b"cannot", 31_000),
                 answer(second, 32_000),
             ];
-            assert_eq!(
-                verdict(&check11a(&r, &notes)),
-                "unknown: contradictory: the unplug question is answered 2 times"
-            );
+            assert!(verdict_of(&r, &notes).starts_with(NO_RESULT));
         }
         let twice = vec![
             cue,
             answer(b"unplugged", 31_000),
             answer(b"unplugged", 31_500),
         ];
-        assert_eq!(
-            verdict(&check11a(&r, &twice)),
-            "unknown: contradictory: the unplug question is answered 2 times"
-        );
+        assert!(verdict_of(&r, &twice).starts_with(NO_RESULT));
     }
 
     /// Each 11a evidence floor on its own, the early release, and a real drop's capture shape.
@@ -881,7 +940,8 @@ mod tests {
             ),
             (
                 early_release,
-                "28 page-25 samples over 14 s after the unplug (at least 40 over 20 s)",
+                // The page 25 recorded before the release at its µs is inside the window.
+                "29 page-25 samples over 14 s after the unplug (at least 40 over 20 s)",
             ),
         ] {
             assert_eq!(
@@ -916,15 +976,16 @@ mod tests {
         for (records, why) in [
             (
                 with(15_000, &RELEASE),
-                "Resistance(0.0) written at 15 s, at or before the unplug cue",
+                "Resistance(0.0) written at 15 s, before the unplug cue",
             ),
             (
                 with(20_000, &RELEASE),
-                "Resistance(0.0) written at 20 s, at or before the unplug cue",
+                "Resistance(0.0) written at 20 s, before the unplug cue",
             ),
+            // After the cue's stamp at its µs (the merge puts the stamp first): the run's end.
             (
                 with(30_000, &RELEASE),
-                "Resistance(0.0) written at 30 s, at or before the unplug cue",
+                "the unplug is answered after the release",
             ),
             (
                 with(15_000, &half),
@@ -945,14 +1006,28 @@ mod tests {
                 "{why}"
             );
         }
-        // The unplug answered at the release's own µs leaves no after window.
+        // A release written before the cue's stamp at its µs is before the cue.
+        let text = crate::timeline::text_of(&with(30_000, &RELEASE), &[], &n);
+        let cue = "# check11a 30000000 01\n";
+        let release = format!(
+            "30000000 tx {}\n",
+            crate::frames::hex(&tx(0, &RELEASE).bytes)
+        );
+        let text = text
+            .replacen(&release, "", 1)
+            .replacen(cue, &format!("{release}{cue}"), 1);
+        assert_eq!(
+            verdict(&super::check11a(&Timeline::parse(&text).expect("in order"))),
+            "unknown: Resistance(0.0) written at 30 s, before the unplug cue"
+        );
+        // The unplug answered at the release's own µs (before it) leaves no after window.
         let late = vec![
             note(WINDOW_A, 30_000, &[UNPLUG]),
             note(&answer_tag("unplugged"), 61_500, b"unplugged"),
         ];
         assert_eq!(
             verdict(&check11a(&r, &late)),
-            "unknown: the unplug is answered at or after the release"
+            "unknown: 0 page-25 samples over 0 s after the unplug (at least 40 over 20 s)"
         );
         // Cut off before the release: no end, no result, offline as live.
         let cut: Vec<Record> = r.iter().filter(|x| x.at_us < 61_500_000).cloned().collect();
@@ -960,30 +1035,145 @@ mod tests {
             verdict(&check11a(&cut, &n)),
             "unknown: no release write after the unplug cue: the capture is cut off before the run's end"
         );
-        let none = crate::partb::PowerLag::NotMeasured("test".into());
-        let v = crate::partb::analyse(
-            "check11a",
-            &cut,
-            &[],
-            &n,
-            Some(crate::partb::COMPLETED),
-            &none,
-        )
-        .expect("stem");
+        let v = analyse("check11a", &cut, &n, crate::partb::COMPLETED);
         assert_eq!(
             v["invalid"],
             "the capture is cut off: no release write ends it"
         );
         assert_eq!(v["verdict"], Value::Null);
         // A trainer frame at the drop's µs is after it: the stamp follows the frames' end.
+        // (No frame after `d`; the merge puts the stamp before a frame of its µs.)
         let mut dropped: Vec<Record> = r.iter().filter(|x| x.at_us < 40_000_000).cloned().collect();
-        dropped.push(tx(41_000, &RELEASE));
+        dropped.extend([tx(41_000, &RELEASE), tx(41_300, &REQUEST)]);
         let drop_at = |at: u64| [n.clone(), vec![note(LINK, at, &[DETECTED])]].concat();
-        assert_eq!(
-            verdict(&check11a(&dropped, &drop_at(39_500))),
-            "unknown: contradictory: the trainer still sent a frame 0 s after the stamped drop"
+        assert!(verdict_of(&dropped, &drop_at(39_500)).starts_with(NO_RESULT));
+        assert!(verdict_of(&dropped, &drop_at(39_501)).starts_with("link dropped "));
+    }
+
+    /// The capture text of `lines`, in the given (file) order, with a completed outcome line.
+    fn file(lines: &[String]) -> String {
+        lines.iter().fold(String::new(), |mut t, l| {
+            t.push_str(l);
+            t.push('\n');
+            t
+        }) + "# hil_fec procedure: completed\n"
+    }
+
+    fn line(r: &Record) -> String {
+        let d = if r.rx { "rx" } else { "tx" };
+        format!("{} {d} {}", r.at_us, crate::frames::hex(&r.bytes))
+    }
+
+    fn stamped(tag: &str, at_us: u64, bytes: &[u8]) -> String {
+        format!("# {tag} {at_us} {}", crate::frames::hex(bytes))
+    }
+
+    /// The silence guard's 11a shape as file lines: ERG 100 W from 5 s, page 25 every 0.5 s to
+    /// 44.5 s, the unplug cue at 30 s (the answer at 31 s when `answered`), the guard's release
+    /// `gap` µs after the last page 25.
+    fn guarded_file(gap: u64, answered: bool) -> Vec<String> {
+        // (µs, notes before frames at a tie, line), in time order.
+        let mut lines: Vec<(u64, u8, String)> = vec![
+            (0, 1, line(&tx(0, &RELEASE))),
+            (300_000, 1, line(&tx(300, &SERIAL))),
+        ];
+        lines.extend(
+            soft_start(5_000, 100.0)
+                .iter()
+                .map(|r| (r.at_us, 1, line(r))),
         );
-        assert!(verdict(&check11a(&dropped, &drop_at(39_501))).starts_with("link dropped "));
+        lines.extend((0..90).map(|k| (k * 500_000, 1, line(&p25(k * 500, 90, 100, 0, 0)))));
+        lines.push((30_000_000, 0, stamped(WINDOW_A, 30_000_000, &[UNPLUG])));
+        if answered {
+            lines.push((
+                31_000_000,
+                0,
+                stamped("answer-unplugged", 31_000_000, b"unplugged"),
+            ));
+        }
+        lines.sort_by_key(|l| (l.0, l.1));
+        let mut lines: Vec<String> = lines.into_iter().map(|l| l.2).collect();
+        lines.push(line(&Record {
+            at_us: 44_500_000 + gap,
+            ..tx(0, &RELEASE)
+        }));
+        lines
+    }
+
+    fn row(text: &str) -> Value {
+        let none = crate::partb::PowerLag::NotMeasured("test".into());
+        crate::partb::analyse("check11a", text, Some(crate::partb::COMPLETED), &none).expect("stem")
+    }
+
+    /// #516: the falsifier's captures, each a full 11a row (`completed`, no `invalid`, "link
+    /// dropped 20 s") before the timeline; each is no result now, and the honest shape is still
+    /// a full row.
+    #[test]
+    fn forged_captures_b1_b2_b3_n1_give_no_full_row() {
+        use crate::rider::SILENCE_US;
+        let drop = stamped(LINK, 50_000_000, &[DETECTED]);
+        let closing = [line(&tx(51_000, &RELEASE)), line(&tx(51_300, &REQUEST))].join("\n");
+        let honest = file(
+            &[
+                guarded_file(SILENCE_US + 1, true),
+                vec![drop.clone(), closing.clone()],
+            ]
+            .concat(),
+        );
+        assert!(
+            verdict(&row(&honest)).starts_with("link dropped 20 s after the unplug cue"),
+            "{}",
+            row(&honest)
+        );
+        // B1: a write at the guard's release µs, after it in the file, is between it and the drop.
+        let erg300 = line(&Record {
+            at_us: 44_500_000 + SILENCE_US + 1,
+            ..tx(0, &ControlPage::TargetPower { watts: 300.0 })
+        });
+        let b1 = file(
+            &[
+                guarded_file(SILENCE_US + 1, true),
+                vec![erg300, drop.clone(), closing.clone()],
+            ]
+            .concat(),
+        );
+        let not_the_procedure =
+            |v: &Value| v["completed"] == json!(false) || verdict(v).starts_with("unknown: ");
+        assert!(not_the_procedure(&row(&b1)), "{}", row(&b1));
+        // B2: a page 25 at 46.4 s written first: the file is not in time order.
+        let b2 = file(
+            &[
+                vec![line(&p25(46_400, 90, 100, 0, 0))],
+                guarded_file(SILENCE_US + 1, true),
+                vec![drop.clone(), closing.clone()],
+            ]
+            .concat(),
+        );
+        let v = row(&b2);
+        assert_eq!(
+            v["invalid"],
+            json!("contradictory: records out of time order (line 2)")
+        );
+        assert_eq!(
+            (&v["completed"], &v["verdict"]),
+            (&json!(false), &Value::Null)
+        );
+        // B3: the answer after the closing release.
+        let late = stamped("answer-unplugged", 80_000_000, b"unplugged");
+        let b3 = file(
+            &[
+                guarded_file(SILENCE_US + 1, false),
+                vec![drop.clone(), closing.clone(), late],
+            ]
+            .concat(),
+        );
+        assert!(not_the_procedure(&row(&b3)), "{}", row(&b3));
+        // N1: a release exactly SILENCE_US after the last page 25 is not the live guard's.
+        let n1 = file(&[guarded_file(SILENCE_US, true), vec![drop, closing]].concat());
+        assert_eq!(
+            verdict(&row(&n1)),
+            "unknown: the release before the drop, at 46.5 s, is not the silence guard's: page 25 came 2 s before it (the guard waits more than 2 s)"
+        );
     }
 
     /// The 80 % boundary of "honoured" is inclusive.
@@ -1008,16 +1198,13 @@ mod tests {
     /// A run that did not complete has no 11a or 11c result fields, only `unknown` reasons.
     #[test]
     fn a_stopped_11a_or_11c_run_carries_no_result_fields() {
-        let none = crate::partb::PowerLag::NotMeasured("test".into());
         let (r, n) = ride11a((100, 0, 0));
-        let v = crate::partb::analyse("check11a", &r, &[], &n, Some("aborted: x"), &none)
-            .expect("stem");
+        let v = analyse("check11a", &r, &n, "aborted: x");
         for key in ["verdict", "link", "before", "after"] {
             assert_eq!(v[key], Value::Null, "{key}: {v}");
         }
         let (r, n) = ride11c((60, 100, 0));
-        let v = crate::partb::analyse("check11c", &r, &[], &n, Some("aborted: x"), &none)
-            .expect("stem");
+        let v = analyse("check11c", &r, &n, "aborted: x");
         for key in ["verdict", "times", "low_cadence", "normal_cadence"] {
             assert_eq!(v[key], Value::Null, "{key}: {v}");
         }
@@ -1118,7 +1305,7 @@ mod tests {
                     &n[3..],
                 ]
                 .concat(),
-                "contradictory: a frame is recorded at 10.2 s, before the trainer advertised",
+                "contradictory: a frame is recorded before the trainer advertised",
             ),
             (
                 with(0, note(WINDOW_C, 9_000, &[COLD])),

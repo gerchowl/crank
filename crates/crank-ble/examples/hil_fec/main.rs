@@ -29,6 +29,7 @@ mod rider;
 mod session;
 #[cfg(test)]
 mod sim;
+mod timeline;
 mod trace;
 
 use std::process::ExitCode;
