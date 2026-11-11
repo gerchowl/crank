@@ -1154,9 +1154,7 @@ mod tests {
         answers: &[],
         answer_at_us: 0,
         connect_answer_after_us: 0,
-        speed_per_rpm: 0.09,
-        shift_at_cue: None,
-        ignores_free: false,
+        road: &crate::sim::ROAD,
     };
 
     async fn driven(p: Procedure, plan: Plan) -> (Report, Vec<Record>) {

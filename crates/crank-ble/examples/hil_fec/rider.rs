@@ -1315,7 +1315,7 @@ mod tests {
     use super::*;
     use crate::{
         partb::{Control, FINISHED, MAX_T90_US, OUTCOME, PowerLag, analyse, controls, outcome_in},
-        sim::{Pattern, Plan, Sim},
+        sim::{Pattern, Plan, ROAD, Road, Sim},
     };
     use std::fmt::Write as _;
 
@@ -3823,7 +3823,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn check12_with_erg_held_and_60_percent_repeats_is_not_released() {
         let text = check12_text(Plan {
-            ignores_free: true,
+            road: &HELD,
             answers: &["n"],
             ..Plan::default()
         })
@@ -3880,6 +3880,19 @@ mod tests {
             );
         }
     }
+
+    /// Check 12's non-releasing trainer: ERG held through `Free`.
+    const HELD: Road = Road {
+        ignores_free: true,
+        ..ROAD
+    };
+
+    /// A rider in a light gear (0.06 m/s per rpm) who shifts to the hardest (0.2) at the 70 rpm cue.
+    const SHIFT: Road = Road {
+        speed_per_rpm: 0.06,
+        shift_at_cue: Some((70, 0.2)),
+        ..ROAD
+    };
 
     /// A page-25 frame line.
     fn is_p25(l: &str) -> bool {
@@ -3991,8 +4004,11 @@ mod tests {
         for gear in [0.03, 0.06, 0.09, 0.14, 0.2] {
             for held in [false, true] {
                 let text = check12_text(Plan {
-                    speed_per_rpm: gear,
-                    ignores_free: held,
+                    road: Box::leak(Box::new(Road {
+                        speed_per_rpm: gear,
+                        ignores_free: held,
+                        ..ROAD
+                    })),
                     answers: if held { &["n"] } else { &["y"] },
                     ..Plan::default()
                 })
@@ -4055,8 +4071,7 @@ mod tests {
         ];
         for (answer, line) in cases {
             let text = check12_text(Plan {
-                speed_per_rpm: 0.06,
-                shift_at_cue: Some((70, 0.2)),
+                road: &SHIFT,
                 answers: answer,
                 ..Plan::default()
             })
@@ -4071,35 +4086,46 @@ mod tests {
         }
     }
 
-    /// ADR-0007 §2's verdict, row by row.
-    #[tokio::test(start_paused = true)]
-    async fn check12_reads_each_verdict_row() {
+    /// Check 12's releasing (answered `y`) and non-releasing (answered `n`) sim captures.
+    async fn check12_bases() -> (String, String) {
         let released = check12_text(Plan {
             answers: &["y"],
             ..Plan::default()
         })
         .await;
         let held = check12_text(Plan {
-            ignores_free: true,
+            road: &HELD,
             answers: &["n"],
             ..Plan::default()
         })
         .await;
-        let reads = |text: &str, want: &str| {
-            let v = row("check12", text);
-            assert!(
-                v["line"].as_str().is_some_and(|l| l.contains(want)),
-                "{want}: {}",
-                v["line"]
-            );
-            v
-        };
-        let without = |text: &str, prefix: &str| -> String {
-            text.lines()
-                .filter(|l| !l.starts_with(prefix))
-                .flat_map(|l| [l, "\n"])
-                .collect()
-        };
+        (released, held)
+    }
+
+    /// `text` without its lines that start with `prefix`.
+    fn without(text: &str, prefix: &str) -> String {
+        text.lines()
+            .filter(|l| !l.starts_with(prefix))
+            .flat_map(|l| [l, "\n"])
+            .collect()
+    }
+
+    /// Check 12's row of `text`, asserted to contain `want`.
+    fn check12_reads(text: &str, want: &str) -> Value {
+        let v = row("check12", text);
+        assert!(
+            v["line"].as_str().is_some_and(|l| l.contains(want)),
+            "{want}: {}",
+            v["line"]
+        );
+        v
+    }
+
+    /// ADR-0007 §2's verdict, rows 1 to 3: what is missing, ERG not held, too few updates.
+    #[tokio::test(start_paused = true)]
+    async fn check12_reads_each_no_result_row() {
+        let (released, _) = check12_bases().await;
+        let reads = check12_reads;
         // The cue or the answer missing, or answered twice.
         reads(
             &without(&released, "# check12 "),
@@ -4159,6 +4185,13 @@ mod tests {
             let v = reads(&(lines.join("\n") + "\n"), want);
             assert_eq!(v["free70_updates"], json!(keep), "{v}");
         }
+    }
+
+    /// ADR-0007 §2's verdict, rows 4 to 7: `s`, PASS, FAIL, and disagreement.
+    #[tokio::test(start_paused = true)]
+    async fn check12_reads_each_verdict_row() {
+        let (released, held) = check12_bases().await;
+        let reads = check12_reads;
         // The rider shifted.
         reads(
             &answered(&released, Some("s")),
@@ -4177,7 +4210,7 @@ mod tests {
             "no result: power and rider disagree",
         );
         let sag = check12_text(Plan {
-            ignores_free: true,
+            road: &HELD,
             erg_curve: Some(&[(70.0, 0.9), (90.0, 1.0)]),
             answers: &["y"],
             ..Plan::default()
