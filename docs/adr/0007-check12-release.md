@@ -70,7 +70,7 @@ cadence × 0.09 m/s, `sim.rs:461`), but it has the same form, so its r also lies
 Even at a standstill the limit is c = 75/85 = 0.88. Under ERG, r stays near 1.
 
 **What does the rider tell us?** Whether the pedals went light. Compared with the 90 rpm part under `Free`, 70 rpm
-on a flat road is lighter in every gear, and 70 rpm under ERG 200 W is heavier per stroke. The rider's answer is
+on a flat road is lighter in every gear if the rider does not shift, and 70 rpm under ERG 200 W is heavier per stroke. The rider's answer is
 an independent channel that no frame can reach.
 
 **Which of #521's rules go?** Every rule that defended against byte sequences our stack does not produce. The

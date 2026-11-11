@@ -1119,11 +1119,38 @@ pub fn check9(tl: &Timeline, lag: &PowerLag) -> Value {
     })
 }
 
-/// Check 12: does `Free` (page 50 defaults, page 51 grade 0) release an ERG target?
+/// Check 12's question (ADR-0007 §2), asked at the end of the 70 rpm hold; its answer's stamp
+/// ends the 70 rpm window.
+pub const EASIER: crate::check10::Question = crate::check10::Question {
+    key: "easier",
+    text: "Compared with the 90 rpm part right after the switch, did pedalling at 70 rpm get clearly easier? (y = easier / n = not easier / s = I shifted gear)",
+    options: &["y", "n", "s"],
+};
+/// Tag of check 12's cue stamp, `# check12 <µs> 46`: the cue to 70 rpm, code [`TO_70`].
+pub const CUE12: &str = "check12";
+/// The code of check 12's 70 rpm cue stamp (its cadence).
+pub const TO_70: u8 = 70;
+/// Check 12's settle after the page-51 write and after the first 70 rpm update (ADR-0007 §2).
+const SETTLE12_US: u64 = 5 * SEC;
+/// Check 12 reads a window of fewer updates than this as no result.
+const MIN_UPDATES12: usize = 15;
+/// Check 12's cadence bands, rpm.
+const BAND90: std::ops::RangeInclusive<u8> = 85..=95;
+const BAND70: std::ops::RangeInclusive<u8> = 65..=75;
+
+/// The median of `v`, `None` when it is empty.
+fn median(mut v: Vec<f64>) -> Option<f64> {
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    (n > 0).then(|| (v[(n - 1) / 2] + v[n / 2]) / 2.0)
+}
+
+/// Check 12 (ADR-0007 §2): does `Free` (page 50 defaults, page 51 grade 0) release an ERG target?
+/// Read from the ratio r of the median power of the updates at 65–75 rpm to that at 85–95 rpm
+/// under `Free`, and from the rider's answer: PASS iff r ≤ 0.85 and `y`, FAIL iff r ≥ 0.95 and
+/// `n`, otherwise no result.
 pub fn check12(tl: &Timeline) -> Value {
-    let s = tl.samples();
     let ctl = tl.writes();
-    let end = procedure_end(tl.end_us(), &tl.controls());
     let Some((erg_i, target)) = ctl
         .iter()
         .enumerate()
@@ -1145,12 +1172,74 @@ pub fn check12(tl: &Timeline) -> Value {
     let (Some(wind), Some(track)) = (wind, track) else {
         return json!({"error": "no page 50 + page 51 grade 0 after the ERG target"});
     };
-    let free_at = wind.at_us.max(track.at_us);
-    let low: Vec<&Sample> = s
+    let cue = match crate::frames::stamps(tl.notes(), CUE12, &[TO_70]) {
+        Err(why) => return json!({ "error": why }),
+        Ok(st) => crate::frames::stamp_of(&st, TO_70),
+    };
+    let Some(cue) = cue.filter(|c| c.before > track.pos) else {
+        return json!({"error": "no 70 rpm cue stamp after page 51"});
+    };
+    let tag = crate::check10::answer_tag(EASIER.key);
+    // The answer notes, with their index among the notes (file order).
+    let answers: Vec<(usize, &crate::frames::Note)> = tl
+        .notes()
         .iter()
-        .filter(|x| x.at_us > free_at && x.at_us < end && x.cadence.is_some_and(|c| c < 80))
+        .enumerate()
+        .filter(|(_, n)| n.tag == tag)
         .collect();
-    let low_power = mean(low.iter().filter_map(|x| x.power.map(f64::from)));
+    let [(seq, answer)] = answers[..] else {
+        return json!({"error": format!("{} answers to the check 12 question, not one", answers.len())});
+    };
+    let said = String::from_utf8_lossy(&answer.bytes).into_owned();
+    if seq < cue.seq || !EASIER.options.contains(&said.as_str()) {
+        return json!({"error": format!("the answer {said:?} is not one to the check 12 question after its cue")});
+    }
+    let ups = tl.updates();
+    let power = |from: usize, to: usize, band: Option<&std::ops::RangeInclusive<u8>>| {
+        let p: Vec<f64> = ups
+            .iter()
+            .filter(|s| s.pos >= from && s.pos < to)
+            .filter(|s| band.is_none_or(|b| s.cadence.is_some_and(|c| b.contains(&c))))
+            .filter_map(|s| s.power.map(f64::from))
+            .collect();
+        (p.len(), median(p))
+    };
+    let (_, erg) = power(
+        tl.index_at(wind.at_us.saturating_sub(5 * SEC)),
+        wind.pos,
+        None,
+    );
+    let from90 = tl.index_at(track.at_us + SETTLE12_US);
+    let (n90, free90) = power(from90, cue.before, Some(&BAND90));
+    let t70 = ups
+        .iter()
+        .find(|s| s.pos >= cue.before && s.cadence.is_some_and(|c| BAND70.contains(&c)));
+    let (n70, free70) = t70.map_or((0, None), |t| {
+        power(
+            tl.index_at(t.at_us + SETTLE12_US),
+            answer.before,
+            Some(&BAND70),
+        )
+    });
+    let r = free70.zip(free90).map(|(a, b)| a / b);
+    let no_result = if !erg.is_some_and(|e| (180.0..=220.0).contains(&e)) {
+        Some("ERG did not hold 180-220 W before Free, so no release can be seen")
+    } else if n90 < MIN_UPDATES12 || n70 < MIN_UPDATES12 {
+        Some("fewer than 15 updates in the 90 or the 70 rpm window")
+    } else if said == "s" {
+        Some("the rider shifted gear")
+    } else if (r.is_some_and(|r| r <= 0.85) && said == "y")
+        || (r.is_some_and(|r| r >= 0.95) && said == "n")
+    {
+        None
+    } else {
+        Some("power and rider disagree, or r is between 0.85 and 0.95")
+    };
+    let released = if no_result.is_some() {
+        Value::Null
+    } else {
+        json!(said == "y")
+    };
     // A page-71 reply after the write naming that page and echoing its bytes 4-7.
     let echoed = |page: u8, w: &Write| {
         tl.statuses()
@@ -1158,16 +1247,22 @@ pub fn check12(tl: &Timeline) -> Value {
             .any(|st| st.at_us >= w.at_us && st.page == page && st.echo == w.data)
     };
     json!({
-        "method": "Free = page 50 then page 51 grade 0 after a page-49 target; released = mean power of the samples below 80 rpm after Free < 90 % of the ERG target (ERG would hold it); echoed = a later page-71 reply names the page and echoes its bytes 4-7",
+        "method": "ADR-0007 §2, page-25 updates only: erg = median power in the 5 s before page 50; free90 = median power at 85-95 rpm from page 51 + 5 s to the 70 rpm cue; free70 = median power at 65-75 rpm from the first such update after the cue + 5 s to the answer; r = free70 / free90. No result unless erg is 180-220 W and each window has >= 15 updates; the answer s is no result; released iff r <= 0.85 and y, not released iff r >= 0.95 and n, else no result. echoed = a later page-71 reply names the page and echoes its bytes 4-7",
         "erg_target_w": target,
-        "free_at_s": round1(secs(free_at)),
-        "mean_power_before_free_5s_w": mean(powers(s, free_at.saturating_sub(5 * SEC), free_at)).map(round1),
-        "low_cadence_samples": low.len(),
-        "low_cadence_mean_power_w": low_power.map(round1),
-        "low_cadence_mean_rpm": mean(low.iter().filter_map(|x| x.cadence.map(f64::from))).map(round1),
+        "free_at_s": round1(secs(track.at_us)),
+        "cue_70rpm_at_s": round1(secs(cue.at_us)),
+        "answer_at_s": round1(secs(answer.at_us)),
+        "erg_w": erg.map(round1),
+        "free90_w": free90.map(round1),
+        "free90_updates": n90,
+        "free70_w": free70.map(round1),
+        "free70_updates": n70,
+        "r": r.map(|r| (r * 1000.0).round() / 1000.0),
+        "answer": said,
+        "no_result": no_result,
         "page71_echoed_50": echoed(50, wind),
         "page71_echoed_51": echoed(51, track),
-        "released": low_power.map(|p| p < 0.9 * target),
+        "released": released,
     })
 }
 
@@ -1432,19 +1527,29 @@ fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'static
             ),
             "§7.4",
         ),
-        _ => (
-            "12",
-            "ERG 200 W → Free",
-            format!(
-                "released: {}; below 80 rpm in Free {} W at {} rpm; page 71 echoed 50/51: {}/{}",
-                v["released"],
-                num(&v["low_cadence_mean_power_w"]),
-                num(&v["low_cadence_mean_rpm"]),
+        _ => {
+            let read = format!(
+                "r = {} (Free {} W at 90 rpm over {} updates, {} W at 70 rpm over {}; ERG {} W), rider: {}; page 71 echoed 50/51: {}/{}",
+                num(&v["r"]),
+                num(&v["free90_w"]),
+                num(&v["free90_updates"]),
+                num(&v["free70_w"]),
+                num(&v["free70_updates"]),
+                num(&v["erg_w"]),
+                v["answer"].as_str().unwrap_or("?"),
                 v["page71_echoed_50"],
                 v["page71_echoed_51"]
-            ),
-            "§7.9",
-        ),
+            );
+            let result = match v["released"].as_bool() {
+                Some(true) => format!("PASS, released: {read}"),
+                Some(false) => format!("FAIL, not released: {read}"),
+                None => format!(
+                    "no result: {}; {read}",
+                    v["no_result"].as_str().unwrap_or("?")
+                ),
+            };
+            ("12", "ERG 200 W → Free", result, "§7.9")
+        }
     }
 }
 
