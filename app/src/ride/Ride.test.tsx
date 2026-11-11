@@ -537,6 +537,18 @@ describe("Ride", () => {
     expect(slot("target")?.textContent).toBe("166");
   });
 
+  test('the target is written like the plan, "250 W" with a space (DESIGN §18.3 "Metric grid", #581)', async () => {
+    const rig = await open();
+    await push(rig, {
+      blockIndex: 1,
+      blockElapsedS: 20,
+      commanded: { kind: "erg", watts: 250 },
+    });
+    expect(slot("target")?.parentElement?.textContent).toBe(
+      "TARGET 250 W · Plan 250 W",
+    );
+  });
+
   test("nothing is commanded: the tile says — and the plan stays", async () => {
     const rig = await open();
     await push(rig, { blockIndex: 1, blockElapsedS: 20, commanded: null });

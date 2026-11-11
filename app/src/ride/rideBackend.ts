@@ -185,6 +185,8 @@ export interface RideWorld {
    */
   unreaped: boolean;
   blocks: WorkoutBlock[];
+  /** The workout's name as `workout_get` answers it. */
+  workoutName: string;
   /** The link keeper's state of the devices no ride holds (`links_intent`'s answer, the link channel's frames). */
   keeper: LinkView;
   /**
@@ -243,6 +245,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
     publishes: true,
     unreaped: false,
     blocks: BLOCKS,
+    workoutName: "Steady 10 min",
     keeper: COLD_LINKS,
     strapHanded: true,
     keeperStorage: false,
@@ -575,13 +578,18 @@ export function installRide(over: Partial<RideWorld> = {}) {
         if (typeof args.id !== "string")
           throw "missing required key id for command `workout_get`";
         if (args.id !== "w1") throw err("not_found", "unknown workout");
+        // The compiled length is the end of the last block, as the core compiles it.
+        const totalS = world.blocks.reduce(
+          (end, b) => Math.max(end, (b.startS ?? 0) + (b.durS ?? 0)),
+          0,
+        );
         return {
-          workout: { id: "w1", name: "Steady 10 min", ftp: 250, nodes: [] },
+          workout: { id: "w1", name: world.workoutName, ftp: 250, nodes: [] },
           dsl: "",
           compiled: {
             blocks: world.blocks,
-            totalS: 600,
-            totalRangeS: [600, 600],
+            totalS,
+            totalRangeS: [totalS, totalS],
             tss: 10,
             if: 0.7,
             timeInZoneS: [0, 0, 0, 0, 0, 0, 0],
