@@ -98,6 +98,14 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   back as the same label ([#539](https://github.com/gerchowl/crank/issues/539))
 - serde_json parses floats exactly (`float_roundtrip`, workspace-wide), so a value read back from JSON has the bits
   it was written with; its default parsing can be one ULP off ([#539](https://github.com/gerchowl/crank/issues/539))
+- `hil_fec analyse` (Part B) reads a capture once into one timeline (ADR-0007): stamps must not go back in file
+  order and no line may be malformed (else no result), ties count in file order, and checks read typed events only
+  (samples, writes, requests, command statuses, measurements, stamps); power and cadence come from updates (the
+  page-25 count changed); checks 6, 9 and 12 must write exactly their procedure's control writes, and a check 6
+  that does not measures no power lag; check 8 needs 3 fresh speeds per segment; the live silence guard and the
+  analyser share one threshold; the reply accounting no longer panics on a missing line. The live writer stamps
+  each line under the capture lock (`Capture::record_now`, `record_aux_now`), so file order is time order
+  ([#516](https://github.com/gerchowl/crank/issues/516))
 
 ### Security
 
