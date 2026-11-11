@@ -1,6 +1,6 @@
 # ADR-0006: Build speed: Nix layout and binary caches
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-10: #604 option 3, #608 confirmed, #615 option 1)
 - **Date:** 2026-11-09
 - **Issue:** #580
 - **Related:** ADR-0001 §9 (Nix, CI, distribution; this ADR amends §9.4 and §9.6), `flake.nix`,
@@ -36,6 +36,10 @@ in which a small edit is cheap. Today:
   aarch64-linux k3s cluster; a local macOS VM does only what needs macOS. This ADR designs that within the
   fleet's existing runner design (g-fleet's k3s lane design, ADR-032, and its runner pool design), which it
   aligns with and does not fork.
+- **Owner decisions (2026-11-10, on this ADR's review).** The runner engine is the pool, not ARC (#608).
+  macOS work goes to a Darwin Nix builder now and to a macOS runner VM later, with #426 (#615 option 1).
+  Release stays on GitHub-hosted macOS until g-fleet#1020 is fixed, then moves to the lane (#604 option 3). §5
+  lists them.
 
 ### 1.1 Measurements
 
@@ -45,7 +49,7 @@ outputs are listed in the PR. The tool is `scripts/nix-build-profile.py`: it rea
 wall time, and how often each workspace crate was compiled (cargo's `Compiling|Checking|Documenting
 crank-<name> v… (` lines; dependencies come from the vendor directory and are not counted).
 
-**Host and method.** The owner's Mac Studio (Apple Silicon), shared with other agents, under the repository's
+**Host and method.** The owner's Apple Silicon host, shared with other agents, under the repository's
 host rules: `--cores 2 --max-jobs 1`, local builds only (`--option builders ""`), one heavy job at a time. Two
 cores make the absolute times long; read them as relative to each other. "Cold" means every crank
 derivation is new: a scratch clone adds an environment variable `CRANK_MEASURE_SALT` to `common` and to the
@@ -248,8 +252,8 @@ The fleet's CI design is g-fleet ADR-032 (the k3s doc) and the runner pool (the 
   Mach-O files), `install-app` (`renamex_np`), and `clippy` and `rust-tests` (nextest) for the Darwin `cfg` code
   and the Darwin stdenv's linker. Everything else is platform-independent and runs once, on Linux. The flake's
   `checks.aarch64-darwin` shrinks to that set (#602).
-- **Where macOS work runs: the macOS guest as a Nix builder, not a runner VM (Recommended; this departs from
-  the owner's topology of a macOS tart VM as Release builder, so it is the owner's decision, #615).** Every item in that
+- **Where macOS work runs: the macOS guest as a Nix builder, not a runner VM (decided by the owner, #615
+  option 1, 2026-11-10: the Darwin builder now; the owner's macOS tart VM later, with #426, §3.8).** Every item in that
   list is a Nix derivation for `aarch64-darwin`. It needs a Darwin *builder*, not a GitHub job on macOS. The
   host's macOS compute guest is already the fleet's aarch64-darwin remote builder; the Linux guest's nix-daemon
   gets it as a builder for `aarch64-darwin`, and the crank job on the Linux lane runs
@@ -259,11 +263,12 @@ The fleet's CI design is g-fleet ADR-032 (the k3s doc) and the runner pool (the 
   guest module, "THE 2-GUEST LIMIT"), which is why the per-job macOS runner VMs are off
   and why the pool's macOS lane (role label `crank-macos-<size>`; its tart backend still unbuilt, "wave 2") would have
   no slot to start in. The release packaging that today calls `ditto`, `plutil` and `shasum` on a macOS runner
-  moves into a derivation and Python (`crank-app-zip`: `zip -X -r`, the plist read with `plistlib`), so the
-  Release job itself runs on Linux too.
+  moves into a derivation and Python (`crank-app-zip`: `zip -X -r`, the plist read with `plistlib`). The
+  derivation lands now; Release keeps building it on GitHub-hosted macOS until g-fleet#1020 is fixed, then the
+  Release job moves to the Linux lane too (§4, #604 option 3).
 - **When a macOS runner VM becomes necessary.** Developer ID signing and notarization (#47, #426) need the signing
   identity in a keychain and `notarytool`, which no Nix build provides. That is the first job that needs a macOS
-  runner, and it goes to the pool's macOS lane once a guest slot is free (the pool's "Day-1 configuration":
+  runner, and it goes to the macOS runner VM the owner chose for later (#615), the pool's macOS lane, once a guest slot is free (the pool's "Day-1 configuration":
   `max_vms = 1`, 2 only after the per-repo tart runners retire). It is out of scope here; #426 owns it.
 
 ### 2.4 Self-hosted runners on a public repository
@@ -337,7 +342,7 @@ store path hash, not by system, so one cache and one public key cover both. What
 
 | Source | What | When | Who holds the push credential |
 |---|---|---|---|
-| CI on the Linux lane | the closure of the job's declared outputs: `crank-deps`, `crank-bins` (with L2: each crate's derivation), the check outputs, `crank-app` and `crank-app-zip` for aarch64-darwin (they come back from the Darwin builder into the Linux guest's store) | after a job **succeeds**, for `push` to `dev`/`main`, `merge_group` on `dev` and the Release workflow; never for `pull_request` or `workflow_dispatch` on `release/*` dry runs before merge | the runner pool, the trusted dispatcher (g-fleet#469 decision 4: "Builds are pushed to attic by the dispatcher, not by the job … signed with a key that jobs never see"). The pods never see it. The push from the Linux guest's store is g-fleet#1447 |
+| CI on the Linux lane | the closure of the job's declared outputs: `crank-deps`, `crank-bins` (with L2: each crate's derivation), the check outputs, `crank-app` and `crank-app-zip` for aarch64-darwin (they come back from the Darwin builder into the Linux guest's store) | after a job **succeeds**, for `push` to `dev`/`main`, `merge_group` on `dev` and the Release workflow once it runs on the lane (after g-fleet#1020, §4); never for `pull_request` or `workflow_dispatch` on `release/*` dry runs before merge | the runner pool, the trusted dispatcher (g-fleet#469 decision 4: "Builds are pushed to attic by the dispatcher, not by the job … signed with a key that jobs never see"). The pods never see it. The push from the Linux guest's store is g-fleet#1447 |
 | Owner builds on the owner's Macs | the same set, from `just cache-push` (`nix build --print-out-paths` of `.#crank-app` and the Rust checks, piped to `attic push`) | when the owner wants a local build shared | the owner's attic login on the infra-domain Macs (g-fleet `modules/home/common.nix`, `attic_push_token`); the recipe never reads, prints or stores it, and refuses when no login is configured |
 | Agent builds through `heavy` | nothing | never | none: agents only substitute. Their inputs are unreviewed branches, and a PR branch is cheaper to rebuild than to pollute the attic with (k3s doc, "Nix in pods") |
 
@@ -370,8 +375,9 @@ No agent creates, reads or stores a secret. The owner:
 4. **g-fleet decisions.** Merge the g-fleet changes of §2.9 (crank's row with `workflow_dispatch`, the Darwin
    builder for the Linux guest, the pool's trusted attic push) when their PRs come; g-fleet merges are the
    owner's.
-5. **Release verification.** Accept that release provenance names a self-hosted runner (§4): installers drop
-   `--deny-self-hosted-runners` and keep `--signer-workflow` and `--source-ref`.
+5. **Release verification.** Decided (#604 option 3): nothing changes while Release stays on GitHub-hosted
+   macOS. When it moves to the lane after g-fleet#1020, installers drop `--deny-self-hosted-runners` and keep
+   `--signer-workflow` and `--source-ref` (§4).
 6. **Attic push from a Mac.** Run `just cache-push` from an infra-domain Mac after a local build worth sharing.
 
 No Cachix token, no R2 bucket and no runner registration token are needed: the fleet's CI GitHub App is
@@ -387,7 +393,7 @@ Each sub-issue's acceptance is tied to a number measured here.
 | 2 | #602 | aarch64-linux system, Darwin check set, `just check` on both systems | — | macOS job ≤ 20 min (35.2 min, run 42541163301) |
 | 3 | #606 | `just cache-push` (owner) | — | a second Mac builds nothing |
 | 4 | #603 | the gate on the lane through a merge queue, attic only, hosted fallback, `magic-nix-cache` removed | g-fleet#858, #1445, #1446, #1447; owner actions 1–3 | `crank-deps` substituted, not built (built in 10 of 10 jobs, Table 1); gate ≤ 12 min (21.6 / 35.2 min, run 42541163301) |
-| 5 | #605 | Release on the lane: `crank-app-zip`, provenance | #603, #604 and #615 (owner), g-fleet#1445, #1446 | release build job ≤ 15 min (27.5 min, run 42104438450; 36.8 min, run 42529294719) |
+| 5 | #605 | `crank-app-zip` now (built on GitHub-hosted macOS); Release on the lane and its provenance after g-fleet#1020 (#604 option 3) | the zip: — ; the move: #603, g-fleet#1020, #1445, #1446 | release build job ≤ 15 min (27.5 min, run 42104438450; 36.8 min, run 42529294719) |
 | 6 | #607 | L2: per-crate shipped binaries, go/no-go | #601 | warm `crank-app` ≤ 50 % of L1 |
 
 1–3 speed up every build today and do not wait for g-fleet.
@@ -398,7 +404,7 @@ Filed for this ADR (none of them changes g-fleet; each is the owner's to merge):
 
 | Issue | What crank needs | Blocks |
 |---|---|---|
-| g-fleet#1445 | `workflow_dispatch` rows (refs `dev`, `release/*`) in the pool's policy, hook and gate; crank's three rows | Release and Prepare Release on the lane |
+| g-fleet#1445 | `workflow_dispatch` rows (refs `dev`, `release/*`) in the pool's policy, hook and gate; crank's three rows | Prepare Release on the lane; Release after g-fleet#1020 |
 | g-fleet#1446 | the Darwin builder for the Linux guest's nix-daemon, so a lane job builds `aarch64-darwin` derivations | the Darwin set on the lane |
 | g-fleet#1447 | the pool's trusted attic push from the Linux guest's store (credential held by a system service, never by pods) | attic hits for CI-built outputs |
 | g-fleet#1448 | the macOS lane's trusted-events layers for public repositories | #426's signing job only |
@@ -449,19 +455,19 @@ Rejected, measured (§2.6).
 
 ### 3.7 ARC runner scale sets on the k3s cluster
 
-Named in the owner's message. Rejected by the fleet's ADR-032 on 2026-10-25/26 for this cluster, and crank follows
+Named in the owner's message. The owner confirmed the pool instead on 2026-11-10 (#608). Rejected by the fleet's ADR-032 on 2026-10-25/26 for this cluster, and crank follows
 it: ARC cannot filter `workflow_job` by event, ref or head repository, which is the trust boundary for a public
 repository; the pool's JIT pods do (k3s doc, "Runner engine"; "Divergence from ADR-030": the fleet's other ARC
 installation stays for private repositories).
 
-### 3.8 A macOS runner VM for the Darwin gate and the release build (the owner's topology; pending #615)
+### 3.8 A macOS runner VM for the Darwin gate and the release build (the owner's topology; later, #615)
 
 The owner's topology of 2026-11-08: a local macOS tart VM is the final Release builder and runs the macOS-only
 checks, with the same caches. Its advantages are real: one VM per job, destroyed after, and a release built on
-macOS by the job itself. The pool's macOS lane (one-shot tart clones, role label `crank-macos-<size>`) for the Darwin set. Not recommended for now, the owner decides (#615): the
-host's two macOS guest slots are taken, so it would wait for a slot that never frees; its tart backend is
-unbuilt; and every Darwin item is a Nix derivation a builder can build. It is the right home for #426's signing
-job. A persistent runner inside the compute guest was rejected outright: a long-lived runner on a public
+macOS by the job itself. The pool's macOS lane (one-shot tart clones, role label `crank-macos-<size>`) would
+host it. Not now (owner, #615 option 1, 2026-11-10): the host's two macOS guest slots are taken, so it would
+wait for a slot that never frees; its tart backend is unbuilt; and every Darwin item is a Nix derivation a
+builder can build. It comes later, together with #426's Developer ID signing job, which needs it. A persistent runner inside the compute guest was rejected outright: a long-lived runner on a public
 repository keeps state between jobs, and the fleet-runner-onboard skill and the pool refuse public repositories
 for it.
 
@@ -477,21 +483,30 @@ break the Darwin build and land green (ADR-0001 §9.6's known risk).
   gate moves from `pull_request` (GitHub-hosted x86_64-linux) to `merge_group` (the lane, aarch64-linux plus the
   Darwin set), and the post-merge macOS run is folded into the queue's gate. ADR-0001 gets an amendment note
   pointing here when the first implementation PR lands.
-- **Release provenance changes.** The attestation will name a self-hosted runner. `release.yml`'s own check and
-  the installer command in RELEASING.md drop `--deny-self-hosted-runners` and keep `--signer-workflow`
-  `…/release.yml` and `--source-ref`. The trust an installer places in the bytes moves from GitHub's runner fleet
-  to the owner's host and to everyone with Nix trust on it (g-fleet#1020). That is a weaker statement than today's,
-  and RELEASING.md says so. Until Developer ID signing (#426) there is no other signature to lean on.
-- **Release bytes can come from the attic.** A release build substitutes what trusted CI already built for the
-  same revision. The attestation still binds the zip to the Release run that packaged it, not to a build from
-  source.
+- **Release provenance changes in two phases (owner, #604 option 3, 2026-11-10).**
+  - *Until g-fleet#1020 is fixed:* Release stays on GitHub-hosted macOS (`macos-latest`, no attic, about
+    27 min, run 42104438450) and builds `crank-app-zip` there. `release.yml`'s own check and the installer
+    command in RELEASING.md keep `--deny-self-hosted-runners`, `--signer-workflow` `…/release.yml` and
+    `--source-ref`. RELEASING.md's guarantee is unchanged: the attestation names a GitHub-hosted runner, so the
+    bytes were built on GitHub's runner fleet from the attested workflow and ref; it proves where they were
+    built, not that they were released.
+  - *After g-fleet#1020:* the Release job moves to the lane (#605). The attestation names a self-hosted runner,
+    so both checks drop `--deny-self-hosted-runners` and keep `--signer-workflow` and `--source-ref`.
+    RELEASING.md's guarantee becomes: the bytes were built by the attested workflow and ref on the owner's
+    self-hosted runner pool, and the trust an installer places in them extends to the owner's host and to
+    everyone with Nix trust on it. That is weaker than the first phase, and RELEASING.md says so. Until
+    Developer ID signing (#426) there is no other signature to lean on.
+- **Release bytes can come from the attic (second phase only).** A release build on the lane substitutes what
+  trusted CI already built for the same revision. The attestation still binds the zip to the Release run that
+  packaged it, not to a build from source.
 - **The repository's process changes.** Agents land PRs through the merge queue (`gh pr merge --auto`), and a red
   queue run removes the PR from the queue instead of turning `dev` red. AGENTS.md and RELEASING.md change with
   the implementation.
 - **Local `just check` grows to two systems.** It builds `.#checks.aarch64-darwin` (the Darwin set) and
   `.#checks.aarch64-linux` (everything) through the host's builders, the same targets as CI: "local CI is CI".
 - **CI stops depending on hosted-runner availability** for its normal path (the macOS acquisition problem of
-  #480), and starts depending on the lane, the pool, the Darwin builder and the attic. The fallback (§2.4) keeps
+  #480; Release keeps a GitHub-hosted macOS job until g-fleet#1020, §4), and starts depending on the lane,
+  the pool, the Darwin builder and the attic. The fallback (§2.4) keeps
   merges possible when they are down, at today's speed.
 - **x86_64-linux stops being built by CI.** It still evaluates. If a Linux bundle (#41) ships for x86_64, its
   build gets its own job then.
@@ -499,14 +514,14 @@ break the Darwin build and land green (ADR-0001 §9.6's known risk).
   #1445, #1446 and #1447 land. The layout (§2.1) and the aarch64-linux flake work do not wait for g-fleet and
   speed up every build, local and CI, at once.
 
-## 5. Open questions
+## 5. Owner decisions and open questions
 
-| Question | Issue | Milestone |
+| Question | Decision (owner, 2026-11-10) | Issue |
 |---|---|---|
-| The owner named ARC; the fleet's lane is the runner pool, not ARC. This ADR follows the fleet (§3.7). Confirm, or reopen ADR-032 in g-fleet | #608 | — |
-| Release provenance from a self-hosted runner before #426, or keep Release on GitHub-hosted until signing lands? | #604 | — |
-| Does L2 (per-crate) pass its go/no-go, crank-desktop's Tauri build script included? | #607 | — |
-| macOS work on the compute guest as a Nix builder (recommended: no free guest slot, no tart backend yet, every macOS item is a derivation; cost: unsandboxed Darwin builds shared with agents, a builder key on the Linux guest) or the owner's macOS runner VM (cleaner one-VM-per-job isolation; needs a freed guest slot, the pool's tart backend and g-fleet#1448)? | #615 | — |
+| The owner named ARC; the fleet's lane is the runner pool, not ARC (§3.7) | The fleet runner pool's one-shot JIT pods (g-fleet ADR-032), not ARC | #608 (closed) |
+| Release provenance from a self-hosted runner before #426, or keep Release on GitHub-hosted? | Option 3: Release stays on GitHub-hosted macOS with `--deny-self-hosted-runners` until g-fleet#1020 is fixed, then moves to the lane (§4) | #604 |
+| macOS work on the compute guest as a Nix builder, or the owner's macOS runner VM? | Option 1: the Darwin Nix builder now (§2.3); the macOS runner VM later, together with Developer ID signing (#426, §3.8) | #615 |
+| Does L2 (per-crate) pass its go/no-go, crank-desktop's Tauri build script included? | Open: decided by #607's measurement | #607 |
 
 ## 6. References
 
