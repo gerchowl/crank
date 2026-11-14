@@ -61,7 +61,8 @@ test-changed base="origin/dev":
 model:
     python3 docs/adr/models/trainer_following.py docs/adr/0002-ble-trainer.md crates/crank-engine/tests/fixtures/following.json
 
-# Executable model of the eased ERG target, ADR-0002 §7.10 (also the `slew-model` flake check).
+# Model of the eased ERG target with Ruckig in the loop, ADR-0002 §7.10. Needs the Ruckig bindings
+# (`pip install ruckig==0.19.4`, not in nixpkgs; CI wiring is #634).
 slew-model *ARGS:
     python3 docs/adr/models/erg_slew.py {{ARGS}}
 

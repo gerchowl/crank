@@ -808,7 +808,7 @@ the reasons are in the ADR section named:
 | `erg.reengageAfterS` | s, 0.25 s grid | 1.5 | 1.5–5 | ADR-0002 §7.4 |
 | `slew.riseWPerS` | W/s, integer | 20 | 5–50 | ADR-0002 §7.10.4 (#585) |
 | `slew.fallFactor` | × `riseWPerS`, on a 0.25 grid; the product ≥ 20 W/s | 2.0 | 1–4 | ADR-0002 §7.10.4 |
-| `slew.easeS` | s, 0.25 s grid | 2 | 1–4 | ADR-0002 §7.10.4 |
+| `slew.easeS` | s, 0.25 s grid: the ease time, rest to full rise rate; Ruckig's acceleration limit `2·rise/τ` and jerk limit `4·rise/τ²` | 2 | 1–4 | ADR-0002 §7.10.4 |
 
 `slew` is implemented by #620. A new group changes no existing field's meaning or unit, so `Tuning::VERSION` stays
 1; a stored layer written before it resolves unchanged, because the merge starts from the defaults.
