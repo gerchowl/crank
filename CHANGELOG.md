@@ -10,6 +10,11 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- The core's snapshot channel beside the ride stream and the link channel (ADR-0001 §4.3, step 3a of #598):
+  `ui_open`/`ui_ack` and `UiFrame` (the full state, one source per device, and up to 256 points per series from the
+  channel's cursor, ≤ 32 KB), ack window 1, ≤ 10 Hz, a 1 s heartbeat, a backfill from index 0 for a new channel, and a
+  lifecycle by channel id; the engine appends the display series (power 4 Hz, cadence and heart rate 2 Hz). The app
+  does not use it yet (#598) ([#598](https://github.com/gerchowl/crank/issues/598))
 - Route model and import, no UI or store yet (ADR-0005 §2.1, §2.2.1–2.2.2, §2.2.4–2.2.5): `crank_domain::route`
   types, a hardened GPX 1.0/1.1 reader (`quick-xml`; a DOCTYPE, any entity but XML's five and nesting deeper than 32
   are refused, every element must stand where the GPX XSD content model puts it, and everything inside `<extensions>`

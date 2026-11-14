@@ -62,6 +62,20 @@ export const commands = {
 	 */
 	linksAck: (id: LinksId, seq: number) => typedError<null, ApiError>(__TAURI_INVOKE("links_ack", { id, seq })),
 	/**
+	 *  Open the calling window's snapshot channel (ADR-0001 §4.3), closing its older ones.
+	 * 
+	 *  # Errors
+	 *  As [`Core::ui_open`].
+	 */
+	uiOpen: (channel: Channel<UiFrame>) => typedError<UiChannelId, ApiError>(__TAURI_INVOKE("ui_open", { channel })),
+	/**
+	 *  The window applied frame `seq` of its snapshot channel.
+	 * 
+	 *  # Errors
+	 *  As [`Core::ui_ack`].
+	 */
+	uiAck: (channel: UiChannelId, seq: number) => typedError<null, ApiError>(__TAURI_INVOKE("ui_ack", { channel, seq })),
+	/**
 	 *  The workout library.
 	 * 
 	 *  # Errors
@@ -272,6 +286,29 @@ export type DeviceRole =
 "trainer" | 
 /**  The heart-rate strap. */
 "heart_rate";
+
+/**  One role: its pairing, the keeper's phase and, while a ride holds it, the ride's link. */
+export type DeviceView = {
+	/**  `null` when nothing is paired for the role; each string cut to 64 bytes. */
+	paired: PairedDevice | null,
+	/**  The keeper's phase (ADR-0002 §5.1.1); `null` exactly when not paired. */
+	phase: LinkPhase | null,
+	/**
+	 *  The ride's link state, from the same engine status as `ride.status`; set exactly when
+	 *  `phase` is `riding` (`connecting` until the load has installed its ride).
+	 */
+	link: LinkStatus | null,
+	/**  The keeper's latest sample while `warm`; `null` otherwise. */
+	sample: LinkSample | null,
+};
+
+/**  Both device roles (ADR-0001 §4.3.6): one source per device. */
+export type DevicesView = {
+	/**  The trainer. */
+	trainer: DeviceView,
+	/**  The strap. */
+	strap: DeviceView,
+};
 
 /**
  *  The ERG low-cadence release and its re-engagement (ADR-0002 §7.4, amended 2026-11-09,
@@ -508,6 +545,16 @@ export type LinkView = {
  */
 export type LinksId = number;
 
+/**  The latest tick's values; each `null` while paused, lost, in a gap or not riding. */
+export type LiveValues = {
+	/**  Power, W. */
+	powerW: number | null,
+	/**  Cadence, rpm. */
+	cadenceRpm: number | null,
+	/**  Heart rate, bpm. */
+	hrBpm: number | null,
+};
+
 /**  The phases of a load in flight (`ride_status().load`, ADR-0002 §5.1.4). */
 export type LoadProgress = {
 	/**
@@ -576,6 +623,18 @@ export type Phase =
 "cooldown" | 
 /**  Unconstrained riding. */
 "free";
+
+/**  Up to 256 consecutive points of one series, oldest first. */
+export type Points = {
+	/**  Index of the first point, always the length the page holds; 0 starts the series again. */
+	from: number,
+	/**  Session time, s. */
+	t: (number | null)[],
+	/**  Workout time, s. */
+	w: (number | null)[],
+	/**  The value: W, rpm or bpm. */
+	v: number[],
+};
 
 /**  Requested power or heart-rate intensity. */
 export type PowerTarget = 
@@ -655,6 +714,16 @@ export type RideEnded = {
 	forced: boolean,
 };
 
+/**  How a ride ended. */
+export type RideEnding = 
+/**  The engine ended it. */
+"finished" | 
+/**
+ *  The core ended it by force, the engine stuck or gone (#331): recorded as aborted,
+ *  without a summary.
+ */
+"forced";
+
 /**  Answer of `ride_load`. */
 export type RideLoaded = {
 	/**  Id the ride record will have once started. */
@@ -719,6 +788,25 @@ export type RideSummary = {
 	blocks: BlockSummary[],
 };
 
+/**  The loaded ride, or the last ended one (ADR-0001 §4.3.2). */
+export type RideView = {
+	/**  The id `ride_load` answered. */
+	id: string,
+	/**  `null` for a free ride. */
+	workoutId: string | null,
+	/**  The engine's status. */
+	status: StreamStatus,
+	/**  This tick's values, for the big numbers. */
+	live: LiveValues,
+	/**  `null` until the ride is over. */
+	ended: RideEnding | null,
+	/**
+	 *  A bounded engine request timed out, or the ride in progress has not published its
+	 *  status for 1 s (#351); kept until the ride ends.
+	 */
+	engineUnresponsive: boolean,
+};
+
 /**  A peripheral seen by a scan. */
 export type ScannedDevice = {
 	/**  Host-local peripheral id: pass it to `device_pair`. */
@@ -731,6 +819,16 @@ export type ScannedDevice = {
 	heartRate: boolean,
 	/**  Already remembered in any role. */
 	paired: boolean,
+};
+
+/**  The points of each series from the channel's cursor. */
+export type SeriesDelta = {
+	/**  Power, W, 4 Hz. */
+	power: Points,
+	/**  Cadence, rpm, 2 Hz. */
+	cadence: Points,
+	/**  Heart rate, bpm, 2 Hz. */
+	hr: Points,
 };
 
 /**  Validation severity. */
@@ -1048,6 +1146,38 @@ export type Tuning = {
 	v: number,
 	/**  The ERG low-cadence release (ADR-0002 §7.4). */
 	erg: ErgTuning,
+};
+
+/**
+ *  A window's snapshot channel (`ui_open`, ADR-0001 §4.3.5): a per-process counter from 1,
+ *  never reused, owned by the window that opened it.
+ */
+export type UiChannelId = number;
+
+/**
+ *  One frame of a window's snapshot channel (ADR-0001 §4.3.2): the full current state and
+ *  the points from the channel's cursor.
+ * 
+ *  The page, for each frame of the channel it holds and in arrival order, replaces `ride`,
+ *  `loading` and `devices`; per series replaces its points when `from` is 0 and appends them
+ *  otherwise; then acks with `ui_ack(channel, seq)`. Nothing else is sent until that ack.
+ */
+export type UiFrame = {
+	/**  The channel the frame belongs to; the page acks with it. */
+	channel: UiChannelId,
+	/**  Per channel, from 0, +1 per frame (wrapping); the ack names it. */
+	seq: number,
+	/**
+	 *  The loaded ride, or the last ended one; `null` before any, after an unload, and from
+	 *  the start of a load until it installs its ride.
+	 */
+	ride: RideView | null,
+	/**  A `ride_load` is under way; its per-device progress is `devices`. */
+	loading: boolean,
+	/**  Both roles, always. */
+	devices: DevicesView,
+	/**  The points from this channel's cursor. */
+	series: SeriesDelta,
 };
 
 /**  Machine-readable prescription diagnostics; messages retain reference wording. */
