@@ -2056,6 +2056,10 @@ and is tight at 1024. At 1024 the 4-column metric column is ≈ 320 px wide, so 
     gap. Polar's adjacent zones share an edge; it belongs to the higher zone (60 % is Z2). Below 50 % of HR max is
     still Z1 (Friel's Z1 has no floor either, and a blank would read as "no data"); above 100 % is still Z5 (the HR
     max is an estimate the rider can pass). Unit tests at every edge: `app/src/ride/hrZone.test.ts`.
+  - **Canonical copy.** The tables and the rounding rule live in the app, `app/src/ride/hrZone.ts`, and that copy is
+    canonical for now. They move to `crank-domain`, beside the power `time_in_zone_s` of
+    `crates/crank-domain/src/workout/compiled.rs`, before Review shows HR time in zone (#645), so the live label and the
+    stored ride never read two copies.
   - **Label.** The zone as the table names it, then the model it is read in: "Z2 · LTHR", "Z3 · HRmax"; at most 10
     characters ("Z5a · LTHR"), 12 px chrome in the number face (§18.7 rule 5). No zone names: Friel's table gives
     none, and the model word tells a rider why the same HR is Z4 on one setup and Z3 on another.
@@ -2067,7 +2071,9 @@ and is tight at 1024. At 1024 the 4-column metric column is ≈ 320 px wide, so 
     neither reference is known: the sub-line stays empty, as before #586. Settings → Athlete model then says so in one
     line: "No max or threshold heart rate yet, so the ride shows no heart-rate zone." (§5.9). The §5.8 answer
     "Medication that changes your heart rate?" turns HR zones off; it is to give no zone the same way, with the
-    health check (#117).
+    health check (#117). HR counts as lost only when the HR link reports lost (the ride's links, §6.5), as the tile
+    does: a value that stops updating before that keeps its number on the tile and its zone beside it, so the two
+    never disagree, and both go together when the link says lost.
   - **Where the references come from.** Nothing in the app sets them yet: the athlete model's estimates and manual
     overrides are #113 (Settings → Athlete model, on #90's persistence), so today every ride shows no zone and the
     hint shows. The seam is `app/src/athleteHr.ts` `useAthleteHr`.
