@@ -10,6 +10,11 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- The heart-rate zone beside the live HR on the ride screen (DESIGN §18.3 "Heart-rate zone"): Friel's seven bike
+  zones with an LTHR, five zones of % HR max without, none with neither; Settings → Athlete model lists both
+  references and, with neither known, says the ride shows no zone. LTHR joins the athlete model's inputs
+  (`spec/ONBOARDING.md` §3); nothing sets the references until Settings → Athlete model (#113)
+  ([#586](https://github.com/gerchowl/crank/issues/586))
 - Route model and import, no UI or store yet (ADR-0005 §2.1, §2.2.1–2.2.2, §2.2.4–2.2.5): `crank_domain::route`
   types, a hardened GPX 1.0/1.1 reader (`quick-xml`; a DOCTYPE, any entity but XML's five and nesting deeper than 32
   are refused, every element must stand where the GPX XSD content model puts it, and everything inside `<extensions>`

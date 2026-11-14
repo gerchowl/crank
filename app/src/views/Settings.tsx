@@ -2,7 +2,11 @@
 // the open section in one panel (9 columns). A section is a heading and its rows; a row is a label and its control, so a
 // later setting is one more row, and a later section one more entry in `SECTIONS`. Devices is the pairing section (#92);
 // Appearance is the theme choice (THEMES.md): the manual choice overrides Auto. Controls are 32 px (§18.4).
-import { Bluetooth, SunMoon, type LucideIcon } from "lucide-react";
+// Athlete model shows the heart-rate references the ride's HR zone reads (§18.3 "Heart-rate zone", #586) and, with
+// neither known, the one-line hint; its estimates and manual overrides are #113.
+import { Bluetooth, HeartPulse, SunMoon, type LucideIcon } from "lucide-react";
+import { useAthleteHr } from "../athleteHr";
+import { Num } from "../Num";
 import { navigate } from "../router";
 import {
   THEME_PREFS,
@@ -19,12 +23,41 @@ const LABEL: Record<ThemePref, string> = {
   light: "Light",
 };
 
-type Section = "devices" | "appearance";
+type Section = "devices" | "athlete" | "appearance";
 const SECTIONS: readonly [Section, string, LucideIcon][] = [
   ["devices", "Devices", Bluetooth],
+  ["athlete", "Athlete model", HeartPulse],
   ["appearance", "Appearance", SunMoon],
 ];
 const icon = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
+
+/** The ride's HR-zone hint (§18.3 "Heart-rate zone"): one line, shown while neither reference is known. */
+export const NO_HR_REFS =
+  "No max or threshold heart rate yet, so the ride shows no heart-rate zone.";
+
+function Athlete() {
+  const { hrMaxBpm, lthrBpm } = useAthleteHr();
+  const rows: [string, string, number | null][] = [
+    ["hrmax", "Max heart rate", hrMaxBpm],
+    ["lthr", "Threshold heart rate (LTHR)", lthrBpm],
+  ];
+  return (
+    <section className="settings-section" aria-labelledby="athlete-h">
+      <h2 id="athlete-h">Athlete model</h2>
+      {rows.map(([id, label, bpm]) => (
+        <div key={id} className="setting-row">
+          <span className="setting-label">{label}</span>
+          <span data-testid={id}>
+            {bpm === null ? "Not set" : <Num>{`${bpm} bpm`}</Num>}
+          </span>
+        </div>
+      ))}
+      {hrMaxBpm === null && lthrBpm === null && (
+        <p className="settings-note">{NO_HR_REFS}</p>
+      )}
+    </section>
+  );
+}
 
 function Appearance() {
   const { pref, notice } = useThemePref();
@@ -64,7 +97,8 @@ function Appearance() {
 }
 
 export function Settings({ sub }: { sub?: string }) {
-  const section: Section = sub === "devices" ? "devices" : "appearance";
+  const section: Section =
+    sub === "devices" || sub === "athlete" ? sub : "appearance";
   return (
     <div className="page settings">
       <h1>Settings</h1>
@@ -83,7 +117,13 @@ export function Settings({ sub }: { sub?: string }) {
           ))}
         </nav>
         <div className="settings-panel">
-          {section === "devices" ? <Devices /> : <Appearance />}
+          {section === "devices" ? (
+            <Devices />
+          ) : section === "athlete" ? (
+            <Athlete />
+          ) : (
+            <Appearance />
+          )}
         </div>
       </div>
     </div>
