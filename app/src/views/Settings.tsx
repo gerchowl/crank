@@ -44,14 +44,16 @@ function Athlete() {
   return (
     <section className="settings-section" aria-labelledby="athlete-h">
       <h2 id="athlete-h">Athlete model</h2>
-      {rows.map(([id, label, bpm]) => (
-        <div key={id} className="setting-row">
-          <span className="setting-label">{label}</span>
-          <span data-testid={id}>
-            {bpm === null ? "Not set" : <Num>{`${bpm} bpm`}</Num>}
-          </span>
-        </div>
-      ))}
+      <div className="setting-rows">
+        {rows.map(([id, label, bpm]) => (
+          <div key={id} className="setting-row">
+            <span className="setting-label">{label}</span>
+            <span data-testid={id}>
+              {bpm === null ? "Not set" : <Num>{`${bpm} bpm`}</Num>}
+            </span>
+          </div>
+        ))}
+      </div>
       {hrMaxBpm === null && lthrBpm === null && (
         <p className="settings-note">{NO_HR_REFS}</p>
       )}
