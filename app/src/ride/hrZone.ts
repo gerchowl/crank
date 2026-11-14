@@ -13,6 +13,8 @@
 // share their edge (60, 70, 80, 90); the edge belongs to the higher zone ("Z2 from 60 %"). Two choices of ours, each
 // in DESIGN: below 50 % of HR max is still Z1 (Friel's Z1 has no floor either, and a blank would read as no data), and
 // above 100 % is still Z5 (the HR max is an estimate the rider can exceed).
+//
+// This copy of the tables is canonical for now; they move to crank-domain before Review shows HR time in zone (#645).
 
 /** A zone: its label ("Z5a") and the model it is read in. */
 export interface HrZone {
