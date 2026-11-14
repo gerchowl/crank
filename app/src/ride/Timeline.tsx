@@ -93,48 +93,55 @@ export function Timeline({ blocks, totalS, workoutS }: Props) {
             : "Free ride · no plan"}
         </span>
       </div>
-      {/* eslint-disable-next-line no-restricted-syntax -- a data graphic, not an icon (DESIGN §18.7 rule 4 is about icons). */}
-      <svg
-        data-graphic
-        role="img"
-        aria-label="Workout blocks, the ridden part and your position"
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-      >
-        {shown.map((b, i) => {
-          const [s, e] = span(b);
-          const [from, to] = [b.powerFrom ?? 0, b.powerTo ?? b.powerFrom ?? 0];
-          return (
-            <path
-              key={i}
-              data-testid="chart-block"
-              data-block={i}
-              className="timeline-block"
-              data-ridden={
-                e <= workoutS ? "done" : s <= workoutS ? "now" : "ahead"
-              }
-              d={`M${left(s)},${H} L${left(s)},${y(from)} L${right(e)},${y(to)} L${right(e)},${H} Z`}
-              vectorEffect="non-scaling-stroke"
-            />
-          );
-        })}
-        <rect
-          className="timeline-ridden"
-          x={0}
-          y={0}
-          width={x(workoutS)}
-          height={H}
-        />
-        <line
-          data-testid="chart-cursor"
-          className="timeline-now"
-          x1={x(workoutS)}
-          x2={x(workoutS)}
-          y1={0}
-          y2={H}
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
+      {/* The bar's row is sized by the grid; the SVG fills it absolutely, never by a percentage height of a grid item
+          (#630: WKWebView resolved that against the whole strip and drew the blocks into the key row). */}
+      <div className="timeline-bar">
+        {/* eslint-disable-next-line no-restricted-syntax -- a data graphic, not an icon (DESIGN §18.7 rule 4 is about icons). */}
+        <svg
+          data-graphic
+          role="img"
+          aria-label="Workout blocks, the ridden part and your position"
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="none"
+        >
+          {shown.map((b, i) => {
+            const [s, e] = span(b);
+            const [from, to] = [
+              b.powerFrom ?? 0,
+              b.powerTo ?? b.powerFrom ?? 0,
+            ];
+            return (
+              <path
+                key={i}
+                data-testid="chart-block"
+                data-block={i}
+                className="timeline-block"
+                data-ridden={
+                  e <= workoutS ? "done" : s <= workoutS ? "now" : "ahead"
+                }
+                d={`M${left(s)},${H} L${left(s)},${y(from)} L${right(e)},${y(to)} L${right(e)},${H} Z`}
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
+          <rect
+            className="timeline-ridden"
+            x={0}
+            y={0}
+            width={x(workoutS)}
+            height={H}
+          />
+          <line
+            data-testid="chart-cursor"
+            className="timeline-now"
+            x1={x(workoutS)}
+            x2={x(workoutS)}
+            y1={0}
+            y2={H}
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+      </div>
       <div className="timeline-labels">
         {shown.map((b, i) => {
           const [s, e] = span(b);
