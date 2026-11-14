@@ -66,6 +66,11 @@ model:
 slew-model *ARGS:
     python3 docs/adr/models/erg_slew.py {{ARGS}}
 
+# Mutation check of that model: every rule of ADR-0002 §7.10.2 deleted in turn must make the
+# model fail (exit 0 = every mutant killed). Same interpreter requirement as `slew-model`.
+slew-mutants *ARGS:
+    python3 docs/adr/models/erg_slew_mutants.py {{ARGS}}
+
 # Regenerate the fixture crank-engine's `refines_the_model` test reads (#218).
 model-fixture:
     python3 docs/adr/models/trainer_following.py --emit-fixture crates/crank-engine/tests/fixtures/following.json
