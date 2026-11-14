@@ -2,7 +2,8 @@
 //! seconds as `f64`, `Option` as `T | null`).
 use crate::error::{ApiError, ErrorCode};
 use crank_domain::workout::{
-    CompiledWorkout, FlatBlock, Phase, Severity, ValidationIssue, ValidationKind, Workout,
+    CompiledWorkout, DslError, FlatBlock, Phase, Severity, ValidationIssue, ValidationKind,
+    Workout, WorkoutNode,
 };
 use crank_engine::{LinkStatus, StreamStatus};
 use serde::{Deserialize, Serialize};
@@ -391,6 +392,53 @@ impl TryFrom<&CompiledWorkout> for CompiledView {
             issues: c.issues.iter().map(WorkoutIssue::from).collect(),
         })
     }
+}
+
+/// Why a DSL text does not parse, as the editor shows it: the message, and the span of the
+/// offending token to select. The boundary owns this type: `crank-domain`'s `DslError` holds
+/// its span (and `DslErrorKind::NestingTooDeep` its bound) as `usize`, which TypeScript cannot
+/// carry without precision loss, so the span is converted with a checked cast. The kind is not
+/// carried: nothing in the UI branches on it (the editor shows the message, DESIGN §5.7).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DslProblem {
+    /// Display text.
+    pub message: String,
+    /// UTF-16 offset of the offending token in the text, as in JavaScript strings.
+    pub offset: u32,
+    /// Its UTF-16 length; zero selects the end of the input.
+    pub length: u32,
+}
+impl TryFrom<&DslError> for DslProblem {
+    type Error = ApiError;
+    fn try_from(e: &DslError) -> Result<Self, ApiError> {
+        let span = |n: usize| {
+            u32::try_from(n)
+                .map_err(|_| ApiError::new(ErrorCode::Internal, "DSL error span exceeds u32"))
+        };
+        Ok(Self {
+            message: e.message.clone(),
+            offset: span(e.offset)?,
+            length: span(e.length)?,
+        })
+    }
+}
+
+/// Answer of `parse_dsl`. A text that does not parse is an answer, not a failed command:
+/// the editor keeps the draft and shows the problem (DESIGN §5.7, #111).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum DslParse {
+    /// The text parses; every node has a fresh id.
+    Parsed {
+        /// The workout tree.
+        nodes: Vec<WorkoutNode>,
+    },
+    /// The text does not parse.
+    Invalid {
+        /// The first problem in the text.
+        problem: DslProblem,
+    },
 }
 
 /// Answer of `ride_load`.

@@ -2,8 +2,8 @@
 //! Tauri command functions, with the managed `Core` and a window of the mock runtime,
 //! and frames arriving on a real IPC `Channel`.
 use crank_core::{
-    Core, CoreConfig, DeviceLinkView, DeviceMode, DeviceRole, EngineHost, ErrorCode, LinkFrame,
-    LinkIntent, LinkPhase, ReleaseReason, RideOutcome,
+    Core, CoreConfig, DeviceLinkView, DeviceMode, DeviceRole, DslParse, EngineHost, ErrorCode,
+    LinkFrame, LinkIntent, LinkPhase, ReleaseReason, RideOutcome,
 };
 use crank_desktop::commands as cmd;
 use crank_devices::sim::SimConfig;
@@ -347,4 +347,46 @@ async fn links_intent_answers_null_for_every_intent_and_keeps_its_refusals() {
             );
         }
     }
+}
+
+/// The editor's commands (#111) on a library workout: its tree prints to its DSL, the DSL
+/// parses back to a tree that prints the same, and compiling the tree gives the library's
+/// compiled view; a parse answer is tagged by `outcome` on the wire.
+#[tokio::test]
+async fn the_editor_commands_agree_with_the_library() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = app(dir.path());
+    let core = app.state::<Core>();
+    for w in cmd::workouts_list(core.clone()).await.unwrap() {
+        let d = cmd::workout_get(core.clone(), w.id.clone()).await.unwrap();
+        let printed = cmd::print_dsl(core.clone(), d.workout.nodes.clone())
+            .await
+            .unwrap();
+        assert_eq!(printed, d.dsl, "{}", w.id);
+        let parsed = cmd::parse_dsl(core.clone(), d.dsl.clone(), d.workout.ftp)
+            .await
+            .unwrap();
+        let wire = serde_json::to_value(&parsed).expect("serialisable");
+        assert_eq!(wire["outcome"], "parsed", "{}", w.id);
+        let DslParse::Parsed { nodes } = parsed else {
+            unreachable!("tagged parsed")
+        };
+        assert_eq!(
+            cmd::print_dsl(core.clone(), nodes).await.unwrap(),
+            d.dsl,
+            "{}",
+            w.id
+        );
+        let compiled = cmd::compile_workout(core.clone(), d.workout.clone())
+            .await
+            .unwrap();
+        assert_eq!(compiled, d.compiled, "{}", w.id);
+    }
+    let bad = cmd::parse_dsl(core.clone(), "10m".into(), 250.0)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&bad).expect("serialisable")["outcome"],
+        "invalid"
+    );
 }

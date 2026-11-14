@@ -1,15 +1,18 @@
-// The core's workout commands behind `mockIPC` (`workouts_list`, `workout_get`, `ride_load`, `ride_status`), for the
-// Workouts tests and the design fixtures (app/e2e/design/fixture.tsx, #457).
+// The core's workout commands behind `mockIPC` (`workouts_list`, `workout_get`, `ride_load`, `ride_status`, and the
+// editor's `parse_dsl`, `print_dsl` and `compile_workout` from editorFixture.ts), for the Workouts tests and the design fixtures (app/e2e/design/fixture.tsx, #457).
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   CompiledView,
   LoadProgress,
   RideLoaded,
   WorkoutDetail,
+  Workout,
   WorkoutIssue,
+  WorkoutNode,
   WorkoutSummary,
 } from "../bindings";
 import { status as idleStatus } from "../stream/testBackend";
+import { editorCommands } from "./editorFixture";
 export const apiError = (code: string, message: string) => ({ code, message });
 
 export const SUMMARIES: WorkoutSummary[] = [
@@ -125,6 +128,8 @@ export type ApiErr = { code: string; message: string };
  * Everything from the storage step on happens while the core's `loading` flag is set (`ride_load`), so the mock raises
  * those refusals after the load's delay (the gate), with the in-flight conflict active meanwhile.
  * (The strap's failures never refuse a load: the ride runs without heart rate, `connect_links`.)
+ * The editor's commands answer, and refuse, as editorFixture.ts documents: only from the core's own answers.
+ *
  * core.rs `Core::ensure_start_allowed` (~1505) always passes today and is not modelled. A free ride (null id) skips the
  * workout checks only. Tauri itself rejects a call without its `workoutId` argument with a plain string.
  */
@@ -155,6 +160,7 @@ export function install(over: Partial<Backend> = {}): Backend {
       );
     return c;
   };
+  const editor = editorCommands();
   mockIPC((cmd, payload) => {
     const args = (payload ?? {}) as Record<string, unknown>;
     b.calls.push({ cmd, args });
@@ -210,6 +216,12 @@ export function install(over: Partial<Backend> = {}): Backend {
         };
         return load();
       }
+      case "parse_dsl":
+        return editor.parse_dsl(args.text as string, args.ftp as number | null);
+      case "print_dsl":
+        return editor.print_dsl(args.nodes as WorkoutNode[]);
+      case "compile_workout":
+        return editor.compile_workout(args.workout as Workout);
       case "ride_status":
         return {
           load: b.loading > 0 || b.coreLoading ? b.progress : null,
