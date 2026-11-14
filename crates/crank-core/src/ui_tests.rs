@@ -8,9 +8,14 @@ use crank_engine::{
     StreamComponent, StreamFollowing, StreamPauseReason, StreamRideState, VirtualClock,
 };
 use proptest::prelude::*;
-use tokio::{sync::mpsc, time::sleep};
+use tokio::{
+    sync::mpsc,
+    time::{Instant, sleep},
+};
 
 const MS: fn(u64) -> Duration = Duration::from_millis;
+/// The design's least frame spacing (§4.3.3: at most 10 Hz), not the constant under test.
+const DESIGN_SPACING: Duration = Duration::from_millis(100);
 /// The whole-frame bound of §4.3.3.
 const FRAME_BYTES: usize = 32 * 1024;
 
@@ -33,7 +38,11 @@ struct Rig {
 fn rig() -> Rig {
     let keeper = watch::Sender::new(LinkFrame::default());
     Rig {
-        ui: Arc::new(Ui::new(keeper.subscribe(), Duration::from_secs(1))),
+        ui: Arc::new(Ui::new(
+            keeper.subscribe(),
+            Arc::new(VirtualClock::new(1)),
+            Duration::from_secs(1),
+        )),
         keeper,
         status: watch::Sender::new(idle()),
         store: SeriesStore::default(),
@@ -88,16 +97,12 @@ impl Rig {
         let ui = Arc::downgrade(&self.ui);
         let id = self
             .ui
-            .open(
-                Some(window.into()),
-                Arc::new(VirtualClock::new(1)),
-                move |f: UiFrame| {
-                    let snapshot = ui.upgrade().map(|ui| ui.snapshot());
-                    let snapshot = snapshot.ok_or(SinkClosed)?;
-                    tx.send((f, snapshot, Instant::now()))
-                        .map_err(|_| SinkClosed)
-                },
-            )
+            .open(Some(window.into()), move |f: UiFrame| {
+                let snapshot = ui.upgrade().map(|ui| ui.snapshot());
+                let snapshot = snapshot.ok_or(SinkClosed)?;
+                tx.send((f, snapshot, Instant::now()))
+                    .map_err(|_| SinkClosed)
+            })
             .unwrap();
         (id, rx)
     }
@@ -345,9 +350,7 @@ async fn lifecycle_by_channel_id() {
     // a failed send closes the channel
     let failing = rig
         .ui
-        .open(Some("dead".into()), Arc::new(VirtualClock::new(1)), |_| {
-            Err(SinkClosed)
-        })
+        .open(Some("dead".into()), |_| Err(SinkClosed))
         .unwrap();
     sleep(MS(1)).await;
     assert_eq!(
@@ -359,12 +362,7 @@ async fn lifecycle_by_channel_id() {
     for n in 0..14 {
         rxs.push(rig.open(&format!("w{n}")));
     }
-    let refused = rig
-        .ui
-        .open(Some("w99".into()), Arc::new(VirtualClock::new(1)), |_| {
-            Ok(())
-        })
-        .unwrap_err();
+    let refused = rig.ui.open(Some("w99".into()), |_| Ok(())).unwrap_err();
     assert_eq!(refused.code, ErrorCode::Conflict);
     rig.open("w0");
     let ids: Vec<u32> = rxs.iter().map(|(id, _)| id.0).collect();
@@ -388,7 +386,7 @@ async fn frames_are_spaced_and_an_idle_core_beats_once_a_second() {
             }
         }
     }
-    assert!(at.windows(2).all(|w| w[1] - w[0] >= SPACING));
+    assert!(at.windows(2).all(|w| w[1] - w[0] >= DESIGN_SPACING));
     assert!(at.len() >= 38, "{} frames for 40 ticks", at.len());
     // idle: the ride is over, nothing changes
     rig.status.send_modify(|st| st.state = RideState::Finished);
@@ -535,6 +533,66 @@ async fn every_frame_is_within_the_bound_at_every_cap() {
     assert_eq!(frames[0].series.power.v.len(), CHUNK);
 }
 
+/// §4.3.5 "engine unresponsive", the silent-status path (#351): a ride in progress whose
+/// status watch goes unwritten for 1 s on the core clock is shown `engine_unresponsive`. The
+/// flag stays when the status comes back (it stays until the ride ends) and is not shown once
+/// the ride has ended.
+#[tokio::test(start_paused = true)]
+async fn a_ride_whose_status_goes_silent_for_a_second_is_unresponsive_until_it_ends() {
+    let mut rig = rig();
+    rig.install();
+    rig.tick();
+    let flag = |rig: &Rig| rig.ui.snapshot().ride.unwrap().engine_unresponsive;
+    assert!(!flag(&rig));
+    sleep(MS(999)).await;
+    assert!(!flag(&rig), "silent for less than 1 s");
+    sleep(MS(1)).await;
+    assert!(flag(&rig), "silent for 1 s");
+    rig.tick();
+    assert!(flag(&rig), "kept when the status comes back");
+    rig.status.send_modify(|st| st.state = RideState::Finished);
+    assert!(!flag(&rig), "an ended ride is not shown unresponsive");
+    // a ride that keeps writing its status is never flagged, however long it runs
+    rig.install();
+    for _ in 0..40 {
+        rig.tick();
+        sleep(MS(250)).await;
+        assert!(!flag(&rig));
+    }
+    // a ride not in progress (loaded, unstarted) is not timed: it does not tick
+    rig.install();
+    sleep(Duration::from_secs(5)).await;
+    assert!(!flag(&rig));
+}
+
+/// §4.3.3: each `PairedDevice` string is cut to 64 bytes on a character boundary when the
+/// pairings are set.
+#[test]
+fn paired_device_strings_are_cut_to_64_bytes_on_a_character_boundary() {
+    let rig = rig();
+    let long = "é".repeat(100);
+    rig.ui.set_paired([
+        Some(PairedDevice {
+            role: DeviceRole::Trainer,
+            id: "x".repeat(65),
+            name: Some(long.clone()),
+            serial: Some(long.clone()),
+            model: Some(format!("a{long}")),
+        }),
+        None,
+    ]);
+    let paired = rig.ui.snapshot().devices.trainer.paired.unwrap();
+    assert_eq!(paired.id.len(), 64);
+    assert_eq!(paired.name.as_deref(), Some("é".repeat(32).as_str()));
+    assert_eq!(paired.serial, paired.name);
+    assert_eq!(
+        paired.model.unwrap().len(),
+        63,
+        "cut back to the character boundary"
+    );
+    assert_eq!(rig.ui.snapshot().devices.strap.paired, None);
+}
+
 /// One step of the property test's script.
 #[derive(Clone, Debug)]
 enum Op {
@@ -614,7 +672,7 @@ impl Client {
                 "the frame's state is the snapshot at its send"
             );
             if let Some(last) = self.last {
-                assert!(at - last >= SPACING, "frames {:?} apart", at - last);
+                assert!(at - last >= DESIGN_SPACING, "frames {:?} apart", at - last);
             }
             assert!(bytes(&f) <= FRAME_BYTES);
             self.page.apply(&f);
