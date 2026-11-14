@@ -268,7 +268,7 @@ faster*, *▼ ease cadence*, or *no target*, from the core's cadence band (#13, 
 power's. If the rider chose slots without cadence, or Focus density, a cadence state that is not *in range*
 appears as a chip in row 1. **ERG released** (cadence < 30 rpm for 5 s, the default rider tuning of ADR-0002 §7.4) takes row 4: "ERG
 released — spin up to 45 rpm to re-engage", with a warning tone; re-engagement shows "easing back in"
-during the ~~5 s~~ soft start (superseded by §19.4: until the eased target has caught up).
+during the ~~5 s~~ soft start (superseded by §19.4: for the engagement).
 
 **Stale values (P6, P7).** A value whose input is lost is never shown as live: it becomes "—" with what is
 missing ("— no power data"), or, where the last value still helps, it is drawn hollow/muted with its age.
@@ -294,7 +294,7 @@ target ("90rpm") counts as 85–95 (#13).
 | Trainer lost | Warning tone. Chip ⚠ NEO "lost"; row 4: "**⚠ Trainer lost 0:12**" / "paused 2:47 into block · ride saved" / "reconnecting (try 3)"; an HR-recovery forecast is frozen (~~"paused · then ends at its maximum in"~~ superseded by §16.1: "paused · block max in"); actual power, cadence and W′ balance "—"; countdown frozen and dimmed (ADR-0002 §6) | — |
 | Trainer lost ≥ 30 s | Row 4 adds what to try ("power-cycle NEO · close Zwift") and **End…**, which opens the End dialog (Keep riding focused); reconnecting continues behind it | End (bindable) → End dialog |
 | Trainer back after ≥ 2 min | The re-entry policy (§6.6) applies: row 4 "↻ Back after 3:10" / "re-warm-up 2:48 · then this interval from its start" | — |
-| Trainer reconnected | Row 4 for the ~~5 s~~ soft start (§19.4: until it has caught up): "Reconnected · easing in to 253 W" / "workout resumed" (or "pedal to resume" at 0 rpm); then the chip shows "NEO back · 0:14 gap" for 10 s | — |
+| Trainer reconnected | Row 4 for the ~~5 s~~ soft start (§19.4: for the engagement): "Reconnected · easing in to 253 W" / "workout resumed" (or "pedal to resume" at 0 rpm); then the chip shows "NEO back · 0:14 gap" for 10 s | — |
 | Trainer lost at a block boundary | The block shown is the one the core paused in (transitions inside the 2 s detection window stand, ADR-0001 §5): "paused at 0:00" of the new interval; on reconnect the soft start goes to *that* block's target | — |
 | HR lost | Chip ⚠ HR "lost"; HR slot "—" + "HR strap lost"; lane: "HR lost: coach can't push" | — |
 | Both lost | Row 4: "⚠ Trainer + HR lost · paused at m:ss"; stays paused until the trainer is back and cadence > 0 | — |
@@ -2202,14 +2202,18 @@ One target line, the one the trainer is asked to hold:
 Unchanged: blocks by height, the plan's targets, done dimmed. In direction A the road of §5.2 is this strip (§18.3).
 An ease is a few seconds of an hour-wide strip (6 s is under 2 px at 1024 px), and the strip answers "what is the
 plan", not "what is the trainer doing now". **Short blocks** keep their planned height on the strip even when the
-rider's rates cannot reach it (ADR-0002 §7.10.4: the rates are limits, a 30/30 at 100 ↔ 400 W rides a mean of 317 W per
+rider's rates cannot reach it (ADR-0002 §7.10.4: the rates are limits, a 30/30 at 100 ↔ 400 W rides a mean of 318 W per
 rep at the defaults); the power trace shows the hump the command really makes, ahead of "now" as the limiter's
 prediction and behind it as ridden. Whether the editor warns about such blocks is an owner question (PR #625, #627).
 
 ### 19.4 Banners and states
 
-- **Reconnected / ERG back:** "easing back in" and "Reconnected · easing in to 253 W" last for the engagement, until
-  the commanded target has caught up, not a fixed 5 s.
+- **Reconnected / ERG back:** "easing back in" and "Reconnected · easing in to 253 W" last for the engagement
+  (ADR-0002 §7.10.3), not a fixed 5 s. The engagement usually ends when the commanded target has caught up. Behind a
+  ramp steeper than the rider's rate it ends earlier, once the command moves at the rider's full rate, and the target
+  can then stay behind the ramp until the ramp ends. From then on the banner is gone, and the power row says
+  "settling" with "easing to N W" (§19.1) until the target has caught up, plus 5 s. The banner names the engagement;
+  catching up is the power row's job.
 - **Pause, ERG released, end, free ride:** unchanged, and immediate: none of them waits for an ease (ADR-0002
   §7.10.5).
 
