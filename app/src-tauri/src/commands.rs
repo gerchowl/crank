@@ -83,17 +83,14 @@ pub async fn device_links(core: State<'_, Core>) -> Result<Vec<DeviceLinkInfo>, 
     core.device_links().await
 }
 
-/// The rider's likely next step, for the link keeper; answers the keeper's state with its
-/// `seq`, ordered with the link channel's frames.
+/// The rider's likely next step, for the link keeper; answers nothing: the effect shows in
+/// the link channel's next frame.
 ///
 /// # Errors
 /// As [`Core::links_intent`].
 #[tauri::command]
 #[specta::specta]
-pub async fn links_intent(
-    core: State<'_, Core>,
-    intent: LinkIntent,
-) -> Result<LinkFrame, ApiError> {
+pub async fn links_intent(core: State<'_, Core>, intent: LinkIntent) -> Result<(), ApiError> {
     core.links_intent(intent).await
 }
 

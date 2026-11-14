@@ -8,12 +8,13 @@ use crank_core::{
 use crank_desktop::commands as cmd;
 use crank_devices::sim::SimConfig;
 use crank_engine::{MetricId, StreamFrame, StreamRideState, SubscribeOpts, VirtualClock};
+use serde_json::Value;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tauri::{
-    Manager, WebviewUrl, WebviewWindowBuilder,
+    Manager, State, WebviewUrl, WebviewWindowBuilder,
     ipc::{Channel, InvokeResponseBody},
     test::{MockRuntime, mock_builder, mock_context, noop_assets},
 };
@@ -190,9 +191,9 @@ async fn a_destroyed_window_loses_its_streams() {
 }
 
 /// The link contract through the commands (ADR-0002 §5.1.4): `links_open` sends the keeper's
-/// state on a real IPC channel, the next frame waits for `links_ack`, `links_intent` answers
-/// the state, another window's ack is refused, and "Release trainer" is refused in a started
-/// ride.
+/// state on a real IPC channel, the next frame waits for `links_ack`, an intent's effect
+/// arrives as the next frame, another window's ack is refused, and "Release trainer" is
+/// refused in a started ride.
 #[tokio::test(start_paused = true)]
 async fn the_link_commands_carry_the_keepers_state() {
     let dir = tempfile::tempdir().unwrap();
@@ -226,16 +227,9 @@ async fn the_link_commands_carry_the_keepers_state() {
     assert_eq!(first[0].links.trainer, cold);
     assert_eq!(first[0].links.strap, None, "no strap paired");
 
-    let answered = cmd::links_intent(core.clone(), LinkIntent::Likely { ready: false })
+    cmd::links_intent(core.clone(), LinkIntent::Likely { ready: false })
         .await
         .unwrap();
-    assert!(
-        answered
-            .links
-            .trainer
-            .is_some_and(|t| t.phase != LinkPhase::Cold)
-    );
-    assert!(answered.seq > first[0].seq, "the answer's state is newer");
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(frames.lock().unwrap().len(), 1, "one frame in flight");
     let refused = cmd::links_ack(core.clone(), other, id, first[0].seq)
@@ -247,10 +241,7 @@ async fn the_link_commands_carry_the_keepers_state() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(10)).await;
     let latest = *frames.lock().unwrap().last().unwrap();
-    assert!(
-        latest.seq > answered.seq,
-        "the latest state outranks the answer"
-    );
+    assert!(latest.seq > first[0].seq, "the next frame is a newer state");
     assert_eq!(latest.links.trainer.map(|t| t.phase), Some(LinkPhase::Warm));
 
     cmd::ride_load(core.clone(), None).await.unwrap();
@@ -265,4 +256,95 @@ async fn the_link_commands_carry_the_keepers_state() {
     .unwrap_err();
     assert_eq!(held.code, ErrorCode::Conflict);
     cmd::ride_end(core.clone(), app.state()).await.unwrap();
+}
+
+/// `links_intent`'s answer as the IPC layer serialises it for the page.
+async fn answered(core: State<'_, Core>, intent: LinkIntent) -> Value {
+    let answer = cmd::links_intent(core, intent).await;
+    serde_json::to_value(
+        answer
+            .as_ref()
+            .unwrap_or_else(|e| panic!("{intent:?}: {e:?}")),
+    )
+    .expect("serialisable")
+}
+
+/// `links_intent` answers nothing (ADR-0002 §5.1.4, ADR-0001 §4.3.10 step 2, #597): through
+/// the commands its answer is `null` on the wire for every intent, idle, over a loaded ride
+/// (whose "Release trainer" discards it), in a started ride and after the quit. Its
+/// refusals are unchanged: "Release trainer" in a started ride and `Likely` / `Retry` after
+/// the quit are `Conflict`.
+#[tokio::test(start_paused = true)]
+async fn links_intent_answers_null_for_every_intent_and_keeps_its_refusals() {
+    use ReleaseReason::{Devices, Hidden, RiderRelease, Sleep};
+    let dir = tempfile::tempdir().unwrap();
+    let app = app(dir.path());
+    let core = app.state::<Core>();
+    cmd::device_pair(core.clone(), "trainer".into(), DeviceRole::Trainer)
+        .await
+        .unwrap();
+    let mut every = vec![
+        LinkIntent::Likely { ready: false },
+        LinkIntent::Likely { ready: true },
+        LinkIntent::Retry,
+        LinkIntent::Left,
+        LinkIntent::Background,
+    ];
+    every.extend(
+        [Hidden, Sleep, Devices, RiderRelease].map(|reason| LinkIntent::Release { reason }),
+    );
+    let rider_release = LinkIntent::Release {
+        reason: RiderRelease,
+    };
+
+    for &intent in &every {
+        assert_eq!(
+            answered(core.clone(), intent).await,
+            Value::Null,
+            "idle, {intent:?}"
+        );
+    }
+
+    cmd::ride_load(core.clone(), None).await.unwrap();
+    assert_eq!(
+        answered(core.clone(), rider_release).await,
+        Value::Null,
+        "a discard"
+    );
+    assert!(!cmd::ride_status(core.clone()).await.unwrap().status.loaded);
+
+    cmd::ride_load(core.clone(), None).await.unwrap();
+    cmd::ride_start(core.clone()).await.unwrap();
+    for &intent in &every {
+        if intent == rider_release {
+            let held = cmd::links_intent(core.clone(), intent).await.unwrap_err();
+            assert_eq!(held.code, ErrorCode::Conflict);
+            assert_eq!(
+                held.message,
+                "the ride holds the trainer: end the ride first"
+            );
+        } else {
+            assert_eq!(
+                answered(core.clone(), intent).await,
+                Value::Null,
+                "riding, {intent:?}"
+            );
+        }
+    }
+    cmd::ride_end(core.clone(), app.state()).await.unwrap();
+
+    core.shutdown(Duration::from_secs(3)).await;
+    for &intent in &every {
+        if matches!(intent, LinkIntent::Likely { .. } | LinkIntent::Retry) {
+            let quitting = cmd::links_intent(core.clone(), intent).await.unwrap_err();
+            assert_eq!(quitting.code, ErrorCode::Conflict);
+            assert_eq!(quitting.message, "the application is quitting");
+        } else {
+            assert_eq!(
+                answered(core.clone(), intent).await,
+                Value::Null,
+                "quit, {intent:?}"
+            );
+        }
+    }
 }
