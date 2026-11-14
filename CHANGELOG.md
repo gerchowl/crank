@@ -87,6 +87,12 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Fixed
 
+- Ride screen: the workout strip's blocks no longer run past the strip into the key row in the app. WKWebView resolved
+  the bar's `height: 100%` (a replaced element in a `minmax(0, 1fr)` grid row) against the whole strip; the bar is now
+  a cell the grid sizes, which the SVG fills absolutely. The design audit gains generic invariants on every fixture and
+  size (`layout.contained`, `layout.landmarks`, `layout.textOverflow`, with declared exemptions), and `just
+  design-webkit` runs them in the system WKWebView, where this one showed
+  ([#630](https://github.com/gerchowl/crank/issues/630))
 - Ride screen metric column on one grid (DESIGN §18.3 "Metric grid"): the same label-to-value gap and slot-to-slot gap
   in every slot, T2 values right-aligned so W, bpm and rpm share one column, and the target written "250 W" like the
   plan; the block strip's labels sit `--space-1` under the bar, flush left with their block, and shed the name, then

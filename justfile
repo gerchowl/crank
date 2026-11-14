@@ -151,5 +151,11 @@ design mode="check":
     cp -r "$shots" app/e2e/design/screenshots/linux
     chmod -R u+w app/e2e/design/screenshots/linux
 
+# The layout audit's generic invariants (#630) in the system WKWebView the app ships in: every fixture at the harness's
+# sizes (app/e2e/design/webkit.ts). macOS only, in the logged-in GUI session, with the Xcode command line tools'
+# swiftc; the harness's Chromium lays some things out unlike it (#630's strip). Elsewhere it says it skipped.
+design-webkit:
+    node app/e2e/design/webkit.ts
+
 screens:
     @echo 'BLOCKED: screenshot matrix awaits the UI waves (#229)'; exit 1
