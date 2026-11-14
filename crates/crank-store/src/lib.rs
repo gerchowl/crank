@@ -3,8 +3,10 @@
 //! Query processes use read-only WAL connections and never recover rides.
 //! Coordinates are session seconds; timestamps are UTC Unix seconds.
 mod json;
+mod route;
 mod writer;
 pub use json::*;
+pub use route::{RouteListing, RouteOriginal, StoredRoute, decode_points, encode_points};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::path::Path;
 use std::sync::{
@@ -46,6 +48,9 @@ pub enum StoreError {
     /// Invalid persisted binary chunk.
     #[error("corrupt ride chunk: {0}")]
     CorruptChunk(String),
+    /// A stored route that does not decode, or breaks an ADR-0005 §2.1 invariant.
+    #[error("corrupt route: {0}")]
+    CorruptRoute(String),
     /// The database was written by a newer schema than this build supports;
     /// it is never interpreted, read-only or not.
     #[error("database schema v{found} is newer than supported v{supported}")]
@@ -502,6 +507,53 @@ impl Store {
             tx.commit()?;
             Ok(deleted > 0)
         })
+    }
+    /// Store a new route under `id` with the file it was imported from, if any (ADR-0005 §2.1).
+    /// The original's SHA-256 is computed here, so it always matches its bytes.
+    /// # Errors
+    /// `InvalidInput` for a taken id or an original over 32 MiB; read-only, SQL or worker errors.
+    pub fn put_route(
+        &self,
+        id: String,
+        route: crank_domain::route::Route,
+        original: Option<RouteOriginal>,
+        created_at: i64,
+    ) -> Result<(), StoreError> {
+        self.write(move |w| route::insert(&w.db, &id, &route, original.as_ref(), created_at))
+    }
+    /// One route, bit for bit as stored, every ADR-0005 §2.1 invariant checked on reading.
+    /// # Errors
+    /// `CorruptRoute` or `InvalidJson` for a row that does not decode; SQL or worker errors.
+    pub fn route(&self, id: &str) -> Result<Option<StoredRoute>, StoreError> {
+        self.read(|db| route::select(db, id))
+    }
+    /// The bytes of the file a route was imported from; `None` for an unknown id or a route
+    /// without a file (a grade profile).
+    /// # Errors
+    /// SQL or worker errors.
+    pub fn route_original(&self, id: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        self.read(|db| {
+            Ok(db
+                .query_row("SELECT original FROM route WHERE id=?1", [id], |r| {
+                    r.get::<_, Option<Vec<u8>>>(0)
+                })
+                .optional()?
+                .flatten())
+        })
+    }
+    /// Every route, newest first, without points or file.
+    /// # Errors
+    /// `CorruptRoute` for a row that does not decode; SQL or worker errors.
+    pub fn routes(&self) -> Result<Vec<RouteListing>, StoreError> {
+        self.read(route::list)
+    }
+    /// Delete a route. Rides ridden on it stay readable: they keep `route_json` and lose only
+    /// the link (ADR-0005 §2.1). Returns whether a row existed.
+    /// # Errors
+    /// Read-only, SQL or worker errors.
+    pub fn delete_route(&self, id: &str) -> Result<bool, StoreError> {
+        let id = id.to_owned();
+        self.write(move |w| route::delete(&w.db, &id))
     }
     /// Decode persisted metric chunks ordered by session second.
     /// # Errors

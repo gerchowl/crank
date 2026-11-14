@@ -76,7 +76,7 @@ fn samples(second: u32) -> Vec<Sample> {
 fn migrate_empty_database() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_owner(dir.path()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 3);
+    assert_eq!(store.schema_version().unwrap(), 4);
     let db = Connection::open(dir.path().join("crank.db")).unwrap();
     let tables: Vec<String> = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -101,6 +101,7 @@ fn migrate_empty_database() {
             "ride",
             "ride_chunk",
             "ride_rr",
+            "route",
             "setting",
             "snippet",
             "workout"
@@ -119,12 +120,13 @@ fn migrate_every_released_fixture() {
     const FIXTURES: &[&[u8]] = &[
         include_bytes!("fixtures/v1.db"),
         include_bytes!("fixtures/v2.db"),
+        include_bytes!("fixtures/v3.db"),
     ];
     for fixture in FIXTURES {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("crank.db"), fixture).unwrap();
         let store = Store::open_owner(dir.path()).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 3);
+        assert_eq!(store.schema_version().unwrap(), 4);
         assert_eq!(
             store
                 .load_json::<SettingJson>(&["fixture"])
@@ -781,7 +783,7 @@ fn read_only_refuses_a_newer_schema() {
         Store::open_read_only(dir.path()),
         Err(StoreError::SchemaTooNew {
             found: 999,
-            supported: 3
+            supported: 4
         })
     ));
 }

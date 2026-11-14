@@ -9,10 +9,11 @@ use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 /// Forward-only migrations; the schema version is their count.
-const MIGRATIONS: [&str; 3] = [
+const MIGRATIONS: [&str; 4] = [
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_device_platform_id_unique.sql"),
     include_str!("../migrations/0003_health_check_result.sql"),
+    include_str!("../migrations/0004_route.sql"),
 ];
 /// Newest `user_version` this build reads or writes: derived from [`MIGRATIONS`], so adding a
 /// migration cannot leave the read-only schema check behind (#166).
