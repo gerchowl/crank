@@ -135,8 +135,7 @@ pub struct DeviceLinkView {
     pub sample: Option<LinkSample>,
 }
 
-/// The link keeper's complete state (ADR-0002 §5.1.4), as each [`LinkFrame`] carries it,
-/// `links_intent`'s answer included.
+/// The link keeper's complete state (ADR-0002 §5.1.4), as each [`LinkFrame`] carries it.
 ///
 /// **One source per device.** A device in [`LinkPhase::Riding`] is held by the ride: read its
 /// live state from the ride stream (`StreamFrame.links`). Every other device is read from here.
@@ -161,24 +160,19 @@ pub struct LinkView {
 pub struct LinksId(pub u32);
 
 /// The link keeper's state with its number: one frame of the window's link channel
-/// (`links_open`, ADR-0002 §5.1.4), and `links_intent`'s answer.
+/// (`links_open`, ADR-0002 §5.1.4). It is the only way the keeper's state reaches the page:
+/// `links_intent` answers nothing (#597).
 ///
-/// Each frame is the complete state, so the latest wins. At most one frame is
-/// unacknowledged (`links_ack`): while the window has not acknowledged the last one, changes
-/// are coalesced into the next, which is again the complete state, so nothing is lost and
-/// there is no resync.
-///
-/// **Frames and answers are ordered by `seq`.** An intent's answer can arrive after a frame
-/// of a newer state, and after the answer of a later intent. Apply a frame or an answer only
-/// if its `seq` is at least the highest `seq` applied so far, from either source; one with a
-/// lower `seq` is older than a state already shown and is dropped. Equal `seq`s are the same
-/// state.
+/// Each frame is the complete state, so the latest wins: the page applies every frame it
+/// receives, in order, and acks it. At most one frame is unacknowledged (`links_ack`): while
+/// the window has not acknowledged the last one, changes are coalesced into the next, which
+/// is again the complete state, so nothing is lost and there is no resync.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkFrame {
     /// The state's number: +1 per change of the keeper's state (a phase or a sample), the
-    /// same for every window and for `links_intent`'s answers; `0` before the keeper has
-    /// published. A channel sends only on change, so its frames' `seq`s increase but can
+    /// same for every window; `0` before the keeper has published. Its one use is the ack
+    /// (`links_ack`). A channel sends only on change, so its frames' `seq`s increase but can
     /// skip the changes it coalesced. The state changes with the samples, a few times per
     /// second (FE-C pages at 4 Hz, a strap at about 1 Hz), so a `u32` does not wrap within a
     /// process's uptime: 2^32 changes at 10 per second take 13 years.

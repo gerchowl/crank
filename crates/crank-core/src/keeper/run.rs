@@ -10,12 +10,12 @@
 //! **The published state.** After every step the task publishes the phases into a
 //! [`watch`] of [`LinkFrame`] ([`Handle::view`]), and only then answers the step's intents.
 //! Every change takes the next `seq` (the state's number, ADR-0002 §5.1.4), the samples'
-//! changes included. Each answer carries the state published by the step that resolves it,
-//! with its `seq` (the intent's own step; for a recorded intent the load's resolution; for a
-//! discard the step that takes the discard's end, which comes after its links' release), so
-//! an answer is never older than what it applied, and the UI can tell whether it is older
-//! than a frame it already has. `ride_status`, `device_links`,
-//! `links_intent` and the link channels ([`super::channel`]) read it. The task ends
+//! changes included. An answer carries no state (#597): it comes after the step that
+//! resolves its intent published (the intent's own step; for a recorded intent the load's
+//! resolution; for a discard the step that takes the discard's end, which comes after its
+//! links' release), so once an intent is answered the published state already holds what
+//! it applied, and the UI sees it in the link channel's next frame. `ride_status`,
+//! `device_links` and the link channels ([`super::channel`]) read it. The task ends
 //! when the core drops its [`Handle`]: every link and attempt it holds is dropped with it,
 //! which the drivers' cleanup disconnects.
 use super::{Ack, Cool, DEVICES, Effect, Input, Keeper, Phase, SUPERSEDED};
@@ -85,8 +85,8 @@ pub(crate) enum Note {
     /// That ride started.
     Started(String),
 }
-/// Where an intent's answer goes: the state published by the step that resolved it.
-type Answer = oneshot::Sender<Result<LinkFrame, ApiError>>;
+/// Where an intent's answer goes, once the step that resolved it published.
+type Answer = oneshot::Sender<Result<(), ApiError>>;
 enum Msg {
     Intent(LinkIntent, Answer),
     Acquire(RiderConfig, oneshot::Sender<Result<Handed, ApiError>>),
@@ -203,7 +203,7 @@ impl Handle {
     /// `Conflict` when it is refused (`RiderRelease` while the ride holds the trainer, a
     /// `Likely` after the quit), its discard found the ride started, or it was a recorded
     /// release that a rider action superseded; `Internal` without a keeper.
-    pub(crate) async fn intent(&self, intent: LinkIntent) -> Result<LinkFrame, ApiError> {
+    pub(crate) async fn intent(&self, intent: LinkIntent) -> Result<(), ApiError> {
         let gone = || ApiError::new(ErrorCode::Internal, "the link keeper is gone");
         let (ack, done) = oneshot::channel();
         self.tx.send(Msg::Intent(intent, ack)).map_err(|_| gone())?;
@@ -530,7 +530,7 @@ impl Task {
                         !self.keeper.is_loaded(&id),
                         "a discard is reported after its ride's release"
                     );
-                    Ok(*self.view.borrow())
+                    Ok(())
                 } else {
                     Err(ApiError::new(
                         ErrorCode::Conflict,
@@ -628,8 +628,8 @@ impl Task {
             return;
         }
         let result = match ack {
-            // the state this step published (`apply` publishes before it answers)
-            Ack::Applied | Ack::Recorded | Ack::Superseded => Ok(*self.view.borrow()),
+            // this step has published (`apply` publishes before it answers)
+            Ack::Applied | Ack::Recorded | Ack::Superseded => Ok(()),
             Ack::Refused(why) => Err(ApiError::new(ErrorCode::Conflict, why)),
             Ack::AwaitDiscard => {
                 // answered by the step that takes the discard's end (`Internal::Discarded`)

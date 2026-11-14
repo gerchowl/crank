@@ -24,31 +24,34 @@
 //   every other ride_* command, engine task ended  internal  "engine stopped"  engine.rs `EngineHandle::send` (~226) via
 //               core.rs `ride_cmd` (~1676), mapped error.rs `ApiError` (~65), its `From<CommandError>`; checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
-//   links_intent (the link keeper, ADR-0002 §5.1; answers the keeper's state with its seq, `LinkFrame`), in the core's order:
+//   links_intent (the link keeper, ADR-0002 §5.1; answers `null` once the intent is applied, #597: its effect reaches the
+//               page only as the link channel's next frame), in the core's order:
 //               "Release trainer" while the ride's session is started: an active ride, or one that finished (its last
 //                 block skipped) and that the reaper has not taken yet (`world.unreaped`)  conflict
-//                 "the ride holds the trainer: end the ride first"  core.rs `Core::links_intent` (~1248), the session's
-//                 state is not `Idle`; after `ride_end` (which waits for the reap, core.rs `Core::end_ride` (~2197)) or
-//                 the reap, the ride is gone and it is accepted (keeper/mod.rs `Keeper::free_intent` (~540))
-//               the keeper's pairings cannot be read when it first starts  storage  core.rs `Core::keeper` (~1216)
+//                 "the ride holds the trainer: end the ride first"  core.rs `Core::links_intent` (~1250), the
+//                 session's state is not `Idle`; after `ride_end` (which waits for the reap,
+//                 core.rs `Core::end_ride` (~2225)) or the reap, the ride is gone and it is accepted
+//                 (keeper/mod.rs `Keeper::free_intent` (~541))
+//               the keeper's pairings cannot be read when it first starts  storage  core.rs `Core::keeper` (~1217),
+//                 whose core.rs `Core::pairings` (~1207) reads the store
 //               a release recorded while the links were handed to a load in flight (no ride loaded yet), superseded by a
-//                 later rider action ("Ride this", Retry; #520)  conflict  keeper/mod.rs `SUPERSEDED` (~316), recorded
-//                 only in `Ride::Handed` (keeper/mod.rs `Keeper::intent` (~458); `world.supersedes`)
-//               `likely` / `retry` after the quit  conflict  "the application is quitting"  keeper/mod.rs `QUITTING`
+//                 later rider action ("Ride this", Retry; #520)  conflict  keeper/run.rs `Task::answer` (~604), text
+//                 keeper/mod.rs `SUPERSEDED` (~316); recorded only in `Ride::Handed`
+//                 (keeper/mod.rs `Keeper::intent` (~458); `world.supersedes`)
+//               `likely` / `retry` after the quit  conflict  "the application is quitting"
+//                 keeper/mod.rs `Keeper::free_intent` (~541), text keeper/mod.rs `QUITTING` (~314)
 //               a "Release trainer" whose discard raced a Start and found the ride started  conflict
-//                 "the ride was started or is gone: it was not discarded"  run.rs `Task::answer`; not reachable here (the
-//                 mock's commands are atomic, so a Start never races the discard)
-//               ("the link keeper is gone", `internal`, needs a dropped core: not modelled)
+//                 "the ride was started or is gone: it was not discarded"  keeper/run.rs `Task::internal` (~492); not
+//                 reachable here (the mock's commands are atomic, so a Start never races the discard)
+//               ("the link keeper is gone", `internal`, keeper/run.rs `Handle::intent` (~206), needs a dropped core: not
+//                 modelled)
 //               `sleep` or `rider_release` with a loaded, unstarted ride discards it (the path of Cancel); every other
-//               intent leaves a loaded or started ride alone (keeper/mod.rs `Keeper::loaded_intent`)
+//               intent leaves a loaded or started ride alone (keeper/mod.rs `Keeper::loaded_intent` (~490))
 //   links_open  answers the channel id and sends the state at once; replaces the window's earlier channel
 //   links_ack   unknown or replaced channel  not_found  "unknown link channel"  keeper/channel.rs `Channels::ack`;
 //               one frame in flight: a change waits for the ack of the last frame sent, then goes out as one frame of
 //               the latest state; an ack of any other seq is ignored (the core's 10 Hz spacing is not modelled)
-//   seq         the keeper state's number, +1 per change, shared by every frame and every `links_intent` answer
-//               (keeper/run.rs `change`); an answer is computed at its call, so one delayed by `hold` keeps its
-//               state's seq, as the core's release answer does while it waits for its links (run.rs `Task::answer`).
-//               The page applies a frame or an answer only if its seq is at least the highest applied (`linkOrder.ts`)
+//   seq         the keeper state's number, +1 per change (keeper/run.rs `change`); its one use is `links_ack`
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type { Channel } from "@tauri-apps/api/core";
@@ -187,7 +190,7 @@ export interface RideWorld {
   blocks: WorkoutBlock[];
   /** The workout's name as `workout_get` answers it. */
   workoutName: string;
-  /** The link keeper's state of the devices no ride holds (`links_intent`'s answer, the link channel's frames). */
+  /** The link keeper's state of the devices no ride holds (the link channel's frames). */
   keeper: LinkView;
   /**
    * The strap was warm at the load and the ride holds it (`RideLoaded.hrLinked`). When false it stayed the keeper's
@@ -554,7 +557,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
             linksChanged();
           }
         }
-        return linkState();
+        return null;
       }
       case "links_open":
         linkCh = {

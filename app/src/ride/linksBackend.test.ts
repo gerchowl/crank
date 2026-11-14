@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 // The link commands of the ride test backend (`rideBackend.ts`) answer and refuse as the core does (ADR-0002 §5.1.3,
-// §5.1.4): each refusal below is listed with its core symbol in the backend's header.
+// §5.1.4): each refusal below is listed with its core file:line in the backend's header. `links_intent` answers `null`
+// (#597): what an intent changes reaches the page only as the link channel's next frame.
 import { Channel } from "@tauri-apps/api/core";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, test } from "vitest";
 import { api } from "../api";
 import { commands } from "../bindings";
 import type { LinkFrame, LinkView } from "../bindings";
-import { keepNewest } from "./linkOrder";
 import { COLD_LINKS, SUPERSEDED, installRide } from "./rideBackend";
 
 afterEach(() => clearMocks());
@@ -27,10 +27,25 @@ const releaseTrainer = {
   kind: "release",
   reason: "rider_release",
 } as const;
+/** `links_intent`'s answer: it carries no state. */
+const NOTHING = { status: "ok", data: null };
+
+/** The page's link channel: every frame it received, and an ack of the last one. */
+async function open() {
+  const frames: LinkFrame[] = [];
+  const channel = new Channel<LinkFrame>();
+  channel.onmessage = (f) => frames.push(f);
+  const opened = await api(commands.linksOpen(channel));
+  if (opened.status !== "ok") throw new Error("open failed");
+  const ack = () => api(commands.linksAck(opened.data, frames.at(-1)!.seq));
+  return { frames, ack, id: opened.data };
+}
 
 describe("links_intent", () => {
   test("a started ride refuses Release trainer and keeps its devices", async () => {
     const rig = installRide({ phase: "active", keeper: WARM });
+    const { frames, ack } = await open();
+    await ack();
     const refused = await api(commands.linksIntent(releaseTrainer));
     expect(refused).toEqual({
       status: "error",
@@ -43,17 +58,19 @@ describe("links_intent", () => {
     const sleep = await api(
       commands.linksIntent({ kind: "release", reason: "sleep" }),
     );
-    expect(sleep.status === "ok" && sleep.data.links.trainer?.phase).toBe(
-      "riding",
-    );
+    expect(sleep).toEqual(NOTHING);
     expect(rig.world.phase).toBe("active");
+    expect(frames.map((f) => f.links.trainer?.phase)).toEqual(["riding"]);
   });
 
-  test("Release trainer or Sleep unloads an unstarted ride and answers cold", async () => {
+  test("Release trainer or Sleep unloads an unstarted ride; the next frame is cold", async () => {
     for (const reason of ["rider_release", "sleep"] as const) {
       const rig = installRide({ phase: "loaded", keeper: WARM });
+      const { frames, ack } = await open();
+      await ack();
       const done = await api(commands.linksIntent({ kind: "release", reason }));
-      expect(done.status === "ok" && done.data.links).toEqual(COLD_LINKS);
+      expect(done).toEqual(NOTHING);
+      expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
       expect(rig.world.phase).toBe("none");
       clearMocks();
     }
@@ -61,6 +78,8 @@ describe("links_intent", () => {
 
   test("every other intent leaves a loaded ride alone, its devices riding", async () => {
     const rig = installRide({ phase: "loaded", keeper: WARM });
+    const { frames, ack } = await open();
+    await ack();
     for (const intent of [
       { kind: "likely", ready: true },
       { kind: "retry" },
@@ -69,10 +88,11 @@ describe("links_intent", () => {
       { kind: "release", reason: "hidden" },
       { kind: "release", reason: "devices" },
     ] as const) {
-      const r = await api(commands.linksIntent(intent));
-      expect(r.status === "ok" && r.data.links.strap?.phase).toBe("riding");
+      expect(await api(commands.linksIntent(intent))).toEqual(NOTHING);
     }
     expect(rig.world.phase).toBe("loaded");
+    expect(frames).toHaveLength(1);
+    expect(frames[0].links.strap?.phase).toBe("riding");
   });
 
   test("a release superseded by a rider action answers conflict and applies nothing", async () => {
@@ -94,19 +114,17 @@ describe("links_intent", () => {
     const discarded = await api(
       commands.linksIntent({ kind: "release", reason: "sleep" }),
     );
-    expect(discarded.status === "ok" && discarded.data.links).toEqual(
-      COLD_LINKS,
-    );
+    expect(discarded).toEqual(NOTHING);
     expect(rig.world.phase).toBe("none");
+    expect((await open()).frames.at(-1)?.links).toEqual(COLD_LINKS);
     clearMocks();
     rig = installRide({ phase: "active", keeper: WARM, supersedes: true });
     const kept = await api(
       commands.linksIntent({ kind: "release", reason: "hidden" }),
     );
-    expect(kept.status === "ok" && kept.data.links.trainer?.phase).toBe(
-      "riding",
-    );
+    expect(kept).toEqual(NOTHING);
     expect(rig.world.phase).toBe("active");
+    expect((await open()).frames.at(-1)?.links.trainer?.phase).toBe("riding");
   });
 
   test("after the quit Likely and Retry are refused; releases still answer", async () => {
@@ -123,7 +141,7 @@ describe("links_intent", () => {
     const r = await api(
       commands.linksIntent({ kind: "release", reason: "hidden" }),
     );
-    expect(r.status).toBe("ok");
+    expect(r).toEqual(NOTHING);
   });
 
   test("a store failure when the keeper starts is storage; a missing argument is Tauri's string", async () => {
@@ -187,15 +205,6 @@ describe("links_open / links_ack", () => {
 // `each_device_has_one_source_an_unlinked_strap_stays_the_keepers` tests): `riding` while the ride holds a device,
 // then `cold` with no sample, in the next frame.
 describe("the ride's hold on the links", () => {
-  async function open() {
-    const frames: LinkFrame[] = [];
-    const channel = new Channel<LinkFrame>();
-    channel.onmessage = (f) => frames.push(f);
-    const opened = await api(commands.linksOpen(channel));
-    if (opened.status !== "ok") throw new Error("open failed");
-    const ack = () => api(commands.linksAck(opened.data, frames.at(-1)!.seq));
-    return { frames, ack, id: opened.data };
-  }
   const seqs = (frames: LinkFrame[]) => frames.map((f) => f.seq);
 
   test("cancelling a loaded ride (End before Start) gives the devices back cold", async () => {
@@ -262,15 +271,14 @@ describe("the ride's hold on the links", () => {
 
   // The core (keeper/contract_tests.rs `release_trainer_after_the_end_of_a_started_ride_is_accepted`): `ride_load`,
   // `ride_start`, `ride_end`, then `links_intent(RiderRelease)` answers `Ok` with both devices `cold`
-  // (core.rs `Core::links_intent` (~1248) finds no session: core.rs `Core::end_ride` (~2197) waited for the reap).
+  // (core.rs `Core::links_intent` (~1250) finds no session: core.rs `Core::end_ride` (~2225) waited for the reap).
   test("Release trainer after End is accepted: the ended ride holds nothing", async () => {
     installRide({ phase: "active", keeper: WARM });
     const { frames, ack } = await open();
     await ack();
     await api(commands.rideEnd());
-    const r = await api(commands.linksIntent(releaseTrainer));
-    expect(r.status === "ok" && r.data.links).toEqual(COLD_LINKS);
-    expect(r.status === "ok" && r.data.seq).toBe(frames.at(-1)?.seq);
+    expect(await api(commands.linksIntent(releaseTrainer))).toEqual(NOTHING);
+    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
   });
 
   // The core (keeper/contract_tests.rs `a_ride_that_finished_on_its_own_holds_its_devices_until_the_reap`): a ride
@@ -290,8 +298,7 @@ describe("the ride's hold on the links", () => {
     rig.reap();
     expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
     await ack();
-    const r = await api(commands.linksIntent(releaseTrainer));
-    expect(r.status).toBe("ok");
+    expect(await api(commands.linksIntent(releaseTrainer))).toEqual(NOTHING);
   });
 
   test("End of a ride that finished on its own waits for its reap: the devices come back cold", async () => {
@@ -304,7 +311,7 @@ describe("the ride's hold on the links", () => {
       data: { rideId: "ride-1", forced: false },
     });
     expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
-    expect((await api(commands.linksIntent(releaseTrainer))).status).toBe("ok");
+    expect(await api(commands.linksIntent(releaseTrainer))).toEqual(NOTHING);
   });
 
   // The core (keeper/contract_tests.rs `a_page_stalled_across_a_ride_with_an_unlinked_strap_gets_one_frame`).
@@ -345,66 +352,36 @@ describe("the ride's hold on the links", () => {
   });
 });
 
-// ADR-0002 §5.1.4: a frame or an answer is applied only if its seq is at least the highest applied so far, from either
-// source (keeper/contract_tests.rs `applied_in_arrival_order_the_newest_state_wins_an_answer_after_a_newer_answer_included`).
-describe("answers and frames are ordered by seq", () => {
-  test("an answer has its state's seq; a later change outranks it", async () => {
-    const rig = installRide({ phase: "none", keeper: WARM });
-    const frames: LinkFrame[] = [];
-    const channel = new Channel<LinkFrame>();
-    channel.onmessage = (f) => frames.push(f);
-    const opened = await api(commands.linksOpen(channel));
-    if (opened.status !== "ok") throw new Error("open failed");
-    const answer = await api(commands.linksIntent({ kind: "left" }));
-    if (answer.status !== "ok") throw new Error("intent failed");
-    expect(answer.data).toEqual(frames.at(-1));
-    await api(commands.linksAck(opened.data, answer.data.seq));
-    rig.setKeeper(COLD_LINKS);
-    const newer = frames.at(-1)!;
-    expect(newer.seq).toBeGreaterThan(answer.data.seq);
-    expect(keepNewest(newer, answer.data)).toEqual(newer);
-    const released = await api(
+// ADR-0002 §5.1.4 (#597): the link channel is the only source of the keeper's state. An intent's answer carries none;
+// its effect is the channel's next frame, sent at once when the last one is acked, otherwise after that ack.
+describe("an intent's effect arrives as a frame", () => {
+  test("acked: the next frame carries it", async () => {
+    installRide({ phase: "none", keeper: WARM });
+    const { frames, ack } = await open();
+    await ack();
+    const answer = await api(
       commands.linksIntent({ kind: "release", reason: "hidden" }),
     );
-    expect(released.status === "ok" && released.data.seq).toBe(newer.seq);
+    expect(answer).toEqual(NOTHING);
+    expect(frames).toEqual([
+      { seq: 1, links: WARM },
+      { seq: 2, links: COLD_LINKS },
+    ]);
   });
 
-  // #561 round 3: the release's answer waits for its links and arrives after the answer of the `likely` sent after it.
-  test("applied in arrival order, an older answer after a newer one never steps back", async () => {
+  test("unacked: it waits for the ack, then arrives as one frame of the latest state", async () => {
     const rig = installRide({ phase: "none", keeper: WARM });
-    const log: { from: string; frame: LinkFrame }[] = [];
-    const channel = new Channel<LinkFrame>();
-    channel.onmessage = (frame) => log.push({ from: "frame", frame });
-    const opened = await api(commands.linksOpen(channel));
-    if (opened.status !== "ok") throw new Error("open failed");
-    const answered =
-      (from: string) => (a: { status: string; data?: LinkFrame }) => {
-        if (a.status !== "ok" || !a.data) throw new Error(`${from} failed`);
-        log.push({ from, frame: a.data });
-      };
-    // the first frame is not acked yet: the changes below wait for its ack
-    const letGo = rig.hold("links_intent");
-    const release = api(
-      commands.linksIntent({ kind: "release", reason: "devices" }),
-    ).then(answered("release"));
+    const { frames, ack } = await open();
+    expect(
+      await api(commands.linksIntent({ kind: "release", reason: "devices" })),
+    ).toEqual(NOTHING);
     rig.setKeeper(SEARCHING);
-    await api(commands.linksIntent({ kind: "likely", ready: false })).then(
-      answered("likely"),
-    );
-    letGo();
-    await release;
-    await api(commands.linksAck(opened.data, log[0].frame.seq));
-    expect(log.map((a) => [a.from, a.frame.seq])).toEqual([
-      ["frame", 1],
-      ["likely", 3],
-      ["release", 2],
-      ["frame", 3],
+    expect(frames).toHaveLength(1);
+    await ack();
+    // the release's `cold` (seq 2) was coalesced into the latest state
+    expect(frames).toEqual([
+      { seq: 1, links: WARM },
+      { seq: 3, links: SEARCHING },
     ]);
-    expect(log[2].frame.links).toEqual(COLD_LINKS);
-    const applied: LinkFrame[] = [];
-    for (const { frame } of log)
-      applied.push(keepNewest(applied.at(-1) ?? null, frame));
-    expect(applied.map((f) => f.seq)).toEqual([1, 3, 3, 3]);
-    expect(applied.at(-1)?.links).toEqual(SEARCHING);
   });
 });
