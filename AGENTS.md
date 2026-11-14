@@ -123,7 +123,20 @@ counts and prunes such keys (one worker); any other mode than `check`/`update` i
 commit it only with the change that moved a count, and say why in the PR. The browser is Chromium from nixpkgs
 (`playwright-driver.browsers`, the devShell's `PLAYWRIGHT_BROWSERS_PATH`); `@playwright/test` is pinned to the same version
 and the flake asserts it. Chromium stands in for the app's WKWebView: the WebdriverIO specs (`just e2e`) still test the
-real app. The `app-e2e-design` flake check runs the harness on x86_64-linux only. The audit reads one fixture at a time; rule 10's
+real app. The `app-e2e-design` flake check runs the harness on x86_64-linux only. **Generic layout invariants (#630):** on
+every fixture × project the audit holds `layout.contained` (each element's border box inside the box that lays it out:
+its parent's border box in the flow, its containing block's padding box when positioned, the window when fixed; the page
+itself and a scroll container bound nothing along the axis that scrolls; an inline box only across), `layout.landmarks`
+(no two landmark regions side by side overlap; a dialog is its own layer) and `layout.textOverflow` (the block holding
+a text run holds all its content on each non-scrolling axis; a font's half-leading overhang past its `line-height` is
+not overflow). A deviation is an entry in `app/e2e/design/audit-opts.ts` `EXEMPT` with its rules, selector and reason
+(a temporary one names its issue); the audit throws on one without a reason. They replace the per-component
+`layout.overflowParent`, `layout.clipped` and the spec's cut-text check. Chromium (and Playwright's WebKit build) lay
+some things out unlike the app's WKWebView: #630's strip drew into the key row only there. `just design-webkit`
+(`app/e2e/design/webkit.ts`, macOS only, in the GUI session, with the Xcode command line tools' `swiftc`) runs the same
+audit and exemptions on every fixture at the harness's sizes in the system WKWebView (`webkit/runner.swift`, off screen,
+occlusion detection off so frames run; `webkit/driver.js` opens each state as the spec does) and fails on any
+invariant violation; run it with any layout change. The audit reads one fixture at a time; rule 10's
 cross-state comparison of the ride's region boxes is #498. **Focus walk (#458, rule 8):** after the audit, each fixture
 is tabbed from the document start until focus is back on the first stop, then Shift+Tabbed back, then its skip link is
 used (`app/e2e/design/focus.ts`, the key presses and rules; `focus-audit.js`, the in-page reads). Its rules share the
