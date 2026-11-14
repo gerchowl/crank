@@ -14,6 +14,9 @@
 //             Default: the ride's `.ride-metrics > .readout`, `.readout-head`, `[data-tier]`, `.readout-value > .tile-unit`.
 //   strip     the block strip's labels (§18.3 "Strip labels", rule 6): { label, block, bar } selectors; a label's
 //             `data-block-label` names the `data-block` it belongs to. Default: the ride's timeline.
+//   exempt    [{ rules, selector, reason }]: the declared exemptions from the generic invariants (`layout.contained`,
+//             `layout.landmarks`, `layout.textOverflow`, #630) for an element matching `selector` or inside one. A
+//             reason is required; one without it throws. Default: none; the spec passes audit-opts.ts `AUDIT_OPTS`.
 //   top       offenders kept per rule (default 3); full: keep every message under `rules`.
 (() => {
   const sel = (el) => {
@@ -264,29 +267,137 @@
       out.rules["layout.hOverflow"] = [
         `scrollWidth ${document.documentElement.scrollWidth} > ${vw}`,
       ];
-    for (const e of all) {
-      const p = e.parentElement;
-      if (!p || p === document.body) continue;
+    // Generic invariants (#630): every element inside the box that lays it out, no two landmark regions over each
+    // other, no text past its box. They hold on every fixture at every size; a deviation is an exemption in
+    // `opts.exempt` with its reason, never a silent skip. They subsume the per-component overflow rules.
+    const exempt = (rule, e) =>
+      (opts.exempt ?? []).some((x) => {
+        if (!x.reason?.trim())
+          throw new Error(`layout exemption ${x.selector} has no reason`);
+        return x.rules.includes(rule) && e.closest(x.selector);
+      });
+    const scrolls = (v) => v === "auto" || v === "scroll";
+    const box = (r) => ({
+      left: r.left,
+      top: r.top,
+      right: r.right,
+      bottom: r.bottom,
+    });
+    const doc = new Set([
+      document.documentElement,
+      document.body,
+      document.getElementById("root"),
+    ]);
+    /** The box that lays `e` out, and the axes on which it bounds it: its parent's border box in the flow, its
+     * containing block's padding box when positioned, the window when fixed. The page itself (html, body, #root)
+     * grows with its content, and a scroll container's content scrolls: those bound nothing along the scrolling axis. */
+    const layoutBox = (e, cs) => {
+      if (cs.position === "fixed")
+        return {
+          r: { left: 0, top: 0, right: vw, bottom: innerHeight },
+          x: true,
+          y: true,
+        };
+      let p = e.parentElement;
+      if (cs.position === "absolute") p = e.offsetParent;
+      else
+        while (p && getComputedStyle(p).display === "contents")
+          p = p.parentElement;
+      if (!p) return null;
       const pcs = getComputedStyle(p);
-      if (/hidden|clip|auto|scroll/.test(pcs.overflowX + pcs.overflowY)) {
-        if (
-          e.scrollWidth > e.clientWidth + 1 &&
-          getComputedStyle(e).overflow === "hidden"
-        )
-          add(
-            "layout.clipped",
-            e,
-            `content ${e.scrollWidth} > box ${e.clientWidth}`,
-          );
-        continue;
+      const r = box(p.getBoundingClientRect());
+      if (cs.position === "absolute") {
+        r.left += px(pcs.borderLeftWidth);
+        r.right -= px(pcs.borderRightWidth);
+        r.top += px(pcs.borderTopWidth);
+        r.bottom -= px(pcs.borderBottomWidth);
       }
-      const r = e.getBoundingClientRect(),
-        pr = p.getBoundingClientRect();
-      if (r.right > pr.right + 2 || r.left < pr.left - 2)
+      return {
+        r,
+        x: !scrolls(pcs.overflowX),
+        y: !doc.has(p) && !scrolls(pcs.overflowY),
+      };
+    };
+    for (const e of all) {
+      if (doc.has(e) || exempt("layout.contained", e)) continue;
+      const cs = getComputedStyle(e);
+      const lb = layoutBox(e, cs);
+      if (!lb) continue;
+      const r = e.getBoundingClientRect();
+      const { r: p } = lb;
+      // An inline box's height is its font's, not the line it sits on: only the line's own box bounds it down the page.
+      const y = lb.y && cs.display !== "inline";
+      const out = [];
+      if (lb.x && r.left < p.left - 1)
+        out.push(`left ${Math.round(r.left)} < ${Math.round(p.left)}`);
+      if (lb.x && r.right > p.right + 1)
+        out.push(`right ${Math.round(r.right)} > ${Math.round(p.right)}`);
+      if (y && r.top < p.top - 1)
+        out.push(`top ${Math.round(r.top)} < ${Math.round(p.top)}`);
+      if (y && r.bottom > p.bottom + 1)
+        out.push(`bottom ${Math.round(r.bottom)} > ${Math.round(p.bottom)}`);
+      if (out.length)
+        add("layout.contained", e, `outside its layout box: ${out.join(", ")}`);
+    }
+    // Landmark regions side by side never overlap. A dialog is its own layer over the page: its regions are compared
+    // with each other, not with the page under it.
+    const LANDMARK =
+      "header,nav,main,aside,footer,section[aria-label],section[aria-labelledby],[role=banner],[role=navigation]," +
+      "[role=main],[role=complementary],[role=contentinfo],[role=region],[data-region]";
+    const LAYER = "dialog,[role=dialog],[role=alertdialog],[aria-modal=true]";
+    const marks = all.filter(
+      (e) => e.matches(LANDMARK) && !exempt("layout.landmarks", e),
+    );
+    for (let i = 0; i < marks.length; i++)
+      for (let j = i + 1; j < marks.length; j++) {
+        const [a, b] = [marks[i], marks[j]];
+        if (a.contains(b) || b.contains(a)) continue;
+        if (a.closest(LAYER) !== b.closest(LAYER)) continue;
+        const [ra, rb] = [a.getBoundingClientRect(), b.getBoundingClientRect()];
+        const w = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left);
+        const h = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top);
+        if (w > 1 && h > 1)
+          add(
+            "layout.landmarks",
+            b,
+            `overlaps ${sel(a)} by ${Math.round(w)}x${Math.round(h)}`,
+          );
+      }
+    // No text overflows its box: the block that holds a text run (an inline element's nearest non-inline ancestor)
+    // holds all its content, on each axis that does not scroll. Down the page a line box is the line-height the design
+    // set; the font's ascent and descent may hang past it by the half-leading (a numeral at `line-height: 1`), which is
+    // no overflow, so each run's overhang is allowed. A line more than the box holds is not.
+    const holders = new Map();
+    for (const e of all)
+      for (const n of e.childNodes) {
+        if (n.nodeType !== 3 || !n.textContent.trim()) continue;
+        let h = e;
+        while (h && /^(inline|contents)$/.test(getComputedStyle(h).display))
+          h = h.parentElement;
+        if (!h || doc.has(h)) continue;
+        const range = document.createRange();
+        range.selectNodeContents(n);
+        const area = Math.max(
+          0,
+          ...[...range.getClientRects()].map((r) => r.height),
+        );
+        const lh = getComputedStyle(e).lineHeight;
+        const hang = lh === "normal" ? 0 : Math.max(0, (area - px(lh)) / 2);
+        holders.set(h, Math.max(holders.get(h) ?? 0, hang));
+      }
+    for (const [h, hang] of holders) {
+      if (exempt("layout.textOverflow", h)) continue;
+      const cs = getComputedStyle(h);
+      const over = [];
+      if (!scrolls(cs.overflowX) && h.scrollWidth > h.clientWidth + 1)
+        over.push(`width ${h.scrollWidth} > ${h.clientWidth}`);
+      if (!scrolls(cs.overflowY) && h.scrollHeight > h.clientHeight + hang + 1)
+        over.push(`height ${h.scrollHeight} > ${h.clientHeight}`);
+      if (over.length)
         add(
-          "layout.overflowParent",
-          e,
-          `x ${Math.round(r.left)}–${Math.round(r.right)} vs parent ${Math.round(pr.left)}–${Math.round(pr.right)}`,
+          "layout.textOverflow",
+          h,
+          `"${h.textContent.trim().slice(0, 24)}" ${over.join(", ")}`,
         );
     }
     const main = document.querySelector("main .page, main .ride, main > *");

@@ -18,6 +18,9 @@ export interface Scenario {
   scrollTo?: string;
 }
 
+/** The fixtures' wall clock (`Date`): a ride date or a "today" renders the same on every run. Timers still run. */
+export const FROZEN = "2026-11-02T08:00:00Z";
+
 export const SCENARIOS = [
   // Today (§5.1 "In direction A", #530). `today` stays first: the gate's own tests inject into it.
   { name: "today", ready: "role=list[name='Last 7 days']" },

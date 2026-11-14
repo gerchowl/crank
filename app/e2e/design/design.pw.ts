@@ -16,6 +16,7 @@ import {
 } from "./baseline";
 import { focusWalk, inOrder, ORDER_TOLERANCE } from "./focus";
 import {
+  FROZEN,
   HISTORY_SCENARIOS,
   RIDE_SCENARIOS,
   SCENARIOS,
@@ -25,12 +26,9 @@ import {
   type Scenario,
 } from "./scenarios";
 import WarningsReporter, { WARNING } from "./warnings";
+import { AUDIT_OPTS } from "./audit-opts";
 
 const AUDIT = join(import.meta.dirname, "layout-audit.js");
-/** Direction A's allowances (§18.4): the rail's items are `--control-h-rail`; every other control is `--control-h`. */
-const AUDIT_OPTS = {
-  controls: [{ selector: ".rail button", token: "--control-h-rail" }],
-};
 /** WCAG 2.2 A and AA (rule 7). */
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 
@@ -44,11 +42,8 @@ declare global {
   }
 }
 
-/** The fixtures' wall clock (`Date`): a ride date or a "today" renders the same on every run. Timers still run. */
-const FROZEN = new Date("2026-11-02T08:00:00Z");
-
 async function open(page: Page, s: Scenario) {
-  await page.clock.setFixedTime(FROZEN);
+  await page.clock.setFixedTime(new Date(FROZEN));
   // No fixture draws from `Math.random` today (each is static data, scenarios.ts); one that does gets the same
   // sequence every run (mulberry32, fixed seed).
   await page.addInitScript(() => {
@@ -177,47 +172,25 @@ const regionBoxes = (page: Page) =>
       }),
     ),
   );
-// No text is cut (§6.1, rule 6): no box that hides or ellipsizes its overflow holds more than it shows, anywhere under
-// `root` (on the ride: the banner band, the key row, the title, the next line …), and every control is wholly inside
-// the window; on the ride an action in the banner band (End…) is wholly inside the band. The audit's `layout.clipped`
-// sees only a box whose parent clips too; this names the text and the control. A control inside `flow` (a list as long
-// as its data, History's rides) may sit above or below the window, where the page scrolls and Tab reaches it, but is
-// still wholly inside it across.
-const screenFit = (page: Page, root: string, flow?: string) =>
+// Every control is wholly inside the window (§6.1, rule 6), so no state pushes an action off screen. A control inside
+// `flow` (a list as long as its data, History's rides) may sit above or below the window, where the page scrolls and
+// Tab reaches it, but is still wholly inside it across. Cut text, and a control outside its band, are the audit's
+// generic `layout.textOverflow` and `layout.contained` (#630), on every fixture at every size.
+const controlsFit = (page: Page, root: string, flow?: string) =>
   page.evaluate(
     ([root, flow]) => {
       const screen = document.querySelector(root);
       if (!screen) return [`no ${root}`];
-      const ride = root === ".ride";
-      const band = screen.querySelector("[data-region='banner']");
-      if (ride && !band) return ["no banner band on the ride screen"];
       const bad: string[] = [];
-      for (const e of screen.querySelectorAll<HTMLElement>("*")) {
-        if (e.closest("svg, .sr-only")) continue;
-        const cs = getComputedStyle(e);
-        // Each axis that hides its overflow must hold its content.
-        if (
-          (cs.overflowX !== "visible" && e.scrollWidth > e.clientWidth + 1) ||
-          (cs.overflowY !== "visible" && e.scrollHeight > e.clientHeight + 1)
-        )
-          bad.push(
-            `cut: ${e.className || e.tagName} "${(e.textContent ?? "").slice(0, 60)}" ${e.scrollWidth}x${e.scrollHeight} > ${e.clientWidth}x${e.clientHeight}`,
-          );
-      }
-      const b = band?.getBoundingClientRect();
       for (const a of screen.querySelectorAll("button")) {
         const r = a.getBoundingClientRect();
-        const box =
-          b && band?.contains(a)
-            ? b
-            : { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
         const flows = flow !== undefined && a.closest(flow) !== null;
         if (
-          r.left < box.left ||
-          r.right > box.right ||
-          (!flows && (r.top < box.top || r.bottom > box.bottom))
+          r.left < 0 ||
+          r.right > innerWidth ||
+          (!flows && (r.top < 0 || r.bottom > innerHeight))
         )
-          bad.push(`control outside its box: "${a.textContent}"`);
+          bad.push(`control outside the window: "${a.textContent}"`);
       }
       return bad;
     },
@@ -238,17 +211,17 @@ test("the ride's region boxes are the same in every ride fixture", async ({
     first ??= boxes;
     expect(boxes, `${name} against ${RIDE_SCENARIOS[0]}`).toEqual(first);
     expect(
-      await screenFit(page, ".ride"),
-      `${name}: cut text or controls`,
+      await controlsFit(page, ".ride"),
+      `${name}: controls outside the window`,
     ).toEqual([]);
   }
 });
 
-// Today (#530) passes the same whole-screen check, with no region exempt: every panel and the long name of a loaded ride
-// stay whole and inside the window at 1024×768. Each fixture opens through the start screen's hand-off (the shell's
+// Today (#530): every control stays inside the window, and (the audit, on every fixture) every panel and the long name
+// of a loaded ride stay whole. Each fixture opens through the start screen's hand-off (the shell's
 // default core adapter, core.ts): once settled the start screen is gone and focus is on Today's main region, the
 // destination it hands off to (shell/StartScreen.tsx).
-test("nothing on Today is cut, in any of its fixtures, and the hand-off focused it", async ({
+test("every control on Today is in the window, in any of its fixtures, and the hand-off focused it", async ({
   page,
 }) => {
   for (const name of TODAY_SCENARIOS) {
@@ -265,15 +238,14 @@ test("nothing on Today is cut, in any of its fixtures, and the hand-off focused 
       `${name}: focus after the hand-off`,
     ).toBe(true);
     expect(
-      await screenFit(page, "#root"),
-      `${name}: cut text or controls`,
+      await controlsFit(page, "#root"),
+      `${name}: controls outside the window`,
     ).toEqual([]);
   }
 });
 
-// Settings and Devices (#527) pass the same whole-screen check: no cut text, every control inside the window, so no
-// state pushes an action below the fold at 1024×768.
-test("nothing on Settings or Devices is cut, in any of their fixtures", async ({
+// Settings and Devices (#527): every control inside the window, so no state pushes an action below the fold.
+test("every control on Settings or Devices is in the window, in any of their fixtures", async ({
   page,
 }) => {
   for (const name of SETTINGS_SCENARIOS) {
@@ -281,31 +253,33 @@ test("nothing on Settings or Devices is cut, in any of their fixtures", async ({
     if (!s) throw new Error(`no fixture ${name}`);
     await open(page, s);
     expect(
-      await screenFit(page, "#root"),
-      `${name}: cut text or controls`,
+      await controlsFit(page, "#root"),
+      `${name}: controls outside the window`,
     ).toEqual([]);
   }
 });
 
-// Workouts (#528) too: a long name or a long workout wraps rather than being cut, and Ride this stays in the window.
-test("nothing on Workouts is cut, in any of its fixtures", async ({ page }) => {
+// Workouts (#528) too: with a long name or a long workout, Ride this stays in the window.
+test("every control on Workouts is in the window, in any of its fixtures", async ({
+  page,
+}) => {
   for (const name of WORKOUTS_SCENARIOS) {
     const s = SCENARIOS.find((x) => x.name === name);
     if (!s) throw new Error(`no fixture ${name}`);
     await open(page, s);
     expect(
-      await screenFit(page, "#root"),
-      `${name}: cut text or controls`,
+      await controlsFit(page, "#root"),
+      `${name}: controls outside the window`,
     ).toEqual([]);
   }
 });
 
-// History and Review (#529) too: a long ride, a long list, a long name; nothing is cut, and every control but a ride
+// History and Review (#529) too: a long ride, a long list, a long name; every control but a ride
 // row's Review (in a list as long as the history) is in the window, the rail and the head included. A fixture scrolled
 // on purpose (`scrollTo`, the end of a long list) is checked from the top: the shell scrolls with the page (#566), so
-// scrolled down the rail and the head are above the window by construction, and the cut and horizontal checks do not
-// depend on where the page is scrolled.
-test("nothing on History or Review is cut, in any of their fixtures", async ({
+// scrolled down the rail and the head are above the window by construction, and the horizontal check does not depend
+// on where the page is scrolled.
+test("every control on History or Review is in the window, in any of their fixtures", async ({
   page,
 }) => {
   for (const name of HISTORY_SCENARIOS) {
@@ -314,31 +288,75 @@ test("nothing on History or Review is cut, in any of their fixtures", async ({
     await open(page, s);
     if ("scrollTo" in s) await page.evaluate(() => scrollTo(0, 0));
     expect(
-      await screenFit(page, "#root", ".history-list"),
-      `${name}: cut text or controls`,
+      await controlsFit(page, "#root", ".history-list"),
+      `${name}: controls outside the window`,
     ).toEqual([]);
   }
 });
 
-// …and catches what it is for: a word cut by a box that hides its overflow, in the Settings panel.
-test("an injected cut word on Settings fails the whole-screen check", async ({
-  page,
-}) => {
-  const s = SCENARIOS.find((x) => x.name === "devices-paired");
-  if (!s) throw new Error("no fixture devices-paired");
-  await open(page, s);
-  await page.evaluate(() => {
-    const cut = document.createElement("span");
-    cut.className = "injected";
-    cut.textContent = "Heart-rate strap";
-    cut.style.display = "inline-block";
-    cut.style.width = "1em";
-    cut.style.overflow = "hidden";
-    document.querySelector(".settings-panel")?.append(cut);
+// The generic invariants (#630) catch what they are for, each a first violation over the baseline: a word cut by a box
+// that hides its overflow (Settings), the strip's bar drawn as tall as the whole strip, as WKWebView drew it on dev
+// (#630), and the key row moved over the strip.
+const INJECTIONS: [string, string, () => void][] = [
+  [
+    "devices-paired",
+    "layout.textOverflow",
+    () => {
+      const cut = document.createElement("span");
+      cut.textContent = "Heart-rate strap";
+      cut.style.display = "inline-block";
+      cut.style.width = "1em";
+      cut.style.overflow = "hidden";
+      document.querySelector(".settings-panel")?.append(cut);
+    },
+  ],
+  [
+    "ride-work-step",
+    "layout.contained",
+    () => {
+      const bar = document.querySelector<HTMLElement>(".timeline-bar svg");
+      const strip = document.querySelector<HTMLElement>(".ride-timeline");
+      if (!bar || !strip) throw new Error("no strip on ride-work-step");
+      bar.style.position = "static";
+      bar.style.height = `${strip.clientHeight}px`;
+    },
+  ],
+  [
+    "ride-work-step",
+    "layout.landmarks",
+    () => {
+      const keys = document.querySelector<HTMLElement>("[data-region='keys']");
+      if (!keys) throw new Error("no key row on ride-work-step");
+      keys.style.transform = "translateY(-8px)";
+    },
+  ],
+];
+for (const [name, rule, inject] of INJECTIONS)
+  test(`an injected ${rule} violation on ${name} fails the gate`, async ({
+    page,
+  }, info) => {
+    test.skip(updating, "measures against the committed baseline");
+    const s = SCENARIOS.find((x) => x.name === name);
+    if (!s) throw new Error(`no fixture ${name}`);
+    const base = baseline[keyOf(s, info.project.name)] ?? {};
+    expect(base[rule], `${rule} passes today`).toBeUndefined();
+    await open(page, s);
+    await page.evaluate(inject);
+    const { failures } = compare(base, (await measure(page)).counts);
+    expect(failures.map((f) => f.split(":")[0])).toContain(rule);
   });
-  expect(await screenFit(page, "#root")).toEqual([
-    expect.stringMatching(/^cut: injected "Heart-rate strap"/),
-  ]);
+
+// An exemption without its reason is refused, never applied silently.
+test("an exemption without a reason fails the audit", async ({ page }) => {
+  await open(page, SCENARIOS[0]);
+  await page.addScriptTag({ path: AUDIT });
+  await expect(
+    page.evaluate(() =>
+      window.__layoutAudit({
+        exempt: [{ rules: ["layout.contained"], selector: "nav", reason: " " }],
+      }),
+    ),
+  ).rejects.toThrow(/has no reason/);
 });
 
 // The gate catches what it is for. Every screen passes `button.height` and `button.padding` today (the rail is held
@@ -391,8 +409,8 @@ test("a rail item off --control-h-rail fails the gate", async ({
   ]);
 });
 
-// The rail's words sit inside their buttons with room to spare (#506, DESIGN §16.3): the layout audit's 2 px
-// `layout.overflowParent` allowance let "Workouts" (600 weight, the current place) spill 2 px each side and still pass.
+// The rail's words sit inside their buttons with room to spare (#506, DESIGN §16.3): the layout audit's containment
+// tolerance (`layout.contained`, 1 px) would let "Workouts" (600 weight, the current place) touch the edge and pass.
 // The margin is `--space-1` on each side of the widest word, measured on the bundled Inter after `settled()`.
 const RAIL_LABEL_MARGIN = 4;
 for (const place of ["Today", "Workouts", "History", "Settings"])

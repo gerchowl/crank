@@ -7,7 +7,8 @@ import { defineConfig } from "@playwright/test";
 
 const PORT = 1431;
 const update = process.env.CRANK_DESIGN_BASELINE === "update";
-const VIEWPORTS = [
+/** The harness's window sizes; the WKWebView run (e2e/design/webkit.ts) uses the same. */
+export const VIEWPORTS = [
   { width: 1024, height: 768 },
   { width: 1440, height: 900 },
 ];
