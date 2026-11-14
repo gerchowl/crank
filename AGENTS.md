@@ -162,6 +162,12 @@ the PR, and the reviewer looks at each changed image (the check's failure prints
 `e2e-out/design` holds the expected/actual/diff images of a local Linux run). The PNGs are about 3.2 MB for 16 fixtures
 × 4 projects. Screenshots of the real app will go to `docs/design/screens/` as ADR-0001 §8 specifies.
 
+The workout editor's commands (`parse_dsl`, `print_dsl`, `compile_workout`, #111) have no TypeScript twin: the app holds
+no DSL parser. Their mock (`app/src/views/editorFixture.ts`, behind `workoutsBackend.ts`) answers only from
+`crates/crank-core/tests/fixtures/editor.json`, which the `editor_fixture` test checks against the core; a draft a test
+types must be added to that test's `DRAFTS` and the file regenerated with `just editor-fixture`. A draft not in the file
+throws in the test, never a guessed answer.
+
 Citing Rust from app/ (comments, docs, test backends): always `<name>.rs <symbol>` with an optional ` (~N)` line hint directly after
 the symbol, e.g. ``core.rs `Core::end_ride` (~1742)``; the symbol is an identifier path (`A::b`), in backticks or not. Never a bare
 `core.rs:1742` (a line number goes stale when the Rust file moves, #380, #391). A bare file mention with no symbol is fine

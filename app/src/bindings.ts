@@ -76,6 +76,27 @@ export const commands = {
 	 */
 	workoutGet: (id: string) => typedError<WorkoutDetail, ApiError>(__TAURI_INVOKE("workout_get", { id })),
 	/**
+	 *  Parse workout DSL text for the editor.
+	 * 
+	 *  # Errors
+	 *  As [`Core::parse_dsl`].
+	 */
+	parseDsl: (text: string, ftp: number | null) => typedError<DslParse, ApiError>(__TAURI_INVOKE("parse_dsl", { text, ftp })),
+	/**
+	 *  The canonical DSL text of a workout tree.
+	 * 
+	 *  # Errors
+	 *  As [`Core::print_dsl`].
+	 */
+	printDsl: (nodes: WorkoutNode[]) => typedError<string, ApiError>(__TAURI_INVOKE("print_dsl", { nodes })),
+	/**
+	 *  Compile a workout draft to its timeline and summary.
+	 * 
+	 *  # Errors
+	 *  As [`Core::compile_workout`].
+	 */
+	compileWorkout: (workout: Workout) => typedError<CompiledView, ApiError>(__TAURI_INVOKE("compile_workout", { workout })),
+	/**
 	 *  Load a workout, or a free ride for `None`.
 	 * 
 	 *  # Errors
@@ -272,6 +293,36 @@ export type DeviceRole =
 "trainer" | 
 /**  The heart-rate strap. */
 "heart_rate";
+
+/**
+ *  Answer of `parse_dsl`. A text that does not parse is an answer, not a failed command:
+ *  the editor keeps the draft and shows the problem (DESIGN §5.7, #111).
+ */
+export type DslParse = 
+/**  The text parses; every node has a fresh id. */
+{ outcome: "parsed"; 
+/**  The workout tree. */
+nodes: WorkoutNode[] } | 
+/**  The text does not parse. */
+{ outcome: "invalid"; 
+/**  The first problem in the text. */
+problem: DslProblem };
+
+/**
+ *  Why a DSL text does not parse, as the editor shows it: the message, and the span of the
+ *  offending token to select. The boundary owns this type: `crank-domain`'s `DslError` holds
+ *  its span (and `DslErrorKind::NestingTooDeep` its bound) as `usize`, which TypeScript cannot
+ *  carry without precision loss, so the span is converted with a checked cast. The kind is not
+ *  carried: nothing in the UI branches on it (the editor shows the message, DESIGN §5.7).
+ */
+export type DslProblem = {
+	/**  Display text. */
+	message: string,
+	/**  UTF-16 offset of the offending token in the text, as in JavaScript strings. */
+	offset: number,
+	/**  Its UTF-16 length; zero selects the end of the input. */
+	length: number,
+};
 
 /**
  *  The ERG low-cadence release and its re-engagement (ADR-0002 §7.4, amended 2026-11-09,

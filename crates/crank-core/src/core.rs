@@ -12,9 +12,9 @@
 //! loaded ride's engine and to a window label; they end with the ride.
 use crate::backend::{Backend, DeviceMode};
 use crate::dto::{
-    CoreInfo, DeviceLinkInfo, DeviceRole, KnownDevice, LinkIntent, LinkPhase, LinksId,
-    PairedDevice, ReleaseReason, RideLoaded, RideOutcome, RideRecord, RideStatusView, RideSummary,
-    ScannedDevice, WorkoutDetail, WorkoutSummary,
+    CompiledView, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, DslProblem, KnownDevice,
+    LinkIntent, LinkPhase, LinksId, PairedDevice, ReleaseReason, RideLoaded, RideOutcome,
+    RideRecord, RideStatusView, RideSummary, ScannedDevice, WorkoutDetail, WorkoutSummary,
 };
 use crate::error::{ApiError, ErrorCode};
 use crate::keeper::channel::{Channels, LinkSink};
@@ -26,7 +26,10 @@ use crank_devices::{
     Clock, CommandSeq, ControlMode, DeviceInfo, DeviceRef, HeartRateLink, RiderConfig, SeqSource,
     TrainerCommand, TrainerEvent, TrainerLink,
 };
-use crank_domain::workout::{CompiledWorkout, Severity, Workout};
+use crank_domain::workout::{
+    CompileOptions, CompiledWorkout, Severity, Workout, WorkoutNode, compile_workout, parse_dsl,
+    print_dsl,
+};
 use crank_engine::{
     CommandError, Engine, EngineCmd, EngineHandle, MetricId, MonotonicClock, RideSetup, RideState,
     StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts, Tuning,
@@ -38,7 +41,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -869,6 +872,8 @@ struct Inner {
     loading: AtomicBool,
     /// Woken when a load is over ([`Inner::finish_loading`]).
     load_done: Notify,
+    /// The id source of `parse_dsl`: the next `dsl-<n>` node id, unique for the core's life.
+    dsl_ids: AtomicU64,
     /// Counts quits ([`Core::shutdown`]): a load still connecting gives up when it changes, so
     /// its `ride` and `device` spans close before vigil's shutdown (vigil#8).
     quits: watch::Sender<u64>,
@@ -1142,6 +1147,7 @@ impl Core {
             released: Notify::new(),
             loading: AtomicBool::new(false),
             load_done: Notify::new(),
+            dsl_ids: AtomicU64::new(1),
             quits: watch::channel(0).0,
             next_stream: AtomicU32::new(1),
             keeper: keeper::Handle::new(),
@@ -1567,6 +1573,54 @@ impl Core {
     )]
     pub async fn workout_get(&self, id: String) -> Result<WorkoutDetail, ApiError> {
         self.0.library.detail(&id)
+    }
+
+    /// Parse workout DSL text (docs/DSL.md) for the editor, with `ftp` as the reference FTP
+    /// for implausible-intensity checks. Every node of a parsed tree gets a fresh `dsl-<n>`
+    /// id, unique for the core's life: the domain has no id source (docs/DSL.md, "Ids"), the
+    /// core owns it. A text that does not parse is the `invalid` answer with its problem.
+    ///
+    /// # Errors
+    /// `Internal` if the problem's span exceeds `u32`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn parse_dsl(&self, text: String, ftp: f64) -> Result<DslParse, ApiError> {
+        let mut ids = || format!("dsl-{}", self.0.dsl_ids.fetch_add(1, Ordering::Relaxed));
+        Ok(match parse_dsl(&text, ftp, &mut ids) {
+            Ok(nodes) => DslParse::Parsed { nodes },
+            Err(e) => DslParse::Invalid {
+                problem: DslProblem::try_from(&e)?,
+            },
+        })
+    }
+
+    /// The canonical DSL text of a workout tree (docs/DSL.md, "Canonical printing").
+    ///
+    /// # Errors
+    /// Never fails; async and fallible as every facade method.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn print_dsl(&self, nodes: Vec<WorkoutNode>) -> Result<String, ApiError> {
+        Ok(print_dsl(&nodes))
+    }
+
+    /// Compile a workout (an editor draft) to its timeline and summary, issues included: an
+    /// error-severity issue is part of the answer, not a failure.
+    ///
+    /// # Errors
+    /// `InvalidInput` when the workout does not compile (a nonfinite input, nesting, expansion
+    /// or timeline bounds, [`crank_domain::workout::CompileError`]); `Internal` if a block
+    /// index exceeds `u32`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn compile_workout(&self, workout: Workout) -> Result<CompiledView, ApiError> {
+        CompiledView::try_from(&compile_workout(&workout, &CompileOptions::default())?)
     }
 
     // ---- ride -------------------------------------------------------------------
