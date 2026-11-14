@@ -411,7 +411,15 @@
   line-height: 1.33;
   color: var(--ink-3);
 }
-.ride-timeline svg {
+/* The bar's row (`minmax(0, 1fr)`) is the grid's to size: a replaced element there with `height: 100%` is resolved
+   against the whole strip by WKWebView (#630), so the SVG fills a non-replaced cell absolutely instead. */
+.timeline-bar {
+  position: relative;
+  min-height: 0;
+}
+.timeline-bar svg {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
