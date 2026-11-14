@@ -212,6 +212,13 @@ fn malformed(at: u64, what: impl Into<String>) -> RouteImportError {
     }
 }
 
+/// One zero: −0.0 becomes +0.0, any other value is kept (ADR-0005 §2.1, #578). A file's `-0` or
+/// `-0.000000` (printf's form just west of Greenwich) is the same position or height as `0`, and
+/// JSON in JavaScript cannot carry the sign (`JSON.stringify(-0)` is `0`), so a route never holds it.
+pub(super) fn one_zero(x: f64) -> f64 {
+    if x == 0.0 { 0.0 } else { x }
+}
+
 /// A finite latitude within ±90° and longitude within ±180°, else the point is malformed.
 fn check_position(p: &RawPoint) -> Result<(), RouteImportError> {
     if !(p.lat.is_finite() && (-90.0..=90.0).contains(&p.lat)) {
@@ -238,7 +245,7 @@ fn plausible_elevation(
             *out_of_range += 1;
             Ok(None)
         }
-        e => Ok(e),
+        e => Ok(e.map(one_zero)),
     }
 }
 
@@ -267,7 +274,7 @@ pub fn route_from_points(
             continue;
         }
         let ele_m = plausible_elevation(p, &mut elevation_out_of_range)?;
-        let lat_lon = (p.lat, p.lon);
+        let lat_lon = (one_zero(p.lat), one_zero(p.lon));
         let Some(prev) = points.last_mut() else {
             last_lat_lon = lat_lon;
             points.push(RoutePoint {
@@ -316,7 +323,8 @@ pub fn route_from_points(
     let ascent_m = points
         .windows(2)
         .filter_map(|w| Some((w[1].ele_m? - w[0].ele_m?).max(0.0)))
-        .sum();
+        // Not `sum()`: an empty `f64` sum is −0.0, and a route without elevation would report it.
+        .fold(0.0, |a, b| a + b);
     let surfaces_from_file = points.iter().filter(|p| p.surface.is_some()).count();
     let report = RouteImportReport {
         points_kept: points.len(),

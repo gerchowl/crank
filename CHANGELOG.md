@@ -98,6 +98,9 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   size (`layout.contained`, `layout.landmarks`, `layout.textOverflow`, with declared exemptions), and `just
   design-webkit` runs them in the system WKWebView, where this one showed
   ([#630](https://github.com/gerchowl/crank/issues/630))
+- A route imported from a file written with `-0` (an elevation, or `lon="-0.000000"` just west of Greenwich) no
+  longer holds −0.0, which JavaScript's JSON turns into 0: the importers write +0.0 and `Route::check` refuses −0.0
+  (ADR-0005 §2.1 "One zero", [#578](https://github.com/gerchowl/crank/issues/578))
 - Ride screen metric column on one grid (DESIGN §18.3 "Metric grid"): the same label-to-value gap and slot-to-slot gap
   in every slot, T2 values right-aligned so W, bpm and rpm share one column, and the target written "250 W" like the
   plan; the block strip's labels sit `--space-1` under the bar, flush left with their block, and shed the name, then

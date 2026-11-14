@@ -177,7 +177,7 @@ fn every_committed_gpx_fixture_imports_and_round_trips_through_json() {
     let files = fixtures();
     assert_eq!(
         files.len(),
-        10,
+        11,
         "{:?}",
         files.iter().map(|f| &f.0).collect::<Vec<_>>()
     );
