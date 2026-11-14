@@ -181,6 +181,142 @@ pub struct LinkFrame {
     pub links: LinkView,
 }
 
+/// A window's snapshot channel (`ui_open`, ADR-0001 §4.3.5): a per-process counter from 1,
+/// never reused, owned by the window that opened it.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, specta::Type,
+)]
+pub struct UiChannelId(pub u32);
+
+/// One frame of a window's snapshot channel (ADR-0001 §4.3.2): the full current state and
+/// the points from the channel's cursor.
+///
+/// The page, for each frame of the channel it holds and in arrival order, replaces `ride`,
+/// `loading` and `devices`; per series replaces its points when `from` is 0 and appends them
+/// otherwise; then acks with `ui_ack(channel, seq)`. Nothing else is sent until that ack.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UiFrame {
+    /// The channel the frame belongs to; the page acks with it.
+    pub channel: UiChannelId,
+    /// Per channel, from 0, +1 per frame (wrapping); the ack names it.
+    pub seq: u32,
+    /// The loaded ride, or the last ended one; `null` before any, after an unload, and from
+    /// the start of a load until it installs its ride.
+    pub ride: Option<RideView>,
+    /// A `ride_load` is under way; its per-device progress is `devices`.
+    pub loading: bool,
+    /// Both roles, always.
+    pub devices: DevicesView,
+    /// The points from this channel's cursor.
+    pub series: SeriesDelta,
+}
+
+/// The state part of a [`UiFrame`], as [`crate::Core::snapshot`] answers it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UiState {
+    /// As [`UiFrame::ride`].
+    pub ride: Option<RideView>,
+    /// As [`UiFrame::loading`].
+    pub loading: bool,
+    /// As [`UiFrame::devices`].
+    pub devices: DevicesView,
+}
+
+/// The loaded ride, or the last ended one (ADR-0001 §4.3.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RideView {
+    /// The id `ride_load` answered.
+    pub id: String,
+    /// `null` for a free ride.
+    pub workout_id: Option<String>,
+    /// The engine's status.
+    pub status: StreamStatus,
+    /// This tick's values, for the big numbers.
+    pub live: LiveValues,
+    /// `null` until the ride is over.
+    pub ended: Option<RideEnding>,
+    /// A bounded engine request timed out, or the ride in progress has not published its
+    /// status for 1 s (#351); kept until the ride ends.
+    pub engine_unresponsive: bool,
+}
+
+/// How a ride ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum RideEnding {
+    /// The engine ended it.
+    Finished,
+    /// The core ended it by force, the engine stuck or gone (#331): recorded as aborted,
+    /// without a summary.
+    Forced,
+}
+
+/// The latest tick's values; each `null` while paused, lost, in a gap or not riding.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveValues {
+    /// Power, W.
+    pub power_w: Option<u16>,
+    /// Cadence, rpm.
+    pub cadence_rpm: Option<u16>,
+    /// Heart rate, bpm.
+    pub hr_bpm: Option<u16>,
+}
+
+/// Both device roles (ADR-0001 §4.3.6): one source per device.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DevicesView {
+    /// The trainer.
+    pub trainer: DeviceView,
+    /// The strap.
+    pub strap: DeviceView,
+}
+
+/// One role: its pairing, the keeper's phase and, while a ride holds it, the ride's link.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceView {
+    /// `null` when nothing is paired for the role; each string cut to 64 bytes.
+    pub paired: Option<PairedDevice>,
+    /// The keeper's phase (ADR-0002 §5.1.1); `null` exactly when not paired.
+    pub phase: Option<LinkPhase>,
+    /// The ride's link state, from the same engine status as `ride.status`; set exactly when
+    /// `phase` is `riding` (`connecting` until the load has installed its ride).
+    pub link: Option<LinkStatus>,
+    /// The keeper's latest sample while `warm`; `null` otherwise.
+    pub sample: Option<LinkSample>,
+}
+
+/// The points of each series from the channel's cursor.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SeriesDelta {
+    /// Power, W, 4 Hz.
+    pub power: Points,
+    /// Cadence, rpm, 2 Hz.
+    pub cadence: Points,
+    /// Heart rate, bpm, 2 Hz.
+    pub hr: Points,
+}
+
+/// Up to 256 consecutive points of one series, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Points {
+    /// Index of the first point, always the length the page holds; 0 starts the series again.
+    pub from: u32,
+    /// Session time, s.
+    pub t: Vec<f64>,
+    /// Workout time, s.
+    pub w: Vec<f64>,
+    /// The value: W, rpm or bpm.
+    pub v: Vec<u16>,
+}
+
 /// The phases of a load in flight (`ride_status().load`, ADR-0002 §5.1.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]

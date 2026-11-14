@@ -17,9 +17,11 @@ mod keeper;
 mod library;
 mod links;
 mod recorder;
+mod ui;
 
 pub use backend::DeviceMode;
 pub use core::{Core, CoreConfig, EngineHost, FrameSink, RideEnd, Shutdown, SinkClosed};
 pub use dto::*;
 pub use error::{ApiError, ErrorCode};
 pub use keeper::channel::LinkSink;
+pub use ui::UiSink;

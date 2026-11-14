@@ -5,7 +5,7 @@ use crate::logging::Logging;
 use crank_core::{
     ApiError, Core, CoreInfo, DeviceLinkInfo, DeviceRole, FrameSink, LinkFrame, LinkIntent,
     LinkSink, LinksId, PairedDevice, RideEnded, RideLoaded, RideRecord, RideStatusView,
-    ScannedDevice, SinkClosed, WorkoutDetail, WorkoutSummary,
+    ScannedDevice, SinkClosed, UiChannelId, UiFrame, UiSink, WorkoutDetail, WorkoutSummary,
 };
 use crank_engine::{MetricId, StreamFrame, StreamId, StreamSnapshot, SubId, SubscribeOpts};
 use tauri::{State, ipc::Channel};
@@ -22,6 +22,14 @@ impl FrameSink for ChannelSink {
 struct LinkChannelSink(Channel<LinkFrame>);
 impl LinkSink for LinkChannelSink {
     fn send(&self, frame: LinkFrame) -> Result<(), SinkClosed> {
+        self.0.send(frame).map_err(|_| SinkClosed)
+    }
+}
+
+/// Snapshot frames go to the window's IPC channel; a failed send closes it.
+struct UiChannelSink(Channel<UiFrame>);
+impl UiSink for UiChannelSink {
+    fn send(&self, frame: UiFrame) -> Result<(), SinkClosed> {
         self.0.send(frame).map_err(|_| SinkClosed)
     }
 }
@@ -122,6 +130,36 @@ pub async fn links_ack<R: tauri::Runtime>(
     seq: u32,
 ) -> Result<(), ApiError> {
     core.links_ack(Some(window.label()), id, seq).await
+}
+
+/// Open the calling window's snapshot channel (ADR-0001 §4.3), closing its older ones.
+///
+/// # Errors
+/// As [`Core::ui_open`].
+#[tauri::command]
+#[specta::specta]
+pub async fn ui_open<R: tauri::Runtime>(
+    core: State<'_, Core>,
+    window: tauri::Window<R>,
+    channel: Channel<UiFrame>,
+) -> Result<UiChannelId, ApiError> {
+    core.ui_open(Some(window.label().to_owned()), UiChannelSink(channel))
+        .await
+}
+
+/// The window applied frame `seq` of its snapshot channel.
+///
+/// # Errors
+/// As [`Core::ui_ack`].
+#[tauri::command]
+#[specta::specta]
+pub async fn ui_ack<R: tauri::Runtime>(
+    core: State<'_, Core>,
+    window: tauri::Window<R>,
+    channel: UiChannelId,
+    seq: u32,
+) -> Result<(), ApiError> {
+    core.ui_ack(Some(window.label()), channel, seq).await
 }
 
 /// The workout library.
