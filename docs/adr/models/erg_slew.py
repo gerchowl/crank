@@ -24,7 +24,7 @@ import random
 import sys
 from dataclasses import dataclass, field
 
-from ruckig import ControlInterface, InputParameter, Result, Ruckig, Trajectory
+from ruckig import ControlInterface, InputParameter, Result, Ruckig, RuckigError, Trajectory
 
 DT = 0.25          # one engine tick, s
 EPS = 0.5          # W: "on the line" is |R - y| <= EPS
@@ -59,8 +59,6 @@ class Tuning:
         change of direction never changes the limits under a moving state."""
         return 4 * self.r_up / self.ease ** 2
 
-    def limits(self, up: bool) -> tuple[float, float]:
-        return self.a_max, self.j_max
 
     def valid(self) -> bool:
         return (5 <= self.rise <= 50 and 1 <= self.factor <= 4 and (self.factor * 4) % 1 == 0
@@ -162,6 +160,23 @@ class State:
     a: float = 0.0
 
 
+@dataclass(frozen=True)
+class _Line:
+    """A frame line c + fs·k·Δt."""
+    c: float
+    fs: float
+
+    def __call__(self, kk: int) -> float:
+        return self.c + self.fs * kk * DT
+
+
+def _cut(old: State, new: State, name: str, exc: str) -> tuple[State, str]:
+    """Apply a cut; it is named (an exception) only if it changes the state by more than floating
+    point: a landing that ends 1e-9 W past the line is clamped, not cut."""
+    material = abs(old.y - new.y) > 1e-6 or abs(old.v - new.v) > 1e-5 or abs(old.a - new.a) > 1e-4
+    return new, (name if material else exc)
+
+
 class Easer:
     """crank's policy around Ruckig: the target frame, the limits, and the cuts X2-X4.
 
@@ -171,12 +186,23 @@ class Easer:
     state is avoided: Ruckig 0.19.4 can fail ("error in step 1") on such a state when it sits
     exactly on a velocity-limit boundary (found by this model, random plan 230)."""
 
-    def __init__(self, t: Tuning):
+    def __init__(self, t: Tuning, inject: float = 0.0, seed: int = 0):
         self.t = t
+        # Fault injection (the suite's own test of X2-X5): this share of Ruckig calculations is
+        # made to fail, deterministically, as if Ruckig had returned an error.
+        self.inject = inject
+        self.inject_rng = random.Random(seed)
+        self.wasteful = 0          # calculations on an unchanged input (step 7 says: none)
+        self.fail_brake = False    # fault injection: the braking plan of step 6 fails
+        self.had_traj = False      # a trajectory was in force at the start of the last tick
         self.otg = Ruckig(1)
         self.inp = InputParameter(1)
         self.traj = Trajectory(1)
+        self.spare = Trajectory(1)
         self.probe = Trajectory(1)
+        self.errors = 0
+        self.prev_piece = None
+        self.x5_frame = None
         self.key = None
         self.elapsed = 0.0
         self.base = 0.0
@@ -195,10 +221,26 @@ class Easer:
         i.max_acceleration, i.min_acceleration, i.max_jerk = [t.a_max], [-t.a_max], [t.j_max]
         return i
 
-    def _calc(self, traj, st, rel, fs, vmax, vmin, vel_target):
-        res = self.otg.calculate(self._input(st, rel, fs, vmax, vmin, vel_target), traj)
+    def _calc(self, traj, st, rel, fs, vmax, vmin, vel_target) -> bool:
+        """Ruckig's calculate; False on any error result or exception (counted, never raised)."""
+        try:
+            if self.inject and self.inject_rng.random() < self.inject:
+                raise RuckigError("injected")
+            res = self.otg.calculate(self._input(st, rel, fs, vmax, vmin, vel_target), traj)
+        except RuckigError:
+            res = None
         if res not in (Result.Working, Result.Finished):
-            raise RuntimeError(f"ruckig {res}: {st} rel {rel} frame {fs} v [{vmin},{vmax}] {self.t}")
+            self.errors += 1
+            return False
+        return True
+
+    def _plan(self, st, rel, fs, vmax, vmin, vel_target) -> bool:
+        """Calculate into the spare trajectory and swap it in only on success, so a failed
+        calculation leaves the trajectory in force untouched (X5)."""
+        if not self._calc(self.spare, st, rel, fs, vmax, vmin, vel_target):
+            return False
+        self.traj, self.spare = self.spare, self.traj
+        return True
 
     def _sample(self, vel_mode: bool):
         dur, tt = self.traj.duration, self.elapsed
@@ -213,17 +255,32 @@ class Easer:
         """True if the braking trajectory from `st` (the state at tick k) stays at or below the
         plan line known ahead, tick by tick, until it is at rest."""
         t = self.t
-        self._calc(self.probe, st, 0.0, 0.0, t.r_up, -t.r_dn, 0.0)
+        if not self._calc(self.probe, st, 0.0, 0.0, t.r_up, -t.r_dn, 0.0):
+            return False
         n = int(math.ceil(self.probe.duration / DT))
         for i in range(1, n + 1):
             tt = min(i * DT, self.probe.duration)
             y = st.y + self.probe.at_time(tt)[0][0]
-            if y > line_at(segs, k + i, m) + EPS:
+            # The line may be passed by at most EPS/2, strictly inside X2's EPS, so a braking path
+            # that is accepted can never be cut; the cap not at all.
+            if y > min(line_at(segs, k + i, m) + EPS / 2, m):
                 return False
         return True
 
+    def _continues(self, st: State, kk: int) -> bool:
+        """True if the trajectory in force reproduces `st` at tick kk: it can then be continued for
+        a tick (X5). Not after a cut or an engagement changed the state under it."""
+        if self.key is None or self.x5_frame is None:
+            return False
+        vel_mode, fl, base = self.x5_frame
+        p, v, a = self._sample(vel_mode)
+        y = base + p if vel_mode else fl(kk) + p
+        v = v if vel_mode else v + fl.fs
+        return abs(y - st.y) < 1e-6 and abs(v - st.v) < 1e-5 and abs(a - st.a) < 1e-4
+
     def _floor_ok(self, st: State) -> bool:
-        self._calc(self.probe, st, 0.0, 0.0, self.t.r_up, -self.t.r_dn, 0.0)
+        if not self._calc(self.probe, st, 0.0, 0.0, self.t.r_up, -self.t.r_dn, 0.0):
+            return False
         p, v, a = self.probe.at_time(self.probe.duration)
         return st.y + min(p[0], self.probe.position_extrema[0].min) >= -1e-9
 
@@ -231,8 +288,17 @@ class Easer:
         """The command for tick k from the state at tick k - 1."""
         t = self.t
         exc = ""
+        # The step from tick k-1 to tick k belongs to the piece in force over that interval: at a
+        # vertex on tick k (the line continuous there), that is still the previous piece. The new
+        # piece takes over from the next step (the backward-slope convention of the line on the
+        # tick grid). Extending the new piece back a tick would put the command "ahead" of it.
+        in_force = segs[0]
+        if (segs[0].k0 == k and segs[0].joined and self.prev_piece is not None and not cut_before
+                and abs(self.prev_piece.at(k) - segs[0].r0) < 1e-9):   # a kink, not where the clamp starts
+            segs = [self.prev_piece] + segs
+        self.prev_piece = in_force
         if st.y > m:                                     # X3: the cap is never eased
-            st, exc = State(m, min(st.v, 0.0), min(st.a, 0.0)), "X3"
+            st, exc = _cut(st, State(m, min(st.v, 0.0), min(st.a, 0.0)), "X3", exc)
         cur = segs[0]
         r_k = clamp(cur.at(k), m)
         s_cur = cur.s
@@ -240,10 +306,6 @@ class Easer:
         # Trackable: strictly inside the rates. A line at exactly the rate cannot be caught after an
         # eased start (that would need a slope above the rate), so it is chased like a steeper one.
         trackable = lambda s: -t.r_dn < s < t.r_up
-        # X2: above the line, the command never rises: a rising slope is cut to 0, and with it any
-        # acceleration that would raise it again. Braking a fall (v < 0, a > 0) is not cut.
-        if st.y > r_k + EPS and (st.v > 1e-9 or st.a > 1e-9 and st.v >= 0):
-            st, exc = State(st.y, 0.0, min(st.a, 0.0)), exc or "X2"
         # The frame: the line in force at tick k (c + fs·k·Δt).
         fs = s_cur
         c = r_k - fs * k * DT
@@ -257,13 +319,14 @@ class Easer:
             lead_key = ("lead", cur.k0, s_cur, nxt.k0, nxt.r0, nxt.s)
             # Lead at a vertex that ends or reverses a rise, or ends a fall without starting a rise;
             # never at one that starts or steepens a rise (that would raise the load before the plan).
-            leads = nxt.joined and trackable(nxt.s) and (nxt.s < s_cur or (s_cur < 0 and s_cur < nxt.s <= 0))
+            # Only from at or below the current line: above it, aiming at a higher next piece would raise it.
+            leads = (nxt.joined and trackable(nxt.s) and (nxt.s < s_cur or (s_cur < 0 and s_cur < nxt.s <= 0))
+                     and st.y <= r_k - s_cur * DT + EPS)   # the state is at tick k-1: compare with the line there
             cap_v = lambda: ((min(t.r_up, s_cur), -t.r_dn) if nxt.s < s_cur else (t.r_up, max(-t.r_dn, s_cur)))
             if self.key is not None and self.key[0] == lead_key and within(s_cur):
                 fs, c = nxt.s, nv - nxt.s * nxt.k0 * DT
                 vmax, vmin = cap_v()
-            elif leads:
-                self._calc(self.probe, st, 0.0, 0.0, t.r_up, -t.r_dn, nxt.s)
+            elif leads and self._calc(self.probe, st, 0.0, 0.0, t.r_up, -t.r_dn, nxt.s):
                 if (nxt.k0 - (k - 1)) * DT <= self.probe.duration / 2 + DT:
                     fs, c = nxt.s, nv - nxt.s * nxt.k0 * DT
                     vmax, vmin = cap_v() if within(s_cur) else (t.r_up, -t.r_dn)
@@ -280,53 +343,87 @@ class Easer:
             vel_target = None
         else:
             # A line steeper than the rider's rate: chase it at the full rate, never away from it.
-            rel0 = st.y - line(k - 1)
-            vel_target = t.r_up if (rel0 < 0 and fs > 0) else (-t.r_dn if (rel0 > 0 and fs < 0) else 0.0)
+            # The gap is to where the line is now (tick k), not to the line extended back a tick.
+            gap = line(k) - st.y
+            vel_target = t.r_up if (gap > 0 and fs > 0) else (-t.r_dn if (gap < 0 and fs < 0) else 0.0)
         key = ((("brake",) if brake else
                 ("lead", cur.k0, s_cur, segs[1].k0, segs[1].r0, segs[1].s) if lead
                 else ("line", round(c, 9), round(fs, 12))),
                vmax, vmin, vel_target, m)
+        x5 = False
+        unchanged = key == self.key and not exc and not cut_before
+        self.had_traj = self._continues(st, k - 1)
         if key != self.key or exc or cut_before:
             self.recalcs += 1
+            self.wasteful += unchanged
             if vel_target is None:
-                self._calc(self.traj, st, st.y - line(k - 1), fs, vmax, vmin, None)
+                ok = self._plan(st, st.y - line(k - 1), fs, vmax, vmin, None)
             else:
-                self._calc(self.traj, st, 0.0, 0.0, t.r_up, -t.r_dn, vel_target)
-                self.base = st.y
-            self.key, self.elapsed = key, DT
+                ok = self._plan(st, 0.0, 0.0, t.r_up, -t.r_dn, vel_target)
+            if ok:
+                if vel_target is not None:
+                    self.base = st.y
+                self.key, self.elapsed = key, DT
+                self.x5_frame = None
+            else:
+                x5 = True
         else:
             self.elapsed += DT
         self.chasing = vel_target is not None
-        p, v, a = self._sample(vel_target is not None)
-        if vel_target is None:
-            nst = State(line(k) + p, v + fs, a)
-        else:
-            nst = State(self.base + p, v, a)
-        # Safe braking: a rising step is taken only if Ruckig's braking trajectory from it (to rest,
+        if x5:
+            # X5: Ruckig refused the new input. The trajectory in force (already within every limit)
+            # is continued for this tick, and the re-plan is tried again on the next. Without one
+            # (or after a cut changed the state under it) the command holds.
+            if self._continues(st, k - 1):
+                self.elapsed += DT
+                vel_mode, fl, base = self.x5_frame
+                p, v, a = self._sample(vel_mode)
+                nst = State(base + p, v, a) if vel_mode else State(fl(k) + p, v + fl.fs, a)
+                exc = exc or "X5"
+            else:
+                nst, exc = State(st.y, 0.0, 0.0), "X5h"
+                self.key = None
+        if not x5:
+            p, v, a = self._sample(vel_target is not None)
+            if vel_target is None:
+                nst = State(line(k) + p, v + fs, a)
+                fl = _Line(c, fs)
+                self.x5_frame = (False, fl, 0.0)
+            else:
+                nst = State(self.base + p, v, a)
+                self.x5_frame = (True, None, self.base)
+        # Safe braking: a step after which the command rises or will rise (v > 0, or a braking fall
+        # whose acceleration will carry it past rest) is taken only if Ruckig's braking trajectory from it (to rest,
         # within the same limits) stays at or below the plan line known ahead. Otherwise the command
         # eases out from the current state and keeps easing out until it is at rest.
         # The same for a fall towards 0 W: a falling step is taken only if its braking trajectory
         # stays at or above 0 W, nothing being below it.
-        if (not brake and ((nst.v > 1e-9 and not self._brake_ok(nst, k, segs, m))
+        will_rise = nst.v > 1e-9 or (nst.a > 1e-9 and nst.v + nst.a * nst.a / (2 * t.j_max) > 1e-9)
+        if (not brake and ((will_rise and not self._brake_ok(nst, k, segs, m))
                            or (nst.v < -1e-9 and not self._floor_ok(nst)))):
-            self.braking = True
-            self._calc(self.traj, st, 0.0, 0.0, t.r_up, -t.r_dn, 0.0)
-            self.base, self.elapsed = st.y, DT
-            self.key = (("brake",), t.r_up, -t.r_dn, 0.0, m)
-            self.chasing = True
-            p, v, a = self._sample(True)
-            nst = State(self.base + p, v, a)
+            if self.fail_brake:
+                self.errors += 1
+            if not self.fail_brake and self._plan(st, 0.0, 0.0, t.r_up, -t.r_dn, 0.0):
+                self.braking = True
+                self.base, self.elapsed = st.y, DT
+                self.key = (("brake",), t.r_up, -t.r_dn, 0.0, m)
+                self.chasing = True
+                p, v, a = self._sample(True)
+                nst = State(self.base + p, v, a)
+                self.x5_frame = (True, None, self.base)
+            else:
+                exc = exc or "X5"   # the step stands; X2 below still bounds it
         if self.braking and abs(nst.v) <= 1e-9:
             self.braking = False
             self.key = None if self.traj.duration > self.elapsed + 1e-9 else self.key
         # X2 again: a step that would rise and end above the line stops instead.
-        if nst.y > r_k + EPS and (nst.v > 0 or nst.y > st.y):
-            nst, exc = State(st.y, 0.0, 0.0), "X2"
+        if nst.y > r_k + EPS and (nst.v > 1e-9 or nst.y > st.y + 1e-7):
+            nst, exc = _cut(nst, State(st.y, 0.0, 0.0), "X2", exc)
         if nst.y < 0:                                    # X4: nothing is below 0 W
-            nst, exc = State(0.0, 0.0, 0.0), "X4"
+            nst, exc = _cut(nst, State(0.0, 0.0, 0.0), "X4", exc)
         if nst.y > m:
-            nst, exc = State(m, 0.0, 0.0), "X3"
-        if exc:
+            nst, exc = _cut(nst, State(m, 0.0, 0.0), "X3", exc)
+        if exc and exc != "X5":
             self.key = None
         return nst, exc
 
@@ -344,25 +441,42 @@ class Trace:
     exc: list = field(default_factory=list)
     reset: list = field(default_factory=list)
     fell: list = field(default_factory=list)
+    m: list = field(default_factory=list)
+    unforeseen: list = field(default_factory=list)   # an unforeseeable event's effect is pending
+    origin: list = field(default_factory=list)       # the engagement origin on a reset tick
+    after_error: list = field(default_factory=list)  # a Ruckig error (X5) since the command was last on the line
+    had_traj: list = field(default_factory=list)     # a trajectory was in force at the tick's start
+    wasteful: int = 0
+    errors: int = 0
+    y_init: float = 0.0      # the state before tick 0 (at rest unless v0 was given)
+    v_init: float = 0.0
 
 
 def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=2000.0,
-        y0: float | None = None, v0: float = 0.0) -> Trace:
+        y0: float | None = None, v0: float = 0.0, inject: float = 0.0, inject_seed: int = 0,
+        fail_brake: bool = False) -> Trace:
     blocks = [Block(b.ticks, b.frm, b.to) for b in blocks if b.ticks > 0]
     ev = {}
     for e in events:
         ev.setdefault(e.tick, []).append(e)
-    ez = Easer(t)
+    ez = Easer(t, inject, inject_seed)
+    ez.fail_brake = fail_brake
+    last_error_k = -10**9
+    error_pending = False
     mult, m = 1.0, m0
     tr = Trace()
     st = None
     pending = origin is not None
+    unforeseen = origin is not None      # an engagement is not known before it happens
     settle_left = 0
     prev_r, prev_s = None, 0.0
     k = 0
     while k < sum(b.ticks for b in blocks):
         disc = reset = False
-        for e in ev.get(k, []):
+        if ev.get(k):
+            unforeseen = True     # skip, ±/coach, cap or engagement: not known before it happens
+        # A cap change applies first, so an engagement on the same tick starts at or below the new cap.
+        for e in sorted(ev.get(k, []), key=lambda e: e.kind != "cap"):
             if e.kind == "offset":
                 mult, disc = e.value, True
             elif e.kind == "cap":
@@ -387,10 +501,22 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
                 st, reset = State(clamp(origin, m)), True
             else:
                 st = State(r if y0 is None else y0, v0, 0.0)
+                tr.y_init, tr.v_init = st.y, st.v
         if any(e.kind == "cap" for e in ev.get(k, [])) and prev_r is not None and r > prev_r + prev_s * DT + 1e-6:
             disc = True    # a raised cap lets the line jump up
+        origin_k = st.y if reset else None
+        errors_before = ez.errors
         st, exc = ez.step(st, k, segs, m, reset or disc)
+        if ez.errors > errors_before:
+            last_error_k = k
+            error_pending = True     # open until the command is next on the line
         on = abs(r - st.y) <= EPS
+        unforeseen_now = unforeseen
+        error_now = error_pending
+        landed = on and abs(st.v - segs[0].s) <= 1e-6 and abs(st.a) <= 1e-5   # on the line, moving with it
+        if landed and not ev.get(k):
+            unforeseen = False
+            error_pending = ez.errors > errors_before
         if disc:
             pending = True
         if not on:
@@ -402,11 +528,15 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
             settle_left -= 1
         for lst, val in ((tr.r, r), (tr.y, st.y), (tr.v, st.v), (tr.a, st.a), (tr.on, on),
                          (tr.settle, settle), (tr.exc, exc), (tr.reset, reset),
-                         (tr.fell, prev_r is not None and r < prev_r - 1e-12)):
+                         (tr.fell, prev_r is not None and r < prev_r - 1e-12), (tr.m, m),
+                         (tr.unforeseen, unforeseen_now), (tr.origin, origin_k),
+                         (tr.after_error, error_now), (tr.had_traj, ez.had_traj)):
             lst.append(val)
         prev_r = r
         prev_s = segs[0].s     # the backward slope of tick k+1 is the slope of the block in force at k
         k += 1
+    tr.errors = ez.errors
+    tr.wasteful = ez.wasteful
     return tr
 
 
@@ -415,48 +545,118 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
 class Report:
     def __init__(self):
         self.fails: list[str] = []
-        self.worst = {"X2": 0.0, "X3": 0.0, "X4": 0.0}
-        self.cuts = {"X2": 0, "X3": 0, "X4": 0}
+        self.worst = {"X2": 0.0, "X3": 0.0, "X4": 0.0, "X5h": 0.0}
+        self.cuts = {"X2": 0, "X3": 0, "X4": 0, "X5": 0, "X5h": 0}
         self.where = {}
-        self.retreat = 0.0
+        self.errors = 0
+        self.plans = 0
+        self.plans_with_errors = 0
 
     def fail(self, msg):
+        self.nfail = getattr(self, "nfail", 0) + 1
+        kind = msg.split(": ", 1)[1].split(" ")[0:2] if ": " in msg else ["?"]
+        self.kinds = getattr(self, "kinds", {})
+        self.kinds[" ".join(kind)] = self.kinds.get(" ".join(kind), 0) + 1
         if len(self.fails) < 25:
             self.fails.append(msg)
 
 
+def bounds(t: Tuning) -> dict:
+    """The slope change each cut may make on the sent positions (ADR-0002 §7.10.2's table)."""
+    step = t.a_max * DT
+    return {"X2": t.r_up + step, "X3": t.r_up + step, "X4": t.r_dn + step,
+            "X5h": max(t.r_up, t.r_dn) + step}
+
+
+CUTS = ("X2", "X3", "X4", "X5h")
+
+
 def check(tr: Trace, t: Tuning, rep: Report, name: str, y_start: float) -> None:
-    py, pv, pa, pr = y_start, None, None, None
+    """Every property on the SENT positions y_k: slope, curvature and jerk are their finite
+    differences, so a cut cannot hide behind the easer's internal state. A window of finite
+    differences that contains a cut is judged by that cut's bound and domain instead."""
+    rep.plans += 1
+    rep.errors += tr.errors
+    if tr.wasteful:
+        rep.fail(f"{name}: {tr.wasteful} Ruckig calculations on an unchanged input (step 8)")
+    rep.plans_with_errors += tr.errors > 0
+    bnd = bounds(t)
+    # The limits as ADR-0002 §7.10.2 states them, computed here and not taken from the easer, so a
+    # change to the easer's mapping cannot move the check with it.
+    a_lim, j_lim = 2 * t.rise / t.ease, 4 * t.rise / t.ease ** 2
+    tol_v, tol_a, tol_j = 1e-6, 1e-5, 1e-4
+    ys, cut, start = [], [], 0
     for k in range(len(tr.y)):
-        y, v, a, r, exc = tr.y[k], tr.v[k], tr.a[k], tr.r[k], tr.exc[k]
-        if tr.reset[k]:
-            pv = pa = pr = None
-        if any(math.isnan(x) or math.isinf(x) for x in (y, v, a)):
+        y, r, exc, m = tr.y[k], tr.r[k], tr.exc[k], tr.m[k]
+        if any(math.isnan(x) or math.isinf(x) for x in (y, tr.v[k], tr.a[k])):
             rep.fail(f"{name} k={k}: NaN")
             return
-        if not -t.r_dn - TOL <= v <= t.r_up + TOL:                       # P2
-            rep.fail(f"{name} k={k}: P2 v={v:.4f}")
-        if abs(a) > t.a_max + TOL:                                         # P3 acceleration
-            rep.fail(f"{name} k={k}: |a|={a:.4f} > {t.a_max}")
-        if pv is not None:
-            jerk, dv = abs(a - pa) / DT, abs(v - pv)
-            broken = jerk > t.j_max + TOL or dv > t.a_max * DT + TOL       # P3 jerk, no corner
-            if broken and exc:
-                rep.worst[exc] = max(rep.worst[exc], dv)
+        if exc == "X5":
+            rep.cuts["X5"] += 1
+        if tr.reset[k]:            # an engagement restarts from rest at its origin
+            o = tr.origin[k]
+            ys, cut, start = [o, o, o], [False, False, False], k
+        elif k == 0:
+            y0 = tr.y_init
+            if tr.v_init == 0.0:
+                ys, cut = [y0, y0, y0], [False, False, False]
+            else:
+                ys, cut = [y0], [False]
+        prev = ys[-1]
+        ys.append(y)
+        is_cut = exc in CUTS
+        cut.append(is_cut)
+        n = len(ys) - 1
+        vs = (ys[n] - ys[n - 1]) / DT
+        cap_drop = (exc in ("X3", "X5h") and k > 0 and tr.m[k] < tr.m[k - 1] - 1e-12 and not tr.reset[k]
+                    and prev > tr.m[k] + 1e-9)
+        # P2 on the sent positions (a cap drop is a position step down, never up).
+        if not cap_drop and not -t.r_dn - tol_v <= vs <= t.r_up + tol_v:
+            rep.fail(f"{name} k={k}: P2 sent slope {vs:.4f}")
+        if n >= 2:
+            vs0 = (ys[n - 1] - ys[n - 2]) / DT
+            curv = (vs - vs0) / DT
+            jerk = None
+            if n >= 3:
+                vs00 = (ys[n - 2] - ys[n - 3]) / DT
+                jerk = ((vs - vs0) - (vs0 - vs00)) / DT / DT
+            within = abs(curv) <= a_lim + tol_a and (jerk is None or abs(jerk) <= j_lim + tol_j)
+            # The cut that explains a broken window: this tick's, or one of the two before it.
+            culprit = next((tr.exc[k - d] for d in (0, 1, 2) if k - d >= 0 and n - d >= 1 and cut[n - d]), None)
+            if cap_drop:
+                # A position step down to the new cap; the slope is kept if it was falling (X3 never
+                # stops a fall), so the state's own slope change stays within X3's bound.
+                dvs = abs(tr.v[k] - tr.v[k - 1])
+                if dvs > bnd[exc] + tol_v:   # X3 keeps a falling slope; an X5h hold on the same tick stops it
+                    rep.fail(f"{name} k={k}: {exc} at a cap drop changed the slope by {dvs:.3f} > {bnd[exc]:.3f}")
+            elif not within and culprit is None:
+                rep.fail(f"{name} k={k}: P3 sent curvature {curv:.3f} (<= {a_lim:.3f}) / jerk "
+                         f"{jerk if jerk is None else round(jerk, 3)} (<= {j_lim:.3f})")
+            elif not within and is_cut:
+                prev_cap_drop = k > 1 and tr.m[k - 1] < tr.m[k - 2] - 1e-12 and ys[n - 2] > tr.m[k - 1] + 1e-9
+                # After a cap's position step the sent slope has no meaningful previous value: the
+                # state's slope change is judged instead.
+                dv = abs(tr.v[k] - tr.v[k - 1]) if prev_cap_drop else abs(vs - vs0)
                 rep.cuts[exc] += 1
-                rep.where.setdefault(exc, name)
-            elif broken:
-                rep.fail(f"{name} k={k}: P3 jerk {jerk:.3f} > {t.j_max:.3f} or dv {dv:.3f} > {t.a_max * DT:.3f}"
-                         f" (v {pv:.2f}->{v:.2f}, a {pa:.2f}->{a:.2f})")
-        if y > r + EPS + TOL and (v > TOL or (k and not tr.reset[k] and y > py + TOL)):   # P5
-            rep.fail(f"{name} k={k}: P5 rising above the line y={y:.3f} R={r:.3f} v={v:.3f}")
-        if pr is not None:                                                  # P6
-            e0, e1 = max(0.0, py - pr - EPS), max(0.0, y - r - EPS)
+                rep.worst[exc] = max(rep.worst[exc], dv)
+                if dv > bnd[exc] + tol_v:
+                    rep.fail(f"{name} k={k}: {exc} slope change {dv:.3f} > bound {bnd[exc]:.3f}")
+                # Domains: X2, X3 and X4 only while an unforeseeable event or a Ruckig error (X5) is
+                # pending; X5h only where no trajectory was in force.
+                if exc in ("X2", "X3", "X4") and not (tr.unforeseen[k] or tr.after_error[k]):
+                    rep.fail(f"{name} k={k}: {exc} outside its domain (no unforeseeable event or error pending)")
+                if exc == "X5h" and tr.had_traj[k]:
+                    rep.fail(f"{name} k={k}: X5h hold although a trajectory was in force")
+        # P5: a step that rises never ends more than EPS above the line.
+        if y > r + EPS + TOL and y > prev + TOL:
+            rep.fail(f"{name} k={k}: P5 rose to above the line y={y:.3f} R={r:.3f}")
+        # P6: the excess grows only on a tick where the line falls; 0 <= y <= M.
+        if k > 0 and not tr.reset[k]:
+            e0, e1 = max(0.0, prev - tr.r[k - 1] - EPS), max(0.0, y - r - EPS)
             if e1 > e0 + TOL and not tr.fell[k]:
                 rep.fail(f"{name} k={k}: P6 excess grew without a falling line ({e0:.3f}->{e1:.3f})")
-        if y < -TOL:
-            rep.fail(f"{name} k={k}: y={y:.3f} < 0")
-        py, pv, pa, pr = y, v, a, r
+        if y < -TOL or y > m + TOL:
+            rep.fail(f"{name} k={k}: y={y:.3f} outside [0, M={m}]")
 
 
 def steady(w, secs):
@@ -531,6 +731,32 @@ def tables(rep: Report, report: bool) -> dict:
         tr = run([steady(100, 10), steady(600, 5), steady(100, 20)], t=tt)
         check(tr, tt, rep, f"5 s at 600 {tag}", 100)
         short[f"{tag} 5 s at 600 W after 100 W"] = (round(max(tr.y)), None)
+    # The figures ADR-0002 §7.10 quotes: a change to any rule that moves one must amend the ADR.
+    got = {
+        "rise 300 W": q["jump 300 W rising / falling"][0], "fall 300 W": q["jump 300 W rising / falling"][1],
+        "rise 83 W": q["jump 83 W rising / falling"][0], "fall 83 W": q["jump 83 W rising / falling"][1],
+        "engage 137": q["engagement 0->137 / 0->250 W"][0], "engage 250": q["engagement 0->137 / 0->250 W"][1],
+        "owner": q["owner's case: ramp 100->180/60 s into 220 W, lands after the boundary"],
+        "steep up": q["steep 100->400 W over 10 s: lands after its start, v range"][0],
+        "steep down": q["steep 400->100 W over 5 s: lands after its start, v range"][0],
+        "ramp 5 W/s off-line": ramps["100->400 W over 60 s (5 W/s)"][0],
+        "ramp 5 W/s excluded": ramps["100->400 W over 60 s (5 W/s)"][1],
+        "ramp 3.3 W/s fall off-line": ramps["300->100 W over 60 s (3.33333 W/s)"][0],
+        "ramp 2.5 W/s excluded": ramps["100->400 W over 120 s (2.5 W/s)"][1],
+        "skip 300->250 lands": land_time(cases["skip 300->250 W"]),
+        "hold-above case lands": None,
+        "15/15 peak": short["defaults 15/15"][0], "15/15 mean": short["defaults 15/15"][1],
+        "30/30 mean": short["defaults 30/30"][1],
+    }
+    got.pop("hold-above case lands")
+    want = {"rise 300 W": 16.25, "fall 300 W": 9.75, "rise 83 W": 5.5, "fall 83 W": 4.5, "engage 137": 8.25,
+            "engage 250": 13.75, "owner": 3.25, "steep up": 16.5, "steep down": 10.0,
+            "ramp 5 W/s off-line": 6, "ramp 5 W/s excluded": 2, "ramp 3.3 W/s fall off-line": 0,
+            "ramp 2.5 W/s excluded": 1, "skip 300->250 lands": 13.75, "15/15 peak": 360, "15/15 mean": 232,
+            "30/30 mean": 316}
+    for key, w in want.items():
+        if got[key] is None or abs(got[key] - w) > 1e-9:
+            rep.fail(f"quoted: {key}: model {got[key]}, ADR {w}")
     if report:
         print("Durations and figures (defaults unless named):")
         for k, v in q.items():
@@ -567,6 +793,104 @@ def corners(rep: Report, report: bool):
                 n += 1
     if report:
         print(f"Bounds corners: {len(CORNERS)} tunings x {len(plans)} plans x (on the line, engaged from 0 W): {n} runs")
+
+
+def pinned(rep: Report, report: bool):
+    """Regressions from the safety falsifications of PR #625, exact floats."""
+    cases = [
+        # Round-4 falsifier, blocker 1: Ruckig "error in step 1" at the defaults (seed 7, plan 226).
+        ("ruckig error, seed 7 plan 226", DEFAULT,
+         [ramp(548.1115998010537, 0, 30), ramp(159.10968483556977, 545.5628042695739, 10),
+          steady(65.44805387940211, 5), ramp(65.44805387940211, 0, 5)], [], None),
+        # Blocker 2: ramp-to-ramp vertices (rise 50, x2, ease 1; and the defaults).
+        ("ramp 37 -> 49.5 W/s, (50, x2, 1)", Tuning(50, 2.0, 1.0),
+         [steady(100, 10), ramp(100, 840, 20), ramp(840, 840 + 49.5 * 5, 5), steady(840 + 49.5 * 5, 10)], [], None),
+        ("ramp 10 -> 40 W/s, defaults", DEFAULT,
+         [ramp(100, 300, 20), ramp(300, 500, 5), steady(500, 10)], [], None),
+        ("engagement mid-plan, then a ramp-end vertex, defaults", DEFAULT,
+         [steady(150, 5), ramp(150, 100, 10), steady(100, 20)], [Event(30, "engage", 95.0)], None),
+        # Nit: X4 in an event-free plan at the defaults.
+        ("200 W, 150 W, then 0 W, defaults", DEFAULT,
+         [steady(200, 10), steady(150, 5), steady(0, 20)], [], None),
+        # Step 6: a fall meets a rising ramp from above (the command must not rise above it).
+        ("hold above a rising line, defaults", DEFAULT,
+         [steady(300, 10), ramp(200, 400, 20), steady(400, 10)], [], None),
+        # Step 5 (hold): an engagement above a fast-rising ramp (seed 585, plan 442).
+        ("engagement above a rising ramp, (50, x1.5, 1)", Tuning(50, 1.5, 1.0),
+         [ramp(8.7961334282744, 182.11548193531897, 5), steady(182.11548193531897, 10)], [], 61.49644706533412),
+        # Safe braking stops at the cap exactly (seed 585, plan 7929).
+        ("ramp into the cap, (40, x2, 2)", Tuning(40, 2.0, 2.0),
+         [steady(580.7, 5), ramp(580.7, 1131.0, 60)], [], None, 790.99),
+        # X3 keeps a falling slope: the cap drops below a command falling at the full rate.
+        ("cap drops mid-fall, defaults", DEFAULT,
+         [steady(400, 10), steady(100, 30)], [Event(52, "cap", 250.0)], None),
+        # Step 7 at 0 W: a falling ramp that ends at 0 W, then a jump up (no lead at a jump).
+        ("falling ramp to 0 W, then a jump up, (10, x4, 3)", Tuning(10, 4.0, 3.0),
+         [steady(297.26, 1), ramp(297.26, 0, 30), steady(501.46, 30)], [], None),
+    ]
+    no_cut = {"engagement above a rising ramp, (50, x1.5, 1)", "ramp 37 -> 49.5 W/s, (50, x2, 1)",
+              "ramp 10 -> 40 W/s, defaults", "hold above a rising line, defaults", "ramp into the cap, (40, x2, 2)"}
+    for case in cases:
+        name, t, blocks, events, origin = case[:5]
+        m0 = case[5] if len(case) > 5 else 2000.0
+        tr = run(blocks, events, t=t, origin=origin, m0=m0)
+        check(tr, t, rep, "pinned: " + name, tr.y[0])
+        if name in no_cut and any(e in CUTS for e in tr.exc):
+            rep.fail(f"pinned: {name}: a cut {sorted(set(e for e in tr.exc if e in CUTS))} where the design eases")
+    # X3 after the step: a ramp into the cap whose braking plan fails (a Ruckig error at that moment).
+    tr = run([steady(580.7, 5), ramp(580.7, 1131.0, 60)], t=Tuning(40, 2.0, 2.0), m0=790.99, fail_brake=True)
+    check(tr, Tuning(40, 2.0, 2.0), rep, "pinned: ramp into the cap, braking plan fails", tr.y[0])
+    # Random plans the falsifications of PR #625 found, by (seed, plan).
+    # (585, 2694), (585, 4693), (7, 2536) need the hold of step 5; (585, 3020), (7, 1773), (7, 5618)
+    # need the cap term of step 6 (each fails when that rule is deleted).
+    for seed, idx in ((7, 226), (585, 442), (585, 7929), (2, 13093), (2, 19521), (3, 15889),
+                      (585, 2694), (585, 4693), (7, 2536), (585, 3020), (7, 1773), (7, 5618)):
+        rng = random.Random(seed)
+        for i in range(idx + 1):
+            t = rng.choice(GRID)
+            blocks, events = random_plan(rng, t)
+            origin = rng.uniform(0, 300) if rng.random() < 0.3 else None
+            m0 = rng.choice([2000.0, rng.uniform(200, 800)])
+        tr = run(blocks, events, t=t, origin=origin, m0=m0)
+        check(tr, t, rep, f"pinned: seed {seed} plan {idx}", tr.y[0])
+        if report:
+            cuts = sorted(set(e for e in tr.exc if e))
+            print(f"  pinned {name}: Ruckig errors {tr.errors}, tagged {cuts}, max |dv| "
+                  f"{max(abs(tr.v[k] - tr.v[k - 1]) for k in range(1, len(tr.v))):.2f} W/s")
+
+
+def injected(rep: Report, report: bool, n: int = 300, share: float = 0.2):
+    """Random plans with a share of Ruckig calculations forced to fail: X5 continues the
+    trajectory in force, and the cuts X2-X4 keep every property where it cannot."""
+    rng = random.Random(1585)
+    for i in range(n):
+        t = rng.choice(GRID)
+        blocks, events = random_plan(rng, t)
+        tr = run(blocks, events, t=t, m0=rng.choice([2000.0, rng.uniform(200, 800)]), inject=share, inject_seed=i)
+        check(tr, t, rep, f"injected#{i} {t} {blocks} {events}", tr.y[0])
+    if report:
+        print(f"Fault injection: {n} random plans with {share:.0%} of Ruckig calculations failing")
+
+
+def ramp_pairs(rep: Report, report: bool):
+    """Ramp-to-ramp vertices (continuous, every slope pair) at the corners of the bounds and the
+    defaults: steady, ramp s1 for 10 s, ramp s2 for 5 s, steady."""
+    n = 0
+    for t in [DEFAULT] + CORNERS:
+        slopes = sorted(set([0.0] + [f * t.r_up for f in (0.1, 0.5, 0.74, 0.99, 1.0, 1.5)] +
+                            [-f * t.r_dn for f in (0.1, 0.5, 0.74, 0.99, 1.0, 1.5)]))
+        for s1 in slopes:
+            for s2 in slopes:
+                w0 = 1500.0
+                w1 = w0 + s1 * 10
+                w2 = w1 + s2 * 5
+                if min(w1, w2) < 0:
+                    continue
+                tr = run([steady(w0, 5), ramp(w0, w1, 10), ramp(w1, w2, 5), steady(w2, 15)], t=t, m0=4000.0)
+                check(tr, t, rep, f"ramp pair {s1:g} -> {s2:g} W/s {t}", tr.y[0])
+                n += 1
+    if report:
+        print(f"Ramp-to-ramp vertices: {n} slope pairs over the defaults and {len(CORNERS)} bound corners")
 
 
 def held(rep: Report, report: bool, n: int = 3000):
@@ -626,8 +950,9 @@ def random_plan(rng, t):
     return blocks, events
 
 
-def randoms(rep: Report, n: int, report: bool):
-    rng = random.Random(585)
+def randoms(rep: Report, n: int, report: bool, seed: int = 585):
+    rng = random.Random(seed)
+    errors0, plans0, with0 = rep.errors, rep.plans, rep.plans_with_errors
     ticks = 0
     for i in range(n):
         t = rng.choice(GRID)
@@ -638,22 +963,30 @@ def randoms(rep: Report, n: int, report: bool):
             check(tr, t, rep, f"random#{i} {t} {blocks} {events} origin {origin}", tr.y[0])
             ticks += len(tr.y)
     if report:
-        print(f"Random plans: {n} plans, {ticks} ticks, every property checked on every tick")
+        print(f"Random plans, seed {seed}: {n} plans, {ticks} ticks, every property checked on every tick;"
+              f" Ruckig errors {rep.errors - errors0} in {rep.plans_with_errors - with0} plans"
+              f" ({(rep.plans_with_errors - with0) / max(1, n):.3%} of plans)")
 
 
 def main(argv):
     report = "--report" in argv
     n = int(argv[argv.index("--random") + 1]) if "--random" in argv else 2000
+    seeds = ([int(x) for x in argv[argv.index("--seeds") + 1].split(",")] if "--seeds" in argv else [585])
     rep = Report()
     tables(rep, report)
     corners(rep, report)
+    pinned(rep, report)
+    ramp_pairs(rep, report)
+    injected(rep, report)
     held(rep, report)
-    randoms(rep, n, report)
+    for seed in seeds:
+        randoms(rep, n, report, seed)
     if report:
-        print("Named cuts: " + ", ".join(f"{k} {rep.cuts[k]} ticks, largest slope change {v:.1f} W/s"
-                                         for k, v in rep.worst.items()))
+        print("Named exceptions (ticks that break the curvature/jerk band): " +
+              ", ".join(f"{k} {rep.cuts[k]} ticks, largest slope change {rep.worst.get(k, 0.0):.1f} W/s"
+                        for k in ("X2", "X3", "X4", "X5h")) + f"; X5 continuations {rep.cuts['X5']} ticks")
     if rep.fails:
-        print("FAIL")
+        print("FAIL", rep.nfail, "failures by kind:", rep.kinds)
         for f in rep.fails:
             print("  " + f[:400])
         return 1
