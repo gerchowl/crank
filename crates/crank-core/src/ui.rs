@@ -29,7 +29,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
     time::Duration,
 };
-use tokio::{sync::watch, task::JoinHandle, time::Instant};
+use tokio::{sync::watch, task::JoinHandle};
 
 /// Least time between two frames of a channel: at most 10 per second.
 pub(crate) const SPACING: Duration = Duration::from_millis(100);
@@ -65,8 +65,9 @@ pub(crate) struct RideSlot {
     /// Set by the core when it ended the ride by force; otherwise derived from the status.
     ended: Option<RideEnding>,
     unresponsive: bool,
-    /// When a read last found the status watch written.
-    seen: Instant,
+    /// When a read last found the status watch written, on the core clock's pacing axis;
+    /// `None` until the slot is installed.
+    seen: Option<MonoTime>,
 }
 impl RideSlot {
     pub(crate) fn new(
@@ -82,7 +83,7 @@ impl RideSlot {
             series,
             ended: None,
             unresponsive: false,
-            seen: Instant::now(),
+            seen: None,
         }
     }
 }
@@ -121,15 +122,23 @@ pub(crate) struct Ui {
     last: Mutex<u32>,
     /// How long a ride in progress may leave its status unwritten before it is unresponsive.
     unresponsive_after: Duration,
+    /// The core's clock: its unscaled pacing axis times the frames and the unresponsive
+    /// timer, which, like the core's request bound, does not scale with simulation speed.
+    clock: Arc<dyn Clock>,
 }
 impl Ui {
-    pub(crate) fn new(keeper: watch::Receiver<LinkFrame>, unresponsive_after: Duration) -> Self {
+    pub(crate) fn new(
+        keeper: watch::Receiver<LinkFrame>,
+        clock: Arc<dyn Clock>,
+        unresponsive_after: Duration,
+    ) -> Self {
         Self {
             model: Mutex::default(),
             keeper,
             changed: watch::Sender::new(0),
             last: Mutex::new(0),
             unresponsive_after,
+            clock,
         }
     }
     fn lock(&self) -> MutexGuard<'_, Model> {
@@ -155,7 +164,8 @@ impl Ui {
         self.change(|m| m.loading = false);
     }
     /// The load installed its ride.
-    pub(crate) fn install(&self, ride: RideSlot) {
+    pub(crate) fn install(&self, mut ride: RideSlot) {
+        ride.seen = Some(self.clock.pacing_now());
         self.change(|m| m.ride = Some(ride));
     }
     /// Ride `id` was unloaded without starting.
@@ -197,7 +207,6 @@ impl Ui {
     pub(crate) fn open(
         self: &Arc<Self>,
         window: Option<String>,
-        clock: Arc<dyn Clock>,
         sink: impl UiSink,
     ) -> Result<UiChannelId, ApiError> {
         let mut m = self.lock();
@@ -228,7 +237,13 @@ impl Ui {
             tracing::info!(target: "crank_core::ui", ?older, new = id.0, "a reopen closed older channels");
         }
         let acks = Arc::new(watch::Sender::new((0, true)));
-        let task = tokio::spawn(run(Arc::downgrade(self), id, acks.subscribe(), clock, sink));
+        let task = tokio::spawn(run(
+            Arc::downgrade(self),
+            id,
+            acks.subscribe(),
+            self.clock.clone(),
+            sink,
+        ));
         m.channels.insert(
             id,
             Channel {
@@ -282,7 +297,7 @@ impl Ui {
         paired: &[Option<PairedDevice>; 2],
         mut cursors: Option<&mut [usize; 3]>,
     ) -> (UiState, SeriesDelta) {
-        let now = Instant::now();
+        let now = self.clock.pacing_now();
         let mut series = SeriesDelta::default();
         let mut links = (None, None);
         let view = match ride.as_mut() {
@@ -296,11 +311,14 @@ impl Ui {
             Some(slot) => {
                 let store = slot.series.lock().unwrap_or_else(PoisonError::into_inner);
                 if slot.status.has_changed().unwrap_or(false) {
-                    slot.seen = now;
+                    slot.seen = Some(now);
                 }
                 let status = slot.status.borrow_and_update().clone();
                 let wire = StreamStatus::from(&status);
-                if wire.in_progress() && now.duration_since(slot.seen) >= self.unresponsive_after {
+                let silent_us = slot.seen.map_or(0, |seen| now.0.saturating_sub(seen.0));
+                let after_us =
+                    u64::try_from(self.unresponsive_after.as_micros()).unwrap_or(u64::MAX);
+                if wire.in_progress() && silent_us >= after_us {
                     slot.unresponsive = true;
                 }
                 if let Some(c) = cursors {
@@ -405,8 +423,19 @@ fn chunk(track: &Track, cursor: &mut usize) -> Points {
     let from = (*cursor).min(track.len());
     let end = track.len().min(from + CHUNK);
     *cursor = end;
+    // A series holds at most one point per 4 Hz tick of one ride, so u32 holds 34 years of it:
+    // no process lives that long, and a larger index would be a core bug.
+    debug_assert!(
+        u32::try_from(from).is_ok(),
+        "series index {from} exceeds u32"
+    );
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded by the ride's length: see the debug_assert"
+    )]
+    let from_u32 = from as u32;
     Points {
-        from: u32::try_from(from).unwrap_or(u32::MAX),
+        from: from_u32,
         t: track.t[from..end].to_vec(),
         w: track.w[from..end].to_vec(),
         v: track.v[from..end].to_vec(),

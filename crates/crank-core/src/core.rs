@@ -1142,7 +1142,7 @@ impl Core {
     ) -> Result<Self, ApiError> {
         let clock_for_idle = clock.clone();
         let keeper = keeper::Handle::new();
-        let ui = Arc::new(Ui::new(keeper.view(), REQUEST_TIMEOUT));
+        let ui = Arc::new(Ui::new(keeper.view(), clock.clone(), REQUEST_TIMEOUT));
         ui.set_paired(paired_roles(store.devices()?));
         Ok(Self(Arc::new(Inner {
             store,
@@ -1345,8 +1345,9 @@ impl Core {
     /// series per frame. It works with or without a ride.
     ///
     /// # Errors
-    /// `Conflict` with 16 channels of other windows open; `Storage` when the pairings cannot
-    /// be read to start the link keeper.
+    /// `Conflict` when 16 channels of other windows are open (a reopen from a window that holds
+    /// one is never refused: it replaces that window's channel); `Storage` when the pairings
+    /// cannot be read to start the link keeper.
     #[expect(
         clippy::unused_async,
         reason = "every facade method is async (ADR-0001 §4)"
@@ -1357,7 +1358,7 @@ impl Core {
         sink: impl UiSink,
     ) -> Result<UiChannelId, ApiError> {
         self.keeper()?;
-        self.0.ui.open(window, self.0.clock.clone(), sink)
+        self.0.ui.open(window, sink)
     }
     /// The window has applied frame `seq` of its snapshot channel: the next frame may go. An
     /// ack of any frame but the last one sent is ignored.
