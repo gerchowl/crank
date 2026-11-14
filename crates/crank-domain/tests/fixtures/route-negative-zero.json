@@ -1,0 +1,50 @@
+{
+  "name": "Greenwich meridian",
+  "source": {
+    "kind": "gpx_track"
+  },
+  "points": [
+    {
+      "distM": 0.0,
+      "eleM": 0.0,
+      "latLon": [
+        51.4779,
+        0.0
+      ],
+      "surface": null
+    },
+    {
+      "distM": 66.71704813937998,
+      "eleM": 0.0,
+      "latLon": [
+        51.4785,
+        0.0
+      ],
+      "surface": null
+    },
+    {
+      "distM": 133.43409628017463,
+      "eleM": 2.0,
+      "latLon": [
+        51.4791,
+        0.0
+      ],
+      "surface": null
+    },
+    {
+      "distM": 208.60137063686537,
+      "eleM": 0.0,
+      "latLon": [
+        51.4797,
+        0.0005
+      ],
+      "surface": null
+    }
+  ],
+  "segments": [],
+  "elevation": "recorded",
+  "surface": {
+    "osm": null,
+    "fromFile": false
+  }
+}

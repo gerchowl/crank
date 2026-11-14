@@ -97,6 +97,15 @@ bit for bit too: serde_json is built with `float_roundtrip` workspace-wide, as i
 come back one ULP off, and a profile one ULP off is no longer its text (#539). Deleting a route keeps every
 ride ridden on it: `ride.route_json` carries what the ride needs to show itself.
 
+**One zero (amended 2026-11-14, #578).** JSON in JavaScript cannot carry −0.0: `JSON.parse` reads `-0.0`, but
+`JSON.stringify(-0)` writes `0`, so a route the UI hands back would differ in one bit. A route therefore holds no
+−0.0 in any `f64`. The importers write +0.0 for a file's `-0` coordinate or elevation (a `<ele>-0</ele>`, or
+`lon="-0.000000"`, printf's form for a point just west of Greenwich): it is the same position or height, so
+nothing the rider can see changes. `Route::check` refuses −0.0 as an invariant, so a route from any other path
+(deserialising, a future importer) cannot carry it either. The grade-profile parser already reads `-0%` as `0%`.
+The alternative, carrying the sign bit-exact in a non-number JSON form, would make every route `f64` on the wire
+a special case for a sign that means nothing on a road.
+
 ### 2.2 Import
 
 One import call per file: `Core::route_import(bytes, file_name, options) -> RouteImportOutcome`, where `options`

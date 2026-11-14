@@ -429,7 +429,7 @@ impl Route {
     /// only for one; coordinates on every point of a file route, finite and within ±90°/±180°,
     /// and on none of a grade profile; segments finite, non-empty and within the route, with
     /// [`SegmentGrade::FromPoints`] in a file route and a stated grade in a grade profile, which
-    /// has at least one. A grade profile's text is its one source of truth: parsing it
+    /// has at least one; no `f64` is −0.0 (one zero, #578). A grade profile's text is its one source of truth: parsing it
     /// ([`parse_route_dsl`]) must give this route, bit for bit.
     ///
     /// # Errors
@@ -489,8 +489,42 @@ impl Route {
                 .eq(other.segments.iter().map(segment))
     }
 
+    /// No `f64` of the route is −0.0 (ADR-0005 §2.1 "One zero", #578): JSON in JavaScript turns it
+    /// into 0, so a route holding it would not round-trip through the UI bit for bit.
+    fn check_one_zero(&self) -> Result<(), RouteInvariantError> {
+        fn negative_zero(x: f64) -> bool {
+            x == 0.0 && x.is_sign_negative()
+        }
+        for (i, p) in self.points.iter().enumerate() {
+            let (lat, lon) = p.lat_lon.unzip();
+            if [Some(p.dist_m), p.ele_m, lat, lon]
+                .into_iter()
+                .flatten()
+                .any(negative_zero)
+            {
+                return Err(broken(format!("point {i}: -0.0 in {p:?}")));
+            }
+        }
+        for (i, s) in self.segments.iter().enumerate() {
+            let grades = match s.grade {
+                SegmentGrade::FromPoints => [0.0, 0.0],
+                SegmentGrade::Constant { pct } => [pct, 0.0],
+                SegmentGrade::Ramp { from_pct, to_pct } => [from_pct, to_pct],
+            };
+            if [s.start_m, s.end_m]
+                .into_iter()
+                .chain(grades)
+                .any(negative_zero)
+            {
+                return Err(broken(format!("segment {i}: -0.0 in {s:?}")));
+            }
+        }
+        Ok(())
+    }
+
     /// Every invariant of [`Route::check`] but a grade profile's agreement with its text.
     fn check_shape(&self) -> Result<(), RouteInvariantError> {
+        self.check_one_zero()?;
         if self.name.trim().is_empty() {
             return Err(broken("the name is blank".into()));
         }
