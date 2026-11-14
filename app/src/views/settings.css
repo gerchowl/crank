@@ -105,6 +105,13 @@
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
+/* Rows of one group stack with one line between them, not the section gap and a doubled border. */
+.setting-rows {
+  display: grid;
+}
+.setting-rows .setting-row + .setting-row {
+  border-top: 0;
+}
 .setting-label {
   font-weight: 600;
 }

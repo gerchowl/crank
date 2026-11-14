@@ -43,6 +43,7 @@ interface Estimate { value: number; sd: number; source: "prior" | "self_report" 
 interface AthleteModel {
   cp: Estimate; wPrime: Estimate; pmax: Estimate;          // OmPD
   hrMax: Estimate; hrRest: Estimate; lt1Hr?: Estimate;      // lt1 from DFA-α1 (guard only)
+  lthr?: Estimate;                                          // lactate-threshold HR: the ride's HR zones (DESIGN §18.3, #586)
   tauRecovery: Estimate;                                    // HR recovery τ at reference conditions
   wbalRecoveryTau: Estimate;                                // per-athlete W′ reconstitution
   hrAtPower: { watts: number; hr: Estimate }[];             // "typical HR" curve
