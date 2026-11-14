@@ -109,7 +109,8 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   stamps the 70 rpm cue, holds 70 rpm 15 s and asks whether 70 rpm got clearly easier (`y` / `n` / `s` after a
   shift). `analyse` reads release from the ratio of the median power of the updates at 65–75 rpm to that at
   85–95 rpm and the answer: PASS iff r ≤ 0.85 and `y`, FAIL iff r ≥ 0.95 and `n`, otherwise no result; ERG must have
-  held 180–220 W before `Free` and each window needs 15 updates. The sim gets a speed per rpm (gear), a shift at a
+  held 180–220 W before `Free`, each window needs 15 updates, and a window below the 8 W power floor (slower than a
+  10 km/h road) is no result. The sim gets a speed per rpm (gear), a shift at a
   cue and a non-releasing trainer ([#616](https://github.com/gerchowl/crank/issues/616))
 
 ### Security

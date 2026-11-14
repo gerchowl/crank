@@ -194,13 +194,20 @@ Check 12 reads page-25 updates only. `erg` is the median power in the 5 s before
 median power at 85–95 rpm from the page-51 write + 5 s to the 70 rpm cue stamp; `free70` the median power at
 65–75 rpm from the first such update after the cue + 5 s to the answer's stamp; r = `free70` / `free90`. In this
 order: a missing cue, answer or `Free` write, or a run that broke its program or did not complete, is no result;
-so is `erg` outside 180–220 W (ERG never held), fewer than 15 updates in either window, or the answer `s`. PASS
+so is `erg` outside 180–220 W (ERG never held), fewer than 15 updates in either window, `free90` or `free70` below
+the 8 W power floor (slower than ADR-0007's 10 km/h road; ADR-0007 §2), or the answer `s`. PASS
 (released) iff r ≤ 0.85 and the answer is `y`; FAIL (not released) iff r ≥ 0.95 and the answer is `n`; anything
 else is no result with r and the answer reported. There is no speed guard. The thresholds, the bands and the 5 s
 settle are calibrated on the first live check 12 (#44). The guarantees are tested by a generator
 (`rider::tests::check12_released_never_fails_and_held_never_passes`): a releasing and a non-releasing sim trainer
 at 0.03–0.2 m/s per rpm, under any sequence of dropped frames, repeats, pump stalls, cadence spans out of the bands
 and answers, never reads FAIL and PASS respectively.
+
+**Known limit: an ERG that sags at 70 rpm, answered `y`** (ADR-0007 §2, [#631](https://github.com/gerchowl/crank/issues/631)). Check 12 assumes that a rider on a held ERG answers `n`. At 200 W the torque per
+stroke is 21.2 Nm at 90 rpm. An ERG that sags 15 % at 70 rpm (r = 0.85) gives 23.2 Nm. One that sags 22 % (r = 0.78)
+gives 21.2 Nm, the same as at 90 rpm, and beyond 22 % the stroke is lighter. An honest `y` then reads PASS for a
+trainer that held ERG and sagged. Read check 12 together with check 9 of the same session, which shows how the NEO
+holds ERG as the cadence falls.
 
 ### Check 9: what counts as a stall
 
