@@ -10,6 +10,11 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- Workout editor commands, no UI yet (ADR-0001 §4, DESIGN §5.7): `parse_dsl` (the tree with fresh core-owned node
+  ids, or the problem with its span: a text that does not parse is an answer, not an error), `print_dsl` (canonical
+  text) and `compile_workout` (a draft's compiled view; `invalid_input` past the compiler's bounds). The app's test
+  backends answer them only from the core's own answers (`crates/crank-core/tests/fixtures/editor.json`, `just
+  editor-fixture`) ([#111](https://github.com/gerchowl/crank/issues/111))
 - Route model and import, no UI or store yet (ADR-0005 §2.1, §2.2.1–2.2.2, §2.2.4–2.2.5): `crank_domain::route`
   types, a hardened GPX 1.0/1.1 reader (`quick-xml`; a DOCTYPE, any entity but XML's five and nesting deeper than 32
   are refused, every element must stand where the GPX XSD content model puts it, and everything inside `<extensions>`

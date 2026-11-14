@@ -3,9 +3,9 @@
 //! [`ApiError`] is the only error that crosses.
 use crate::logging::Logging;
 use crank_core::{
-    ApiError, Core, CoreInfo, DeviceLinkInfo, DeviceRole, FrameSink, LinkFrame, LinkIntent,
-    LinkSink, LinksId, PairedDevice, RideEnded, RideLoaded, RideRecord, RideStatusView,
-    ScannedDevice, SinkClosed, WorkoutDetail, WorkoutSummary,
+    ApiError, CompiledView, Core, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, FrameSink,
+    LinkFrame, LinkIntent, LinkSink, LinksId, PairedDevice, RideEnded, RideLoaded, RideRecord,
+    RideStatusView, ScannedDevice, SinkClosed, Workout, WorkoutDetail, WorkoutNode, WorkoutSummary,
 };
 use crank_engine::{MetricId, StreamFrame, StreamId, StreamSnapshot, SubId, SubscribeOpts};
 use tauri::{State, ipc::Channel};
@@ -142,6 +142,43 @@ pub async fn workouts_list(core: State<'_, Core>) -> Result<Vec<WorkoutSummary>,
 #[specta::specta]
 pub async fn workout_get(core: State<'_, Core>, id: String) -> Result<WorkoutDetail, ApiError> {
     core.workout_get(id).await
+}
+
+/// Parse workout DSL text for the editor.
+///
+/// # Errors
+/// As [`Core::parse_dsl`].
+#[tauri::command]
+#[specta::specta]
+pub async fn parse_dsl(
+    core: State<'_, Core>,
+    text: String,
+    ftp: f64,
+) -> Result<DslParse, ApiError> {
+    core.parse_dsl(text, ftp).await
+}
+
+/// The canonical DSL text of a workout tree.
+///
+/// # Errors
+/// As [`Core::print_dsl`].
+#[tauri::command]
+#[specta::specta]
+pub async fn print_dsl(core: State<'_, Core>, nodes: Vec<WorkoutNode>) -> Result<String, ApiError> {
+    core.print_dsl(nodes).await
+}
+
+/// Compile a workout draft to its timeline and summary.
+///
+/// # Errors
+/// As [`Core::compile_workout`].
+#[tauri::command]
+#[specta::specta]
+pub async fn compile_workout(
+    core: State<'_, Core>,
+    workout: Workout,
+) -> Result<CompiledView, ApiError> {
+    core.compile_workout(workout).await
 }
 
 /// Load a workout, or a free ride for `None`.

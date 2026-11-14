@@ -152,3 +152,81 @@ fn another_process_cannot_take_ride_lock() {
         .unwrap();
     assert!(status.success(), "child: {status}");
 }
+
+/// The editor's commands (#111): parse gives fresh core-owned ids, print is canonical and
+/// round-trips, a bad text is an answer with its span, and compile refuses what the domain does.
+#[tokio::test]
+async fn the_editor_parses_prints_and_compiles_drafts() {
+    use crank_core::{DslParse, Workout};
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path())).unwrap();
+    let parse = |text: &str| core.parse_dsl(text.into(), 250.0);
+
+    let DslParse::Parsed { nodes } = parse("\"Warm-up\" 90s 50%; 2x(1m 100%, 1m 50%)")
+        .await
+        .unwrap()
+    else {
+        panic!("parses");
+    };
+    let ids = |nodes: &[crank_core::WorkoutNode]| {
+        serde_json::to_value(nodes)
+            .unwrap()
+            .to_string()
+            .split("\"id\":\"")
+            .skip(1)
+            .map(|s| s.split('"').next().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let first = ids(&nodes);
+    assert_eq!(
+        first.len(),
+        4,
+        "a repeat, its two steps and the warm-up: {first:?}"
+    );
+    assert!(first.iter().all(|id| id.starts_with("dsl-")), "{first:?}");
+    let text = core.print_dsl(nodes.clone()).await.unwrap();
+    assert_eq!(text, "\"Warm-up\" 1m30s 50%\n2x(1m 100%, 1m 50%)");
+    let DslParse::Parsed { nodes: again } = parse(&text).await.unwrap() else {
+        panic!("canonical text parses");
+    };
+    let second = ids(&again);
+    assert!(
+        second.iter().all(|id| !first.contains(id)),
+        "ids are never reused: {second:?}"
+    );
+    assert_eq!(
+        core.print_dsl(again).await.unwrap(),
+        text,
+        "the round trip is byte-identical"
+    );
+
+    // "5m 900%": the problem's span selects the offending token.
+    assert_eq!(
+        serde_json::to_value(parse("3m 60%\n5m 900%").await.unwrap()).unwrap(),
+        serde_json::json!({"outcome": "invalid", "problem": {
+            "message": "900 % FTP is implausible (max 400 %)", "offset": 10, "length": 4}})
+    );
+
+    let workout = |nodes| Workout {
+        id: "draft".into(),
+        name: "Draft".into(),
+        ftp: 250.0,
+        nodes,
+    };
+    let view = core.compile_workout(workout(nodes)).await.unwrap();
+    assert_eq!(view.blocks.len(), 5);
+    assert!((view.total_s - 330.0).abs() < 1e-9, "{}", view.total_s);
+    // Compile refusals the editor can reach from a text that parses.
+    for text in ["100000x(1s 50%, 1s 50%)", "200h 50%"] {
+        let DslParse::Parsed { nodes } = parse(text).await.unwrap() else {
+            panic!("{text} parses");
+        };
+        let err = core.compile_workout(workout(nodes)).await.unwrap_err();
+        assert_eq!(
+            code(&err),
+            ErrorCode::InvalidInput,
+            "{text}: {}",
+            err.message
+        );
+    }
+}

@@ -65,6 +65,11 @@ model:
 model-fixture:
     python3 docs/adr/models/trainer_following.py --emit-fixture crates/crank-engine/tests/fixtures/following.json
 
+# Regenerate the core's answers the app's editor mock reads (#111,
+# crates/crank-core/tests/fixtures/editor.json); the `editor_fixture` test fails until it is current.
+editor-fixture:
+    CRANK_WRITE_EDITOR_FIXTURE=1 cargo nextest run -p crank-core --test editor_fixture
+
 # FMEA validator, strict: a cited test that does not exist fails here (the `fmea` flake check
 # only warns about it). `just fmea --write` re-renders the table into FMEA.md.
 fmea *ARGS:

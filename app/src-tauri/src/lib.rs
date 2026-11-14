@@ -13,10 +13,10 @@ pub mod logging;
 pub mod report;
 
 use commands::{
-    core_ready, device_forget, device_links, device_pair, devices_scan, links_ack, links_intent,
-    links_open, open_stream, ride_end, ride_load, ride_pause, ride_resume, ride_skip, ride_start,
-    ride_status, ride_summary, rides_list, stream_ack, stream_snapshot, stream_subscribe,
-    stream_unsubscribe, workout_get, workouts_list,
+    compile_workout, core_ready, device_forget, device_links, device_pair, devices_scan, links_ack,
+    links_intent, links_open, open_stream, parse_dsl, print_dsl, ride_end, ride_load, ride_pause,
+    ride_resume, ride_skip, ride_start, ride_status, ride_summary, rides_list, stream_ack,
+    stream_snapshot, stream_subscribe, stream_unsubscribe, workout_get, workouts_list,
 };
 pub use config::RuntimeConfig;
 use crank_core::{ApiError, Core, CoreConfig, DeviceMode, EngineHost, ErrorCode};
@@ -41,6 +41,9 @@ pub fn bindings() -> tauri_specta::Builder<tauri::Wry> {
             links_ack::<tauri::Wry>,
             workouts_list,
             workout_get,
+            parse_dsl,
+            print_dsl,
+            compile_workout,
             ride_load,
             ride_start,
             ride_pause,
