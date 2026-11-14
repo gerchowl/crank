@@ -915,8 +915,7 @@ async fn handed_to_a_cancelled_load(dir: &std::path::Path) -> (Core, FakeRadio) 
 }
 fn intent_task(core: &Core, intent: LinkIntent) -> tokio::task::JoinHandle<Result<(), ApiError>> {
     let core = core.clone();
-    // (the answered state is not what these tests check)
-    tokio::spawn(async move { core.links_intent(intent).await.map(drop) })
+    tokio::spawn(async move { core.links_intent(intent).await })
 }
 
 /// X1 at core level, both orders: `Hidden` and `Likely { ready }` recorded while the links are
