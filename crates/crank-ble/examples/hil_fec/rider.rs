@@ -143,6 +143,8 @@ pub enum Cue {
     Descend,
     /// SIM: steady, comfortable effort.
     Steady,
+    /// Check 12, at the switch to `Free`: no gear shift until the question (ADR-0007 §2).
+    StayInGear,
     /// Check 10: stay off the pedals and try the phone as a second central.
     Phone,
     /// Check 11b: stop pedalling until the unplugged trainer's lights go out.
@@ -176,6 +178,9 @@ impl Cue {
             Self::Descend => format!(
                 "lower cadence smoothly, about 5 rpm every 10 s, and keep turning: the run ends when the trainer lets go or at {STALL_FLOOR_RPM} rpm; stopping early is safe (released) but gives no result"
             ),
+            Self::StayInGear => {
+                "stay in this gear from now until the question; keep about 90 rpm".into()
+            }
             Self::Steady => {
                 "easy gear, steady comfortable effort; shift down when it gets steep, never strain"
                     .into()
@@ -675,7 +680,9 @@ async fn check9<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop>
     Ok(())
 }
 
-/// #44 check 12: ERG 200 W, then `Free` (page 50 defaults, page 51 grade 0), then 70 rpm.
+/// #44 check 12 (ADR-0007 §2): ERG 200 W, then `Free` (page 50 defaults, page 51 grade 0) with
+/// the cue to stay in this gear, 15 s at 90 rpm, the 70 rpm cue stamped
+/// ([`crate::partb::CUE12`]), 15 s at 70 rpm, then [`crate::partb::EASIER`], its answer stamped.
 async fn check12<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop> {
     r.engage(CHECK12_W).await?;
     r.cue(Cue::Cadence(90));
@@ -689,9 +696,13 @@ async fn check12<W: Wire, O: Operator>(r: &mut Rig<'_, W, O>) -> Result<(), Stop
     r.request71().await?;
     r.track(0.0).await?;
     r.request71().await?;
-    r.hold(Duration::from_secs(10)).await?;
+    r.cue(Cue::StayInGear);
+    r.hold(Duration::from_secs(15)).await?;
+    r.note(crate::partb::CUE12, &[crate::partb::TO_70])?;
     r.cue(Cue::Cadence(70));
     r.hold(Duration::from_secs(15)).await?;
+    let until = Instant::now() + crate::check10::ANSWER_WAIT;
+    r.answer(&mut None, until, &crate::partb::EASIER).await?;
     Ok(())
 }
 
@@ -1119,7 +1130,7 @@ impl Procedure {
                 "page 48 0 %; soft start to 100 W; 20 s; page 48 0 %; cue to stop until the lights go out (unplugged); waits up to 90 s for the drop; scans and reconnects (60 s at most); page 48 0 % first; asks about the lights and for y; soft start to 100 W; 20 s; release"
             }
             Self::Check12 => {
-                "page 48 0 %; soft start to 200 W; 15 s; page 50 defaults, request 71, page 51 0 %, request 71; 10 s at 90 rpm, 15 s at 70 rpm; release"
+                "page 48 0 %; soft start to 200 W; 15 s; page 50 defaults, request 71, page 51 0 %, request 71; cue to stay in this gear; 15 s at 90 rpm; 70 rpm cue stamped, 15 s at 70 rpm; asks whether 70 rpm got clearly easier (y/n/s, within 180 s, pedalling on); release"
             }
         }
     }
@@ -1304,7 +1315,7 @@ mod tests {
     use super::*;
     use crate::{
         partb::{Control, FINISHED, MAX_T90_US, OUTCOME, PowerLag, analyse, controls, outcome_in},
-        sim::{Pattern, Plan, Sim},
+        sim::{Pattern, Plan, ROAD, Road, Sim},
     };
     use std::fmt::Write as _;
 
@@ -2068,8 +2079,37 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn check12_free_releases_erg() {
-        let (sim, report) = run(Procedure::Check12, Plan::default(), None).await;
+        let plan = Plan {
+            answers: &["y"],
+            ..Plan::default()
+        };
+        let (sim, report) = run(Procedure::Check12, plan, None).await;
         assert_eq!(report.procedure, Ok(()));
+        // ADR-0007 §2: the don't-shift cue at the switch, 15 s at 90 rpm, the stamped 70 rpm cue,
+        // 15 s at 70 rpm, then the question, its answer stamped.
+        let cues = sim.cues();
+        let at = |c| sim.cue_at(c).expect("cued");
+        assert!(
+            cues.ends_with(&[Cue::StayInGear, Cue::Cadence(70), Cue::Stop]),
+            "{cues:?}"
+        );
+        let to70 = at(Cue::Cadence(70));
+        assert!((15 * SEC..15 * SEC + 200_000).contains(&(to70 - at(Cue::StayInGear))));
+        let notes = sim.notes();
+        let stamp = notes
+            .iter()
+            .find(|n| n.tag == crate::partb::CUE12)
+            .expect("stamped");
+        assert_eq!((stamp.at_us, &stamp.bytes[..]), (to70, &[70][..]));
+        let answer = notes
+            .iter()
+            .find(|n| n.tag == "answer-easier")
+            .expect("the answer");
+        assert_eq!(
+            (answer.tag.as_str(), &answer.bytes[..]),
+            ("answer-easier", &b"y"[..])
+        );
+        assert!(answer.at_us >= to70 + 15 * SEC, "{}", answer.at_us);
         assert_released(&sim, &report);
         let rest = assert_soft_start(&ctl(&sim), 200.0);
         assert!(
@@ -2078,6 +2118,13 @@ mod tests {
         );
         let v = reanalysed(&sim, &report, Procedure::Check12, "check12");
         assert_eq!(v["released"], json!(true), "{v}");
+        assert!(v["r"].as_f64().is_some_and(|r| r <= 0.85), "{v}");
+        assert!(
+            v["line"]
+                .as_str()
+                .is_some_and(|l| l.contains("PASS, released")),
+            "{v}"
+        );
         assert_eq!(
             (&v["page71_echoed_50"], &v["page71_echoed_51"]),
             (&json!(true), &json!(true))
@@ -3451,7 +3498,7 @@ mod tests {
                     ..Plan::default()
                 },
             ),
-            (Procedure::Check12, "check12", Plan::default()),
+            (Procedure::Check12, "check12", answers(&["y"])),
         ] {
             let (sim, report) = run(p, plan, None).await;
             out.push((stem, fecap(&sim, &report)));
@@ -3768,14 +3815,19 @@ mod tests {
         f[14] = format!("{x:02X}");
     }
 
-    /// #516 round 10 (the falsifier's check 12 with ERG held and 60 % repeats): check 12 reads
-    /// every page 25, as dev does, until ADR-0007 §2's rule (#616). After `Free` the low-cadence
-    /// frames are rewritten to updates of 205 W and 150 W, each followed by byte-identical
-    /// repeats, 3 in every 5 frames: the updates average 177.5 W (< 90 % of 200 W) and every frame
-    /// 183 W. Read from the updates alone this would read released; it reads held.
+    /// #516 round 10, the falsifier's check 12 with ERG held and 60 % repeats, under ADR-0007 §2:
+    /// on a trainer that holds ERG 200 W through `Free`, the frames below 80 rpm after page 51
+    /// are rewritten to updates of 205 W and 150 W, each followed by byte-identical repeats, 3 in
+    /// every 5 frames. Read from updates only, with the honest rider's `n`, a missing answer or
+    /// `s`, it never reads PASS.
     #[tokio::test(start_paused = true)]
     async fn check12_with_erg_held_and_60_percent_repeats_is_not_released() {
-        let text = capture_of(&valid_captures().await, "check12");
+        let text = check12_text(Plan {
+            road: &HELD,
+            answers: &["n"],
+            ..Plan::default()
+        })
+        .await;
         let lines: Vec<&str> = text.lines().collect();
         let free = lines
             .iter()
@@ -3791,10 +3843,7 @@ mod tests {
         let mut k = 0;
         for l in out.iter_mut().take(release).skip(free) {
             let f = cols(l);
-            if f.len() != 15 || f[1] != "rx" || f[6] != "19" {
-                continue;
-            }
-            if u8::from_str_radix(&f[8], 16).expect("hex") >= 80 {
+            if !is_p25(l) || u8::from_str_radix(&f[8], 16).expect("hex") >= 80 {
                 continue;
             }
             let g = match (k % 5, &last) {
@@ -3820,9 +3869,430 @@ mod tests {
             k += 1;
         }
         assert!(k >= 20, "{k} low-cadence frames rewritten");
-        let v = row("check12", &(out.join("\n") + "\n"));
-        assert!(full(&v), "{}", v["line"]);
-        assert_eq!(v["released"], json!(false), "{v}");
+        let forged = out.join("\n") + "\n";
+        for answer in [Some("n"), Some("s"), None] {
+            let v = row("check12", &answered(&forged, answer));
+            assert_ne!(v["released"], json!(true), "{answer:?}: {}", v["line"]);
+            assert!(
+                !v["line"].as_str().is_some_and(|l| l.contains("PASS")),
+                "{}",
+                v["line"]
+            );
+        }
+    }
+
+    /// Check 12's non-releasing trainer: ERG held through `Free`.
+    const HELD: Road = Road {
+        ignores_free: true,
+        ..ROAD
+    };
+
+    /// A rider in a light gear (0.06 m/s per rpm) who shifts to the hardest (0.2) at the 70 rpm cue.
+    const SHIFT: Road = Road {
+        speed_per_rpm: 0.06,
+        shift_at_cue: Some((70, 0.2)),
+        ..ROAD
+    };
+
+    /// A page-25 frame line.
+    fn is_p25(l: &str) -> bool {
+        let f = cols(l);
+        f.len() == 15 && f[1] == "rx" && f[6] == "19"
+    }
+
+    /// The `.fecap` text of a sim check 12 run under `plan`; the run completes.
+    async fn check12_text(plan: Plan) -> String {
+        let (sim, report) = run(Procedure::Check12, plan, None).await;
+        assert_eq!(report.procedure, Ok(()));
+        fecap(&sim, &report)
+    }
+
+    /// Check 12's capture `text` with its answer line replaced by `answer` (`None`: removed).
+    fn answered(text: &str, answer: Option<&str>) -> String {
+        text.lines()
+            .filter_map(|l| match l.strip_prefix("# answer-easier ") {
+                None => Some(l.to_string()),
+                Some(rest) => answer.map(|a| {
+                    let at = rest.split_whitespace().next().unwrap_or("0");
+                    format!("# answer-easier {at} {:02X}", a.as_bytes()[0])
+                }),
+            })
+            .flat_map(|l| [l, "\n".into()])
+            .collect()
+    }
+
+    /// One of ADR-0007 §3's capture operators (`op` picks it, `next` draws its arguments) on
+    /// check 12's `lines`, kept in time order; its name, `None` when it found nothing to change.
+    fn operate(
+        lines: &mut Vec<String>,
+        op: usize,
+        next: &mut impl FnMut(usize) -> usize,
+    ) -> Option<&'static str> {
+        let p25: Vec<usize> = (0..lines.len()).filter(|i| is_p25(&lines[*i])).collect();
+        let stamped: Vec<usize> = (0..lines.len())
+            .filter(|i| stamp_of_line(&lines[*i]).is_some())
+            .collect();
+        Some(match op % 5 {
+            0 => {
+                let rx: Vec<usize> = (0..lines.len())
+                    .filter(|i| cols(&lines[*i]).get(1).is_some_and(|d| d == "rx"))
+                    .collect();
+                lines.remove(rx[next(rx.len())]);
+                "drop"
+            }
+            1 => {
+                // The trainer repeats an update, byte for byte, in the next page-25 slot.
+                let k = next(p25.len() - 1);
+                let mut g = cols(&lines[p25[k]]);
+                g[0] = cols(&lines[p25[k + 1]])[0].clone();
+                lines[p25[k + 1]] = g.join(" ");
+                "repeat"
+            }
+            2 => {
+                // A pump stall: a run of stamps compressed to 1 µs steps.
+                let from = next(stamped.len());
+                let base = stamp_of_line(&lines[stamped[from]]).expect("stamped");
+                let run = 2 + next(30);
+                for (k, &i) in stamped[from..].iter().take(run).enumerate() {
+                    let at = stamp_of_line(&lines[i]).expect("stamped");
+                    lines[i] = restamp(&lines[i], at.min(base + u64::try_from(k).expect("small")));
+                }
+                "stall"
+            }
+            3 => {
+                // A span of updates moved to 0 rpm or out of both bands.
+                let from = next(p25.len());
+                let rpm = [0, 50, 80, 100][next(4)];
+                for &i in p25[from..].iter().take(1 + next(20)) {
+                    let mut f = cols(&lines[i]);
+                    set_byte(&mut f, 6, rpm);
+                    lines[i] = f.join(" ");
+                }
+                "cadence"
+            }
+            _ => {
+                let text = lines.join("\n") + "\n";
+                if !text.contains("# answer-easier ") {
+                    return None;
+                }
+                let answer = [Some("y"), Some("n"), Some("s"), None][next(4)];
+                *lines = answered(&text, answer)
+                    .lines()
+                    .map(str::to_string)
+                    .collect();
+                "answer"
+            }
+        })
+    }
+
+    /// ADR-0007 §3's properties, by a generator: base captures of a releasing and a
+    /// non-releasing trainer (ERG 200 W held through `Free`) at speeds of 0.03 to 0.2 m/s per rpm
+    /// (`gear(g)`), each answered as an honest rider would, then 1 to 4 operators (drop, repeat,
+    /// stall, cadence, answer) in any sequence. A releasing capture is never FAIL, a
+    /// non-releasing one never PASS, and PASS and FAIL come only with an agreeing answer.
+    #[tokio::test(start_paused = true)]
+    async fn check12_released_never_fails_and_held_never_passes() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % u64::try_from(n.max(1)).expect("small")).expect("small")
+        };
+        let mut outcomes = std::collections::BTreeMap::<String, usize>::new();
+        let mut bad = Vec::new();
+        for gear in [0.03, 0.06, 0.09, 0.14, 0.2] {
+            for held in [false, true] {
+                let text = check12_text(Plan {
+                    road: Box::leak(Box::new(Road {
+                        speed_per_rpm: gear,
+                        ignores_free: held,
+                        ..ROAD
+                    })),
+                    answers: if held { &["n"] } else { &["y"] },
+                    ..Plan::default()
+                })
+                .await;
+                let base = row("check12", &text);
+                assert_eq!(base["released"], json!(!held), "{gear}: {}", base["line"]);
+                let lines: Vec<String> = text.lines().map(str::to_string).collect();
+                for k in 0..150 {
+                    let mut m = lines.clone();
+                    let ops: Vec<&str> = (0..=next(4))
+                        .filter_map(|_| operate(&mut m, next(5), &mut next))
+                        .collect();
+                    let t = m.join("\n") + "\n";
+                    assert!(crate::timeline::Timeline::parse(&t).is_ok(), "{ops:?}");
+                    let v = row("check12", &t);
+                    let (released, r) = (v["released"].as_bool(), v["r"].as_f64());
+                    let agrees = match released {
+                        Some(true) => v["answer"] == "y" && r.is_some_and(|r| r <= 0.85),
+                        Some(false) => v["answer"] == "n" && r.is_some_and(|r| r >= 0.95),
+                        None => true,
+                    };
+                    if released == Some(held) || !agrees {
+                        bad.push(format!("{gear} held {held} k={k} {ops:?}: {}", v["line"]));
+                    }
+                    *outcomes
+                        .entry(format!("held {held}: {released:?}"))
+                        .or_default() += 1;
+                }
+            }
+        }
+        println!("check 12 generator: {outcomes:?}");
+        assert!(
+            bad.is_empty(),
+            "{} breaches:\n{}",
+            bad.len(),
+            bad.join("\n")
+        );
+        for kind in [
+            "held false: Some(true)",
+            "held true: Some(false)",
+            "held false: None",
+            "held true: None",
+        ] {
+            assert!(
+                outcomes.get(kind).is_some_and(|n| *n >= 50),
+                "{kind}: {outcomes:?}"
+            );
+        }
+    }
+
+    /// ADR-0007 §3: a gear shift between the holds, answered `s`, is no result. Unreported, a
+    /// shift to a harder gear raises r, and with the rider's `n` reads FAIL: the don't-shift rule
+    /// (runbook), not a guard, covers it.
+    #[tokio::test(start_paused = true)]
+    async fn check12_a_shift_answered_s_is_no_result() {
+        let cases: [(&'static [&'static str], &str); 3] = [
+            (&["s"], "no result: the rider shifted gear"),
+            (&["y"], "no result: power and rider disagree"),
+            (&["n"], "FAIL, not released"),
+        ];
+        for (answer, line) in cases {
+            let text = check12_text(Plan {
+                road: &SHIFT,
+                answers: answer,
+                ..Plan::default()
+            })
+            .await;
+            let v = row("check12", &text);
+            assert!(v["r"].as_f64().is_some_and(|r| r > 1.0), "{v}");
+            assert!(
+                v["line"].as_str().is_some_and(|l| l.contains(line)),
+                "{answer:?}: {}",
+                v["line"]
+            );
+        }
+    }
+
+    /// A released trainer on a 3 km/h road (0.0093 m/s per rpm) gives page 25 a few watts in
+    /// both windows: below ADR-0007 §2's 8 W floor that is no result, whatever the rider says.
+    #[tokio::test(start_paused = true)]
+    async fn check12_a_3_kmh_road_is_no_result() {
+        const CRAWL: Road = Road {
+            speed_per_rpm: 3.0 / 3.6 / 90.0,
+            ..ROAD
+        };
+        for answer in [&["n"], &["y"]] {
+            let text = check12_text(Plan {
+                road: &CRAWL,
+                answers: answer,
+                ..Plan::default()
+            })
+            .await;
+            let v = check12_reads(&text, "no result: power under Free below the 8 W floor");
+            assert!(v["free70_w"].as_f64().is_some_and(|w| w < 8.0), "{v}");
+        }
+    }
+
+    /// Check 12's releasing (answered `y`) and non-releasing (answered `n`) sim captures.
+    async fn check12_bases() -> (String, String) {
+        let released = check12_text(Plan {
+            answers: &["y"],
+            ..Plan::default()
+        })
+        .await;
+        let held = check12_text(Plan {
+            road: &HELD,
+            answers: &["n"],
+            ..Plan::default()
+        })
+        .await;
+        (released, held)
+    }
+
+    /// `text` without its lines that start with `prefix`.
+    fn without(text: &str, prefix: &str) -> String {
+        text.lines()
+            .filter(|l| !l.starts_with(prefix))
+            .flat_map(|l| [l, "\n"])
+            .collect()
+    }
+
+    /// Check 12's row of `text`, asserted to contain `want`.
+    fn check12_reads(text: &str, want: &str) -> Value {
+        let v = row("check12", text);
+        assert!(
+            v["line"].as_str().is_some_and(|l| l.contains(want)),
+            "{want}: {}",
+            v["line"]
+        );
+        v
+    }
+
+    /// ADR-0007 §2's verdict, rows 1 to 3: what is missing, ERG not held, too few updates.
+    #[tokio::test(start_paused = true)]
+    async fn check12_reads_each_no_result_row() {
+        let (released, _) = check12_bases().await;
+        let reads = check12_reads;
+        // The cue or the answer missing, or answered twice.
+        reads(
+            &without(&released, "# check12 "),
+            "no result: no 70 rpm cue stamp after page 51",
+        );
+        reads(
+            &answered(&released, None),
+            "no result: 0 answers to the check 12 question",
+        );
+        let twice = inserted(
+            &released,
+            &format!(
+                "# answer-easier {} 79",
+                stamp_of_line(
+                    released
+                        .lines()
+                        .rev()
+                        .find(|l| l.starts_with("# answer-easier "))
+                        .expect("answer")
+                )
+                .expect("stamped")
+                    + 1
+            ),
+        );
+        reads(&twice, "no result: 2 answers to the check 12 question");
+        // ERG never held 180-220 W before Free (it gives 80 % of its target).
+        let sagging = check12_text(Plan {
+            erg_curve: Some(&[(0.0, 0.8)]),
+            answers: &["y"],
+            ..Plan::default()
+        })
+        .await;
+        reads(
+            &sagging,
+            "no result: ERG did not hold 180-220 W before Free",
+        );
+        // 15 updates in the 70 rpm window are enough, 14 are not.
+        let n70 = row("check12", &released)["free70_updates"]
+            .as_u64()
+            .expect("n");
+        for (keep, want) in [
+            (15, "PASS, released"),
+            (14, "no result: fewer than 15 updates"),
+        ] {
+            let mut lines: Vec<&str> = released.lines().collect();
+            let answer = lines
+                .iter()
+                .position(|l| l.starts_with("# answer-easier "))
+                .expect("answer");
+            let mut gone = 0;
+            for i in (0..answer).rev() {
+                if gone < n70 - keep && is_p25(lines[i]) {
+                    lines.remove(i);
+                    gone += 1;
+                }
+            }
+            let v = reads(&(lines.join("\n") + "\n"), want);
+            assert_eq!(v["free70_updates"], json!(keep), "{v}");
+        }
+    }
+
+    /// ADR-0007 §2's verdict, rows 4 to 7: `s`, PASS, FAIL, and disagreement.
+    #[tokio::test(start_paused = true)]
+    async fn check12_reads_each_verdict_row() {
+        let (released, held) = check12_bases().await;
+        let reads = check12_reads;
+        // The rider shifted.
+        reads(
+            &answered(&released, Some("s")),
+            "no result: the rider shifted gear",
+        );
+        // PASS and FAIL.
+        reads(&released, "PASS, released");
+        reads(&held, "FAIL, not released");
+        // Power and rider disagree, or r between 0.85 and 0.95 (an ERG that sags 10 % at 70 rpm).
+        reads(
+            &answered(&released, Some("n")),
+            "no result: power and rider disagree",
+        );
+        reads(
+            &answered(&held, Some("y")),
+            "no result: power and rider disagree",
+        );
+        let sag = check12_text(Plan {
+            road: &HELD,
+            erg_curve: Some(&[(70.0, 0.9), (90.0, 1.0)]),
+            answers: &["y"],
+            ..Plan::default()
+        })
+        .await;
+        for answer in ["y", "n"] {
+            let v = reads(
+                &answered(&sag, Some(answer)),
+                "no result: power and rider disagree",
+            );
+            assert!(v["r"].as_f64().is_some_and(|r| r > 0.85 && r < 0.95), "{v}");
+        }
+    }
+
+    /// A check 12 capture whose closing release is dropped is cut off: no result, and the trainer
+    /// reads NOT released at the end.
+    #[tokio::test(start_paused = true)]
+    async fn check12_without_its_closing_release_is_no_result_not_released() {
+        let text = check12_text(Plan {
+            answers: &["y"],
+            ..Plan::default()
+        })
+        .await;
+        let mut lines: Vec<&str> = text.lines().collect();
+        let release = lines
+            .iter()
+            .rposition(|l| l.contains(" tx A4 09 4F 05 30 "))
+            .expect("the closing release");
+        lines.remove(release);
+        let v = row("check12", &(lines.join("\n") + "\n"));
+        let line = v["line"].as_str().expect("line");
+        assert!(
+            line.contains("no result: the capture is cut off") && line.contains("NOT released"),
+            "{line}"
+        );
+        assert_eq!(v["released"], Value::Null);
+    }
+
+    /// The runbook gives check 12's rider both halves of ADR-0007 §2's rule: stay in this gear
+    /// from the switch until the question, and answer `s` after a shift; the harness says so too.
+    #[test]
+    fn the_runbook_says_stay_in_this_gear_and_answer_s() {
+        let runbook = include_str!("../../../../docs/hil/part-b-runbook.md");
+        let row = runbook
+            .lines()
+            .find(|l| l.starts_with("| 12 |"))
+            .expect("check 12's row");
+        assert!(
+            row.contains("Stay in this gear from the switch until the question"),
+            "{row}"
+        );
+        assert!(row.contains("answer `s` if you shifted"), "{row}");
+        assert!(
+            row.contains("(`y` easier / `n` not easier / `s` I shifted gear)"),
+            "{row}"
+        );
+        assert!(
+            Cue::StayInGear
+                .text()
+                .starts_with("stay in this gear from now until the question")
+        );
+        assert!(crate::partb::EASIER.text.contains("s = I shifted gear"));
     }
 
     /// #516 round 6 B2 (the falsifier's `fz_check5_power_between_crank_events`): after each

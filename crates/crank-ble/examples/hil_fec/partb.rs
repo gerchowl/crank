@@ -1119,11 +1119,96 @@ pub fn check9(tl: &Timeline, lag: &PowerLag) -> Value {
     })
 }
 
-/// Check 12: does `Free` (page 50 defaults, page 51 grade 0) release an ERG target?
+/// Check 12's question (ADR-0007 §2), asked at the end of the 70 rpm hold; its answer's stamp
+/// ends the 70 rpm window.
+pub const EASIER: crate::check10::Question = crate::check10::Question {
+    key: "easier",
+    text: "Compared with the 90 rpm part right after the switch, did pedalling at 70 rpm get clearly easier? (y = easier / n = not easier / s = I shifted gear)",
+    options: &["y", "n", "s"],
+};
+/// Tag of check 12's cue stamp, `# check12 <µs> 46`: the cue to 70 rpm, code [`TO_70`].
+pub const CUE12: &str = "check12";
+/// The code of check 12's 70 rpm cue stamp (its cadence).
+pub const TO_70: u8 = 70;
+/// Check 12's settle after the page-51 write and after the first 70 rpm update (ADR-0007 §2).
+const SETTLE12_US: u64 = 5 * SEC;
+/// Check 12 reads a window of fewer updates than this as no result.
+const MIN_UPDATES12: usize = 15;
+/// Check 12's power floor, W (ADR-0007 §2): a `free90` or `free70` median below it is no result.
+/// The slowest road ADR-0007 §1 models is 10 km/h at 90 rpm; on it, a released NEO's flat road
+/// (Crr 0.004, 85 kg, Kw 0.51 kg/m) needs 8.75 W at 65 rpm, the lowest cadence of either band,
+/// and more at every other in-band cadence. Rounded down to page 25's whole watts: 8 W. Below
+/// it the ratio is a ratio of a few 1 W steps (or of 0), which says nothing about a release.
+const FLOOR12_W: f64 = 8.0;
+/// Check 12's cadence bands, rpm.
+const BAND90: std::ops::RangeInclusive<u8> = 85..=95;
+const BAND70: std::ops::RangeInclusive<u8> = 65..=75;
+
+/// The median of `v`, `None` when it is empty.
+fn median(mut v: Vec<f64>) -> Option<f64> {
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    (n > 0).then(|| f64::midpoint(v[(n - 1) / 2], v[n / 2]))
+}
+
+/// Check 12's one answer, after the cue (the note at index `cue_seq`): its note and its text.
+fn answer12(tl: &Timeline, cue_seq: usize) -> Result<(crate::frames::Note, String), String> {
+    let tag = crate::check10::answer_tag(EASIER.key);
+    // The answer notes, with their index among the notes (file order).
+    let answers: Vec<(usize, &crate::frames::Note)> = tl
+        .notes()
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.tag == tag)
+        .collect();
+    let [(seq, answer)] = answers[..] else {
+        return Err(format!(
+            "{} answers to the check 12 question, not one",
+            answers.len()
+        ));
+    };
+    let said = String::from_utf8_lossy(&answer.bytes).into_owned();
+    if seq < cue_seq || !EASIER.options.contains(&said.as_str()) {
+        return Err(format!(
+            "the answer {said:?} is not one to the check 12 question after its cue"
+        ));
+    }
+    Ok((answer.clone(), said))
+}
+
+/// Why check 12 gives no result (ADR-0007 §2's verdict, in order), `None` for PASS or FAIL;
+/// `updates` is the smaller window's count, `lowest` the smaller of the `free90` and `free70`
+/// medians.
+fn verdict12(
+    erg: Option<f64>,
+    updates: usize,
+    lowest: Option<f64>,
+    r: Option<f64>,
+    said: &str,
+) -> Option<&'static str> {
+    if !erg.is_some_and(|e| (180.0..=220.0).contains(&e)) {
+        Some("ERG did not hold 180-220 W before Free, so no release can be seen")
+    } else if updates < MIN_UPDATES12 {
+        Some("fewer than 15 updates in the 90 or the 70 rpm window")
+    } else if !lowest.is_some_and(|w| w >= FLOOR12_W) {
+        Some("power under Free below the 8 W floor (slower than a 10 km/h road)")
+    } else if said == "s" {
+        Some("the rider shifted gear")
+    } else if (r.is_some_and(|r| r <= 0.85) && said == "y")
+        || (r.is_some_and(|r| r >= 0.95) && said == "n")
+    {
+        None
+    } else {
+        Some("power and rider disagree, or r is between 0.85 and 0.95")
+    }
+}
+
+/// Check 12 (ADR-0007 §2): does `Free` (page 50 defaults, page 51 grade 0) release an ERG target?
+/// Read from the ratio r of the median power of the updates at 65–75 rpm to that at 85–95 rpm
+/// under `Free`, and from the rider's answer: PASS iff r ≤ 0.85 and `y`, FAIL iff r ≥ 0.95 and
+/// `n`, otherwise no result.
 pub fn check12(tl: &Timeline) -> Value {
-    let s = tl.samples();
     let ctl = tl.writes();
-    let end = procedure_end(tl.end_us(), &tl.controls());
     let Some((erg_i, target)) = ctl
         .iter()
         .enumerate()
@@ -1145,12 +1230,52 @@ pub fn check12(tl: &Timeline) -> Value {
     let (Some(wind), Some(track)) = (wind, track) else {
         return json!({"error": "no page 50 + page 51 grade 0 after the ERG target"});
     };
-    let free_at = wind.at_us.max(track.at_us);
-    let low: Vec<&Sample> = s
+    let cue = match crate::frames::stamps(tl.notes(), CUE12, &[TO_70]) {
+        Err(why) => return json!({ "error": why }),
+        Ok(st) => crate::frames::stamp_of(&st, TO_70),
+    };
+    let Some(cue) = cue.filter(|c| c.before > track.pos) else {
+        return json!({"error": "no 70 rpm cue stamp after page 51"});
+    };
+    let (answer, said) = match answer12(tl, cue.seq) {
+        Ok(a) => a,
+        Err(why) => return json!({ "error": why }),
+    };
+    let ups = tl.updates();
+    let power = |from: usize, to: usize, band: Option<&std::ops::RangeInclusive<u8>>| {
+        let p: Vec<f64> = ups
+            .iter()
+            .filter(|s| s.pos >= from && s.pos < to)
+            .filter(|s| band.is_none_or(|b| s.cadence.is_some_and(|c| b.contains(&c))))
+            .filter_map(|s| s.power.map(f64::from))
+            .collect();
+        (p.len(), median(p))
+    };
+    let (_, erg) = power(
+        tl.index_at(wind.at_us.saturating_sub(5 * SEC)),
+        wind.pos,
+        None,
+    );
+    let from90 = tl.index_at(track.at_us + SETTLE12_US);
+    let (n90, free90) = power(from90, cue.before, Some(&BAND90));
+    let t70 = ups
         .iter()
-        .filter(|x| x.at_us > free_at && x.at_us < end && x.cadence.is_some_and(|c| c < 80))
-        .collect();
-    let low_power = mean(low.iter().filter_map(|x| x.power.map(f64::from)));
+        .find(|s| s.pos >= cue.before && s.cadence.is_some_and(|c| BAND70.contains(&c)));
+    let (n70, free70) = t70.map_or((0, None), |t| {
+        power(
+            tl.index_at(t.at_us + SETTLE12_US),
+            answer.before,
+            Some(&BAND70),
+        )
+    });
+    let r = free70.zip(free90).map(|(a, b)| a / b);
+    let lowest = free70.zip(free90).map(|(a, b)| a.min(b));
+    let no_result = verdict12(erg, n90.min(n70), lowest, r, &said);
+    let released = if no_result.is_some() {
+        Value::Null
+    } else {
+        json!(said == "y")
+    };
     // A page-71 reply after the write naming that page and echoing its bytes 4-7.
     let echoed = |page: u8, w: &Write| {
         tl.statuses()
@@ -1158,16 +1283,22 @@ pub fn check12(tl: &Timeline) -> Value {
             .any(|st| st.at_us >= w.at_us && st.page == page && st.echo == w.data)
     };
     json!({
-        "method": "Free = page 50 then page 51 grade 0 after a page-49 target; released = mean power of the samples below 80 rpm after Free < 90 % of the ERG target (ERG would hold it); echoed = a later page-71 reply names the page and echoes its bytes 4-7",
+        "method": "ADR-0007 §2, page-25 updates only: erg = median power in the 5 s before page 50; free90 = median power at 85-95 rpm from page 51 + 5 s to the 70 rpm cue; free70 = median power at 65-75 rpm from the first such update after the cue + 5 s to the answer; r = free70 / free90. No result unless erg is 180-220 W, each window has >= 15 updates and free90 and free70 are >= 8 W; the answer s is no result; released iff r <= 0.85 and y, not released iff r >= 0.95 and n, else no result. echoed = a later page-71 reply names the page and echoes its bytes 4-7",
         "erg_target_w": target,
-        "free_at_s": round1(secs(free_at)),
-        "mean_power_before_free_5s_w": mean(powers(s, free_at.saturating_sub(5 * SEC), free_at)).map(round1),
-        "low_cadence_samples": low.len(),
-        "low_cadence_mean_power_w": low_power.map(round1),
-        "low_cadence_mean_rpm": mean(low.iter().filter_map(|x| x.cadence.map(f64::from))).map(round1),
+        "free_at_s": round1(secs(track.at_us)),
+        "cue_70rpm_at_s": round1(secs(cue.at_us)),
+        "answer_at_s": round1(secs(answer.at_us)),
+        "erg_w": erg.map(round1),
+        "free90_w": free90.map(round1),
+        "free90_updates": n90,
+        "free70_w": free70.map(round1),
+        "free70_updates": n70,
+        "r": r.map(|r| (r * 1000.0).round() / 1000.0),
+        "answer": said,
+        "no_result": no_result,
         "page71_echoed_50": echoed(50, wind),
         "page71_echoed_51": echoed(51, track),
-        "released": low_power.map(|p| p < 0.9 * target),
+        "released": released,
     })
 }
 
@@ -1432,20 +1563,33 @@ fn cells(stem: &str, v: &Value) -> (&'static str, &'static str, String, &'static
             ),
             "§7.4",
         ),
-        _ => (
-            "12",
-            "ERG 200 W → Free",
-            format!(
-                "released: {}; below 80 rpm in Free {} W at {} rpm; page 71 echoed 50/51: {}/{}",
-                v["released"],
-                num(&v["low_cadence_mean_power_w"]),
-                num(&v["low_cadence_mean_rpm"]),
-                v["page71_echoed_50"],
-                v["page71_echoed_51"]
-            ),
-            "§7.9",
-        ),
+        _ => cells12(v),
     }
+}
+
+/// Check 12's row cells: PASS, FAIL or no result with why, and r and the answer either way.
+fn cells12(v: &Value) -> (&'static str, &'static str, String, &'static str) {
+    let read = format!(
+        "r = {} (Free {} W at 90 rpm over {} updates, {} W at 70 rpm over {}; ERG {} W), rider: {}; page 71 echoed 50/51: {}/{}",
+        num(&v["r"]),
+        num(&v["free90_w"]),
+        num(&v["free90_updates"]),
+        num(&v["free70_w"]),
+        num(&v["free70_updates"]),
+        num(&v["erg_w"]),
+        v["answer"].as_str().unwrap_or("?"),
+        v["page71_echoed_50"],
+        v["page71_echoed_51"]
+    );
+    let result = match v["released"].as_bool() {
+        Some(true) => format!("PASS, released: {read}"),
+        Some(false) => format!("FAIL, not released: {read}"),
+        None => format!(
+            "no result: {}; {read}",
+            v["no_result"].as_str().unwrap_or("?")
+        ),
+    };
+    ("12", "ERG 200 W → Free", result, "§7.9")
 }
 
 #[cfg(test)]
@@ -1899,5 +2043,414 @@ mod tests {
             )["error"],
             json!("no page-49 write of 250 W")
         );
+    }
+
+    /// A page-25 frame of a synthetic check 12 run: `(at_us, cadence, watts, repeat)`; a repeat
+    /// keeps the update event count of the frame before it (the NEO repeating its last update).
+    type Frame12 = (u64, u8, u16, bool);
+
+    /// Updates every `step_us` in [`from_us`, `to_us`) at `cadence` and `watts`.
+    fn every(from_us: u64, to_us: u64, step_us: u64, cadence: u8, watts: u16) -> Vec<Frame12> {
+        (from_us..to_us)
+            .step_by(usize::try_from(step_us).expect("small"))
+            .map(|at| (at, cadence, watts, false))
+            .collect()
+    }
+
+    /// A synthetic check 12 run (ADR-0007 §2), its program and notes as `rider.rs` `check12`
+    /// writes them: the opening release, the soft start to 200 W at 1 s, page 50 at 20 s, page 51
+    /// at 20.5 s, the 70 rpm cue at `cue_us`, the answer at `answer_us`, the closing release at
+    /// 66 s. By default: ERG 200 W at 90 rpm, 200 W at 90 rpm under `Free` (settled from 25.5 s),
+    /// 150 W at 70 rpm from 40.25 s (settled from 45.25 s), and `y`: r = 0.75, PASS.
+    struct Run12 {
+        /// Before page 50.
+        erg: Vec<Frame12>,
+        /// From page 51 to the cue.
+        free90: Vec<Frame12>,
+        /// From the cue to the answer.
+        free70: Vec<Frame12>,
+        /// After the answer.
+        after: Vec<Frame12>,
+        cue_us: u64,
+        answer_us: u64,
+        answer: &'static str,
+    }
+
+    const MS: u64 = 1_000;
+
+    impl Default for Run12 {
+        fn default() -> Self {
+            Self {
+                erg: every(1_250 * MS, 20 * SEC, 250 * MS, 90, 200),
+                free90: every(20_750 * MS, 40 * SEC, 250 * MS, 90, 200),
+                free70: every(40_250 * MS, 60 * SEC, 250 * MS, 70, 150),
+                after: every(60_250 * MS, 65 * SEC, 250 * MS, 70, 150),
+                cue_us: 40 * SEC,
+                answer_us: 60 * SEC,
+                answer: "y",
+            }
+        }
+    }
+
+    impl Run12 {
+        /// The run with its free70 updates set to `watts`, free90 to `free90` W.
+        fn ratio(free90: u16, free70: u16, answer: &'static str) -> Self {
+            Self {
+                free90: every(20_750 * MS, 40 * SEC, 250 * MS, 90, free90),
+                free70: every(40_250 * MS, 60 * SEC, 250 * MS, 70, free70),
+                answer,
+                ..Self::default()
+            }
+        }
+
+        /// The capture text.
+        fn text(&self) -> String {
+            let mut frames: Vec<Frame12> = [&self.erg, &self.free90, &self.free70, &self.after]
+                .into_iter()
+                .flatten()
+                .copied()
+                .collect();
+            frames.sort_by_key(|f| f.0);
+            let mut count = 0_u8;
+            let mut records: Vec<Record> = frames
+                .iter()
+                .map(|&(at_us, cadence, watts, repeat)| {
+                    if !repeat {
+                        count = count.wrapping_add(1);
+                    }
+                    let w = watts.to_le_bytes();
+                    let mut f = [
+                        0xa4, 9, 0x4e, 5, 25, count, cadence, 0, 0, w[0], w[1], 0x30, 0,
+                    ];
+                    f[12] = f[..12].iter().fold(0, |x, v| x ^ v);
+                    Record {
+                        at_us,
+                        rx: true,
+                        bytes: f.to_vec(),
+                    }
+                })
+                .collect();
+            let free = ControlPage::BasicResistance { pct: 0.0 };
+            records.extend([tx(0, &free), serial_request(100 * MS)]);
+            records.extend(soft_start(SEC, f32::from(crate::rider::CHECK12_W)));
+            records.extend([
+                tx(
+                    20 * SEC,
+                    &ControlPage::Wind {
+                        cw_kg_per_m: 0.51,
+                        speed_kmh: 0.0,
+                        drafting: 1.0,
+                    },
+                ),
+                status_request(20_100 * MS),
+                tx(
+                    20_500 * MS,
+                    &ControlPage::Track {
+                        grade_pct: 0.0,
+                        crr: 0.004,
+                    },
+                ),
+                status_request(20_600 * MS),
+                tx(66 * SEC, &free),
+                status_request(66_300 * MS),
+            ]);
+            records.sort_by_key(|r| r.at_us);
+            let note = |tag: &str, at_us: u64, bytes: Vec<u8>| crate::frames::Note {
+                tag: tag.into(),
+                at_us,
+                bytes,
+                before: 0,
+            };
+            let notes = [
+                note(CUE12, self.cue_us, vec![TO_70]),
+                note(
+                    &crate::check10::answer_tag(EASIER.key),
+                    self.answer_us,
+                    self.answer.as_bytes().to_vec(),
+                ),
+            ];
+            crate::timeline::text_of(&records, &[], &notes)
+        }
+
+        /// Check 12's row of the run, completed.
+        fn row(&self) -> Value {
+            let none = PowerLag::NotMeasured("test".into());
+            analyse("check12", &self.text(), Some(COMPLETED), &none).expect("stem")
+        }
+
+        /// The row, asserted to read `want`.
+        fn reads(&self, want: &str) -> Value {
+            let v = self.row();
+            assert!(
+                v["line"].as_str().is_some_and(|l| l.contains(want)),
+                "{want}: {}",
+                v["line"]
+            );
+            v
+        }
+    }
+
+    const PASS: &str = "PASS, released: r = ";
+    const FAIL: &str = "FAIL, not released: r = ";
+    const DISAGREE: &str = "no result: power and rider disagree";
+
+    /// The synthetic run reads as the procedure's: completed, PASS at r = 0.75, each window
+    /// counted from updates only.
+    #[test]
+    fn check12_a_synthetic_run_passes() {
+        let v = Run12::default().reads(PASS);
+        assert_eq!(v["completed"], json!(true), "{v}");
+        assert_eq!(v["released"], json!(true), "{v}");
+        assert_eq!(v["r"], json!(0.75), "{v}");
+        assert_eq!(v["free90_updates"], json!(58), "{v}");
+        assert_eq!(v["free70_updates"], json!(59), "{v}");
+    }
+
+    /// ADR-0007 §2's thresholds are inclusive: r = 0.85 with `y` is PASS, r = 0.855 is not; r = 0.95
+    /// with `n` is FAIL, r = 0.945 is not.
+    #[test]
+    fn check12_r_at_0_85_passes_and_at_0_95_fails() {
+        let v = Run12::ratio(200, 170, "y").reads(PASS);
+        assert_eq!(v["r"], json!(0.85), "{v}");
+        Run12::ratio(200, 171, "y").reads(DISAGREE);
+        let v = Run12::ratio(200, 190, "n").reads(FAIL);
+        assert_eq!(
+            (v["r"].clone(), v["released"].clone()),
+            (json!(0.95), json!(false))
+        );
+        Run12::ratio(200, 189, "n").reads(DISAGREE);
+    }
+
+    /// The median of an even count is the midpoint of the middle two: 180 and 200 W at 70 rpm
+    /// read 190 W, r = 0.95, FAIL with `n`; and 160 and 180 W read 170 W, r = 0.85, PASS with `y`.
+    #[test]
+    fn check12_the_median_of_an_even_count_is_the_midpoint() {
+        for (low, answer, want) in [(180, "n", FAIL), (160, "y", PASS)] {
+            // 30 updates, 15 of each (the window starts 5 s after the first at 40.25 s).
+            let mut free70 = every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 150);
+            free70.extend((0..30_u64).map(|k| {
+                (
+                    45_250 * MS + k * 250 * MS,
+                    70,
+                    low + 20 * u16::from(k % 2 == 1),
+                    false,
+                )
+            }));
+            let run = Run12 {
+                free70,
+                answer,
+                ..Run12::default()
+            };
+            let v = run.reads(want);
+            assert_eq!(v["free70_updates"], json!(30), "{v}");
+        }
+    }
+
+    /// The median, not the mean: 9 of 59 updates at 70 rpm spiking to 2000 W leave r = 0.75.
+    #[test]
+    fn check12_a_minority_of_spikes_does_not_move_the_median() {
+        let mut run = Run12::default();
+        for f in run.free70.iter_mut().rev().take(9) {
+            f.2 = 2000;
+        }
+        let v = run.reads(PASS);
+        assert_eq!(v["r"], json!(0.75), "{v}");
+    }
+
+    /// ERG must have held 180–220 W, both ends inclusive, in the 5 s before page 50 only.
+    #[test]
+    fn check12_erg_holds_180_to_220_w() {
+        for (watts, ok) in [
+            (179, false),
+            (180, true),
+            (181, true),
+            (219, true),
+            (220, true),
+            (221, false),
+        ] {
+            let run = Run12 {
+                erg: every(1_250 * MS, 20 * SEC, 250 * MS, 90, watts),
+                ..Run12::default()
+            };
+            let v = run.reads(if ok {
+                PASS
+            } else {
+                "no result: ERG did not hold 180-220 W before Free"
+            });
+            assert_eq!(v["erg_w"], json!(f64::from(watts)), "{v}");
+        }
+        // Earlier than 5 s before page 50, and between page 50 and page 51, ERG is not read:
+        // 55 updates at 100 W before 15 s and 40 at 100 W after page 50 are outvoted by none.
+        let mut run = Run12 {
+            erg: every(1_250 * MS, 15 * SEC, 250 * MS, 90, 100),
+            ..Run12::default()
+        };
+        run.erg.extend(every(15 * SEC, 20 * SEC, 250 * MS, 90, 200));
+        run.erg
+            .extend(every(20 * SEC, 20_400 * MS, 10 * MS, 90, 100));
+        let v = run.reads(PASS);
+        assert_eq!(v["erg_w"], json!(200.0), "{v}");
+    }
+
+    /// Page-25 updates only (ADR-0007 §2): repeats of an update (count held) are not read. 20 of
+    /// 41 updates at 190 W each repeated 3 times would make the median of all frames 190 W
+    /// (r = 0.95, no result with `y`); of the updates it is 150 W (r = 0.75, PASS).
+    #[test]
+    fn check12_reads_updates_not_repeats() {
+        let mut run = Run12 {
+            free70: every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 150),
+            ..Run12::default()
+        };
+        for k in 0..41_u64 {
+            let at = 45_250 * MS + k * 250 * MS;
+            if k % 2 == 0 {
+                run.free70.push((at, 70, 150, false));
+            } else {
+                run.free70.push((at, 70, 190, false));
+                run.free70
+                    .extend((1..=3).map(|j| (at + j * 50 * MS, 70, 190, true)));
+            }
+        }
+        run.free70
+            .extend(every(55_750 * MS, 60 * SEC, 250 * MS, 70, 150));
+        let v = run.reads(PASS);
+        assert_eq!(v["r"], json!(0.75), "{v}");
+        assert_eq!(v["free70_updates"], json!(58), "{v}");
+    }
+
+    /// The bands are 85–95 and 65–75 rpm, both ends inclusive: updates at 84 and 96 rpm (100 W)
+    /// and at 64 and 76 rpm (400 W), as many as the in-band ones, are not read.
+    #[test]
+    fn check12_reads_85_to_95_and_65_to_75_rpm() {
+        let edges = |from: u64, cadences: [u8; 4], watts: [u16; 4]| -> Vec<Frame12> {
+            (0..116_u64)
+                .map(|k| {
+                    let i = usize::try_from(k % 4).expect("small");
+                    (from + k * 125 * MS, cadences[i], watts[i], false)
+                })
+                .collect()
+        };
+        let run = Run12 {
+            free90: [
+                every(20_750 * MS, 25_500 * MS, 250 * MS, 90, 200),
+                edges(25_500 * MS, [84, 85, 95, 96], [100, 200, 200, 100]),
+            ]
+            .concat(),
+            free70: [
+                every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 150),
+                edges(45_250 * MS, [64, 65, 75, 76], [400, 150, 150, 400]),
+            ]
+            .concat(),
+            ..Run12::default()
+        };
+        let v = run.reads(PASS);
+        assert_eq!(v["r"], json!(0.75), "{v}");
+        assert_eq!(
+            (v["free90_updates"].clone(), v["free70_updates"].clone()),
+            (json!(58), json!(58))
+        );
+    }
+
+    /// The 70 rpm window ends at the answer's stamp: what comes after it (here 110 updates at
+    /// 400 W) is not read.
+    #[test]
+    fn check12_the_70_rpm_window_ends_at_the_answer() {
+        let run = Run12 {
+            after: every(60_050 * MS, 65_550 * MS, 50 * MS, 70, 400),
+            ..Run12::default()
+        };
+        let v = run.reads(PASS);
+        assert_eq!(v["free70_updates"], json!(59), "{v}");
+    }
+
+    /// Both windows start 5 s after their event: after page 51 (95 updates at 160 W while the
+    /// trainer settles) and after the first 70 rpm update (100 at 300 W), neither is read.
+    #[test]
+    fn check12_settles_5_s_after_page_51_and_after_reaching_70_rpm() {
+        let run = Run12 {
+            free90: [
+                every(20_750 * MS, 25_500 * MS, 50 * MS, 90, 160),
+                every(25_500 * MS, 40 * SEC, 250 * MS, 90, 200),
+            ]
+            .concat(),
+            ..Run12::default()
+        };
+        let v = run.reads(PASS);
+        assert_eq!(v["free90_w"], json!(200.0), "{v}");
+        let run = Run12 {
+            free70: [
+                every(40_250 * MS, 45_250 * MS, 50 * MS, 70, 300),
+                every(45_250 * MS, 60 * SEC, 250 * MS, 70, 150),
+            ]
+            .concat(),
+            ..Run12::default()
+        };
+        let v = run.reads(PASS);
+        assert_eq!(v["free70_w"], json!(150.0), "{v}");
+    }
+
+    /// t₇₀ is the first update in 65–75 rpm after the cue, not the first update: a rider who
+    /// takes 4 s at 80 rpm, then 5 s at 70 rpm and 300 W before the power settles, reads PASS.
+    #[test]
+    fn check12_t70_is_the_first_update_in_the_band() {
+        let run = Run12 {
+            free70: [
+                every(40_250 * MS, 44_250 * MS, 250 * MS, 80, 200),
+                every(44_250 * MS, 49_250 * MS, 50 * MS, 70, 300),
+                every(49_250 * MS, 60 * SEC, 250 * MS, 70, 150),
+            ]
+            .concat(),
+            ..Run12::default()
+        };
+        let v = run.reads(PASS);
+        assert_eq!(v["free70_updates"], json!(43), "{v}");
+    }
+
+    /// The cue counts only after page 51, the answer only after the cue and only as `y`, `n` or
+    /// `s`: each otherwise is no result, for that reason.
+    #[test]
+    fn check12_the_cue_follows_page_51_and_the_answer_follows_the_cue() {
+        let run = Run12 {
+            cue_us: 20_200 * MS,
+            ..Run12::default()
+        };
+        run.reads("no result: no 70 rpm cue stamp after page 51");
+        let run = Run12 {
+            answer_us: 39 * SEC,
+            ..Run12::default()
+        };
+        run.reads("no result: the answer \"y\" is not one to the check 12 question after its cue");
+        let run = Run12 {
+            answer: "x",
+            ..Run12::default()
+        };
+        run.reads("no result: the answer \"x\" is not one to the check 12 question after its cue");
+        for (answer, want) in [
+            ("y", PASS),
+            ("n", DISAGREE),
+            ("s", "no result: the rider shifted gear"),
+        ] {
+            Run12 {
+                answer,
+                ..Run12::default()
+            }
+            .reads(want);
+        }
+    }
+
+    /// The power floor (ADR-0007 §2, [`FLOOR12_W`]): below 8 W in either window is no result.
+    /// Without it, free90 = 0 W with free70 = 100 W and `n` read FAIL with r infinite; free70 = 0
+    /// W on a held trainer with `y` read PASS with r = 0; and a road at 3 km/h (page 25 at 2 W in
+    /// both windows) read FAIL with `n` at r = 1.
+    #[test]
+    fn check12_power_below_the_floor_is_no_result() {
+        let floor = "no result: power under Free below the 8 W floor";
+        for (free90, free70, answer) in [(0, 100, "n"), (200, 0, "y"), (2, 2, "n"), (10, 7, "y")] {
+            let v = Run12::ratio(free90, free70, answer).reads(floor);
+            assert_eq!(v["released"], Value::Null, "{v}");
+        }
+        // At the floor, r reads as ever: 10 W and 8 W, r = 0.8, PASS with `y`.
+        let v = Run12::ratio(10, 8, "y").reads(PASS);
+        assert_eq!(v["r"], json!(0.8), "{v}");
     }
 }

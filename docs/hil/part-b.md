@@ -69,7 +69,7 @@ check's `.fecap`.
 | 7 | `hil_fec check7 --out DIR` | 90 rpm at 150 W; the harness writes nothing for 40 s (no keep-alive, no page-70 poll) | 1 min |
 | 8 | `hil_fec check8 --out DIR` | Easy gear, steady effort; SIM 0 %, 5 %, 5 % with page 55 rider mass 100 kg, 10 % with 75 kg (30 s each); shift down on the steep part | 2.5 min |
 | 9 | `hil_fec check9 --out DIR` | 90 rpm at 250 W ERG, then lower cadence smoothly, about 5 rpm every 10 s, and keep turning until the run ends. Stopping early is safe (the trainer is released) but aborts the run without a result | up to 3 min |
-| 12 | `hil_fec check12 --out DIR` | 90 rpm at 200 W ERG; the harness switches to `Free` (page 50 defaults, page 51 grade 0); after 10 s, cue to 70 rpm for 15 s | 1 min |
+| 12 | `hil_fec check12 --out DIR` | 90 rpm at 200 W ERG; the harness switches to `Free` (page 50 defaults, page 51 grade 0) and cues *stay in this gear from now until the question*; 15 s at 90 rpm; the 70 rpm cue (stamped `# check12 <µs> 46`) and 15 s at 70 rpm; then the question "did pedalling at 70 rpm get clearly easier?" (`y` / `n`, `s` after a gear shift), answered at 70 rpm (below) | 1 min |
 | 10 | `hil_fec check10 --out DIR` | No pedalling. With the phone, try to connect to the NEO while `hil_fec` holds it, then type two answers in the window (below) | 1–3 min |
 | 11a | `hil_fec check11a --out DIR` | Trainer **plugged in**. 90 rpm at ERG 100 W (20 s); at the cue pull the mains plug and keep pedalling; answer `unplugged`; 30 s more (below) | 1.5 min |
 | 11b | `hil_fec check11b --out DIR` | Trainer **unplugged**. 90 rpm at ERG 100 W (20 s); released, stop and wait until the lights go out; pedal again to wake it; answer the lights question and type `y`; 90 rpm at 100 W again (20 s) (below) | 2–4 min |
@@ -146,9 +146,8 @@ of `redact`.
 - **Updates** (ADR-0007 §2, §4), the one freshness notion: a page 25 whose update event count (page byte 1) equals
   the one before is a repeat of the trainer's last update (in the committed live captures always byte for byte).
   Checks 5, 7 and 9's bins read power and cadence from updates only (`Timeline::updates`; ADR-0007 §4: "used by
-  checks 5, 7, 9 and 12"). Checks 6, 8, 11a/b/c and 12 read every page 25 as before: check 12's updates-only
-  reading comes with ADR-0007 §2's rule ([#616](https://github.com/gerchowl/crank/issues/616)), since the old
-  threshold read from updates alone can call a held ERG released. The live guards' readings — link alive, silence
+  checks 5, 7, 9 and 12"), and so does check 12 ([#616](https://github.com/gerchowl/crank/issues/616)). Checks 6,
+  8 and 11a/b/c read every page 25 as before. The live guards' readings — link alive, silence
   evidence, check 9's descent — count every frame, as the live run does. Check 8 reads a page 16
   whose elapsed time (page byte 2) is unchanged as a repeat and needs at least 3 fresh speeds in each SIM segment,
   else it gives no result: "page 16 counters did not advance (no fresh speed samples)". Cycling Power measurements
@@ -185,11 +184,30 @@ the order and timing the run saw; hand-edited and desktop captures are out of sc
 
 - **Check 12 and gear shifts (ADR-0007):** check 12 judges release from the ratio of power at 70 rpm to power at 90 rpm
   under `Free`, which does not depend on the gear only if the rider does not shift. A shift between the switch and the
-  question that the rider does not report is not detected (no speed guard), so a releasing trainer reads FAIL only
-  under such a shift. Stay in one gear from the switch until the question.
+  question that the rider does not report is not detected (no speed guard), so a releasing trainer can read FAIL
+  under such a shift, with the rider's `n`. Stay in one gear from the switch until the question, and answer `s` if
+  you shifted.
 
-Check 12 still reads release as before ADR-0007 (the mean power below 80 rpm after `Free` against the ERG
-target) until #616 implements ADR-0007 §2; #616 blocks check 12 of the live Part B session (#44).
+### Check 12: the ratio and the rider (ADR-0007 §2)
+
+Check 12 reads page-25 updates only. `erg` is the median power in the 5 s before the page-50 write; `free90` the
+median power at 85–95 rpm from the page-51 write + 5 s to the 70 rpm cue stamp; `free70` the median power at
+65–75 rpm from the first such update after the cue + 5 s to the answer's stamp; r = `free70` / `free90`. In this
+order: a missing cue, answer or `Free` write, or a run that broke its program or did not complete, is no result;
+so is `erg` outside 180–220 W (ERG never held), fewer than 15 updates in either window, `free90` or `free70` below
+the 8 W power floor (slower than ADR-0007's 10 km/h road; ADR-0007 §2), or the answer `s`. PASS
+(released) iff r ≤ 0.85 and the answer is `y`; FAIL (not released) iff r ≥ 0.95 and the answer is `n`; anything
+else is no result with r and the answer reported. There is no speed guard. The thresholds, the bands and the 5 s
+settle are calibrated on the first live check 12 (#44). The guarantees are tested by a generator
+(`rider::tests::check12_released_never_fails_and_held_never_passes`): a releasing and a non-releasing sim trainer
+at 0.03–0.2 m/s per rpm, under any sequence of dropped frames, repeats, pump stalls, cadence spans out of the bands
+and answers, never reads FAIL and PASS respectively.
+
+**Known limit: an ERG that sags at 70 rpm, answered `y`** (ADR-0007 §2, [#631](https://github.com/gerchowl/crank/issues/631)). Check 12 assumes that a rider on a held ERG answers `n`. At 200 W the torque per
+stroke is 21.2 Nm at 90 rpm. An ERG that sags 15 % at 70 rpm (r = 0.85) gives 23.2 Nm. One that sags 22 % (r = 0.78)
+gives 21.2 Nm, the same as at 90 rpm, and beyond 22 % the stroke is lighter. An honest `y` then reads PASS for a
+trainer that held ERG and sagged. Read check 12 together with check 9 of the same session, which shows how the NEO
+holds ERG as the cadence falls.
 
 ### Check 9: what counts as a stall
 
