@@ -62,3 +62,28 @@ async fn a_forced_end_is_visible_to_a_new_channel() {
     );
     core.0.stall.release();
 }
+
+/// §4.3.5 "engine unresponsive", the request path (#351): a bounded request that times out
+/// marks the loaded ride `engine_unresponsive`. The ride is loaded and not started, so it does
+/// not tick and the silent-status path cannot be what sets the flag; it stays until the ride
+/// ends.
+#[tokio::test(start_paused = true)]
+async fn a_request_that_times_out_marks_the_ride_unresponsive() {
+    let dir = tempfile::tempdir().unwrap();
+    let radio = fake(vec![], false);
+    let core = open(dir.path(), &radio);
+    core.device_pair("neo".into(), DeviceRole::Trainer)
+        .await
+        .unwrap();
+    core.ride_load(None).await.unwrap();
+    let flag = |core: &Core| core.snapshot().ride.unwrap().engine_unresponsive;
+    sleep(Duration::from_secs(5)).await;
+    assert!(!flag(&core), "an unstarted ride is not timed by its status");
+    stall_engine(&core);
+    let refused = core.ride_start().await.unwrap_err();
+    assert_eq!(refused.code, ErrorCode::EngineUnresponsive);
+    assert!(flag(&core), "the timed-out request marks the ride");
+    core.0.stall.release();
+    sleep(Duration::from_secs(1)).await;
+    assert!(flag(&core), "kept until the ride ends");
+}
