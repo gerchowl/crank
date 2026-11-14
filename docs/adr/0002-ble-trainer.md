@@ -1130,9 +1130,9 @@ the core computes the overlay from the two inputs it already has (the keeper's v
 
 **`links_intent` answers nothing (#588 step 2, #597).** `links_intent(intent)` returns `Result<(), ApiError>`. It is
 answered at the same moment as today, once the intent is applied and what it releases is released ("What
-`links_intent` answers", §5.1.3), with the same refusals (`Conflict`, `Storage`). Today it answers the `LinkFrame` its
-resolving step published (`app/src-tauri/src/commands.rs:93-98`), and the page had to order those answers against the
-channel's frames by `seq` (`app/src/ride/linkOrder.ts:7-10`), which is how #577 arose. With no state in the answer the
+`links_intent` answers", §5.1.3), with the same refusals (`Conflict`, `Storage`). Until #597 it answered the `LinkFrame`
+its resolving step published (`app/src-tauri/src/commands.rs:93-98`), and the page had to order those answers against
+the channel's frames by `seq` (`app/src/ride/linkOrder.ts:7-10`, deleted in #597), which is how #577 arose. With no state in the answer the
 **ordering rule is deleted**: the page applies and acks every frame. After an intent the UI changes on the next link
 frame (within about 100 ms plus one IPC hop), not on the answer; #561's per-device split (`StreamFrame.links` for a
 riding device, `LinkFrame` for the others) stays until step 3.
@@ -1199,7 +1199,7 @@ cold warm-up per phase. No timing is derived from the UI.
    for athlete inputs (#247, #518): until then the configuration is the constant `RIDER`, and a load passes it.
 3. **Contract.** `LoadProgress` in `ride_status`, `links_open` / `LinkFrame`, and the regenerated bindings (shipped,
    #561). **Amended 2026-11-09 (#588):** the contract is ADR-0001 §4.3's snapshot channel, reached in #588's steps:
-   - step 2 (#597): `links_intent` answers `()`, and the `seq` ordering rule is deleted;
+   - step 2 (#597, shipped): `links_intent` answers `()`, and the `seq` ordering rule is deleted;
    - step 3 (#598): `UiFrame.devices` and `loading` replace `links_open` / `LinkFrame`, `device_links` and
      `ride_status().load`, with one source per device (the core's overlay, §5.1.4); `RideLoaded.hr_linked` is
      deleted.
