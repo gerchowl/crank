@@ -114,6 +114,47 @@ MUTANTS = [
     ("keys compared exactly", "step 7",
      "        if not same_key(key, self.key) or exc or cut_before:",
      "        if key != self.key or exc or cut_before:"),
+    # The round-6 falsifier's survivors (PR #625, round 7):
+    ("hold above a rising line at 2 EPS", "step 5",
+     "        elif trackable(fs) and fs > 0 and st.y - line(k) > EPS:",
+     "        elif trackable(fs) and fs > 0 and st.y - line(k) > 2 * EPS:"),
+    ("slower-answer threshold 10 %", "X5 step 1",
+     "d_t < d_n - (1e-6 * d_n + 1e-9)",
+     "d_t < d_n - (1e-1 * d_n + 1e-9)"),
+    # "closed form tried before continuation" is equivalent up to floating point and is not run:
+    # both apply only at an interior rest of a trajectory heading for a flat line, whose remainder is
+    # the time-optimal rest-to-rest move the double-S reproduces (1 of 1 500 random plans with
+    # injected failures differed, by 2e-14 W). PR #625, round 7.
+    ("closed form on a sloped line", "X5 step 3",
+     "            elif at_rest and vel_target is None and fs == 0.0 and not exc:",
+     "            elif at_rest and vel_target is None and not exc:"),
+    ("closed form from a moving state", "X5 step 3",
+     "            elif at_rest and vel_target is None and fs == 0.0 and not exc:",
+     "            elif vel_target is None and fs == 0.0 and not exc:"),
+    ("SLOPE_TOL 1e-3", "the line on the tick grid", "SLOPE_TOL = 1e-9 ", "SLOPE_TOL = 1e-3 "),
+    ("SLOPE_TOL 1e-6", "the line on the tick grid", "SLOPE_TOL = 1e-9 ", "SLOPE_TOL = 1e-6 "),
+    ("merged slope not recomputed", "the line on the tick grid",
+     "            lines[-1] = Seg(q.k0, q.r0, (end - q.r0) / (n * DT), n, q.joined)",
+     "            lines[-1] = Seg(q.k0, q.r0, q.s, n, q.joined)"),
+    ("X5h keeps moving", "X5 step 4",
+     "                nst, exc = State(st.y, 0.0, 0.0), \"X5h\"",
+     "                nst, exc = State(st.y + st.v * DT, st.v, 0.0), \"X5h\""),
+    ("same_key tolerance 1e-3", "step 7",
+     "        return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))",
+     "        return abs(a - b) <= 1e-3 * max(1.0, abs(a), abs(b))"),
+    ("continuation not tagged X5", "X5 step 2",
+     "                exc = exc or \"X5\"\n                self.x5_tick = True",
+     "                self.x5_tick = True"),
+    # Round 7's own rules:
+    ("merge across a jump (no VALUE_TOL)", "the line on the tick grid",
+     "                and abs(out[-1].at(p.k0) - p.r0) <= VALUE_TOL):",
+     "                and True):"),
+    ("continuation past the trajectory's end", "X5 step 2",
+     "        if self.elapsed + DT > self.traj.duration + 1e-9:\n            return False",
+     "        if False:\n            return False"),
+    ("a clamped jump read as joined", "the line on the tick grid",
+     "                joined = line.joined and last is not None and abs(last.at(kk) - piece.r0) <= VALUE_TOL",
+     "                joined = line.joined"),
 ]
 
 

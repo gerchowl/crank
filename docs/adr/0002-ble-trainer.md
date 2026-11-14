@@ -1752,11 +1752,29 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
   1. each block's line (multiplier applied), joined if it starts where the previous block ended;
   2. joined lines whose slopes agree within `SLOPE_TOL` = 10⁻⁹ relative (max(1, |slope|)) are **merged into one
      line**, its slope recomputed from the merged endpoints;
-  3. each line is split where the clamp to `[0, M]` starts or ends, and a clamped piece is flat at 0 W or `M`.
+  3. a merged slope within `SLOPE_TOL` of 0 is exactly 0. Float noise in a flat block's endpoints must not read as
+     a rising or falling line: in round 7, a slope of 7.7·10⁻¹⁴ W/s read as rising held the command 0.75 W above a
+     0 W line;
+  4. each line is split where the clamp to `[0, M]` starts or ends, and a clamped piece is flat at 0 W or `M`;
+  5. **after the clamp, a piece is joined to the previous one only if the clamped line continues there**:
+     - its first tick's value must equal the previous piece's value at that tick within `VALUE_TOL` = 10⁻⁶ W;
+     - inside one line, where the clamp starts or ends, a piece is joined (a vertex);
+     - a block that started where the unclamped line ended can still jump after the clamp, for example a ramp that
+       falls from above `M` within one tick. That is a discontinuity, not a vertex.
+  6. adjacent pieces are **merged after the clamp** only if they are joined in this sense, start where the previous
+     one ends, and have the same slope within `SLOPE_TOL`. In practice these are two blocks both held at `M`, or both
+     at 0 W.
+     - Round 6 merged on slope alone, so a flat piece at `M` swallowed the next, lower flat block. With a cap of 250
+       and the plan 100 W 10 s, 300 W 4 s, a ramp 300 → 150 W over 0.25 s, then 150 W 30 s, the line stayed at
+       250 W; at (50, ×1, 4) the load went 232.9 W above the plan.
+     - The 0 W mirror (a ramp from exactly 0) had the same fault.
+     - The spec now says what the model does, and round 7's generator draws both shapes.
 
-  So a ramp split into blocks of one slope (an editor's split, a file format's, endpoints with float noise) gives
-  bitwise the same pieces as the single block, hence the same Ruckig inputs and the same commands (Ruckig is
-  deterministic). The model checks it on 300 random splits with noisy endpoints: difference 0 W. In round 5, a split
+  So a ramp split into blocks of one slope (an editor's split, a file format's, endpoints with float noise) gives the
+  same pieces as the single block: **exactly at multiplier 1** (the merged slope is recomputed from the merged
+  endpoints), and **within 5·10⁻¹³ W otherwise** (the multiplier's rounding). Hence it gives the same Ruckig inputs and
+  the same commands; Ruckig is deterministic. The model checks it at multiplier 1 on 300 random splits with noisy
+  endpoints: difference 0 W. In round 5, a split
   at slopes 10⁻¹³ apart was a lead vertex with a velocity cap the state was outside, which gave Ruckig refusals and a
   47 W undershoot.
 - A piece's start is a **vertex** when the line is continuous there and the slope changes (not collinear), and a
@@ -1869,9 +1887,13 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
   position 41.25, velocity 0, acceleration 0, target (0, 0, 0), `max_velocity` 15, `min_velocity` −22.5,
   `max_acceleration` 10.909…, `max_jerk` 7.934… (rise 15, ×1.5, ease 2.75).
 
-- **A second symptom of the same boundary class** (found by round 6's generator): a state whose `v + a²/(2j)` is
-  exactly the velocity limit (left by a chase at exactly the rate) is *accepted*, but answered with a valid, slower
-  profile. Falling 631.5 W from (−23.47 W/s, −2.12 W/s²) at (8, ×3, 2.75), Ruckig returned 52.14 s against a
+- **A second symptom of the same boundary class** (found by round 6's generator): a state whose slope will reach
+  the velocity limit exactly is *accepted*, but answered with a valid, slower profile. That is `v − a²/(2j)` equal
+  to `min_velocity` (here −24 W/s) on a fall with `a < 0`, or `v + a²/(2j)` equal to `max_velocity` on a rise with
+  `a > 0`; such a state is left by a chase at exactly the rate.
+  - Over 100 000 such boundary states drawn over every valid tuning, 13 200 answers are slower, by 0.02 % to 99 %
+    (521 by less than 10 %).
+  - So step 1's threshold is "materially slower" (10⁻⁶ relative), not a percentage. A state 5.3 % slower is pinned. Falling 631.5 W from (−23.47 W/s, −2.12 W/s²) at (8, ×3, 2.75), Ruckig returned 52.14 s against a
   time-optimal 29.07 s, and P7 caught it. That is seed 585, plan 4670 of the new generator, pinned.
 
 *The recovery*, in order:
@@ -1884,19 +1906,34 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
    - On the full sweep above, **this recovers all 516** refusals, and the bare input too. The 52.14 s answer above
      becomes 29.07 s.
    - Only a double refusal goes on to step 2.
-2. If that is refused as well, **the trajectory in force is continued** for the tick (within every limit; no cut).
-   The next tick re-plans. A trajectory in force ends at rest at its target, so this step lasts at most that
-   trajectory's remaining duration.
-3. **At rest, with a flat line** (a held block, the cap or 0 W), the command moves to the line by the **closed-form
-   double-S** profile: the time-optimal rest-to-rest move under (rate, `a_max`, `j_max`) of Biagiotti and Melchiorri
+2. If that is refused as well, **the trajectory in force is continued** for the tick (within every limit; no cut),
+   but **only within its own duration**. Past its end, a position trajectory would be extrapolated along its frame
+   line (a ramp's slope `ŝ`), and a velocity trajectory at its target velocity, for as long as Ruckig refused. Round 6
+   did this: under a persistent error from t = 15 s, the plan 400 W 5 s, ramp 400 → 300 over 10 s, then 500 W kept
+   falling at −10 W/s to 0 W. The next tick re-plans.
+3. **At rest** (`v = a = 0`), **with a flat frame** (its slope 0, the lead frame's if a lead is in force: a held
+   block, the cap or 0 W), **in position mode** (no chase, brake or hold target this tick) **and with no cut this
+   tick**, the command moves to the line by the **closed-form double-S** profile: the time-optimal rest-to-rest move under (rate, `a_max`, `j_max`) of Biagiotti and Melchiorri
    (*Trajectory Planning for Automatic Machines and Robots*, 2008, §3.4), computed without Ruckig. Over 20 000 random
    rest-to-rest moves, its duration equals Ruckig's within 3·10⁻¹⁴ s and its endpoint is within 5·10⁻¹³ W. So a
-   persistent refusal still lands on a held line in the time of a normal ease: **P4 and P7 hold under a persistent
-   Ruckig error.** A change of the frame (an event) ends it and re-plans.
-4. Otherwise (not at rest, and no trajectory reproduces the state, which happens only right after a cut or an
-   engagement) the command **holds** (`v = a = 0`, **X5h**), and step 3 applies from the next tick if the line is
-   flat. On a moving line, under a persistent error, the command holds until the line is flat or a calculation
-   succeeds. A hold never rises, so P5 and P6 hold. P4/P7 concern held lines, where step 3 applies.
+   persistent refusal still lands on a held line in the time of a normal ease. The move **skips safe braking (step 6)**:
+   it is a monotone rest-to-rest move that ends exactly on a flat line, so it never passes the line and never rises
+   above the plan. A change of the frame (an event) ends it and re-plans.
+4. Otherwise the command **holds** (`v = a = 0`, **X5h**). Step 3 applies from the next tick if the frame is flat. On
+   a moving line, under a persistent error, the command holds until the line is flat or a calculation succeeds. A
+   hold never rises, so P5 and P6 hold.
+
+*P4/P7 under a persistent error from any tick and any state.* Suppose every calculation fails from some tick on.
+- Step 2 lasts at most the remaining duration of the trajectory in force, and while it runs the command follows a
+  trajectory within every limit, already planned towards the line.
+- Then step 4 holds once, a cut of at most `max(r↑, r↓) + a_max·Δt` (X5h), and the command is at rest.
+- From rest, on a flat piece, step 3 lands within the time-optimal rest-to-rest duration `d(Δ)`.
+
+So the command reaches a held line within the remaining trajectory time, plus a tick, plus `d(Δ)` from where it
+stopped. That is within `landing_bound` from the state at the piece's start, because `landing_bound` allows for
+easing out any slope and curvature, and a hold stops faster. The model checks it on 300 random plans (round 7's
+generator, caps, events), each with every calculation failing from a random tick, and on steps at the defaults and
+the corners. Round 6's random persistent onsets failed 137 of 1 000 plans; now 0 of 300 fail.
 
 Every refusal is counted in the ride's diagnostics and its log, and so is every tick X5 acts.
 
@@ -1907,8 +1944,10 @@ duration. Step 3 is closed form and needs no calculation. No step waits on a lat
 - the Δ = rise·ease steps over every 35th tuning (1 068 plans): every refusal recovered by step 1;
 - every step at the defaults and the corners under a persistent error (every calculation failing, 36 plans): landed by
   step 3 within P4/P7;
+- 300 random plans (round 7's generator) with every calculation failing from a random tick: every property, P4/P7
+  included, holds;
 - 300 random plans with 20 % of trajectory calculations failing: every property holds;
-- 5 × 20 000 random plans from round 6's generator: 97 nominal refusals in 97 of 100 000 plans (the grid-exact steps), every one recovered by step 1, with no double refusal; every property holds.
+- 5 × 20 000 random plans from round 7's generator: 96 nominal refusals in 92 of 100 000 plans, all recovered; every property holds.
 
 *`rsruckig`* (read, not built): `lib/src/rsruckig/position_third_step1.rs` filters the same roots strictly, at lines
 487, 535 and 575 (`if t < t_min_… || t > t_max_… { continue; }`), the lines #270 changes upstream. So the port
@@ -2131,15 +2170,21 @@ on `rsruckig`; the model checks them with upstream Ruckig in the loop.
 - Every tick where Ruckig refuses a trajectory twice must show X5 acting, and an X4 cut must leave no falling slope.
 
 The model's runs, with no violation:
-- 5 × 20 000 random plans (seeds 585, 7, 1, 2, 3) from round 6's generator: 100 000 plans, 26 052 177 ticks. The plans have 2–8 blocks over
+- 5 × 20 000 random plans (seeds 585, 7, 1, 2, 3) from round 7's generator: 100 000 plans, 29 721 744 ticks. The plans have 2–8 blocks over
   the tuning grid. They mix steps and ramps within, at and beyond the rates, entered from the line and by jumps, with
   blocks of 0.25–60 s, ± offsets, cap changes, skips and engagements (some mid-plan, some from 0 W). Round 6 adds:
   - grid-exact steps: Δ = rise·ease and its multiples, and levels on the 0.25 W grid;
   - ramps split into blocks of one slope with float noise in the endpoints.
+
+  Round 7 adds:
+  - clamp then drop: a block far above any cap, then a fall within one tick;
+  - ramps that start at exactly 0 W.
+- A persistent Ruckig error from a random tick on 300 random plans (round 7's generator).
 - Δ = rise·ease steps (1×, 2×, 3×, both directions) over every 35th of the 6 955 valid tunings: 1 068 plans.
 - A persistent Ruckig error (every calculation failing) on steps at the defaults and the corners: 36 plans.
 - Split ramps against the single block, tick for tick: 300 plans, difference 0 W.
-- Golden traces: Σ y and off-line ticks of 19 canonical plans, pinned. They pin what the properties leave free: the
+- Golden traces: Σ y, off-line ticks and settle ticks of 27 canonical plans, pinned, including three under a
+  persistent error. They pin what the properties leave free: the
   lead's timing and cap, the chase, the will-rise test, the boundary of `trackable`.
 - Ramp-to-ramp vertices: 1 421 slope pairs at the defaults and the 8 bound corners.
 - Fault injection: 300 random plans with 20 % of Ruckig calculations forced to fail.
@@ -2245,7 +2290,7 @@ about the workout, not the rider.
 8. **Compliance.** Settle never ends before the command lands. An off-line tick is never counted, so a steep ramp, an
    eased corner or an unreached short block is excluded, never counted as a miss.
 9. **Mutation.** Deleting any rule of §7.10.2 must fail the property tests, as it fails the model:
-   `just slew-mutants` (`docs/adr/models/erg_slew_mutants.py`) deletes or breaks each rule in turn (29 mutants since round 6, including the round-5 falsifier's 10 survivors) and requires a non-zero exit
+   `just slew-mutants` (`docs/adr/models/erg_slew_mutants.py`) deletes or breaks each rule in turn (43 mutants since round 7, including the round-5 and round-6 falsifiers' survivors; one more is argued equivalent in PR #625) and requires a non-zero exit
    from the model. #620 runs a mutation tool (`cargo mutants`) over `crank_engine::slew` with the same requirement.
 
 #### 7.10.8 HIL Part B checks 6, 7 and 12
