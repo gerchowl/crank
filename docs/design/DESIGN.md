@@ -418,17 +418,33 @@ suggestion is explained before it is accepted:
 - the **summary shows Current → Proposed** for duration range, TSS, IF and zone time, every value labelled.
 Undo/redo spans all three views; tree ops, undo/redo and DSL ↔ tree sync are unit-tested in production (#9).
 
-**In direction A** (#528, `app/src/views/Workouts.tsx`; the library subset of #256, no editor yet): the page title,
+**In direction A** (#528, `app/src/views/Workouts.tsx`; the library subset of #256, the editor below): the page title,
 then on the 12-column grid (§18.2) the library in 7 columns and the picked workout in one panel in 5. The library is a
 table of Name, Duration and TSS whose rows are the options of a single-select listbox (selection follows focus: one tab
 stop, ↑ / ↓ / Home / End walk it and pick as they go); a row is as tall as its name needs, so a long name wraps and is
 never cut, and while a ride is loading every row is disabled (#320). The panel holds the name and the reference FTP, the
-profile (blocks by height over the workout's length), **Ride this** (32 px primary, §18.4; disabled with the reason
+profile (blocks by height over the workout's length), **Ride this** (32 px primary, §18.4) and **Duplicate & edit** (32 px
+default; disabled while a load is in flight; Ride this: disabled with the reason
 under it for an error-severity issue; while its load is in flight it reads "Loading ride…", and with nothing picked the
 panel says "Loading ride…" while a load started elsewhere runs), then the compiled summary (Duration, a
 range for open-ended steps; TSS; IF; the issues, each with ⚠ and its word; time in zone, one bar per zone) and every
 block (phase, length, watts). Ride this sits above the summary, so a long block list never pushes it down. A refused load is a notice with ⚠ under Ride this, or at the top naming the workout (#333); "no workouts yet" says
-where workouts come from. Ride this leads to the Ready check (§5.4) as before. Desk screens bind no keys (§5.9).
+where workouts come from. Ride this leads to the Ready check (§5.4) as before. Desk screens bind no keys (§5.9), the
+editor's undo and redo excepted.
+
+**The editor in direction A** (#111, `app/src/editor/`): a state of the Workouts place, opened by **Duplicate & edit**,
+so a library workout stays read-only and the editor works on a copy ("<name> (copy)"). It replaces the 7 / 5 page
+until **Back to library**, which returns to the library with the same workout picked and drops the draft. The header
+holds the name, the chip **Draft, not saved** (the draft lives in memory; saving is the library's, #110), **Undo**,
+**Redo** and **Back to library**; then the profile across the page, the selected node's blocks drawn with a heavier
+edge; then **Outline · Text · Summary** in one row, 4 / 4 / 4 on the grid at 1024 and 1440. The outline is the tree as
+one single-select listbox (selection follows focus, as the library; a nested row is indented and a long label wraps);
+the text is the DSL (docs/DSL.md) in the mono face; the summary is the library panel's. Every edit goes through the
+pure editor model (`editor/model.ts`); the core parses (`parse_dsl`) and compiles (`compile_workout`). A draft that
+does not parse keeps the saved workout, edges the text in the error colour and shows ⚠, the core's message and its
+line and column; it is never committed in part. A tree the core refuses to compile shows the refusal and keeps the
+last compiled view. Undo and redo restore a saved tree with its text, and the selection survives while its node
+exists. Riding a draft is #643.
 
 ### 5.8 Onboarding (first run)
 Eight steps (spec/ONBOARDING §1; §15.1 added *Training for*): About you · Background · Current numbers · Health
@@ -523,7 +539,10 @@ panel (9 columns). A section is its heading and its rows, a row a label and its 
 more row and a later section one more list entry. Desk chrome is 13 px with 12 px captions; every control is the 32 px
 family of §18.4 (default, primary, danger; disabled reads as disabled, a pending one names what it is doing:
 "Scanning…", "Pairing…"). Desk screens bind no keys, so their buttons show none (§18.7 rule 9 covers ride and saddle
-actions). **Devices** is two tables: **Paired** (one fixed row per role: icon and role, the device's name, model and
+actions). **One exception (#111):** while focus is inside the workout editor (§5.7), Cmd/Ctrl+Z undoes and
+Shift+Cmd/Ctrl+Z redoes, in all three views. Editing text-like content follows the platform convention, and the
+text area's own undo would reach the text view alone. The keys are bound nowhere else, and the editor's Undo and Redo
+buttons show no key either. **Devices** is two tables: **Paired** (one fixed row per role: icon and role, the device's name, model and
 serial or "Not paired", Forget) and **Nearby** (the last scan: name, the roles it offers, then per role "✓ Paired as
 …" with Forget, or "Pair as …", #442); before the first scan a hint says how to wake a device. **Forget asks first**, in
 place of the row's device line and actions ("Forget Tacx Neo 55624 as the trainer? Pair it again to ride with it.",
@@ -1380,13 +1399,14 @@ Key glyphs, on every key hint (Today, the ride's `?` list and hints, wish mode, 
 | Decision | What it is | Why |
 |---|---|---|
 | **Labelled icon rail** | **76 px** at every size (the accepted 72–76 px range's upper end; ~~72 px~~ superseded by #506, below): icon over a **12 px word** (`--text-xs`, on the §18.1 type scale; ~~12.5 px~~ was off it, #467), ~~62 px items, ≥ 48 px targets~~ superseded by §18.4: ~~40 px items~~ 55 px items (`--control-h-rail`, #555) with 20 px Lucide icons, never an icon alone. The rail's side padding is `--space-1` (4 px), so a button is 76 − 2 × 4 − 1 (border) = **67 px** wide. Replaces the 184 px text rail (148 px at ≤ 1100). The page's max width rises from 1240 to **1364 px** (= 1440 − rail). **Word margin (#506):** every rail word at its widest weight (600, the current place) keeps ≥ `--space-1` (4 px) inside its button on each side. Measured on the bundled Inter: "Workouts" is 55.85 px at 12 px / 600, so (67 − 55.85) / 2 = **5.6 px** each side; "Settings" 47.9 px (9.6 px), "History" and "Today" less. The design suite asserts it for each word (`the rail word … has 4 px inside its button`), not by widening `layout.overflowParent`. | Content width: **1300 px at 1440** (was 1176, +124 — the old max width capped the rail's gain), **908 px at 1024** (was 836). The words stay, so the rail is as findable as before. The old 72 px rail with 13 px words put "Workouts" (60.5 px at 600) in a 55 px button, 2.75 px past each edge, inside the audit's 2 px allowance only by rounding; 12 px alone (55.85 px) still left under 0.1 px, so the rail grows to the top of its accepted range and its padding drops to the token below `--space-2`. |
-| **Workouts library drawer** | Below 1280 px the library is a drawer: **☰ Library** in the editor header opens it over the panes and a dimming scrim; its items are ~~≥ 48 px~~ superseded by §18.4: 32 px. While open it is **modal**: focus moves to its first item, Tab and Shift+Tab wrap inside it, and the editor behind it is inert. A pick, ✕, Esc or a click on the scrim closes it, and focus returns to ☰ Library. Growing the window to ≥ 1280 px closes it too — whichever place is showing when the window crosses 1280 px, so it cannot come back as a modal when the window shrinks or when Workouts is opened again. ≥ 1280 px keeps the 200 px column (not modal). | Outline · Text · Summary stay in one row at 1024 (#111), instead of the summary moving under them; the library is used once per edit session, the panes all the time. |
+| **Workouts library drawer** | **Superseded by §18.2 (#111):** direction A's 7 / 5 Workouts page is the library, and the editor is a state of that place, opened by Duplicate & edit and left by Back to library (§5.7), with no library column or drawer inside it; Outline · Text · Summary stay in one row at 1024 and 1440. ~~Below 1280 px the library is a drawer: ☰ Library in the editor header opens it over the panes and a dimming scrim; its items are 32 px (§18.4). While open it is modal: focus moves to its first item, Tab and Shift+Tab wrap inside it, and the editor behind it is inert. A pick, ✕, Esc or a click on the scrim closes it, and focus returns to ☰ Library. Growing the window to ≥ 1280 px closes it too, whichever place is showing when the window crosses 1280 px. ≥ 1280 px keeps the 200 px column (not modal).~~ | Outline · Text · Summary stay in one row at 1024 (#111), instead of the summary moving under them; the library is used once per edit session, the panes all the time. |
 
 ### 16.4 Prototype, screens, checks
 
 - New scenes (both themes, both sizes): `today-checked-in` (summary line + saddle card, no wish), `today-checkin-edit`
   (the done check-in re-opened: desk card), `ride-cooldown` (the cool-down template; "next" at the ride's end),
-  `workouts-library-drawer` (the drawer at 1024; at 1440 the column, as `workouts`), `ride-reconnected-hr-lost` (the
+  ~~`workouts-library-drawer` (the drawer at 1024; at 1440 the column, as `workouts`)~~ (no drawer, §16.3; the editor's
+  scenes are `workouts-editor` and `workouts-editor-invalid`, #111), `ride-reconnected-hr-lost` (the
   widest device pill).
 - Regenerated: every `ride-*` scene with the ride screen (status bar, hero, lane, road), every Today scene, every
   railed view (`ready*`, `review*`, `history*`, `workouts*`, `settings-*`, the start gates), `start-handoff-100ms`
@@ -1407,12 +1427,12 @@ Key glyphs, on every key hint (Today, the ride's `?` list and hints, wish mode, 
 - `pnpm test:safety` adds the check-in flow: desk card with Start disabled while open; Same as yesterday alone does
   not collapse it; confirmed + red flags → one summary line and the saddle card; *Edit* re-opens it with the desk
   card and Start disabled; a change keeps it open; *Use these answers* collapses it with the new answer; the footer
-  under Start names what is missing in each case. It also drives the Workouts library drawer at 1024 **keyboard
-  only**: Enter on ☰ Library opens it with focus inside; Tab / Shift+Tab stay inside, the editor is inert; Esc and
-  Enter on an item close it with focus back on ☰ Library; the scrim closes it too.
+  under Start names what is missing in each case. ~~It also drives the Workouts library drawer at 1024 keyboard
+  only: Enter on ☰ Library opens it with focus inside; Tab / Shift+Tab stay inside, the editor is inert; Esc and
+  Enter on an item close it with focus back on ☰ Library; the scrim closes it too.~~ (no drawer: §16.3, #111)
 - `pnpm test:layout` (#179) checks Start is inside 1440×900 with no empty band above the desk card's actions in `today`,
-  `today-health-cap`, `today-checkin-edit` and `today-wish-carried`; and that opening the library drawer at 1024,
-  growing the window to 1440 and shrinking it again leaves the drawer closed (crossing 1280 px closes it), also when the crossing happens while another place is showing.
+  `today-health-cap`, `today-checkin-edit` and `today-wish-carried`; ~~and that opening the library drawer at 1024,
+  growing the window to 1440 and shrinking it again leaves the drawer closed (crossing 1280 px closes it), also when the crossing happens while another place is showing.~~ (no drawer: §16.3, #111)
 - `pnpm screens` (here and `design/brand`) is byte-reproducible (#189): Chromium runs with one raster thread and no
   partial raster, the hand-off frames are pinned to their nominal time (the fake clock's `performance.now()` jitters
   by 1 ms between runs), and the brand's CSS animations are created paused (they run on the document timeline, so a slow
@@ -1429,7 +1449,7 @@ Key glyphs, on every key hint (Today, the ride's `?` list and hints, wish mode, 
 2. **Today** (`today`, `today-checked-in`, `today-checkin-edit`, `today-wish-*`, `today-medical-stop`,
    `today-health-cap`): one proposal, readable from the bike, nothing duplicated, nothing lost (facts, reasons,
    *Edit a copy*)?
-3. **Shell** (any railed view at 1024; `workouts`, `workouts-library-drawer`): is the rail as findable, and do the
+3. **Shell** (any railed view at 1024; `workouts`, `workouts-editor`): is the rail as findable, and do the
    editor panes work in one row?
 
 ---

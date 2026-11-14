@@ -12,7 +12,7 @@ import type {
   WorkoutSummary,
 } from "../bindings";
 import { status as idleStatus } from "../stream/testBackend";
-import { editorCommands } from "./editorFixture";
+import { DRAFTS, editorCommands } from "./editorFixture";
 export const apiError = (code: string, message: string) => ({ code, message });
 
 export const SUMMARIES: WorkoutSummary[] = [
@@ -72,6 +72,11 @@ export interface Backend {
   summaries: WorkoutSummary[];
   /** The compiled view each workout of `summaries` answers with (a listed id without one is a broken fixture). */
   compiled: Record<string, CompiledView>;
+  /**
+   * Library workouts whose tree, text and compiled view are a draft of the core's editor fixture (editorFixture.ts), by
+   * workout id → draft name: what "Duplicate & edit" opens. Others answer with an empty tree and `compiled`.
+   */
+  trees: Record<string, string>;
   /** A ride is already in progress. */
   rideActive: boolean;
   /** A trainer is paired (core.rs `connect_links` (~1515)). */
@@ -139,6 +144,7 @@ export function install(over: Partial<Backend> = {}): Backend {
     fail: {},
     summaries: SUMMARIES,
     compiled: { "w-ss": compiled(), "w-easy": compiled({ tss: 20 }) },
+    trees: {},
     rideActive: false,
     trainerPaired: true,
     connectTimesOut: false,
@@ -170,7 +176,17 @@ export function install(over: Partial<Backend> = {}): Backend {
         return b.summaries;
       case "workout_get": {
         const id = args.id as string;
-        return detail(id, compiledOf(id), b.summaries);
+        const d = detail(id, compiledOf(id), b.summaries);
+        const tree =
+          b.trees[id] === undefined ? undefined : DRAFTS[b.trees[id]];
+        if (tree === undefined) return d;
+        if (!("compiled" in tree))
+          throw new Error(`fixture: draft ${b.trees[id]} does not compile`);
+        return {
+          workout: { ...d.workout, ftp: tree.ftp, nodes: tree.nodes },
+          dsl: tree.printed,
+          compiled: tree.compiled,
+        } satisfies WorkoutDetail;
       }
       case "ride_load": {
         if (!("workoutId" in args))

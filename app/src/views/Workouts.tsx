@@ -1,11 +1,12 @@
 // Workouts library, MVP subset of #110 (DESIGN §5.7): the list from the core, a pick shows the compiled summary
-// (duration range, TSS, IF, zone time, issues), and "Ride this" loads the ride and routes to it. Not here yet,
-// by decision (#256): the editor pane and AI diff (A24/A25), search and tags, and the health-stop guard.
+// (duration range, TSS, IF, zone time, issues), "Ride this" loads the ride and routes to it, and "Duplicate & edit"
+// opens the editor on a copy (../editor/WorkoutEditor.tsx, #111). Not here yet, by decision (#256): the AI diff (#112),
+// search and tags, and the health-stop guard.
 // Direction A (§18, #528): the page title, then on the 12-column grid (§18.2) the library in 7 columns and the picked
 // workout in one panel in 5. The library is a single-select listbox whose selection follows focus (WAI-ARIA APG): a row
 // is a workout of any name length, not a 32 px button (§18.4), and Up/Down/Home/End walk it. The panel puts "Ride this"
 // right under the workout's profile and figures, so it stays in the window however long the block list runs.
-import { Play } from "lucide-react";
+import { Copy, Play } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -18,8 +19,10 @@ import {
   type ApiError,
   type CompiledView,
   type WorkoutBlock,
+  type WorkoutDetail,
   type WorkoutIssue,
 } from "../bindings";
+import { WorkoutEditor } from "../editor/WorkoutEditor";
 import { PHASE_NAME, watts } from "../ride/Timeline";
 import { useCommand } from "../stream";
 import { dismissRideLoad, startRideLoad, useRideLoad } from "./rideLoad";
@@ -46,7 +49,7 @@ const number = (n: number | null, digits: number) =>
 const icon = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
 
 /** A failed command, as a notice: ⚠ and the core's message (§18.7 rule 11), what to do, and Retry where it helps. */
-function ErrorLine({
+export function ErrorLine({
   error,
   onRetry,
 }: {
@@ -93,12 +96,15 @@ function Issues({ issues }: { issues: WorkoutIssue[] }) {
 const PW = 400;
 const PH = 80;
 /** The workout's blocks by height over its length (P13), a ramp as a slope; the block list below gives the words. */
-function Profile({
+export function Profile({
   blocks,
   totalS,
+  marked,
 }: {
   blocks: readonly WorkoutBlock[];
   totalS: number | null;
+  /** The editor's selection: every block of these nodes is drawn marked (DESIGN §5.7). */
+  marked?: ReadonlySet<string>;
 }) {
   const shown = blocks.filter((b) => b.startS !== null && b.durS !== null);
   if (shown.length === 0) return null;
@@ -119,7 +125,11 @@ function Profile({
       data-graphic
       className="workouts-profile"
       role="img"
-      aria-label={`Profile: ${shown.length} blocks over ${formatDuration(xMax)}`}
+      aria-label={`Profile: ${shown.length} blocks over ${formatDuration(xMax)}${
+        marked?.size
+          ? `, ${shown.filter((b) => marked.has(b.nodeId)).length} marked`
+          : ""
+      }`}
       viewBox={`0 0 ${PW} ${PH}`}
       preserveAspectRatio="none"
     >
@@ -131,6 +141,7 @@ function Profile({
             key={i}
             className="workouts-profile-block"
             data-phase={b.phase}
+            data-marked={marked?.has(b.nodeId) || undefined}
             d={`M${x(s) + 0.5},${PH} L${x(s) + 0.5},${y(from)} L${x(e) - 0.5},${y(to)} L${x(e) - 0.5},${PH} Z`}
             vectorEffect="non-scaling-stroke"
           />
@@ -164,7 +175,7 @@ function Blocks({ blocks }: { blocks: readonly WorkoutBlock[] }) {
   );
 }
 
-function Summary({ compiled }: { compiled: CompiledView }) {
+export function Summary({ compiled }: { compiled: CompiledView }) {
   const most = Math.max(1, ...compiled.timeInZoneS);
   return (
     <section aria-label="Compiled summary" className="workouts-summary">
@@ -214,6 +225,9 @@ export function Workouts() {
   const status = useCommand(commands.rideStatus);
   const load = useRideLoad();
   const [picked, setPicked] = useState<string | null>(null);
+  // The editor is a state of this place (DESIGN §16.3 as amended for direction A, #111): it works on a copy of the
+  // picked workout, and Back to library returns here with that workout still picked.
+  const [editing, setEditing] = useState<WorkoutDetail | null>(null);
   const { run: runList } = list;
   const { run: runGet } = get;
   const { run: runStatus } = status;
@@ -301,6 +315,8 @@ export function Workouts() {
     detail?.compiled.issues.find((i) => i.severity === "error") ?? null;
   // A pending Ride this names what it is doing (§5.9, §18.4), as Devices' "Scanning…" does: its own load is in flight.
   const busy = load.phase === "loading" && load.workoutId === picked;
+  if (editing)
+    return <WorkoutEditor from={editing} onBack={() => setEditing(null)} />;
   return (
     <div className="page workouts">
       <h1>Workouts</h1>
@@ -406,19 +422,30 @@ export function Workouts() {
                 totalS={detail.compiled.totalS}
               />
               <div className="workouts-actions">
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={loading || blocking !== null}
-                  aria-busy={busy || undefined}
-                  aria-describedby={blocking ? "ride-blocked" : undefined}
-                  onClick={() =>
-                    rideThis(detail.workout.id, detail.workout.name)
-                  }
-                >
-                  <Play {...icon} />
-                  {busy ? "Loading ride…" : "Ride this"}
-                </button>
+                <div className="workouts-buttons">
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={loading || blocking !== null}
+                    aria-busy={busy || undefined}
+                    aria-describedby={blocking ? "ride-blocked" : undefined}
+                    onClick={() =>
+                      rideThis(detail.workout.id, detail.workout.name)
+                    }
+                  >
+                    <Play {...icon} />
+                    {busy ? "Loading ride…" : "Ride this"}
+                  </button>
+                  {/* Not while a load is in flight: its success routes to the ride and would drop the draft (#320). */}
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => setEditing(detail)}
+                  >
+                    <Copy {...icon} />
+                    Duplicate &amp; edit
+                  </button>
+                </div>
                 {blocking && (
                   <p id="ride-blocked" className="workouts-blocked">
                     Can’t ride this until the error is fixed: {blocking.message}
