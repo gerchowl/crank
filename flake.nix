@@ -244,12 +244,6 @@
           python3 ${./docs/adr/models/trainer_following.py} ${./docs/adr/0002-ble-trainer.md} ${./crates/crank-engine/tests/fixtures/following.json}
           touch $out
         '';
-        # Executable model of the eased ERG target (ADR-0002 §7.10, #585): P1–P7, the exceptions'
-        # bounds and the numbers the ADR quotes.
-        slew-model = pkgs.runCommand "slew-model" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-          python3 ${./docs/adr/models/erg_slew.py}
-          touch $out
-        '';
         # FMEA rows: schema, guards, table rendered from the TOML (#255); a missing cited test only
         # warns here, `just fmea` (--strict) fails on it.
         fmea = pkgs.runCommand "fmea" { nativeBuildInputs = [ pkgs.python3 ]; } ''
