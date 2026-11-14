@@ -11,6 +11,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { setAthleteHr } from "../athleteHr";
 import { commands } from "../bindings";
 import type { MetricId, StreamStatus, SubSample } from "../bindings";
 import { navigate, useRoute } from "../router";
@@ -1366,5 +1367,56 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
     });
     expect(screen.getByTestId("loss-trainer")).toBeTruthy();
     expect(screen.queryByTestId("loss-help")).toBeNull();
+  });
+});
+
+describe("the heart-rate zone (DESIGN §18.3, #586)", () => {
+  afterEach(() => setAthleteHr(null));
+  const riding = async (hr: number | null) => {
+    const rig = await open({ phase: "active" });
+    await push(rig, { workoutS: 100, blockIndex: 1, blockElapsedS: 65 }, [
+      sample(rig, "hr", hr),
+    ]);
+    return rig;
+  };
+  const sub = () =>
+    slot("hr")?.closest(".readout")?.querySelector(".readout-sub");
+
+  test("with an LTHR the HR tile names Friel's zone of the value it shows", async () => {
+    setAthleteHr({ lthrBpm: 165, hrMaxBpm: 190 });
+    const rig = await riding(141.6);
+    expect(slot("hr")?.textContent).toBe("142");
+    // 142 / 165 = 86 % of LTHR: Z2 ("81% to 89%").
+    expect(slot("hr-zone")?.textContent).toBe("Z2 · LTHR");
+    await push(rig, { workoutS: 101, blockIndex: 1, blockElapsedS: 66 }, [
+      sample(rig, "hr", 166, 2),
+    ]);
+    expect(slot("hr-zone")?.textContent).toBe("Z5a · LTHR");
+  });
+
+  test("with only an HR max it names the five-zone zone", async () => {
+    setAthleteHr({ hrMaxBpm: 190 });
+    await riding(142);
+    // 142 / 190 = 75 % of HR max: Z3.
+    expect(slot("hr-zone")?.textContent).toBe("Z3 · HRmax");
+  });
+
+  test("with neither reference the tile shows no zone", async () => {
+    await riding(142);
+    expect(slot("hr")?.textContent).toBe("142");
+    expect(slot("hr-zone")).toBeNull();
+    expect(sub()?.textContent).toBe("");
+  });
+
+  test("no HR yet, or the strap lost: no zone; the loss says why", async () => {
+    setAthleteHr({ lthrBpm: 165 });
+    const rig = await riding(null);
+    expect(slot("hr-zone")).toBeNull();
+    await act(async () => {
+      Object.assign(rig.world, { hrLost: true });
+      rig.publish();
+    });
+    expect(slot("hr-zone")).toBeNull();
+    expect(sub()?.textContent).toBe("HR strap lost");
   });
 });
