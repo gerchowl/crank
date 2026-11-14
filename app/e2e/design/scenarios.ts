@@ -12,6 +12,8 @@ export interface Scenario {
   picks?: string[];
   /** Buttons the spec clicks, by accessible name, before it waits for `ready` (a scan, Ride this). */
   clicks?: string[];
+  /** Text boxes the spec fills, by accessible name, after its `clicks` (a draft typed in the editor). */
+  fills?: { label: string; text: string }[];
   /** Mock answers that stay pending on purpose (a scan in flight): the settle wait ignores this many. */
   held?: number;
   /** A selector the spec scrolls into view once the state is ready (a long list, scrolled to its end). */
@@ -77,6 +79,27 @@ export const SCENARIOS = [
     name: "workouts-long",
     ready: "role=region[name='Compiled summary']",
     picks: ["Over-unders"],
+  },
+  // The editor (§5.7, #111) on a copy of the picked workout: its three views in one row.
+  {
+    name: "workouts-editor",
+    ready: "role=listbox[name='Outline']",
+    picks: ["Sweet spot 3x12"],
+    clicks: ["Duplicate & edit"],
+  },
+  // A draft that does not parse: the saved workout stays, the problem is under the text. The text is the core's
+  // `missing-target` draft (crates/crank-core/tests/fixtures/editor.json); the mock answers nothing else.
+  {
+    name: "workouts-editor-invalid",
+    ready: "#editor-problem",
+    picks: ["Sweet spot 3x12"],
+    clicks: ["Duplicate & edit"],
+    fills: [
+      {
+        label: "Text",
+        text: '"Warm-up" 10m ramp 45-70%\n3x("Sweet spot" 12m 90%, "Rest" 4m)',
+      },
+    ],
   },
   { name: "devices-empty", ready: "role=button[name='Scan']" },
   {
@@ -211,6 +234,8 @@ export const WORKOUTS_SCENARIOS: readonly ScenarioName[] = [
   "workouts-loading",
   "workouts-load-error",
   "workouts-long",
+  "workouts-editor",
+  "workouts-editor-invalid",
 ];
 
 /** The fixtures of History and Review (#529): nothing on them is cut, and every control is inside the window. */
