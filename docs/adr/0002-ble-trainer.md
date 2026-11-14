@@ -1700,7 +1700,7 @@ builds were barred this round while the build disk was below its floor):
   `test_target.cpp` runs 256 × 1 024 random trajectories per suite. #620 closes that gap for our use: its property
   tests and golden vectors cross-check `rsruckig` against upstream through this model, within 1e-6, over the same
   random plans.
-- **Fallback, if `rsruckig` proves inadequate** (disagrees with upstream beyond 1e-6, fails the pinned #269 input, or
+- **Fallback, if `rsruckig` proves inadequate** (disagrees with upstream beyond 1e-6, refuses the bare #269-class input of §7.10.2's X5, or
   is abandoned):
   1. fix it upstream in `rsruckig`, porting pantor/ruckig#270 and any other upstream fix (MIT, 2 maintainers), and pin
      the fixed release;
@@ -1747,9 +1747,23 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
 - `R_k = clamp(P(t_k)·(1 + offset + coach), 0, M)`, sampled at the tick's start. This is dev's
   `frac = elapsed/dur` (`crates/crank-engine/src/erg/policy.rs:219`): a ramp's first tick carries its `from`, and
   the next block's first tick carries its `to`.
-- The line is a list of **pieces**: each block's line, split where the clamp starts or ends. A clamped piece is flat at
-  0 W or `M`.
-- A piece's start is a **vertex** when the line is continuous there, and a **discontinuity** when it jumps.
+- The line is a list of **pieces**, built in canonical form from tick 0 every time, so it never depends on the tick
+  that asks:
+  1. each block's line (multiplier applied), joined if it starts where the previous block ended;
+  2. joined lines whose slopes agree within `SLOPE_TOL` = 10⁻⁹ relative (max(1, |slope|)) are **merged into one
+     line**, its slope recomputed from the merged endpoints;
+  3. each line is split where the clamp to `[0, M]` starts or ends, and a clamped piece is flat at 0 W or `M`.
+
+  So a ramp split into blocks of one slope (an editor's split, a file format's, endpoints with float noise) gives
+  bitwise the same pieces as the single block, hence the same Ruckig inputs and the same commands (Ruckig is
+  deterministic). The model checks it on 300 random splits with noisy endpoints: difference 0 W. In round 5, a split
+  at slopes 10⁻¹³ apart was a lead vertex with a velocity cap the state was outside, which gave Ruckig refusals and a
+  47 W undershoot.
+- A piece's start is a **vertex** when the line is continuous there and the slope changes (not collinear), and a
+  **discontinuity** when it jumps.
+- The easer's frame and lead keys are compared within floating point (10⁻⁹ relative), so two representations of one
+  line never count as a new input. A lead is identified by the vertex it leads into, and its timing test admits ties
+  (+10⁻⁹ s).
 - The line ahead is known up to the plan's end or the next event (skip, ±, coach, cap, engagement, edit). Each event
   re-plans.
 
@@ -1778,14 +1792,19 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
      slope: at most `ŝ` before a slope fall, at least `ŝ` before a fall's end.
    - **Effect:** the command eases into the vertex on the side that lowers the load. It is below the line before a rise
      ends; it brakes the fall early, above a falling line, before a fall ends.
-   - **Only from at or below the current line.** Above it, aiming at a higher next piece would raise the command above
-     the plan (seed 3, plan 15889: a steep ramp running into the cap, pinned).
+   - **Where the slope falls, only from on the current line** (within ε at tick `k − 1`). The next line extended back
+     lies above the current one, and the velocity is capped at the current slope. From above, aiming at it would raise
+     the command above the plan (seed 3, plan 15889: a steep ramp running into the cap, pinned). From below, the cap
+     would hold the command back from the line (round 6: a flat clamp at the cap followed by a fall). A fall's end
+     aims below the current line, so it has no such condition.
    - **Never at a vertex that starts or steepens a rise:** leading there would raise the load before the plan does.
      There the command starts the S-curve on the vertex's tick and lags below the line.
 4. **A line Ruckig cannot follow.** Where `|ŝ| ≥ r` in its direction (a ramp at or above the rider's rate), the target
    state "on the line" is infeasible.
-   - Ruckig's **velocity interface** chases it at the full rate, towards where the line is on tick `k`: `+r↑` below a
-     rising line, `−r↓` above a falling one.
+   - Ruckig's **velocity interface** chases it at the full rate, towards where the line is on tick `k`: `+r↑` at or
+     below a rising line, `−r↓` at or above a falling one. "At" means within ε: on the line counts as behind it, so a
+     command engaged a fraction of a watt above a steep rise chases it rather than holding (round 6; a golden plan
+     pins it).
    - If the line is moving towards the command, the target velocity is 0: the command holds, and the line comes to it.
    - A line at *exactly* the rate counts here too. After an eased start, the command can only lag it.
 5. **Above a rising line, never rise.** If the command is above a rising line by more than ε on tick `k`, the target is
@@ -1793,15 +1812,17 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
    rising ramp, or an engagement above one. Without it, Ruckig's time-optimal landing from above a fast-rising line
    rises while still above it; for example, an engagement at 61.5 W on a 34.7 W/s ramp at (50, ×1.5, 1), found in seed
    585's plan 442 and pinned.
-6. **Safe braking.** A step after which the command **rises or will rise** is taken only if Ruckig's braking
-   trajectory from the new state stays at or below the plan line known ahead, tick by tick, until the command is at
-   rest.
+6. **Safe braking.** A step after which the command **rises or will rise** is taken only if the new state itself, on
+   its own tick, and then Ruckig's braking trajectory from it stay at or below the plan line known ahead, tick by
+   tick, until the command is at rest. The candidate's own tick was added in round 6: a line that dips 0.5 W for one
+   tick and then climbs steeply let a chase step overshoot the dip (seed 1, plan 10743 of round 6's generator).
    - "Will rise" means `v > 0`, or a braking fall whose curvature will carry it past rest: `a > 0` and
      `v + a²/(2·j_max) > 0`.
    - The braking trajectory is the velocity interface to `v = 0` under the same limits. It may pass the line by at
      most ε/2, strictly inside X2's ε, so a braking path that is accepted is never cut (seed 2, plan 19521, pinned).
-     It may not pass the cap `M` at all, so a ramp that runs into the cap is braked to rest exactly at `M` (seed 585,
-     plan 7929, pinned).
+     It may not pass the cap `M` beyond floating point (1e-6 W), so a ramp that runs into the cap is braked to rest
+     exactly at `M` (seed 585, plan 7929, pinned). With no tolerance, a time-optimal landing on a cap line was refused
+     by float noise and re-approached in cycles (round 6).
    - A step that leaves the command falling is taken only if its braking trajectory stays at or above 0 W.
    - Otherwise the command eases out from the current state (velocity target 0) until it is at rest.
    - This is what eases, without a cut:
@@ -1829,38 +1850,84 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
      after the step covers it.
 9. **Command:** `Erg { target_w: round(y) }`.
 
-**If Ruckig returns an error (X5).** Ruckig 0.19.4 can refuse a valid input ("error in step 1"):
-- the trigger is a state that sits exactly on a limit boundary, such as a fall braking to the very slope a lead then
-  caps the velocity at;
-- that is upstream issue pantor/ruckig#269, rounding that discards a valid root, fixed by the open pull request #270;
-- the round-4 falsifier's plan at the defaults (seed 7, plan 226) is one such case, pinned in the model.
+**If Ruckig refuses an input (X5): a bounded recovery (round 6).**
 
-The design:
-- **the trajectory in force is continued** for that tick. It already satisfies every limit, so nothing is cut;
-- the next tick re-plans;
-- only when no trajectory reproduces the current state (right after an engagement, or after a cut) does the command
-  hold (`v = a = 0`, **X5h**);
-- every error is counted in the ride's diagnostics and its log.
+*The cause.*
+- Ruckig 0.19.4 refuses some valid inputs with "error in step 1". This is upstream pantor/ruckig#269: in
+  `PositionThirdOrderStep1::time_all_none_acc0_acc1`, a root that rounds a few ulps past its admissible time interval
+  is discarded. It happens at the distance where the acceleration plateau vanishes, `2·a_max³/j_max²`. The open
+  upstream pull request #270 admits such roots within 16 ε.
+- With our mapping (`a_max = 2·rise/τ`, `j_max = 4·rise/τ²`), that distance is exactly **Δ = rise·ease**, and the
+  peak slope `a_max²/j_max` is exactly the rate. So a rest-to-rest step of Δ = rise·ease lands on a double boundary.
+- Over every valid tuning (6 955) × every Δ on the 0.25 W grid up to 600 W, both directions (33 384 000 inputs),
+  Ruckig refuses **516, every one at |Δ| = rise·ease**. Some are whole watts (33 W at (11, ×2, 3); 75 W). The
+  defaults are not affected.
+- 300 000 random moving-frame states, with slopes, curvatures and gaps drawn over the tuning grid, gave 0 refusals.
+- Round 5's X5 continued the trajectory in force, but a refused rest-to-rest step re-plans from the identical state
+  every tick. So it held forever: 233 W for 600 s at (11, ×2, 3), against P7's 6.75 s.
+- **The bare input**, pinned in the model as the #269-class regression and as #620's first `rsruckig` test:
+  position 41.25, velocity 0, acceleration 0, target (0, 0, 0), `max_velocity` 15, `min_velocity` −22.5,
+  `max_acceleration` 10.909…, `max_jerk` 7.934… (rise 15, ×1.5, ease 2.75).
 
-Error rate in the model, 20 000 random plans per seed at every in-bound tuning:
-- seeds 585, 7, 1, 2 and 3 (100 000 plans, 25 947 231 ticks): **1 error, in 1 plan (seed 2)**, continued under X5 with every property holding. Earlier variants of this round's model saw 1 each in seeds 7 and 1, so the rate is about 1 in 50 000–100 000 plans;
-- the pinned plan;
-- the fault-injection run, 300 plans with 20 % of Ruckig calculations forced to fail, in which every property holds.
+- **A second symptom of the same boundary class** (found by round 6's generator): a state whose `v + a²/(2j)` is
+  exactly the velocity limit (left by a chase at exactly the rate) is *accepted*, but answered with a valid, slower
+  profile. Falling 631.5 W from (−23.47 W/s, −2.12 W/s²) at (8, ×3, 2.75), Ruckig returned 52.14 s against a
+  time-optimal 29.07 s, and P7 caught it. That is seed 585, plan 4670 of the new generator, pinned.
 
-`rsruckig` is a port of the same algorithm, including its root filtering, so it presumably shares #269. That was not
-checked this round, because cargo builds are barred while the build disk is below its floor. #620 runs the pinned
-input against `rsruckig` as its first test, and tracks a port of the upstream fix if it fails.
+*The recovery*, in order:
+1. **Every calculation is made twice:** with the rider's limits and with every limit tightened by (1 − 2⁻²⁰)
+   (`RETRY_SCALE`). The tightened answer is used when the nominal one is refused, or when it is materially slower (by
+   more than 10⁻⁶ relative).
+   - The tightened limits are strictly inside the rider's, so every property holds as before.
+   - The tightened input lies off the boundary: Δ and the state stay, while `2·a_max³/j_max²`, the peak slope and the
+     limit move by about 10⁻⁶ relatively.
+   - On the full sweep above, **this recovers all 516** refusals, and the bare input too. The 52.14 s answer above
+     becomes 29.07 s.
+   - Only a double refusal goes on to step 2.
+2. If that is refused as well, **the trajectory in force is continued** for the tick (within every limit; no cut).
+   The next tick re-plans. A trajectory in force ends at rest at its target, so this step lasts at most that
+   trajectory's remaining duration.
+3. **At rest, with a flat line** (a held block, the cap or 0 W), the command moves to the line by the **closed-form
+   double-S** profile: the time-optimal rest-to-rest move under (rate, `a_max`, `j_max`) of Biagiotti and Melchiorri
+   (*Trajectory Planning for Automatic Machines and Robots*, 2008, §3.4), computed without Ruckig. Over 20 000 random
+   rest-to-rest moves, its duration equals Ruckig's within 3·10⁻¹⁴ s and its endpoint is within 5·10⁻¹³ W. So a
+   persistent refusal still lands on a held line in the time of a normal ease: **P4 and P7 hold under a persistent
+   Ruckig error.** A change of the frame (an event) ends it and re-plans.
+4. Otherwise (not at rest, and no trajectory reproduces the state, which happens only right after a cut or an
+   engagement) the command **holds** (`v = a = 0`, **X5h**), and step 3 applies from the next tick if the line is
+   flat. On a moving line, under a persistent error, the command holds until the line is flat or a calculation
+   succeeds. A hold never rises, so P5 and P6 hold. P4/P7 concern held lines, where step 3 applies.
+
+Every refusal is counted in the ride's diagnostics and its log, and so is every tick X5 acts.
+
+*Termination.* Each re-plan makes two calculations (step 1), or three when the tightened one is used. Step 2 is bounded by a finite
+duration. Step 3 is closed form and needs no calculation. No step waits on a later success.
+
+*Measured in the model* (`erg_slew.py --report`):
+- the Δ = rise·ease steps over every 35th tuning (1 068 plans): every refusal recovered by step 1;
+- every step at the defaults and the corners under a persistent error (every calculation failing, 36 plans): landed by
+  step 3 within P4/P7;
+- 300 random plans with 20 % of trajectory calculations failing: every property holds;
+- 5 × 20 000 random plans from round 6's generator: 97 nominal refusals in 97 of 100 000 plans (the grid-exact steps), every one recovered by step 1, with no double refusal; every property holds.
+
+*`rsruckig`* (read, not built): `lib/src/rsruckig/position_third_step1.rs` filters the same roots strictly, at lines
+487, 535 and 575 (`if t < t_min_… || t > t_max_… { continue; }`), the lines #270 changes upstream. So the port
+presumably shares #269. #620's first test is the bare input against `rsruckig`, and if it is refused, #620 ports #270.
+The recovery above does not depend on either fix.
+
+*Upstream report.* A draft is in PR #625's body, for the owner to decide whether to file it: the bare input and the
+sweep's pattern, as a comment on #269 asking whether #270 also covers the velocity-limit coincidence.
 
 **The remaining exceptions.** The rate (P2) holds on every tick. The acceleration limit and the jerk limit (P3) hold on
 every tick, judged on the **sent positions**' finite differences (slope, curvature, jerk), except where one of these
 cuts breaks them. Each cut is allowed only in its domain and within its bound, and the model fails otherwise:
 
-| | Domain (anywhere else the model fails) | Bound on the slope change | Worst seen | Why it is safe |
+| | Domain (anywhere else the model fails) | Bound on the slope change | Worst seen (round 6, 5 × 20 000 plans) | Why it is safe |
 |---|---|---|---|---|
 | X2 | Only while an **unforeseeable event** (skip, ±, coach, cap, engagement) or a Ruckig error is pending, until the command is next on the line and moving with it | `r↑ + a_max·Δt` | 50.0 W/s | It only stops a rise; continuing would raise the load above a plan that was just lowered (P5) |
-| X3 | The same | a position step down to `M`; the slope changes by at most `r↑ + a_max·Δt` | 10.3 W/s | The cap is a limit; it only lowers the load |
-| X4 | The same | `r↓ + a_max·Δt` | 161.2 W/s (at 0 W) | Nothing is below 0 W, and there is no load to feel at 0 W |
-| X5h | Only where no trajectory reproduces the current state | `max(r↑, r↓) + a_max·Δt` | 38.5 W/s (fault injection only) | A hold never raises the load |
+| X3 | The same | a position step down to `M`; the slope changes by at most `r↑ + a_max·Δt` | 10.7 W/s | The cap is a limit; it only lowers the load |
+| X4 | The same | `r↓ + a_max·Δt` | 109.5 W/s (at 0 W) | Nothing is below 0 W, and there is no load to feel at 0 W |
+| X5h | Only where no trajectory reproduces the current state, and not at rest on a flat line (X5 step 4) | `max(r↑, r↓) + a_max·Δt` | 5.0 W/s (fault injection only) | A hold never raises the load |
 
 **No corner is left in event-free riding:** X2, X3 and X4 never break the band without an unforeseeable event or a
 Ruckig error, and the model fails if one does. That covers:
@@ -2045,17 +2112,43 @@ The properties of the easer, for every in-bounds tuning and any plan. #620 tests
 on `rsruckig`; the model checks them with upstream Ruckig in the loop.
 - Every rate, curvature and jerk property is judged on the **sent positions** `y_k`: their first, second and third
   finite differences over Δt. So a cut cannot hide behind the easer's internal state.
-- A window of differences that contains a named cut is judged by that cut's domain and bound instead.
+- On a cut tick, the slope change must be within that cut's bound and the cut inside its domain.
+- A window that contains a cut tick's slope may exceed the band by that cut's own slope change `Δv_c` (the larger of
+  the sent slope's and the state's), and by no more:
+  - the curvature one tick after the cut by `Δv_c/Δt`;
+  - the jerk one and two ticks after by `2·Δv_c/Δt²`.
+
+  A cap drop's position step exempts the windows that contain it, and its slope change is judged by X3's bound
+  (round 6: in round 5 any window within two ticks of a cut was excused without a bound).
+- **P4/P7 on every plan** (round 6). Wherever a flat piece starts, whether a step, a ramp's end, an event or an
+  engagement, the command must reach it within `landing_bound`, if the piece and the plan last that long without a
+  further event:
+  - from rest: `Δ/r + T_e + 0.75 s`, with `T_e` = τ rising and τ(1 + f)/2 falling;
+  - from a moving state, add the time and distance of easing it out: unwinding the curvature `|a|/j`, which adds
+    `a²/(2j)` to the slope, then stopping the slope.
+
+  In round 5, P7 was checked only on held-line cases from rest, so a command stuck for 600 s passed.
+- Every tick where Ruckig refuses a trajectory twice must show X5 acting, and an X4 cut must leave no falling slope.
 
 The model's runs, with no violation:
-- 5 × 20 000 random plans (seeds 585, 7, 1, 2, 3): 100 000 plans, 25 947 231 ticks. The plans have 2–8 blocks
-  over the tuning grid. They mix steps and ramps within, at and beyond the rates, entered from the line and by jumps, with blocks of 0.25–60 s, ± offsets, cap changes, skips and engagements
-  (some mid-plan, some from 0 W).
+- 5 × 20 000 random plans (seeds 585, 7, 1, 2, 3) from round 6's generator: 100 000 plans, 26 052 177 ticks. The plans have 2–8 blocks over
+  the tuning grid. They mix steps and ramps within, at and beyond the rates, entered from the line and by jumps, with
+  blocks of 0.25–60 s, ± offsets, cap changes, skips and engagements (some mid-plan, some from 0 W). Round 6 adds:
+  - grid-exact steps: Δ = rise·ease and its multiples, and levels on the 0.25 W grid;
+  - ramps split into blocks of one slope with float noise in the endpoints.
+- Δ = rise·ease steps (1×, 2×, 3×, both directions) over every 35th of the 6 955 valid tunings: 1 068 plans.
+- A persistent Ruckig error (every calculation failing) on steps at the defaults and the corners: 36 plans.
+- Split ramps against the single block, tick for tick: 300 plans, difference 0 W.
+- Golden traces: Σ y and off-line ticks of 19 canonical plans, pinned. They pin what the properties leave free: the
+  lead's timing and cap, the chase, the will-rise test, the boundary of `trackable`.
 - Ramp-to-ramp vertices: 1 421 slope pairs at the defaults and the 8 bound corners.
 - Fault injection: 300 random plans with 20 % of Ruckig calculations forced to fail.
 - 3 000 held-line cases, and 80 runs at the corners of the bounds.
-- Pinned regressions from the round-4 falsification:
-  - the Ruckig error at the defaults;
+- Pinned regressions from the falsifications:
+  - the bare #269-class input: upstream refuses it, and the tightened retry calculates it;
+  - the round-5 stuck steps (233 → 200 W at (11, ×2, 3), its mirror, 275 → 200 W at (20, ×1.25, 3.75)) and the stuck
+    mid-plan case. Each must be recovered by X5 step 1 alone;
+  - the split ramps of round 5's blocker 3;
   - the ramp-to-ramp cuts;
   - the X4 plan;
   - a fall that meets a rising ramp;
@@ -2083,13 +2176,15 @@ The properties:
 - **P3 ease.** On the sent positions, curvature ≤ `a_max` and jerk ≤ `j_max` on every tick, except where X2–X5 break
   them, each within its domain and bound (§7.10.2's table). No un-eased corner without an unforeseeable event or a
   Ruckig error.
-- **P4 duration.** A rise onto a held line, from rest, lands within `Δ/r↑ + τ + 0.75 s`.
+- **P4 duration.** A rise onto a held line lands within `landing_bound`: `Δ/r↑ + τ + 0.75 s` from rest. This holds
+  on every plan, and under a persistent Ruckig error (X5 step 3).
 - **P5 no rise above the plan.** A command more than ε above the line never rises. No step ends more than ε above the
   line higher than it started.
 - **P6 excess and bounds.** `max(0, y − R − ε)` grows only on a tick where the line falls (a downward jump, a falling
   ramp, the clamp), and `0 ≤ y ≤ M` after every tick.
-- **P7 time above the line after a fall.** After a downward jump onto a held line, from rest, the command is at or
-  below the line within `Δ/r↓ + τ·(1 + f)/2 + 0.75 s`.
+- **P7 time above the line after a fall.** After a downward jump onto a held line, the command is at or below the
+  line within `landing_bound`: `Δ/r↓ + τ·(1 + f)/2 + 0.75 s` from rest. This holds on every plan, and under a
+  persistent Ruckig error (X5 step 3).
 
 **Claim: no eased target holds the rider above the plan for longer than the documented bound.**
 
@@ -2141,16 +2236,17 @@ about the workout, not the rider.
    - re-plan only on a change, with no `calculate` call on an unchanged input;
    - a forced Ruckig error continues the trajectory in force (X5), holds only without one (X5h), and records its
      diagnostic, then re-plans;
-   - the pinned #269 input (seed 7, plan 226) against `rsruckig`;
+   - the bare #269-class input (§7.10.2, X5) against `rsruckig`, porting pantor/ruckig#270 if it is refused;
+   - a persistent error (every calculation failing) on a step: the closed-form move lands within P4/P7;
    - no NaN or infinity for any input;
    - the golden vectors agree with `erg_slew.py` within 1e-6.
-9. **Mutation.** Deleting any rule of §7.10.2 must fail the property tests, as it fails the model:
-   `just slew-mutants` (`docs/adr/models/erg_slew_mutants.py`) deletes each rule in turn and requires a non-zero exit
-   from the model. #620 runs a mutation tool (`cargo mutants`) over `crank_engine::slew` with the same requirement.
 7. **Following and writer.** Per-tick updates keep a healthy trainer `following` (the executable model, `just model`).
    The writer still serves the reserved poll on time during a long ramp (§4.4).
 8. **Compliance.** Settle never ends before the command lands. An off-line tick is never counted, so a steep ramp, an
    eased corner or an unreached short block is excluded, never counted as a miss.
+9. **Mutation.** Deleting any rule of §7.10.2 must fail the property tests, as it fails the model:
+   `just slew-mutants` (`docs/adr/models/erg_slew_mutants.py`) deletes or breaks each rule in turn (29 mutants since round 6, including the round-5 falsifier's 10 survivors) and requires a non-zero exit
+   from the model. #620 runs a mutation tool (`cargo mutants`) over `crank_engine::slew` with the same requirement.
 
 #### 7.10.8 HIL Part B checks 6, 7 and 12
 
@@ -2178,6 +2274,9 @@ are checked on hardware by a new check in #624 (§7.10.1).
 | On a Ruckig error, hold the command (round 4's X5) | A corner that is not needed: the trajectory in force already satisfies every limit, so it is continued for the tick (round 5) |
 | Round 4's "X2 before the step" | Redundant: deleting it changed no property in any check (§7.10.2 step 8) |
 | Use the new piece, extended back a tick, for the step into a vertex (round 4) | Put the command "ahead" of a steeper line: un-eased cuts at ramp-to-ramp vertices (2 701 slope pairs) |
+| On a persistent Ruckig refusal, continue the trajectory in force (round 5's X5) | A refused rest-to-rest step re-plans from the identical state every tick, so the command stuck (600 s at 233 W for a 200 W block). Round 6 adds the tightened retry and the closed-form double-S, which bound the recovery |
+| Perturb the target (not the limits) on a refusal | It moves the command off the plan; tightening the limits keeps the target exact and stays inside the rider's limits |
+| Treat slopes 10⁻¹³ apart as a vertex (round 5) | A split ramp became a lead with a velocity cap the state was outside: Ruckig refusals and a 47 W undershoot. Collinear lines are merged (§7.10.2) |
 | Per-direction acceleration and jerk limits | A change of direction then changes the limits under a moving state, which made Ruckig fail; one pair for every move (§7.10.2, the mapping) |
 | Lead every vertex, or centre every ease on its boundary | It raises the load before the plan does at a rise's start, and it is impossible for a skip, a ±, the coach or an edit. Only vertices where the lead lowers the load are led (step 4) |
 | Keep easing through a reversal (no X2) | The command would keep rising after the plan lowered it (P5). Planned reversals are eased out before they happen (step 6); unforeseeable ones keep the cut |
