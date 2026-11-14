@@ -1,6 +1,6 @@
 # ADR-0001: Architecture, crate layout, Rust↔UI contract, persistence, testing
 
-- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10)
+- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10); 2026-11-11 (#585: §7.2 `slew` fields)
 - **Date:** 2026-10-13
 - **Issue:** #26
 - **Related:** ADR-0002 (BLE + `Trainer`), #24 (first-principles UX), #28 (scaffold), #2 #4 #12–#19
@@ -773,8 +773,8 @@ ran with.
 
 **Decision.**
 
-- **One typed struct.** `crank_engine::tuning::Tuning { version, erg: ErgTuning }`. Later groups (auto-pause #594,
-  coach #596, smoothing #585) are new fields of `Tuning`, each a struct of its own. Durations are **seconds** and
+- **One typed struct.** `crank_engine::tuning::Tuning { version, erg: ErgTuning, slew: SlewTuning }` (`slew` from
+  #585, below). Later groups (auto-pause #594, coach #596) are new fields of `Tuning`, each a struct of its own. Durations are **seconds** and
   cadences **rpm**, never ticks: the tick is an engine detail (§5). A duration must lie on the 0.25 s tick grid,
   so the engine never rounds a rider's value; `validate()` refuses one that does not.
 - **Documented in code.** Every field has rustdoc with its unit, what it does and the decision behind its default.
@@ -795,6 +795,23 @@ ran with.
   reads which layer set each leaf. hil_fec reads the recorded values instead of its own copies (#593).
 - **No config files.** Settings live in SQLite (§6, table `setting`); the environment stays for process-level
   configuration (above).
+
+**The fields (amended 2026-11-11, #585).** JSON paths, units and defaults; the bounds, the cross-field rules and
+the reasons are in the ADR section named:
+
+| Field | Unit | Default | Bounds | Decided in |
+|---|---|---|---|---|
+| `erg.releaseEnabled` | bool | `true` | — | ADR-0002 §7.4 (#589) |
+| `erg.releaseRpm` | rpm | 30 | 20–50 | ADR-0002 §7.4 |
+| `erg.releaseAfterS` | s, 0.25 s grid | 5 | 1–8 | ADR-0002 §7.4 |
+| `erg.reengageRpm` | rpm, above `releaseRpm` | 45 | 30–90 | ADR-0002 §7.4 |
+| `erg.reengageAfterS` | s, 0.25 s grid | 1.5 | 1.5–5 | ADR-0002 §7.4 |
+| `slew.riseWPerS` | W/s, integer | 20 | 5–50 | ADR-0002 §7.10.4 (#585) |
+| `slew.fallFactor` | × `riseWPerS`, on a 0.25 grid; the product ≥ 20 W/s | 2.0 | 1–4 | ADR-0002 §7.10.4 |
+| `slew.easeS` | s, 0.25 s grid: the ease time, rest to full rise rate; Ruckig's acceleration limit `2·rise/τ` and jerk limit `4·rise/τ²` | 2 | 1–4 | ADR-0002 §7.10.4 |
+
+`slew` is implemented by #620. A new group changes no existing field's meaning or unit, so `Tuning::VERSION` stays
+1; a stored layer written before it resolves unchanged, because the merge starts from the defaults.
 
 **Alternatives.** A config file (TOML) next to the database: a second source of truth that a ride does not record,
 rejected. Ticks in the struct: ties a rider's setting to the engine's sampling, rejected. Falling back to the

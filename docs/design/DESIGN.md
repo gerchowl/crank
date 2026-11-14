@@ -7,6 +7,7 @@ finding to its resolution). It drives the M1 UI issues once the reviews accept i
 **Amendment §16** (#175, owner-accepted 2026-10-13): layout revisit of Ride, Today and the shell.
 **Amendment §18** (#452, owner-accepted 2026-11-02, #438): design direction A "Telemetry": visual language, grid, ride
 anatomy, 32 px keyboard-first controls, motion, and the enforced design rules.
+**Amendment §19** (#585): the eased ERG target on the readout, the trace, the strip and in Settings.
 Prototype: `design/prototype/` (`pnpm -C design/prototype dev`). Screenshots: `docs/design/screens/`
 (`pnpm -C design/prototype screens`). Where this document conflicts with `spec/UX-SPEC.md` or
 `spec/VIEWS.md`, this document wins; §9 lists every such place. Engine behaviour (pauses, reconnects, ERG
@@ -257,7 +258,8 @@ All times count **from now** (the sub-line too), so two numbers on screen never 
 
 **ERG band.** The band shows the core's target band (#13); edges are solid lines, not gradients. The marker
 and Δ are **hidden while the trainer settles** (first 5 s of a block whose target changed, after a ± or coach
-change, after ERG re-engagement — the same settle the core uses for compliance, ADR-0002 §7.8): the band shows
+change, after ERG re-engagement — the same settle the core uses for compliance, ADR-0002 §7.8; amended by §19.1:
+until the eased target has caught up, plus 5 s): the band shows
 "settling" instead, so normal ramp-up never reads as failure. Below the band: cool colour + ▼; above: warm
 colour + ▲; inside: neutral, no arrow.
 
@@ -266,7 +268,7 @@ faster*, *▼ ease cadence*, or *no target*, from the core's cadence band (#13, 
 power's. If the rider chose slots without cadence, or Focus density, a cadence state that is not *in range*
 appears as a chip in row 1. **ERG released** (cadence < 30 rpm for 5 s, the default rider tuning of ADR-0002 §7.4) takes row 4: "ERG
 released — spin up to 45 rpm to re-engage", with a warning tone; re-engagement shows "easing back in"
-during the 5 s soft start.
+during the ~~5 s~~ soft start (superseded by §19.4: for the engagement).
 
 **Stale values (P6, P7).** A value whose input is lost is never shown as live: it becomes "—" with what is
 missing ("— no power data"), or, where the last value still helps, it is drawn hollow/muted with its age.
@@ -292,7 +294,7 @@ target ("90rpm") counts as 85–95 (#13).
 | Trainer lost | Warning tone. Chip ⚠ NEO "lost"; row 4: "**⚠ Trainer lost 0:12**" / "paused 2:47 into block · ride saved" / "reconnecting (try 3)"; an HR-recovery forecast is frozen (~~"paused · then ends at its maximum in"~~ superseded by §16.1: "paused · block max in"); actual power, cadence and W′ balance "—"; countdown frozen and dimmed (ADR-0002 §6) | — |
 | Trainer lost ≥ 30 s | Row 4 adds what to try ("power-cycle NEO · close Zwift") and **End…**, which opens the End dialog (Keep riding focused); reconnecting continues behind it | End (bindable) → End dialog |
 | Trainer back after ≥ 2 min | The re-entry policy (§6.6) applies: row 4 "↻ Back after 3:10" / "re-warm-up 2:48 · then this interval from its start" | — |
-| Trainer reconnected | Row 4 for the 5 s soft start: "Reconnected · easing in to 253 W" / "workout resumed" (or "pedal to resume" at 0 rpm); then the chip shows "NEO back · 0:14 gap" for 10 s | — |
+| Trainer reconnected | Row 4 for the ~~5 s~~ soft start (§19.4: for the engagement): "Reconnected · easing in to 253 W" / "workout resumed" (or "pedal to resume" at 0 rpm); then the chip shows "NEO back · 0:14 gap" for 10 s | — |
 | Trainer lost at a block boundary | The block shown is the one the core paused in (transitions inside the 2 s detection window stand, ADR-0001 §5): "paused at 0:00" of the new interval; on reconnect the soft start goes to *that* block's target | — |
 | HR lost | Chip ⚠ HR "lost"; HR slot "—" + "HR strap lost"; lane: "HR lost: coach can't push" | — |
 | Both lost | Row 4: "⚠ Trainer + HR lost · paused at m:ss"; stays paused until the trainer is back and cadence > 0 | — |
@@ -528,7 +530,8 @@ serial or "Not paired", Forget) and **Nearby** (the last scan: name, the roles i
 …" with Forget, or "Pair as …", #442); before the first scan a hint says how to wake a device. **Forget asks first**, in
 place of the row's device line and actions ("Forget Tacx Neo 55624 as the trainer? Pair it again to ride with it.",
 Cancel focused, Esc cancels; #438's note that Forget sits beside "Pair as strap" on a dual-role row). A failed command
-is a notice under the section head: ⚠ and its title, what to do, and "Try again" where a retry is the fix. Live
+is a notice under the section head: ⚠ and its title, what to do, and "Try again" where a retry is the fix. The Trainer section (#595) holds the ERG release and the
+easing rows (§19.5). Live
 readings while pairing (#267) are not in this screen yet; Release trainer is End on an unstarted ride (§5.4).
 
 ---
@@ -605,7 +608,7 @@ transitions. Deadlines and undo windows count down in whole seconds, as numbers 
 |---|---|---|
 | Trainer silent < 2 s | still `riding`; record seconds `null` | power "—"; nothing else changes |
 | Trainer lost (event or 2 s silence) | `paused(trainer_lost)`: block timer and workout time freeze, session time runs, record `null`; reconnect loop with backoff | warning tone; row 4 banner (what broke · "workout paused at m:ss of this block" · "reconnecting (attempt n)" · "keep pedalling or stop — your ride is saved"); countdown frozen; chip ⚠ |
-| Reconnected | driver ready → engine re-applies ERG with a **5 s soft start** from current power to the block target → workout resumes when cadence > 0 | row 4 "Reconnected · easing back in to 253 W"; then "NEO back · m:ss gap" for 10 s |
+| Reconnected | driver ready → engine re-applies ERG with a ~~**5 s soft start**~~ **soft start** (the eased engagement, §19, ADR-0002 §7.10.3) from current power to the block target → workout resumes when cadence > 0 | row 4 "Reconnected · easing back in to 253 W"; then "NEO back · m:ss gap" for 10 s |
 | Lost across a block boundary | transitions inside the 2 s window stand; the soft start targets the block the ride paused in | as above; the block name in row 1 tells which interval resumes |
 | HR lost | ride keeps going; HR `null`; `hr<` blocks fall back to their maximum; the judge gets no HR features (cannot push) | chip ⚠ HR; HR slot "—"; lane note; in `hr<` blocks the caption switches to "HR lost · block ends at its maximum" |
 | Both lost | `paused(trainer_lost)` as above | one banner for both |
@@ -1638,13 +1641,13 @@ in depth); neither relies on the other.
    A rider who has already worked is not restricted.
 5. **Entering a block by an edit** (only `end_set`, its undo and Skip move the cursor): the ERG target changes **exactly
    as at a natural block boundary** (ADR-0002 §7 item 2): while ERG is engaged, the rider is pedalling and no ramp is
-   running, it is one step on the next tick (newest mode wins in the `control` slot, §4.4). It is not a new
+   running, it is ~~one step on the next tick~~ (superseded by §19, ADR-0002 §7.10: the eased target starts towards it on the next tick) (newest mode wins in the `control` slot, §4.4). It is not a new
    engagement, so no soft start of its own, as with Skip today. Settle follows **ADR-0002 §7.8 (a) as written**: the
    first 5 s of the entered block are settle seconds **only when its start target differs from the previous block's
    end target**; when they are equal nothing is settled.
 5a. **An edit never cuts a soft-start ramp.** If a §7.5 ramp is running (after a reconnect, after ERG re-engagement,
    or the ride-start ramp of #250) when an edit changes the target, the ramp **continues** under the same per-tick rule
-   (the same step schedule and 1 Hz updates) **toward the new target**; it is neither replaced by a direct step to
+   (~~the same step schedule and 1 Hz updates~~ the same easer, a re-plan, ADR-0002 §7.10.3) **toward the new target**; it is neither replaced by a direct step to
    the new block's target nor restarted. The settle of the new block starts when the ramp ends, as §7.8 (c) does.
 5b. **Entering ERG from `Free` or `Sim` by an edit** (a plan with a `Free` block, then `end_set` or `suppress` of the
    free block's successor makes an ERG block current) is the ADR-0002 §7.5 item 5 case, exactly as at a natural
@@ -2020,7 +2023,7 @@ and is tight at 1024. At 1024 the 4-column metric column is ≈ 320 px wide, so 
 
 - **Traces replace the band row (amends §16.1).** Power over its target band (2 / 4 of the stack), heart rate
   and cadence (1 / 4 each) share one x axis: the whole workout, with the planned target drawn ahead of "now",
-  ghosted. The ERG band's rules (§5.2: settle hides Δ, edges not gradients, ▲ / ▼) apply to the trace's band and to
+  ghosted. The target line follows the eased S-curve on both sides of "now" (§19.2, #585). The ERG band's rules (§5.2: settle hides Δ, edges not gradients, ▲ / ▼) apply to the trace's band and to
   the band under the power readout.
 - **Metric column:** the countdown (T1) with its caption and the next block; then power (with its target and Δ, and
   the band), heart rate (zone, trend) and cadence (state, §5.2). Each readout is a fixed row, so no value moves
@@ -2156,3 +2159,70 @@ keyboard input, focus and menu-bar conventions on macOS (standard shortcuts, the
 access, VoiceOver names). It does **not** take the HIG's visual language (SF fonts, native materials, system
 controls' look): A's tokens, type and icons win. Where the two disagree on behaviour, the HIG wins unless §7.2's ride
 input rules say otherwise.
+
+## 19. Amendment (#585): the eased ERG target
+
+The engine eases every change of the ERG target into an S-curve (ADR-0002 §7.10, a jerk-limited trajectory from
+the Ruckig library). The **commanded** target is what the trainer is told. The **plan line** is what the plan says
+after ± and the coach. The commanded target moves towards the plan line:
+- at most at the rider's rise rate going up, and at twice that by default coming down;
+- reaching full rate over a 2 s ease.
+
+A ramp is followed on the line, with its start and end corners eased too. The soft start is the same curve, started
+from the rider's current power. "Caught up" below means the command is
+on the plan line. This section says what the rider sees of it. It amends §5.2, §5.9, §6.5, §17.3 and §18.3,
+which point here.
+
+### 19.1 The power readout
+
+- **TARGET** in the power row shows the commanded target, as since #324 ("what the engine commanded"); during an ease it
+  changes at the stream's rate, a reading, not a tween (§18.5 holds: the number jumps to each new value).
+- **Sub-line while easing:** "easing to 220 W", the controlled target from `easingToW` (ADR-0002 §7.10.5), until the
+  commanded target has caught up. It takes the place of a ramp block's "↗ to 210 W" for that time. No duration is
+  promised: the ease takes as long as the step needs.
+- **Band and Δ:** hidden while the trainer settles, as before (§5.2), and settle now lasts until the commanded target
+  has caught up plus 5 s (ADR-0002 §7.10.5), so neither a rising nor a falling ease reads as failure.
+
+### 19.2 The power trace
+
+One target line, the one the trainer is asked to hold:
+
+- **Behind "now"**: the recorded commanded target (stream and record metric `target`, #622), one vertex per second as
+  every series (§18.7 rule 17). It is the S-curve as ridden, so a pause, a release or a skip shows as it happened.
+- **Ahead of "now"**: the engine's own prediction of the eased target over the plan, ghosted as before. The core runs
+  the same easer over the plan ahead and sends it on the ui channel as a per-second polyline on every re-plan (an
+  event, an engagement; ADR-0002 §7.10.5, #622). The app draws it and computes nothing itself, so the drawn line cannot
+  drift from the engine's (the #357 rule: the UI is never looser than the engine).
+- **The ±5 % band** is drawn around that drawn line, the commanded target. That is consistent with §5.2 and with
+  compliance: compliance counts a second only while the command is on the plan line (ADR-0002 §7.10.5), where the
+  commanded target and the controlled target agree within 0.5 W, so wherever compliance counts the band is the
+  compliance band; off the line the band is hidden from judgement (Δ hidden, "settling", §5.2) and only shows the
+  ease. The plan's raw step is not drawn as a second line: the strip shows the plan's blocks (§19.3).
+- **Ramps** draw on the plan line, with corners eased by at most a watt or two at ordinary ramp slopes. A ramp at or
+  above the rider's rate draws the command behind it, as it will be ridden.
+
+### 19.3 The strip (block timeline) and the road
+
+Unchanged: blocks by height, the plan's targets, done dimmed. In direction A the road of §5.2 is this strip (§18.3).
+An ease is a few seconds of an hour-wide strip (6 s is under 2 px at 1024 px), and the strip answers "what is the
+plan", not "what is the trainer doing now". **Short blocks** keep their planned height on the strip even when the
+rider's rates cannot reach it (ADR-0002 §7.10.4: the rates are limits, a 30/30 at 100 ↔ 400 W rides a mean of 316 W per
+rep at the defaults); the power trace shows the hump the command really makes, ahead of "now" as the engine's
+prediction and behind it as ridden. Whether the editor warns about such blocks is an owner question (PR #625, #627).
+
+### 19.4 Banners and states
+
+- **Reconnected / ERG back:** "easing back in" and "Reconnected · easing in to 253 W" last for the engagement
+  (ADR-0002 §7.10.3), not a fixed 5 s. The engagement usually ends when the commanded target has caught up. Behind a
+  ramp steeper than the rider's rate it ends earlier, once the command moves at the rider's full rate, and the target
+  can then stay behind the ramp until the ramp ends. From then on the banner is gone, and the power row says
+  "settling" with "easing to N W" (§19.1) until the target has caught up, plus 5 s. The banner names the engagement;
+  catching up is the power row's job.
+- **Pause, ERG released, end, free ride:** unchanged, and immediate: none of them waits for an ease (ADR-0002
+  §7.10.5).
+
+### 19.5 Settings
+
+The Trainer section (#595, §5.9) gets three rows beside the release rows: **Rise** (W/s), **Fall** (× rise, with the
+resulting W/s shown) and **Ease** (s), with their defaults and bounds from ADR-0001 §7.2. A change applies from the
+next ride.
