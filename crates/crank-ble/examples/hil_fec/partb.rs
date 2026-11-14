@@ -2226,13 +2226,9 @@ mod tests {
     #[test]
     fn check12_the_median_of_an_even_count_is_the_midpoint() {
         for (low, answer, want) in [(180, "n", FAIL), (160, "y", PASS)] {
-            let mut run = Run12 {
-                answer,
-                ..Run12::default()
-            };
             // 30 updates, 15 of each (the window starts 5 s after the first at 40.25 s).
-            run.free70 = every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 150);
-            run.free70.extend((0..30_u64).map(|k| {
+            let mut free70 = every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 150);
+            free70.extend((0..30_u64).map(|k| {
                 (
                     45_250 * MS + k * 250 * MS,
                     70,
@@ -2240,6 +2236,11 @@ mod tests {
                     false,
                 )
             }));
+            let run = Run12 {
+                free70,
+                answer,
+                ..Run12::default()
+            };
             let v = run.reads(want);
             assert_eq!(v["free70_updates"], json!(30), "{v}");
         }
@@ -2296,8 +2297,10 @@ mod tests {
     /// (r = 0.95, no result with `y`); of the updates it is 150 W (r = 0.75, PASS).
     #[test]
     fn check12_reads_updates_not_repeats() {
-        let mut run = Run12::default();
-        run.free70 = every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 150);
+        let mut run = Run12 {
+            free70: every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 150),
+            ..Run12::default()
+        };
         for k in 0..41_u64 {
             let at = 45_250 * MS + k * 250 * MS;
             if k % 2 == 0 {
@@ -2327,13 +2330,19 @@ mod tests {
                 })
                 .collect()
         };
-        let mut run = Run12::default();
-        run.free90 = every(20_750 * MS, 25_500 * MS, 250 * MS, 90, 200);
-        run.free90
-            .extend(edges(25_500 * MS, [84, 85, 95, 96], [100, 200, 200, 100]));
-        run.free70 = every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 150);
-        run.free70
-            .extend(edges(45_250 * MS, [64, 65, 75, 76], [400, 150, 150, 400]));
+        let run = Run12 {
+            free90: [
+                every(20_750 * MS, 25_500 * MS, 250 * MS, 90, 200),
+                edges(25_500 * MS, [84, 85, 95, 96], [100, 200, 200, 100]),
+            ]
+            .concat(),
+            free70: [
+                every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 150),
+                edges(45_250 * MS, [64, 65, 75, 76], [400, 150, 150, 400]),
+            ]
+            .concat(),
+            ..Run12::default()
+        };
         let v = run.reads(PASS);
         assert_eq!(v["r"], json!(0.75), "{v}");
         assert_eq!(
@@ -2358,16 +2367,24 @@ mod tests {
     /// trainer settles) and after the first 70 rpm update (100 at 300 W), neither is read.
     #[test]
     fn check12_settles_5_s_after_page_51_and_after_reaching_70_rpm() {
-        let mut run = Run12::default();
-        run.free90 = every(20_750 * MS, 25_500 * MS, 50 * MS, 90, 160);
-        run.free90
-            .extend(every(25_500 * MS, 40 * SEC, 250 * MS, 90, 200));
+        let run = Run12 {
+            free90: [
+                every(20_750 * MS, 25_500 * MS, 50 * MS, 90, 160),
+                every(25_500 * MS, 40 * SEC, 250 * MS, 90, 200),
+            ]
+            .concat(),
+            ..Run12::default()
+        };
         let v = run.reads(PASS);
         assert_eq!(v["free90_w"], json!(200.0), "{v}");
-        let mut run = Run12::default();
-        run.free70 = every(40_250 * MS, 45_250 * MS, 50 * MS, 70, 300);
-        run.free70
-            .extend(every(45_250 * MS, 60 * SEC, 250 * MS, 70, 150));
+        let run = Run12 {
+            free70: [
+                every(40_250 * MS, 45_250 * MS, 50 * MS, 70, 300),
+                every(45_250 * MS, 60 * SEC, 250 * MS, 70, 150),
+            ]
+            .concat(),
+            ..Run12::default()
+        };
         let v = run.reads(PASS);
         assert_eq!(v["free70_w"], json!(150.0), "{v}");
     }
@@ -2376,12 +2393,15 @@ mod tests {
     /// takes 4 s at 80 rpm, then 5 s at 70 rpm and 300 W before the power settles, reads PASS.
     #[test]
     fn check12_t70_is_the_first_update_in_the_band() {
-        let mut run = Run12::default();
-        run.free70 = every(40_250 * MS, 44_250 * MS, 250 * MS, 80, 200);
-        run.free70
-            .extend(every(44_250 * MS, 49_250 * MS, 50 * MS, 70, 300));
-        run.free70
-            .extend(every(49_250 * MS, 60 * SEC, 250 * MS, 70, 150));
+        let run = Run12 {
+            free70: [
+                every(40_250 * MS, 44_250 * MS, 250 * MS, 80, 200),
+                every(44_250 * MS, 49_250 * MS, 50 * MS, 70, 300),
+                every(49_250 * MS, 60 * SEC, 250 * MS, 70, 150),
+            ]
+            .concat(),
+            ..Run12::default()
+        };
         let v = run.reads(PASS);
         assert_eq!(v["free70_updates"], json!(43), "{v}");
     }
