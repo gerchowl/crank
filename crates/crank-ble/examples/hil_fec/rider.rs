@@ -4086,6 +4086,26 @@ mod tests {
         }
     }
 
+    /// A released trainer on a 3 km/h road (0.0093 m/s per rpm) gives page 25 a few watts in
+    /// both windows: below ADR-0007 §2's 8 W floor that is no result, whatever the rider says.
+    #[tokio::test(start_paused = true)]
+    async fn check12_a_3_kmh_road_is_no_result() {
+        const CRAWL: Road = Road {
+            speed_per_rpm: 3.0 / 3.6 / 90.0,
+            ..ROAD
+        };
+        for answer in [&["n"], &["y"]] {
+            let text = check12_text(Plan {
+                road: &CRAWL,
+                answers: answer,
+                ..Plan::default()
+            })
+            .await;
+            let v = check12_reads(&text, "no result: power under Free below the 8 W floor");
+            assert!(v["free70_w"].as_f64().is_some_and(|w| w < 8.0), "{v}");
+        }
+    }
+
     /// Check 12's releasing (answered `y`) and non-releasing (answered `n`) sim captures.
     async fn check12_bases() -> (String, String) {
         let released = check12_text(Plan {
@@ -4263,6 +4283,10 @@ mod tests {
             "{row}"
         );
         assert!(row.contains("answer `s` if you shifted"), "{row}");
+        assert!(
+            row.contains("(`y` easier / `n` not easier / `s` I shifted gear)"),
+            "{row}"
+        );
         assert!(
             Cue::StayInGear
                 .text()
