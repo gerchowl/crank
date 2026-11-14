@@ -13,14 +13,16 @@
 use crate::backend::{Backend, DeviceMode};
 use crate::dto::{
     CompiledView, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, DslProblem, KnownDevice,
-    LinkIntent, LinkPhase, LinksId, PairedDevice, ReleaseReason, RideLoaded, RideOutcome,
-    RideRecord, RideStatusView, RideSummary, ScannedDevice, WorkoutDetail, WorkoutSummary,
+    LinkIntent, LinkPhase, LinksId, PairedDevice, ReleaseReason, RideEnding, RideLoaded,
+    RideOutcome, RideRecord, RideStatusView, RideSummary, ScannedDevice, UiChannelId, UiState,
+    WorkoutDetail, WorkoutSummary,
 };
 use crate::error::{ApiError, ErrorCode};
 use crate::keeper::channel::{Channels, LinkSink};
 use crate::keeper::run::{self as keeper, Hold, Note};
 use crate::library::Library;
 use crate::recorder::{RideMeta, StoreRecorder};
+use crate::ui::{RideSlot, Ui, UiSink};
 use crank_ble::{Pairing, RideGate};
 use crank_devices::{
     Clock, CommandSeq, ControlMode, DeviceInfo, DeviceRef, HeartRateLink, RiderConfig, SeqSource,
@@ -32,7 +34,7 @@ use crank_domain::workout::{
 };
 use crank_engine::{
     CommandError, Engine, EngineCmd, EngineHandle, MetricId, MonotonicClock, RideSetup, RideState,
-    StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts, Tuning,
+    SeriesStore, StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts, Tuning,
 };
 use crank_store::{Device, JsonColumn, RideListing, SettingJson, Store};
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
@@ -287,6 +289,8 @@ struct Session {
     /// The engine task or thread: ending it drops the device links.
     task: EngineTask,
     ride_id: String,
+    /// The ride's display series, which its engine appends to (ADR-0001 §4.3.3).
+    series: SeriesStore,
     /// The `ride` and `device` spans (ADR-0001 §7.1). `reap` closes them the moment it takes the
     /// session out, so no wait for the engine can leave them open at a quit; a quit that gives up
     /// before the reap closes them through the session ([`Core::shutdown`]). vigil exports no span
@@ -833,6 +837,7 @@ impl Inner {
     /// A `ride_load` is over: clear the flag and wake a quit waiting for it.
     fn finish_loading(&self) {
         self.loading.store(false, Ordering::SeqCst);
+        self.ui.load_over();
         self.load_done.notify_waiters();
     }
 }
@@ -883,6 +888,8 @@ struct Inner {
     keeper: keeper::Handle,
     /// The windows' link channels (`links_open`).
     link_channels: Channels,
+    /// The snapshot state and the windows' snapshot channels (`ui_open`, ADR-0001 §4.3).
+    ui: Arc<Ui>,
     /// Lets a test interleave a command into `discard` (#278).
     #[cfg(test)]
     discard_hook: Rendezvous,
@@ -1016,6 +1023,17 @@ fn paired(d: Device) -> Option<PairedDevice> {
         model: d.model,
     })
 }
+/// The pairing of each role, trainer then strap.
+fn paired_roles(devices: Vec<Device>) -> [Option<PairedDevice>; 2] {
+    let mut roles = [None, None];
+    for d in devices.into_iter().filter_map(paired) {
+        let role = &mut roles[usize::from(d.role == DeviceRole::HeartRate)];
+        if role.is_none() {
+            *role = Some(d);
+        }
+    }
+    roles
+}
 fn pairing(d: &Device) -> Pairing {
     Pairing::from_connection(
         &DeviceRef(d.platform_id.clone()),
@@ -1129,6 +1147,9 @@ impl Core {
         engine_host: EngineHost,
     ) -> Result<Self, ApiError> {
         let clock_for_idle = clock.clone();
+        let keeper = keeper::Handle::new();
+        let ui = Arc::new(Ui::new(keeper.view(), REQUEST_TIMEOUT));
+        ui.set_paired(paired_roles(store.devices()?));
         Ok(Self(Arc::new(Inner {
             store,
             backend,
@@ -1150,8 +1171,9 @@ impl Core {
             dsl_ids: AtomicU64::new(1),
             quits: watch::channel(0).0,
             next_stream: AtomicU32::new(1),
-            keeper: keeper::Handle::new(),
+            keeper,
             link_channels: Channels::new(),
+            ui,
             #[cfg(test)]
             discard_hook: Rendezvous::default(),
             #[cfg(test)]
@@ -1322,6 +1344,53 @@ impl Core {
         self.0.link_channels.ack(window, id, seq)
     }
 
+    /// Open the window's snapshot channel (ADR-0001 §4.3), closing that window's older ones:
+    /// frames of the full state ([`UiState`]) plus the series from the channel's cursors go to
+    /// `sink`, the first at once, then each once the window acked the last
+    /// ([`Core::ui_ack`]) and a change, new points or the 1 s heartbeat is due, at most 10 per
+    /// second. A new channel's series start at index 0 (the backfill), at most 256 points per
+    /// series per frame. It works with or without a ride.
+    ///
+    /// # Errors
+    /// `Conflict` with 16 channels of other windows open; `Storage` when the pairings cannot
+    /// be read to start the link keeper.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn ui_open(
+        &self,
+        window: Option<String>,
+        sink: impl UiSink,
+    ) -> Result<UiChannelId, ApiError> {
+        self.keeper()?;
+        self.0.ui.open(window, self.0.clock.clone(), sink)
+    }
+    /// The window has applied frame `seq` of its snapshot channel: the next frame may go. An
+    /// ack of any frame but the last one sent is ignored.
+    ///
+    /// # Errors
+    /// `NotFound` for a channel `window` does not hold (another window's, or one closed by a
+    /// page load, a reopen or a failed send).
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn ui_ack(
+        &self,
+        window: Option<&str>,
+        channel: UiChannelId,
+        seq: u32,
+    ) -> Result<(), ApiError> {
+        self.0.ui.ack(window, channel, seq)
+    }
+    /// The snapshot channel's state now, without the series: for tests, the CLI and MCP
+    /// (ADR-0001 §4.3.8). Not a command.
+    #[must_use]
+    pub fn snapshot(&self) -> UiState {
+        self.0.ui.snapshot()
+    }
+
     /// Scan for trainers and straps for `for_ms` (default 5 s, 0.2–15 s), or until the
     /// scan source ends.
     ///
@@ -1449,6 +1518,7 @@ impl Core {
             .ok_or_else(|| ApiError::new(ErrorCode::Internal, "pairing vanished"))?;
         self.0.backend.remember(pairing(&kept));
         self.keeper()?.note(Note::Pairings(self.pairings()?));
+        self.0.ui.set_paired(paired_roles(self.0.store.devices()?));
         paired(kept).ok_or_else(|| ApiError::new(ErrorCode::Internal, "unknown device kind"))
     }
 
@@ -1471,6 +1541,7 @@ impl Core {
             self.0.backend.forget(&d.platform_id);
         }
         self.keeper()?.note(Note::Pairings(self.pairings()?));
+        self.0.ui.set_paired(paired_roles(self.0.store.devices()?));
         any.then_some(())
             .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "nothing paired for that role"))
     }
@@ -1690,6 +1761,9 @@ impl Core {
                 && let Some(session) = st.session.take()
             {
                 let status = session.handle.status();
+                if !force && status.state != RideState::Finished {
+                    self.0.ui.unload(ride_id);
+                }
                 st.last = (status.state == RideState::Finished)
                     .then(|| (session.ride_id.clone(), StreamStatus::from(&status)));
                 st.last_release = Some(session.release.clone());
@@ -1879,6 +1953,7 @@ impl Core {
         }
         // From here every exit (error, cancellation, panic) clears the flag.
         let mut loading = LoadGuard::new(self.0.clone());
+        self.0.ui.load_started();
         // Connecting takes seconds: it runs outside the state lock, and `ride_status`
         // reports `loading` meanwhile.
         // A quit cancels a build still connecting: dropping it closes its spans, which would
@@ -1909,6 +1984,12 @@ impl Core {
         st.forcing = None;
         st.starting = None;
         let ride_id = session.ride_id.clone();
+        self.0.ui.install(RideSlot::new(
+            ride_id.clone(),
+            workout_id.clone(),
+            session.handle.subscribe(),
+            session.series.clone(),
+        ));
         st.session = Some(session);
         drop(st);
         self.keeper()?.note(Note::Loaded(ride_id.clone()));
@@ -2088,6 +2169,7 @@ impl Core {
         let engine_activity: Arc<dyn Fn(bool) + Send + Sync> = activity.clone();
         #[cfg(test)]
         let engine_control = trainer.control.clone();
+        let series = SeriesStore::default();
         let (engine, handle) = Engine::new(
             self.0.clock.clone(),
             Some(trainer),
@@ -2100,6 +2182,7 @@ impl Core {
                 activity(on);
             }),
         );
+        let engine = engine.with_series(series.clone());
         #[cfg(test)]
         let task = EngineTask::spawn(
             self.0.engine_host,
@@ -2161,6 +2244,7 @@ impl Core {
                 streams: BTreeMap::new(),
                 task,
                 ride_id,
+                series,
                 spans,
                 release,
                 _hold: handed.hold,
@@ -2188,7 +2272,18 @@ impl Core {
     }
     async fn ride_cmd(&self, cmd: EngineCmd) -> Result<(), ApiError> {
         let engine = self.engine().await?;
-        bounded(engine.send(cmd)).await
+        self.watched(bounded(engine.send(cmd)).await)
+    }
+    /// `answer` of a bounded request to the loaded ride's engine: a timeout marks the ride
+    /// `engine_unresponsive` in the snapshot (ADR-0001 §4.3.5).
+    fn watched<T>(&self, answer: Result<T, ApiError>) -> Result<T, ApiError> {
+        if answer
+            .as_ref()
+            .is_err_and(|e| e.code == ErrorCode::EngineUnresponsive)
+        {
+            self.0.ui.unresponsive();
+        }
+        answer
     }
     /// Start the loaded ride.
     ///
@@ -2210,7 +2305,7 @@ impl Core {
             st.starting = Some(found.1.clone());
             found
         };
-        if let Err(error) = bounded(engine.send(EngineCmd::Start)).await {
+        if let Err(error) = self.watched(bounded(engine.send(EngineCmd::Start)).await) {
             let mut st = self.0.state.lock().await;
             if st.starting.as_deref() == Some(ride_id.as_str()) {
                 st.starting = None;
@@ -2403,6 +2498,14 @@ impl Core {
             // A late end of a replaced ride (#370) clears nothing of the newer ride's: neither
             // its signal nor the last-end record that its End reports.
             if self.clear_signal(ride_id) {
+                self.0.ui.ended(
+                    ride_id,
+                    if closed == Closed::Finished {
+                        RideEnding::Finished
+                    } else {
+                        RideEnding::Forced
+                    },
+                );
                 if closed == Closed::Finished {
                     if st.last.is_none() {
                         st.last = Some((ride_id.to_owned(), self.0.idle.clone()));
@@ -2677,9 +2780,10 @@ impl Core {
         let (engine, id) = self.owned(window, stream).await?;
         bounded(engine.stream_snapshot(id)).await
     }
-    /// A window was destroyed or reloads: drop its streams and its link channel.
+    /// A window was destroyed or reloads: drop its streams, its link channel and its snapshot
+    /// channels.
     ///
-    /// The link channel is dropped **now**, when the close is issued, not when the returned
+    /// The link and snapshot channels are dropped **now**, when the close is issued, not when the returned
     /// future runs: the caller issues it from the page-load event, before the new page can
     /// open its own channel, so a close can only drop a channel opened before it and never the
     /// new page's (whose acks would otherwise answer `NotFound`, with no resync to recover).
@@ -2689,6 +2793,7 @@ impl Core {
     /// it does not take the request, the window's streams still end, as their sink fails.
     pub fn close_window(&self, window: String) -> impl Future<Output = ()> + Send + 'static {
         self.0.link_channels.close(&window);
+        self.0.ui.close_window(&window);
         let core = self.clone();
         async move { core.close_streams(window).await }
     }
@@ -2765,6 +2870,9 @@ mod contract_tests;
 #[cfg(test)]
 #[path = "keeper/core_tests.rs"]
 mod keeper_tests;
+#[cfg(test)]
+#[path = "ui_core_tests.rs"]
+mod ui_core_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3783,7 +3891,7 @@ mod tests {
     }
 
     /// A ride is under way when the application quits.
-    async fn riding(radio: &FakeRadio, dir: &std::path::Path) -> Core {
+    pub(super) async fn riding(radio: &FakeRadio, dir: &std::path::Path) -> Core {
         let core = open(dir, radio);
         core.device_pair("neo".into(), DeviceRole::Trainer)
             .await
