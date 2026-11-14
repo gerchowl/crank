@@ -99,9 +99,10 @@ ride ridden on it: `ride.route_json` carries what the ride needs to show itself.
 
 ### 2.2 Import
 
-One import call per file: `Core::route_import(bytes, file_name, options) -> RouteImportOutcome`, where `options`
-holds the track index of a multi-track file (§2.2.1); surface matching against the local index needs no option
-(§2.6.1). The outcome is the route plus an **import report**, which the UI
+One import per file or grade-profile text, through the commands of §2.2.6 (amended 2026-11-14): the core opens
+the file dialog and reads the file itself, a multi-track file is answered with its tracks to pick from (§2.2.1),
+and surface matching against the local index needs no option (§2.6.1). The outcome is the route plus an
+**import report**, which the UI
 shows before the route is saved: points kept, points dropped and why, gaps filled, elevation kind, distance,
 ascent, and the surface sources. Nothing is dropped or filled silently.
 
@@ -213,6 +214,111 @@ surface   = "smooth_paved" | "rough_paved" | "gravel" | "grass" | "sand" | "cobb
   the workout DSL's `MAX_NESTING_DEPTH`.
 - Elevation starts at 0 m and is the integral of the grade (`ElevationKind::Exact`): no smoothing, because there
   is no noise. The slew limit of §2.3.5 still softens steps between segments.
+
+#### 2.2.6 Import commands: preview, save, progress, cancel
+
+**Amended 2026-11-14 (#541).** This settles how an import crosses IPC. It answers the owner's requests of 2026-11-08: progress and cancel on #541, and the progress dialog on #547. The commands below replace the single `Core::route_import(bytes, file_name, options)` of §2.2's first draft. The surface matching of §2.6.1 and the import report of §2.2 are unchanged.
+
+| Command | What it does | Answer |
+|---|---|---|
+| `route_import(channel)` | Opens the native file dialog, reads the picked file (reporting progress on `channel`) and parses it. Stores nothing | `RouteImportOutcome` |
+| `route_import_track(import_id, track)` | Parses one track or route of a pending file import from the bytes already read (§2.2.1). Stores nothing | `RouteImportOutcome` (a `Preview`) |
+| `route_import_profile(text)` | Parses grade-profile text (§2.2.5): the text crosses IPC, at most 256 KiB (§2.2.4). Stores nothing | `RouteImportOutcome` (a `Preview`) |
+| `route_import_cancel(import_id)` | Cancels an import that is in flight or pending | nothing |
+| `route_save(import_id, name)` | Stores the previewed route under a new id, with its original file (§2.1) | the stored route's listing |
+| `route_list()`, `route_get(id)`, `route_delete(id)` | The library (§2.1). Deleting keeps the rides ridden on it | listings, one route, nothing |
+
+```rust
+pub enum RouteImportOutcome {
+    Preview { import_id: ImportId, route: Route, report: RouteImportReport },
+    ChooseTrack { import_id: ImportId, tracks: Vec<TrackChoice> },   // §2.2.1
+    Cancelled,          // the dialog was dismissed, or route_import_cancel arrived before the answer
+}
+pub enum RouteImportProgress {                    // every message names its import
+    Read { import_id: ImportId, bytes_read: u64, bytes_total: u64 },
+    Parse { import_id: ImportId },
+    Done { import_id: ImportId },
+}
+```
+
+**1. Two steps.** `route_import`, `route_import_track` and `route_import_profile` parse the input and answer a preview. Nothing is stored until `route_save`. This keeps §2.2's rule that the report is shown before the route is saved. It also means a cancel at any point before the save leaves the store untouched, as the owner required on #541.
+
+- **Where previews live.** A preview is held in memory in the `Core` as a *pending import*, keyed by `import_id`. An `import_id` is an opaque string the core issues and never reuses within a process. A pending import belongs to the calling window and holds:
+  - the file's bytes, which `route_import_track` reparses and `route_save` stores as `route.original`;
+  - the file's name;
+  - the parsed route and its report, once there is one.
+- **Bound: one pending import per window, and at most N = 2 in all.**
+  - A new `route_import` or `route_import_profile` from a window that already has an import in flight or pending cancels that one first. The window's UI shows one import at a time (#547), so the old one has no one left to save it.
+  - A request beyond 2 in all is refused with `Conflict`.
+  - Why 2: crank opens one window (`tauri.conf.json`), so per window is the rule that actually applies. The global 2 leaves room for a second window without letting memory grow with the number of windows.
+  - The memory cost: a pending import holds at most the 32 MiB file (§2.2.4) plus the parsed route. At most 200 000 points of 56 bytes each (`RoutePoint` in memory) is about 11 MiB, so about 43 MiB per import and about 86 MiB for the bound.
+  - An import whose parse is still running after its cancel (point 3) counts against the bound until its thread ends, so the bound holds.
+- **When a pending import is dropped:**
+  - on `route_save` and on `route_import_cancel`;
+  - when a newer import from the same window replaces it;
+  - when its window is destroyed or its page (re)loads, through `Core::close_window`, the rule streams and the link channel already follow.
+
+  There is no timeout: the window's lifetime bounds a pending import.
+- **Saving.** `route_save(import_id, name)` stores the pending route under a fresh id, as rides get one (`put_route`, §2.1), then drops the pending import.
+  - For a file route, `name` replaces the file's name. A blank name is refused (`InvalidInput`), because a route is never unnamed (§2.1).
+  - A grade profile is named by its text's first label: `Route::check` reparses the stored text and refuses any other name (§2.1). So for a grade profile `name` must equal the parsed name, and anything else is `InvalidInput` ("a grade profile is named by its first label: edit the text").
+  - The file and its SHA-256 are stored with a file route; a grade profile has no file.
+
+**2. The file's bytes never cross IPC.** The page never names a path and never sends file contents.
+
+- **Who opens the dialog.** `crank-desktop`'s `route_import` opens the native dialog itself, through `tauri-plugin-dialog` 2.8.4, which is already a dependency (`lib.rs` uses it for message dialogs):
+  - the call is `window.dialog().file().add_filter("Routes", &["gpx", "fit"]).set_parent(&window).blocking_pick_file()`;
+  - `FileDialogBuilder::blocking_pick_file` returns `Option<FilePath>`, `None` when the rider closes the dialog. It must not run on the main thread, which the plugin documents and an async command satisfies;
+  - `FilePath::into_path` (`tauri-plugin-fs` 2.7.1) gives the path. The `Url` form (Android `content://`) does not occur on desktop and is refused (`InvalidInput`).
+- **No new permission.** The Rust API needs no capability: capabilities gate the plugin's JavaScript commands, and `dialog:allow-open` stays unallowed. No fs plugin, no fs scope and no path parameter is added to any command.
+- **Who reads the file.** The core does. The facade takes an open file, not a path: `Core::route_import(window, file_name, file: impl Read + Send, len, progress)`. So `crank-cli` and `crank-mcp` can import a file they opened themselves.
+- **GPX or FIT.** The format is chosen by the file's content: FIT's `.FIT` signature at bytes 8 to 11 (#540), else GPX. The extension filter only narrows what the dialog shows.
+- Drag-and-drop is #647: Tauri delivers a drop as a Rust window event with OS-supplied paths, so it can keep this rule.
+
+**3. Progress.** `route_import` takes a `Channel<RouteImportProgress>`, the pattern of `open_stream` and `links_open`.
+
+- **Messages:**
+  - `Read` comes first, at 0 bytes, before anything is read. The page then knows the `import_id` and can cancel during the read. It repeats at most every 100 ms (≤ 10 Hz) and once at `bytes_total`.
+  - `Parse` follows once the file is in memory.
+  - `Done` comes just before the command answers.
+  - #553 adds a `Decimate` stage between `Parse` and `Done` when it lands.
+  - The page picks a spinner or a determinate bar from `bytes_total` (#547).
+- **How the read is counted.** A counting reader, `countio::Counter` (countio 0.3.0, MIT, crates.io), wraps the file. The core reads it into one buffer in 64 KiB chunks and reports `Counter::reader_bytes`.
+  - Considered instead: `progress-streams` 1.1.0 (a callback per `read`, unmaintained since 2019) and `read-progress` 0.5.0 (little use).
+  - The GPX parser needs no hook. It takes the whole file (`import_gpx`, §2.2.1, #539), and an in-memory parse has no byte position worth showing. This corrects an assumption in the owner's #541 comment that #539's reader exposes a progress callback: it does not, and with this design it need not.
+- **Size checks.** `bytes_total` is the file's length from its metadata, read before reading. A file over 32 MiB is refused `TooLarge` before a byte is read. The read stops at 32 MiB + 1 byte if the file grows while being read.
+- **A failed send.** If a send on the channel fails, the window is gone, and the import is cancelled.
+
+**Cancel** is an explicit `route_import_cancel(import_id)`. A dropped channel is not a reliable signal: the core sees it only on its next send, and none comes during a parse. What the cancel does depends on where the import is:
+
+| The import is | Cancel does |
+|---|---|
+| In the dialog (no `import_id` yet) | Nothing to cancel. The dialog's own Cancel ends it, and `route_import` answers `Cancelled` |
+| Reading | Sets the import's cancel flag. The read loop checks it before each 64 KiB chunk, so the read stops within one chunk. The bytes are dropped, and `route_import` answers `Cancelled` |
+| Parsing | The parser has no hook (#539), so the parse runs to its end on its blocking thread, bounded by §2.2.4's 32 MiB and 200 000 points. `route_import` answers `Cancelled` as soon as the cancel arrives. The parse's result is dropped when the thread ends and never becomes a pending import |
+| Pending (a `Preview` or `ChooseTrack` was answered) | Drops it |
+| Saved, cancelled already, or unknown | `NotFound` |
+
+In every case nothing has been stored, so no cancel touches the store.
+
+**4. Multi-track files.** A file with several tracks or routes answers `ChooseTrack { import_id, tracks }` (§2.2.1), and the import stays pending with its bytes. `route_import_track(import_id, track)` parses that track from those bytes (`RouteImportOptions { track }`) and answers a `Preview` under the same `import_id`. The rider may pick again while the import is pending. An index that names no track is `NoTrack` (`InvalidInput`).
+
+**Refusals** (the commands PR's mocks model each, with its core file and symbol):
+
+- `route_import`:
+  - every §2.2.4 `RouteImportError` (`InvalidInput`, with the position);
+  - an unreadable file (`InvalidInput`, naming the file);
+  - the pending bound (`Conflict`);
+  - `Invariant` (`Internal`, a bug).
+- `route_import_track`: `NotFound` for an unknown import, and `InvalidInput` for a grade-profile import or `NoTrack`.
+- `route_import_profile`: `InvalidInput` with the `RouteDslError`.
+- `route_import_cancel`: `NotFound`.
+- `route_save`:
+  - `NotFound`;
+  - `InvalidInput` for an import with no `Preview` yet, a blank name, or a renamed grade profile;
+  - `Storage`.
+- `route_get`, `route_delete`: `NotFound` and `Storage`.
+- `route_list`: `Storage`.
 
 ### 2.3 Elevation to grade
 
@@ -870,7 +976,7 @@ case, unchanged.
 |---|---|
 | R1 route types, GPX import, grade-profile text | Property tests: every grade-profile text round-trips (parse → print → parse equal, print idempotent). Every §2.2.4 limit and refusal has a test that fails without it (the oversize file, too many points, (0, 0) dropped and counted, a 10 km jump, an XML bomb (a DOCTYPE with nested entities) refused, depth 33 refused). Missing elevation: a 400 m gap filled and counted, a 600 m gap refused, no elevation at all → `ElevationKind::None`. `500m` refused with the minutes message. Multi-track files list their tracks. The fixture of `route_grade.py` imports to the same distance as the model (±0.1 %) |
 | R2 FIT course | A course file round-trips its points; a FIT activity refuses with `NotACourse`; semicircle conversion tested at ±180°; `enhanced_altitude` preferred |
-| R3 store | `put_route`/`get_route` bit-exact (f64 NaN included) by property test; the migration is forward-only; deleting a route keeps its rides readable |
+| R3 store | `put_route`/`get_route` bit-exact (f64 NaN included) by property test; the migration is forward-only; deleting a route keeps its rides readable. Commands (§2.2.6): a cancel while reading, while parsing and while pending each leaves the store untouched and the pending import dropped; `Read` messages at most 10 Hz, the first at 0 bytes; the pending bound (a second import from a window replaces the first, a third in all is `Conflict`); a window close or reload drops its imports; no command takes a path or file bytes (the bindings show it); a renamed grade profile is refused at save; the mocks model every refusal of §2.2.6 |
 | R4 elevation → grade | A refinement fixture `route_grade.json` emitted by `route_grade.py` (smoothed profile of every fixture segment, the pipeline trace of the 0 → 25 % step); the Rust `Profile` and pipeline match it within 1e-9; the flake check `route-grade-model` runs the model |
 | R5 speed model | A refinement fixture `route_speed.json` from `route_speed.py` (the worked examples' per-tick traces); the Rust integrator matches within 1e-9 m/s; the flake check `route-speed-model` runs the model; both models are also run by `just model` |
 | R6 local surface index | No network call outside the Map data download, and none from `route_import`, `route_resurface` or a ride (a mock transport that fails the test on any other request). The md5 is checked and a mismatch refuses the region. A filtered fixture extract (a few km², committed under the size limit) builds an index whose way count, classes and matched surfaces are pinned. The `.pbf` is deleted after the build, and the builder's peak memory stays under its bound with a run size that forces spills on the fixture (§2.6.1, builder memory); an unsorted PBF is refused. A route outside every region falls back and names the gap. A stale region (> 180 days) is marked. `deps-edges` fails when `crank-engine` or `crank-domain` depends on `crank-osm` or `reqwest`. Attribution is present in Map data, the import report and the summary DTO |
@@ -938,7 +1044,7 @@ In order. Each issue cites the section it builds and the acceptance of §2.9.
 |---|---|---|---|---|
 | R1 | #539 | Route model and GPX + grade-profile import (ADR-0005 §2.1, §2.2.1–2.2.2, §2.2.4–2.2.5) | `crank-domain::route` types, `Profile`; GPX parser (`quick-xml`, hardened), missing-elevation rules, limits, import report; grade-profile grammar, parser, printer | — |
 | R2 | #540 | FIT course import with the shared `crank-fit` decoder (ADR-0005 §2.2.3) | `crank-fit` crate over `fitparser`, course messages → `Route`; the decoder #257 reuses | R1 |
-| R3 | #541 | Route store and `route_import` / `route_list` / `route_get` / `route_delete` commands (ADR-0005 §2.1, §2.2) | migration, `route` table, `ride` columns, bit-exact round trip, `Core` facade + Tauri commands + bindings | R1 |
+| R3 | #541 | Route store and `route_import` / `route_list` / `route_get` / `route_delete` commands (ADR-0005 §2.1, §2.2) | migration, `route` table, `ride` columns, bit-exact round trip, `Core` facade + Tauri commands + bindings; the import contract of §2.2.6 (`route_import`, `route_import_track`, `route_import_profile`, `route_import_cancel`, `route_save`; amended 2026-11-14) | R1 |
 | R4 | #542 | Elevation → grade profile and the send pipeline (ADR-0005 §2.3) | resampling, Gaussian smoothing, cap, scaling, slew/grid/period as pure functions; `route_grade.json` refinement fixture; flake check `route-grade-model` | R1 |
 | R5 | #543 | Speed model (a) (ADR-0005 §2.4) | integrator in `crank-domain`, `steady_speed`; `route_speed.json` refinement fixture; flake check `route-speed-model`; `just model` runs all three models | R4 |
 | R6 | #544 | Local OSM surface index: region download, index build, matching (ADR-0005 §2.6) | Geofabrik region list and download with md5 check (`crank-core`); `crank-osm` (PBF filter over `osmpbf`, surface classes, index, matching); `surface_region`/`surface_way` tables; `route_resurface`; fallback, attribution, `deps-edges` rule | R3, R4 |
