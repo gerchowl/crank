@@ -37,6 +37,7 @@ import type {
   WorkoutBlock,
   WorkoutDetail,
 } from "../bindings";
+import { useAthleteHr } from "../athleteHr";
 import { Num } from "../Num";
 import { navigate } from "../router";
 import {
@@ -51,6 +52,7 @@ import { openKeys } from "../shell/keys";
 import { BannerBand, banners, trainerNow } from "./banners";
 import { useFit } from "./fit";
 import { markForcedEnd } from "./forcedEnds";
+import { hrZone, zoneText } from "./hrZone";
 import {
   releaseRide,
   useSeries,
@@ -359,6 +361,7 @@ function Screen({ session }: { session: RideSession }) {
   const power = useSubscribe("power", { rateHz: 4 }).sample;
   const cadence = useSubscribe("cadence", { rateHz: 2 }).sample;
   const hr = useSubscribe("hr", { rateHz: 2 }).sample;
+  const hrRefs = useAthleteHr();
   const detail = useDetail(session);
   const compiled = detail?.compiled ?? null;
   const series = useSeries(session);
@@ -493,6 +496,8 @@ function Screen({ session }: { session: RideSession }) {
   // sample was; HR lost blanks the HR tile.
   const round = (v: number | null | undefined, blank = false) =>
     v == null || blank ? null : Math.round(v);
+  // The zone of the value the tile shows, so the two never disagree (§18.3 "Heart-rate zone").
+  const zone = hrZone(round(hr?.v, loss.hr), hrRefs);
 
   const next = blockIdx === null ? undefined : blocks[blockIdx + 1];
   // The plan dims while it does not run: the rider's pause and a trainer loss (§5.2 States).
@@ -739,8 +744,17 @@ function Screen({ session }: { session: RideSession }) {
               <Heart {...icon} />
               <span data-series-label>Heart rate</span>
             </span>
+            {/* The zone of the shown value, in words (§18.3 "Heart-rate zone"); none without HR or references. */}
             <span className="readout-sub">
-              {loss.hr ? "HR strap lost" : ""}
+              {loss.hr ? (
+                "HR strap lost"
+              ) : zone ? (
+                <Num data-slot="hr-zone" data-live>
+                  {zoneText(zone)}
+                </Num>
+              ) : (
+                ""
+              )}
             </span>
             <span className="readout-value">
               <Value

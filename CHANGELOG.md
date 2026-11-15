@@ -10,6 +10,11 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- The heart-rate zone beside the live HR on the ride screen (DESIGN §18.3 "Heart-rate zone"): Friel's seven bike
+  zones with an LTHR, five zones of % HR max without, none with neither; Settings → Athlete model lists both
+  references and, with neither known, says the ride shows no zone. LTHR joins the athlete model's inputs
+  (`spec/ONBOARDING.md` §3); nothing sets the references until Settings → Athlete model (#113)
+  ([#586](https://github.com/gerchowl/crank/issues/586))
 - Workout editor commands, no UI yet (ADR-0001 §4, DESIGN §5.7): `parse_dsl` (the tree with fresh core-owned node
   ids, or the problem with its span: a text that does not parse is an answer, not an error), `print_dsl` (canonical
   text) and `compile_workout` (a draft's compiled view; `invalid_input` past the compiler's bounds). The app's test
