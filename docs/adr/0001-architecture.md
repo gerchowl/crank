@@ -1,6 +1,6 @@
 # ADR-0001: Architecture, crate layout, Rust↔UI contract, persistence, testing
 
-- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10); 2026-11-11 (#585: §7.2 `slew` fields; 2026-11-15: track 2 keeps them)
+- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10); 2026-11-11 (#585: §7.2 `slew` fields; 2026-11-15 round 10, the hybrid, keeps them)
 - **Date:** 2026-10-13
 - **Issue:** #26
 - **Related:** ADR-0002 (BLE + `Trainer`), #24 (first-principles UX), #28 (scaffold), #2 #4 #12–#19
@@ -811,10 +811,12 @@ the reasons are in the ADR section named:
 | `slew.easeS` | s, 0.25 s grid: the ease time, rest to full rise rate; Ruckig's acceleration limit `2·rise/τ` and jerk limit `4·rise/τ²` | 2 | 1–4 | ADR-0002 §7.10.4 |
 
 `slew` is implemented by #620. A new group changes no existing field's meaning or unit, so `Tuning::VERSION` stays
-1; a stored layer written before it resolves unchanged, because the merge starts from the defaults. ADR-0002 §7.10's
-track 2 (2026-11-15: Ruckig towards the plan line with a hard clamp, relaxed promises) keeps these three fields and
-their mapping unchanged. Its own constants (a 2-tick look-ahead, `N_ERRORS` = 3 refusals before the clamp chain) are
-engine constants, not tuning: a rider has no reason to change them, and the promises of §7.10.6 are measured for them.
+1; a stored layer written before it resolves unchanged, because the merge starts from the defaults.
+
+ADR-0002 §7.10's round 10 (2026-11-15, the owner's hybrid: track 1's planning, track 2's fallback after Ruckig
+refusals) keeps these three fields and their mapping. Its own constants are engine constants, not tuning: a rider has
+no reason to change them, and the properties of ADR-0002 §7.10.6 are checked for them. They are `N_ERRORS` = 3
+refusals before the clamp chain, and a target velocity kept one part in a million inside the rates.
 
 **Alternatives.** A config file (TOML) next to the database: a second source of truth that a ride does not record,
 rejected. Ticks in the struct: ties a rider's setting to the engine's sampling, rejected. Falling back to the
