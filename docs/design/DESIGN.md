@@ -2262,8 +2262,9 @@ after ± and the coach. The commanded target moves towards the plan line:
 
 A ramp is followed on the line, with its start and end corners eased too. If the trajectory library refuses a
 calculation (rare: a known upstream bug class), a simpler limiter takes over until it answers again (ADR-0002 §7.10.2,
-X5, round 10). The rider sees no change of behaviour beyond a landing that can take a few seconds longer; the target
-still never rises above the plan. The soft start is the same curve, started
+X5, rounds 10–11). The target still never rises above the plan, and it still brakes before a known drop. A landing can
+take several times longer, though: a staircase under persistent refusals took 23.5 s where Ruckig takes 8.75 s, and
+a planned fall can lag up to about 16 W more than without refusals. The soft start is the same curve, started
 from the rider's current power. "Caught up" below means the command is
 on the plan line. This section says what the rider sees of it. It amends §5.2, §5.9, §6.5, §17.3 and §18.3,
 which point here.
@@ -2293,7 +2294,9 @@ One target line, the one the trainer is asked to hold:
   commanded target and the controlled target agree within 0.5 W, so wherever compliance counts the band is the
   compliance band; off the line the band is hidden from judgement (Δ hidden, "settling", §5.2) and only shows the
   ease. The plan's raw step is not drawn as a second line: the strip shows the plan's blocks (§19.3).
-- **Ramps** draw on the plan line, with corners eased by at most a watt or two at ordinary ramp slopes. A ramp at or
+- **Ramps** draw on the plan line, with eased corners. At the defaults and ordinary slopes (±10 W/s) a corner cuts up to
+  6.7 W below the line, and where a falling ramp turns into a rising one up to 19.2 W below it (ADR-0002 §7.10). A
+  corner from a rise into a fall can lag up to about 4 W above the falling line. A ramp at or
   above the rider's rate draws the command behind it, as it will be ridden.
 
 ### 19.3 The strip (block timeline) and the road
