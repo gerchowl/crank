@@ -4,8 +4,9 @@
 // ride session and the router, and views only read it.
 //
 // When it completes the result is applied once:
-// - success: the ride session begins (`beginRide`, core truth: the core now holds this ride), and the rider is routed
-//   into it only if they are still on the Workouts view that asked. Anywhere else they are not pulled away: the
+// - success: the core now holds this ride, and the snapshot channel's next frame carries it (`ride`, ADR-0001 §4.3;
+//   the answer is only its id). The rider is routed into the ride screen only if they are still on the Workouts view
+//   that asked; the screen draws the frame's ride. Anywhere else they are not pulled away: the
 //   state stays `loaded` and a non-modal notice offers "Go to ride" (`RideLoadNotice`).
 // - refusal: kept as `refused` until it is seen (#333), and seen exactly once: the notice shows it wherever the rider
 //   is except Workouts; the Workouts view shows it (mounted, or on return) under its workout or, for another pick,
@@ -18,14 +19,13 @@
 import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { commands } from "../bindings";
-import type { ApiError, RideLoaded } from "../bindings";
-import { beginRide } from "../ride/session";
+import type { ApiError } from "../bindings";
 import { getRoute, navigate } from "../router";
 
 export type RideLoadState =
   | { phase: "idle" }
   | { phase: "loading"; workoutId: string; name: string }
-  | { phase: "loaded"; workoutId: string; name: string; loaded: RideLoaded }
+  | { phase: "loaded"; workoutId: string; name: string; rideId: string }
   | { phase: "refused"; workoutId: string; name: string; error: ApiError };
 
 let state: RideLoadState = { phase: "idle" };
@@ -60,12 +60,11 @@ export async function startRideLoad(
     set({ phase: "refused", workoutId, name, error: outcome.error });
     return;
   }
-  beginRide(outcome.data);
   if (getRoute().view === "workouts") {
     set({ phase: "idle" });
     navigate("ride");
   } else {
-    set({ phase: "loaded", workoutId, name, loaded: outcome.data });
+    set({ phase: "loaded", workoutId, name, rideId: outcome.data });
   }
 }
 

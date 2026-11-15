@@ -4,7 +4,7 @@
 // straight runs between consecutive seconds only, and a gap where a second has no sample. No smoothing, no zones.
 import { useId } from "react";
 import type { WorkoutBlock } from "../bindings";
-import type { Point, Series } from "./session";
+import type { Point, Series } from "../stream/ui";
 
 const W = 1000;
 const H = 100;

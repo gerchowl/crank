@@ -12,7 +12,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { navigate, useRoute } from "../router";
-import { currentSession } from "../ride/session";
+import { UiClient, type Timers } from "../stream/ui";
+import { installUi, type UiBackend } from "../stream/uiBackend";
+import { UiProvider } from "../stream/uiHooks";
 import { Workouts } from "./Workouts";
 import { RideLoadNotice } from "./RideLoadNotice";
 import { resetRideLoad, startRideLoad } from "./rideLoad";
@@ -22,9 +24,27 @@ import {
   WARNING,
   apiError,
   compiled,
-  install,
+  install as installBackend,
   type Backend,
 } from "./workoutsBackend";
+
+/**
+ * Install the window's snapshot channel first, then the workouts backend: the mock's `ride_load` pushes the load into
+ * the channel (`loading` on at `loadStarted`, the installed ride and `loading` off at the end), so the view's lock
+ * follows the core as the production code does.
+ */
+const install = (over: Partial<Backend> = {}): Backend => {
+  const ui = installUi();
+  return installBackend({ ui, ...over });
+};
+/** Also hand the UI backend back for tests that drive it directly. */
+const installWithUi = (
+  over: Partial<Backend> = {},
+): { b: Backend; ui: UiBackend } => {
+  const ui = installUi();
+  const b = installBackend({ ui, ...over });
+  return { b, ui };
+};
 
 afterEach(() => {
   cleanup();
@@ -45,7 +65,14 @@ function Routed() {
     </>
   );
 }
-const open = () => render(<Routed />);
+/** A fake clock so the snapshot channel's 2 s watchdog never fires in these tests. */
+const neverClock: Timers = { setTimeout: () => 0, clearTimeout: () => {} };
+const open = () =>
+  render(
+    <UiProvider client={new UiClient(neverClock)}>
+      <Routed />
+    </UiProvider>,
+  );
 const summary = () => screen.findByRole("region", { name: "Compiled summary" });
 
 test("the library list renders from the core's workouts command", async () => {
@@ -107,7 +134,7 @@ test("a validation warning renders with its message", async () => {
 });
 
 test("Ride this loads the picked workout and routes to the ride", async () => {
-  const b = install();
+  const { b, ui } = installWithUi();
   open();
   await userEvent.click(
     await screen.findByRole("option", { name: /Easy spin/ }),
@@ -122,9 +149,9 @@ test("Ride this loads the picked workout and routes to the ride", async () => {
   expect(b.calls.find((c) => c.cmd === "ride_load")?.args).toEqual({
     workoutId: "w-easy",
   });
-  // The ride screen's session is the one ride_load made.
-  expect(currentSession()?.workoutId).toBe("w-easy");
-  expect(currentSession()?.rideId).toBe("ride-1");
+  // The channel carries the loaded ride (ui.rs `Ui::install`): `ride_load`'s mock installed it on the backend's ui.
+  expect(ui.truth.ride?.workoutId).toBe("w-easy");
+  expect(ui.truth.ride?.id).toBe("ride-1");
 });
 
 test("a failing library list shows the error and can be retried", async () => {
@@ -437,7 +464,7 @@ const leave = () => act(() => navigate("settings"));
 const comeBack = () => act(() => navigate("workouts"));
 
 test("leaving Workouts mid-load and coming back is still locked, and the load routes into the right ride", async () => {
-  const b = install();
+  const { b, ui } = installWithUi();
   const release = await startHeldLoad(b, /Easy spin/);
   await leave();
   await comeBack();
@@ -454,30 +481,32 @@ test("leaving Workouts mid-load and coming back is still locked, and the load ro
   await waitFor(() =>
     expect(screen.getByTestId("route").textContent).toBe("ride"),
   );
-  expect(currentSession()?.workoutId).toBe("w-easy");
+  expect(ui.truth.ride?.workoutId).toBe("w-easy");
   expect(b.calls.filter((c) => c.cmd === "ride_load")).toHaveLength(1);
 });
 
 test("a load the core reports as in flight locks a freshly mounted view, and unlocks when it clears", async () => {
-  const b = install({ coreLoading: true });
+  const { ui } = installWithUi({ coreLoading: true });
   open();
   expect(await screen.findByText("Loading ride…")).toBeTruthy();
   expect(locked(await screen.findByRole("option", { name: /Easy spin/ }))).toBe(
     true,
   );
-  b.coreLoading = false;
+  // The core's `loading` clears (another window finished, or the load was cancelled): the next frame carries it off.
+  ui.truth.loading = false;
+  ui.changed();
   await waitFor(() => expect(screen.queryByText("Loading ride…")).toBeNull());
   expect(locked(screen.getByRole("option", { name: /Easy spin/ }))).toBe(false);
 });
 
 test("a load that completes while the rider is elsewhere does not pull them out; the notice offers the ride", async () => {
-  const b = install();
+  const { b, ui } = installWithUi();
   const release = await startHeldLoad(b, /Easy spin/);
   await leave();
   release();
   const notice = await screen.findByText(/Ride loaded: Easy spin/);
   expect(screen.getByTestId("route").textContent).toBe("settings");
-  expect(currentSession()?.workoutId).toBe("w-easy");
+  expect(ui.truth.ride?.workoutId).toBe("w-easy");
   await userEvent.click(
     within(notice.closest("p")!).getByRole("button", { name: "Go to ride" }),
   );

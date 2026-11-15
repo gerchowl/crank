@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-// The Ready sheet (DESIGN §5.4, #526): its state from today's data, and the ride screen before Start showing it.
+// The Ready sheet (DESIGN §5.4, #526, #598): its state from the snapshot frame's `devices`, and the ride screen
+// before Start showing it.
 import {
   act,
   cleanup,
@@ -11,7 +12,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import type { LinkChange } from "../bindings";
+import type { DevicesView, LinkPhase, LinkStatus } from "../bindings";
 import { navigate } from "../router";
 import {
   readyBanner,
@@ -21,20 +22,41 @@ import {
 } from "./ReadySheet";
 import { LINE_MAX } from "./banners";
 import { Ride } from "./Ride";
-import { installRide, type RideWorld } from "./rideBackend";
-import { beginRide } from "./session";
+import { HRM, NEO, installRide, type RideWorld } from "./rideBackend";
+import { resetLeft } from "./session";
+import { UiClient, type Timers } from "../stream/ui";
+import { UiProvider } from "../stream/uiHooks";
+import { devicesOf } from "../stream/uiBackend";
+
+const neverClock: Timers = {
+  setTimeout: () => 0,
+  clearTimeout: () => {},
+};
+
+const devices = (
+  links: {
+    trainer?: LinkStatus | null;
+    strap?: LinkStatus | null;
+  } = {},
+  phases: { trainer?: LinkPhase; strap?: LinkPhase } = {},
+): DevicesView => devicesOf({ trainer: NEO, strap: HRM }, links, phases);
+
+/** Both devices connected (ride holds them with link "ready"). */
+const BOTH_READY = devices({ trainer: "ready", strap: "ready" });
+/** The strap the ride does not hold (phase `not_found`, link null); the ride holds the trainer. */
+const STRAP_NOT_HELD = devices({ trainer: "ready" }, { strap: "not_found" });
+const TRAINER_CONNECTING = devices({
+  trainer: "connecting",
+  strap: "ready",
+});
+const TRAINER_LOST = devices({ trainer: "lost", strap: "ready" });
+const BOTH_LOST = devices({ trainer: "lost", strap: "lost" });
 
 describe("readyView", () => {
   const view = (over: Partial<Parameters<typeof readyView>[0]> = {}) =>
-    readyView({
-      status: true,
-      links: {},
-      hrLinked: true,
-      refused: null,
-      ...over,
-    });
+    readyView({ devices: BOTH_READY, refused: null, ...over });
 
-  test("with no link reported the load's answer holds: the trainer linked, the strap as hrLinked says", () => {
+  test("both devices on ready links are connected and the sheet is ready", () => {
     expect(view()).toMatchObject({
       state: "ready",
       trainer: "connected",
@@ -42,48 +64,40 @@ describe("readyView", () => {
       refused: null,
       canStart: true,
     });
-    expect(view({ hrLinked: false })).toMatchObject({
+  });
+
+  test("the strap row follows devices.strap (#598): a strap the ride does not hold is strap-missing", () => {
+    expect(view({ devices: STRAP_NOT_HELD })).toMatchObject({
       state: "strap-missing",
       hr: "lost",
       canStart: true,
     });
-  });
-
-  test("before the status nothing is known and Start is not offered by the state", () => {
-    expect(view({ status: false })).toMatchObject({
-      state: "loading",
-      trainer: "checking",
-      hr: "checking",
+    expect(view({ devices: BOTH_READY })).toMatchObject({
+      state: "ready",
+      hr: "connected",
     });
   });
 
   test("a trainer link that is not ready holds the start (§5.4)", () => {
-    expect(view({ links: { trainer: "connecting" } })).toMatchObject({
+    expect(view({ devices: TRAINER_CONNECTING })).toMatchObject({
       state: "connecting",
       canStart: false,
     });
-    expect(view({ links: { trainer: "lost" } })).toMatchObject({
+    expect(view({ devices: TRAINER_LOST })).toMatchObject({
       state: "trainer-missing",
       trainer: "lost",
       canStart: false,
     });
   });
 
-  test("the links outrank the load's answer", () => {
-    expect(view({ hrLinked: false, links: { hr: "ready" } }).state).toBe(
-      "ready",
-    );
-    expect(view({ links: { hr: "lost" } }).state).toBe("strap-missing");
-  });
-
-  test("most urgent first: a refusal, then loading, then the trainer, then the strap", () => {
-    const all = { trainer: "lost", hr: "lost" } as const;
-    expect(view({ refused: "start", links: all }).state).toBe("error");
-    expect(view({ status: false, links: all }).state).toBe("loading");
-    expect(view({ links: all }).state).toBe("trainer-missing");
-    expect(view({ links: { trainer: "connecting", hr: "lost" } }).state).toBe(
-      "connecting",
-    );
+  test("most urgent first: a refusal, then the trainer, then the strap", () => {
+    expect(view({ refused: "start", devices: BOTH_LOST }).state).toBe("error");
+    expect(view({ devices: BOTH_LOST }).state).toBe("trainer-missing");
+    const connectingLost = devices({
+      trainer: "connecting",
+      strap: "lost",
+    });
+    expect(view({ devices: connectingLost }).state).toBe("connecting");
   });
 
   test("a refusal is titled by the command the core refused, and the line keeps the devices' state", () => {
@@ -91,38 +105,29 @@ describe("readyView", () => {
       readyBanner(view({ refused })).title.text;
     expect(title("start")).toBe("Could not start");
     expect(title("end")).toBe("Could not unload the ride");
-    const lost = view({ refused: "end", links: { trainer: "lost" } });
+    const lost = view({ refused: "end", devices: TRAINER_LOST });
     expect(lost.state).toBe("error");
     expect(lost.canStart).toBe(false);
-    expect(lost.line).toBe(view({ links: { trainer: "lost" } }).line);
+    expect(lost.line).toBe(view({ devices: TRAINER_LOST }).line);
   });
 
   test("the key row's line follows the devices and never repeats the band", () => {
-    const cases: [Parameters<typeof view>[0], ReadyState, string][] = [
+    const cases: [DevicesView, ReadyState, string][] = [
       [
-        { status: false },
-        "loading",
-        "Start is enabled once the ride has loaded",
-      ],
-      [
-        { links: { trainer: "connecting" } },
+        TRAINER_CONNECTING,
         "connecting",
         "Start is enabled once the NEO is connected",
       ],
+      [TRAINER_LOST, "trainer-missing", "Start needs the NEO connected"],
       [
-        { links: { trainer: "lost" } },
-        "trainer-missing",
-        "Start needs the NEO connected",
-      ],
-      [
-        { hrLinked: false },
+        STRAP_NOT_HELD,
         "strap-missing",
         "Press Start; the trainer waits for you to pedal",
       ],
-      [{}, "ready", "Press Start; the trainer waits for you to pedal"],
+      [BOTH_READY, "ready", "Press Start; the trainer waits for you to pedal"],
     ];
-    for (const [over, state, line] of cases) {
-      const v = view(over);
+    for (const [d, state, line] of cases) {
+      const v = view({ devices: d });
       expect(v.state).toBe(state);
       expect(v.line).toBe(line);
       const b = readyBanner(v);
@@ -135,10 +140,9 @@ describe("readyView", () => {
     const views = [
       view({ refused: "start" }),
       view({ refused: "end" }),
-      view({ status: false }),
-      view({ links: { trainer: "lost" } }),
-      view({ links: { trainer: "connecting" } }),
-      view({ hrLinked: false }),
+      view({ devices: TRAINER_LOST }),
+      view({ devices: TRAINER_CONNECTING }),
+      view({ devices: STRAP_NOT_HELD }),
       view(),
     ];
     for (const v of views) {
@@ -155,6 +159,7 @@ describe("readyView", () => {
 
 beforeEach(() => navigate("ride"));
 afterEach(() => {
+  resetLeft();
   cleanup();
   clearMocks();
 });
@@ -163,29 +168,25 @@ type Rig = ReturnType<typeof installRide>;
 async function open(
   over: Partial<RideWorld> = {},
   opts: {
-    hrLinked?: boolean;
     workoutId?: string | null;
     before?: (rig: Rig) => void;
-    settled?: boolean;
   } = {},
 ) {
-  const rig = installRide(over);
+  const world: Partial<RideWorld> = { ...over };
+  if (opts.workoutId !== undefined) world.workoutId = opts.workoutId;
+  const rig = installRide(world);
   opts.before?.(rig);
-  beginRide({
-    rideId: "ride-1",
-    workoutId: opts.workoutId === undefined ? "w1" : opts.workoutId,
-    hrLinked: opts.hrLinked ?? true,
-  });
-  render(<Ride />);
-  await waitFor(() => expect(rig.base.liveSubs()).toBe(3));
-  if (opts.settled !== false)
-    await waitFor(() => expect(rig.base.count("stream_snapshot")).toBe(1));
-  return rig;
+  const client = new UiClient(neverClock);
+  render(
+    <UiProvider client={client}>
+      <Ride />
+    </UiProvider>,
+  );
+  await waitFor(() => expect(rig.ui.count("ui_open")).toBe(1));
+  await waitFor(() => expect(client.snapshot.received).toBe(true));
+  return { rig, client };
 }
-const links = (rig: Rig, l: LinkChange[]) =>
-  act(async () => {
-    rig.base.push({ links: l });
-  });
+
 const sheet = () => screen.getByRole("region", { name: "Ready check" });
 const band = () =>
   document.querySelector("[data-region='banner']")?.textContent ?? "";
@@ -216,43 +217,22 @@ describe("the ride screen before Start is the Ready sheet", () => {
     await waitFor(() => expect(document.activeElement).toBe(start()));
   });
 
-  test("loading: until the stream answers nothing is the core's and Start waits", async () => {
-    let release = () => {};
-    const rig = await open(
-      {},
-      {
-        settled: false,
-        before: (r) => (release = r.base.hold("stream_snapshot")),
-      },
-    );
-    expect(sheet().dataset.ready).toBe("loading");
-    expect(band()).toContain("Loading the ride…");
-    expect(keyLine()).toBe("Start is enabled once the ride has loaded");
-    expect(within(sheet()).getAllByText(/checking…/)).toHaveLength(2);
-    expect(start().disabled).toBe(true);
-    // The metric column does not call a plan it has no status for "done".
-    expect(screen.queryByText("Last block done")).toBeNull();
-    expect(rig.count("ride_start")).toBe(0);
-    await act(async () => release());
-    await waitFor(() => expect(sheet().dataset.ready).toBe("ready"));
-  });
-
   test("connecting: a trainer link coming up disables Start and says why", async () => {
-    const rig = await open({ trainer: "connecting" });
-    await links(rig, [{ device: "trainer", state: "connecting" }]);
+    const { rig } = await open({ trainer: "connecting" });
     expect(sheet().dataset.ready).toBe("connecting");
     expect(band()).toContain("Connecting the NEO…");
     expect(keyLine()).toBe("Start is enabled once the NEO is connected");
     expect(start().disabled).toBe(true);
-    await links(rig, [{ device: "trainer", state: "ready" }]);
-    rig.world.trainer = "ready";
-    expect(sheet().dataset.ready).toBe("ready");
+    await act(async () => {
+      rig.world.trainer = "ready";
+      rig.publish();
+    });
+    await waitFor(() => expect(sheet().dataset.ready).toBe("ready"));
     expect(start().disabled).toBe(false);
   });
 
   test("trainer missing: a lost trainer link disables Start, with what to try", async () => {
-    const rig = await open({ trainer: "connecting" });
-    await links(rig, [{ device: "trainer", state: "lost" }]);
+    const { rig } = await open({ trainer: "lost" });
     expect(sheet().dataset.ready).toBe("trainer-missing");
     expect(band()).toContain("NEO not found");
     expect(band()).toContain("close apps using the NEO");
@@ -266,8 +246,8 @@ describe("the ride screen before Start is the Ready sheet", () => {
     expect(rig.count("ride_start")).toBe(0);
   });
 
-  test("strap missing: the load linked no strap; Start stays enabled and the consequence is stated", async () => {
-    const rig = await open({}, { hrLinked: false });
+  test("strap missing: the ride does not hold the strap; Start stays enabled and the consequence is stated", async () => {
+    const { rig } = await open({ strapHanded: false });
     await waitFor(() => expect(sheet().dataset.ready).toBe("strap-missing"));
     expect(band()).toContain("HR not found");
     expect(band()).toContain("this ride runs without HR");
@@ -278,7 +258,7 @@ describe("the ride screen before Start is the Ready sheet", () => {
   });
 
   test("error: a refused Start shows the core's reason in the sheet, and the next try clears it", async () => {
-    const rig = await open({ recordFails: true });
+    const { rig } = await open({ recordFails: true });
     await userEvent.click(start());
     const alert = await within(sheet()).findByRole("alert");
     expect(alert.textContent).toBe(
@@ -296,7 +276,7 @@ describe("the ride screen before Start is the Ready sheet", () => {
   });
 
   test("error: a refused End (unloading the unstarted ride) is not called a failed start", async () => {
-    const rig = await open();
+    const { rig } = await open();
     // The core no longer holds the ride: `ride_end` answers "no ride loaded" (core.rs `Core::end_ride`).
     rig.world.phase = "none";
     await userEvent.click(screen.getByRole("button", { name: "End" }));
@@ -316,7 +296,7 @@ describe("the ride screen before Start is the Ready sheet", () => {
   });
 
   test("the sheet leaves with the start: the traces and the ride's key row take its place", async () => {
-    const rig = await open();
+    const { rig } = await open();
     await userEvent.click(start());
     await waitFor(() => expect(rig.world.phase).toBe("active"));
     await waitFor(() =>

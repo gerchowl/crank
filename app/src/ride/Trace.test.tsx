@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import type { Point } from "./session";
+import type { Point } from "../stream/ui";
 import { perSecond, Trace } from "./Trace";
 
 afterEach(cleanup);
