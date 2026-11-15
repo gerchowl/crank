@@ -209,6 +209,11 @@ gives 21.2 Nm, the same as at 90 rpm, and beyond 22 % the stroke is lighter. An 
 trainer that held ERG and sagged. Read check 12 together with check 9 of the same session, which shows how the NEO
 holds ERG as the cadence falls.
 
+**Known limit: `erg` has no minimum update count** (ADR-0007 §2). A single update in the 5 s before page 50 is
+enough for `erg`, and none is no result. A held count is a repeat that carries its update's own bytes, so frames
+with a held count and other power are forged input, out of scope (ADR-0007 §1). A sparse but honest window rests on
+a few true readings. Whether it needs a minimum is calibrated on the first live check 12 (#44).
+
 ### Check 9: what counts as a stall
 
 Check 9 measures the trainer: down to which cadence the NEO's ERG holds 250 W while the rider follows

@@ -2,7 +2,8 @@
 
 - **Status:** Accepted (owner, 2026-11-09)
 - **Date:** 2026-11-09
-- **Amended:** 2026-11-14 (PR #626: §2's cue stamp text, the 8 W power floor, the sagging-ERG known limit)
+- **Amended:** 2026-11-14 (PR #626: §2's cue stamp text, the 8 W power floor, the sagging-ERG known limit); 2026-11-15
+  (PR #626: `erg` has no minimum update count, stated as a known limit)
 - **Issue:** #516 (PR #521)
 - **Related:** #44 (HIL), #576, ADR-0002 §4.2, §5, §7.9, `docs/hil/part-b.md`, `docs/hil/part-b-runbook.md`
 
@@ -145,6 +146,16 @@ is lighter. So in 15–22 % the rider's answer rests on perception, not on a lig
 makes such a trainer read PASS, released, although it held ERG and sagged. PR #626's falsifier reproduced PASS at
 r = 0.78. The rule is unchanged. Check 9 of the same session shows how the NEO holds ERG as the cadence falls.
 
+**Known limit: `erg` has no minimum update count** (decided as stated, not changed; PR #626 safety round 2). `erg` is the
+median of the updates in its 5 s, however few there are, and no update at all is no result. So one update at 200 W
+whose count then holds for the rest of the 5 s reads `erg` = 200 W. That is sound within §3's fault model: a held count
+is a repeat, and a repeat carries the update's own bytes (§1: 68 of 68), so the frames after that one update say
+nothing different. A capture whose held-count frames carry other power (one update at 200 W, then 18 frames at
+60 W with its count) has bytes the NEO does not send. That is out of scope, like any forged input (§1). What
+remains is a sparse but honest window: losses that leave 1–7 of the about 18 expected updates. Then `erg` rests on
+a few true readings, and its job is only to show that ERG was engaged. Checks 6 and 9 of the same session read ERG
+at length. A minimum for this window is calibrated with the rest of §2 on the first live check 12 (§7, #44).
+
 **#521's falsifier fixtures under this rule.** Evaluated by hand, with the cue at `free` + 10 s as those
 captures were made, and before the question existed:
 
@@ -275,4 +286,4 @@ bands, and no accumulated-power reading after a drop.
 
 | Question | Issue | Milestone |
 |---|---|---|
-| Calibrate the r thresholds (0.85 / 0.95), the bands and the 5 s settle on the first live check 12 | #44 | Part B session 1 |
+| Calibrate the r thresholds (0.85 / 0.95), the bands, the 5 s settle and whether `erg`'s 5 s needs a minimum update count on the first live check 12 | #44 | Part B session 1 |
