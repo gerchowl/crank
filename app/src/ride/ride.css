@@ -551,8 +551,12 @@
   max-width: 70ch;
   color: var(--ink-2);
 }
-.ride-empty button {
+.ride-empty-actions {
   justify-self: start;
+  display: flex;
+  gap: var(--space-2);
+}
+.ride-empty button {
   display: inline-flex;
   align-items: center;
   height: var(--control-h);

@@ -110,7 +110,9 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   (the strap row of the Ready sheet follows `devices.strap`), how it ended, the load in flight and the traces
   (built from the channel's series, so a reload mid-ride backfills them and shows a forced end) come from the
   frames, no more from the ride stream, `device_links` or `ride_status` polling. A 2 s watchdog marks the state
-  stale (the ride screen's "Engine not answering" banner) and opens a new channel, which recovers a lost frame.
+  stale and opens a new channel, which recovers a lost frame; the stale state shows on every route (a notice above the
+  page, and the ride screen's "Engine not answering" banner), a broken series update from the core is logged, shown
+  the same way and repaired by the new channel's backfill, and a refused `ui_open` is said where the live data would be.
   `ride_load` answers the ride id, `ride_end` and `device_pair` answer nothing
   ([#598](https://github.com/gerchowl/crank/issues/598))
 - Rail item height (DESIGN §18.4): the labelled rail item has its own token, `--control-h-rail` (55 px, derived from its

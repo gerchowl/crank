@@ -101,9 +101,11 @@ function SummaryBody({ ride }: { ride: RideRecord }) {
   const ui = useUi();
   const own = ui.ride?.id === ride.id;
   const forced = own && ui.ride?.ended === "forced";
-  const recorded: Readonly<Record<Series, readonly Point[]>> | null = own
-    ? ui.series
-    : null;
+  // Its traces once it has points: a ride ended before its first point (a forced end at the start) has none to draw.
+  const recorded: Readonly<Record<Series, readonly Point[]>> | null =
+    own && Object.values(ui.series).some((p) => p.length > 0)
+      ? ui.series
+      : null;
   return (
     <section aria-label="Ride summary" className="review-body">
       <p className="review-meta">
