@@ -1224,11 +1224,14 @@ pub fn check12(tl: &Timeline) -> Value {
     let wind = after
         .iter()
         .find(|w| matches!(w.control, Control::Wind(..)));
+    // The first page 51 after the target, whatever its grade: `PROGRAM_12` (ADR-0007 §4) holds
+    // a completed run's writes to `Track(0)` item by item before this check's result counts
+    // (`result_of`), so a grade filter here would be dead code.
     let track = after
         .iter()
-        .find(|w| matches!(w.control, Control::Track(g, _) if g.abs() < 1e-9));
+        .find(|w| matches!(w.control, Control::Track(..)));
     let (Some(wind), Some(track)) = (wind, track) else {
-        return json!({"error": "no page 50 + page 51 grade 0 after the ERG target"});
+        return json!({"error": "no page 50 + page 51 after the ERG target"});
     };
     let cue = match crate::frames::stamps(tl.notes(), CUE12, &[TO_70]) {
         Err(why) => return json!({ "error": why }),
@@ -2523,6 +2526,73 @@ mod tests {
         }
         .reads(PASS);
         assert_eq!(v["erg_w"], json!(200.0), "{v}");
+    }
+
+    /// t₇₀ is searched only after the cue: a 70 rpm update at 30 s, before it, is not t₇₀. On a
+    /// held trainer (200 W) whose first 5 s after the cue read 100 W and the next 5 s 200 W
+    /// (then 80 rpm), the window from t₇₀ + 5 s is the 200 W: r = 1, no result with `y`. From the
+    /// early update it would take both, median 150 W, and read PASS at r = 0.75.
+    #[test]
+    fn check12_t70_is_only_searched_after_the_cue() {
+        let mut free90 = every(20_750 * MS, 40 * SEC, 250 * MS, 90, 200);
+        free90.retain(|f| f.0 != 30 * SEC);
+        free90.push((30 * SEC, 70, 200, false));
+        let v = Run12 {
+            free90,
+            free70: [
+                every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 100),
+                every(45_250 * MS, 50_250 * MS, 250 * MS, 70, 200),
+                every(50_250 * MS, 60 * SEC, 250 * MS, 80, 200),
+            ]
+            .concat(),
+            ..Run12::default()
+        }
+        .reads(DISAGREE);
+        assert_eq!(
+            (
+                v["free70_w"].clone(),
+                v["free70_updates"].clone(),
+                v["r"].clone()
+            ),
+            (json!(200.0), json!(20), json!(1.0)),
+            "{v}"
+        );
+    }
+
+    /// The 90 rpm window ends at the cue: on a held trainer (200 W), 16 updates in 85–95 rpm
+    /// before it, then 39 at 90 rpm and 300 W after it (a rider who keeps 90 rpm) and 70 rpm at
+    /// 200 W, read free90 = 200 W, r = 1, no result with `y`. To the answer it would read 300 W
+    /// and PASS at r = 0.667.
+    #[test]
+    fn check12_the_90_rpm_window_ends_at_the_cue() {
+        let mut free90 = every(20_750 * MS, 25_500 * MS, 250 * MS, 90, 200);
+        free90.extend((0..58_u64).map(|k| {
+            (
+                25_500 * MS + k * 250 * MS,
+                if k < 16 { 90 } else { 100 },
+                200,
+                false,
+            )
+        }));
+        let v = Run12 {
+            free90,
+            free70: [
+                every(40_250 * MS, 50 * SEC, 250 * MS, 90, 300),
+                every(50 * SEC, 60 * SEC, 250 * MS, 70, 200),
+            ]
+            .concat(),
+            ..Run12::default()
+        }
+        .reads(DISAGREE);
+        assert_eq!(
+            (
+                v["free90_w"].clone(),
+                v["free90_updates"].clone(),
+                v["r"].clone()
+            ),
+            (json!(200.0), json!(16), json!(1.0)),
+            "{v}"
+        );
     }
 
     /// The power floor (ADR-0007 §2, [`FLOOR12_W`]): below 8 W in either window is no result.
