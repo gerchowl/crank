@@ -471,6 +471,9 @@ const SETUPS: Record<ScenarioName, () => void> = {
     ],
     compiled: { "w-ss": SWEET_SPOT, "w-long": LONG },
   }),
+  // The editor on the core's `sweet-spot` draft (editorFixture.ts): a real tree, text and compiled view.
+  "workouts-editor": workouts({ trees: { "w-ss": "sweet-spot" } }),
+  "workouts-editor-invalid": workouts({ trees: { "w-ss": "sweet-spot" } }),
   "devices-empty": devices({}),
   // The scan never answers: the button stays "Scanning…".
   "devices-scanning": devices({ gate: new Promise<void>(() => {}) }),

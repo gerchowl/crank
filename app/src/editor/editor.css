@@ -1,0 +1,136 @@
+/* The workout editor (DESIGN §5.7, §16.3 as amended for direction A; #111): the header (name, "Draft, not saved",
+   Undo, Redo, Back to library), the profile across the page, then Outline · Text · Summary in one row on the 12-column
+   grid (§18.2), 4 / 4 / 4, the same at 1024 and 1440 (no breakpoint reflows it). The buttons, the chip, the stats and
+   the zones are Workouts' own (workouts.css), so the editor is the same desk family (§18.4). */
+.editor-head,
+.editor-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.editor-head {
+  justify-content: space-between;
+}
+.editor-title {
+  min-width: 0;
+}
+.editor-head h1 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.editor-profile,
+.editor-pane {
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+}
+.editor-panes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+.editor-pane {
+  display: grid;
+  gap: var(--space-3);
+  align-content: start;
+}
+.editor-pane h2 {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+/* The outline: one listbox of rows, indented by depth (a third level and deeper as the second) with a rule on the left; the selected row has a fill, an accent
+   edge and bold, never colour alone. A row is as tall as its words (a long label wraps, never cut). */
+.editor-outline {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.editor-outline li {
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-s);
+  line-height: var(--text-l);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.editor-outline li[data-depth="1"] {
+  margin-left: var(--space-4);
+  box-shadow: inset 1px 0 0 var(--line);
+}
+.editor-outline li[data-depth="2"] {
+  margin-left: var(--space-6);
+  box-shadow: inset 1px 0 0 var(--line);
+}
+.editor-outline li[aria-selected="true"] {
+  background: var(--panel-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+  font-weight: 600;
+}
+
+/* The text: the DSL in the mono face; a draft that does not parse is edged in the error colour, its problem under it. */
+.editor-text textarea {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-m);
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-s);
+  line-height: var(--text-l);
+  resize: vertical;
+}
+.editor-text textarea[aria-invalid="true"] {
+  border-color: var(--status-critical);
+}
+.editor-problem {
+  color: var(--ink);
+}
+.editor-problem [data-state-label] {
+  color: var(--status-critical);
+}
+/* The problem's line in the text's face, its span marked by an underline and the error colour, never colour alone. */
+.editor-problem-line {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-s);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.editor-problem-line mark {
+  background: none;
+  color: var(--status-critical);
+  text-decoration: underline wavy;
+}
+
+/* The selection on the profile: its blocks get a heavier edge in the focus colour. */
+.workouts-profile-block[data-marked="true"] {
+  stroke: var(--focus);
+  stroke-width: 3;
+}
+
+/* The summary's tiles in a third of the page: Duration across the pane, TSS and IF under it, so a number is never
+   broken across lines (a 1024 px window leaves a tile too narrow for "0.80" in three columns). */
+.editor-pane .workouts-stats {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.editor-pane .workouts-stats div:first-child {
+  grid-column: 1 / -1;
+}
