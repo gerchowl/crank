@@ -266,8 +266,9 @@
 .ready-device[data-device="hr"][data-state="lost"] .ready-device-word {
   color: var(--warn);
 }
-/* The sheet's banner says a warning only when something is missing or refused; ready is a plain fact. */
-.banner[data-state="ready"] .banner-line {
+/* The sheet's banner says a warning only when something is missing or refused; ready and loading are plain facts. */
+.banner[data-state="ready"] .banner-line,
+.banner[data-state="ready-loading"] .banner-line {
   color: var(--ink);
 }
 .ready-hint {

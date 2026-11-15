@@ -260,7 +260,10 @@ It never sees a channel or awaits a page and publishes its status on its `watch`
 **Ride lifetime.** From the start of `ride_load`, `loading` is true, `ride` is `null` and the series are dropped, so the
 next frame carries `from: 0` and no points (today the core keeps the previous status until the new session is installed,
 `crates/crank-core/src/core.rs:1834`). A failed load leaves `ride` `null`; an unload makes it `null`; an ended ride
-stays, with `ended` set, until the next load.
+stays, with `ended` set, until the next load. While `loading` is true and `ride` is `null` the ride screen draws the
+Ready sheet's loading state from the frame (the ride layout, each device "checking…", Start waiting); the frame does not
+name the workout being loaded, so its plan is the requesting window's own (`useRideLoad`) and another window draws the
+layout without it until #657 adds the workout to the frame.
 
 **Frame bound.** Each bound is measured by a test with every part at its cap:
 
