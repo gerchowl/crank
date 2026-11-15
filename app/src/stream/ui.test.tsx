@@ -155,6 +155,67 @@ describe("the client rule", () => {
     ).toThrow(/power: from 5 on a series of 0/);
   });
 
+  test("in production a broken from is logged once, shown stale and internal, and a new channel's backfill repairs it", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ui = installUi({ ride: rideView() });
+    const client = new UiClient(new FakeClock(), undefined, false);
+    client.retain();
+    appendPower(ui, 10);
+    await flush();
+    const channel = ui.calls.find((c) => c.cmd === "ui_open")?.args.channel as {
+      onmessage: (f: unknown) => void;
+    };
+    // The new channel's first frame waits, so the state between the fault and the repair can be seen.
+    ui.stall();
+    // A frame the core cannot send: from 3 on a series of 10.
+    act(() =>
+      channel.onmessage({
+        ...ui.frames[0],
+        seq: 9,
+        series: {
+          ...ui.frames[0].series,
+          power: { from: 3, t: [1], w: [1], v: [999] },
+        },
+      }),
+    );
+    expect(client.snapshot.stale).toBe(true);
+    expect(client.snapshot.error).toEqual({
+      code: "internal",
+      message: "power: from 3 on a series of 10",
+    });
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledWith(
+      "ui channel: power: from 3 on a series of 10; reopening",
+    );
+    // Not repaired in place: the series stays as it was until the new channel's backfill from 0 replaces it.
+    expect(ui.count("ui_open")).toBe(2);
+    expect(values(client.snapshot.series.power)).toHaveLength(10);
+    ui.resume();
+    await flush();
+    expect(client.snapshot.stale).toBe(false);
+    expect(client.snapshot.error).toBeNull();
+    expect(values(client.snapshot.series.power)).toEqual(coreValues(ui));
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  test("a replaced channel's IPC callback is released", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const internals = (
+      window as unknown as {
+        __TAURI_INTERNALS__: { unregisterCallback: (id: number) => void };
+      }
+    ).__TAURI_INTERNALS__;
+    const { ui, clock } = setup({ ride: rideView() });
+    await flush();
+    const first = ui.calls.find((c) => c.cmd === "ui_open")?.args.channel as {
+      id: number;
+    };
+    const unregister = vi.spyOn(internals, "unregisterCallback");
+    ui.stall();
+    await clock.advance(WATCHDOG_MS);
+    expect(unregister).toHaveBeenCalledWith(first.id);
+  });
+
   test("drops the frames of a channel it replaced", async () => {
     const { ui, clock, client } = setup({ ride: rideView() });
     await flush();

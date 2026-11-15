@@ -262,15 +262,20 @@ test("while a ride is loaded the devices show its links", async () => {
   });
 });
 
-test("a channel that cannot open is a notice without Retry (the watchdog retries)", async () => {
-  // `ui_open` refused with `storage` (the keeper cannot read the pairings): the paired list shows the notice; no Retry
-  // button, since the channel's watchdog retries on its own.
-  setup({}, { keeperStorage: true });
+test("a channel that cannot open is a notice; Retry opens it again at once", async () => {
+  // `ui_open` refused with `storage` (the keeper cannot read the pairings): the paired list shows the notice. The
+  // watchdog asks again every 2 s; Retry asks now, and the frame that answers it brings the devices.
+  const { ui } = setup({}, { keeperStorage: true });
   open();
   const devices = panel("Devices");
   const alert = await devices.findByRole("alert");
   expect(alert.querySelector("p")?.textContent).toBe("⚠ database is locked");
-  expect(within(alert).queryByRole("button", { name: "Retry" })).toBeNull();
+  ui.truth.keeperStorage = false;
+  await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+  expect(
+    await devices.findByRole("list", { name: "Paired devices" }),
+  ).toBeTruthy();
+  expect(ui.count("ui_open")).toBe(2);
 });
 
 test("the last ride is the newest one, with its figures and a Review named like History's", async () => {
