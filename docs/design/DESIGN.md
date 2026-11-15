@@ -2260,8 +2260,11 @@ after ± and the coach. The commanded target moves towards the plan line:
 - at most at the rider's rise rate going up, and at twice that by default coming down;
 - reaching full rate over a 2 s ease.
 
-A ramp is followed on the line, with its start and end corners eased too. The soft start is the same curve, started
-from the rider's current power. "Caught up" below means the command is
+A ramp is followed on the line once the command has caught up with it, with its start and end corners eased too.
+Since 2026-11-15 (ADR-0002 §7.10, track 2) the eased target is allowed to go above the plan line for a while: at the
+start of a fall it lags behind the falling line, and it can briefly rise before it falls (at the defaults up to 35 W
+above the level it was holding, and up to 180 W above a line falling at the full fall rate). It never goes above the
+cap. The soft start is the same curve, started from the rider's current power. "Caught up" below means the command is
 on the plan line. This section says what the rider sees of it. It amends §5.2, §5.9, §6.5, §17.3 and §18.3,
 which point here.
 
@@ -2290,8 +2293,11 @@ One target line, the one the trainer is asked to hold:
   commanded target and the controlled target agree within 0.5 W, so wherever compliance counts the band is the
   compliance band; off the line the band is hidden from judgement (Δ hidden, "settling", §5.2) and only shows the
   ease. The plan's raw step is not drawn as a second line: the strip shows the plan's blocks (§19.3).
-- **Ramps** draw on the plan line, with corners eased by at most a watt or two at ordinary ramp slopes. A ramp at or
-  above the rider's rate draws the command behind it, as it will be ridden.
+- **Ramps** draw on the plan line once the command has caught up, with corners eased by a few watts at ordinary ramp
+  slopes (at most 5 W at the defaults). A ramp at or above the rider's rate draws the command behind it, as it will be
+  ridden. **The start of a fall** draws the command above the plan's line: it lags the falling line, and it can rise a
+  little first (ADR-0002 §7.10.6, promise 3). The drawn line is the engine's own prediction, so the rider sees that
+  hump before riding it, and the band stays hidden from judgement there ("settling").
 
 ### 19.3 The strip (block timeline) and the road
 
