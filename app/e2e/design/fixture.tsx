@@ -538,13 +538,21 @@ const SETUPS: Record<ScenarioName, () => void> = {
   }),
   // The Ready sheet (DESIGN §5.4, #526): the loaded, unstarted ride in each of its states.
   ready: ride({ phase: "loaded" }, NO_LIVE, 0),
-  // A load is under way: the channel says `loading` and has no ride yet (ui.rs `Ui::load_started`).
+  // This window's `ride_load` of w1 is under way and never answers: the channel's frame says `loading` and has no ride
+  // yet (ui.rs `Ui::load_started`), and the screen draws the Ready sheet's loading state from it, with the plan of the
+  // workout asked for (`useRideLoad`).
   "ready-loading": () => {
-    installUi({
-      ...BEAT,
-      loading: true,
-      devices: devicesOf({ trainer: neo, strap: hrm }),
+    const library = installWorkouts({
+      summaries: [
+        { id: "w1", name: "Steady 10 min", totalS: 600, tss: 10, ftp: 250 },
+      ],
+      compiled: { w1: compiled({ blocks: BLOCKS, totalS: 600 }) },
+      gate: new Promise<void>(() => {}),
     });
+    // The ride commands, `workout_get` among them, are the ride backend's; `ride_load` falls through to the library's.
+    const rig = installRide({ phase: "none", blocks: BLOCKS }, BEAT);
+    library.ui = rig.ui;
+    void startRideLoad("w1", "Steady 10 min");
     navigate("ride");
   },
   // The trainer link is coming back up; the core refuses Start until it is ready (rideBackend `trainer`).
