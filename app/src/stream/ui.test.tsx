@@ -222,6 +222,41 @@ describe("the client rule", () => {
     expect(error).toHaveBeenCalledTimes(1);
   });
 
+  test("a fault that comes back after a repair is logged again", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ui = installUi({ ride: rideView() });
+    const clock = new FakeClock();
+    const client = new UiClient(clock, undefined, false);
+    client.retain();
+    appendPower(ui, 4);
+    await flush();
+    const broken = () => {
+      const channel = ui.calls.filter((c) => c.cmd === "ui_open").at(-1)?.args
+        .channel as { onmessage: (f: unknown) => void };
+      const last = ui.frames.at(-1)!;
+      act(() =>
+        channel.onmessage({
+          ...last,
+          seq: last.seq + 1,
+          series: {
+            ...last.series,
+            power: { from: 9, t: [1], w: [1], v: [1] },
+          },
+        }),
+      );
+    };
+    broken();
+    expect(error).toHaveBeenCalledTimes(1);
+    // The watchdog's reopen repairs it: a clean frame.
+    await clock.advance(WATCHDOG_MS);
+    expect(client.snapshot.stale).toBe(false);
+    // The same kind of fault again, after the repair: a new log line.
+    broken();
+    expect(client.snapshot.stale).toBe(true);
+    expect(error).toHaveBeenCalledTimes(2);
+  });
+
   test("a replaced channel's IPC callback is released", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const internals = (
