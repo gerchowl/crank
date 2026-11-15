@@ -11,6 +11,7 @@ import "../../src/theme.css";
 import "../../src/shell.css";
 import type { LinkStatus, MetricId, PairedDevice } from "../../src/bindings";
 import { navigate } from "../../src/router";
+import { setAthleteHr } from "../../src/athleteHr";
 import {
   BLOCKS,
   block,
@@ -528,6 +529,16 @@ const SETUPS: Record<ScenarioName, () => void> = {
     rampStep: 2,
   }),
   "ride-work-step": ride(active),
+  // The HR zone (DESIGN §18.3 "Heart-rate zone", #586): 142 bpm is 101 % of an LTHR of 140, Friel's Z5a, the widest
+  // label ("Z5a · LTHR"); and with only an HR max of 190 it is 75 %, Z3 of the five zones.
+  "ride-hr-zone": () => {
+    setAthleteHr({ lthrBpm: 140, hrMaxBpm: 190 });
+    ride(active)();
+  },
+  "ride-hr-zone-max": () => {
+    setAthleteHr({ hrMaxBpm: 190 });
+    ride(active)();
+  },
   "ride-short-block": ride({
     phase: "active",
     blockIdx: 0,
@@ -610,6 +621,8 @@ const SETUPS: Record<ScenarioName, () => void> = {
   // Opened from Review: "All rides" leads back to the list with this ride marked.
   "history-selected": history("ride-3"),
   settings: () => navigate("settings"),
+  // Neither HR reference known: the one-line hint (§18.3 "Heart-rate zone").
+  "settings-athlete": () => navigate("settings", "athlete"),
   "settings-ride-loaded": () => {
     navigate("settings");
     installWorkouts(longLibrary());

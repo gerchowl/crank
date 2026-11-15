@@ -124,6 +124,9 @@ export const SCENARIOS = [
     name: "ride-work-step",
     ready: "role=button[name='Pause'][disabled=false]",
   },
+  // The HR zone beside the live HR (DESIGN §18.3 "Heart-rate zone", #586): Friel's with an LTHR, % of HR max without.
+  { name: "ride-hr-zone", ready: "[data-slot='hr-zone']" },
+  { name: "ride-hr-zone-max", ready: "[data-slot='hr-zone']" },
   // An hour with a 30 s block: the strip's labels shed to a leader (DESIGN §18.3 "Strip labels", #581).
   {
     name: "ride-short-block",
@@ -162,6 +165,7 @@ export const SCENARIOS = [
     clicks: ["All rides"],
   },
   { name: "settings", ready: "role=heading[name='Appearance']" },
+  { name: "settings-athlete", ready: "role=heading[name='Athlete model']" },
   // A load finished while the rider was elsewhere: the ride-load notice offers it (#320).
   {
     name: "settings-ride-loaded",
@@ -186,6 +190,7 @@ export const TODAY_SCENARIOS: readonly ScenarioName[] = [
 /** The fixtures of Settings and Devices (#527): nothing on them is cut, and every control is inside the window. */
 export const SETTINGS_SCENARIOS: readonly ScenarioName[] = [
   "settings",
+  "settings-athlete",
   "settings-ride-loaded",
   "devices-empty",
   "devices-scanning",
@@ -232,6 +237,8 @@ export const RIDE_SCENARIOS: readonly ScenarioName[] = [
   "ready-error",
   "ride-soft-start",
   "ride-work-step",
+  "ride-hr-zone",
+  "ride-hr-zone-max",
   "ride-short-block",
   "ride-paused",
   "ride-hr-lost",

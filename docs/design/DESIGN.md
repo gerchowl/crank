@@ -530,6 +530,9 @@ place of the row's device line and actions ("Forget Tacx Neo 55624 as the traine
 Cancel focused, Esc cancels; #438's note that Forget sits beside "Pair as strap" on a dual-role row). A failed command
 is a notice under the section head: ⚠ and its title, what to do, and "Try again" where a retry is the fix. Live
 readings while pairing (#267) are not in this screen yet; Release trainer is End on an unstarted ride (§5.4).
+**Athlete model** (#586) lists the heart-rate references the ride's zone reads, max heart rate and threshold heart
+rate (LTHR), each "Not set" or its value in bpm, and with neither known the one-line hint of §18.3 "Heart-rate zone";
+the estimates, their ± and source, and the manual override are #113.
 
 ---
 
@@ -2036,6 +2039,46 @@ and is tight at 1024. At 1024 the 4-column metric column is ≈ 320 px wide, so 
   Check: the layout audit's `metrics.labelGap`, `metrics.unitColumn` and `metrics.slotGap` (rule 6; ±1 px across
   the slots; `metrics.slotGap` measures from the last line that draws ink, so an empty box cannot hide an unequal
   gap).
+- **Heart-rate zone (#586, owner decision 2026-11-14).** The heart-rate slot names the zone of the value it shows,
+  in its label line's sub-line, right-aligned where the power slot has its target (the §18.3 "Metric grid" line, so
+  the slot's height, gaps and unit column are unchanged and `metrics.labelGap`/`unitColumn`/`slotGap` still hold).
+  - **Model.** With an LTHR, Joe Friel's seven bike zones as % of LTHR: Z1 "Less than 81%", Z2 "81% to 89%", Z3 "90%
+    to 93%", Z4 "94% to 99%", Z5a "100% to 102%", Z5b "103% to 106%", Z5c "More than 106%" (J. Friel, *Joe Friel's
+    Quick Guide to Setting Zones*, TrainingPeaks, from his 2009 TrainingBible blog,
+    <https://www.trainingpeaks.com/learn/articles/joe-friel-s-quick-guide-to-setting-zones/>, read 2026-11-14; Friel's
+    2025 revision at joefrieltraining.com merges the bike and run tables into one image-only table, so the last
+    published bike table is the one cited). Otherwise, with an HR max, five zones as % of HR max: Z1 50–60 %, Z2
+    60–70 %, Z3 70–80 %, Z4 80–90 %, Z5 90–100 % (Polar, *Heart Rate Zones*,
+    <https://www.polar.com/blog/running-heart-rate-zones-basics/>, read 2026-11-14). The LTHR wins when both are
+    known. The references are the athlete model's (`spec/ONBOARDING.md` §3, `hrMax` and `lthr`).
+  - **Edges.** Both tables are written in whole percents, so the percent (100 × HR / reference, HR being the value
+    the tile shows) is rounded half up to a whole one and the table applies as written: Friel's ranges then leave no
+    gap. Polar's adjacent zones share an edge; it belongs to the higher zone (60 % is Z2). Below 50 % of HR max is
+    still Z1 (Friel's Z1 has no floor either, and a blank would read as "no data"); above 100 % is still Z5 (the HR
+    max is an estimate the rider can pass). Unit tests at every edge: `app/src/ride/hrZone.test.ts`.
+  - **Canonical copy.** The tables and the rounding rule live in the app, `app/src/ride/hrZone.ts`, and that copy is
+    canonical for now. They move to `crank-domain`, beside the power `time_in_zone_s` of
+    `crates/crank-domain/src/workout/compiled.rs`, before Review shows HR time in zone (#645), so the live label and the
+    stored ride never read two copies.
+  - **Label.** The zone as the table names it, then the model it is read in: "Z2 · LTHR", "Z3 · HRmax"; at most 10
+    characters ("Z5a · LTHR"), 12 px chrome in the number face (§18.7 rule 5). No zone names: Friel's table gives
+    none, and the model word tells a rider why the same HR is Z4 on one setup and Z3 on another.
+  - **Colour, never alone (P9, §18.7 rule 11).** The zone has no colour of its own: the sub-line keeps its ink
+    (`--ink-2`) and the slot keeps its series colour (`--hr`, §18.1). On the ride colour carries state (§6.3), and a
+    zone is a reading, not a state; the word carries the whole meaning, so nothing is colour alone. The zone ramp
+    (`--zone-1` … `--zone-7`, THEMES) stays for charts that set zones side by side (Review's time in zone, §5.5).
+  - **No data.** No zone without HR (none yet, or "HR strap lost", which keeps the sub-line, §5.2), and none when
+    neither reference is known: the sub-line stays empty, as before #586. Settings → Athlete model then says so in one
+    line: "No max or threshold heart rate yet, so the ride shows no heart-rate zone." (§5.9). The §5.8 answer
+    "Medication that changes your heart rate?" turns HR zones off; it is to give no zone the same way, with the
+    health check (#117). HR counts as lost only when the HR link reports lost (the ride's links, §6.5), as the tile
+    does: a value that stops updating before that keeps its number on the tile and its zone beside it, so the two
+    never disagree, and both go together when the link says lost.
+  - **Where the references come from.** Nothing in the app sets them yet: the athlete model's estimates and manual
+    overrides are #113 (Settings → Athlete model, on #90's persistence), so today every ride shows no zone and the
+    hint shows. The seam is `app/src/athleteHr.ts` `useAthleteHr`.
+  - Check: the fixtures `ride-hr-zone` (Friel, the widest label) and `ride-hr-zone-max` (% HR max) in the layout
+    audit, rule 10's ride set and the visual baselines; `settings-athlete` for the hint.
 - **Block timeline:** the workout's blocks by height, the ridden part dimmed, a "now" marker, block names and watts
   in the number face. It replaces the road-ahead and overview rows of §16.1. **Coach marks** (§7.1) are drawn on it:
   a dashed outline at the proposed height for a proposed change, a solid one for an applied change, each with its
