@@ -14,20 +14,26 @@ import {
 import userEvent from "@testing-library/user-event";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { Rail } from "../shell/Rail";
 import { navigate } from "../router";
 import { Workouts } from "../views/Workouts";
 import { DRAFTS } from "../views/editorFixture";
 import { resetRideLoad } from "../views/rideLoad";
-import { install } from "../views/workoutsBackend";
-import { lineColumn } from "./WorkoutEditor";
+import { apiError, install } from "../views/workoutsBackend";
+import { GROUP_MS } from "./model";
+import { lineColumn, typingClock } from "./WorkoutEditor";
 
 afterEach(() => {
   cleanup();
   clearMocks();
 });
+/** Each keystroke a pause after the last, so each text is its own undo step unless a test says otherwise. */
+let now = 0;
 beforeEach(() => {
   resetRideLoad();
   navigate("workouts");
+  now = 0;
+  typingClock.now = () => (now += GROUP_MS);
 });
 const text = (name: string) => DRAFTS[name]!.text;
 const problemOf = (name: string) => {
@@ -40,7 +46,12 @@ const problemOf = (name: string) => {
 async function open() {
   const b = install({ trees: { "w-ss": "sweet-spot" } });
   const user = userEvent.setup();
-  render(<Workouts />);
+  render(
+    <>
+      <Rail view="workouts" />
+      <Workouts />
+    </>,
+  );
   await user.click(
     await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
   );
@@ -104,6 +115,13 @@ test("an invalid draft shows the problem and leaves the saved state, the outline
     `(line ${line}, column ${column}). The saved workout is unchanged.`,
   );
   expect(box.getAttribute("aria-invalid")).toBe("true");
+  // The problem's line, its span (the core's offset and length) marked.
+  expect(problem.querySelector("mark")?.textContent).toBe(
+    text("missing-target").slice(
+      problemOf("missing-target").offset,
+      problemOf("missing-target").offset + problemOf("missing-target").length,
+    ),
+  );
   expect(box.value).toBe(text("missing-target"));
   expect(rows()).toEqual(before);
   expect(
@@ -133,9 +151,34 @@ test("undo and redo span the three views, by button and by Cmd/Ctrl+Z inside the
   expect(box.value).toBe(text("sweet-spot-4x"));
   expect(rows()[1]).toBe("4 ×");
 
-  // Outside the editor the keys do nothing.
-  fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+  // Outside the editor (focus on a rail button) the keys do nothing.
+  const rail = screen.getByRole("button", { name: /History/ });
+  rail.focus();
+  expect(document.activeElement).toBe(rail);
+  await user.keyboard("{Meta>}z{/Meta}");
   expect(box.value).toBe(text("sweet-spot-4x"));
+  expect(rows()[1]).toBe("4 ×");
+});
+
+test("a burst of typing is one undo step; a pause starts the next", async () => {
+  const { user, box } = await open();
+  typingClock.now = () => (now += GROUP_MS / 5);
+  setText(box, text("sweet-spot-4x"));
+  await waitFor(() => expect(rows()[1]).toBe("4 ×"));
+  setText(box, text("sweet-spot-4x-15m"));
+  await waitFor(() => expect(rows()[2]).toMatch(/15:00/));
+  typingClock.now = () => (now += GROUP_MS);
+  setText(box, text("sweet-spot-no-cool-down"));
+  await waitFor(() => expect(rows()).toHaveLength(4));
+
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  expect(box.value).toBe(text("sweet-spot-4x-15m"));
+  await user.click(screen.getByRole("button", { name: "Undo" }));
+  expect(box.value).toBe(text("sweet-spot"));
+  expect(
+    (screen.getByRole("button", { name: "Undo" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
 });
 
 test("the profile marks the selected node's blocks; the selection survives undo while its node exists", async () => {
@@ -174,6 +217,16 @@ test("the profile marks the selected node's blocks; the selection survives undo 
   expect(
     within(outline()).queryByRole("option", { selected: true }),
   ).toBeNull();
+});
+
+test("a failed parse shows its error until the next parse answers, even one that commits nothing", async () => {
+  const { b, box } = await open();
+  b.fail.parse_dsl = apiError("internal", "core gone");
+  setText(box, text("sweet-spot-4x"));
+  expect((await screen.findByRole("alert")).textContent).toContain("core gone");
+  delete b.fail.parse_dsl;
+  setText(box, text("sweet-spot")); // the saved text: the answer commits nothing
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
 });
 
 test("a draft the core cannot compile shows its refusal; the last compiled view stays", async () => {

@@ -7,6 +7,10 @@
 //   of it. A draft that does not parse leaves the saved state untouched and carries the core's problem (no partial
 //   commit).
 // - History holds saved states only: undo and redo restore a tree with its text, so they need no printer.
+// - Undo groups (DESIGN §5.7): the text commits of one burst of typing are one undo step. A burst ends at a pause of
+//   `GROUP_MS` between two keystrokes, or at any other commit, undo or redo; a tree op is a group of its own. The
+//   history keeps the last `HISTORY_LIMIT` steps and drops the oldest past it. Both numbers are prosemirror-history's
+//   defaults (`newGroupDelay`, `depth`), the convention text editors follow; time is handed in, so the model stays pure.
 // - The selection is a node id. It survives a commit, undo or redo while that id is in the tree; a text commit gives
 //   every node a fresh id (the core's parser), so the selection follows its path there (docs/DSL.md, "Tree-helper
 //   ownership"); otherwise it collapses to null.
@@ -14,6 +18,17 @@
 import type { DslParse, DslProblem, Workout, WorkoutNode } from "../bindings";
 
 /** A pending AI rewrite (#112 owns its contents): while one is set the editor refuses every edit. */
+/** A pause this long (ms) between two keystrokes ends an undo group (prosemirror-history's `newGroupDelay`). */
+export const GROUP_MS = 500;
+/** The most undo steps kept; past it the oldest is dropped (prosemirror-history's `depth`). */
+export const HISTORY_LIMIT = 100;
+
+/** The burst of typing in progress: when its last keystroke was, and whether it has its undo step already. */
+export interface Typing {
+  readonly at: number;
+  readonly open: boolean;
+}
+
 export interface Lock {
   readonly kind: "pending" | "diff";
 }
@@ -36,6 +51,8 @@ export interface EditorState {
   readonly selection: string | null;
   readonly past: readonly Saved[];
   readonly future: readonly Saved[];
+  /** The typing burst whose commits share one undo step; null after any other commit, undo or redo. */
+  readonly typing: Typing | null;
   readonly lock: Lock | null;
 }
 
@@ -52,6 +69,7 @@ export function load(workout: Workout, text: string): EditorState {
     selection: null,
     past: [],
     future: [],
+    typing: null,
     lock: null,
   };
 }
@@ -151,12 +169,16 @@ export const wrapNode = (
 
 // ---- editor transitions -------------------------------------------------------------------------------------------
 
-/** Commit `nodes` with `text` as the new saved state; the old one becomes undoable and redo is cleared. */
+/**
+ * Commit `nodes` with `text` as the new saved state and clear redo. Unless `grouped` (a later commit of the same typing
+ * burst, whose undo step exists), the old state becomes one more undo step, the oldest dropped past `HISTORY_LIMIT`.
+ */
 function commit(
   s: EditorState,
   nodes: readonly WorkoutNode[],
   text: string,
   selection: string | null,
+  grouped: boolean,
 ): EditorState {
   return {
     ...s,
@@ -164,20 +186,27 @@ function commit(
     draft: text,
     problem: null,
     selection: has(nodes, selection) ? selection : null,
-    past: [...s.past, s.saved],
+    past: grouped ? s.past : [...s.past, s.saved].slice(-HISTORY_LIMIT),
     future: [],
   };
 }
 
-/** The rider typed `text`: the draft follows at once; its parse answer arrives with `parsed`. */
-export function typed(s: EditorState, text: string): EditorState {
-  return s.lock ? s : { ...s, draft: text };
+/**
+ * The rider typed `text` at time `at` (ms, any monotonic clock): the draft follows at once; its parse answer arrives
+ * with `parsed`. A keystroke within `GROUP_MS` of the previous one continues the burst, else it starts a new one.
+ */
+export function typed(s: EditorState, text: string, at: number): EditorState {
+  if (s.lock) return s;
+  const open =
+    s.typing !== null && at - s.typing.at < GROUP_MS && s.typing.open;
+  return { ...s, draft: text, typing: { at, open } };
 }
 
 /**
  * The core's answer for parsing `text`. An answer for a text that is no longer the draft is stale and dropped; an
  * invalid one keeps the saved state and shows the problem; a parsed one is committed with the draft as its text, the
- * selection following its path. A text equal to the saved one commits nothing (the tree is the same).
+ * selection following its path, into the typing burst's undo step. A text equal to the saved one commits nothing
+ * (the tree is the same).
  */
 export function parsed(
   s: EditorState,
@@ -189,7 +218,9 @@ export function parsed(
   if (text === s.saved.text) return { ...s, problem: null };
   const at = s.selection === null ? null : pathOf(s.saved.nodes, s.selection);
   const follow = at === null ? null : (nodeAt(answer.nodes, at)?.id ?? null);
-  return commit(s, answer.nodes, text, follow);
+  const grouped = s.typing?.open ?? false;
+  const next = commit(s, answer.nodes, text, follow, grouped);
+  return { ...next, typing: s.typing && { ...s.typing, open: true } };
 }
 
 /** A tree op's result `nodes` with the core's canonical `text` for it (`print_dsl`), committed. */
@@ -198,7 +229,8 @@ export function applied(
   nodes: readonly WorkoutNode[],
   text: string,
 ): EditorState {
-  return s.lock ? s : commit(s, nodes, text, s.selection);
+  if (s.lock) return s;
+  return { ...commit(s, nodes, text, s.selection, false), typing: null };
 }
 
 export function select(s: EditorState, id: string | null): EditorState {
@@ -231,6 +263,7 @@ function restore(
     selection: has(to.nodes, s.selection) ? s.selection : null,
     past,
     future,
+    typing: null,
   };
 }
 

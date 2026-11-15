@@ -438,13 +438,18 @@ until **Back to library**, which returns to the library with the same workout pi
 holds the name, the chip **Draft, not saved** (the draft lives in memory; saving is the library's, #110), **Undo**,
 **Redo** and **Back to library**; then the profile across the page, the selected node's blocks drawn with a heavier
 edge; then **Outline · Text · Summary** in one row, 4 / 4 / 4 on the grid at 1024 and 1440. The outline is the tree as
-one single-select listbox (selection follows focus, as the library; a nested row is indented and a long label wraps);
-the text is the DSL (docs/DSL.md) in the mono face; the summary is the library panel's. Every edit goes through the
+one single-select listbox (selection follows focus, as the library; a nested row is indented and a long label wraps).
+It is read-only for now: selecting a row marks its blocks, and the tree is edited through the text; outline edits
+(delete, insert, wrap in a repeat) are #653. The text is the DSL (docs/DSL.md) in the mono face; the summary is the library panel's. Every edit goes through the
 pure editor model (`editor/model.ts`); the core parses (`parse_dsl`) and compiles (`compile_workout`). A draft that
-does not parse keeps the saved workout, edges the text in the error colour and shows ⚠, the core's message and its
-line and column; it is never committed in part. A tree the core refuses to compile shows the refusal and keeps the
+does not parse keeps the saved workout, edges the text in the error colour and shows ⚠, the core's message, its
+line and column, and that line with the problem's span (`DslProblem` offset and length) underlined in the error colour,
+since a textarea cannot mark a range of its own text; it is never committed in part. A tree the core refuses to compile shows the refusal and keeps the
 last compiled view. Undo and redo restore a saved tree with its text, and the selection survives while its node
-exists. Riding a draft is #643.
+exists. **Undo groups:** the commits of one burst of typing are one undo step; a burst ends at a pause of 500 ms
+between two keystrokes, or at any other commit, undo or redo, and a structural edit is a step of its own. The history
+keeps the last 100 steps and drops the oldest past that. Both numbers are the text-editor convention
+(prosemirror-history's `newGroupDelay` and `depth` defaults; `editor/model.ts` `GROUP_MS`, `HISTORY_LIMIT`). Riding a draft is #643.
 
 ### 5.8 Onboarding (first run)
 Eight steps (spec/ONBOARDING §1; §15.1 added *Training for*): About you · Background · Current numbers · Health

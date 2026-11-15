@@ -31,6 +31,9 @@ import {
 import "./editor.css";
 
 const icon = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
+
+/** The clock keystrokes are timed by for undo groups (model.ts `GROUP_MS`); tests set it to step past or within one. */
+export const typingClock = { now: () => performance.now() };
 const num = (n: number | null) => (n === null ? "—" : String(n));
 
 function endText(e: StepEnd): string {
@@ -174,6 +177,24 @@ export function lineColumn(text: string, offset: number) {
   return { line: before.length, column: (before.at(-1)?.length ?? 0) + 1 };
 }
 
+/**
+ * The problem's line, split around its span (`DslProblem` offset and length, UTF-16) so the view can mark it: a
+ * textarea cannot style a range of its own text. A span that runs past its line is cut at the line's end; an empty
+ * one (a token missing at the end) marks nothing.
+ */
+export function problemLine(text: string, offset: number, length: number) {
+  const start = text.lastIndexOf("\n", offset - 1) + 1;
+  const nl = text.indexOf("\n", offset);
+  const end = nl === -1 ? text.length : nl;
+  const to = Math.min(offset + length, end);
+  return {
+    ...lineColumn(text, offset),
+    before: text.slice(start, offset),
+    span: text.slice(offset, to),
+    after: text.slice(to, end),
+  };
+}
+
 export function WorkoutEditor({
   from,
   onBack,
@@ -193,7 +214,10 @@ export function WorkoutEditor({
     ),
   );
   const [compiled, setCompiled] = useState<CompiledView>(from.compiled);
-  const [failure, setFailure] = useState<ApiError | null>(null);
+  // A command that failed: the compile of the saved tree, or the last parse. Each clears on its own next success.
+  const [compileFailure, setCompileFailure] = useState<ApiError | null>(null);
+  const [parseFailure, setParseFailure] = useState<ApiError | null>(null);
+  const failure = parseFailure ?? compileFailure;
   const root = useRef<HTMLDivElement>(null);
 
   // The summary and the profile follow the saved tree: each change is compiled by the core; an answer for a tree that
@@ -211,19 +235,21 @@ export function WorkoutEditor({
       compiledFor.current = saved;
       if (r.status === "ok") {
         setCompiled(r.data);
-        setFailure(null);
-      } else setFailure(r.error);
+        setCompileFailure(null);
+      } else setCompileFailure(r.error);
     });
     return () => {
       current = false;
     };
   }, [saved, meta]);
 
-  const edit = (text: string) => {
-    setS((st) => typed(st, text));
+  const edit = (text: string, at: number) => {
+    setS((st) => typed(st, text, at));
     void api(commands.parseDsl(text, s.workout.ftp)).then((r) => {
-      if (r.status === "ok") setS((st) => parsed(st, text, r.data));
-      else setFailure(r.error);
+      if (r.status === "ok") {
+        setParseFailure(null);
+        setS((st) => parsed(st, text, r.data));
+      } else setParseFailure(r.error);
     });
   };
 
@@ -243,7 +269,9 @@ export function WorkoutEditor({
   }, []);
 
   const marked = subtree(saved.nodes, s.selection);
-  const at = s.problem ? lineColumn(s.draft, s.problem.offset) : null;
+  const at = s.problem
+    ? problemLine(s.draft, s.problem.offset, s.problem.length)
+    : null;
   return (
     <div ref={root} className="page workouts editor">
       <div className="editor-head">
@@ -284,9 +312,7 @@ export function WorkoutEditor({
       </div>
       <div className="editor-panes">
         <section className="editor-pane" aria-labelledby="editor-outline-h">
-          <h2 id="editor-outline-h" aria-hidden>
-            Outline
-          </h2>
+          <h2 id="editor-outline-h">Outline</h2>
           {saved.nodes.length === 0 ? (
             <p className="workouts-hint">No steps yet: write one in Text.</p>
           ) : (
@@ -297,8 +323,11 @@ export function WorkoutEditor({
             />
           )}
         </section>
-        <section className="editor-pane editor-text">
-          <h2>
+        <section
+          className="editor-pane editor-text"
+          aria-labelledby="editor-text-h"
+        >
+          <h2 id="editor-text-h">
             <label htmlFor="editor-dsl">Text</label>
           </h2>
           <textarea
@@ -308,7 +337,7 @@ export function WorkoutEditor({
             value={s.draft}
             aria-invalid={s.problem !== null || undefined}
             aria-describedby={s.problem ? "editor-problem" : undefined}
-            onChange={(e) => edit(e.target.value)}
+            onChange={(e) => edit(e.target.value, typingClock.now())}
           />
           {s.problem && at && (
             <p
@@ -317,7 +346,12 @@ export function WorkoutEditor({
               data-state="error"
             >
               <span data-state-label>⚠</span> {s.problem.message} (line{" "}
-              {at.line}, column {at.column}). The saved workout is unchanged.
+              {at.line}, column {at.column}). The saved workout is unchanged.{" "}
+              <code className="editor-problem-line">
+                {at.before}
+                {at.span && <mark>{at.span}</mark>}
+                {at.after}
+              </code>
             </p>
           )}
         </section>

@@ -8,6 +8,8 @@ import {
   applied,
   canRedo,
   canUndo,
+  GROUP_MS,
+  HISTORY_LIMIT,
   insertAfter,
   load,
   nodeAt,
@@ -39,9 +41,13 @@ function fresh() {
     { id: "w", name: "Sweet spot", ftp: FTP, nodes: first.nodes },
     text("sweet-spot"),
   );
-  /** Type `t` and hand the core's answer in, as the view does. */
-  const type = (st: EditorState, t: string) =>
-    parsed(typed(st, t), t, parse(t));
+  let now = 0;
+  /** Type `t` `gap` ms after the last keystroke and hand the core's answer in, as the view does. By default after a
+   * pause, so each text is its own undo step. */
+  const type = (st: EditorState, t: string, gap = GROUP_MS) => {
+    now += gap;
+    return parsed(typed(st, t, now), t, parse(t));
+  };
   return { core, parse, s, type };
 }
 
@@ -117,6 +123,47 @@ describe("undo and redo", () => {
   });
 });
 
+describe("undo groups and the history cap", () => {
+  it("the commits of one burst of typing are one undo step; a pause starts the next", () => {
+    const { s, type } = fresh();
+    const a = type(s, text("sweet-spot-4x"));
+    const b = type(a, text("missing-target"), 100); // an invalid text in the burst keeps it open
+    const c = type(b, text("sweet-spot-4x-15m"), GROUP_MS - 1);
+    expect(c.saved.text).toBe(text("sweet-spot-4x-15m"));
+    expect(c.past).toEqual([s.saved]);
+    expect(undo(c).saved).toBe(s.saved);
+    const d = type(c, text("sweet-spot-no-cool-down"), GROUP_MS);
+    expect(d.past).toEqual([s.saved, c.saved]);
+    expect(undo(d).saved).toBe(c.saved);
+  });
+
+  it("a tree op or an undo ends the burst", () => {
+    const { s, type, core } = fresh();
+    const a = type(type(s, text("sweet-spot-4x")), text("sweet-spot"), 1);
+    expect(a.past).toEqual([s.saved]);
+    const gone = removeNode(a.saved.nodes, a.saved.nodes[2]!.id);
+    const b = applied(a, gone, core.print_dsl(gone));
+    const c = type(b, text("sweet-spot-4x"), 1);
+    expect(c.past).toEqual([s.saved, a.saved, b.saved]);
+    const d = type(undo(c), text("sweet-spot-4x-15m"), 1);
+    expect(d.past).toEqual([s.saved, a.saved, b.saved]);
+    expect(undo(d).saved).toBe(b.saved);
+  });
+
+  it(`keeps the last ${HISTORY_LIMIT} steps and drops the oldest`, () => {
+    const { s, type } = fresh();
+    let st = s;
+    const texts = [text("sweet-spot-4x"), text("sweet-spot")];
+    for (let i = 0; i < HISTORY_LIMIT + 5; i++) st = type(st, texts[i % 2]!);
+    expect(st.past).toHaveLength(HISTORY_LIMIT);
+    let back = st;
+    for (let i = 0; i < HISTORY_LIMIT; i++) back = undo(back);
+    expect(canUndo(back)).toBe(false);
+    expect(back.saved).not.toBe(s.saved); // the loaded state was among the dropped
+    expect(back.future).toHaveLength(HISTORY_LIMIT);
+  });
+});
+
 describe("DSL ↔ tree", () => {
   it("typing a valid text commits the core's tree with that text", () => {
     const { s, type, parse } = fresh();
@@ -150,8 +197,9 @@ describe("DSL ↔ tree", () => {
     const { s, parse } = fresh();
     const stale = parse(text("sweet-spot-4x"));
     const moved = typed(
-      typed(s, text("sweet-spot-4x")),
+      typed(s, text("sweet-spot-4x"), 0),
       text("sweet-spot-4x-15m"),
+      10,
     );
     expect(parsed(moved, text("sweet-spot-4x"), stale)).toBe(moved);
   });
@@ -203,7 +251,7 @@ describe("lock (#112)", () => {
     const { s, type, core } = fresh();
     const b = type(s, text("sweet-spot-4x"));
     const locked = setLock(b, { kind: "pending" });
-    expect(typed(locked, "x")).toBe(locked);
+    expect(typed(locked, "x", 0)).toBe(locked);
     expect(
       parsed(locked, locked.draft, core.parse_dsl(text("sweet-spot"), FTP)),
     ).toBe(locked);
@@ -238,10 +286,13 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
   fc.record({ op: fc.constant("redo" as const) }),
 );
 
-/** Run `ops`; a tree op the fixture has no printed text for is skipped (the core's answer is unknown). */
+/**
+ * Run `ops` from a fresh editor, checking each step; a tree op the fixture has no printed text for is skipped (the
+ * core's answer is unknown). Returns the state it started from and the one it ended in.
+ */
 function run(
   ops: readonly Op[],
-  check: (before: EditorState, after: EditorState, op: Op) => void,
+  check: (before: EditorState, after: EditorState, op: Op) => void = () => {},
 ) {
   const { s, type, core } = fresh();
   let st = s;
@@ -271,51 +322,112 @@ function run(
     check(st, next, op);
     st = next;
   }
+  return { start: s, end: st };
 }
 
 describe("properties", () => {
   it("the selection is always null or a node of the saved tree", () => {
     fc.assert(
-      fc.property(fc.array(opArb, { maxLength: 30 }), (ops) =>
-        run(ops, (_, after) => {
-          if (after.selection !== null)
-            expect(pathOf(after.saved.nodes, after.selection)).not.toBeNull();
-        }),
+      fc.property(
+        fc.array(opArb, { maxLength: 30 }),
+        (ops) =>
+          void run(ops, (_, after) => {
+            if (after.selection !== null)
+              expect(pathOf(after.saved.nodes, after.selection)).not.toBeNull();
+          }),
       ),
     );
   });
 
   it("undo then redo returns the same saved state; history length is conserved", () => {
     fc.assert(
-      fc.property(fc.array(opArb, { maxLength: 30 }), (ops) =>
-        run(ops, (_, after) => {
-          const total = after.past.length + after.future.length;
-          if (canUndo(after)) {
-            const u = undo(after);
-            expect(redo(u).saved).toBe(after.saved);
-            expect(u.past.length + u.future.length).toBe(total);
-          }
-        }),
+      fc.property(
+        fc.array(opArb, { maxLength: 30 }),
+        (ops) =>
+          void run(ops, (_, after) => {
+            const total = after.past.length + after.future.length;
+            if (canUndo(after)) {
+              const u = undo(after);
+              expect(redo(u).saved).toBe(after.saved);
+              expect(u.past.length + u.future.length).toBe(total);
+            }
+          }),
       ),
     );
   });
 
   it("a saved state always holds a tree and the text it was committed with; only an invalid draft differs", () => {
     fc.assert(
-      fc.property(fc.array(opArb, { maxLength: 30 }), (ops) =>
-        run(ops, (before, after, op) => {
-          if (after.problem === null)
-            expect(after.draft).toBe(after.saved.text);
-          // A problem comes only from typing, with the saved state untouched; any other step keeps the draft and its
-          // problem as they were (an undo or redo that moves drops both).
-          if (after.problem !== null) {
-            expect(after.saved).toBe(before.saved);
-            if (op.op !== "type") {
-              expect(after.problem).toBe(before.problem);
-              expect(after.draft).toBe(before.draft);
+      fc.property(
+        fc.array(opArb, { maxLength: 30 }),
+        (ops) =>
+          void run(ops, (before, after, op) => {
+            if (after.problem === null)
+              expect(after.draft).toBe(after.saved.text);
+            // A problem comes only from typing, with the saved state untouched; any other step keeps the draft and its
+            // problem as they were (an undo or redo that moves drops both).
+            if (after.problem !== null) {
+              expect(after.saved).toBe(before.saved);
+              if (op.op !== "type") {
+                expect(after.problem).toBe(before.problem);
+                expect(after.draft).toBe(before.draft);
+              }
             }
-          }
-        }),
+          }),
+      ),
+    );
+  });
+
+  it("any sequence of edits undoes back to the loaded state, and redoes forward to where it was", () => {
+    fc.assert(
+      fc.property(fc.array(opArb, { maxLength: 30 }), (ops) => {
+        const { start, end } = run(ops);
+        let st = end;
+        for (let i = 0; canUndo(st); i++) {
+          expect(i).toBeLessThan(HISTORY_LIMIT);
+          st = undo(st);
+        }
+        expect(st.saved).toBe(start.saved);
+        for (let i = 0; i < end.past.length; i++) st = redo(st);
+        expect(st.saved).toBe(end.saved);
+      }),
+    );
+  });
+
+  it("an answer for any text that is not the draft changes nothing", () => {
+    fc.assert(
+      fc.property(
+        fc.array(opArb, { maxLength: 20 }),
+        fc.constantFrom(...DRAFT_NAMES),
+        (ops, name) => {
+          const answer = editorCommands().parse_dsl(DRAFTS[name]!.text, FTP);
+          run(ops, (_, after) => {
+            for (const t of [DRAFTS[name]!.text, after.draft + " "])
+              if (t !== after.draft)
+                expect(parsed(after, t, answer)).toBe(after);
+          });
+        },
+      ),
+    );
+  });
+
+  it("one burst of typing (every keystroke within the pause) adds at most one undo step", () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            name: fc.constantFrom(...DRAFT_NAMES),
+            gap: fc.nat(GROUP_MS - 1),
+          }),
+          { minLength: 1, maxLength: 20 },
+        ),
+        (keys) => {
+          const { s, type } = fresh();
+          let st = s;
+          for (const k of keys) st = type(st, DRAFTS[k.name]!.text, k.gap);
+          expect(st.past.length).toBeLessThanOrEqual(1);
+          if (st.saved !== s.saved) expect(undo(st).saved).toBe(s.saved);
+        },
       ),
     );
   });
