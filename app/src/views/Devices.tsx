@@ -1,5 +1,6 @@
 // Devices (DESIGN §5.9, #92 MVP subset; direction A, §18 and #527): scan, pair and forget the trainer and the strap. It renders what the core
-// reports (`devices_scan`, `device_pair`, `device_forget`, `device_links`) and branches on `ApiError.code`, never on
+// reports (`devices_scan`, and the pairings in the snapshot channel's `devices`, ADR-0001 §4.3: `device_pair` and
+// `device_forget` answer nothing, their effect is the next frame) and branches on `ApiError.code`, never on
 // `message` (ADR-0001 §4.4). Out of this subset, each with its issue: live W/rpm/bpm while pairing (#267),
 // "Release trainer" (the core has no release command, #314) and a distinct "another app holds the NEO" signal (#314).
 // Two tables in the Settings panel: Paired (one fixed row per role) and Nearby (the last scan). Forget asks first, in
@@ -10,15 +11,16 @@ import {
   Heart,
   type LucideIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { commands } from "../bindings";
 import type {
   ApiError,
-  DeviceLinkInfo,
   DeviceRole,
+  PairedDevice,
   ScannedDevice,
 } from "../bindings";
 import { useCommand } from "../stream";
+import { useUi } from "../stream/uiHooks";
 
 const ROLE_LABEL: Record<DeviceRole, string> = {
   trainer: "Trainer",
@@ -84,7 +86,7 @@ function describeError(
     case "storage":
       // The pairings live in the local database; the core reads it first on scan and forget, and writes it last on pair.
       // A pair can fail after the row was written (core.rs `device_pair` (~1170)), so the wording does not say what was stored:
-      // the view re-reads the pairings, and the list shows the truth.
+      // the list shows the truth, the snapshot channel's pairings.
       return during === "pair"
         ? {
             title: `Could not save the pairing of ${what}`,
@@ -125,7 +127,7 @@ function Banner({ notice, onRetry }: { notice: Notice; onRetry: () => void }) {
   );
 }
 
-function pairedLine(d: NonNullable<DeviceLinkInfo["device"]>): string {
+function pairedLine(d: PairedDevice): string {
   return [d.name ?? "Unnamed device", d.model, d.serial && `S/N ${d.serial}`]
     .filter(Boolean)
     .join(" · ");
@@ -202,13 +204,14 @@ export function Devices() {
   /** The pairing in flight: device id and role, so a dual-role device shows "Pairing…" on one button only. */
   const [pairing, setPairing] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<Confirming | null>(null);
-  const getLinks = useCommand(commands.deviceLinks);
   const scan = useCommand(commands.devicesScan);
   const pair = useCommand(commands.devicePair);
   const forget = useCommand(commands.deviceForget);
-  // `useCommand` drops its data on a failure: keep the last good list here, so a failed re-read leaves the rows.
-  const [links, setLinks] = useState<DeviceLinkInfo[] | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
+  // The pairings are the snapshot channel's (`devices.<role>.paired`): a pair or a forget shows in its next frame.
+  const ui = useUi();
+  const pairedOf = (role: DeviceRole): PairedDevice | null =>
+    (role === "trainer" ? ui.devices?.trainer : ui.devices?.strap)?.paired ??
+    null;
   /** Scan gets focus after a confirmed Forget; Cancel gives it back to the row's Forget, once it is drawn again (`refocus`). */
   const scanButton = useRef<HTMLButtonElement | null>(null);
   const root = useRef<HTMLElement | null>(null);
@@ -220,23 +223,6 @@ export function Devices() {
       ?.focus();
     refocus.current = null;
   });
-
-  // Re-read the pairings; a failure surfaces as a notice and the last good list stays.
-  const load = getLinks.run;
-  const apply = useCallback((r: Awaited<ReturnType<typeof load>>) => {
-    if (r.status === "ok") {
-      setLinks(r.data);
-      setLoadFailed(false);
-    } else {
-      setLoadFailed(true);
-      const n = describe(r.error, "load", "the paired devices");
-      setNotices((all) => [...all, n]);
-    }
-  }, []);
-  const refresh = useCallback(async () => apply(await load()), [load, apply]);
-  useEffect(() => {
-    void load().then(apply);
-  }, [load, apply]);
 
   // One command at a time: the core has one central. A ref, not the pending flags, because a second click can
   // arrive before the render that disables the buttons.
@@ -268,14 +254,11 @@ export function Devices() {
       setPairing(`${d.id}:${role}`);
       const r = await pair.run(d.id, role);
       setPairing(null);
-      if (r.status === "ok") await refresh();
-      else {
+      // `storage` after the connect may have written the pairing already: the list is the frame's, so it is the truth.
+      if (r.status === "error")
         setNotices([
           describe(r.error, "pair", d.name ?? ROLE_LABEL[role].toLowerCase()),
         ]);
-        // `storage` after the connect may have written the pairing already: re-read, so the list is the truth.
-        if (r.error.code === "storage") await refresh();
-      }
     });
   const runForget = (role: DeviceRole) =>
     exclusive(async () => {
@@ -283,22 +266,11 @@ export function Devices() {
       // The row's buttons are gone with the question: the next likely step is a scan for the replacement.
       scanButton.current?.focus();
       const r = await forget.run(role);
-      // `not_found` is success: the role has no pairing, which is what the rider asked for. Both outcomes are settled
-      // facts, so the row is cleared here and the refresh only reconciles: if it fails, the row must not go on
-      // showing a pairing that is gone (a second Forget would answer `not_found` for nothing).
-      const gone = r.status === "ok" || r.error.code === "not_found";
-      if (gone)
-        setLinks(
-          (all) =>
-            all?.map((l) => (l.role === role ? { ...l, device: null } : l)) ??
-            null,
-        );
-      else
+      // `not_found` is success: the role has no pairing, which is what the rider asked for. The row follows the frame.
+      if (r.status === "error" && r.error.code !== "not_found")
         setNotices([
           describe(r.error, "forget", ROLE_LABEL[role].toLowerCase()),
         ]);
-      // The refresh adds its own notice after the forget's: neither replaces the other.
-      await refresh();
     });
   const cancelForget = () => {
     if (confirming) refocus.current = `${confirming.role}:${confirming.row}`;
@@ -318,7 +290,9 @@ export function Devices() {
   // The core pairs by role: one trainer and one strap, each replaced by a new pairing, so a peripheral that offers
   // both may hold both. `ScannedDevice.paired` carries no role, so the role comes from the pairings read above.
   const pairedIn = (d: ScannedDevice, role: DeviceRole) =>
-    links?.find((l) => l.role === role)?.device?.id === d.id;
+    pairedOf(role)?.id === d.id;
+  // Until the first frame the pairings are unknown; a channel that cannot open says why, and its watchdog retries.
+  const channelError = ui.devices === null ? ui.error : null;
   return (
     <section
       ref={root}
@@ -332,6 +306,15 @@ export function Devices() {
           apps that use them.
         </p>
       </div>
+      {channelError && (
+        <Banner
+          notice={{
+            id: 0,
+            ...describeError(channelError, "load", "the paired devices"),
+          }}
+          onRetry={() => void runScan()}
+        />
+      )}
       {notices.map((n) => (
         <Banner key={n.id} notice={n} onRetry={() => void runScan()} />
       ))}
@@ -342,7 +325,7 @@ export function Devices() {
         </div>
         <ul className="device-list">
           {ROLES.map((role) => {
-            const device = links?.find((l) => l.role === role)?.device ?? null;
+            const device = pairedOf(role);
             const Icon = ROLE_ICON[role];
             const confirm =
               device &&
@@ -356,8 +339,8 @@ export function Devices() {
                 {confirm || (
                   <>
                     <span className={device ? "device-line" : "muted"}>
-                      {links === null
-                        ? loadFailed
+                      {ui.devices === null
+                        ? channelError
                           ? "Unknown"
                           : "Loading…"
                         : device

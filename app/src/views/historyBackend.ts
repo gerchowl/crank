@@ -1,5 +1,6 @@
 // The core's ride-record commands behind `mockIPC` (`rides_list`, `ride_summary`), for the History tests and the
-// design fixtures (app/e2e/design/fixture.tsx, #457).
+// design fixtures (app/e2e/design/fixture.tsx, #457). Any other command (the snapshot channel's, stream/uiBackend.ts)
+// goes to the backend installed before this one.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type { RideRecord } from "../bindings";
 export const apiError = (code: string, message: string) => ({ code, message });
@@ -98,7 +99,16 @@ export const newestFirst = (a: RideRecord, b: RideRecord) =>
  */
 export function install(over: Partial<Backend> = {}): Backend {
   const b: Backend = { calls: [], rides: RIDES, fail: {}, hold: {}, ...over };
+  const prev = (
+    window as unknown as {
+      __TAURI_INTERNALS__?: {
+        invoke: (cmd: string, args?: unknown) => Promise<unknown>;
+      };
+    }
+  ).__TAURI_INTERNALS__?.invoke;
   mockIPC((cmd, payload) => {
+    if (prev && cmd !== "rides_list" && cmd !== "ride_summary")
+      return prev(cmd, payload);
     const args = (payload ?? {}) as Record<string, unknown>;
     b.calls.push({ cmd, args });
     if (cmd in b.fail) throw b.fail[cmd];

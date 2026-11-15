@@ -16,6 +16,7 @@ import { closeKeys, openKeys, useKeysOpen } from "./shell/keys";
 import { StartScreen, reducedMotion, type Boot } from "./shell/StartScreen";
 import { useApplyTheme } from "./theme";
 import { Ride } from "./ride/Ride";
+import { UiProvider } from "./stream/uiHooks";
 import { History } from "./views/History";
 import { Placeholder } from "./views/Placeholder";
 import { RideLoadNotice } from "./views/RideLoadNotice";
@@ -168,7 +169,13 @@ export function App({
           Skip to main
         </a>
       )}
-      {handoff && <Destination views={views} />}
+      {/* The window's snapshot channel opens with the destination, once the core is up and the start screen hands off,
+          and stays open for the window's life (ADR-0001 §4.3): every view reads the live state from it. */}
+      {handoff && (
+        <UiProvider>
+          <Destination views={views} />
+        </UiProvider>
+      )}
       {!gone && (
         <StartScreen
           boot={boot}

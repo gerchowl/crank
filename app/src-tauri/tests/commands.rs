@@ -3,11 +3,11 @@
 //! and frames arriving on a real IPC `Channel`.
 use crank_core::{
     Core, CoreConfig, DeviceLinkView, DeviceMode, DeviceRole, DslParse, EngineHost, ErrorCode,
-    LinkFrame, LinkIntent, LinkPhase, ReleaseReason, RideOutcome,
+    LinkFrame, LinkIntent, LinkPhase, ReleaseReason, RideEnding, RideOutcome, UiFrame,
 };
 use crank_desktop::commands as cmd;
 use crank_devices::sim::SimConfig;
-use crank_engine::{MetricId, StreamFrame, StreamRideState, SubscribeOpts, VirtualClock};
+use crank_engine::{StreamFrame, StreamRideState, VirtualClock};
 use serde_json::Value;
 use std::{
     sync::{Arc, Mutex},
@@ -22,6 +22,7 @@ use tauri::{
 const SENSOR_CHECK: &str = "builtin-sensor-check";
 
 type Frames = Arc<Mutex<Vec<StreamFrame>>>;
+type UiFrames = Arc<Mutex<Vec<UiFrame>>>;
 
 fn app(dir: &std::path::Path) -> tauri::App<MockRuntime> {
     let core = Core::open(CoreConfig {
@@ -66,6 +67,24 @@ fn channel(frames: &Frames) -> Channel<StreamFrame> {
     })
 }
 
+/// A channel that decodes the snapshot frames the core sends, as the page would.
+fn ui_channel(frames: &UiFrames) -> Channel<UiFrame> {
+    let frames = frames.clone();
+    Channel::new(move |body| {
+        let InvokeResponseBody::Json(json) = body else {
+            panic!("frames are JSON");
+        };
+        frames
+            .lock()
+            .expect("test mutex")
+            .push(serde_json::from_str(&json).expect("a UiFrame"));
+        Ok(())
+    })
+}
+
+/// A whole ride through the commands, its live state on the snapshot channel (ADR-0001
+/// §4.3.8): `ride_load` answers the ride id, `device_pair` and `ride_end` answer `()`, and
+/// what they did is in the next frames; another window's ack is `NotFound`.
 #[tokio::test(start_paused = true)]
 async fn a_whole_ride_through_the_commands_streams_frames_and_lands_in_history() {
     let dir = tempfile::tempdir().unwrap();
@@ -75,87 +94,62 @@ async fn a_whole_ride_through_the_commands_streams_frames_and_lands_in_history()
 
     let info = cmd::core_ready(core.clone()).await.unwrap();
     assert!(info.sim);
+    let frames: UiFrames = Arc::default();
+    let channel = cmd::ui_open(core.clone(), window.clone(), ui_channel(&frames))
+        .await
+        .unwrap();
+    // Apply and ack every frame as the page does (ADR-0001 §4.3.2), checking the series rule.
+    let mut page = Page::default();
     let found = cmd::devices_scan(core.clone(), None).await.unwrap();
     let trainer = found.iter().find(|d| d.trainer).unwrap().id.clone();
     let strap = found.iter().find(|d| d.heart_rate).unwrap().id.clone();
-    cmd::device_pair(core.clone(), trainer, DeviceRole::Trainer)
+    let () = cmd::device_pair(core.clone(), trainer.clone(), DeviceRole::Trainer)
         .await
         .unwrap();
-    cmd::device_pair(core.clone(), strap, DeviceRole::HeartRate)
+    let () = cmd::device_pair(core.clone(), strap, DeviceRole::HeartRate)
         .await
         .unwrap();
-    assert_eq!(cmd::device_links(core.clone()).await.unwrap().len(), 2);
+    page.pump(&core, &window, &frames, 3).await;
+    let paired = page.last().devices.trainer.paired.clone();
+    assert_eq!(
+        paired.map(|p| p.id),
+        Some(trainer),
+        "the pairing is in the frame"
+    );
     let library = cmd::workouts_list(core.clone()).await.unwrap();
     assert!(library.iter().any(|w| w.id == SENSOR_CHECK));
     cmd::workout_get(core.clone(), SENSOR_CHECK.into())
         .await
         .unwrap();
 
-    cmd::ride_load(core.clone(), Some(SENSOR_CHECK.into()))
+    let id: String = cmd::ride_load(core.clone(), Some(SENSOR_CHECK.into()))
         .await
         .unwrap();
-    let frames: Frames = Arc::default();
-    let stream = cmd::open_stream(core.clone(), window.clone(), channel(&frames))
-        .await
-        .unwrap();
-    let sub = cmd::stream_subscribe(
-        core.clone(),
-        window.clone(),
-        stream,
-        MetricId::Power,
-        SubscribeOpts {
-            rate_hz: 1.0,
-            filters: Vec::new(),
-        },
-    )
-    .await
-    .unwrap();
     cmd::ride_start(core.clone()).await.unwrap();
-
-    // Ride, acknowledging as the page does.
-    for _ in 0..20 {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let last = frames.lock().unwrap().last().map(|f| f.seq);
-        if let Some(seq) = last {
-            cmd::stream_ack(core.clone(), window.clone(), stream, seq)
-                .await
-                .unwrap();
-        }
-    }
+    page.pump(&core, &window, &frames, 20).await;
     {
-        let frames = frames.lock().unwrap();
-        assert!(frames.len() >= 10, "{} frames", frames.len());
-        assert!(
-            frames
-                .iter()
-                .flat_map(|f| &f.samples)
-                .any(|s| s.sub == sub && s.v.is_some_and(|w| w > 0.0)),
-            "power samples arrive"
-        );
+        let last = page.last();
+        let ride = last.ride.as_ref().expect("the ride is in the frame");
+        assert_eq!(ride.id, id, "the frame's ride is the loaded one");
+        assert_eq!(ride.status.state, StreamRideState::Riding);
+        assert!(page.power.len() >= 20, "{} power points", page.power.len());
+        assert!(page.power.iter().any(|&w| w > 0), "power points arrive");
     }
-    let view = cmd::ride_status(core.clone()).await.unwrap();
-    assert_eq!(view.status.state, StreamRideState::Riding);
 
-    // A window may only use its own streams.
+    // A window may only ack its own channel.
     let other = win(&app, "other");
-    let e = cmd::stream_snapshot(core.clone(), other, stream)
+    let e = cmd::ui_ack(core.clone(), other, channel, page.last().seq)
         .await
         .unwrap_err();
     assert_eq!(e.code, ErrorCode::NotFound);
-    let snapshot = cmd::stream_snapshot(core.clone(), window.clone(), stream)
-        .await
-        .unwrap();
-    assert!(snapshot.status.is_some());
 
     cmd::ride_pause(core.clone()).await.unwrap();
     cmd::ride_resume(core.clone()).await.unwrap();
     cmd::ride_skip(core.clone()).await.unwrap();
-    cmd::stream_unsubscribe(core.clone(), window.clone(), stream, sub)
-        .await
-        .unwrap();
-    let ended = cmd::ride_end(core.clone(), app.state()).await.unwrap();
-    assert!(!ended.forced);
-    let id = ended.ride_id.expect("a ride");
+    let () = cmd::ride_end(core.clone(), app.state()).await.unwrap();
+    page.pump(&core, &window, &frames, 3).await;
+    let ended = page.last().ride.as_ref().map(|r| (r.id.clone(), r.ended));
+    assert_eq!(ended, Some((id.clone(), Some(RideEnding::Finished))));
 
     let rides = cmd::rides_list(core.clone()).await.unwrap();
     assert_eq!(rides.len(), 1);
@@ -164,6 +158,50 @@ async fn a_whole_ride_through_the_commands_streams_frames_and_lands_in_history()
     cmd::device_forget(core.clone(), DeviceRole::HeartRate)
         .await
         .unwrap();
+}
+
+/// The page's side of the snapshot channel, by the client rule (ADR-0001 §4.3.2).
+#[derive(Default)]
+struct Page {
+    applied: usize,
+    frames: Vec<UiFrame>,
+    power: Vec<u16>,
+}
+impl Page {
+    /// For `secs` seconds, apply each new frame (asserting `from` is the page's length) and
+    /// ack it.
+    async fn pump(
+        &mut self,
+        core: &State<'_, Core>,
+        window: &tauri::Window<MockRuntime>,
+        frames: &UiFrames,
+        secs: u32,
+    ) {
+        for _ in 0..secs * 10 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let new: Vec<UiFrame> = frames.lock().expect("test mutex")[self.applied..].to_vec();
+            for frame in new {
+                self.applied += 1;
+                let p = &frame.series.power;
+                if p.from == 0 {
+                    self.power.clear();
+                }
+                assert_eq!(
+                    p.from as usize,
+                    self.power.len(),
+                    "from is the page's length"
+                );
+                self.power.extend(&p.v);
+                cmd::ui_ack(core.clone(), window.clone(), frame.channel, frame.seq)
+                    .await
+                    .expect("the page's own channel takes its ack");
+                self.frames.push(frame);
+            }
+        }
+    }
+    fn last(&self) -> &UiFrame {
+        self.frames.last().expect("a frame arrived")
+    }
 }
 
 #[tokio::test(start_paused = true)]

@@ -19,12 +19,13 @@ export const commands = {
 	 */
 	devicesScan: (forMs: number | null) => typedError<ScannedDevice[], ApiError>(__TAURI_INVOKE("devices_scan", { forMs })),
 	/**
-	 *  Pair a device in a role.
+	 *  Pair a device in a role; answers nothing: the pairing shows in the snapshot channel's
+	 *  next frame, as `devices.<role>.paired` (ADR-0001 §4.3.8).
 	 * 
 	 *  # Errors
 	 *  As [`Core::device_pair`].
 	 */
-	devicePair: (id: string, role: DeviceRole) => typedError<PairedDevice, ApiError>(__TAURI_INVOKE("device_pair", { id, role })),
+	devicePair: (id: string, role: DeviceRole) => typedError<null, ApiError>(__TAURI_INVOKE("device_pair", { id, role })),
 	/**
 	 *  Forget the pairing of a role.
 	 * 
@@ -111,12 +112,14 @@ export const commands = {
 	 */
 	compileWorkout: (workout: Workout) => typedError<CompiledView, ApiError>(__TAURI_INVOKE("compile_workout", { workout })),
 	/**
-	 *  Load a workout, or a free ride for `None`.
+	 *  Load a workout, or a free ride for `None`; answers the ride's id, for logs and tests.
+	 *  What is drawn comes from the snapshot channel: `ride.workout_id`, and the strap's link in
+	 *  `devices.strap` (ADR-0001 §4.3.8).
 	 * 
 	 *  # Errors
 	 *  As [`Core::ride_load`].
 	 */
-	rideLoad: (workoutId: string | null) => typedError<RideLoaded, ApiError>(__TAURI_INVOKE("ride_load", { workoutId })),
+	rideLoad: (workoutId: string | null) => typedError<string, ApiError>(__TAURI_INVOKE("ride_load", { workoutId })),
 	/**
 	 *  Start the loaded ride.
 	 * 
@@ -146,13 +149,14 @@ export const commands = {
 	 */
 	rideSkip: () => typedError<null, ApiError>(__TAURI_INVOKE("ride_skip")),
 	/**
-	 *  End the ride: the id of the finished ride (`null` for an unloaded one) and whether the
-	 *  core had to end it by force because the engine could not.
+	 *  End the ride, or unload an unstarted one; answers nothing: the end shows in the snapshot
+	 *  channel's next frame, as `ride.ended` (`forced` when the core had to end it because the
+	 *  engine could not), and an unload as `ride: null` (ADR-0001 §4.3.8).
 	 * 
 	 *  # Errors
-	 *  As [`Core::ride_end_outcome`].
+	 *  As [`Core::ride_end`].
 	 */
-	rideEnd: () => typedError<RideEnded, ApiError>(__TAURI_INVOKE("ride_end")),
+	rideEnd: () => typedError<null, ApiError>(__TAURI_INVOKE("ride_end")),
 	/**
 	 *  The ride's state.
 	 * 
@@ -756,17 +760,6 @@ export type RepeatNode = {
 	skipLastRest: boolean | null,
 };
 
-/**  Answer of `ride_end`. */
-export type RideEnded = {
-	/**  The ride's id; `null` for a ride that never started and was only unloaded. */
-	rideId: string | null,
-	/**
-	 *  The engine could not end the ride (stuck or gone) and the core ended it by force: the
-	 *  ride is recorded as aborted, without a summary, and its data may be incomplete.
-	 */
-	forced: boolean,
-};
-
 /**  How a ride ended. */
 export type RideEnding = 
 /**  The engine ended it. */
@@ -776,16 +769,6 @@ export type RideEnding =
  *  without a summary.
  */
 "forced";
-
-/**  Answer of `ride_load`. */
-export type RideLoaded = {
-	/**  Id the ride record will have once started. */
-	rideId: string,
-	/**  Workout, `null` for a free ride. */
-	workoutId: string | null,
-	/**  A strap is connected; without one the ride runs without heart rate. */
-	hrLinked: boolean,
-};
 
 /**  How a stored ride ended. */
 export type RideOutcome = 
