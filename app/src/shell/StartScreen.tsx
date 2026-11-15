@@ -1,42 +1,105 @@
-// Cold-start screen and hand-off (BRAND.md §Start screen). Shown only while the core boots; no minimum display
-// time, never waits for devices. The moment the core is ready the destination (rendered underneath by the
-// shell) is focused, this screen turns inert and fades over HANDOFF_MS, or is removed at once under
-// prefers-reduced-motion. The slow-boot status line is inserted by a timer from the boot attempt, so a fast
-// boot never shows it and a screen reader never hears it. The wordmark is the vendored outlined SVG (no font);
-// the launch motion is the brand spike's and is not part of this shell.
-import { useEffect, useState } from "react";
-import wordmarkDark from "../../../assets/brand/wordmark-dark.svg";
-import wordmarkLight from "../../../assets/brand/wordmark-light.svg";
+// Cold-start screen and hand-off (BRAND.md §Start screen, §F · Spin-up; #88, #552). Its launch motion is F · Spin-up:
+// the brand spike's pure `frame(t)` (design/brand/src/spin.ts, the same code the prototype paints), driven per
+// animation frame from the clock, from the first frame, whatever the boot does. It is never restarted ("Try again"
+// keeps the one motion going) and runs on at 1:1 under the hand-off fade. The markup at rest is the settled wordmark
+// (A · Slice), so under prefers-reduced-motion nothing is driven and the final frame is what shows.
+//
+// When the hand-off begins is the shell's (App.tsx): at once when the core is ready, except on the first launch of a
+// build, which waits for the motion to end (`onMotionEnd`). The moment it begins (`leaving`) the destination
+// (rendered underneath by the shell) is focused, this screen turns inert and fades over HANDOFF_MS, or is removed at
+// once under reduced motion. The slow-boot status line is inserted by a timer from the boot attempt, so a fast boot
+// never shows it and a screen reader never hears it. The build's version string sits at the bottom right.
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
+import { SPIN, frame, paint } from "../../../design/brand/src/spin.ts";
+import {
+  CONCEPTS,
+  focusShift,
+  svg,
+} from "../../../design/brand/src/wordmark.ts";
 import type { ThemeMode } from "../theme";
 
 /** The boot status line appears only when a boot outlasts this (BRAND.md §Motion budget). */
 export const STATUS_AFTER_MS = 1200;
 /** Cross-fade to the destination. */
 export const HANDOFF_MS = 200;
+/** F · Spin-up's length: at rest on the wordmark from here (BRAND.md §F · Spin-up, Timing). */
+export const MOTION_MS = SPIN.end;
 
 export type Boot =
   | { phase: "booting"; attempt: number }
   | { phase: "ready" }
   | { phase: "failed"; detail: string };
 
-const reducedMotion = () =>
+export const reducedMotion = () =>
   typeof matchMedia === "function" &&
   matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// The wordmark paints with the start screen's roles (theme.css `.start[data-mode]`), never hex. The SVG is the brand
+// spike's generated drawing, so it is markup, not a JSX `<svg>`: a brand graphic (`data-graphic`), not an icon
+// (DESIGN §18.7 rule 4); its wrapper names it. The wrapper carries the shift that centres the letters' optical centre,
+// so the drawing stays inside the box that lays it out.
+const COLOURS = { ink: "var(--start-ink)", accent: "var(--start-accent)" };
+const WORDMARK = svg("spin", COLOURS, "start", ' data-graphic=""');
+const CENTRE = {
+  "--focus-shift": `${focusShift(CONCEPTS.spin.build(COLOURS, "start"))}%`,
+} as CSSProperties;
 
 export function StartScreen({
   boot,
   mode,
+  build,
+  leaving,
   onRetry,
   onGone,
+  onMotionEnd,
 }: {
   boot: Boot;
   mode: ThemeMode;
+  /** This build's version string, once read. */
+  build: string | null;
+  /** The hand-off has begun: the destination is live underneath. */
+  leaving: boolean;
   onRetry: () => void;
   onGone: () => void;
+  /** F · Spin-up has reached its rest (never called under reduced motion: there is no motion). */
+  onMotionEnd: () => void;
 }) {
+  const art = useRef<HTMLDivElement>(null);
+  const motionEnd = useRef(onMotionEnd);
+  useLayoutEffect(() => {
+    motionEnd.current = onMotionEnd;
+  });
   const [slowAttempt, setSlowAttempt] = useState(0);
   const attempt = boot.phase === "booting" ? boot.attempt : 0;
-  const ready = boot.phase === "ready";
+
+  // The motion, once per mount: t is the time since the first frame, capped at the rest. `data-t` reports the
+  // painted t (tests). Painted before the first paint, so the settled wordmark never flashes first.
+  useLayoutEffect(() => {
+    const wrap = art.current;
+    const drawing = wrap?.querySelector("svg");
+    if (!wrap || !drawing || reducedMotion()) return;
+    const draw = (t: number) => {
+      paint(drawing, frame(t), COLOURS);
+      wrap.dataset.t = String(Math.round(t));
+    };
+    const t0 = performance.now();
+    let raf = 0;
+    const tick = () => {
+      const t = Math.min(performance.now() - t0, SPIN.end);
+      draw(t);
+      if (t < SPIN.end) raf = requestAnimationFrame(tick);
+      else motionEnd.current();
+    };
+    draw(0);
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   useEffect(() => {
     if (!attempt) return;
@@ -45,22 +108,29 @@ export function StartScreen({
   }, [attempt]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!leaving) return;
     document.querySelector<HTMLElement>("[data-destination]")?.focus();
     if (reducedMotion()) return onGone();
     const t = setTimeout(onGone, HANDOFF_MS);
     return () => clearTimeout(t);
-  }, [ready, onGone]);
+  }, [leaving, onGone]);
 
   return (
     <section
       className="start"
       data-mode={mode}
       aria-label="crank is starting"
-      inert={ready}
-      data-leaving={ready ? "" : undefined}
+      inert={leaving}
+      data-leaving={leaving ? "" : undefined}
     >
-      <img src={mode === "dark" ? wordmarkDark : wordmarkLight} alt="crank" />
+      <div
+        ref={art}
+        className="start-wordmark"
+        role="img"
+        aria-label="crank"
+        style={CENTRE}
+        dangerouslySetInnerHTML={{ __html: WORDMARK }}
+      />
       {boot.phase === "booting" && slowAttempt === boot.attempt && (
         <p className="start-status" role="status">
           Starting crank…
@@ -84,6 +154,7 @@ export function StartScreen({
           </p>
         </div>
       )}
+      {build !== null && <p className="start-build">{build}</p>}
     </section>
   );
 }

@@ -10,6 +10,14 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- The start screen plays F · Spin-up in full once per version (BRAND.md §Start screen, DESIGN §12): the app now paints
+  the brand's launch motion, and on the first launch after an install or update the hand-off waits until it is at
+  rest (1080 ms); later launches hand off the moment the core is ready. "Seen" is kept in the app's local settings,
+  not the store. Reduced motion is never held, "Try again" never restarts the motion, and a failed boot shows its
+  alert at once. The build's version string (`0.2.0-rc.1 · 7516045`, `-dirty` for a dirty tree) is at the start
+  screen's bottom right and in the window title (DESIGN §5.9), fixed at build time from the workspace version and the
+  flake's rev (`CRANK_BUILD_REV`); the release workflow checks the rc binary carries its commit's rev
+  ([#552](https://github.com/gerchowl/crank/issues/552))
 - The heart-rate zone beside the live HR on the ride screen (DESIGN §18.3 "Heart-rate zone"): Friel's seven bike
   zones with an LTHR, five zones of % HR max without, none with neither; Settings → Athlete model lists both
   references and, with neither known, says the ride shows no zone. LTHR joins the athlete model's inputs

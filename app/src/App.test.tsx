@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
@@ -22,7 +23,8 @@ import { App, type ViewRegistry } from "./App";
 import { navigate } from "./router";
 import { installDevices } from "./views/devicesBackend";
 import { install as installToday } from "./views/todayBackend";
-import { HANDOFF_MS, STATUS_AFTER_MS } from "./shell/StartScreen";
+import { markSeen, seenBuild } from "./build";
+import { HANDOFF_MS, MOTION_MS, STATUS_AFTER_MS } from "./shell/StartScreen";
 import { reloadTheme } from "./theme";
 
 type Listener = () => void;
@@ -51,6 +53,10 @@ function stubMedia(opts: { dark: boolean; reduced?: boolean }) {
 }
 
 const theme = () => document.documentElement.dataset.theme;
+/** The build string every test's desktop answers; `beforeEach` records its spin-up as played (a later launch). */
+const BUILD = "0.2.0-rc.1 · 7516045";
+let build = BUILD;
+const readBuild = () => Promise.resolve(build);
 /**
  * The shell is ready when the start screen's hand-off has focused the destination. `findByRole("main")` alone
  * resolves at the DOM commit, before React's passive effects have run: the destination's route subscription
@@ -64,6 +70,8 @@ const ready = async () => {
 
 beforeEach(() => {
   localStorage.clear();
+  build = BUILD;
+  markSeen(BUILD);
   reloadTheme();
   navigate("today");
   stubMedia({ dark: true });
@@ -79,7 +87,7 @@ afterEach(() => {
 
 describe("rail", () => {
   test("is visible on places and hidden under ride and onboarding", async () => {
-    render(<App />);
+    render(<App readBuild={readBuild} />);
     await ready();
     expect(screen.getByRole("navigation", { name: "Places" })).toBeTruthy();
     for (const label of ["Today", "Workouts", "History", "Settings"])
@@ -104,7 +112,7 @@ describe("rail", () => {
   });
 
   test("Today is the real view: today's ride, the devices, the last 7 days and the last ride", async () => {
-    render(<App />);
+    render(<App readBuild={readBuild} />);
     await ready();
     expect(
       screen.getByRole("heading", { level: 1, name: "Today" }),
@@ -117,7 +125,7 @@ describe("rail", () => {
   test("Devices is reachable under Settings", async () => {
     installDevices();
     const user = userEvent.setup();
-    render(<App />);
+    render(<App readBuild={readBuild} />);
     await ready();
     await user.click(screen.getByRole("button", { name: /Settings/ }));
     await user.click(screen.getByRole("button", { name: "Devices" }));
@@ -132,7 +140,7 @@ describe("theme", () => {
   test("auto follows prefers-color-scheme live; a manual choice overrides and persists", async () => {
     const media = stubMedia({ dark: false });
     const user = userEvent.setup();
-    render(<App />);
+    render(<App readBuild={readBuild} />);
     await ready();
     expect(theme()).toBe("light");
     media.setDark(true);
@@ -159,7 +167,7 @@ describe("theme", () => {
     async (raw) => {
       localStorage.setItem("crank.theme.v1", raw);
       reloadTheme();
-      render(<App />);
+      render(<App readBuild={readBuild} />);
       await ready();
       act(() => navigate("settings", "appearance"));
       expect(theme()).toBe("dark"); // system is dark; not a crash
@@ -177,7 +185,7 @@ describe("theme", () => {
       JSON.stringify({ v: 1, pref: "light" }),
     );
     reloadTheme();
-    render(<App />);
+    render(<App readBuild={readBuild} />);
     expect(theme()).toBe("light");
   });
 });
@@ -197,7 +205,7 @@ describe("error boundary", () => {
       resume: () => null,
     };
     const user = userEvent.setup();
-    render(<App views={views} />);
+    render(<App readBuild={readBuild} views={views} />);
     await ready();
     await user.click(screen.getByRole("button", { name: /Workouts/ }));
     const alert = screen.getByRole("alert");
@@ -216,7 +224,7 @@ describe("keys dialog", () => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && behind();
     document.addEventListener("keydown", onKey);
     onTestFinished(() => document.removeEventListener("keydown", onKey));
-    render(<App />);
+    render(<App readBuild={readBuild} />);
     await ready();
     const today = screen.getByRole("button", { name: /Today/ });
     today.focus();
@@ -237,7 +245,7 @@ describe("keys dialog", () => {
   });
 
   test("? typed into a field does not open it", async () => {
-    render(<App />);
+    render(<App readBuild={readBuild} />);
     await ready();
     const field = document.body.appendChild(document.createElement("input"));
     field.focus();
@@ -249,7 +257,7 @@ describe("keys dialog", () => {
 describe("start screen hand-off", () => {
   test("the destination is focused at once, the screen is inert, then removed after the fade", async () => {
     vi.useFakeTimers();
-    render(<App />);
+    render(<App readBuild={readBuild} />);
     await act(() => vi.advanceTimersByTimeAsync(0));
     const main = screen.getByRole("main");
     expect(document.activeElement).toBe(main);
@@ -264,7 +272,7 @@ describe("start screen hand-off", () => {
   test("prefers-reduced-motion removes it at once", async () => {
     stubMedia({ dark: true, reduced: true });
     vi.useFakeTimers();
-    render(<App />);
+    render(<App readBuild={readBuild} />);
     await act(() => vi.advanceTimersByTimeAsync(0));
     expect(screen.queryByLabelText("crank is starting")).toBeNull();
     expect(document.activeElement).toBe(screen.getByRole("main"));
@@ -274,7 +282,7 @@ describe("start screen hand-off", () => {
     vi.useFakeTimers();
     let resolve!: () => void;
     const slow = () => new Promise<void>((r) => (resolve = r));
-    render(<App waitForCore={slow} />);
+    render(<App readBuild={readBuild} waitForCore={slow} />);
     await act(() => vi.advanceTimersByTimeAsync(STATUS_AFTER_MS - 1));
     expect(screen.queryByRole("status")).toBeNull();
     await act(() => vi.advanceTimersByTimeAsync(1));
@@ -291,7 +299,7 @@ describe("start screen hand-off", () => {
         ? Promise.reject(new Error("its saved state could not be opened"))
         : Promise.resolve();
     const user = userEvent.setup();
-    render(<App waitForCore={wait} />);
+    render(<App readBuild={readBuild} waitForCore={wait} />);
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toMatch(
       /can’t start.*saved state could not be opened/,
@@ -303,10 +311,129 @@ describe("start screen hand-off", () => {
   });
 });
 
+describe("once-per-version spin-up (#552)", () => {
+  const starting = () => screen.queryByLabelText("crank is starting");
+  /** The motion's painted t (StartScreen's `data-t`). */
+  const paintedT = () =>
+    Number(
+      starting()?.querySelector<HTMLElement>(".start-wordmark")?.dataset.t,
+    );
+  /** One animation frame on the fake clock. */
+  const FRAME = 16;
+
+  test("the first launch of a build holds the hand-off until the motion ends, then records the build", async () => {
+    localStorage.clear();
+    vi.useFakeTimers();
+    render(<App readBuild={readBuild} />);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    // The core is ready at once, but nothing is handed off yet.
+    expect(screen.queryByRole("main")).toBeNull();
+    expect(starting()?.hasAttribute("inert")).toBe(false);
+    await act(() => vi.advanceTimersByTimeAsync(MOTION_MS - FRAME));
+    expect(screen.queryByRole("main")).toBeNull();
+    expect(paintedT()).toBeLessThan(MOTION_MS);
+    expect(seenBuild()).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(2 * FRAME));
+    expect(paintedT()).toBe(MOTION_MS);
+    expect(document.activeElement).toBe(screen.getByRole("main"));
+    expect(starting()?.hasAttribute("inert")).toBe(true);
+    expect(seenBuild()).toBe(BUILD);
+    await act(() => vi.advanceTimersByTimeAsync(HANDOFF_MS));
+    expect(starting()).toBeNull();
+  });
+
+  test("a later launch of the same build hands off at once, the motion running on under the fade", async () => {
+    vi.useFakeTimers();
+    render(<App readBuild={readBuild} />);
+    await act(() => vi.advanceTimersByTimeAsync(FRAME));
+    expect(document.activeElement).toBe(screen.getByRole("main"));
+    expect(starting()?.hasAttribute("inert")).toBe(true);
+    const t = paintedT();
+    expect(t).toBeLessThan(MOTION_MS);
+    await act(() => vi.advanceTimersByTimeAsync(FRAME));
+    expect(paintedT()).toBeGreaterThan(t);
+  });
+
+  test("a version change holds again", async () => {
+    build = "0.2.0-rc.2 · 89abcde";
+    vi.useFakeTimers();
+    render(<App readBuild={readBuild} />);
+    await act(() => vi.advanceTimersByTimeAsync(MOTION_MS - FRAME));
+    expect(screen.queryByRole("main")).toBeNull();
+    expect(seenBuild()).toBe(BUILD);
+    await act(() => vi.advanceTimersByTimeAsync(2 * FRAME));
+    expect(document.activeElement).toBe(screen.getByRole("main"));
+    expect(seenBuild()).toBe("0.2.0-rc.2 · 89abcde");
+  });
+
+  test("reduced motion is never held: the settled wordmark, removed at once, nothing recorded", async () => {
+    localStorage.clear();
+    stubMedia({ dark: true, reduced: true });
+    vi.useFakeTimers();
+    render(<App readBuild={readBuild} />);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(starting()).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("main"));
+    await act(() => vi.advanceTimersByTimeAsync(MOTION_MS + FRAME));
+    expect(seenBuild()).toBeNull();
+  });
+
+  test("a boot failure during the hold shows the alert at once; Try again does not restart the motion", async () => {
+    localStorage.clear();
+    vi.useFakeTimers();
+    let calls = 0;
+    const wait = () =>
+      ++calls === 1
+        ? new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error("the store is locked")), 300),
+          )
+        : Promise.resolve();
+    render(<App readBuild={readBuild} waitForCore={wait} />);
+    await act(() => vi.advanceTimersByTimeAsync(300));
+    expect(screen.getByRole("alert").textContent).toMatch(
+      /can’t start.*the store is locked/,
+    );
+    const atFailure = paintedT();
+    expect(atFailure).toBeLessThan(MOTION_MS);
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Try again" })),
+    );
+    await act(() => vi.advanceTimersByTimeAsync(FRAME));
+    expect(calls).toBe(2);
+    expect(paintedT()).toBeGreaterThanOrEqual(atFailure);
+    // Ready now, but still the first launch of this build: held until the one motion ends.
+    expect(screen.queryByRole("main")).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(MOTION_MS));
+    expect(document.activeElement).toBe(screen.getByRole("main"));
+  });
+
+  test("the start screen shows the build's version string; a build that cannot be read is a boot failure", async () => {
+    vi.useFakeTimers();
+    let resolve!: () => void;
+    render(
+      <App
+        readBuild={readBuild}
+        waitForCore={() => new Promise<void>((r) => (resolve = r))}
+      />,
+    );
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(within(starting()!).getByText(BUILD)).toBeTruthy();
+    await act(async () => resolve());
+    cleanup();
+    render(
+      <App readBuild={() => Promise.reject("command app_build not found")} />,
+    );
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByRole("alert").textContent).toMatch(
+      /didn’t come up: command app_build not found/,
+    );
+  });
+});
+
 describe("a11y", () => {
   test("Skip to main moves focus to main", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    render(<App readBuild={readBuild} />);
     await ready();
     await user.click(screen.getByRole("link", { name: "Skip to main" }));
     expect(document.activeElement).toBe(screen.getByRole("main"));

@@ -11,6 +11,7 @@ pub mod display;
 pub mod lifecycle;
 pub mod logging;
 pub mod report;
+pub mod version;
 
 use commands::{
     compile_workout, core_ready, device_forget, device_links, device_pair, devices_scan, links_ack,
@@ -62,6 +63,7 @@ pub fn bindings() -> tauri_specta::Builder<tauri::Wry> {
             rides_list,
             ride_summary,
             display_width_mm::<tauri::Wry>,
+            version::app_build,
         ])
         // The rider tuning and its defaults (ADR-0001 §7.2), so the UI and its test backends
         // take the ADR-0002 §7.4 values from Rust instead of copying them (#589).
@@ -123,6 +125,10 @@ pub fn run() -> tauri::Result<()> {
             .plugin(tauri_plugin_dialog::init())
             .invoke_handler(bindings.invoke_handler())
             .setup(|app| {
+                // The build's string in the title (#552, DESIGN §5.9); tauri.conf.json names the one window.
+                app.get_webview_window("main")
+                    .ok_or("the main window is missing")?
+                    .set_title(&version::window_title(&version::build_label()))?;
                 let config = RuntimeConfig::from_env();
                 let plan =
                     logging::LogPlan::new(config.capture_dir.as_deref(), app.path().app_log_dir()?);

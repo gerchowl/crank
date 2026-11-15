@@ -17,12 +17,17 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       # One version, the workspace's (#428): the derivations below take it, so a release bump cannot leave them behind.
       version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
+      # The build's rev (#552): the desktop shows `<version> · <rev>` (app/src-tauri/src/version.rs), `-dirty` for a
+      # dirty tree. Only the `crank-desktop` packages take it, so the checks stay cached across commits. A source
+      # without git metadata has no rev to show: building the desktop from one is an error, not a guessed rev.
+      buildRev = self.shortRev or self.dirtyShortRev
+        or (throw "crank-desktop needs the flake's git rev (self.shortRev / self.dirtyShortRev) for its version string (#552)");
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
       cargoFiles = lib.fileset.difference (craneLib.fileset.commonCargoSources ./.) ./crates/crank-fec/fuzz;
       rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./app/src-tauri/tests/fixtures ./crates/crank-fec/tests/fixtures ./crates/crank-engine/tests/fixtures (lib.fileset.fileFilter (f: f.hasExt "fecap") ./docs/hil/captures) ./clippy.toml ./.config/nextest.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-core/tests/fixtures ./docs/adr/models/fixtures/gpx-elevation-samples.csv ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md ./.github/ISSUE_TEMPLATE/bug.yml
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
-        (lib.fileset.difference ./app ./app/src-tauri) ./shared ./assets/brand
+        (lib.fileset.difference ./app ./app/src-tauri) ./shared ./assets/brand ./design/brand/src
         ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-core/tests/fixtures
         ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ]);
       pnpmDeps = pkgs.fetchPnpmDeps {
@@ -97,6 +102,7 @@
         cargoVendorDir = if lib.hasInfix "e2e" features then cargoVendorDirE2e else cargoVendorDir;
         pname = "crank-desktop"; cargoExtraArgs = "--locked -p crank-desktop --bin crank-desktop --features custom-protocol${features}";
         doCheck = false;
+        CRANK_BUILD_REV = buildRev;
         preBuild = ''export TAURI_CONFIG='{"build":{"frontendDist":"${appDist}"}}' '';
       });
       cli = craneLib.buildPackage (rustCheck // {

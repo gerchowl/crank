@@ -156,14 +156,26 @@ in the page; the run fails if any item renders at another size).
 reports ready — backend handshake done and persisted state loaded (athlete model, today's proposal, or an
 interrupted ride). Never on window re-open, wake from sleep, navigation, or after a ride.
 
-**It never delays the rider.**
-- No minimum display time. If the core is ready before the first frame, there is no start screen.
+**It never delays the rider, bar once per version.**
+- No minimum display time. If the core is ready before the first frame, there is no start screen. ~~Never
+  held.~~ **Held once per version** (#552, owner decision 2026-11-08): on the first launch after an install or
+  update, F · Spin-up plays in full (see "Held once per version" below).
 - It does **not wait for devices.** Trainer and HR reconnect in the background; their state is shown where it
   matters (the Ready check — DESIGN.md §4).
 - **Hand-off, the moment the core is ready:** the destination (Onboarding on first run, the Resume sheet after
   an interrupted ride — DESIGN §6.6 — otherwise Today) is rendered **underneath, live and focused at once**;
   the start screen becomes `inert` (no input), freezes its launch motion where it is, and fades out over
-  **200 ms**. Under `prefers-reduced-motion` it is **removed at once** (no fade).
+  **200 ms**. Under `prefers-reduced-motion` it is **removed at once** (no fade). (F supersedes the freeze: its motion
+  runs on at 1:1 under the fade, "Boot behaviours" (a).)
+- **Held once per version (#552).** When this build's version string (below) differs from the one whose launch
+  motion last played through, the hand-off waits for the motion to come to rest: **1080 ms** from its first frame
+  (F · Spin-up, Timing), then hands off as above. The string is recorded as "seen" once the motion has played
+  through, in the app's **local settings** (the webview's storage, beside the theme, until the persistence primitive
+  #90), **not the store**, so it does not sync between machines. Every later launch of that build is not held. Under
+  reduced motion there is no motion to wait for: the settled wordmark shows at once and is **never held** (nothing is
+  recorded). **"Try again" never restarts the motion**: a ready after a retry waits only for the one motion still
+  running. A boot that **fails** during the held motion shows its alert **at once**, as below (P6), never after
+  the motion.
 - **Slow boot:** the status line ("Starting crank…", `--muted`, `role="status"`) is **inserted by a boot
   timer at 1.2 s** — timed from boot, not from the motion, and the same under reduced motion. A fast boot
   never shows it, and a screen reader never announces it. A boot *failure* becomes an error in that line per
@@ -184,7 +196,11 @@ start screen's `--bg` from `index.html` before any script runs (the web analogue
 above; `pnpm -C design/prototype screens` renders `docs/design/screens/start-*.png`.
 
 **Layout.** Letters centred in the window (lines trailing left), wordmark at `min(52vw, 820px)` wide, status
-line 48 px above the bottom edge. Nothing else: no version, no tips, no progress bar.
+line 48 px above the bottom edge. ~~Nothing else: no version, no tips, no progress bar.~~ The build's **version
+string** at the bottom right, 48 px in from the right and bottom edges (#552): `<version> · <rev>`, e.g.
+`0.2.0-rc.1 · 7516045`, with `-dirty` for a build from a dirty tree, in `--start-muted` at the app's small text size
+(`--text-s`, 13 px), ≥ 4.5 : 1 on `--start-bg` in both modes (`app/src/theme.test.ts`). It is fixed at build time from
+one source (DESIGN §5.9) and is the same string as the window title's. Nothing else: no tips, no progress bar.
 
 The spike demonstrates all of this: `?concept=slice&ready=<ms>` simulates the core becoming ready
 (`src/main.ts`); `pnpm screens` checks it on a fake clock and captures `slice.slow-boot.*` and
@@ -202,7 +218,7 @@ Every keyframe states only its `from`; the resting state is the element's own st
 | each letter (C→K) | −60 units x, opacity 0 | 520 ms settle | 45 ms × index | 700 ms |
 | lower / upper speed line | hidden by `clip-path: inset(0 0 0 100%)`, revealed right → left (drawn out behind the word) | 700 ms settle | 150 / 230 ms | 930 ms |
 | status line (slow boot only) | opacity 0, on insertion at 1.2 s | 300 ms linear | — | — |
-| hand-off | start screen opacity 1 → 0, over the live destination | 200 ms linear | when the core is ready | — |
+| hand-off | start screen opacity 1 → 0, over the live destination | 200 ms linear | when the core is ready (on a build's first launch, not before F is at rest, #552) | — |
 
 The lines are revealed with a clip, not `scaleX`, so the 50° chamfer never changes angle mid-draw. The other
 concepts' motions (B–E) are recorded in `src/style.css` and their `motion.*` frames.
@@ -239,7 +255,8 @@ unchanged. **Decision (round 2): F is the start screen's launch motion**, replac
 independent reviews of the A-vs-F round chose F (astra, opus; summary below). Integration into
 `design/prototype` is [#138](https://github.com/gerchowl/crank/issues/138) (done: `src/StartScreen.tsx` paints
 `frame(t)` per animation frame, `pnpm -C design/prototype test:start` covers it; `?hold` is not ported); the
-production shell follows in the UI waves (#88+).
+production shell paints the same `frame(t)` since #552 (`app/src/shell/StartScreen.tsx`), and holds it once per
+version (§Start screen).
 
 **Sequence.** The mark (`logo.svg` without the squircle, ring outer diameter 1.5 H ≈ 190 px at 1440×900,
 centred on the letters) spins up on its hub; the arms' sweep closes the C's gap into a solid brass ring
@@ -320,8 +337,9 @@ only. Findings and their resolution:
 | (a) ready during the motion — any time, including the first frames | hand-off as A: destination live + focused at once, start screen `inert`, 200 ms linear fade; F's motion **runs on at its own pace** under the fade — no freeze (a frozen blur reads as a glitch), no cut, no fast-forward (round 1's snap at ≤ 150 ms and rush after it were conspicuous over the live destination) |
 | (b) slow boot — **default** | the sequence plays through and **rests** on the wordmark (as A); status line from the boot timer at 1.2 s; fade on ready |
 | (b′) slow boot, `?hold` (record only) | the spin **sustains at ω_max** (no further acceleration) until ready — at full speed that is the steady closed ring; status at 1.2 s; on ready it runs on under the fade. Not ported (#138) |
-| reduced motion | no motion, no script: the markup at rest is the wordmark; status at 1.2 s; removed at once on ready |
-| boot failure | as "Boot failure" above: the alert replaces the status at once; F's motion is not cut — it plays through and rests on the wordmark; "Try again" does not restart it. Wired in `design/prototype` (#138) |
+| (c) first launch of a build — **held once per version** (#552) | as (a) or (b), except the hand-off waits for the rest at **1080 ms**: ready earlier, the destination stays unrendered and the screen live until then, then hand-off as (a) with the motion already at rest; recorded as seen once played through, so the next launch is (a)/(b) |
+| reduced motion | no motion, no script: the markup at rest is the wordmark; status at 1.2 s; removed at once on ready; **never held** |
+| boot failure | as "Boot failure" above: the alert replaces the status at once — also during a held motion (c), never after it; F's motion is not cut — it plays through and rests on the wordmark; "Try again" does not restart it. Wired in `design/prototype` (#138) and the app (#552) |
 
 **Why (b) and not (b′) as default** (confirmed by both reviews). A held spin is a progress spinner, which
 the start screen rules out ("no progress bar"); and since the hand-off begins the moment the core is
