@@ -60,7 +60,9 @@ test("a channel silent for 2 s is shown as stale until the next frame", async ()
 test("a broken frame in production is shown with the fault, and goes with the repair", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   const ui = installUi({ ride: rideView() });
-  const client = new UiClient(manual().timers, undefined, false);
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  const clock = manual();
+  const client = new UiClient(clock.timers, undefined, false);
   render(
     <UiProvider client={client}>
       <ChannelNotice />
@@ -70,7 +72,6 @@ test("a broken frame in production is shown with the fault, and goes with the re
   const channel = ui.calls.find((c) => c.cmd === "ui_open")?.args.channel as {
     onmessage: (f: unknown) => void;
   };
-  ui.stall();
   act(() =>
     channel.onmessage({
       ...ui.frames[0],
@@ -84,7 +85,43 @@ test("a broken frame in production is shown with the fault, and goes with the re
   expect(screen.getByTestId("channel-stale").textContent).toContain(
     "The core sent a broken update (hr: from 2 on a series of 0).",
   );
+  // Not acked: the watchdog reopens and the backfill repairs it.
   ui.resume();
+  act(() => clock.fire());
   await flush();
   expect(screen.queryByTestId("channel-stale")).toBeNull();
+});
+
+test("a refused ui_open is shown on Workouts, History and Settings with Retry, not where the view shows it", async () => {
+  const { navigate } = await import("../router");
+  const ui = installUi({ keeperStorage: true });
+  const client = new UiClient(manual().timers);
+  render(
+    <UiProvider client={client}>
+      <ChannelNotice />
+    </UiProvider>,
+  );
+  for (const [view, sub] of [
+    ["workouts", undefined],
+    ["history", undefined],
+    ["settings", undefined],
+  ] as const) {
+    act(() => navigate(view, sub));
+    await flush();
+    expect(screen.getByTestId("channel-refused").textContent).toBe(
+      "⚠ Live data is not available: database is locked. Trying again every 2 s.",
+    );
+  }
+  // Today and Settings → Devices show it beside the devices it hides.
+  act(() => navigate("today"));
+  expect(screen.queryByTestId("channel-refused")).toBeNull();
+  act(() => navigate("settings", "devices"));
+  expect(screen.queryByTestId("channel-refused")).toBeNull();
+  // Retry opens the channel at once.
+  act(() => navigate("workouts"));
+  ui.truth.keeperStorage = false;
+  act(() => screen.getByRole("button", { name: "Retry" }).click());
+  await flush();
+  expect(screen.queryByTestId("channel-refused")).toBeNull();
+  expect(ui.count("ui_open")).toBe(2);
 });

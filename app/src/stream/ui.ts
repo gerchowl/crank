@@ -6,9 +6,11 @@
 // `ui_ack(frame.channel, frame.seq)`. It compares no `seq`, runs no re-query, merges no command's answer, keeps nothing
 // from an earlier frame but the series, and drops the frames of a channel it replaced. `from` always equals the length
 // the page holds (the core's property test, `ui::tests::the_channel_holds_over_arbitrary_interleavings`): a mismatch
-// is a core bug. A dev build throws on it. A production build does not repair the series: it logs the fault once,
-// reports it as `internal` and shows the state as stale (every route shows that, `ChannelNotice` and the ride screen's
-// band), and opens a new channel at once, whose backfill from index 0 replaces the broken series.
+// is a core bug. A dev build throws on it. A production build does not repair the series: it logs each kind of fault
+// once (per series, a `from` or a point with no time), reports it as `internal`, shows the state as stale (every route
+// shows that: `ChannelNotice`, the ride screen's band) and does not ack the frame. The core then sends nothing more on
+// that channel, so the watchdog reopens it 2 s later and the backfill from index 0 replaces the broken series. A fault
+// that repeats on every backfill costs one reopen per 2 s, never a loop.
 //
 // **Watchdog (§4.3.4).** The core sends a frame at least every second on an open channel (the heartbeat), so 2 s
 // without one means a frame was lost (Tauri's fetch path for a frame of 8 192 B or more ends in
@@ -106,11 +108,12 @@ function applyPoints(
   held: readonly Point[],
   points: Points,
   name: Series,
-): { series: readonly Point[]; fault: string | null } {
+): { series: readonly Point[]; fault: string | null; kind?: string } {
   if (points.from !== 0 && points.from !== held.length)
     return {
       series: held,
       fault: `${name}: from ${points.from} on a series of ${held.length}`,
+      kind: `${name}:from`,
     };
   if (points.from === 0 && points.v.length === 0 && held.length === 0)
     return { series: held, fault: null };
@@ -120,7 +123,11 @@ function applyPoints(
     const w = points.w[i];
     // The core's `f64`s; specta types them nullable, the store never holds a non-finite one (§4.3.3).
     if (typeof t !== "number" || typeof w !== "number")
-      return { series: held, fault: `${name}: point ${i} has no time` };
+      return {
+        series: held,
+        fault: `${name}: point ${i} has no time`,
+        kind: `${name}:time`,
+      };
     fresh.push({ t, workoutS: w, v: points.v[i] });
   }
   if (points.from === 0) return { series: fresh, fault: null };
@@ -136,6 +143,8 @@ export class UiClient {
   /** The channel whose frames are applied; any other's are dropped. */
   private channel: Channel<UiFrame> | null = null;
   private watchdog: unknown = null;
+  /** The kinds of broken frame already logged (`power:from`, `hr:time`, …): each is logged once. */
+  private readonly logged = new Set<string>();
 
   /**
    * `dev`: a broken `from` throws (a dev or test build); otherwise it is the production path of the header. Tests
@@ -240,10 +249,12 @@ export class UiClient {
     const held = this.snap.series;
     const series = { ...held };
     const faults: string[] = [];
+    const kinds: string[] = [];
     for (const name of SERIES) {
       const r = applyPoints(held[name], frame.series[name], name);
       series[name] = r.series;
       if (r.fault !== null) faults.push(r.fault);
+      if (r.kind !== undefined) kinds.push(r.kind);
     }
     const fault = faults.length > 0 ? faults.join("; ") : null;
     if (fault !== null && this.dev) throw new Error(`ui channel: ${fault}`);
@@ -257,16 +268,20 @@ export class UiClient {
         : Object.freeze(series),
       stale: fault !== null,
       error: fault === null ? null : { code: "internal", message: fault },
-      reopens: this.snap.reopens + (fault === null ? 0 : 1),
+      reopens: this.snap.reopens,
     });
     if (fault === null) {
       this.ack(channel, frame.channel, frame.seq);
       return;
     }
-    // A core bug (ADR-0001 §4.3.2), not repaired: logged once, shown as stale, and a new channel's backfill from 0
-    // replaces the series. The broken channel is not acked; the core closes it at the reopen.
-    console.error(`ui channel: ${fault}; reopening`);
-    this.open();
+    // A core bug (ADR-0001 §4.3.2), not repaired: shown as stale and not acked, so the watchdog armed above reopens
+    // in 2 s and the backfill from 0 replaces the series. Each kind of fault is logged once.
+    const fresh = kinds.filter((k) => !this.logged.has(k));
+    for (const k of fresh) this.logged.add(k);
+    if (fresh.length > 0)
+      console.error(
+        `ui channel: ${fault}; not acked, the watchdog reopens in ${WATCHDOG_MS} ms`,
+      );
   }
 
   private ack(channel: Channel<UiFrame>, id: UiChannelId, seq: number): void {

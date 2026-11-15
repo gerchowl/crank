@@ -24,6 +24,7 @@ import { navigate } from "./router";
 import { installDevices } from "./views/devicesBackend";
 import { install as installToday } from "./views/todayBackend";
 import { markSeen, seenBuild } from "./build";
+import { installUi } from "./stream/uiBackend";
 import { HANDOFF_MS, MOTION_MS, STATUS_AFTER_MS } from "./shell/StartScreen";
 import { reloadTheme } from "./theme";
 
@@ -75,8 +76,18 @@ beforeEach(() => {
   reloadTheme();
   navigate("today");
   stubMedia({ dark: true });
-  // Today is the hand-off's destination and reads the core (rides, devices).
-  installToday();
+  // Today is the hand-off's destination and reads the core: the rides, and the devices on the window's snapshot
+  // channel, which every place has.
+  installUi();
+  installToday({
+    others: (
+      window as unknown as {
+        __TAURI_INTERNALS__: {
+          invoke: (cmd: string, args?: unknown) => Promise<unknown>;
+        };
+      }
+    ).__TAURI_INTERNALS__.invoke,
+  });
 });
 afterEach(() => {
   clearMocks();

@@ -897,6 +897,12 @@ export function Ride() {
             ? "Connecting your devices and loading the ride."
             : "Pick a workout in Workouts and choose Ride this."}
       </p>
+      {ui.stale && (
+        <p role="alert" data-testid="channel-stale">
+          <span data-state-label>⚠</span> Live data stopped: what is shown may
+          be out of date. Reconnecting…
+        </p>
+      )}
       <span className="ride-empty-actions">
         {refused && <button onClick={() => client.reopen()}>Retry</button>}
         <button onClick={() => navigate("workouts")}>Go to Workouts</button>
