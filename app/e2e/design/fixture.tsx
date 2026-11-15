@@ -649,10 +649,10 @@ const SETUPS: Record<ScenarioName, () => void> = {
     rodeIt("ride-long", 10_800);
     history("ride-long", { rides: [LONG_RIDE, ...RIDES] })();
   },
-  // The core ended ride-2 by force before its first point (`ride.ended: forced`, no series); the channel keeps it
-  // until the next load.
+  // The core ended ride-2 by force 5 minutes in (`ride.ended: forced`); the channel keeps it, and its series, until the
+  // next load.
   "review-aborted": () => {
-    rodeIt("ride-2", 0, "forced");
+    rodeIt("ride-2", 300, "forced");
     history("ride-2")();
   },
   "review-error": history("ride-1", {

@@ -155,18 +155,19 @@ describe("the client rule", () => {
     ).toThrow(/power: from 5 on a series of 0/);
   });
 
-  test("in production a broken from is logged once, shown stale and internal, and a new channel's backfill repairs it", async () => {
+  test("in production a broken from is logged once, shown stale and internal, not acked, and the watchdog's backfill repairs it", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const ui = installUi({ ride: rideView() });
-    const client = new UiClient(new FakeClock(), undefined, false);
+    const clock = new FakeClock();
+    const client = new UiClient(clock, undefined, false);
     client.retain();
     appendPower(ui, 10);
     await flush();
     const channel = ui.calls.find((c) => c.cmd === "ui_open")?.args.channel as {
       onmessage: (f: unknown) => void;
     };
-    // The new channel's first frame waits, so the state between the fault and the repair can be seen.
-    ui.stall();
+    const acks = ui.count("ui_ack");
     // A frame the core cannot send: from 3 on a series of 10.
     act(() =>
       channel.onmessage({
@@ -178,6 +179,7 @@ describe("the client rule", () => {
         },
       }),
     );
+    await flush();
     expect(client.snapshot.stale).toBe(true);
     expect(client.snapshot.error).toEqual({
       code: "internal",
@@ -185,16 +187,38 @@ describe("the client rule", () => {
     });
     expect(error).toHaveBeenCalledTimes(1);
     expect(error).toHaveBeenCalledWith(
-      "ui channel: power: from 3 on a series of 10; reopening",
+      "ui channel: power: from 3 on a series of 10; not acked, the watchdog reopens in 2000 ms",
     );
-    // Not repaired in place: the series stays as it was until the new channel's backfill from 0 replaces it.
-    expect(ui.count("ui_open")).toBe(2);
+    // Not repaired in place, not acked, no reopen yet: the watchdog does it.
+    expect(ui.count("ui_ack")).toBe(acks);
+    expect(ui.count("ui_open")).toBe(1);
     expect(values(client.snapshot.series.power)).toHaveLength(10);
-    ui.resume();
-    await flush();
+    await clock.advance(WATCHDOG_MS);
+    expect(ui.count("ui_open")).toBe(2);
     expect(client.snapshot.stale).toBe(false);
     expect(client.snapshot.error).toBeNull();
     expect(values(client.snapshot.series.power)).toEqual(coreValues(ui));
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
+  test("a fault on every backfill costs one reopen per 2 s and one log line, never a loop", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ui = installUi({ ride: rideView() });
+    // A point the core can never send (no session time): every frame that carries it, every backfill, is broken.
+    appendPower(ui, 4);
+    (ui.truth.series.power[0] as { t: number | null }).t = null;
+    const clock = new FakeClock();
+    const client = new UiClient(clock, undefined, false);
+    client.retain();
+    await flush();
+    expect(client.snapshot.stale).toBe(true);
+    expect(client.snapshot.error?.message).toBe("power: point 0 has no time");
+    await clock.advance(10_000);
+    // 10 s: the first open plus one reopen per 2 s.
+    expect(ui.count("ui_open")).toBe(1 + 10_000 / WATCHDOG_MS);
+    expect(client.snapshot.reopens).toBe(10_000 / WATCHDOG_MS);
+    expect(client.snapshot.stale).toBe(true);
     expect(error).toHaveBeenCalledTimes(1);
   });
 

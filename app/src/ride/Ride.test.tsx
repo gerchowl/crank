@@ -165,6 +165,39 @@ describe("Ride", () => {
     expect(rig.ui.count("ui_open")).toBe(2);
   });
 
+  test("the page without a ride shows a stalled channel too", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rig = installRide({ phase: "none" });
+    let due: (() => void) | null = null;
+    const clock: Timers = {
+      setTimeout: (fn) => {
+        due = fn;
+        return 1;
+      },
+      clearTimeout: () => {
+        due = null;
+      },
+    };
+    const client = new UiClient(clock);
+    render(
+      <UiProvider client={client}>
+        <Ride />
+      </UiProvider>,
+    );
+    expect(
+      await screen.findByRole("heading", { name: "No ride loaded" }),
+    ).toBeTruthy();
+    rig.ui.stall();
+    act(() => due?.());
+    expect(screen.getByTestId("channel-stale").textContent).toBe(
+      "⚠ Live data stopped: what is shown may be out of date. Reconnecting…",
+    );
+    rig.ui.resume();
+    await waitFor(() =>
+      expect(screen.queryByTestId("channel-stale")).toBeNull(),
+    );
+  });
+
   test("the tiles show the latest samples, the block countdown and the clocks", async () => {
     const { rig } = await open();
     await push(
