@@ -2420,11 +2420,21 @@ mod tests {
             ..Run12::default()
         };
         run.reads("no result: the answer \"y\" is not one to the check 12 question after its cue");
-        let run = Run12 {
-            answer: "x",
-            ..Run12::default()
-        };
-        run.reads("no result: the answer \"x\" is not one to the check 12 question after its cue");
+        // Every answer but `y`, `n` and `s`: each printable ASCII character, and longer ones.
+        let others = (0x20_u8..0x7f)
+            .map(|c| char::from(c).to_string())
+            .filter(|a| !["y", "n", "s"].contains(&a.as_str()))
+            .chain(["Y", "N", "S", "yes", "no", "ys", "yy"].map(str::to_string));
+        for answer in others {
+            let answer: &'static str = Box::leak(answer.into_boxed_str());
+            Run12 {
+                answer,
+                ..Run12::default()
+            }
+            .reads(&format!(
+                "no result: the answer {answer:?} is not one to the check 12 question after its cue"
+            ));
+        }
         for (answer, want) in [
             ("y", PASS),
             ("n", DISAGREE),
@@ -2436,6 +2446,83 @@ mod tests {
             }
             .reads(want);
         }
+    }
+
+    /// The 90 rpm window needs 15 updates in 85–95 rpm too, as the 70 rpm window does
+    /// (`check12_reads_each_no_result_row`): 15 read PASS, 14 no result, the rest of the window
+    /// at 100 rpm. A held trainer (200 W at 70 rpm) with 3 updates at 260 W in the band, answered
+    /// `y`, would read PASS at r = 0.769 if only the 70 rpm window were counted.
+    #[test]
+    fn check12_the_90_rpm_window_needs_15_updates() {
+        let few = "no result: fewer than 15 updates in the 90 or the 70 rpm window";
+        let window = |n: usize, watts: u16| -> Vec<Frame12> {
+            let mut f = every(20_750 * MS, 25_500 * MS, 250 * MS, 90, 200);
+            f.extend((0..58_u64).map(|k| {
+                let band = usize::try_from(k).expect("small") < n;
+                (
+                    25_500 * MS + k * 250 * MS,
+                    if band { 90 } else { 100 },
+                    watts,
+                    false,
+                )
+            }));
+            f
+        };
+        for (n, want) in [(15, PASS), (14, few)] {
+            let v = Run12 {
+                free90: window(n, 200),
+                ..Run12::default()
+            }
+            .reads(want);
+            assert_eq!(v["free90_updates"], json!(n), "{v}");
+        }
+        let held = Run12 {
+            free90: window(3, 260),
+            ..Run12::ratio(200, 200, "y")
+        };
+        let v = held.reads(few);
+        assert_eq!(v["free90_updates"], json!(3), "{v}");
+        assert_eq!(v["released"], Value::Null, "{v}");
+    }
+
+    /// ERG must be seen: a 5 s before page 50 with no update (all repeats of the update before
+    /// it) gives no `erg`, and no result.
+    #[test]
+    fn check12_an_erg_window_of_repeats_only_is_no_result() {
+        let mut erg = every(1_250 * MS, 15 * SEC, 250 * MS, 90, 200);
+        erg.extend(
+            (15 * SEC..20 * SEC)
+                .step_by(250_000)
+                .map(|at| (at, 90, 200, true)),
+        );
+        let v = Run12 {
+            erg,
+            ..Run12::default()
+        }
+        .reads("no result: ERG did not hold 180-220 W before Free");
+        assert_eq!(v["erg_w"], Value::Null, "{v}");
+    }
+
+    /// The ERG window is [page 50 − 5 s, page 50), to the µs: updates at 15 s (in), 17.5 s and
+    /// 20 s − 1 µs read 200, 100 and 200 W, median 200 W; one more at 15 s − 1 µs or at 20 s + 1 µs
+    /// (100 W, both out), or a window from page 51 − 5 s (15.5 s: 17.5 and 20 s − 1 µs only),
+    /// would read 150 W, no result.
+    #[test]
+    fn check12_the_erg_window_edges_are_exact() {
+        let mut erg = every(1_250 * MS, 14_800 * MS, 250 * MS, 90, 100);
+        erg.extend([
+            (15 * SEC - 1, 90, 100, false),
+            (15 * SEC, 90, 200, false),
+            (17_500 * MS, 90, 100, false),
+            (20 * SEC - 1, 90, 200, false),
+            (20 * SEC + 1, 90, 100, false),
+        ]);
+        let v = Run12 {
+            erg,
+            ..Run12::default()
+        }
+        .reads(PASS);
+        assert_eq!(v["erg_w"], json!(200.0), "{v}");
     }
 
     /// The power floor (ADR-0007 §2, [`FLOOR12_W`]): below 8 W in either window is no result.
