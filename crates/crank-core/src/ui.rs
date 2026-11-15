@@ -163,10 +163,17 @@ impl Ui {
     pub(crate) fn load_over(&self) {
         self.change(|m| m.loading = false);
     }
-    /// The load installed its ride.
+    /// The load installed its ride. Its series start at index 0, so every cursor goes back to
+    /// 0 here too: the cursors belong to the installed ride, whether or not a `load_started`
+    /// (or a frame built while no ride was loaded) reset them first.
     pub(crate) fn install(&self, mut ride: RideSlot) {
         ride.seen = Some(self.clock.pacing_now());
-        self.change(|m| m.ride = Some(ride));
+        self.change(|m| {
+            m.ride = Some(ride);
+            for c in m.channels.values_mut() {
+                c.cursors = [0; 3];
+            }
+        });
     }
     /// Ride `id` was unloaded without starting.
     pub(crate) fn unload(&self, id: &str) {

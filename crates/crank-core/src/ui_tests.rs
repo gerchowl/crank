@@ -779,6 +779,23 @@ async fn script(ops: Vec<Op>) {
     assert_eq!(client.page.state, Some(rig.ui.snapshot()));
 }
 
+/// The property test's shrunk counterexample, pinned: a ride installed over another one with no
+/// load in between starts the channel's series from 0 (failed while `install` kept the old
+/// ride's cursors: the third ride's first point came as `from: 1` onto a page of 2).
+#[tokio::test(start_paused = true)]
+async fn a_ride_installed_over_another_restarts_the_series_from_0() {
+    script(vec![
+        Op::Install,
+        Op::Ticks(2),
+        Op::Ack,
+        Op::Install,
+        Op::Ack,
+        Op::Install,
+        Op::Ticks(1),
+    ])
+    .await;
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
     /// §4.3.9 "one property test of the `ui` channel" over arbitrary interleavings of ticks,
