@@ -18,6 +18,8 @@ export interface Scenario {
   held?: number;
   /** A selector the spec scrolls into view once the state is ready (a long list, scrolled to its end). */
   scrollTo?: string;
+  /** The screen has no control by design (a slow boot's start screen): the focus walk must reach none. */
+  noControls?: true;
 }
 
 /** The fixtures' wall clock (`Date`): a ride date or a "today" renders the same on every run. Timers still run. */
@@ -194,6 +196,14 @@ export const SCENARIOS = [
     name: "settings-ride-loaded",
     ready: "role=button[name='Go to ride']",
   },
+  // The cold start (BRAND.md §Start screen, #552): a slow boot (status line at 1.2 s) and a failed one (the P6
+  // alert), both at rest on the wordmark with the build's version string at the bottom right.
+  {
+    name: "start-slow",
+    ready: "role=status >> text=Starting crank",
+    noControls: true,
+  },
+  { name: "start-failed", ready: "role=alert >> text=can’t start" },
 ] as const satisfies readonly Scenario[];
 
 export type ScenarioName = (typeof SCENARIOS)[number]["name"];

@@ -214,6 +214,8 @@ export const commands = {
 	 *  (no EDID, no platform source, or the window has no monitor).
 	 */
 	displayWidthMm: () => __TAURI_INVOKE<number | null>("display_width_mm"),
+	/**  This build's version string, for the start screen. */
+	appBuild: () => __TAURI_INVOKE<string>("app_build"),
 };
 
 /* Constants */

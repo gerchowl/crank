@@ -90,7 +90,12 @@ for (const s of SCENARIOS)
     const audit = await measure(page);
     // After the audit: the walk moves focus, and its skip-link check moves it into `#main`.
     const focus = await focusWalk(page);
-    expect(focus.stops, "the focus walk reached a control").toBeGreaterThan(0);
+    if ("noControls" in s)
+      expect(focus.stops, "a screen with no control by design").toBe(0);
+    else
+      expect(focus.stops, "the focus walk reached a control").toBeGreaterThan(
+        0,
+      );
     const counts = { ...audit.counts, ...focus.counts };
     const worst = { ...audit.worst, ...focus.worst };
     const key = keyOf(s, info.project.name);

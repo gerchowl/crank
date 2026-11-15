@@ -262,10 +262,27 @@ main.mode {
   opacity: 0;
   transition: opacity 200ms linear;
 }
-.start img {
-  display: block;
+/* F · Spin-up's drawing (BRAND.md §Layout): the mark spins up beyond the letters' box, so the SVG draws outside its
+   viewBox; --focus-shift (StartScreen.tsx, from the brand code) centres the letters' optical centre. */
+.start-wordmark {
   width: min(52vw, 820px);
+  transform: translateX(var(--focus-shift, 0%));
+}
+.start-wordmark svg {
+  display: block;
+  width: 100%;
   height: auto;
+  overflow: visible;
+}
+/* The build's version string (#552): bottom right, secondary text at the screen's small size. */
+.start-build {
+  position: absolute;
+  right: 48px;
+  bottom: 48px;
+  margin: 0;
+  color: var(--start-muted);
+  font-size: var(--text-s);
+  font-variant-numeric: tabular-nums lining-nums;
 }
 .start-status,
 .start-error {
@@ -284,7 +301,12 @@ main.mode {
 .start-error p {
   margin: 0 0 var(--space-2);
 }
+/* A desk control (DESIGN §18.4): the 32 px family. */
 .start-retry {
+  height: var(--control-h);
+  min-height: 0;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-m);
   color: var(--start-ink);
   background: transparent;
   border-color: var(--start-muted);

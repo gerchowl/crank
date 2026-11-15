@@ -1,13 +1,19 @@
 // Shell: four places plus the ride / onboarding / resume modes (DESIGN §3), the labelled icon rail (§16.3),
 // a top-level error boundary, theme, the `?` keys dialog and the cold-start hand-off (BRAND.md §Start screen).
 import { useCallback, useEffect, useState, type ComponentType } from "react";
+import {
+  markSeen,
+  readBuild as defaultReadBuild,
+  seenBuild,
+  type ReadBuild,
+} from "./build";
 import { waitForCore as defaultWaitForCore, type WaitForCore } from "./core";
 import { isMode, navigate, useRoute, type View } from "./router";
 import { ErrorBoundary } from "./shell/ErrorBoundary";
 import { Rail } from "./shell/Rail";
 import { KeysDialog } from "./shell/KeysDialog";
 import { closeKeys, openKeys, useKeysOpen } from "./shell/keys";
-import { StartScreen, type Boot } from "./shell/StartScreen";
+import { StartScreen, reducedMotion, type Boot } from "./shell/StartScreen";
 import { useApplyTheme } from "./theme";
 import { Ride } from "./ride/Ride";
 import { History } from "./views/History";
@@ -33,13 +39,18 @@ const DEFAULT_VIEWS: ViewRegistry = {
   resume: soon("Resume your ride"),
 };
 
-function useBoot(wait: WaitForCore) {
+/** A boot attempt: the core's hand-off and the build's version string; ready needs both. */
+function useBoot(wait: WaitForCore, read: ReadBuild) {
   const [boot, setBoot] = useState<Boot>({ phase: "booting", attempt: 1 });
+  const [build, setBuild] = useState<string | null>(null);
   const attempt = boot.phase === "booting" ? boot.attempt : 0;
   useEffect(() => {
     if (!attempt) return;
     let live = true;
-    wait().then(
+    const label = read().then((b) => {
+      if (live) setBuild(b);
+    });
+    Promise.all([wait(), label]).then(
       () => live && setBoot({ phase: "ready" }),
       (e: unknown) =>
         live &&
@@ -51,7 +62,7 @@ function useBoot(wait: WaitForCore) {
     return () => {
       live = false;
     };
-  }, [wait, attempt]);
+  }, [wait, read, attempt]);
   const retry = useCallback(
     () =>
       setBoot((b) => ({
@@ -60,7 +71,24 @@ function useBoot(wait: WaitForCore) {
       })),
     [],
   );
-  return { boot, retry };
+  return { boot, build, retry };
+}
+
+/**
+ * The once-per-version spin-up (#552, BRAND.md §Start screen): the first launch of a build holds the hand-off until
+ * F · Spin-up has played through; once it has, that build is recorded as seen and later launches hand off the moment
+ * the core is ready. Reduced motion has no motion to wait for: never held, nothing recorded.
+ */
+function useSpinup(build: string | null) {
+  const [reduced] = useState(reducedMotion);
+  const [seen] = useState(seenBuild);
+  const [played, setPlayed] = useState(false);
+  const onMotionEnd = useCallback(() => setPlayed(true), []);
+  useEffect(() => {
+    if (played && build !== null && build !== seen) markSeen(build);
+  }, [played, build, seen]);
+  const hold = !reduced && !played && build !== seen;
+  return { hold, onMotionEnd };
 }
 
 function useKeysDialog() {
@@ -111,14 +139,20 @@ function Destination({ views }: { views: ViewRegistry }) {
 
 export function App({
   waitForCore = defaultWaitForCore,
+  readBuild = defaultReadBuild,
   views = DEFAULT_VIEWS,
 }: {
   /** The core hand-off adapter (core.ts); a test double in tests. */
   waitForCore?: WaitForCore;
+  /** The build's version string (build.ts); a test double in tests and fixtures. */
+  readBuild?: ReadBuild;
   views?: ViewRegistry;
 }) {
   const mode = useApplyTheme();
-  const { boot, retry } = useBoot(waitForCore);
+  const { boot, build, retry } = useBoot(waitForCore, readBuild);
+  const spinup = useSpinup(build);
+  // Ready implies the build string is known (useBoot), so `hold` is decided by then.
+  const handoff = boot.phase === "ready" && !spinup.hold;
   const keys = useKeysDialog();
   const [gone, setGone] = useState(false);
   const onGone = useCallback(() => setGone(true), []);
@@ -128,12 +162,23 @@ export function App({
   };
   return (
     <>
-      <a className="skip-link" href="#main" onClick={skip}>
-        Skip to main
-      </a>
-      {boot.phase === "ready" && <Destination views={views} />}
+      {handoff && (
+        // Nothing to skip to before the destination exists: the start screen has no repeated blocks (WCAG 2.4.1).
+        <a className="skip-link" href="#main" onClick={skip}>
+          Skip to main
+        </a>
+      )}
+      {handoff && <Destination views={views} />}
       {!gone && (
-        <StartScreen boot={boot} mode={mode} onRetry={retry} onGone={onGone} />
+        <StartScreen
+          boot={boot}
+          mode={mode}
+          build={build}
+          leaving={handoff}
+          onRetry={retry}
+          onGone={onGone}
+          onMotionEnd={spinup.onMotionEnd}
+        />
       )}
       {keys.open && <KeysDialog onClose={keys.close} />}
     </>

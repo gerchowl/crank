@@ -113,6 +113,9 @@ jobs:
           eval "$(python3 -I scripts/release-version.py parse "$VERSION" | grep -E '^(short|bundle)=')"
           [ "$(plutil -extract CFBundleShortVersionString raw "$PLIST")" = "$short" ]
           [ "$(plutil -extract CFBundleVersion raw "$PLIST")" = "$bundle" ]
+          # The version string (#552) is `<version> · <rev>`: the flake compiles in its own shortRev (dirtyShortRev,
+          # `-dirty`, on a dry run's bumped tree), so the binary must carry this commit's.
+          grep -aqF "${GITHUB_SHA:0:7}" result/crank.app/Contents/MacOS/crank-desktop
           ditto -c -k --keepParent result/crank.app "$ZIP"
           shasum -a 256 "$ZIP" > "$ZIP.sha256"
           shasum -a 256 -c "$ZIP.sha256"
