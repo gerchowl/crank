@@ -3,6 +3,7 @@ use crate::control::{PolicyContext, PolicyStatus, RideActivity, TargetPolicy};
 use crate::erg::{Compliance, Component, ErgPolicy, Machine, TrainerFollowing};
 use crate::lap::{Lap, LapEnd, Laps};
 use crate::record::{METRICS, Mean, RecordError, RideRecorder, SecondRow};
+use crate::series::{Live, Series, SeriesStore};
 use crate::stream::hub::Hub;
 use crate::stream::types::StreamError;
 use crate::stream::{
@@ -704,6 +705,9 @@ pub struct Engine {
     stream_reqs: Option<mpsc::Receiver<StreamReq>>,
     pub(crate) hub: Hub,
     pub(crate) status: watch::Sender<RideStatus>,
+    /// The core's display series of the ride ([`Engine::with_series`]), and the points and
+    /// live values of the ticks since the last publish.
+    pub(crate) series: Option<(SeriesStore, Series)>,
     trainer_log: LinkLog,
     hr_log: LinkLog,
     session: Option<Session>,
@@ -775,6 +779,7 @@ impl Engine {
                 commanded: None,
             })
             .0,
+            series: None,
             trainer_log: LinkLog::default(),
             hr_log: LinkLog::default(),
             session: None,
@@ -795,6 +800,16 @@ impl Engine {
         factory: impl Fn(&Tuning) -> Box<dyn TargetPolicy> + Send + 'static,
     ) -> Self {
         self.policy_factory = Box::new(factory);
+        self
+    }
+
+    /// Append the ride's display series to `store` (ADR-0001 §4.3.3): power every tick,
+    /// cadence and heart rate every second tick, each only while riding and present, and the
+    /// tick's values as its live values. Each publish appends and writes the status under the
+    /// store's lock. The engine holds no channel and never waits for a reader beyond the lock.
+    #[must_use]
+    pub fn with_series(mut self, store: SeriesStore) -> Self {
+        self.series = Some((store, Series::default()));
         self
     }
 
@@ -1243,6 +1258,15 @@ impl Engine {
             [None; 6]
         };
         self.hub.on_source(ticks_to_seconds(s.clock_ticks), &values);
+        if let Some((_, pending)) = &mut self.series {
+            let [power, cadence, _, hr, ..] = values;
+            pending.tick(
+                ticks_to_seconds(s.clock_ticks),
+                ticks_to_seconds(s.ride_ticks),
+                s.clock_ticks.is_multiple_of(2),
+                [power, cadence, hr],
+            );
+        }
     }
     /// Feed the following machine with what happened up to the end of tick `k`: the
     /// link and desired mode as they stand, then the replies stamped in the tick.
@@ -1554,7 +1578,7 @@ impl Engine {
             .map_or_else(Vec::new, |s| s.laps.closed().to_vec())
     }
 
-    fn publish(&mut self) {
+    pub(crate) fn publish(&mut self) {
         let s = self.session.as_ref();
         let live = s.filter(|s| s.phase == Phase::Active);
         let in_block = s.filter(|s| s.block_idx < s.blocks.len());
@@ -1614,6 +1638,17 @@ impl Engine {
             }
         }
         self.hub.poll(now);
+        let Some((store, pending)) = &mut self.series else {
+            self.status.send_replace(status);
+            return;
+        };
+        if status.state != RideState::Riding {
+            pending.live = Live::default();
+        }
+        let mut series = store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        series.take(pending);
         self.status.send_replace(status);
     }
 }

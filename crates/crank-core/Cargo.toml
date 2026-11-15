@@ -25,6 +25,7 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+proptest.workspace = true
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "test-util", "time", "rt-multi-thread"] }
 specta-typescript.workspace = true
