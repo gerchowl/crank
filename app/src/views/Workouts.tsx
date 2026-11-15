@@ -25,6 +25,7 @@ import {
 import { WorkoutEditor } from "../editor/WorkoutEditor";
 import { PHASE_NAME, watts } from "../ride/Timeline";
 import { useCommand } from "../stream";
+import { useUi } from "../stream/uiHooks";
 import { dismissRideLoad, startRideLoad, useRideLoad } from "./rideLoad";
 import "./workouts.css";
 
@@ -216,13 +217,9 @@ export function Summary({ compiled }: { compiled: CompiledView }) {
   );
 }
 
-/** How often the core is asked whether a load is still in flight, while it says one is. */
-const STATUS_POLL_MS = 400;
-
 export function Workouts() {
   const list = useCommand(commands.workoutsList);
   const get = useCommand(commands.workoutGet);
-  const status = useCommand(commands.rideStatus);
   const load = useRideLoad();
   const [picked, setPicked] = useState<string | null>(null);
   // The editor is a state of this place (DESIGN §16.3 as amended for direction A, #111): it works on a copy of the
@@ -230,7 +227,6 @@ export function Workouts() {
   const [editing, setEditing] = useState<WorkoutDetail | null>(null);
   const { run: runList } = list;
   const { run: runGet } = get;
-  const { run: runStatus } = status;
   useEffect(() => {
     void runList();
   }, [runList]);
@@ -240,17 +236,9 @@ export function Workouts() {
   // load DURING the first ("another ride is loading or loaded", core.rs `ride_load` (~1679)), and the page must never show a
   // workout other than the one being loaded: success would route into the old workout's ride, a refusal would
   // appear under the new one (#320). "In flight" is not this view's state: the app-scope controller (rideLoad.ts)
-  // knows a load this window started, and `ride_status().load` (core.rs `ride_status` (~2382)) is the core's own answer for one
-  // that started anywhere (a window reloaded mid-load), asked when the view mounts and until it clears.
-  const coreLoading = (status.data?.load ?? null) !== null;
-  useEffect(() => {
-    void runStatus();
-  }, [runStatus]);
-  useEffect(() => {
-    if (!coreLoading) return;
-    const t = setTimeout(() => void runStatus(), STATUS_POLL_MS);
-    return () => clearTimeout(t);
-  }, [coreLoading, status.data, runStatus]);
+  // knows a load this window started, and the snapshot channel's `loading` (ADR-0001 §4.3.6) is the core's own word for
+  // one that started anywhere (a window reloaded mid-load), in every frame until it is over.
+  const coreLoading = useUi().loading;
   const loading = load.phase === "loading" || coreLoading;
   // A refusal is shown where the rider is looking (#333), whether it arrived while this view was mounted or while
   // they were elsewhere (then on return). The notice hides on this view, and leaving it marks the refusal seen
@@ -269,8 +257,9 @@ export function Workouts() {
   /**
    * The one seam for the start guard. When the health-stop guard lands (A6 `requestStart`, #81) it replaces
    * this call: `requestStart(workout, "workouts")` decides, and loads through `ride_load` itself. There is no
-   * guard today and none is faked. The load itself is owned at app scope (`startRideLoad`): it begins the ride
-   * session (`beginRide`) and routes to the ride only if the rider is still here when it completes.
+   * guard today and none is faked. The load itself is owned at app scope (`startRideLoad`): the ride reaches the
+   * page as the snapshot channel's next frame, and the load routes to it only if the rider is still here when it
+   * completes.
    */
   const rideThis = useCallback(
     (id: string, name: string) => void startRideLoad(id, name),

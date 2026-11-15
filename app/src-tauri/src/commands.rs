@@ -4,9 +4,8 @@
 use crate::logging::Logging;
 use crank_core::{
     ApiError, CompiledView, Core, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, FrameSink,
-    LinkFrame, LinkIntent, LinkSink, LinksId, PairedDevice, RideEnded, RideLoaded, RideRecord,
-    RideStatusView, ScannedDevice, SinkClosed, UiChannelId, UiFrame, UiSink, Workout,
-    WorkoutDetail, WorkoutNode, WorkoutSummary,
+    LinkFrame, LinkIntent, LinkSink, LinksId, RideRecord, RideStatusView, ScannedDevice,
+    SinkClosed, UiChannelId, UiFrame, UiSink, Workout, WorkoutDetail, WorkoutNode, WorkoutSummary,
 };
 use crank_engine::{MetricId, StreamFrame, StreamId, StreamSnapshot, SubId, SubscribeOpts};
 use tauri::{State, ipc::Channel};
@@ -58,7 +57,8 @@ pub async fn devices_scan(
     core.devices_scan(for_ms).await
 }
 
-/// Pair a device in a role.
+/// Pair a device in a role; answers nothing: the pairing shows in the snapshot channel's
+/// next frame, as `devices.<role>.paired` (ADR-0001 §4.3.8).
 ///
 /// # Errors
 /// As [`Core::device_pair`].
@@ -68,8 +68,8 @@ pub async fn device_pair(
     core: State<'_, Core>,
     id: String,
     role: DeviceRole,
-) -> Result<PairedDevice, ApiError> {
-    core.device_pair(id, role).await
+) -> Result<(), ApiError> {
+    core.device_pair(id, role).await.map(drop)
 }
 
 /// Forget the pairing of a role.
@@ -220,7 +220,9 @@ pub async fn compile_workout(
     core.compile_workout(workout).await
 }
 
-/// Load a workout, or a free ride for `None`.
+/// Load a workout, or a free ride for `None`; answers the ride's id, for logs and tests.
+/// What is drawn comes from the snapshot channel: `ride.workout_id`, and the strap's link in
+/// `devices.strap` (ADR-0001 §4.3.8).
 ///
 /// # Errors
 /// As [`Core::ride_load`].
@@ -229,8 +231,10 @@ pub async fn compile_workout(
 pub async fn ride_load(
     core: State<'_, Core>,
     workout_id: Option<String>,
-) -> Result<RideLoaded, ApiError> {
-    core.ride_load(workout_id).await
+) -> Result<String, ApiError> {
+    core.ride_load(workout_id)
+        .await
+        .map(|loaded| loaded.ride_id)
 }
 
 /// Start the loaded ride.
@@ -273,18 +277,16 @@ pub async fn ride_skip(core: State<'_, Core>) -> Result<(), ApiError> {
     core.ride_skip().await
 }
 
-/// End the ride: the id of the finished ride (`null` for an unloaded one) and whether the
-/// core had to end it by force because the engine could not.
+/// End the ride, or unload an unstarted one; answers nothing: the end shows in the snapshot
+/// channel's next frame, as `ride.ended` (`forced` when the core had to end it because the
+/// engine could not), and an unload as `ride: null` (ADR-0001 §4.3.8).
 ///
 /// # Errors
-/// As [`Core::ride_end_outcome`].
+/// As [`Core::ride_end`].
 #[tauri::command]
 #[specta::specta]
-pub async fn ride_end(
-    core: State<'_, Core>,
-    logging: State<'_, Logging>,
-) -> Result<RideEnded, ApiError> {
-    let ended = core.ride_end_outcome().await.map(Into::into);
+pub async fn ride_end(core: State<'_, Core>, logging: State<'_, Logging>) -> Result<(), ApiError> {
+    let ended = core.ride_end().await.map(drop);
     // The ride's records reach the disk now, not only at quit (ADR-0001 §7.1). Not awaited:
     // a stalled disk must not hold up the ride's end (vigil waits up to 5 s).
     drop(logging.flush_in_background());

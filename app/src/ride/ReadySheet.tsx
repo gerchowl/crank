@@ -5,40 +5,31 @@
 // banner in the band's vocabulary, banners.tsx, T3+ lines of at most 26 characters) and, below it, the body at T3: one
 // row per device, the mode and how the ride starts, and the reason of a refused command.
 //
-// Every word comes from today's data: the status (`null` until the stream has answered), the links of the loaded ride
-// (`useLinks`: the stream's link frames and `device_links`), the `ride_load` answer (`RideLoaded.hrLinked`; a loaded ride
-// had its trainer linked, core.rs `Core::ride_load` (~1566) fails the load without one) and the compiled plan. The device
+// Every word comes from the snapshot channel's frame (ADR-0001 §4.3): the ride's status and `devices`, where a device the
+// ride holds is `riding` with the ride's link (§4.3.6; a loaded ride holds its trainer, core.rs `Core::ride_load` (~1566)
+// fails the load without one, and holds the strap only if it was warm at the load), and the compiled plan. The device
 // rows are the connect-progress region of ADR-0002 §5.1.4, in their final geometry: one fixed row per device, a T3 line
 // and one hint line. What #471 plugs in once #470's `LoadProgress` exists is listed in `DEVICE_WORD`'s comment.
 import { Bluetooth, Heart } from "lucide-react";
 import type { ReactNode } from "react";
-import type { LinkStatus, WorkoutBlock } from "../bindings";
+import type { DeviceView, DevicesView, WorkoutBlock } from "../bindings";
 import { Num } from "../Num";
-import type { Links } from "../stream/state";
 import type { Banner } from "./banners";
 import { PHASE_NAME } from "./Timeline";
 
 /** The sheet's states (#526 acceptance), most urgent first. */
 export type ReadyState =
-  | "error"
-  | "loading"
-  | "trainer-missing"
-  | "connecting"
-  | "strap-missing"
-  | "ready";
+  "error" | "trainer-missing" | "connecting" | "strap-missing" | "ready";
 
 /** The ride commands of the screen; before Start only Start and End reach the core. */
 export type RideCommand = "start" | "pause" | "resume" | "skip" | "end";
 
-/** One device row's phase, from the links of the loaded ride and the load's answer. */
-export type DevicePhase = "checking" | "connected" | "connecting" | "lost";
+/** One device row's phase, from the frame's `devices`. */
+export type DevicePhase = "connected" | "connecting" | "lost";
 
 export interface ReadyInput {
-  /** The status has arrived: until then nothing on the sheet is the core's yet. */
-  status: boolean;
-  links: Links;
-  /** `RideLoaded.hrLinked`: the strap linked at the load. */
-  hrLinked: boolean;
+  /** The frame's `devices`: the ride's link on each device it holds. */
+  devices: DevicesView;
   /** The command whose refusal is shown (until the next command), `null` without one. */
   refused: RideCommand | null;
 }
@@ -59,28 +50,21 @@ export interface ReadyView {
 }
 
 /**
- * The link of a device as the sheet says it. No link reported yet means the load's own answer: the trainer linked (the
- * load fails without it), the strap as `hrLinked` says; before the status has arrived, nothing is known.
+ * A device as the sheet says it: the ride's link when the ride holds it (`link` is set exactly when `phase` is
+ * `riding`); a device the ride does not hold (a strap that missed the load, or none paired) is not found for this ride.
  */
-function phase(
-  status: boolean,
-  link: LinkStatus | undefined,
-  linkedAtLoad: boolean,
-): DevicePhase {
-  if (link === "ready") return "connected";
-  if (link === "connecting") return "connecting";
-  if (link === "lost") return "lost";
-  if (!status) return "checking";
-  return linkedAtLoad ? "connected" : "lost";
+function phase(d: DeviceView): DevicePhase {
+  if (d.link === "ready") return "connected";
+  if (d.link === "connecting") return "connecting";
+  return "lost";
 }
 
-/** The sheet's state and its device rows: a pure function of today's data, tested on its own. */
+/** The sheet's state and its device rows: a pure function of the frame, tested on its own. */
 export function readyView(i: ReadyInput): ReadyView {
-  const trainer = phase(i.status, i.links.trainer, true);
-  const hr = phase(i.status, i.links.hr, i.hrLinked);
-  const devices: ReadyState = !i.status
-    ? "loading"
-    : trainer === "lost"
+  const trainer = phase(i.devices.trainer);
+  const hr = phase(i.devices.strap);
+  const devices: ReadyState =
+    trainer === "lost"
       ? "trainer-missing"
       : trainer === "connecting"
         ? "connecting"
@@ -100,7 +84,6 @@ export function readyView(i: ReadyInput): ReadyView {
 /** The key row's line per devices' state (`ReadyView.line`); `error` never comes from the devices. */
 const LINE: Record<ReadyState, string> = {
   error: "",
-  loading: "Start is enabled once the ride has loaded",
   connecting: "Start is enabled once the NEO is connected",
   "trainer-missing": "Start needs the NEO connected",
   "strap-missing": "Press Start; the trainer waits for you to pedal",
@@ -129,13 +112,6 @@ export function readyBanner(view: ReadyView): Banner {
       return {
         id: "ready-error",
         title: text(REFUSED_TITLE[view.refused ?? "start"]),
-        actions: [],
-        status: [],
-      };
-    case "loading":
-      return {
-        id: "ready-loading",
-        title: text("Loading the ride…"),
         actions: [],
         status: [],
       };
@@ -172,14 +148,13 @@ export function readyBanner(view: ReadyView): Banner {
 }
 
 /**
- * A device row's word and glyph (rule 11: never colour alone). The words for `LoadProgress`'s phases, which #471 maps
- * onto these rows once #470 reports them in `ride_status` (ADR-0002 §5.1.4): `searching` "searching…" ↻,
+ * A device row's word and glyph (rule 11: never colour alone). The words for the keeper's phases during a load, which
+ * #471 maps onto these rows from the frame's `devices` (ADR-0001 §4.3.6, ADR-0002 §5.1.4): `searching` "searching…" ↻,
  * `connecting`/`handshake` as `connecting` here, `warm`/`riding` as `connected`, `not_found` "not found" ⚠ with the
  * hint line "keeps looking" (reserved and empty today: the band and the key row say what a missing device means). #471 also adds Retry (the `Retry` intent) to a row that is not found, and "Retry now" before
  * "Start without HR" on the HR row (DESIGN §5.4); no command for either exists today.
  */
 const DEVICE_WORD: Record<DevicePhase, { glyph: string; word: string }> = {
-  checking: { glyph: "↻", word: "checking…" },
   connected: { glyph: "✓", word: "connected" },
   connecting: { glyph: "↻", word: "connecting…" },
   lost: { glyph: "⚠", word: "not found" },

@@ -11,13 +11,19 @@ import {
   test,
 } from "vitest";
 import { commands } from "../bindings";
-import { apiError, install } from "./historyBackend";
-import { markForcedEnd, resetForcedEnds } from "../ride/forcedEnds";
+import { apiError, install as installHistory } from "./historyBackend";
 import { navigate, useRoute } from "../router";
 import { setTimeZone } from "../testTz";
+import { UiClient, type Point, type Timers } from "../stream/ui";
+import {
+  installUi,
+  rideView,
+  type UiBackend,
+  type UiOptions,
+} from "../stream/uiBackend";
+import { UiProvider } from "../stream/uiHooks";
 import { History, startedText, work } from "./History";
 import { axis, extent, ticks } from "./RideTraces";
-import { beginRide, releaseRide, type Point } from "../ride/session";
 
 // The start time renders in the rider's local time: pin it, so a date can be asserted literally.
 let restoreTimeZone: () => void;
@@ -26,7 +32,6 @@ beforeAll(() => {
 });
 afterAll(() => restoreTimeZone());
 afterEach(() => {
-  resetForcedEnds();
   cleanup();
   clearMocks();
 });
@@ -41,7 +46,31 @@ function Routed() {
     </>
   );
 }
-const open = () => render(<Routed />);
+/** A fake clock so the snapshot channel's 2 s watchdog never fires in these tests. */
+const neverClock: Timers = { setTimeout: () => 0, clearTimeout: () => {} };
+const open = () =>
+  render(
+    <UiProvider client={new UiClient(neverClock)}>
+      <Routed />
+    </UiProvider>,
+  );
+/** Install a snapshot-channel backend first (so `ui_open` answers), then the history backend. */
+const install = (
+  over: Parameters<typeof installHistory>[0] = {},
+  uiOpts: UiOptions = {},
+): ReturnType<typeof installHistory> => {
+  installUi(uiOpts);
+  return installHistory(over);
+};
+/** The install above, with the snapshot-channel backend handed back for tests that drive it. */
+const installWithUi = (
+  over: Parameters<typeof installHistory>[0] = {},
+  uiOpts: UiOptions = {},
+): { b: ReturnType<typeof installHistory>; ui: UiBackend } => {
+  const ui = installUi(uiOpts);
+  const b = installHistory(over);
+  return { b, ui };
+};
 
 test("a summary renders the core's values", async () => {
   const b = install();
@@ -95,8 +124,10 @@ test("an aborted ride that was not ended by force shows no forced note", async (
 });
 
 test("a ride the core ended by force shows the note, whatever its recorded outcome", async () => {
-  install();
-  markForcedEnd("ride-1");
+  installWithUi(
+    {},
+    { ride: rideView({ id: "ride-1", workoutId: "w-ss", ended: "forced" }) },
+  );
   navigate("history", "ride-1");
   open();
   const s = within(await screen.findByRole("region", { name: "Ride summary" }));
@@ -107,17 +138,23 @@ test("a ride the core ended by force shows the note, whatever its recorded outco
 });
 
 test("a forced end the core answers after the summary is showing adds the note (#372)", async () => {
-  install();
+  // The channel's ride is the loaded one with `ended: "finished"`; the next frame changes `ended` to `forced` and the
+  // note appears (ADR-0001 §4.3.3): the summary follows the frame, never the stored outcome.
+  const { ui } = installWithUi(
+    {},
+    {
+      ride: rideView({
+        id: "ride-1",
+        workoutId: "w-ss",
+        ended: "finished",
+      }),
+    },
+  );
   navigate("history", "ride-1");
   open();
   const s = within(await screen.findByRole("region", { name: "Ride summary" }));
-  // `findBy` resolves on the DOM change, before React has run the passive effects of that commit, and the summary's
-  // `useForcedEnd` subscribes in one of them: let them run, so the mark below reaches a live subscriber and its
-  // re-render is flushed by the `act` that marks (without this, 7 of 10 runs of 300 repeats failed)
-  await act(async () => {});
   expect(s.queryByRole("note")).toBeNull();
-  // the `finished` frame routed here before the `ride_end` answer; the answer marks the ride forced
-  act(() => markForcedEnd("ride-1"));
+  act(() => ui.setRide({ ended: "forced" }));
   expect(s.getByRole("note").textContent).toBe(
     "Ride ended without the engine confirming; data may be incomplete.",
   );
@@ -307,27 +344,25 @@ test("the list hides its old error while Retry is in flight, then shows the new 
   );
 });
 
-/** The window's session of `rideId`, with `seconds` of samples at `hz` per series (power, heart rate, cadence). */
-function rode(rideId: string, seconds: number, hz = 4) {
-  const session = beginRide({ rideId, workoutId: null, hrLinked: true });
-  const of = (v: (t: number) => number): Point[] =>
-    Array.from({ length: seconds * hz }, (_, i) => {
-      const t = i / hz;
-      return { t, workoutS: t, v: v(t) };
+/** The snapshot-channel state of a ride this window has just ridden: its series at `hz` samples per second. */
+function rode(rideId: string, seconds: number, hz = 4): UiOptions {
+  const atHz = (hzOf: number, v: (t: number) => number) =>
+    Array.from({ length: seconds * hzOf }, (_, i) => {
+      const t = i / hzOf;
+      return { t, w: t, v: v(t) };
     });
-  // The series as `record` leaves them (a fresh array each), set at once: appending 43 200 samples one by one is
-  // #557's O(n²) and not what this test is about.
-  session.series = {
-    power: of((t) => 200 + (t % 60)),
-    hr: of((t) => 120 + (t % 30)),
-    cadence: of(() => 90),
+  return {
+    ride: rideView({ id: rideId, workoutId: null, ended: "finished" }),
+    series: {
+      power: atHz(hz, (t) => 200 + (t % 60)),
+      hr: atHz(hz, (t) => 120 + (t % 30)),
+      cadence: atHz(hz, () => 90),
+    },
   };
-  return session;
 }
 
 test("Review draws the traces of the ride this window rode, one vertex per second", async () => {
-  install();
-  const session = rode("ride-3", 300);
+  install({}, rode("ride-3", 300));
   navigate("history", "ride-3");
   open();
   const s = within(await screen.findByRole("region", { name: "Ride summary" }));
@@ -342,12 +377,11 @@ test("Review draws the traces of the ride this window rode, one vertex per secon
   expect(
     s.getByRole("img", { name: /^Heart rate/ }).getAttribute("aria-label"),
   ).toBe("Heart rate over the ride, 80 to 200 bpm");
-  releaseRide(session);
 });
 
 test("a ride the window did not ride shows its figures and no traces", async () => {
-  install();
-  const session = rode("ride-3", 300);
+  // The channel holds ride-3; the Review for ride-1 is another ride, so no traces are its.
+  install({}, rode("ride-3", 300));
   navigate("history", "ride-1");
   open();
   const s = within(await screen.findByRole("region", { name: "Ride summary" }));
@@ -356,12 +390,10 @@ test("a ride the window did not ride shows its figures and no traces", async () 
     s.getByText(/Traces show for the ride you have just ridden/),
   ).toBeTruthy();
   expect(s.getByText("Duration").nextElementSibling?.textContent).toBe("50:00");
-  releaseRide(session);
 });
 
 test("a 3 h ride at 4 Hz renders its traces whole", async () => {
-  install();
-  const session = rode("ride-1", 3 * 3600);
+  install({}, rode("ride-1", 3 * 3600));
   navigate("history", "ride-1");
   open();
   const s = within(await screen.findByRole("region", { name: "Ride summary" }));
@@ -372,7 +404,6 @@ test("a 3 h ride at 4 Hz renders its traces whole", async () => {
   }
   // the axis ends at the last sample (3:00:00 less one 4 Hz step, shown rounded), past the summary's 50:00
   expect(s.getByText("3:00:00")).toBeTruthy();
-  releaseRide(session);
 });
 
 test("a trace's range is found without spreading the samples into Math.max", () => {
