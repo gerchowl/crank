@@ -113,7 +113,8 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   stale and opens a new channel, which recovers a lost frame; the stale state shows on every route (a notice above the
   page, and the ride screen's "Engine not answering" banner), a broken series update from the core is logged, shown
   the same way and not acked, so the watchdog's reopen 2 s later repairs it by a backfill (a fault on every backfill
-  costs one reopen per 2 s), and a refused `ui_open` is said on every route.
+  costs one reopen per 2 s), and a refused `ui_open` is said on every route. While a load has not installed its ride
+  the ride screen draws the Ready sheet's loading state from the frame, as before.
   `ride_load` answers the ride id, `ride_end` and `device_pair` answer nothing
   ([#598](https://github.com/gerchowl/crank/issues/598))
 - Rail item height (DESIGN §18.4): the labelled rail item has its own token, `--control-h-rail` (55 px, derived from its

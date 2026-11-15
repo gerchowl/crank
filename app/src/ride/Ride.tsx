@@ -56,6 +56,7 @@ import { openKeys } from "../shell/keys";
 import { BannerBand, banners, trainerNow } from "./banners";
 import { useFit } from "./fit";
 import { hrZone, zoneText } from "./hrZone";
+import { useRideLoad } from "../views/rideLoad";
 import { leaveOnce } from "./session";
 import {
   ReadyBody,
@@ -336,28 +337,43 @@ const FOLLOWING: Record<StreamFollowing, string | null> = {
 };
 
 /** The ride's link of each device it holds (`riding`); a device it does not hold has none (ADR-0001 §4.3.6). */
-const linksOf = (d: DevicesView) => ({
+const linksOf = (
+  d: DevicesView,
+): { trainer?: LinkStatus; hr?: LinkStatus } => ({
   trainer: d.trainer.link ?? undefined,
   hr: d.strap.link ?? undefined,
 });
 
+/**
+ * The workout the screen shows: the ride's, or while a load is under way the one this window asked to load
+ * (`useRideLoad`); `null` when it is not known (a load another window started, or one this window started before a
+ * reload: the frame does not name the workout being loaded, #657). `workoutId` is `null` for a free ride.
+ */
+type Plan = { workoutId: string | null } | null;
+
 function Screen({
   ride,
   devices,
+  plan,
   ui,
 }: {
-  ride: RideView;
+  /** `null` while a load is under way: the screen is the Ready sheet's loading state until the ride is installed. */
+  ride: RideView | null;
   devices: DevicesView;
+  plan: Plan;
   ui: UiSnapshot;
 }) {
-  const status: StreamStatus = ride.status;
-  const links = linksOf(devices);
+  const status: StreamStatus | null = ride?.status ?? null;
+  // The ride's links; before the ride is installed it holds no device, so there is none (the pills say "not connected").
+  const links = ride ? linksOf(devices) : {};
   // A wedged engine (#351, the core's `engineUnresponsive`), or a channel silent for 2 s (the watchdog's `stale`): the
   // values below are not live.
-  const unresponsive = ride.engineUnresponsive || ui.stale;
-  const { powerW: power, cadenceRpm: cadence, hrBpm: hr } = ride.live;
+  const unresponsive = (ride?.engineUnresponsive ?? false) || ui.stale;
+  const power = ride?.live.powerW ?? null;
+  const cadence = ride?.live.cadenceRpm ?? null;
+  const hr = ride?.live.hrBpm ?? null;
   const hrRefs = useAthleteHr();
-  const detail = useDetail(ride.workoutId);
+  const detail = useDetail(plan?.workoutId ?? null);
   const compiled = detail?.compiled ?? null;
   const series = ui.series;
   const tooSmall = useTooSmall();
@@ -389,13 +405,15 @@ function Screen({
   const loss = lossView(status, links);
   const [skippedFrom, setSkippedFrom] = useState<number | null>(null);
 
-  const workoutS = status.workoutS;
-  const kind = status.state.kind;
+  const workoutS = status?.workoutS ?? null;
+  const kind = status?.state.kind ?? "idle";
+  const rideId = ride?.id ?? null;
   // Over: the engine finished it, or the core says it ended (also by force, `ended: forced`).
-  const finished = kind === "finished" || ride.ended !== null;
+  const finished = kind === "finished" || (ride?.ended ?? null) !== null;
   useEffect(() => {
-    if (finished) leaveOnce(ride.id, () => navigate("history", ride.id));
-  }, [finished, ride.id]);
+    if (finished && rideId !== null)
+      leaveOnce(rideId, () => navigate("history", rideId));
+  }, [finished, rideId]);
 
   const run = async <T,>(
     command: RideCommand,
@@ -434,21 +452,22 @@ function Screen({
     const unloads = kind === "idle";
     const outcome = await run("end", end.run);
     // How it ended (also by force) is the frame's `ride.ended`, which the summary reads; the answer is only `null`.
-    if (outcome.status === "ok")
-      leaveOnce(ride.id, () =>
-        unloads ? navigate("workouts") : navigate("history", ride.id),
+    // End is disabled until the ride is installed, so there is a ride to leave.
+    if (outcome.status === "ok" && rideId !== null)
+      leaveOnce(rideId, () =>
+        unloads ? navigate("workouts") : navigate("history", rideId),
       );
   };
 
   const blocks = compiled?.blocks ?? [];
-  const blockIdx = status.blockIndex;
+  const blockIdx = status?.blockIndex ?? null;
   const block = blockIdx === null ? undefined : blocks[blockIdx];
-  const target = targetNow(block, status.blockElapsedS);
+  const target = targetNow(block, status?.blockElapsedS ?? null);
   const targetView = commandedView(status);
   const blockLeft =
-    block?.durS != null && status.blockElapsedS != null
+    block?.durS != null && status?.blockElapsedS != null
       ? block.durS - status.blockElapsedS
-      : status.blockElapsedS;
+      : (status?.blockElapsedS ?? null);
   const total = compiled?.totalS ?? null;
   // End is never held by a pending command: the rider always has a way out. The core does not bound the ride commands
   // it relays to the engine (`EngineHandle::send` waits on the engine's reply, engine.rs `EngineHandle::send` (~226)), and a second `ride_end`
@@ -456,7 +475,7 @@ function Screen({
   // and RELEASE_TIMEOUT 3 s, core.rs `REAP_TIMEOUT` (~55)), so End may be tapped again, also while an earlier End has not answered.
   // The rider's pause is the core's `userPaused`, not the pause reason: under a trainer loss `state` says
   // `trainer_lost` while the core still holds the rider pause (#327 item 3).
-  const userPaused = status.userPaused;
+  const userPaused = status?.userPaused === true;
   // The tap's guard ends when the status shows its effect, whoever caused it (the coach may resume a rider pause).
   if (
     (pauseSent === "pause" && userPaused) ||
@@ -488,27 +507,32 @@ function Screen({
   // The plan dims while it does not run: the rider's pause and a trainer loss (§5.2 States).
   const dim = userPaused || loss.trainer ? "" : undefined;
   const xMax = Math.max(total ?? 0, workoutS ?? 0, 1);
-  const free = ride.workoutId === null;
-  const counted = status.compliance.countedS ?? 0;
+  // A free ride has no plan; `null` while the workout is not known (`Plan`).
+  const free = plan === null ? null : plan.workoutId === null;
+  const counted = status?.compliance.countedS ?? 0;
   // The trainer as the engine commands it and whether it follows (the same words as the pause banner, #324).
   // Not while the trainer is lost: `commanded` then still holds the engine's last mode, which nothing is following.
-  const trainer = loss.trainer ? null : trainerNow(status.commanded);
-  const follows = loss.trainer ? null : FOLLOWING[status.trainerFollowing];
-  const following = [
-    trainer && follows
-      ? `${trainer}, ${follows}`
-      : (trainer ?? (follows && `trainer ${follows}`)),
-    counted > 0
-      ? `compliance ${Math.round((100 * (status.compliance.withinS ?? 0)) / counted)} %`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const trainer = loss.trainer ? null : trainerNow(status?.commanded);
+  const follows =
+    status && !loss.trainer ? FOLLOWING[status.trainerFollowing] : null;
+  const following = status
+    ? [
+        trainer && follows
+          ? `${trainer}, ${follows}`
+          : (trainer ?? (follows && `trainer ${follows}`)),
+        counted > 0
+          ? `compliance ${Math.round((100 * (status.compliance.withinS ?? 0)) / counted)} %`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
 
   // Before Start the traces column is the Ready sheet (ReadySheet.tsx, DESIGN §5.4): its state is the band's banner,
   // after an engine that does not answer (the values are not live); the sheet's plan line says a free ride is free.
   const ready = kind === "idle";
   const sheet = readyView({
+    loading: ride === null,
     devices,
     refused: refused?.command ?? null,
   });
@@ -528,8 +552,8 @@ function Screen({
     unresponsive,
     loss,
     userPaused,
-    free,
-    commanded: status.commanded,
+    free: free === true,
+    commanded: status?.commanded,
     clock,
   });
   const bannerList = ready
@@ -553,7 +577,7 @@ function Screen({
     <div className="ride" data-testid="ride">
       <header className="ride-bar" data-region="status">
         <span className="ride-title">
-          {free ? "Free ride" : (detail?.workout.name ?? "")}
+          {free === true ? "Free ride" : (detail?.workout.name ?? "")}
         </span>
         <span className="ride-times num" data-testid="times">
           <span data-slot="elapsed" style={{ width: "7ch" }}>
@@ -651,9 +675,9 @@ function Screen({
               <span data-slot="block">
                 {block
                   ? `${PHASE_WORD[block.phase]} · block ${(blockIdx ?? 0) + 1} of ${blocks.length}`
-                  : blocks.length > 0 && blockIdx === null
+                  : status !== null && blocks.length > 0 && blockIdx === null
                     ? "Last block done"
-                    : free
+                    : free === true
                       ? "FREE RIDE"
                       : "Loading the plan…"}
               </span>
@@ -661,7 +685,7 @@ function Screen({
             {/* Under a trainer loss the countdown is frozen: the caption says where the block paused (§5.2). */}
             <span className="readout-sub" data-testid="caption">
               {loss.trainer
-                ? `paused at ${clock(status.blockElapsedS)}`
+                ? `paused at ${clock(status?.blockElapsedS ?? null)}`
                 : block?.durS == null
                   ? "in block"
                   : "left in block"}
@@ -822,7 +846,7 @@ function Screen({
         </button>
         <button
           className="ride-end"
-          disabled={finished}
+          disabled={finished || ride === null}
           onClick={() => setConfirming("end")}
         >
           <Square {...icon} />
@@ -870,17 +894,33 @@ function Screen({
 export function Ride() {
   const ui = useUi();
   const client = useUiClient();
-  // The frame's ride; until the first frame, and while a load has not installed its ride yet, it is on its way.
-  if (ui.ride !== null && ui.devices !== null)
+  const load = useRideLoad();
+  // The frame's ride, or while a load is under way (`loading`, no ride yet) the Ready sheet's loading state, drawn
+  // from the same frame: the ride layout with the devices "checking…" and the plan of the workout this window asked
+  // to load. Only before the first frame is there nothing to draw it from.
+  if (ui.devices !== null && (ui.ride !== null || ui.loading)) {
+    const plan: Plan =
+      ui.ride !== null
+        ? { workoutId: ui.ride.workoutId }
+        : load.phase === "loading"
+          ? { workoutId: load.workoutId }
+          : null;
     return (
       <div className="ride-root">
-        <Screen key={ui.ride.id} ride={ui.ride} devices={ui.devices} ui={ui} />
+        <Screen
+          key={ui.ride?.id ?? "loading"}
+          ride={ui.ride}
+          devices={ui.devices}
+          plan={plan}
+          ui={ui}
+        />
       </div>
     );
+  }
   // `ui_open` was refused (`storage`: the pairings cannot be read; `conflict`: 16 channels open) and no frame came:
   // the screen says so instead of waiting; the watchdog asks again every 2 s, Retry at once.
   const refused = !ui.received ? ui.error : null;
-  const coming = !ui.received || ui.loading;
+  const coming = !ui.received;
   return (
     <div className="page ride-empty">
       <h1>

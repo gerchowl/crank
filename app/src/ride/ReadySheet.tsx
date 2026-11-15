@@ -5,8 +5,9 @@
 // banner in the band's vocabulary, banners.tsx, T3+ lines of at most 26 characters) and, below it, the body at T3: one
 // row per device, the mode and how the ride starts, and the reason of a refused command.
 //
-// Every word comes from the snapshot channel's frame (ADR-0001 §4.3): the ride's status and `devices`, where a device the
-// ride holds is `riding` with the ride's link (§4.3.6; a loaded ride holds its trainer, core.rs `Core::ride_load` (~1566)
+// Every word comes from the snapshot channel's frame (ADR-0001 §4.3): `loading` while a load has not installed its ride
+// (the sheet's loading state: nothing on it is the ride's yet, and each device row says "checking…" until #471 maps the
+// keeper's phases during a load onto the rows), the ride's status and `devices`, where a device the ride holds is `riding` with the ride's link (§4.3.6; a loaded ride holds its trainer, core.rs `Core::ride_load` (~1566)
 // fails the load without one, and holds the strap only if it was warm at the load), and the compiled plan. The device
 // rows are the connect-progress region of ADR-0002 §5.1.4, in their final geometry: one fixed row per device, a T3 line
 // and one hint line. What #471 plugs in once #470's `LoadProgress` exists is listed in `DEVICE_WORD`'s comment.
@@ -19,15 +20,22 @@ import { PHASE_NAME } from "./Timeline";
 
 /** The sheet's states (#526 acceptance), most urgent first. */
 export type ReadyState =
-  "error" | "trainer-missing" | "connecting" | "strap-missing" | "ready";
+  | "error"
+  | "loading"
+  | "trainer-missing"
+  | "connecting"
+  | "strap-missing"
+  | "ready";
 
 /** The ride commands of the screen; before Start only Start and End reach the core. */
 export type RideCommand = "start" | "pause" | "resume" | "skip" | "end";
 
-/** One device row's phase, from the frame's `devices`. */
-export type DevicePhase = "connected" | "connecting" | "lost";
+/** One device row's phase, from the frame's `devices`; `checking` while the load has not installed its ride. */
+export type DevicePhase = "checking" | "connected" | "connecting" | "lost";
 
 export interface ReadyInput {
+  /** The frame says `loading` and has no ride yet: the ride holds no device, nothing is the ride's yet. */
+  loading: boolean;
   /** The frame's `devices`: the ride's link on each device it holds. */
   devices: DevicesView;
   /** The command whose refusal is shown (until the next command), `null` without one. */
@@ -61,10 +69,11 @@ function phase(d: DeviceView): DevicePhase {
 
 /** The sheet's state and its device rows: a pure function of the frame, tested on its own. */
 export function readyView(i: ReadyInput): ReadyView {
-  const trainer = phase(i.devices.trainer);
-  const hr = phase(i.devices.strap);
-  const devices: ReadyState =
-    trainer === "lost"
+  const trainer = i.loading ? "checking" : phase(i.devices.trainer);
+  const hr = i.loading ? "checking" : phase(i.devices.strap);
+  const devices: ReadyState = i.loading
+    ? "loading"
+    : trainer === "lost"
       ? "trainer-missing"
       : trainer === "connecting"
         ? "connecting"
@@ -76,7 +85,8 @@ export function readyView(i: ReadyInput): ReadyView {
     trainer,
     hr,
     refused: i.refused,
-    canStart: trainer !== "lost" && trainer !== "connecting",
+    // There is no ride to start before it is installed.
+    canStart: !i.loading && trainer !== "lost" && trainer !== "connecting",
     line: LINE[devices],
   };
 }
@@ -84,6 +94,7 @@ export function readyView(i: ReadyInput): ReadyView {
 /** The key row's line per devices' state (`ReadyView.line`); `error` never comes from the devices. */
 const LINE: Record<ReadyState, string> = {
   error: "",
+  loading: "Start is enabled once the ride has loaded",
   connecting: "Start is enabled once the NEO is connected",
   "trainer-missing": "Start needs the NEO connected",
   "strap-missing": "Press Start; the trainer waits for you to pedal",
@@ -112,6 +123,13 @@ export function readyBanner(view: ReadyView): Banner {
       return {
         id: "ready-error",
         title: text(REFUSED_TITLE[view.refused ?? "start"]),
+        actions: [],
+        status: [],
+      };
+    case "loading":
+      return {
+        id: "ready-loading",
+        title: text("Loading the ride…"),
         actions: [],
         status: [],
       };
@@ -155,6 +173,7 @@ export function readyBanner(view: ReadyView): Banner {
  * "Start without HR" on the HR row (DESIGN §5.4); no command for either exists today.
  */
 const DEVICE_WORD: Record<DevicePhase, { glyph: string; word: string }> = {
+  checking: { glyph: "↻", word: "checking…" },
   connected: { glyph: "✓", word: "connected" },
   connecting: { glyph: "↻", word: "connecting…" },
   lost: { glyph: "⚠", word: "not found" },
@@ -215,7 +234,8 @@ export function ReadyBody({
   refusal,
 }: {
   view: ReadyView;
-  free: boolean;
+  /** `null` while the workout is not known (a load this window did not start). */
+  free: boolean | null;
   first: WorkoutBlock | undefined;
   clock: (s: number | null) => string;
   refusal: ReactNode;
@@ -236,8 +256,10 @@ export function ReadyBody({
         <Device device="hr" name="HR" Icon={Heart} at={view.hr} />
       </ul>
       <p className="ready-plan" data-testid="ready-plan">
-        {free ? (
+        {free === true ? (
           "Free ride · no targets"
+        ) : free === null ? (
+          "Loading the plan…"
         ) : (
           <>
             ERG · <Starts first={first} clock={clock} />

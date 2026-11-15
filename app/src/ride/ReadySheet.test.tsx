@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The Ready sheet (DESIGN §5.4, #526, #598): its state from the snapshot frame's `devices`, and the ride screen
-// before Start showing it.
+// The Ready sheet (DESIGN §5.4, #526, #598): its state from the snapshot frame's `loading` and `devices`, and the ride
+// screen before Start showing it.
 import {
   act,
   cleanup,
@@ -22,8 +22,10 @@ import {
 } from "./ReadySheet";
 import { LINE_MAX } from "./banners";
 import { Ride } from "./Ride";
-import { HRM, NEO, installRide, type RideWorld } from "./rideBackend";
+import { BLOCKS, HRM, NEO, installRide, type RideWorld } from "./rideBackend";
 import { resetLeft } from "./session";
+import { resetRideLoad, startRideLoad } from "../views/rideLoad";
+import { compiled, install as installWorkouts } from "../views/workoutsBackend";
 import { UiClient, type Timers } from "../stream/ui";
 import { UiProvider } from "../stream/uiHooks";
 import { devicesOf } from "../stream/uiBackend";
@@ -54,7 +56,7 @@ const BOTH_LOST = devices({ trainer: "lost", strap: "lost" });
 
 describe("readyView", () => {
   const view = (over: Partial<Parameters<typeof readyView>[0]> = {}) =>
-    readyView({ devices: BOTH_READY, refused: null, ...over });
+    readyView({ loading: false, devices: BOTH_READY, refused: null, ...over });
 
   test("both devices on ready links are connected and the sheet is ready", () => {
     expect(view()).toMatchObject({
@@ -78,6 +80,20 @@ describe("readyView", () => {
     });
   });
 
+  test("while a load has not installed its ride nothing is the ride's: both rows check and Start waits", () => {
+    // The frame's devices during a load are the keeper's (here both connecting); the ride holds none of them yet.
+    expect(view({ loading: true, devices: TRAINER_CONNECTING })).toMatchObject({
+      state: "loading",
+      trainer: "checking",
+      hr: "checking",
+      canStart: false,
+      line: "Start is enabled once the ride has loaded",
+    });
+    expect(readyBanner(view({ loading: true })).title.text).toBe(
+      "Loading the ride…",
+    );
+  });
+
   test("a trainer link that is not ready holds the start (§5.4)", () => {
     expect(view({ devices: TRAINER_CONNECTING })).toMatchObject({
       state: "connecting",
@@ -90,8 +106,9 @@ describe("readyView", () => {
     });
   });
 
-  test("most urgent first: a refusal, then the trainer, then the strap", () => {
+  test("most urgent first: a refusal, then loading, then the trainer, then the strap", () => {
     expect(view({ refused: "start", devices: BOTH_LOST }).state).toBe("error");
+    expect(view({ loading: true, devices: BOTH_LOST }).state).toBe("loading");
     expect(view({ devices: BOTH_LOST }).state).toBe("trainer-missing");
     const connectingLost = devices({
       trainer: "connecting",
@@ -140,6 +157,7 @@ describe("readyView", () => {
     const views = [
       view({ refused: "start" }),
       view({ refused: "end" }),
+      view({ loading: true }),
       view({ devices: TRAINER_LOST }),
       view({ devices: TRAINER_CONNECTING }),
       view({ devices: STRAP_NOT_HELD }),
@@ -160,6 +178,7 @@ describe("readyView", () => {
 beforeEach(() => navigate("ride"));
 afterEach(() => {
   resetLeft();
+  resetRideLoad();
   cleanup();
   clearMocks();
 });
@@ -194,6 +213,104 @@ const band = () =>
 const keyLine = () => document.querySelector(".ride-status")?.textContent ?? "";
 const start = () =>
   screen.getByRole("button", { name: "Start" }) as HTMLButtonElement;
+
+/**
+ * A load of w1 under way whose answer never comes: the frame says `loading` and has no ride (ui.rs `Ui::load_started`).
+ * `own`: this window asked for it (`startRideLoad`); otherwise another window did, and this one does not know the workout.
+ */
+async function openLoading(own: boolean) {
+  const library = installWorkouts({
+    summaries: [
+      { id: "w1", name: "Steady 10 min", totalS: 600, tss: 10, ftp: 250 },
+    ],
+    compiled: { w1: compiled({ blocks: BLOCKS, totalS: 600 }) },
+    gate: new Promise<void>(() => {}),
+  });
+  const rig = installRide({ phase: "none", blocks: BLOCKS });
+  library.ui = rig.ui;
+  if (own) void startRideLoad("w1", "Steady 10 min");
+  else rig.ui.loadStarted();
+  const client = new UiClient(neverClock);
+  render(
+    <UiProvider client={client}>
+      <Ride />
+    </UiProvider>,
+  );
+  await waitFor(() => expect(client.snapshot.loading).toBe(true));
+  return { rig, client };
+}
+
+describe("the ride screen while a load has not installed its ride", () => {
+  test("the first frame's `loading` draws the ride layout: rows checking, the plan, empty tiles, Start waiting", async () => {
+    const { rig } = await openLoading(true);
+    expect(rig.ui.truth.ride).toBeNull();
+    await waitFor(() => expect(sheet().dataset.ready).toBe("loading"));
+    expect(band()).toContain("Loading the ride…");
+    const rows = within(sheet()).getAllByRole("listitem");
+    expect(rows.map((r) => r.dataset.state)).toEqual(["checking", "checking"]);
+    expect(within(sheet()).getAllByText(/↻ checking…/)).toHaveLength(2);
+    // The plan of the workout this window asked to load.
+    await waitFor(() =>
+      expect(screen.getByTestId("ready-plan").textContent).toBe(
+        "ERG · starts with 3:00 warm-up",
+      ),
+    );
+    expect(document.querySelector(".ride-title")?.textContent).toBe(
+      "Steady 10 min",
+    );
+    expect(
+      document.querySelector("[data-region='timeline']")?.textContent,
+    ).toContain("Work 250 W");
+    // Nothing is the ride's yet: the tiles are empty, the pills not connected, the countdown waits for the ride.
+    for (const id of ["power", "hr", "cadence"])
+      expect(document.querySelector(`[data-slot='${id}']`)?.textContent).toBe(
+        "—",
+      );
+    expect(document.querySelector("[data-slot='block']")?.textContent).toBe(
+      "Loading the plan…",
+    );
+    expect(
+      [...document.querySelectorAll(".pill-half")].map(
+        (p) => (p as HTMLElement).dataset.link,
+      ),
+    ).toEqual(["none", "none"]);
+    expect(keyLine()).toBe("Start is enabled once the ride has loaded");
+    expect(start().disabled).toBe(true);
+    const end = screen.getByRole("button", {
+      name: "End",
+    }) as HTMLButtonElement;
+    expect(end.disabled).toBe(true);
+    // Never the bare page once a frame has come.
+    expect(
+      screen.queryByRole("heading", { name: "Loading the ride…" }),
+    ).toBeNull();
+  });
+
+  test("the installed ride replaces the loading state in the same layout", async () => {
+    const { rig } = await openLoading(false);
+    await waitFor(() => expect(sheet().dataset.ready).toBe("loading"));
+    // ui.rs `Ui::install`, then `Ui::load_over`: the next frame carries the ride and no `loading`.
+    await act(async () => {
+      rig.world.phase = "loaded";
+      rig.ui.truth.loading = false;
+      rig.publish();
+    });
+    await waitFor(() => expect(sheet().dataset.ready).toBe("ready"));
+    expect(screen.getByTestId("ready-plan").textContent).toBe(
+      "ERG · starts with 3:00 warm-up",
+    );
+  });
+
+  test("a load another window started: the same layout, the plan not known", async () => {
+    await openLoading(false);
+    await waitFor(() => expect(sheet().dataset.ready).toBe("loading"));
+    expect(screen.getByTestId("ready-plan").textContent).toBe(
+      "Loading the plan…",
+    );
+    expect(document.querySelector(".ride-title")?.textContent).toBe("");
+    expect(start().disabled).toBe(true);
+  });
+});
 
 describe("the ride screen before Start is the Ready sheet", () => {
   test("ready: both devices connected, the plan's first block, Start enabled and focused", async () => {
