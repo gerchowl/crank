@@ -231,8 +231,10 @@ appends them otherwise; (3) calls `ui_ack(frame.channel, frame.seq)`. It compare
 command's answer, keeps nothing from an earlier frame but the series, and drops the frames of a channel it replaced. It
 routes on the frame's `ride`, never on `ride_load`'s id. **Watchdog:** no frame for 2 s on an open channel, and it calls
 `ui_open` again (§4.3.4). The core guarantees `from` equals the length the page holds (tested, §4.3.9); a mismatch is a
-core bug, reported as `internal`, not repaired: the page logs it once, shows its state as stale on every route (as for
-a silent channel) and calls `ui_open` at once, so the new channel's backfill from index 0 replaces the series (#598).
+core bug, reported as `internal`, not repaired: the page logs each kind of fault once, shows its state as stale on
+every route (as for a silent channel) and does not ack the frame, so the core sends nothing more on that channel and
+the watchdog's reopen 2 s later brings a backfill from index 0 that replaces the series. A fault that repeats on every
+backfill costs one reopen per 2 s, never a loop (#598).
 
 **The e2e probe (#598).** The page defines one read-only global, `window.__crankUi()`, which answers the client's
 current state (the object the views render). `just e2e` (§8.3) drives `.#crank-desktop-e2e`, whose frontend is the
