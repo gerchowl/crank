@@ -104,6 +104,21 @@
 .editor-problem [data-state-label] {
   color: var(--status-critical);
 }
+/* The problem's line in the text's face, its span marked by an underline and the error colour, never colour alone. */
+.editor-problem-line {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-s);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.editor-problem-line mark {
+  background: none;
+  color: var(--status-critical);
+  text-decoration: underline wavy;
+}
 
 /* The selection on the profile: its blocks get a heavier edge in the focus colour. */
 .workouts-profile-block[data-marked="true"] {

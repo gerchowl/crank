@@ -20,7 +20,8 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   (`app/src/editor/model.ts`) plus the compiled summary. The core parses and compiles every edit. A text that does
   not parse shows its problem with line and column and leaves the saved tree alone. Undo and redo span all three
   views by button and, only while focus is inside the editor, by Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z (§5.9's one
-  exception). The draft lives in memory; saving is #110 and riding a draft is #643
+  exception); a burst of typing is one undo step (a 500 ms pause ends it) and the history keeps 100 steps. The outline
+  is read-only for now (#653). The draft lives in memory; saving is #110 and riding a draft is #643
   ([#111](https://github.com/gerchowl/crank/issues/111))
 - Workout editor commands, no UI yet (ADR-0001 §4, DESIGN §5.7): `parse_dsl` (the tree with fresh core-owned node
   ids, or the problem with its span: a text that does not parse is an answer, not an error), `print_dsl` (canonical
