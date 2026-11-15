@@ -20,6 +20,7 @@ import { UiProvider } from "./stream/uiHooks";
 import { History } from "./views/History";
 import { Placeholder } from "./views/Placeholder";
 import { RideLoadNotice } from "./views/RideLoadNotice";
+import { ChannelNotice } from "./shell/ChannelNotice";
 import { Settings } from "./views/Settings";
 import { Today } from "./views/Today";
 import { Workouts } from "./views/Workouts";
@@ -118,8 +119,9 @@ function Destination({ views }: { views: ViewRegistry }) {
       <View sub={route.sub} />
     </ErrorBoundary>
   );
-  // `data-destination`: where focus lands when the start screen hands off; `#main` is the skip-link target. The ride-load
-  // notice (#320) leads the main region, above the view.
+  // `data-destination`: where focus lands when the start screen hands off; `#main` is the skip-link target. The live-data
+  // notice (stale channel, ChannelNotice.tsx) and the ride-load notice (#320) lead the main region, above the view; in a
+  // mode (the ride screen) the stale state is the screen's own banner.
   if (isMode(route.view))
     return (
       <main id="main" className="mode" data-destination tabIndex={-1}>
@@ -131,6 +133,7 @@ function Destination({ views }: { views: ViewRegistry }) {
     <div className="shell">
       <Rail view={route.view} />
       <main id="main" data-destination tabIndex={-1}>
+        <ChannelNotice />
         <RideLoadNotice />
         {body}
       </main>

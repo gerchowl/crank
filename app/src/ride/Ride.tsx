@@ -51,7 +51,7 @@ import { Num } from "../Num";
 import { navigate } from "../router";
 import { useCommand } from "../stream";
 import type { UiSnapshot } from "../stream/ui";
-import { useUi } from "../stream/uiHooks";
+import { useUi, useUiClient } from "../stream/uiHooks";
 import { openKeys } from "../shell/keys";
 import { BannerBand, banners, trainerNow } from "./banners";
 import { useFit } from "./fit";
@@ -869,6 +869,7 @@ function Screen({
 
 export function Ride() {
   const ui = useUi();
+  const client = useUiClient();
   // The frame's ride; until the first frame, and while a load has not installed its ride yet, it is on its way.
   if (ui.ride !== null && ui.devices !== null)
     return (
@@ -876,16 +877,30 @@ export function Ride() {
         <Screen key={ui.ride.id} ride={ui.ride} devices={ui.devices} ui={ui} />
       </div>
     );
+  // `ui_open` was refused (`storage`: the pairings cannot be read; `conflict`: 16 channels open) and no frame came:
+  // the screen says so instead of waiting; the watchdog asks again every 2 s, Retry at once.
+  const refused = !ui.received ? ui.error : null;
   const coming = !ui.received || ui.loading;
   return (
     <div className="page ride-empty">
-      <h1>{coming ? "Loading the ride…" : "No ride loaded"}</h1>
-      <p>
-        {coming
-          ? "Connecting your devices and loading the ride."
-          : "Pick a workout in Workouts and choose Ride this."}
+      <h1>
+        {refused
+          ? "Live data is not available"
+          : coming
+            ? "Loading the ride…"
+            : "No ride loaded"}
+      </h1>
+      <p role={refused ? "alert" : undefined}>
+        {refused
+          ? `${refused.message}. Trying again every 2 s.`
+          : coming
+            ? "Connecting your devices and loading the ride."
+            : "Pick a workout in Workouts and choose Ride this."}
       </p>
-      <button onClick={() => navigate("workouts")}>Go to Workouts</button>
+      <span className="ride-empty-actions">
+        {refused && <button onClick={() => client.reopen()}>Retry</button>}
+        <button onClick={() => navigate("workouts")}>Go to Workouts</button>
+      </span>
     </div>
   );
 }

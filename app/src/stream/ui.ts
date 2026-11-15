@@ -6,7 +6,9 @@
 // `ui_ack(frame.channel, frame.seq)`. It compares no `seq`, runs no re-query, merges no command's answer, keeps nothing
 // from an earlier frame but the series, and drops the frames of a channel it replaced. `from` always equals the length
 // the page holds (the core's property test, `ui::tests::the_channel_holds_over_arbitrary_interleavings`): a mismatch
-// is a core bug. A dev build throws on it; a production build reports it as `internal` and does not repair it.
+// is a core bug. A dev build throws on it. A production build does not repair the series: it logs the fault once,
+// reports it as `internal` and shows the state as stale (every route shows that, `ChannelNotice` and the ride screen's
+// band), and opens a new channel at once, whose backfill from index 0 replaces the broken series.
 //
 // **Watchdog (§4.3.4).** The core sends a frame at least every second on an open channel (the heartbeat), so 2 s
 // without one means a frame was lost (Tauri's fetch path for a frame of 8 192 B or more ends in
@@ -90,11 +92,13 @@ export const EMPTY: UiSnapshot = {
   reopens: 0,
 };
 
-/** A core bug the client does not repair (ADR-0001 §4.3.2): thrown in a dev build, reported as `internal` otherwise. */
-function broken(message: string): ApiError {
-  const error: ApiError = { code: "internal", message };
-  if (import.meta.env.DEV) throw new Error(`ui channel: ${message}`);
-  return error;
+/**
+ * Unregister a channel's IPC callback. `Channel.cleanupCallback` is what the channel runs itself when the core ends
+ * it (@tauri-apps/api 2.12.3 core.js `Channel`); it is private only in the type declarations, and the core never ends
+ * a snapshot channel it closes, so the client calls it when it replaces one. (The last channel goes with the page.)
+ */
+function release(channel: Channel<UiFrame>): void {
+  (channel as unknown as { cleanupCallback(): void }).cleanupCallback();
 }
 
 /** `points` applied to `held` by the client rule; a broken `from` keeps `held` and names the fault. */
@@ -133,9 +137,14 @@ export class UiClient {
   private channel: Channel<UiFrame> | null = null;
   private watchdog: unknown = null;
 
+  /**
+   * `dev`: a broken `from` throws (a dev or test build); otherwise it is the production path of the header. Tests
+   * pass `false` to run that path.
+   */
   constructor(
     private readonly timers: Timers = PLATFORM,
     private readonly makeChannel: MakeChannel = () => new Channel<UiFrame>(),
+    private readonly dev: boolean = import.meta.env.DEV,
   ) {}
 
   /** The current snapshot; a new object whenever it changes. */
@@ -169,8 +178,18 @@ export class UiClient {
     };
   }
 
+  /**
+   * Open a channel now, whatever the watchdog says (the channel notice's Retry after a refused `ui_open`): the core
+   * closes the window's older one and the new one backfills from 0.
+   */
+  reopen(): void {
+    if (this.channel !== null) this.open();
+  }
+
   /** Open a channel; the core closes the window's older one (§4.3.5) and the new one backfills from 0. */
   private open(): void {
+    // The replaced channel's IPC callback is released: its frames are dropped anyway, and nothing else frees it.
+    if (this.channel) release(this.channel);
     const channel = this.makeChannel();
     channel.onmessage = (frame) => this.onFrame(channel, frame);
     this.channel = channel;
@@ -200,7 +219,10 @@ export class UiClient {
     this.watchdog = null;
   }
 
-  /** 2 s without a frame: stale, and a new channel. */
+  /**
+   * 2 s without a frame: a new channel, and the state is stale if the page had any. A channel that never answered
+   * (`ui_open` refused) is not stale: its refusal is what the page shows.
+   */
   private bark(): void {
     this.watchdog = null;
     if (this.channel === null) return;
@@ -208,7 +230,7 @@ export class UiClient {
     console.warn(
       `ui channel: no frame for ${WATCHDOG_MS} ms, reopening (${reopens} so far)`,
     );
-    this.set({ ...this.snap, stale: true, reopens });
+    this.set({ ...this.snap, stale: this.snap.received, reopens });
     this.open();
   }
 
@@ -223,6 +245,8 @@ export class UiClient {
       series[name] = r.series;
       if (r.fault !== null) faults.push(r.fault);
     }
+    const fault = faults.length > 0 ? faults.join("; ") : null;
+    if (fault !== null && this.dev) throw new Error(`ui channel: ${fault}`);
     this.set({
       received: true,
       ride: frame.ride,
@@ -231,11 +255,18 @@ export class UiClient {
       series: SERIES.every((n) => series[n] === held[n])
         ? held
         : Object.freeze(series),
-      stale: false,
-      error: faults.length > 0 ? broken(faults.join("; ")) : null,
-      reopens: this.snap.reopens,
+      stale: fault !== null,
+      error: fault === null ? null : { code: "internal", message: fault },
+      reopens: this.snap.reopens + (fault === null ? 0 : 1),
     });
-    this.ack(channel, frame.channel, frame.seq);
+    if (fault === null) {
+      this.ack(channel, frame.channel, frame.seq);
+      return;
+    }
+    // A core bug (ADR-0001 §4.3.2), not repaired: logged once, shown as stale, and a new channel's backfill from 0
+    // replaces the series. The broken channel is not acked; the core closes it at the reopen.
+    console.error(`ui channel: ${fault}; reopening`);
+    this.open();
   }
 
   private ack(channel: Channel<UiFrame>, id: UiChannelId, seq: number): void {

@@ -18,7 +18,7 @@ import {
 } from "../bindings";
 import { navigate } from "../router";
 import { useCommand } from "../stream";
-import { useUi } from "../stream/uiHooks";
+import { useUi, useUiClient } from "../stream/uiHooks";
 import { OUTCOME, startedText, work } from "./History";
 import { goToRide, useRideLoad } from "./rideLoad";
 import { formatDuration } from "./Workouts";
@@ -145,10 +145,11 @@ function DeviceRow({ of: role, info }: { of: DeviceRole; info: DeviceView }) {
 /**
  * The paired devices, from the snapshot channel (a pairing, a forget or a load shows in its next frame). Until the
  * first frame they are loading; a channel that cannot open says why (`ui_open`: the pairings cannot be read), and the
- * channel's watchdog opens it again.
+ * channel's watchdog opens it again every 2 s, Retry at once.
  */
 function Devices() {
   const ui = useUi();
+  const client = useUiClient();
   const devices = ui.devices;
   const error = devices === null ? ui.error : null;
   const noTrainer = devices !== null && devices.trainer.paired === null;
@@ -158,7 +159,7 @@ function Devices() {
       {devices === null && error === null && (
         <p className="today-hint">Loading…</p>
       )}
-      {error && <ErrorLine error={error} />}
+      {error && <ErrorLine error={error} onRetry={() => client.reopen()} />}
       {devices && (
         <ul className="today-devices" aria-label="Paired devices">
           <DeviceRow of="trainer" info={devices.trainer} />

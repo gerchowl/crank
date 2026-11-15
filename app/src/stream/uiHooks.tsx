@@ -33,3 +33,8 @@ export function useUi(): UiSnapshot {
     () => client.snapshot,
   );
 }
+
+/** The window's client itself, for its one action: `reopen` (a Retry after a refused `ui_open`). */
+export function useUiClient(): UiClient {
+  return useContext(UiContext);
+}

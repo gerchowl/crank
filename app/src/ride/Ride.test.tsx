@@ -139,6 +139,32 @@ describe("Ride", () => {
     expect(screen.getByRole("button", { name: "Go to Workouts" })).toBeTruthy();
   });
 
+  test("a refused ui_open is shown on the ride route, not an endless Loading; Retry opens the channel again", async () => {
+    // `storage`: the keeper cannot read the pairings (core.rs `Core::ui_open`). No frame ever arrives.
+    const rig = installRide({}, { keeperStorage: true });
+    const client = new UiClient(neverClock);
+    render(
+      <UiProvider client={client}>
+        <Ride />
+      </UiProvider>,
+    );
+    expect(
+      await screen.findByRole("heading", {
+        name: "Live data is not available",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toBe(
+      "database is locked. Trying again every 2 s.",
+    );
+    expect(
+      screen.queryByRole("heading", { name: "Loading the ride…" }),
+    ).toBeNull();
+    rig.ui.truth.keeperStorage = false;
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByTestId("ride")).toBeTruthy();
+    expect(rig.ui.count("ui_open")).toBe(2);
+  });
+
   test("the tiles show the latest samples, the block countdown and the clocks", async () => {
     const { rig } = await open();
     await push(
