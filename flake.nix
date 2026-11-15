@@ -27,7 +27,9 @@
       rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./app/src-tauri/tests/fixtures ./crates/crank-fec/tests/fixtures ./crates/crank-engine/tests/fixtures (lib.fileset.fileFilter (f: f.hasExt "fecap") ./docs/hil/captures) ./clippy.toml ./.config/nextest.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-core/tests/fixtures ./docs/adr/models/fixtures/gpx-elevation-samples.csv ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md ./.github/ISSUE_TEMPLATE/bug.yml
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
-        (lib.fileset.difference ./app ./app/src-tauri) ./shared ./assets/brand ./design/brand/src
+        (lib.fileset.difference ./app ./app/src-tauri) ./shared ./assets/brand
+        # The start screen paints the brand's F · Spin-up (#552); pnpm needs the workspace member's package.json beside it.
+        ./design/brand/src ./design/brand/package.json
         ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-core/tests/fixtures
         ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ]);
       pnpmDeps = pkgs.fetchPnpmDeps {
@@ -39,7 +41,7 @@
         # pnpm leaves an empty v11/links directory on macOS but not Linux.
         # Empty store directories carry no cache data; normalize before packing.
         postInstall = ''find "$storePath" -type d -empty -delete'';
-        fetcherVersion = 4; hash = "sha256-d5cXHJQOUVOlcIazn5/FJJY8QDBhLVXw6gZcA11gmZg=";
+        fetcherVersion = 4; hash = "sha256-T7KuamxIwjEU2hl+SsJUzfbZCRgsiNr+tRt+FapHH8k=";
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
         pname = name; inherit version; src = frontendSrc;
