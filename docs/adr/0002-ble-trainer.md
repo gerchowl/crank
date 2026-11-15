@@ -1595,6 +1595,12 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
   continuity-gated canonical line, "never rises above the plan" on planned shapes). Its X5 recovery chain is replaced
   by track 2's fallback: after 3 consecutive refusals, a ros2_control SpeedLimiter-style clamp chain that cannot fail.
   The hard clamp to `[0, M]` stays absolute. The line no longer depends on the tick that asks (the round-7 blocker 1).*
+- *Round 11, fix round 1 of the hybrid, after a safety falsification at the seam between the planner and X5:*
+  - *the clamp chain keeps the planner's promises: closed-form safe braking on every chain tick, aimed at the
+    planner's frame;*
+  - *the hand-off back to Ruckig is strictly inside the rate limits (off Ruckig's slow-answer boundary);*
+  - *the planner's probes are closed form, so they cannot be refused;*
+  - *X2–X4 are admitted only by unforeseeable events.*
 
 *The design's model drives the library itself: `docs/adr/models/erg_slew.py`, with Ruckig in the loop.*
 
@@ -1906,8 +1912,9 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
   `a > 0`; such a state is left by a chase at exactly the rate.
   - Over 100 000 such boundary states drawn over every valid tuning, 13 200 answers are slower, by 0.02 % to 99 %
     (521 by less than 10 %).
-  - So step 1's threshold is "materially slower" (10⁻⁶ relative), not a percentage. A state 5.3 % slower is pinned. Falling 631.5 W from (−23.47 W/s, −2.12 W/s²) at (8, ×3, 2.75), Ruckig returned 52.14 s against a
-  time-optimal 29.07 s, and P7 caught it. That is seed 585, plan 4670 of the new generator, pinned.
+  - Falling 631.5 W from (−23.47 W/s, −2.12 W/s²) at (8, ×3, 2.75), Ruckig returned 52.14 s against a time-optimal
+    29.07 s, and P7 caught it. That is seed 585, plan 4670 of round 6's generator, pinned. Round 10 handles this
+    symptom by not accepting such an answer (X5 step 0 below).
 
 *The fallback* (round 10, the owner's hybrid, 2026-11-15). It replaces round 6's recovery chain (the tightened twin
 calculation, the continuation, the closed-form double-S, the hold X5h) with track 2's fallback.
@@ -1930,7 +1937,11 @@ calculation, the continuation, the closed-form double-S, the hold X5h) with trac
      up. It limits the rate the engine asks for, given the two previous sent rates: jerk to `±j_max·Δt²`, then
      acceleration to `±a_max·Δt`, then rate to `[−r↓, r↑]`. The reference's jerk step is `2·j·Δt²`; crank uses
      `j_max·Δt²`, so the sampled jerk stays within `j_max`.
-   - The rate it asks for (the **shaped reference**, track 2 round 8) is the line in force's slope plus a closing
+   - It aims at the **planner's reference**, not the raw line (round 11): the frame in force (where the planner
+     leads into a vertex, the next line extended back), clamped to `[0, M]`, with the lead's rate caps. The gap is
+     taken at the state's own tick (`k − 1`): against tick `k` it built one tick of the line's motion (`s·Δt`, 4.5 W
+     at −18 W/s) into a permanent offset on ramps.
+   - The rate it asks for (the **shaped reference**, track 2 round 8) is that line's slope plus a closing
      rate. The closing rate is the one from which the command can still stop within the gap at `a_max/2`, with the
      jerk ramp-up (`d = v²/a_max + v·a_max/(2·j_max)`); near the line it is the gap over 2τ. It is aimed short by
      `a·|a|/(2·j_max)`. A linear zone over τ rings in a jerk-saturated limit cycle (±1.7 W at (5, ×4, 2)). Without
@@ -1939,23 +1950,49 @@ calculation, the continuation, the closed-form double-S, the hold X5h) with trac
      any cut (X2's stop, the cap, 0 W), because a cut is not a rate; they restart from the cut state's own slope and
      curvature, since X3 keeps a falling slope. Without the restart, a cap drop under the chain read as a −2 137 W/s
      rate. Restarting "at rest" after X3 broke X3's slope bound in 16 of 100 000 random plans (two are pinned).
-   - **The hand-off** back to Ruckig gives Ruckig the slope at the sample and a curvature from which the rate limits
-     can still be kept (`v + a·|a|/(2·j_max)` within them).
-   - Safe braking (step 6) needs Ruckig, so the chain skips it. X2, X3 and X4 apply to the chain's step as to any
-     other, so P5 (never rise above the line) and the hard clamp to `[0, M]` hold under it.
+   - **The chain keeps the planner's promises** (round 11). Its step is taken only if the time-optimal stop from it
+     stays at or below the line known ahead, tick by tick (safe braking, step 6), and at or above 0 W. Otherwise the
+     command brakes by that stop. Both are in closed form (the stop's jerk-limited profile under `a_max` and
+     `j_max`, Biagiotti and Melchiorri 2008, §3.4), so they cannot be refused. Before round 11 the chain skipped
+     safe braking: during refusals it kept accelerating towards a line about to drop, and X2 then cut it. At the
+     defaults, refusals on ticks 40–51 of the plan 100 W, 400 W 3 s, 100 W raised the peak excess from 16.8 W to
+     45.0 W, with one X2 cut. Over 4 000 random plans the extra excess reached +57.7 W, and 72 plans gained an X2 cut.
+     Now: no cut, and the command never rises further above the plan (at most +0.2 W extra, inside ε, over 4 000
+     plans with refusal windows). What remains is lag on planned falls: at most 16.4 W more than without refusals
+     over those plans (43.9 W with 40-tick windows), within P6 and `fallback_bound`.
+   - **The hand-off** back to Ruckig gives Ruckig the slope at the sample, `(y_{k} − y_{k−1})/Δt + a·Δt/2` (the
+     backward difference is the slope at the interval's midpoint), and a curvature from which the rate limits can
+     still be kept (`v + a·|a|/(2·j_max)` within them). **Both are strictly inside the limits** by
+     `2⁻²⁰·max(1, |limit|)` (round 11). The chain's rate clamp put the hand-off exactly on `v = −r↓`, which is
+     Ruckig's slower-answer boundary, and on a ramp frame the slow answer was accepted. At the defaults, `2 100 W 10 s`
+     then a ramp `1 800 → 0` at −20 W/s with refusals on ticks 40–61 was answered in 23.7 s where 12.8 s is
+     time-optimal, so the rider was above the line for 28.75 s instead of 18.75 s. 16 of 645 hand-offs were about
+     twice the optimal duration. *Why inside the limits rather than slow-answer detection on every frame:* detection
+     needs a bound per frame, and near the rate a long answer is legitimate (round 10 rejected 257 valid answers in
+     3 000 plans that way). Moving the hand-off off the boundary removes the case at its source and needs no bound.
+     The model's P4/P7 now also checks the landing onto a ramp after a hand-back (relative rates), and fails the
+     on-limit hand-off.
+   - X2, X3 and X4 apply to the chain's step as to any other. Since round 11 their domain is an unforeseeable event
+     only, no longer a Ruckig error: on planned shapes a refusal never cuts.
    - *Why hand-written, against the library-first rule.* It is the fallback for when the library refuses, so it
      cannot be the library. There is no Rust crate for a jerk-limited rate limiter, and SpeedLimiter is the ROS
      reference algorithm, cited in the code. Every one of its rules is a mutant the model kills (§7.10.7).
 
 *The fallback's bounds.*
 - **Landing** (P4/P7 where X5 acts). The command is on a held line (a rise) or at or below it (a fall) within
-  `fallback_bound`: the chain's `Δ/r + τ·(1 + 2·ln(max(1, Δ/ε)))` over the gap plus the distance of stopping the state
-  first, plus that stop's time and `N_ERRORS + 1` ticks. The chain brakes at `a_max/2`, and near the line the gap
-  shrinks by e every 2τ, so this is larger than Ruckig's `landing_bound`. The model applies it wherever X5 acts in the
-  window and Ruckig's bound everywhere else. Over the tuning grid (204 tunings), steps of 1–600 W both ways under a persistent error from tick 0 (2 856 runs) all land, at least 1.89 s inside `fallback_bound`, and none passes the held line.
-- **Excess.** None beyond the design's: P5 and P6 are checked on every chain tick (X2 stops a rise above the line).
-  On steps under a persistent error at the defaults and the corners, the chain never passes the held line by more
-  than ε.
+  `fallback_bound`. That is the chain's `Δ/r + 2τ·ln(max(1, Δ/ε))` over the gap plus the distance of stopping the
+  state first, plus that stop's time and `N_ERRORS + 1` ticks.
+  - The chain brakes at `a_max/2`, and near the line the gap shrinks by e every 2τ, so this is larger than Ruckig's
+    `landing_bound`.
+  - The model applies it wherever X5 acts in the window, and Ruckig's bound everywhere else.
+  - It is tight (round 11): over every grid tuning, the latest step lands 0.73 s inside it, and a bound τ/4 tighter
+    fails.
+  - Onto a ramp after a hand-back it is taken in the line's frame, with the relative rates `r↑ − s` and `r↓ + s`.
+- **Excess.** The design's: P5 and P6 are checked on every chain tick, and the chain's braking check keeps it from
+  rising further above the plan. A held line is never passed. The remaining cost is lag on planned falls, above.
+- **The chain's jerk (X5f).** Where its acceleration or rate clamp overrides its jerk clamp, and on the hand-back tick,
+  the sampled jerk may exceed `j_max`, but by at most 2× (`X5F_JERK`). The suites' worst is 1.94× (40 ticks, all in
+  the refusal suites), and a bound of 1.5× fails. The rate and the curvature hold there.
 
 *P4/P7 under a persistent error from any tick and any state.* Suppose every calculation fails from some tick on:
 - for at most 3 ticks the trajectory in force is continued (within every limit);
@@ -1976,9 +2013,16 @@ continuation is bounded by `N_ERRORS` and the trajectory's duration, and there i
 Every refusal is counted in the ride's diagnostics and its log, and so is every tick X5 acts.
 
 *Termination.* Each re-plan makes one calculation. Continuation is bounded by 3 ticks and by the trajectory's
-duration. The chain is closed form per tick. No step waits on a later success.
+duration. The chain and its braking are closed form per tick. No step waits on a later success.
 
-*The target velocity is kept strictly inside its limits* (one part in a million; track 2 round 8). Ruckig 0.19.4
+*Probes cannot be refused* (round 11). Safe braking's stop (step 6), the floor check against 0 W and the lead's timing
+(step 3) use the closed-form profile, not Ruckig, so no probe refusal exists. Before round 11 they were Ruckig
+calculations, and a refused one counted as "not safe". One forced probe refusal mid-fall made the fall to 0 W take
+15.75 s against P7's 13.75 s. When Ruckig refuses the braking trajectory itself (step 6 decided to brake), the
+command brakes by the same closed-form stop for that tick (X5b) and re-plans on the next. The fault suite refuses
+every braking plan on falls at the defaults and the corners, and P7 holds.
+
+*The target velocity is kept strictly inside its limits* (by `2⁻²⁰·max(1, |limit|)`; track 2 round 8). Ruckig 0.19.4
 segfaults on a target velocity exactly at `max_velocity` from some states: current (554.15625, 0.9375, 3.75), target
 (614, 30, 0), limits 30 / −120, ±15, 7.5. One ulp inside it calculates. A chase at exactly the rate is such a target.
 The input is in the upstream draft, and #620 tests `rsruckig` on it.
@@ -1990,8 +2034,13 @@ The input is in the upstream draft, and #620 tests `rsruckig` on it.
 - 2 × 300 random plans (round 7's generator; the suite's scheme and the falsifier's q4v7) with every calculation
   failing from a random tick: every property, P4/P7 included, holds;
 - 300 random plans with 20 % of trajectory calculations failing: every property holds;
-- 5 × 20 000 random plans from round 7's generator: 669 refusals or answers not accepted, in 582 of 100 000 plans,
-  all landed; every property holds.
+- 5 × 20 000 random plans from round 7's generator (round 11's model): 672 refusals or answers not accepted, in 581
+  of 100 000 plans, all landed; every property holds.
+- refusal windows (round 11): 2 × 300 random plans with 1–40 refused ticks at a random place (the falsifier's schemes,
+  seeds 56000 + i and 70000 + i), against the same plan without refusals: every property holds, no added cut, and
+  the command never rises further above the plan;
+- the round-11 falsifier's cases pinned: the 100/400/100 W plan with refusals, the round-6 plans under a cap with
+  refusals from tick 40, the hand-back onto a −20 W/s ramp, and every braking plan refused.
 
 *`rsruckig`* (read, not built): `lib/src/rsruckig/position_third_step1.rs` filters the same roots strictly, at lines
 487, 535 and 575 (`if t < t_min_… || t > t_max_… { continue; }`), the lines #270 changes upstream. So the port
@@ -2007,13 +2056,13 @@ cuts breaks them. Each cut is allowed only in its domain and within its bound, a
 
 | | Domain (anywhere else the model fails) | Bound on the slope change | Worst seen (round 10, 5 × 20 000 plans) | Why it is safe |
 |---|---|---|---|---|
-| X2 | Only while an **unforeseeable event** (skip, ±, coach, cap, engagement) or a Ruckig error is pending, until the command is next on the line and moving with it | `r↑ + a_max·Δt` | 50.0 W/s | It only stops a rise; continuing would raise the load above a plan that was just lowered (P5) |
+| X2 | Only while an **unforeseeable event** (skip, ±, coach, cap, engagement) is pending, until the command is next on the line and moving with it (round 11: no longer while only a Ruckig error is) | `r↑ + a_max·Δt` | 50.0 W/s | It only stops a rise; continuing would raise the load above a plan that was just lowered (P5) |
 | X3 | The same | a position step down to `M`; the slope changes by at most `r↑ + a_max·Δt` | 10.5 W/s | The cap is a limit; it only lowers the load |
-| X4 | The same | `r↓ + a_max·Δt` | 111.4 W/s (at 0 W) | Nothing is below 0 W, and there is no load to feel at 0 W |
-| X5f (round 10) | Only where Ruckig refused (X5), and only the **jerk**: on a clamp-chain tick whose acceleration or rate clamp overrode its jerk clamp, the three ticks after it, and the first Ruckig tick after the chain (the hand-off) | none on the slope: the chain keeps the rate and the curvature in band | about 45 jerk-window ticks per run, all in the persistent-error suites | The chain only bounds a motion the limits already allow; its jerk is the reference algorithm's order |
+| X4 | The same | `r↓ + a_max·Δt` | 85.7 W/s (at 0 W) | Nothing is below 0 W, and there is no load to feel at 0 W |
+| X5f (round 10) | Only where Ruckig refused (X5), and only the **jerk**: on a clamp-chain tick whose acceleration or rate clamp overrode its jerk clamp or that brakes, the three ticks after it, and the first Ruckig tick after the chain (the hand-off) | the sampled jerk within `2·j_max` (`X5F_JERK`, round 11); the rate and the curvature in band | about 40 jerk-window ticks per run, all in the refusal suites; worst 1.94·j_max | The chain only bounds a motion the limits already allow; its jerk is the reference algorithm's order |
 
-**No corner is left in event-free riding:** X2, X3 and X4 never break the band without an unforeseeable event or a
-Ruckig error, and the model fails if one does. That covers:
+**No corner is left in event-free riding:** X2, X3 and X4 never break the band without an unforeseeable event (round
+11: a Ruckig error alone no longer admits them), and the model fails if one does. That covers:
 - every vertex: a ramp's start or end, ramp to ramp (1 421 slope pairs over the defaults and the bound corners, within,
   at and beyond the rates), and the clamp;
 - every jump;
@@ -2271,8 +2320,8 @@ The properties:
 - **P2 rate.** The sent slope `(y_k − y_{k−1})/Δt` is in `[−r↓, r↑]` on every tick, except X3's position step down to
   a lowered cap. Ruckig's velocity limits; the cuts only move the slope towards 0.
 - **P3 ease.** On the sent positions, curvature ≤ `a_max` and jerk ≤ `j_max` on every tick, except where X2–X4 and
-  X5's clamp chain (its jerk only) break them, each within its domain and bound (§7.10.2's table). No un-eased corner without an unforeseeable event or a
-  Ruckig error.
+  X5's clamp chain (its jerk only, within `2·j_max`) break them, each within its domain and bound (§7.10.2's table).
+  No un-eased corner without an unforeseeable event, or (for the chain's jerk only) a Ruckig refusal.
 - **P4 duration.** A rise onto a held line lands within `landing_bound`: `Δ/r↑ + τ + 0.75 s` from rest. This holds
   on every plan. Where Ruckig refuses (X5), it lands within the fallback's `fallback_bound` (§7.10.2), also under a
   persistent error.
@@ -2282,13 +2331,15 @@ The properties:
   ramp, the clamp), and `0 ≤ y ≤ M` after every tick.
 - **P7 time above the line after a fall.** After a downward jump onto a held line, the command is at or below the
   line within `landing_bound`: `Δ/r↓ + τ·(1 + f)/2 + 0.75 s` from rest. This holds on every plan. Where Ruckig
-  refuses (X5), the command is at or below the line within `fallback_bound`, also under a persistent error.
+  refuses (X5), the command is at or below the line within `fallback_bound`, also under a persistent error. Where X5
+  hands the command back onto a ramp, the same holds in the ramp's frame (round 11).
 
 **Claim: no eased target holds the rider above the plan for longer than the documented bound.**
 
 1. *A rise never commands more than the plan.*
    - A rising command never ends a tick more than ε above the line (P5): safe braking (step 6) and the hold above a
-     rising line (step 5), with X2 where an unforeseeable reversal or a Ruckig error leaves no room.
+     rising line (step 5), with X2 where an unforeseeable reversal leaves no room. Under a Ruckig refusal the clamp
+     chain keeps the same braking check, in closed form (round 11).
    - On the line, it is the line.
    - The lead into a vertex only lowers it.
 2. *A fall never commands more than the rider was just riding, and ends in bounded time.*
@@ -2334,6 +2385,11 @@ about the workout, not the rider.
    - re-plan only on a change, with no `calculate` call on an unchanged input;
    - a forced Ruckig error continues the trajectory in force (X5) for at most `N_ERRORS` = 3 consecutive refusals,
      then the clamp chain moves the command, and Ruckig takes over on its first success; each records its diagnostic;
+   - refusals during a planned rise into a drop add no cut and no load above the plan (the chain's closed-form
+     braking check), and refusal windows of 1–40 ticks anywhere in a plan change no property;
+   - the hand-back onto a ramp is off the rate limits and lands within the ramp-frame P4/P7 bound;
+   - the probes (the stop, the floor, the lead's timing) are closed form; a refused braking plan brakes by the
+     closed-form stop (X5b);
    - an answer slower than `landing_bound` onto a held line is not accepted (X5);
    - the clamp chain's order (jerk, acceleration, rate) and its jerk step `j_max·Δt²`, on any input;
    - the bare #269-class input (§7.10.2, X5) against `rsruckig`, porting pantor/ruckig#270 if it is refused;
@@ -2348,11 +2404,17 @@ about the workout, not the rider.
    eased corner or an unreached short block is excluded, never counted as a miss.
 9. **Mutation.** Deleting or breaking any rule of §7.10.2 must fail the property tests, as it fails the model:
    `just slew-mutants` (`docs/adr/models/erg_slew_mutants.py`) breaks each rule in turn and requires a non-zero exit
-   from the model. Round 10 has 58 mutants: track 1's planning rules; round 7's falsifier survivors (the snap
+   from the model. Round 11 has 78 mutants: track 1's planning rules; round 7's falsifier survivors (the snap
    threshold, no merge after the clamp, the raw join tolerance, the post-clamp join ignoring the raw join, and drop
    before merge); and X5's fallback (`N_ERRORS` 2 and 4 and one tick fewer, no trajectory in force, both other chain
    orders, the reference's `2·j·Δt²`, no rate clamp, the linear zone over τ, no jerk-aware aim, no hand-off clip, no
-   history restart, no return to Ruckig, a slower answer accepted, the target velocity at its limit). #620 runs a
+   history restart, no return to Ruckig, a slower answer accepted, the target velocity at its limit); and round 11's
+   seam (no braking check in the chain, the chain aiming at the raw line or the unclamped line or the gap at tick k,
+   the hand-off on the limits, without its midpoint or its curvature, `fail_run` not reset, continuation against tick
+   k or past the trajectory's end, the chain braking at `a_max`, the chain bound tightened by τ/4, the pre-step X3
+   skipped on chain ticks, the closed-form stop without its jerk ramp-down, a refused braking plan letting the step
+   stand, the X5f jerk bound at 1.5·j_max). One is equivalent and not run: the chain aiming at the unclamped line,
+   since its closed-form braking check stops it at `M` whatever it aims at. #620 runs a
    mutation tool (`cargo mutants`) over `crank_engine::slew` with the same requirement.
 
 #### 7.10.8 HIL Part B checks 6, 7 and 12
