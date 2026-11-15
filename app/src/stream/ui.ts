@@ -7,7 +7,7 @@
 // from an earlier frame but the series, and drops the frames of a channel it replaced. `from` always equals the length
 // the page holds (the core's property test, `ui::tests::the_channel_holds_over_arbitrary_interleavings`): a mismatch
 // is a core bug. A dev build throws on it. A production build does not repair the series: it logs each kind of fault
-// once (per series, a `from` or a point with no time), reports it as `internal`, shows the state as stale (every route
+// once while it lasts (per series, a `from` or a point with no time), reports it as `internal`, shows the state as stale (every route
 // shows that: `ChannelNotice`, the ride screen's band) and does not ack the frame. The core then sends nothing more on
 // that channel, so the watchdog reopens it 2 s later and the backfill from index 0 replaces the broken series. A fault
 // that repeats on every backfill costs one reopen per 2 s, never a loop.
@@ -143,7 +143,10 @@ export class UiClient {
   /** The channel whose frames are applied; any other's are dropped. */
   private channel: Channel<UiFrame> | null = null;
   private watchdog: unknown = null;
-  /** The kinds of broken frame already logged (`power:from`, `hr:time`, …): each is logged once. */
+  /**
+   * The kinds of broken frame logged since the last clean frame (`power:from`, `hr:time`, …): each is logged once
+   * while it lasts, and again if it comes back after a repair.
+   */
   private readonly logged = new Set<string>();
 
   /**
@@ -271,6 +274,8 @@ export class UiClient {
       reopens: this.snap.reopens,
     });
     if (fault === null) {
+      // A clean frame: any repair has succeeded, so a fault that comes back is logged again.
+      this.logged.clear();
       this.ack(channel, frame.channel, frame.seq);
       return;
     }
