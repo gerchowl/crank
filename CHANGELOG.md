@@ -15,6 +15,14 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   references and, with neither known, says the ride shows no zone. LTHR joins the athlete model's inputs
   (`spec/ONBOARDING.md` §3); nothing sets the references until Settings → Athlete model (#113)
   ([#586](https://github.com/gerchowl/crank/issues/586))
+- Workout editor (DESIGN §5.7, §16.3 as amended for direction A): "Duplicate & edit" on a library workout opens a
+  copy in the editor, with the profile, an outline and the DSL text as three synced views over one pure model
+  (`app/src/editor/model.ts`) plus the compiled summary. The core parses and compiles every edit. A text that does
+  not parse shows its problem with line and column and leaves the saved tree alone. Undo and redo span all three
+  views by button and, only while focus is inside the editor, by Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z (§5.9's one
+  exception); a burst of typing is one undo step (a 500 ms pause ends it) and the history keeps 100 steps. The outline
+  is read-only for now (#653). The draft lives in memory; saving is #110 and riding a draft is #643
+  ([#111](https://github.com/gerchowl/crank/issues/111))
 - Workout editor commands, no UI yet (ADR-0001 §4, DESIGN §5.7): `parse_dsl` (the tree with fresh core-owned node
   ids, or the problem with its span: a text that does not parse is an answer, not an error), `print_dsl` (canonical
   text) and `compile_workout` (a draft's compiled view; `invalid_input` past the compiler's bounds). The app's test

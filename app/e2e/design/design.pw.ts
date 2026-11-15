@@ -60,6 +60,8 @@ async function open(page: Page, s: Scenario) {
     await page.getByRole("option", { name }).first().click();
   for (const name of s.clicks ?? [])
     await page.getByRole("button", { name }).first().click();
+  for (const f of s.fills ?? [])
+    await page.getByRole("textbox", { name: f.label }).fill(f.text);
   await expect(page.locator(s.ready).first()).toBeVisible();
   if (s.scrollTo) await page.locator(s.scrollTo).scrollIntoViewIfNeeded();
   await page.evaluate(() => window.__fixture.settled());
