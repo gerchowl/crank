@@ -90,15 +90,30 @@ export function StartScreen({
     };
     const t0 = performance.now();
     let raf = 0;
+    let ended = false;
+    const end = () => {
+      if (ended) return;
+      ended = true;
+      cancelAnimationFrame(raf);
+      draw(SPIN.end);
+      motionEnd.current();
+    };
     const tick = () => {
       const t = Math.min(performance.now() - t0, SPIN.end);
+      if (t >= SPIN.end) return end();
       draw(t);
-      if (t < SPIN.end) raf = requestAnimationFrame(tick);
-      else motionEnd.current();
+      raf = requestAnimationFrame(tick);
     };
     draw(0);
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    // A webview that launches hidden may pause animation frames (WKWebView does): the clock, not the frames, bounds
+    // the hold, so the motion is at rest and the hand-off free at SPIN.end whether or not a frame was painted.
+    const bound = setTimeout(end, SPIN.end);
+    return () => {
+      ended = true;
+      cancelAnimationFrame(raf);
+      clearTimeout(bound);
+    };
   }, []);
 
   useEffect(() => {

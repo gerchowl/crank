@@ -564,8 +564,9 @@ section).** The build's version string, `<version> · <rev>` (`0.2.0-rc.1 · 751
 `--text-s` (13 px; ≥ 4.5 : 1 on `--start-bg` in both modes, `theme.test.ts`). Settings shows no copy of it. One source,
 fixed at build time, never `git` at run time: the workspace version (`CARGO_PKG_VERSION`) and the flake's
 `self.shortRev` (`self.dirtyShortRev`) as `CRANK_BUILD_REV`, compiled into the desktop (`app/src-tauri/src/version.rs`)
-and read by the page through `app_build`. The release workflow builds the rc zip from the same flake and checks that its
-binary carries the commit's rev.
+and read by the page through `app_build`. Only the flake's desktop packages take the rev; its checks build without it,
+so a docs-only commit leaves them cached, and a source without git metadata builds packages that say `dev`. The release
+workflow builds the rc zip from the same flake and checks that its binary carries exactly `<version> · <rev>`.
 
 ---
 

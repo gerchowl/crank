@@ -1,8 +1,8 @@
 //! The build's version string (#552): `<version> · <rev>`, e.g. `0.2.0-rc.1 · 7516045`.
 //!
 //! One source, fixed at build time, never `git` at run time: the version is the workspace's
-//! `CARGO_PKG_VERSION`, the rev is `CRANK_BUILD_REV`, which the flake sets on the
-//! `crank-desktop` package to its `self.shortRev` (`self.dirtyShortRev`, with its `-dirty`
+//! `CARGO_PKG_VERSION`, the rev is `CRANK_BUILD_REV`, which the flake sets on its desktop
+//! packages (never its checks) to its `self.shortRev` (`self.dirtyShortRev`, with its `-dirty`
 //! suffix, for a dirty tree). The release pipeline builds `.#crank-app` from the same flake,
 //! so an rc zip carries the same string. A build that is not the flake package (`just dev`,
 //! `cargo test`) has no rev and says `dev`. The start screen shows the string, keys its
@@ -42,20 +42,29 @@ pub fn app_build() -> String {
 mod tests {
     use super::*;
 
+    /// An injected rev, clean or dirty, reads exactly `<version> · <rev>`: one space each side of
+    /// U+00B7, the rev verbatim with its `-dirty`. The compiled-in path with a real rev is checked on
+    /// the binary itself: the flake's `stamped` packages grep it for `<version> · <rev>`.
     #[test]
-    fn label_is_version_dot_rev() {
-        assert_eq!(label("0.2.0-rc.1", Some("7516045")), "0.2.0-rc.1 · 7516045");
+    fn an_injected_rev_reads_version_dot_rev_exactly() {
+        let clean = label("0.2.0-rc.1", Some("7516045"));
+        assert_eq!(clean, "0.2.0-rc.1 \u{b7} 7516045");
+        assert_eq!(clean.as_bytes(), b"0.2.0-rc.1 \xc2\xb7 7516045");
         assert_eq!(
             label("0.2.0-rc.1", Some("7516045-dirty")),
-            "0.2.0-rc.1 · 7516045-dirty"
+            "0.2.0-rc.1 \u{b7} 7516045-dirty"
         );
+    }
+
+    #[test]
+    fn no_rev_reads_dev() {
         assert_eq!(label("0.1.0", None), "0.1.0 · dev");
         assert_eq!(label("0.1.0", Some("")), "0.1.0 · dev");
     }
 
     /// The compiled-in string is the build inputs: the workspace version, and the
     /// `CRANK_BUILD_REV` this test binary was built with (cargo builds and runs it in one
-    /// environment; the flake's checks set none, its `crank-desktop` package sets the rev).
+    /// environment; the flake's checks set none, only its `stamped` packages set the rev).
     #[test]
     fn build_label_matches_the_build_inputs() {
         let workspace = include_str!("../../../Cargo.toml");

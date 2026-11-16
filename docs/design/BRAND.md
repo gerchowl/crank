@@ -256,7 +256,8 @@ independent reviews of the A-vs-F round chose F (astra, opus; summary below). In
 `design/prototype` is [#138](https://github.com/gerchowl/crank/issues/138) (done: `src/StartScreen.tsx` paints
 `frame(t)` per animation frame, `pnpm -C design/prototype test:start` covers it; `?hold` is not ported); the
 production shell paints the same `frame(t)` since #552 (`app/src/shell/StartScreen.tsx`), and holds it once per
-version (§Start screen).
+version (§Start screen). A timer bounds that hold at `SPIN.end`: a webview launched hidden may pause animation
+frames (WKWebView does), and the motion is then at rest and the hand-off free on the clock, not on a frame.
 
 **Sequence.** The mark (`logo.svg` without the squircle, ring outer diameter 1.5 H ≈ 190 px at 1440×900,
 centred on the letters) spins up on its hub; the arms' sweep closes the C's gap into a solid brass ring
