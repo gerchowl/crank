@@ -1151,6 +1151,21 @@ fn median(mut v: Vec<f64>) -> Option<f64> {
     (n > 0).then(|| f64::midpoint(v[(n - 1) / 2], v[n / 2]))
 }
 
+/// r as shown (the row's `r`): rounded to 3 decimals, or to as many more (up to 12) as keep it on
+/// the same side of 0.85 and of 0.95 as r itself, so that the shown value agrees with the verdict
+/// that `verdict12` reads from the unrounded r (r = 0.85037 shows as 0.8504, not 0.85). Display
+/// only: no verdict reads it.
+fn shown12(r: f64) -> f64 {
+    let side = |x: f64| (x.total_cmp(&0.85), x.total_cmp(&0.95));
+    (3..=12)
+        .map(|d| {
+            let p = 10_f64.powi(d);
+            (r * p).round() / p
+        })
+        .find(|x| side(*x) == side(r))
+        .unwrap_or(r)
+}
+
 /// Check 12's one answer, after the cue (the note at index `cue_seq`): its note and its text.
 fn answer12(tl: &Timeline, cue_seq: usize) -> Result<(crate::frames::Note, String), String> {
     let tag = crate::check10::answer_tag(EASIER.key);
@@ -1296,7 +1311,7 @@ pub fn check12(tl: &Timeline) -> Value {
         "free90_updates": n90,
         "free70_w": free70.map(round1),
         "free70_updates": n70,
-        "r": r.map(|r| (r * 1000.0).round() / 1000.0),
+        "r": r.map(shown12),
         "answer": said,
         "no_result": no_result,
         "page71_echoed_50": echoed(50, wind),
@@ -2198,10 +2213,12 @@ mod tests {
     const DISAGREE: &str = "no result: power and rider disagree";
 
     /// The synthetic run reads as the procedure's: completed, PASS at r = 0.75, each window
-    /// counted from updates only.
+    /// counted from updates only. The ERG target is the last page 49 before `Free` (200 W), not
+    /// the soft start's first (0 W).
     #[test]
     fn check12_a_synthetic_run_passes() {
         let v = Run12::default().reads(PASS);
+        assert_eq!(v["erg_target_w"], json!(200.0), "{v}");
         assert_eq!(v["completed"], json!(true), "{v}");
         assert_eq!(v["released"], json!(true), "{v}");
         assert_eq!(v["r"], json!(0.75), "{v}");
@@ -2609,5 +2626,119 @@ mod tests {
         // At the floor, r reads as ever: 10 W and 8 W, r = 0.8, PASS with `y`.
         let v = Run12::ratio(10, 8, "y").reads(PASS);
         assert_eq!(v["r"], json!(0.8), "{v}");
+    }
+
+    /// The verdict reads r unrounded, and the row shows r to as many decimals as keep it on the
+    /// verdict's side of 0.85 and 0.95. free90 alternating 200/201 W (median 200.5 W) and free70
+    /// 170.5 W give r = 0.85037: no result with `y`, shown as 0.8504; rounded to 3 decimals
+    /// first it would read 0.85 and PASS. free90 209.5 W and free70 199 W give r = 0.94988: no
+    /// result with `n`, shown as 0.9499; rounded first it would read 0.95 and FAIL.
+    #[test]
+    fn check12_r_is_not_rounded_before_the_verdict() {
+        let alternating = |from_us: u64, n: u64, cadence: u8, low: u16| -> Vec<Frame12> {
+            (0..n)
+                .map(|k| {
+                    (
+                        from_us + k * 250 * MS,
+                        cadence,
+                        low + u16::from(k % 2 == 1),
+                        false,
+                    )
+                })
+                .collect()
+        };
+        let mut free70 = every(40_250 * MS, 45_250 * MS, 250 * MS, 70, 170);
+        free70.extend(alternating(45_250 * MS, 30, 70, 170));
+        let v = Run12 {
+            free90: alternating(20_750 * MS, 77, 90, 200),
+            free70,
+            ..Run12::default()
+        }
+        .reads(DISAGREE);
+        assert_eq!(
+            (v["free90_w"].clone(), v["free70_w"].clone(), v["r"].clone()),
+            (json!(200.5), json!(170.5), json!(0.8504)),
+            "{v}"
+        );
+        assert!(
+            v["line"]
+                .as_str()
+                .is_some_and(|l| l.contains("r = 0.8504 ")),
+            "{v}"
+        );
+        let v = Run12 {
+            free90: alternating(20_750 * MS, 77, 90, 209),
+            ..Run12::ratio(200, 199, "n")
+        }
+        .reads(DISAGREE);
+        assert_eq!(
+            (v["free90_w"].clone(), v["free70_w"].clone(), v["r"].clone()),
+            (json!(209.5), json!(199.0), json!(0.9499)),
+            "{v}"
+        );
+    }
+
+    /// r is shown to 3 decimals unless that would put it on the other side of 0.85 or 0.95; on
+    /// a threshold it stays there.
+    #[test]
+    fn check12_r_is_shown_on_its_side_of_each_threshold() {
+        for (r, shown) in [
+            (0.75, 0.75),
+            (0.123_456, 0.123),
+            (0.85, 0.85),
+            (0.95, 0.95),
+            (170.5 / 200.5, 0.8504),
+            (0.850_000_4, 0.850_000_4),
+            (0.849_94, 0.8499),
+            (0.849_96, 0.849_96),
+            (0.950_06, 0.9501),
+            (0.949_99, 0.949_99),
+        ] {
+            assert!((shown12(r) - shown).abs() < 1e-12, "{r}: {}", shown12(r));
+        }
+    }
+
+    /// An update with no cadence (page 25 cadence 0xFF) is in neither band: 118 of them at 100 W
+    /// in the 70 rpm window of a run at r = 0.95, answered `y`, leave free70 at 190 W over 59
+    /// updates, no result. Counted as in-band they would make free70 100 W and read PASS at
+    /// r = 0.5.
+    #[test]
+    fn check12_an_update_without_cadence_is_in_no_band() {
+        let mut run = Run12::ratio(200, 190, "y");
+        for k in 0..59_u64 {
+            for off in [60, 125] {
+                run.free70
+                    .push((45_250 * MS + k * 250 * MS + off * MS, 0xff, 100, false));
+            }
+        }
+        let v = run.reads(DISAGREE);
+        assert_eq!(
+            (v["free70_w"].clone(), v["free70_updates"].clone()),
+            (json!(190.0), json!(59)),
+            "{v}"
+        );
+    }
+
+    /// The 90 rpm window starts at page 51 + 5 s to the µs (25.5 s): an in-band update at
+    /// 25.5 s − 1 µs is out, so 14 in-band updates from 25.5 s (the rest at 100 rpm) read no
+    /// result; a window from 1 µs earlier would count 15 and read PASS.
+    #[test]
+    fn check12_the_90_rpm_window_starts_exactly_5_s_after_page_51() {
+        let mut free90 = every(20_750 * MS, 25_500 * MS, 250 * MS, 100, 200);
+        free90.push((25_500 * MS - 1, 90, 200, false));
+        free90.extend((0..58_u64).map(|k| {
+            (
+                25_500 * MS + k * 250 * MS,
+                if k < 14 { 90 } else { 100 },
+                200,
+                false,
+            )
+        }));
+        let v = Run12 {
+            free90,
+            ..Run12::default()
+        }
+        .reads("no result: fewer than 15 updates in the 90 or the 70 rpm window");
+        assert_eq!(v["free90_updates"], json!(14), "{v}");
     }
 }
