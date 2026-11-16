@@ -1,6 +1,6 @@
 # ADR-0001: Architecture, crate layout, Rust↔UI contract, persistence, testing
 
-- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10); 2026-11-11 (#585: §7.2 `slew` fields; 2026-11-15 round 10, the hybrid, keeps them)
+- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10); 2026-11-11 (#585: §7.2 `slew` fields; 2026-11-15 rounds 10–12, the hybrid, keep them)
 - **Date:** 2026-10-13
 - **Issue:** #26
 - **Related:** ADR-0002 (BLE + `Trainer`), #24 (first-principles UX), #28 (scaffold), #2 #4 #12–#19
@@ -814,9 +814,14 @@ the reasons are in the ADR section named:
 1; a stored layer written before it resolves unchanged, because the merge starts from the defaults.
 
 ADR-0002 §7.10's round 10 (2026-11-15, the owner's hybrid: track 1's planning, track 2's fallback after Ruckig
-refusals) keeps these three fields and their mapping. Its own constants are engine constants, not tuning: a rider has
-no reason to change them, and the properties of ADR-0002 §7.10.6 are checked for them. They are `N_ERRORS` = 3
-refusals before the clamp chain, and a target velocity kept one part in a million inside the rates.
+refusals) keeps these three fields and their mapping, and so do its fix rounds 11 and 12. Its own constants are
+engine constants, not tuning: a rider has no reason to change them, and the properties of ADR-0002 §7.10.6 are
+checked for them. As of round 12 they are:
+- `N_ERRORS` = 3 refusals before the clamp chain;
+- a target velocity, and the chain's hand-off to Ruckig (its slope, and the slope its curvature still adds), kept
+  `2⁻²⁰·max(1, |limit|)` inside the rates (Ruckig 0.19.4's segfault and slow-answer boundaries);
+- `X5F_JERK` = 2.25: the chain's sampled jerk on its override ticks, in `j_max` (worst measured 1.979);
+- `CHAIN_C` = 0: the constant of the chain's landing bound, in ease times (tight; the grid needs −0.18).
 
 **Alternatives.** A config file (TOML) next to the database: a second source of truth that a ride does not record,
 rejected. Ticks in the struct: ties a rider's setting to the engine's sampling, rejected. Falling back to the

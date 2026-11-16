@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mutation check of the eased-ERG model (ADR-0002 §7.10, #585; round 10, the hybrid).
+"""Mutation check of the eased-ERG model (ADR-0002 §7.10, #585; round 10, the hybrid; round 12).
 
 Each mutant deletes or breaks one of crank's rules around Ruckig in `erg_slew.py` (a copy in a
 temporary directory; the file in the repo is never touched), then runs the model's whole suite
@@ -67,8 +67,8 @@ MUTANTS = [
      "        return 2 * self.r_dn / self.ease"),
     # The round-5 falsifier's survivors (PR #625), each killed since round 6:
     ("lead from up to 3 EPS off the line", "step 3",
-     "                     and ((nxt.s < s_cur and abs(st.y - (r_k - s_cur * DT)) <= EPS)",
-     "                     and ((nxt.s < s_cur and abs(st.y - (r_k - s_cur * DT)) <= 3 * EPS)"),
+     "(off <= EPS if self.off_plan else abs(off) <= EPS)",
+     "(off <= EPS if self.off_plan else abs(off) <= 3 * EPS)"),
     ("lead velocity not capped", "step 3",
      "            cap_v = lambda: ((min(t.r_up, s_cur), -t.r_dn) if nxt.s < s_cur else (t.r_up, max(-t.r_dn, s_cur)))",
      "            cap_v = lambda: (t.r_up, -t.r_dn)"),
@@ -185,24 +185,55 @@ MUTANTS = [
      "        tv = min(max(tv, lo), hi)"),
     # Round 11 (falsifier at f135b8c): the seam between the planner and X5.
     ("no braking check in the chain", "X5 (the chain keeps the planner's promises)",
-     "                if (rises(nst, t) and not self._brake_ok(nst, k, segs, m)) or (nst.v < -1e-9 and not self._floor_ok(nst)):",
+     "                if (((rises(nst, t) or nst.y > st.y) and not self._brake_ok(nst, k, segs, m))\n                        or (nst.v < -1e-9 and not self._floor_ok(nst))):",
      "                if False:"),
     ("chain aims at the raw line, not the planner's frame", "X5 (the chain's reference)",
      "                lo_v, hi_v = max(vmin, -t.r_dn), min(vmax, t.r_up)\n                s_t = min(max(fs, lo_v), hi_v)",
      "                lo_v, hi_v = -t.r_dn, t.r_up\n                s_t = min(max(s_cur, lo_v), hi_v)"),
     ("chain gap taken against the line at tick k", "X5 (the chain's reference)",
      "chain_rate(clamp(line(k - 1), m), s_t, st.y, t, (v0 - v1) / DT)", "chain_rate(clamp(line(k), m), s_t, st.y, t, (v0 - v1) / DT)"),
-    # "chain aims at the unclamped line" is equivalent since round 11 and not run: the chain's closed-form
-    # braking check stops it at M (min(line + ε/2, M)) whatever it aims at.
+    # Round 12 (falsifier at 45be306): the lead kept off the plan, and the round-11 survivors.
+    ("the lead's EPS gate kept off the plan (the chain drops the lead)", "step 3 / X5",
+     "(off <= EPS if self.off_plan else abs(off) <= EPS)", "abs(off) <= EPS"),
+    ("off the plan never set by the chain", "step 3 / X5",
+     "                self.key, self.x5_frame, self.braking = None, None, False\n                self.off_plan = True",
+     "                self.key, self.x5_frame, self.braking = None, None, False"),
+    ("chain braking check only on a rising state, not a rising step", "X5 (the chain keeps the planner's promises)",
+     "if (((rises(nst, t) or nst.y > st.y) and not", "if (((rises(nst, t)) and not"),
+    ("no rounding snap at M and 0 W (a 1-ulp landing is cut)", "step 8",
+     "        if m < nst.y <= m + ROUND_SNAP:", "        if False:"),
+    ("no rounding snap at 0 W (a landing 4e-14 W below is cut)", "step 8",
+     "        elif -ROUND_SNAP <= nst.y < 0:", "        elif False:"),
+    ("chain step not kept inside [0, M]", "X5 (the clamp chain)",
+     "                if y_new > m or y_new < 0:", "                if False:"),
+    ("cut domains tested only outside the band", "the check",
+     "        if is_cut and not tr.unforeseen[k]:", "        if is_cut and not tr.unforeseen[k] and False:"),
+    ("profile_extrema: one root of the slope only (N7)", "safe braking (closed form)",
+     "                for sgn in (1, -1):", "                for sgn in (1,):"),
+    ("profile_at: no constant-slope tail (N6)", "safe braking (closed form)",
+     "    return y + v * tt, v, 0.0", "    return y, v, 0.0"),
+    ("lead timing ignores the curvature (N10)", "step 3",
+     "s_dur = sum(d for d, _ in slope_change(st.v, st.a, nxt.s, t))", "s_dur = sum(d for d, _ in slope_change(st.v, 0.0, nxt.s, t))"),
+    ("chain drops the lead's rate caps (N11)", "X5 (the chain's reference)",
+     "                lo_v, hi_v = max(vmin, -t.r_dn), min(vmax, t.r_up)", "                lo_v, hi_v = -t.r_dn, t.r_up"),
+    ("chain rate not clamped to the lead's caps (N21)", "X5 (the chain's reference)",
+     "v_ref = min(max(chain_rate(clamp(line(k - 1), m), s_t, st.y, t, (v0 - v1) / DT), lo_v), hi_v)",
+     "v_ref = chain_rate(clamp(line(k - 1), m), s_t, st.y, t, (v0 - v1) / DT)"),
+    ("chain aims at the unclamped line (N13/E6)", "X5 (the chain's reference)",
+     "chain_rate(clamp(line(k - 1), m), s_t", "chain_rate(line(k - 1), s_t"),
+    ("hand-off curvature clip against the rate, not the margin (N18)", "X5 (the hand-off)",
+     "    if a > 0 and v + a * a / (2 * t.j_max) > up:", "    if a > 0 and v + a * a / (2 * t.j_max) > t.r_up:"),
+    ("safe braking slack ε, not ε/2 (N20)", "step 6",
+     "            if y > min(line_at(segs, k + i, m) + EPS / 2, m + 1e-6):", "            if y > min(line_at(segs, k + i, m) + EPS, m + 1e-6):"),
     ("hand-off on the rate limits", "X5 (the hand-off)",
      "    up = t.r_up - (1 - TARGET_SCALE) * max(1.0, t.r_up)\n    dn = t.r_dn - (1 - TARGET_SCALE) * max(1.0, t.r_dn)",
      "    up = t.r_up\n    dn = t.r_dn"),
     ("hand-off slope without the half-tick midpoint (E1)", "X5 (the hand-off)",
-     "nst = State(st.y + v_new * DT, *handoff(v_new + a_new * DT / 2, a_new, t))",
-     "nst = State(st.y + v_new * DT, *handoff(v_new, a_new, t))"),
+     "nst = State(y_new, *handoff(v_new + a_new * DT / 2, a_new, t))",
+     "nst = State(y_new, *handoff(v_new, a_new, t))"),
     ("hand-off curvature dropped (E2)", "X5 (the hand-off)",
-     "nst = State(st.y + v_new * DT, *handoff(v_new + a_new * DT / 2, a_new, t))",
-     "nst = State(st.y + v_new * DT, *handoff(v_new + a_new * DT / 2, 0.0, t))"),
+     "nst = State(y_new, *handoff(v_new + a_new * DT / 2, a_new, t))",
+     "nst = State(y_new, *handoff(v_new + a_new * DT / 2, 0.0, t))"),
     ("fail_run not reset on success (E4)", "X5",
      "                self.x5_frame = None\n                self.fail_run = 0", "                self.x5_frame = None"),
     ("continuation checked against tick k (E5)", "X5",
@@ -234,7 +265,7 @@ MUTANTS = [
     ("a refused braking plan lets the step stand", "X5 (the braking plan)",
      "                nst = State(*profile_at(st.y, st.v, st.a, slope_change(st.v, st.a, 0.0, t), DT))\n                self.key, self.x5_frame = None, None",
      "                self.key, self.x5_frame = None, None"),
-    ("X5f jerk bound 1.5·j_max (tighter than measured)", "X5f", "X5F_JERK = 2.0 ", "X5F_JERK = 1.5 "),
+    ("X5f jerk bound 1.95·j_max (below the worst measured, 1.979)", "X5f", "X5F_JERK = 2.25 ", "X5F_JERK = 1.95 "),
 ]
 
 

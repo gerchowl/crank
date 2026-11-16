@@ -2262,9 +2262,12 @@ after ± and the coach. The commanded target moves towards the plan line:
 
 A ramp is followed on the line, with its start and end corners eased too. If the trajectory library refuses a
 calculation (rare: a known upstream bug class), a simpler limiter takes over until it answers again (ADR-0002 §7.10.2,
-X5, rounds 10–11). The target still never rises above the plan, and it still brakes before a known drop. A landing can
-take several times longer, though: a staircase under persistent refusals took 23.5 s where Ruckig takes 8.75 s, and
-a planned fall can lag up to about 16 W more than without refusals. The soft start is the same curve, started
+X5, rounds 10–12). The target still never rises above the plan, and it still brakes before a known drop and eases
+into a planned fall. A landing can take several times longer, though: a staircase under persistent refusals took
+23.5 s where Ruckig takes 8.75 s. A planned fall can also start up to a second late (the old trajectory is kept for
+three ticks first). The target can then sit further above a falling plan than without refusals, by at most the
+plan's fall over that second: 39 W on a −39.5 W/s fall at the defaults. The worst measured is 56 W, on a fall at
+60 W/s. The soft start is the same curve, started
 from the rider's current power. "Caught up" below means the command is
 on the plan line. This section says what the rider sees of it. It amends §5.2, §5.9, §6.5, §17.3 and §18.3,
 which point here.
