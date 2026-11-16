@@ -366,6 +366,26 @@ describe("once-per-version spin-up (#552)", () => {
     expect(seenBuild()).toBe("0.2.0-rc.2 · 89abcde");
   });
 
+  test("paused animation frames (a webview launched hidden) still end the hold at the motion's length", async () => {
+    localStorage.clear();
+    vi.useFakeTimers();
+    const raf = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation(() => 0);
+    try {
+      render(<App readBuild={readBuild} />);
+      await act(() => vi.advanceTimersByTimeAsync(MOTION_MS - 1));
+      expect(screen.queryByRole("main")).toBeNull();
+      expect(paintedT()).toBe(0);
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(paintedT()).toBe(MOTION_MS);
+      expect(document.activeElement).toBe(screen.getByRole("main"));
+      expect(seenBuild()).toBe(BUILD);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
   test("reduced motion is never held: the settled wordmark, removed at once, nothing recorded", async () => {
     localStorage.clear();
     stubMedia({ dark: true, reduced: true });
