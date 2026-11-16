@@ -30,9 +30,10 @@ DT = 0.25          # one engine tick, s
 EPS = 0.5          # W: "on the line" is |R - y| <= EPS
 SETTLE_AFTER_TICKS = 20
 TOL = 1e-6         # floating-point tolerance of the checks
+ROUND_SNAP = 1e-9  # W: a landing this close outside [0, M] is floating-point rounding, snapped, not cut (round 12)
 N_ERRORS = 3       # X5: consecutive refusals answered from the trajectory in force, then the clamp chain
 CHAIN_C = 0.0      # X5: the clamp chain's landing constant, in ease times (chain_bound); the grid needs −0.18
-X5F_JERK = 2.0     # X5f: the clamp chain's sampled jerk is within this many j_max (measured 1.83 at f135b8c)
+X5F_JERK = 2.25    # X5f: the sampled jerk on the chain's override ticks, in j_max; worst seen 1.979 (round 12), headroom ~14 %
 TARGET_SCALE = 1 - 2 ** -20   # a target velocity stays this far inside its limit (Ruckig 0.19.4 segfault, §7.10.2)
 
 
@@ -424,6 +425,11 @@ class Easer:
         self.recalcs = 0
         self.chasing = False
         self.braking = False
+        # Off the plan (round 12): set by the clamp chain and the closed-form stop (X5), cleared once
+        # Ruckig has the command back on the line. While it is set, the lead into a vertex where the
+        # slope falls starts from on or below the current line, not only from on it: the chain and the
+        # hand-back keep the planner's lead and timing whatever the command's offset below the line.
+        self.off_plan = False
 
     def _input(self, st: State, rel: float, fs: float, vmax: float, vmin: float, vel_target,
                scale: float = 1.0):
@@ -574,8 +580,9 @@ class Easer:
             # (tick k-1's state against tick k-1's line, within EPS). From above it would raise the
             # command above the plan; from below the cap would hold it back from the line. A fall's
             # end aims below the current line: no condition.
+            off = st.y - (r_k - s_cur * DT)
             leads = (nxt.joined and trackable(nxt.s)
-                     and ((nxt.s < s_cur and abs(st.y - (r_k - s_cur * DT)) <= EPS)
+                     and ((nxt.s < s_cur and (off <= EPS if self.off_plan else abs(off) <= EPS))
                           or (s_cur < 0 and s_cur < nxt.s <= 0)))
             cap_v = lambda: ((min(t.r_up, s_cur), -t.r_dn) if nxt.s < s_cur else (t.r_up, max(-t.r_dn, s_cur)))
             if self.key is not None and same_key(self.key[0], lead_key) and within(s_cur):
@@ -656,22 +663,39 @@ class Easer:
                 v0, v1 = (h[2] - h[1]) / DT, (h[1] - h[0]) / DT
                 # The chain aims at the planner's reference, not the raw line: the frame in force (the
                 # lead's next line extended back, where the planner leads into a vertex) with the
-                # lead's rate caps, so it starts a planned fall when the planner would.
+                # lead's rate caps. Since round 12 the lead survives the chain (off_plan: it starts from
+                # on or below the line), so the chain starts a planned fall too; the continuation of
+                # step 1 can delay it, and refusal_excess bounds what that costs above the plan.
                 lo_v, hi_v = max(vmin, -t.r_dn), min(vmax, t.r_up)
                 s_t = min(max(fs, lo_v), hi_v)
                 # The gap is taken at the state's own tick (k - 1): line(k) against y(k - 1) would build
                 # one tick of the line's motion (s·Δt) into a permanent offset on a ramp (round 11).
                 v_ref = min(max(chain_rate(clamp(line(k - 1), m), s_t, st.y, t, (v0 - v1) / DT), lo_v), hi_v)
                 v_new, over = speed_limiter(v_ref, v0, v1, DT, t)
+                # The step never leaves [0, M] (round 12): safe braking lets a stop reach M + 1e-6 (the
+                # planner's own rounding onto a line at M), but X3 cuts anything above M; a chain step
+                # landing on M overshot it by 3.5e-8 W and X3 cut. Its rate is limited to land on M (or
+                # 0 W) instead, a clamp that overrides the jerk clamp like the others.
+                y_new = st.y + v_new * DT
+                if y_new > m or y_new < 0:
+                    y_new = min(max(y_new, 0.0), m)
+                    v_new, over = (y_new - st.y) / DT, True
                 a_new = (v_new - v0) / DT
-                nst = State(st.y + v_new * DT, *handoff(v_new + a_new * DT / 2, a_new, t))
+                nst = State(y_new, *handoff(v_new + a_new * DT / 2, a_new, t))
                 # The planner's promises hold under the chain too: its step is taken only if the
                 # closed-form stop from it stays at or below the line known ahead (and at or above
-                # 0 W). Otherwise the command brakes by that stop, which cannot be refused either.
-                if (rises(nst, t) and not self._brake_ok(nst, k, segs, m)) or (nst.v < -1e-9 and not self._floor_ok(nst)):
+                # 0 W). Otherwise the command brakes by that stop, which cannot be refused either. (A step
+                # that would end below 0 W is already limited to 0 W above: round 12, a chain step came to
+                # rest just below 0 W, skipped the floor check, which runs on falling steps, and X4 cut.)
+                # The braking check runs whenever the step rose, too: the hand-off's slope (the midpoint
+                # estimate) can already be negative on a step that rose (round 12: it ended 5.6e-6 W
+                # above M, and X3 cut; at a planned jump down, X2).
+                if (((rises(nst, t) or nst.y > st.y) and not self._brake_ok(nst, k, segs, m))
+                        or (nst.v < -1e-9 and not self._floor_ok(nst))):
                     nst = State(*profile_at(st.y, st.v, st.a, slope_change(st.v, st.a, 0.0, t), DT))
                     over = True       # a braking tick: the sampled jerk follows the stop, not the chain
                 self.key, self.x5_frame, self.braking = None, None, False
+                self.off_plan = True
                 self.chain_ticks += 1
                 self.chain_now, self.chain_over = True, over
                 return self._after(st, nst, k, segs, m, r_k, exc or ("X5fo" if over else "X5f"), brake=True)
@@ -715,18 +739,27 @@ class Easer:
                 nst = State(*profile_at(st.y, st.v, st.a, slope_change(st.v, st.a, 0.0, t), DT))
                 self.key, self.x5_frame = None, None
                 exc = exc or "X5b"; self.x5_tick = True
+                self.off_plan = True
         if self.braking and abs(nst.v) <= 1e-9:
             self.braking = False
             self.key = None if self.traj.duration > self.elapsed + 1e-9 else self.key
         # X2 again: a step that would rise and end above the line stops instead.
         if nst.y > r_k + EPS and (nst.v > 1e-9 or nst.y > st.y + 1e-7):
             nst, exc = _cut(nst, State(st.y, 0.0, 0.0), "X2", exc)
+        # Ruckig lands on M or 0 W to within floating point (round 12: 1 ulp above M, 4e-14 W below 0 W, at rest).
+        # That is rounding, not a cut: it is snapped to the bound, a position change far below every tolerance.
+        if m < nst.y <= m + ROUND_SNAP:
+            nst = State(m, nst.v, nst.a)
+        elif -ROUND_SNAP <= nst.y < 0:
+            nst = State(0.0, nst.v, nst.a)
         if nst.y < 0:                                    # X4: nothing is below 0 W
             nst, exc = _cut(nst, State(0.0, 0.0, 0.0), "X4", exc)
         if nst.y > m:
             nst, exc = _cut(nst, State(m, 0.0, 0.0), "X3", exc)
         if exc and exc != "X5":
             self.key = None
+        if self.off_plan and not exc and abs(nst.y - r_k) <= EPS:
+            self.off_plan = False     # Ruckig has the command back on the line
         return nst, exc
 
 
@@ -1131,10 +1164,11 @@ def check(tr: Trace, t: Tuning, rep: Report, name: str, y_start: float) -> None:
                 rep.worst[exc] = max(rep.worst[exc], dv)
                 if dv > bnd[exc] + tol_v:
                     rep.fail(f"{name} k={k}: {exc} slope change {dv:.3f} > bound {bnd[exc]:.3f}")
-                # Domains: X2, X3 and X4 only while an unforeseeable event is pending (round 11: no
-                # longer while only a Ruckig error is; X5's chain keeps the planner's promises).
-                if exc in ("X2", "X3", "X4") and not tr.unforeseen[k]:
-                    rep.fail(f"{name} k={k}: {exc} outside its domain (no unforeseeable event pending)")
+        # Domains: X2, X3 and X4 only while an unforeseeable event is pending (round 11: no longer
+        # while only a Ruckig error is; X5's chain keeps the planner's promises). On every cut tick,
+        # also one whose sent samples stay inside the band (round 12: an X4 at rest was not tested).
+        if is_cut and not tr.unforeseen[k]:
+            rep.fail(f"{name} k={k}: {exc} outside its domain (no unforeseeable event pending)")
         # P5: a step that rises never ends more than EPS above the line.
         if y > r + EPS + TOL and y > prev + TOL:
             rep.fail(f"{name} k={k}: P5 rose to above the line y={y:.3f} R={r:.3f}")
@@ -1409,6 +1443,10 @@ GOLDEN = {
     'persistent error mid-fall, then a jump up': (96395.907218, 108, 128),
     'persistent error mid-rise on a ramp': (93798.380845, 33, 33),
     'persistent error while chasing a steep fall': (35267.342079, 117, 117),
+    'planned fall #29 with refusals 29..68': (88123.394121, 99, 119),
+    'planned fall #202 with refusals 35..74': (40805.027489, 37, 37),
+    'planned fall #358 with refusals 65..67': (66150.415011, 71, 71),
+    'random 56000+87 (the lead from a moving state)': (164798.878085, 123, 161),
 }
 
 
@@ -1481,6 +1519,49 @@ def constants(rep: Report, report: bool):
             break
     if N_ERRORS != 3:
         rep.fail(f"constants: N_ERRORS = {N_ERRORS}, stated 3")
+    # Round 12: the closed-form helpers on their own. profile_extrema against the profile sampled
+    # densely (both roots of the slope in a segment, and the tail at constant slope); handoff
+    # strictly inside the rate limits including the slope the curvature still adds.
+    rng = random.Random(1212)
+    for _ in range(3000):
+        tt = rng.choice(GRID)
+        y, v, a = rng.uniform(0, 500), rng.uniform(-tt.r_dn, tt.r_up), rng.uniform(-tt.a_max, tt.a_max)
+        prof = slope_change(v, a, rng.choice([0.0, rng.uniform(-tt.r_dn, tt.r_up)]), tt)
+        dur = sum(d for d, _ in prof)
+        ys = [profile_at(y, v, a, prof, dur * i / 4000)[0] for i in range(4001)]
+        lo, hi = profile_extrema(y, v, a, prof)
+        if lo > min(ys) + 1e-6 or hi < max(ys) - 1e-6 or lo < min(ys) - 1e-3 or hi > max(ys) + 1e-3:
+            rep.fail(f"constants: profile_extrema {lo:.6f}/{hi:.6f} against sampled {min(ys):.6f}/{max(ys):.6f} {tt} {(y, v, a)}")
+            break
+        if abs(profile_at(y, v, a, prof, dur)[0] - ys[-1]) > 1e-9 or abs(profile_at(y, v, a, prof, dur + 1)[0]
+                                                                          - ys[-1] - profile_at(y, v, a, prof, dur)[1]) > 1e-6:
+            rep.fail(f"constants: profile_at does not continue at constant slope after the profile {tt}")
+            break
+        hv, ha = handoff(rng.uniform(-2 * tt.r_dn, 2 * tt.r_up), rng.uniform(-2 * tt.a_max, 2 * tt.a_max), tt)
+        up = tt.r_up - (1 - TARGET_SCALE) * max(1.0, tt.r_up)
+        dn = tt.r_dn - (1 - TARGET_SCALE) * max(1.0, tt.r_dn)
+        if hv + max(ha, 0.0) ** 2 / (2 * tt.j_max) > up + 1e-9 or hv - min(ha, 0.0) ** 2 / (2 * tt.j_max) < -dn - 1e-9:
+            rep.fail(f"constants: handoff ({hv}, {ha}) not strictly inside the rates {tt}")
+            break
+    # The hand-off clip at its boundary: a curvature whose slope it still adds lands between the
+    # margin and the limit itself (the band Ruckig answers slowly on).
+    for tt in (DEFAULT, Tuning(50, 4.0, 1.0)):
+        for sign in (1, -1):
+            lim = (tt.r_up if sign > 0 else tt.r_dn) * (1 - (1 - TARGET_SCALE) / 2)
+            hv, ha = handoff(sign * (lim - 0.5 ** 2 / (2 * tt.j_max)), sign * 0.5, tt)
+            up = tt.r_up - (1 - TARGET_SCALE) * max(1.0, tt.r_up)
+            dn = tt.r_dn - (1 - TARGET_SCALE) * max(1.0, tt.r_dn)
+            if hv + max(ha, 0.0) ** 2 / (2 * tt.j_max) > up + 1e-12 or hv - min(ha, 0.0) ** 2 / (2 * tt.j_max) < -dn - 1e-12:
+                rep.fail(f"constants: handoff ({hv}, {ha}) ends between the margin and the rate {tt}")
+    # Safe braking's slack: a stop may pass the line by up to ε/2, not more (strictly inside X2's ε).
+    ez = Easer(DEFAULT)
+    segs = segments([steady(100, 60)], 0, 1.0, 2000.0)
+    for over, want in ((0.25 * EPS, True), (0.75 * EPS, False)):
+        v = 5.0
+        peak = profile_extrema(0.0, v, 0.0, slope_change(v, 0.0, 0.0, DEFAULT))[1]
+        got = ez._brake_ok(State(100 + over - peak, v, 0.0), 1, segs, 2000.0)
+        if got != want:
+            rep.fail(f"constants: a stop {over:.2f} W past the line is {'refused' if want else 'accepted'} (slack ε/2)")
     if report:
         print("Constants SLOPE_TOL and VALUE_TOL pinned at their boundaries; the snap, the raw join, the merge"
               " after the clamp; the clamp chain's order")
@@ -1594,7 +1675,7 @@ def golden(rep: Report, report: bool, emit: bool = False):
     the properties allow to vary, such as the lead's timing and cap, the chase, the will-rise
     test and the boundary of `trackable`. #620's golden vectors carry the same plans tick by tick."""
     got = {}
-    for name, spec in GOLDEN_PLANS.items():
+    for name, spec in {**GOLDEN_PLANS, **golden_random()}.items():
         t, blocks, events, origin = spec[:4]
         kw = spec[4] if len(spec) > 4 else {}
         tr = run(blocks, events, t=t, origin=origin, **kw)
@@ -1895,9 +1976,114 @@ def repros(rep: Report, report: bool) -> None:
         kc = next(k for k in range(40, len(free.y)) if free.v[k] <= -0.9 * t.r_dn)   # the chain near the full falling rate
         tr = run(plan, [Event(kc + 2, "cap", free.y[kc + 1] - 40.0)], t=t, inject=1.0, inject_from=40)
         check(tr, t, rep, f"repro: a cap drop below the chain at the full falling rate {t}", 100.0)
+    # Round 12 (falsifier at 45be306): the chain and the hand-back keep the planner's lead into a fall.
+    # Refusal windows over the vertex of a planned fall at -39.5 and -30 W/s (defaults): the excess
+    # above the plan stays within refusal_excess's bound against the plan without refusals, and the
+    # command is falling on the tick the planner without refusals starts the fall.
+    for slope in (39.5, 30.0):
+        plan = [steady(400, 10), ramp(400, 0, 400 / slope), steady(0, 20)]
+        base = run(plan, t=DEFAULT)
+        k_fall = next(k for k in range(len(base.y)) if base.v[k] < -1e-6)
+        for k0 in range(25, 41, 3):
+            for n in (3, 12):
+                tr = run(plan, t=DEFAULT, refuse_ticks=set(range(k0, k0 + n)))
+                name = f"repro: planned fall at -{slope:g} W/s, refusals {k0}..{k0 + n - 1}"
+                check(tr, DEFAULT, rep, name, 400.0)
+                x, bound = refusal_excess(base, tr, k0, n, DEFAULT)
+                if x > bound:
+                    rep.fail(f"{name}: excess {x:.2f} W more than without refusals (bound {bound:.2f} W)")
+                late = k_fall + N_ERRORS + 1
+                if k0 + n <= k_fall and tr.v[late] >= -1e-6:
+                    rep.fail(f"{name}: not falling at tick {late} (the plan without refusals falls from {k_fall})")
+    # The falsifier's random plan (seed 123000 + 287, (20, x3, 4), cap 436, refusals 38..49).
+    rng = random.Random(123000 + 287)
+    t = rng.choice(GRID)
+    blocks, events = random_plan_v7(rng, t)
+    m0 = rng.choice([2000.0, rng.uniform(200, 800), rng.uniform(100, 300)])
+    base, tr = run(blocks, events, t=t, m0=m0), run(blocks, events, t=t, m0=m0, refuse_ticks=set(range(38, 50)))
+    check(tr, t, rep, "repro: random 123000+287 with refusals 38..49", tr.y[0])
+    x, bound = refusal_excess(base, tr, 38, 12, t)
+    if x > bound:
+        rep.fail(f"repro: random 123000+287: excess {x:.2f} W more than without refusals (bound {bound:.2f} W)")
+    # The chain's floor check on a step that comes to rest just below 0 W ((10, x2, 1), refusals
+    # 120..127 at the end of a fall to 0 W): no X4.
+    t = Tuning(10, 2.0, 1.0)
+    tr = run([steady(400, 10), ramp(400, 0, 20), steady(0, 30)], t=t, refuse_ticks=set(range(120, 128)))
+    check(tr, t, rep, "repro: fall to 0 W, refusals 120..127 (10, x2, 1)", 400.0)
+    if "X4" in tr.exc:
+        rep.fail(f"repro: fall to 0 W with refusals 120..127: X4 at tick {tr.exc.index('X4')}")
+    # The chain's step kept inside [0, M], and its braking check on a step that rose (round 12): the falsifier's
+    # scheme (cap drawn from 100-300 W too), seeds 56000 + 792 and 56000 + 1227, where a chain step landing on M
+    # overshot it (X3 outside its domain).
+    for i in (792, 1227):
+        rng = random.Random(56000 + i)
+        t = rng.choice(GRID)
+        blocks, events = random_plan_v7(rng, t)
+        m0 = rng.choice([2000.0, rng.uniform(200, 800), rng.uniform(100, 300)])
+        k0 = rng.randrange(max(1, sum(b.ticks for b in blocks)))
+        L = rng.choice([1, 2, 3, 4, 5, 6, 8, 12, 20, 40, 80])
+        tr = run(blocks, events, t=t, m0=m0, refuse_ticks=set(range(k0, k0 + L)))
+        check(tr, t, rep, f"repro: chain onto the cap, 56000+{i}, refusals {k0}..{k0 + L - 1}", tr.y[0])
+    # Ruckig's landings on M and 0 W, 1 ulp outside them (random plans of seeds 1, 2 and 7): snapped, not cut
+    # (X3/X4 outside their domain before round 12, unseen while check() tested domains only outside the band).
+    for seed, want in ((1, 3167), (2, 6492), (7, 3875), (7, 5964)):
+        rng = random.Random(seed)
+        for i in range(want + 1):
+            t = rng.choice(GRID)
+            blocks, events = random_plan_v7(rng, t)
+            origin = rng.uniform(0, 300) if rng.random() < 0.3 else None
+            m0 = rng.choice([2000.0, rng.uniform(200, 800)])
+        tr = run(blocks, events, t=t, origin=origin, m0=m0)
+        check(tr, t, rep, f"repro: a landing 1 ulp outside [0, M], seed {seed} plan {want}", tr.y[0])
+    # The check itself: a cut is tested against its domain on every tick, also inside the band (a cut at rest).
+    tr = run([steady(200, 20)], t=DEFAULT)
+    tr.exc[40] = "X2"
+    self_rep = Report()
+    check(tr, DEFAULT, self_rep, "self-test", 200.0)
+    if not any("outside its domain" in f for f in self_rep.fails):
+        rep.fail("repro: check() does not test a cut's domain inside the band")
+    # The chain's worst jerk seen (1.979·j_max, round 12's sweep: seed 56000 + 656 of the falsifier's scheme,
+    # (20, x2, 3), refusals 1..80): within X5F_JERK; a bound below it fails here.
+    rng = random.Random(56000 + 656)
+    t = rng.choice(GRID)
+    blocks, events = random_plan_v7(rng, t)
+    tr = run(blocks, events, t=t, m0=2000.0, refuse_ticks=set(range(1, 81)))
+    jr = Report()
+    check(tr, t, jr, "repro: the chain's worst jerk, 56000+656", tr.y[0])
+    check(tr, t, rep, "repro: the chain's worst jerk, 56000+656", tr.y[0])
+    if jr.worst.get("X5f jerk", 0.0) < 1.95:
+        rep.fail(f"repro: 56000+656 no longer reaches 1.95·j_max ({jr.worst.get('X5f jerk', 0.0):.3f}): re-measure X5F_JERK")
     if report:
         print(f"Repros: {len(REPROS)} falsifier plans (f625b/c/d) and the segfault plan; X5's order pinned; round 11's"
-              f" blockers and mechanism pins")
+              f" and round 12's blockers and mechanism pins")
+
+
+REFUSAL_HORIZON = 160   # ticks after a refusal window over which its excess is compared (40 s)
+
+
+def refusal_excess(a: Trace, b: Trace, k0: int, L: int, t: Tuning) -> tuple[float, float]:
+    """Round 12: the excess above the plan during and after a refusal window (ticks k0..k0+L-1 and
+    REFUSAL_HORIZON ticks after it), the run with refusals `b` against the same plan without `a`, on
+    planned ticks only (no unforeseeable event pending in either run: there P6 and the fallback's
+    landing bound govern). Returns (extra excess, its bound). The bound: X5 continues the trajectory
+    in force for up to N_ERRORS ticks before the chain takes over, so a planned fall may start up to
+    N_ERRORS + 1 ticks late; meanwhile the line falls by at most (N_ERRORS + 1)·Δt·s, s the steepest
+    fall of the line in the window (a jump counts as the rider's rate r↓, the command's fastest fall)."""
+    hi = min(len(a.y), len(b.y), k0 + L + REFUSAL_HORIZON)
+    ks = [k for k in range(max(0, k0), hi) if not a.unforeseen[k] and not b.unforeseen[k]]
+    if not ks:
+        return 0.0, 0.0
+    ea = max([0.0] + [a.y[k] - a.r[k] - EPS for k in ks])   # P6's excess: above the line by more than ε
+    eb = max([0.0] + [b.y[k] - b.r[k] - EPS for k in ks])
+    s = max([0.0] + [min(t.r_dn, (b.r[k - 1] - b.r[k]) / DT) for k in range(max(1, k0), hi)])
+    return eb - ea, (N_ERRORS + 1) * DT * s + 1e-6
+
+
+def added_cuts(a: Trace, b: Trace) -> bool:
+    """True if the run with refusals `b` has more cuts than the same plan without `a`, not counting
+    cuts on the tick of an unforeseeable event (the event's own reaction, whatever the timing)."""
+    count = lambda tr: sum(1 for k, e in enumerate(tr.exc) if e in CUTS and not tr.events[k])
+    return count(b) > count(a)
 
 
 def refusal_windows(rep: Report, report: bool, n: int = 300):
@@ -1905,7 +2091,7 @@ def refusal_windows(rep: Report, report: bool, n: int = 300):
     generator, the falsifier's schemes: seeds 56000 + i and 70000 + i), against the same plan without
     refusals. Every property holds, no cut appears that the plan without refusals does not have, and
     the command never rises further above the plan (X5 keeps the planner's promises)."""
-    worst_up = worst_lag = 0.0
+    worst_up = worst_lag = worst_x = 0.0
     for base_seed in (56000, 70000):
         for i in range(n):
             rng = random.Random(base_seed + i)
@@ -1919,16 +2105,82 @@ def refusal_windows(rep: Report, report: bool, n: int = 300):
             b = run(blocks, events, t=t, m0=m0, refuse_ticks=set(range(k0, k0 + L)))
             name = f"refusal window {base_seed}+{i} ticks {k0}..{k0 + L - 1} {t}"
             check(b, t, rep, name, b.y[0])
-            if sum(e in CUTS for e in b.exc) > sum(e in CUTS for e in a.exc):
-                rep.fail(f"{name}: X5 added a cut {[e for e in b.exc if e in CUTS]}")
+            # A cut on the tick of an unforeseeable event is that event's (round 12: an engagement
+            # during refusals shifted the landing a tick, and a skip then found the command still
+            # rising: X2 on the skip's tick, in its domain). Any other added cut is X5's.
+            if added_cuts(a, b):
+                rep.fail(f"{name}: X5 added a cut {[(k, e) for k, e in enumerate(b.exc) if e in CUTS]}")
             ups = [max([0.0] + [tr.y[k] - tr.r[k] for k in range(1, len(tr.y)) if tr.y[k] > tr.y[k - 1] + 1e-7]) for tr in (a, b)]
             lags = [max([0.0] + [tr.y[k] - tr.r[k] for k in range(1, len(tr.y)) if tr.y[k] <= tr.y[k - 1] + 1e-7]) for tr in (a, b)]
             worst_up, worst_lag = max(worst_up, ups[1] - ups[0]), max(worst_lag, lags[1] - lags[0])
             if ups[1] > max(ups[0], EPS) + 1e-6:
                 rep.fail(f"{name}: X5 rose {ups[1]:.2f} W above the plan (without refusals {ups[0]:.2f} W)")
+            x, bound = refusal_excess(a, b, k0, L, t)
+            worst_x = max(worst_x, x)
+            if x > bound:
+                rep.fail(f"{name}: excess above the plan {x:.2f} W more than without refusals (bound {bound:.2f} W)")
     if report:
-        print(f"Refusal windows: 2 × {n} random plans; extra rise above the plan {worst_up:.2f} W at most, extra lag"
-              f" on falls {worst_lag:.2f} W at most")
+        print(f"Refusal windows: 2 × {n} random plans; extra rise above the plan {worst_up:.3f} W at most, extra"
+              f" excess on planned ticks {worst_x:.2f} W at most, extra lag on falls {worst_lag:.2f} W at most")
+
+
+def fall_plan(i: int):
+    """refusal_falls' plan i (seed 121000 + i): (tuning, blocks, cap, first refused tick, refused ticks)."""
+    rng = random.Random(121000 + i)
+    t = rng.choice(GRID)
+    w = rng.uniform(50, 800)
+    lo = rng.choice([0.0, rng.uniform(0, w)])
+    s = rng.uniform(0.2, 1.0) * t.r_dn
+    pre = rng.choice([steady(w, 10), ramp(w * 0.6, w, rng.uniform(5, 15))])
+    blocks = [pre, ramp(w, lo, (w - lo) / s), steady(lo, 20)]
+    v = pre.ticks
+    k0 = rng.randrange(max(1, v - 30), v + blocks[1].ticks + 8)
+    L = rng.choice([1, 2, 3, 4, 6, 8, 12, 20, 40])
+    m0 = rng.choice([2000.0, rng.uniform(lo + 1, w * 1.2)])
+    return t, blocks, m0, k0, L
+
+
+def golden_random() -> dict:
+    """Golden plans drawn from the generators (round 12), in GOLDEN_PLANS' format. They pin rules whose change
+    moves a trace without breaking a property: the lead's timing from a moving state (N10), the chain's lead rate
+    caps (N11, N21) and its aim at the clamped line (N13)."""
+    out = {}
+    for i in (29, 202, 358):
+        t, blocks, m0, k0, L = fall_plan(i)
+        out[f"planned fall #{i} with refusals {k0}..{k0 + L - 1}"] = (t, blocks, [], None,
+                                                                         dict(m0=m0, refuse_ticks=set(range(k0, k0 + L))))
+    rng = random.Random(56000 + 87)
+    t = rng.choice(GRID)
+    blocks, events = random_plan_v7(rng, t)
+    m0 = rng.choice([2000.0, rng.uniform(200, 800), rng.uniform(100, 300)])
+    out["random 56000+87 (the lead from a moving state)"] = (t, blocks, events, None, dict(m0=m0))
+    return out
+
+
+def refusal_falls(rep: Report, report: bool, n: int = 400):
+    """Round 12: refusal windows of 1-40 ticks on planned falls (a held or rising line, then a ramp
+    down at 20-100 % of r↓, possibly under a cap), placed from 30 ticks before the fall's vertex to
+    its end. The excess above the plan, during and after the window, against the same plan without
+    refusals stays within refusal_excess's bound; P6's allowance for lag does not excuse it."""
+    worst = worst_ratio = 0.0
+    for i in range(n):
+        t, blocks, m0, k0, L = fall_plan(i)
+        w, lo = blocks[1].frm, blocks[1].to
+        s = (w - lo) / (blocks[1].ticks * DT) if blocks[1].ticks else math.inf
+        a = run(blocks, t=t, m0=m0)
+        b = run(blocks, t=t, m0=m0, refuse_ticks=set(range(k0, k0 + L)))
+        name = f"refusal on a planned fall #{i} {t} {w:.1f} -> {lo:.1f} W at {s:.2f} W/s, cap {m0:.1f}, ticks {k0}..{k0 + L - 1}"
+        check(b, t, rep, name, b.y[0])
+        if added_cuts(a, b):
+            rep.fail(f"{name}: X5 added a cut {[(k, e) for k, e in enumerate(b.exc) if e in CUTS]}")
+        x, bound = refusal_excess(a, b, k0, L, t)
+        worst = max(worst, x)
+        worst_ratio = max(worst_ratio, x / bound if bound > 1e-6 else 0.0)
+        if x > bound:
+            rep.fail(f"{name}: excess above the plan {x:.2f} W more than without refusals (bound {bound:.2f} W)")
+    if report:
+        print(f"Refusal windows on planned falls: {n} plans; extra excess {worst:.2f} W at most,"
+              f" {worst_ratio:.0%} of its bound")
 
 
 def injected(rep: Report, report: bool, n: int = 300, share: float = 0.2):
@@ -2124,6 +2376,7 @@ def main(argv):
     line_independence(rep, report)
     repros(rep, report)
     refusal_windows(rep, report)
+    refusal_falls(rep, report)
     golden(rep, report)
     ramp_pairs(rep, report)
     injected(rep, report)
