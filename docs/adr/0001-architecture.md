@@ -1,6 +1,6 @@
 # ADR-0001: Architecture, crate layout, Rust↔UI contract, persistence, testing
 
-- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10); 2026-11-11 (#585: §7.2 `slew` fields; 2026-11-15 rounds 10–12, the hybrid, keep them)
+- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10); 2026-11-11 (#585: §7.2 `slew` fields; 2026-11-15 rounds 10–12, the hybrid, and 2026-11-16 round 13, degraded mode, keep them)
 - **Date:** 2026-10-13
 - **Issue:** #26
 - **Related:** ADR-0002 (BLE + `Trainer`), #24 (first-principles UX), #28 (scaffold), #2 #4 #12–#19
@@ -324,7 +324,9 @@ newest state wins; points accumulate. A ride sends at its 4 Hz tick; outside one
 
 **Status notes** (#219, #243, #324, #329) stay in force, documented on each field of `StreamStatus`
 (`crates/crank-engine/src/stream/types.rs:293-364`) and in `git show 2de24c5:docs/adr/0001-architecture.md`.
-Thresholds and flags (#243 part b) and nudges (#248) enter later, each a field with its own size test.
+Thresholds and flags (#243 part b) and nudges (#248) enter later, each a field with its own size test. The ERG
+easer's fields (ADR-0002 §7.10.5, #622) are among them: `easingToW`, `softStartTargetW` and the fault flag
+`ergEaserDegraded` (round 13: Ruckig and its twin refused, the command stops and holds).
 
 #### 4.3.7 Per-widget rates or filters
 
@@ -813,15 +815,25 @@ the reasons are in the ADR section named:
 `slew` is implemented by #620. A new group changes no existing field's meaning or unit, so `Tuning::VERSION` stays
 1; a stored layer written before it resolves unchanged, because the merge starts from the defaults.
 
-ADR-0002 §7.10's round 10 (2026-11-15, the owner's hybrid: track 1's planning, track 2's fallback after Ruckig
-refusals) keeps these three fields and their mapping, and so do its fix rounds 11 and 12. Its own constants are
-engine constants, not tuning: a rider has no reason to change them, and the properties of ADR-0002 §7.10.6 are
-checked for them. As of round 12 they are:
-- `N_ERRORS` = 3 refusals before the clamp chain;
-- a target velocity, and the chain's hand-off to Ruckig (its slope, and the slope its curvature still adds), kept
-  `2⁻²⁰·max(1, |limit|)` inside the rates (Ruckig 0.19.4's segfault and slow-answer boundaries);
-- `X5F_JERK` = 2.25: the chain's sampled jerk on its override ticks, in `j_max` (worst measured 1.979);
-- `CHAIN_C` = 0: the constant of the chain's landing bound, in ease times (tight; the grid needs −0.18).
+ADR-0002 §7.10's round 10 (2026-11-15, the owner's hybrid: track 1's planning) keeps these three fields and their
+mapping, and so do its fix rounds 11 and 12 and round 13 (2026-11-16, the owner's simple degraded mode). Its own
+constants are engine constants, not tuning: a rider has no reason to change them, and the properties of ADR-0002
+§7.10.6 are checked for them. As of round 13 they are, completely (#620 uses these values; the model,
+`docs/adr/models/erg_slew.py`, pins each):
+- `DT` = 0.25 s: the engine tick the easer steps on;
+- `EPS` = 0.5 W: "on the line" is `|R − y| ≤ EPS` (half the 1 W resolution); X2's threshold;
+- `SETTLE_AFTER_TICKS` = 20 (5 s): settle after landing following a discontinuity or an engagement;
+- the line on the tick grid: `SLOPE_TOL` = 10⁻⁹ relative to `max(1, |slope|)` (one slope; a slope within it of 0 is
+  0), `VALUE_TOL` = 10⁻⁶ W (a piece continues the previous one after the clamp), the raw join 10⁻⁹ W (a block that
+  starts within it of the previous end is joined), and frame keys compared within 10⁻⁹ relative;
+- safe braking's slack: a stop may pass the line ahead by at most `EPS/2`, and `M` by at most 10⁻⁶ W;
+- `ROUND_SNAP` = 10⁻⁹ W: a landing this close outside `[0, M]` is rounding, snapped to the bound, not cut;
+- a cut is named only when it changes the state by more than 10⁻⁶ W, 10⁻⁵ W/s or 10⁻⁴ W/s²;
+- a target velocity kept `2⁻²⁰·max(1, |limit|)` inside its limits (Ruckig 0.19.4's segfault boundary);
+- `TWIN` = 2⁻²⁰: the twin calculation on a refusal tightens every limit by `TWIN·max(1, |limit|)`.
+
+Round 13 deletes round 12's `N_ERRORS` (the continuation before the clamp chain), the chain's hand-off margin,
+`X5F_JERK` and `CHAIN_C` with the clamp chain.
 
 **Alternatives.** A config file (TOML) next to the database: a second source of truth that a ride does not record,
 rejected. Ticks in the struct: ties a rider's setting to the engine's sampling, rejected. Falling back to the
