@@ -5,7 +5,7 @@
 //                its background (focus-audit.js).
 //   focus.order  a step against the reading order (below), a Shift+Tab stop that is not the forward cycle reversed,
 //                and the skip link: it is the first stop, Enter moves focus to its target (`#main`), and the next Tab
-//                reaches the first stop inside the target, if it has one.
+//                reaches the first stop inside the target, if it has one; a page without `#main` needs none.
 //   focus.trap   focus lost mid-cycle (to `body`; once next to the first stop is the document's edge, where a window
 //                hands focus to the browser), a stop that is no control (focus-audit.js `kindOf`), and a cycle that never
 //                comes back to the first stop (a loop elsewhere, or no end within MAX_STOPS).
@@ -82,11 +82,15 @@ export async function focusWalk(page: Page) {
         add("focus.ring", `${p.previous.sel}: ${p.previous.fault}`);
       if (p.kind === "lost") {
         lost++;
+        // Past the document's edge and back with no stop: a page with no control (design.pw.ts checks it wants none).
+        if (!first && lost > 2) return { first, stops, closed: false };
         continue;
       }
       if (first && p.id === first.id) {
-        // Tab crosses the document's edge last, just before the first stop again.
-        if (lost > (key === "Tab" ? 1 : 0))
+        // Tab crosses the document's edge last, just before the first stop again; so does Shift+Tab when the first
+        // stop is the only one (with more, it crosses right after the first stop, counted at the next one below).
+        const edge = key === "Tab" || !stops.length ? 1 : 0;
+        if (lost > edge)
           add("focus.trap", `focus lost to body before ${p.sel}`);
         return { first, stops, closed: true };
       }
@@ -132,10 +136,14 @@ export async function focusWalk(page: Page) {
           );
     }
 
-    // The skip link (§6.7): the first stop, onto `#main`, and the next Tab is main's first control.
+    // The skip link (§6.7): the first stop, onto `#main`, and the next Tab is main's first control. A page with no
+    // `#main` (the start screen, before the hand-off) has no blocks to bypass and so no skip link (WCAG 2.4.1).
     const target = first.skipTo;
-    if (!target) add("focus.order", `first stop ${first.sel} is no skip link`);
-    else {
+    const hasMain = (await page.locator("#main").count()) > 0;
+    if (!target) {
+      if (hasMain)
+        add("focus.order", `first stop ${first.sel} is no skip link`);
+    } else {
       await page.evaluate(() => window.__focusStart());
       await page.keyboard.press("Tab");
       await page.keyboard.press("Enter");

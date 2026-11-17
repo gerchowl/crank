@@ -557,6 +557,16 @@ readings while pairing (#267) are not in this screen yet; Release trainer is End
 **Athlete model** (#586) lists the heart-rate references the ride's zone reads, max heart rate and threshold heart
 rate (LTHR), each "Not set" or its value in bpm, and with neither known the one-line hint of §18.3 "Heart-rate zone";
 the estimates, their ± and source, and the manual override are #113.
+**Version and build (#552; placement from the #558 review, owner decision 2026-11-08: spread out, no "Help & about"
+section).** The build's version string, `<version> · <rev>` (`0.2.0-rc.1 · 7516045`; `-dirty` for a dirty tree;
+`· dev` for a build that is not the flake package, such as `just dev`), shows in two places: the **window title**
+("crank — 0.2.0-rc.1 · 7516045", on every screen) and the **start screen**, bottom right, in `--start-muted` at
+`--text-s` (13 px; ≥ 4.5 : 1 on `--start-bg` in both modes, `theme.test.ts`). Settings shows no copy of it. One source,
+fixed at build time, never `git` at run time: the workspace version (`CARGO_PKG_VERSION`) and the flake's
+`self.shortRev` (`self.dirtyShortRev`) as `CRANK_BUILD_REV`, compiled into the desktop (`app/src-tauri/src/version.rs`)
+and read by the page through `app_build`. Only the flake's desktop packages take the rev; its checks build without it,
+so a docs-only commit leaves them cached, and a source without git metadata builds packages that say `dev`. The release
+workflow builds the rc zip from the same flake and checks that its binary carries exactly `<version> · <rev>`.
 
 ---
 
@@ -825,13 +835,26 @@ sizing (#52), remote test (#53).
   mock core is otherwise ready at once, so without them no start screen is shown). Its launch motion is **F · Spin-up**
   ([BRAND.md](BRAND.md) §F · Spin-up, chosen over A · Slice's letter settle in #131): the app mark spins up into a
   ring, which opens into the wordmark's C; R A N K come out and one slice cuts the word. It plays once from the
-  first frame and rests on the wordmark whatever the boot does — never gated on readiness, never held (the
-  `?hold` variant is a record in design/brand only), never restarted by "Try again". Ready at any time: the
-  destination is live and focused at once, the start screen is inert and cross-fades out over 200 ms while the
-  motion runs on at 1:1 (no cut at ≤ 150 ms, no rush after it). Reduced motion: no script, the settled
-  wordmark, removed at once. The settled frame is A · Slice's, pixel for pixel. Status line at 1.2 s from boot;
-  a failed boot replaces it with the alert (P6). `pnpm -C design/prototype test:start`
-  drives all of it on a fake clock, including the ring's slit (no hairline before the faces are 1 px apart, #142).
+  first frame and rests on the wordmark whatever the boot does — never gated on readiness, ~~never held~~ **held
+  once per version** (#552; the `?hold` variant, a spin sustained until ready, stays a record in design/brand only),
+  never restarted by "Try again". Ready at any time: the destination is live and focused at once, the start screen
+  is inert and cross-fades out over 200 ms while the motion runs on at 1:1 (no cut at ≤ 150 ms, no rush after it).
+  **Held once per version (#552, owner decision 2026-11-08):** on the first launch after an install or update (the
+  build's version string differs from the one whose motion last played through) the hand-off waits until the
+  motion is at rest, **1080 ms** from its first frame (BRAND.md §F · Spin-up, Timing), so the rider sees it in full
+  once; later launches hand off the moment the core is ready, as above. "Seen" is the build's string, kept in the
+  app's local settings (the webview's storage, beside the theme, until #90), not the store, so it does not sync; it
+  is written when the motion has played through. Reduced motion: no script, the settled wordmark, removed at once,
+  never held (and nothing recorded). A boot that fails during the held motion shows the alert at once (P6), not
+  after the motion; "Try again" does not restart the motion, and a ready after it still waits for the one motion to
+  end. The settled frame is A · Slice's, pixel for pixel. Status line at 1.2 s from boot;
+  a failed boot replaces it with the alert (P6). The build's version string, `<version> · <rev>` (e.g.
+  `0.2.0-rc.1 · 7516045`, `-dirty` for a build from a dirty tree), sits at the bottom right (§5.9). `pnpm -C
+  design/prototype test:start` drives the prototype on a fake clock, including the ring's slit (no hairline before the
+  faces are 1 px apart, #142); the production shell (`app/src/shell/StartScreen.tsx`, `App.tsx`) paints the same
+  `frame(t)` and `app/src/App.test.tsx` checks the hold on a fake clock: the first launch holds until the motion
+  ends, the second does not, a version change holds again, reduced motion never holds, a failed boot during the
+  hold shows the alert. The design harness has the `start-slow` and `start-failed` fixtures.
 - Interactive: `pnpm -C design/prototype dev` (real-time mock with sound; `?speed=10` or `60` for a faster
   ride; `?first=1` starts in onboarding).
 - Scenes: `?scene=<id>&theme=dark|light` builds a seeded mock (seed 42) on a virtual clock, advances it to the

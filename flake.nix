@@ -17,12 +17,20 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       # One version, the workspace's (#428): the derivations below take it, so a release bump cannot leave them behind.
       version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
+      # The build's rev (#552): the desktop shows `<version> · <rev>` (app/src-tauri/src/version.rs), `-dirty` for a
+      # dirty tree. Only the packages take it (`stamped` below): the checks build the desktop without it, so their
+      # drvs depend on the sources alone and a docs-only commit leaves them cached. A source without git metadata
+      # (a `path:` flake, a tarball) has no rev: its packages say `dev`, never a guessed rev, and the release
+      # workflow refuses a binary without its commit's `<version> · <rev>`.
+      buildRev = self.shortRev or self.dirtyShortRev or null;
       source = fileset: lib.fileset.toSource { root = ./.; inherit fileset; };
       cargoFiles = lib.fileset.difference (craneLib.fileset.commonCargoSources ./.) ./crates/crank-fec/fuzz;
       rustFiles = lib.fileset.unions [ cargoFiles ./crates/crank-ble/proptest-regressions ./crates/crank-store/migrations ./crates/crank-store/tests/fixtures ./app/src-tauri/tests/fixtures ./crates/crank-fec/tests/fixtures ./crates/crank-engine/tests/fixtures (lib.fileset.fileFilter (f: f.hasExt "fecap") ./docs/hil/captures) ./clippy.toml ./.config/nextest.toml ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-core/tests/fixtures ./docs/adr/models/fixtures/gpx-elevation-samples.csv ./crates/crank-domain/DIVERGENCES.md ./scripts/relocate-tauri-permissions.py ./spec/knowledge-pack/rules.md ./.github/ISSUE_TEMPLATE/bug.yml
         ./app/src-tauri/tauri.conf.json ./app/src-tauri/capabilities ./app/src-tauri/Info.plist ./app/src-tauri/icons ];
       frontendSrc = source (lib.fileset.unions [
         (lib.fileset.difference ./app ./app/src-tauri) ./shared ./assets/brand
+        # The start screen paints the brand's F · Spin-up (#552); pnpm needs the workspace member's package.json beside it.
+        ./design/brand/src ./design/brand/package.json
         ./crates/crank-domain/tests/vectors ./crates/crank-domain/tests/fixtures ./crates/crank-core/tests/fixtures
         ./package.json ./pnpm-lock.yaml ./pnpm-workspace.yaml ]);
       pnpmDeps = pkgs.fetchPnpmDeps {
@@ -34,7 +42,7 @@
         # pnpm leaves an empty v11/links directory on macOS but not Linux.
         # Empty store directories carry no cache data; normalize before packing.
         postInstall = ''find "$storePath" -type d -empty -delete'';
-        fetcherVersion = 4; hash = "sha256-d5cXHJQOUVOlcIazn5/FJJY8QDBhLVXw6gZcA11gmZg=";
+        fetcherVersion = 4; hash = "sha256-T7KuamxIwjEU2hl+SsJUzfbZCRgsiNr+tRt+FapHH8k=";
       };
       frontend = name: command: pkgs.stdenvNoCC.mkDerivation {
         pname = name; inherit version; src = frontendSrc;
@@ -99,6 +107,13 @@
         doCheck = false;
         preBuild = ''export TAURI_CONFIG='{"build":{"frontendDist":"${appDist}"}}' '';
       });
+      # A desktop package with this build's rev compiled in (#552), checked for the exact string it will show.
+      stamped = drv: if buildRev == null then drv else drv.overrideAttrs (old: {
+        CRANK_BUILD_REV = buildRev;
+        postInstall = (old.postInstall or "") + ''
+          grep -aqF ${lib.escapeShellArg "${version} · ${buildRev}"} $out/bin/crank-desktop
+        '';
+      });
       cli = craneLib.buildPackage (rustCheck // {
         pname = "crank-cli"; cargoExtraArgs = "--locked -p crank-cli"; doCheck = false;
       });
@@ -111,10 +126,10 @@
       # invalidates the linker's ad-hoc signature, so the binary is re-signed ad hoc here (arm64 refuses
       # to run unsigned code); `just bundle` replaces that signature with the nix-tcc one. The
       # `bundle-no-nix-store` check fails if any Mach-O (also an unexpected library) still names the store.
-      crankApp = pkgs.runCommand "crank-app" { nativeBuildInputs = [ pkgs.cctools pkgs.darwin.sigtool ]; } ''
+      crankAppOf = desktopDrv: pkgs.runCommand "crank-app" { nativeBuildInputs = [ pkgs.cctools pkgs.darwin.sigtool ]; } ''
         app=$out/crank.app/Contents
         mkdir -p $app/MacOS $app/Resources
-        install -m755 ${desktop ""}/bin/crank-desktop $app/MacOS/crank-desktop
+        install -m755 ${desktopDrv}/bin/crank-desktop $app/MacOS/crank-desktop
         install -m755 ${cli}/bin/crank $app/MacOS/crank
         for bin in $app/MacOS/*; do
           otool -L "$bin" | awk '/^\t\/nix\/store\/.*-libiconv-.*\/libiconv\.2\.dylib /{print $1}' | while read -r lib; do
@@ -297,7 +312,7 @@
         '';
         # No Mach-O of the built bundle may load from /nix/store (#413); the script is the same one the docs name.
         bundle-no-nix-store = pkgs.runCommand "bundle-no-nix-store" { nativeBuildInputs = [ pkgs.cctools ]; } ''
-          bash ${./scripts/check-bundle-no-nix-store.sh} ${crankApp}/crank.app
+          bash ${./scripts/check-bundle-no-nix-store.sh} ${crankAppOf checks.build}/crank.app
           touch $out
         '';
       } // {
@@ -321,10 +336,10 @@
           });
     in {
       inherit checks;
-      packages = { app-dist = appDist; crank-desktop = desktop "";
-        crank-desktop-e2e = desktop ",e2e";
+      packages = { app-dist = appDist; crank-desktop = stamped (desktop "");
+        crank-desktop-e2e = stamped (desktop ",e2e");
         crank-cli = cli;
-      } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin { crank-app = crankApp; }
+      } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin { crank-app = crankAppOf (stamped (desktop "")); }
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           design-screenshots = designHarness "design-screenshots"
             "rm -rf app/e2e/design/screenshots && pnpm -C app exec playwright test --grep ' screenshot$' --update-snapshots=all"

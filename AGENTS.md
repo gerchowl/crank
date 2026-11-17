@@ -49,7 +49,11 @@ pinned `advisory-db` input (bump: `nix flake update advisory-db`; ADR-0001 §9.5
 `crank-desktop` wires `crank-core` as Tauri commands (`app/src-tauri/src/commands.rs`, one per facade method; `ApiError` is the only
 error type that crosses) and manages one `Core`. Runtime configuration: `--sim` or `CRANK_SIM=1` (anything but empty, `0`, `false`)
 drives the seeded device simulator instead of Bluetooth; `CRANK_DATA_DIR` sets the directory of `crank.db` and `ride.lock` (default:
-the app-data directory of the bundle identifier). **Logs and raw-frame captures (#411, #414, ADR-0001 §7.1)**: the desktop main (`app/src-tauri/src/logging.rs`,
+the app-data directory of the bundle identifier). **Version string (#552):** `<version> · <rev>` from `CARGO_PKG_VERSION`
+and the build-time `CRANK_BUILD_REV`, which only the flake's `crank-desktop` packages set (`self.shortRev`, or
+`dirtyShortRev` with `-dirty`, through `stamped`; the checks do not, so they stay cached), else `dev` (also a flake
+source without git metadata) (`app/src-tauri/src/version.rs`;
+the window title and the `app_build` command; never `git` at run time). **Logs and raw-frame captures (#411, #414, ADR-0001 §7.1)**: the desktop main (`app/src-tauri/src/logging.rs`,
 never a library crate) installs vigil (`vigil-telemetry`, tag `0.2.0`; tests that start a pipeline need nextest, one per process). Records
 are OTLP/JSON Lines, one `LogsData` per line: `logs.jsonl` (records sit under `resourceLogs[].scopeLogs[].logRecords[]`) and `traces.jsonl`,
 rotated into 8 MiB segments (`logs-<UTC stamp>.jsonl`). A normal launch logs to `~/Library/Logs/io.github.gerchowl.crank/`
@@ -143,7 +147,8 @@ used (`app/e2e/design/focus.ts`, the key presses and rules; `focus-audit.js`, th
 baseline: `focus.ring` (a stop whose focused `outline`, or `box-shadow`, is unchanged, under 2 px, off screen or under
 3 : 1 against the background it is drawn on), `focus.order` (a step against the reading order: rows top to bottom, then
 left to right, a later column may start higher, 4 px tolerance; Shift+Tab not the exact reverse; the skip link not first,
-not onto `#main`, or the next Tab not `#main`'s first control) and `focus.trap` (focus lost to `body` other than once at
+not onto `#main`, or the next Tab not `#main`'s first control; a page with no `#main`, the start screen, needs none, and a
+fixture with no control by design says `noControls`) and `focus.trap` (focus lost to `body` other than once at
 the document's edge, a stop that is no control, a cycle that never closes). Every screen passes all three today, so none
 is in the baseline and a first violation fails; each failure prints the offending stops (`<selector>: <why>`, or
 `<from> -> <to>: against reading order`). **Visual baselines (#459):** on Linux each fixture × project is also compared
