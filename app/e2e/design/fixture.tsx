@@ -7,6 +7,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { AppRoot } from "../../src/App";
+import { markSeen } from "../../src/build";
+import type { WaitForCore } from "../../src/core";
 import "../../src/theme.css";
 import "../../src/shell.css";
 import type { LinkStatus, MetricId, PairedDevice } from "../../src/bindings";
@@ -631,7 +633,22 @@ const SETUPS: Record<ScenarioName, () => void> = {
     installWorkouts(longLibrary());
     void startRideLoad("w-long", LONG_NAME);
   },
+  // The destination (Today) is never reached; the start screen calls nothing.
+  "start-slow": () => navigate("today"),
+  "start-failed": () => navigate("today"),
 };
+
+// The start screen's fixtures boot slowly or fail; every other one is a core that is ready at once (core.ts).
+const BOOTS: Partial<Record<ScenarioName, WaitForCore>> = {
+  "start-slow": () => new Promise<void>(() => {}),
+  "start-failed": () =>
+    Promise.reject(new Error("its saved state could not be opened")),
+};
+
+/** The fixtures' build string (version.rs `build_label`'s shape); its spin-up counts as played (a later launch). */
+const BUILD = "0.2.0-rc.1 · 7516045";
+const readBuild = () => Promise.resolve(BUILD);
+markSeen(BUILD);
 
 const name = new URLSearchParams(location.search).get("scenario");
 const scenario = SCENARIOS.find((s) => s.name === name);
@@ -678,6 +695,6 @@ const root = document.getElementById("root");
 if (!root) throw new Error("Missing app root");
 createRoot(root).render(
   <StrictMode>
-    <AppRoot />
+    <AppRoot readBuild={readBuild} waitForCore={BOOTS[scenario.name]} />
   </StrictMode>,
 );

@@ -88,6 +88,20 @@ const PAIRS: [string, string, number][] = [
   ["focus", "panel-2", 3],
 ];
 
+describe("start screen (BRAND.md §Colour)", () => {
+  for (const mode of ["dark", "light"] as const) {
+    test(`${mode}: the status line, the build's version string and the alert text meet 4.5 : 1`, () => {
+      const t = tokens(block(`.start[data-mode="${mode}"]`));
+      for (const fg of ["start-muted", "start-ink"]) {
+        expect(
+          ratio(t[fg]!, t["start-bg"]!),
+          `--${fg} on --start-bg`,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+  }
+});
+
 describe("palette", () => {
   for (const [mode, sel] of [
     ["dark", ':root[data-theme="dark"]'],

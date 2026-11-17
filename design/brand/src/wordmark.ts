@@ -160,9 +160,15 @@ export const CONCEPTS: Record<ConceptId, { name: string; build: (p: Paint, id: s
 /** The recommended direction (BRAND.md §Recommendation); scripts/export.ts writes it to assets/brand/. */
 export const RECOMMENDED: ConceptId = "slice";
 
+/** How far (in % of the drawing's width) to move a drawing so its optical centre sits mid-window. */
+export function focusShift({ viewBox, focus }: Art) {
+  return focus === undefined ? 0 : n(((viewBox[0] + viewBox[2] / 2 - focus) / viewBox[2]) * 100);
+}
+
 export function svg(id: ConceptId, paint: Paint, uid: string = id, attrs = "") {
-  const { viewBox, body, focus } = CONCEPTS[id].build(paint, uid);
-  // --focus-shift: how far (in % of the drawing's width) to move it so the optical centre sits mid-window.
-  const shift = focus === undefined ? 0 : n(((viewBox[0] + viewBox[2] / 2 - focus) / viewBox[2]) * 100);
+  const art = CONCEPTS[id].build(paint, uid);
+  const { viewBox, body } = art;
+  // --focus-shift: see focusShift; the page applies it (style.css, the prototype's start.css, the app's shell.css).
+  const shift = focusShift(art);
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox.map(n).join(" ")}" style="--focus-shift:${shift}%"${attrs}>${body}</svg>`;
 }
