@@ -2261,13 +2261,11 @@ after ± and the coach. The commanded target moves towards the plan line:
 - reaching full rate over a 2 s ease.
 
 A ramp is followed on the line, with its start and end corners eased too. If the trajectory library refuses a
-calculation (rare: a known upstream bug class), a simpler limiter takes over until it answers again (ADR-0002 §7.10.2,
-X5, rounds 10–12). The target still never rises above the plan, and it still brakes before a known drop and eases
-into a planned fall. A landing can take several times longer, though: a staircase under persistent refusals took
-23.5 s where Ruckig takes 8.75 s. A planned fall can also start up to a second late (the old trajectory is kept for
-three ticks first). The target can then sit further above a falling plan than without refusals, by at most the
-plan's fall over that second: 39 W on a −39.5 W/s fall at the defaults. The worst measured is 56 W, on a fall at
-60 W/s. The soft start is the same curve, started
+calculation (rare: a known upstream bug class), it is asked once more with its limits tightened by a hair, which in
+every measured case answers (ADR-0002 §7.10.2, X5a). If that is refused too, the easer is **degraded** (X5, round 13):
+the target comes to rest smoothly (the same S-curve, eased out) and holds there, without following the plan, until the
+library answers again; then it eases back onto the plan line as after any change. While degraded the target never
+rises while above the plan line, and stays between 0 W and the cap, and the ride shows a fault (§19.4). The soft start is the same curve, started
 from the rider's current power. "Caught up" below means the command is
 on the plan line. This section says what the rider sees of it. It amends §5.2, §5.9, §6.5, §17.3 and §18.3,
 which point here.
@@ -2321,6 +2319,11 @@ prediction and behind it as ridden. Whether the editor warns about such blocks i
   catching up is the power row's job.
 - **Pause, ERG released, end, free ride:** unchanged, and immediate: none of them waits for an ease (ADR-0002
   §7.10.5).
+- **Easer degraded** (ADR-0002 §7.10.2 X5, `ergEaserDegraded`, round 13): a warning banner in row 4, "⚠ ERG easing
+  fault · target held at 253 W", with the warning tone of §6.5, for as long as the status is raised. The target holds
+  (after easing to rest) instead of following the plan, so the power row says "settling" and those seconds are
+  excluded from compliance, as any off-line second. When the easer recovers the banner goes and the target eases back
+  onto the plan; the ride's log records each degraded run.
 
 ### 19.5 Settings
 
