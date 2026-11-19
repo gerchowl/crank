@@ -124,6 +124,11 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Fixed
 
+- `nix build .#crank-app` (and `.#crank-desktop`) from a git checkout builds again: the version string is one
+  compile-time constant (`build.rs` resolves the rev, `concat!` joins it), so the binary carries the whole
+  `<version> · <rev>` that the flake checks for; the check names the string it missed, and a `build-stamped` flake
+  check builds the stamped path with a fixed rev on every CI run
+  ([#659](https://github.com/gerchowl/crank/issues/659))
 - Ride screen: the workout strip's blocks no longer run past the strip into the key row in the app. WKWebView resolved
   the bar's `height: 100%` (a replaced element in a `minmax(0, 1fr)` grid row) against the whole strip; the bar is now
   a cell the grid sizes, which the SVG fills absolutely. The design audit gains generic invariants on every fixture and
