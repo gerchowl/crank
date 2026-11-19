@@ -1,6 +1,6 @@
 // The build's version string and the once-per-version spin-up (#552, BRAND.md §Start screen). The string,
 // `<version> · <rev>` (e.g. `0.2.0-rc.1 · 7516045`, `-dirty` for a dirty tree, `· dev` off the flake), is fixed in
-// the desktop binary at build time (version.rs `build_label`) and read once per boot attempt; the page never
+// the desktop binary at build time (version.rs `BUILD_LABEL`) and read once per boot attempt; the page never
 // formats or guesses it. "Seen" records the string whose spin-up has played through, in the app's local settings
 // (localStorage, beside the theme, until the persistence primitive #90; never the store, so it does not sync):
 // the first launch of a new install or update holds the start screen until the motion ends, later ones do not.

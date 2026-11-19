@@ -118,7 +118,8 @@ jobs:
           # exactly this release's version and this commit's rev.
           rev=${GITHUB_SHA:0:7}
           git diff --quiet HEAD || rev=$rev-dirty
-          grep -aqF "$VERSION · $rev" result/crank.app/Contents/MacOS/crank-desktop
+          grep -aqF "$VERSION · $rev" result/crank.app/Contents/MacOS/crank-desktop \
+            || { echo "::error::crank-desktop lacks the version string '$VERSION · $rev' (#552, #659)"; exit 1; }
           ditto -c -k --keepParent result/crank.app "$ZIP"
           shasum -a 256 "$ZIP" > "$ZIP.sha256"
           shasum -a 256 -c "$ZIP.sha256"
