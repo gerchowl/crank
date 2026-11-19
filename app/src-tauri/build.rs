@@ -13,7 +13,7 @@ fn main() {
     let rev = match env::var("CRANK_BUILD_REV") {
         Ok(rev) => Some(rev),
         Err(VarError::NotPresent) => None,
-        Err(VarError::NotUnicode(rev)) => panic!("CRANK_BUILD_REV is not UTF-8: {rev:?}"),
+        Err(VarError::NotUnicode(rev)) => panic!("CRANK_BUILD_REV is not UTF-8: {}", rev.display()),
     };
     println!(
         "cargo:rustc-env=CRANK_BUILD_REV_SHOWN={}",
