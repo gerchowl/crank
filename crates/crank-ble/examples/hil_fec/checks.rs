@@ -1154,6 +1154,7 @@ mod tests {
         answers: &[],
         answer_at_us: 0,
         connect_answer_after_us: 0,
+        road: &crate::sim::ROAD,
     };
 
     async fn driven(p: Procedure, plan: Plan) -> (Report, Vec<Record>) {

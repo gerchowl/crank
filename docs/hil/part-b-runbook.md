@@ -94,7 +94,7 @@ Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10, 11a, 11b and 11c), w
 | 7 | `hil_fec check7 --out "$OUT"` | 90 rpm at 150 W; the harness stays silent for 40 s | 1 min |
 | 8 | `hil_fec check8 --out "$OUT"` | Easy gear, steady; grades 0 / 5 / 5 / 10 %, shift down when steep | 2.5 min |
 | 9 | `hil_fec check9 --out "$OUT"` | 90 rpm at 250 W, then follow the cue down about 5 rpm every 10 s; keep turning | up to 3 min |
-| 12 | `hil_fec check12 --out "$OUT"` | 90 rpm at 200 W; it switches to Free; at the cue go to 70 rpm. **Stay in this gear from the switch until the question** (ADR-0007; until that procedure lands, to the end of the check) | 1 min |
+| 12 | `hil_fec check12 --out "$OUT"` | 90 rpm at 200 W; it switches to Free and cues *stay in this gear*: hold 90 rpm 15 s, at the cue go to 70 rpm for 15 s, then answer whether 70 rpm got clearly easier than the 90 rpm part right after the switch (`y` easier / `n` not easier / `s` I shifted gear), keeping 70 rpm until you have answered. **Stay in this gear from the switch until the question; answer `s` if you shifted** (ADR-0007 §2) | 1 min |
 
 - **After check 8:** confirm its row does not read `page 16 counters did not advance`. Check 8 reads speed only
   from page 16 frames whose elapsed time moves (ANT+ FE-C General FE Data page 16: page byte 2, 0.25 s units,
