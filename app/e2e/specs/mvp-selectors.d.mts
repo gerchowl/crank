@@ -16,6 +16,7 @@ export const ride: string;
 export const pill: (name: "NEO" | "HR") => string;
 export const key: (word: string) => string;
 export const slot: (name: string) => string;
+export const neoBack: string;
 export const stateLine: string;
 export const banner: (id: string) => string;
 export const chart: (series: "power" | "hr" | "cadence") => string;

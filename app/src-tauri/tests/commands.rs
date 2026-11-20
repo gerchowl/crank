@@ -390,3 +390,24 @@ async fn the_editor_commands_agree_with_the_library() {
         "invalid"
     );
 }
+
+/// #668: the test hook `sim_fault` exists only in the `e2e` build. The desktop installs the
+/// invoke handler of `crank_desktop::bindings`, and that handler and the exported function
+/// list come from one `collect_commands!`: so this exports the registry, built as CI's
+/// nextest builds it (without `e2e`), and looks for the command, with `core_ready` as the
+/// control that the export lists the commands at all.
+#[test]
+fn only_the_e2e_build_registers_sim_fault() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("bindings.ts");
+    crank_desktop::bindings()
+        .export(specta_typescript::Typescript::default(), &out)
+        .expect("export");
+    let ts = std::fs::read_to_string(&out).expect("exported");
+    assert!(ts.contains(r#"__TAURI_INVOKE("core_ready")"#), "{ts}");
+    assert_eq!(
+        ts.contains(r#"__TAURI_INVOKE("sim_fault""#),
+        cfg!(feature = "e2e"),
+        "sim_fault is registered exactly in the e2e build"
+    );
+}

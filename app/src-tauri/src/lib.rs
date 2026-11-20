@@ -29,11 +29,11 @@ use std::path::Path;
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-/// Registry shared by the desktop and export binary to prevent drift.
-#[must_use]
-pub fn bindings() -> tauri_specta::Builder<tauri::Wry> {
-    tauri_specta::Builder::new()
-        .commands(tauri_specta::collect_commands![
+/// The command list of [`bindings`], then the build's test-only commands. One list, so the
+/// production and the `e2e` registries cannot drift apart.
+macro_rules! registry {
+    ($($extra:tt)*) => {
+        tauri_specta::collect_commands![
             core_ready,
             devices_scan,
             device_pair,
@@ -65,7 +65,27 @@ pub fn bindings() -> tauri_specta::Builder<tauri::Wry> {
             ride_summary,
             display_width_mm::<tauri::Wry>,
             version::app_build,
-        ])
+            $($extra)*
+        ]
+    };
+}
+
+/// Registry shared by the desktop and export binary to prevent drift.
+///
+/// The `e2e` build adds the test hook `sim_fault` (`commands::sim_fault`, #668), so a
+/// production build has no such command and the exported bindings (built without `e2e`)
+/// never name it. The invoke handler and the exported function list come from the same
+/// `collect_commands!`, so `tests/commands.rs` `only_the_e2e_build_registers_sim_fault`
+/// checks the export of this registry in CI; the `deps-edges` flake check proves that
+/// production never enables `e2e`.
+#[must_use]
+pub fn bindings() -> tauri_specta::Builder<tauri::Wry> {
+    #[cfg(not(feature = "e2e"))]
+    let commands = registry!();
+    #[cfg(feature = "e2e")]
+    let commands = registry!(commands::sim_fault);
+    tauri_specta::Builder::new()
+        .commands(commands)
         // The rider tuning and its defaults (ADR-0001 §7.2), so the UI and its test backends
         // take the ADR-0002 §7.4 values from Rust instead of copying them (#589).
         .typ::<crank_engine::Tuning>()

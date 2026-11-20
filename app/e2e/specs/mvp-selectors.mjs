@@ -66,6 +66,8 @@ export const key = (word) =>
   `//div[@data-region="keys"]/button[normalize-space(.)=${lit(word)} or starts-with(normalize-space(.), ${lit(`${word} `)})]`;
 /** A live slot: "target", "plan", "power", "cadence", "hr", "block", "countdown", "elapsed". */
 export const slot = (name) => `[data-slot=${lit(name)}]`;
+/** The status bar's reconnect chip: "NEO back · m:ss gap" for a while after a trainer loss, else empty. */
+export const neoBack = `[data-testid="neo-back"]`;
 /** The key row's state line ("Riding", "Paused", …). */
 export const stateLine = `[data-testid="state"]`;
 /** A banner of the band by its id (src/ride/banners.tsx `BannerBand`): "paused", "loss-trainer", "loss-hr", … */
