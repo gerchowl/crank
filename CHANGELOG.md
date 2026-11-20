@@ -124,6 +124,9 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Fixed
 
+- Loading a ride while "Release trainer" discards the loaded one no longer fails with "driver already connected"
+  and leaves the trainer `not_found`: a ride's hold on the keeper is given back only once its devices are handed back
+  (ADR-0002 §5.1.1), on every way a ride ends ([#573](https://github.com/gerchowl/crank/issues/573))
 - `nix build .#crank-app` (and `.#crank-desktop`) from a git checkout builds again: the version string is one
   compile-time constant (`build.rs` resolves the rev, `concat!` joins it), so the binary carries the whole
   `<version> · <rev>` that the flake checks for; the check names the string it missed, and a `build-stamped` flake

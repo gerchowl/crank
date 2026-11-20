@@ -296,12 +296,13 @@ struct Session {
     /// before the reap closes them through the session ([`Core::shutdown`]). vigil exports no span
     /// still open at its shutdown (vigil#8).
     spans: RideSpans,
-    /// Set once a driver has closed its event stream, i.e. handed the peripheral back
-    /// (the same confirmation pairing waits for).
+    /// Set once the drivers have closed their event streams, i.e. handed the peripherals back
+    /// (the same confirmation pairing waits for), and the keeper hold was given back.
     release: LinkRelease,
     /// The ride's hold on the links the keeper handed over: dropped with the session (its
-    /// reap), which makes the keeper active again (ADR-0002 §5.1.1).
-    _hold: Hold,
+    /// reap), it gives the hold back once the links are released, which makes the keeper
+    /// active again (ADR-0002 §5.1.1).
+    _lease: Lease,
     /// The core's own hold on the trainer, independent of the engine task, for the end mode
     /// of a forced end.
     trainer: TrainerHold,
@@ -386,16 +387,35 @@ struct TrainerHold {
 ///
 /// Two different things are awaited when a ride is released, in this order: the **session
 /// reap** (`wait_released`: the engine dropped the ride-active signal and its task ended),
-/// then **the drivers' streams closing** (`LinkRelease::wait`: the trainer and the strap
-/// handed their peripherals back). `discard` and `ride_end` await both, so a pairing
-/// right after either finds the devices free; the second step is bounded by
-/// [`RELEASE_TIMEOUT`].
+/// then **the links handed back** (`LinkRelease::wait`: the trainer and the strap handed their
+/// peripherals back, and then the ride's keeper hold was given back, [`Lease`]). `discard` and
+/// `ride_end` await both, so a pairing or a load right after either finds the devices free and
+/// the keeper active; the second step is bounded by [`RELEASE_TIMEOUT`].
 #[derive(Clone)]
 struct LinkRelease {
+    /// The drivers' own signals, for a test to check what was released.
+    #[cfg(test)]
+    drivers: DriversClosed,
+    /// Set once the [`Lease`] has given the keeper hold back, after `drivers`.
+    handed_back: watch::Receiver<bool>,
+}
+impl LinkRelease {
+    /// Resolves at most [`RELEASE_TIMEOUT`] after the [`Lease`] was dropped: await it only once
+    /// it has been (its session reaped, or its build given up), or it waits for that too.
+    async fn wait(mut self) {
+        // An error is the lease's task gone with the runtime: nothing is left to wait for.
+        let _ = self.handed_back.wait_for(|h| *h).await;
+    }
+}
+/// Set once a driver has closed its event stream, i.e. handed the peripheral back: one signal
+/// for the trainer and one for a linked strap ([`relay_links`]).
+#[derive(Clone)]
+struct DriversClosed {
     trainer: watch::Receiver<bool>,
     hr: Option<watch::Receiver<bool>>,
 }
-impl LinkRelease {
+impl DriversClosed {
+    /// Wait until both drivers closed their streams, for at most [`RELEASE_TIMEOUT`].
     async fn wait(mut self) {
         let trainer = async {
             let _ = self.trainer.wait_for(|c| *c).await;
@@ -410,6 +430,55 @@ impl LinkRelease {
             .is_err()
         {
             tracing::warn!("a device did not confirm release");
+        }
+    }
+}
+/// A ride's keeper [`Hold`] on the links it was handed, tied to their release (ADR-0002 §5.1.1,
+/// #573): the hold is given back only once the drivers have closed their streams (or
+/// [`RELEASE_TIMEOUT`] passed), so the keeper, active again from that moment, never starts an
+/// attempt that meets the ride's link still connected.
+///
+/// It is the one owner of that order, whatever drops it: the session's reap (an end, a discard,
+/// a forced end, a dead engine) or a load that fails, is cancelled or panics after its links were
+/// handed over. Dropping it starts the wait on the runtime (as [`LoadGuard`] does), so no path
+/// can give the hold back early, and none can keep it: the wait is bounded. Its
+/// [`LinkRelease`] resolves after the hold is given back, so whoever awaits it (a replacing load,
+/// `ride_end`, the keeper's discard) acts on a keeper that has the `Released` report queued
+/// before anything it sends next.
+struct Lease {
+    give_back: Option<(Hold, DriversClosed, watch::Sender<bool>)>,
+}
+impl Lease {
+    fn new(hold: Hold, drivers: DriversClosed) -> (Self, LinkRelease) {
+        let (handed_back, rx) = watch::channel(false);
+        let release = LinkRelease {
+            #[cfg(test)]
+            drivers: drivers.clone(),
+            handed_back: rx,
+        };
+        (
+            Self {
+                give_back: Some((hold, drivers, handed_back)),
+            },
+            release,
+        )
+    }
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let Some((hold, drivers, handed_back)) = self.give_back.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                drivers.wait().await;
+                drop(hold);
+                handed_back.send_replace(true);
+            });
+        } else {
+            // No runtime left: the drivers went with it, and so does the keeper.
+            drop(hold);
+            handed_back.send_replace(true);
         }
     }
 }
@@ -565,7 +634,7 @@ fn relay_links(
     trainer: &mut TrainerLink,
     hr: Option<&mut HeartRateLink>,
     takeover: &watch::Sender<Takeover>,
-) -> (TrainerHold, LinkRelease) {
+) -> (TrainerHold, DriversClosed) {
     #[cfg(test)]
     let dropped = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (engine_control, core_control) = gate_commands(
@@ -605,11 +674,11 @@ fn relay_links(
         link.events = events;
         closed
     });
-    let release = LinkRelease {
+    let closed = DriversClosed {
         trainer: trainer_closed,
         hr: hr_closed,
     };
-    (hold, release)
+    (hold, closed)
 }
 /// The engine's ride-active signal, as the core takes it: into the gate and `active`, while
 /// the engine has the ride ([`Takeover::Engine`]) and its ride owns the signal (`signal_of`)
@@ -720,6 +789,26 @@ async fn force_end_mode(ride_id: &str, hold: &TrainerHold) -> bool {
         );
     }
     confirmed
+}
+/// A build whose new engine did not take `Load` in time: a wedged engine holds the links it was
+/// built with, so the core cuts it off and releases them itself, as a forced end does, and
+/// waits until the keeper has them back, so the next load finds the devices free (#573).
+async fn release_wedged(
+    ride_id: &str,
+    hold: &TrainerHold,
+    takeover: &watch::Sender<Takeover>,
+    task: &EngineTask,
+    lease: Lease,
+    release: LinkRelease,
+) -> ApiError {
+    release_links(ride_id, hold, takeover);
+    task.abort();
+    drop(lease);
+    release.wait().await;
+    ApiError::new(
+        ErrorCode::EngineUnresponsive,
+        "the ride engine did not take the ride in time; its devices were released, try again",
+    )
 }
 /// Step 3 of [`Core::force_end`]: the relays stop and close the drivers' event streams (a
 /// closed stream is what makes a trainer's driver return and a strap's disconnect), and the
@@ -1886,6 +1975,63 @@ impl Core {
         Ok((e.workout.clone(), e.compiled.clone()))
     }
 
+    /// The first step of a load: a loaded-but-unstarted or finished ride is replaced, but only
+    /// once it has released its devices; a ride reaped meanwhile by someone else is waited for
+    /// the same way.
+    ///
+    /// # Errors
+    /// `Conflict` if a ride is in progress or another load is under way.
+    async fn replace_unstarted(&self) -> Result<(), ApiError> {
+        loop {
+            let (ending, reaped) = {
+                let st = self.0.state.lock().await;
+                let ending = match &st.session {
+                    None => None,
+                    Some(s) => {
+                        if StreamStatus::from(&s.handle.status()).in_progress() {
+                            return Err(ApiError::new(
+                                ErrorCode::Conflict,
+                                "a ride is in progress",
+                            ));
+                        }
+                        // `Stop` unloads a loaded ride; a finished one is refused, harmlessly.
+                        // Bounded like the one of `ride_end`: an engine that does not
+                        // answer is ended by force below, not waited for under the lock.
+                        let stopped =
+                            tokio::time::timeout(STOP_TIMEOUT, s.handle.send(EngineCmd::Stop))
+                                .await;
+                        let stuck =
+                            matches!(stopped, Err(_) | Ok(Err(CommandError::EngineStopped)));
+                        Some((s.ride_id.clone(), s.release.clone(), stuck))
+                    }
+                };
+                (ending, st.last_release.clone())
+            };
+            let Some((id, release, stuck)) = ending else {
+                // Another load (or a cancelled one winding down) is refused at once, as
+                // `ride_load` does, not after waiting for a release that is not its to wait for.
+                if self.0.loading.load(Ordering::SeqCst) {
+                    return Err(ApiError::new(
+                        ErrorCode::Conflict,
+                        "another ride is loading or loaded",
+                    ));
+                }
+                // A ride reaped by someone else (an End, the keeper's discard) may still be
+                // handing its links back: the keeper takes no load until it has (#573).
+                if let Some(reaped) = reaped {
+                    reaped.wait().await;
+                }
+                return Ok(());
+            };
+            if stuck {
+                self.force_end(&id, false).await;
+            } else {
+                self.settle(&id).await;
+            }
+            release.wait().await;
+        }
+    }
+
     /// Load a workout (or a free ride for `None`): connect the paired devices, build
     /// the engine and load the workout. The ride starts with `ride_start`.
     ///
@@ -1905,44 +2051,7 @@ impl Core {
         let (workout, compiled) = self.resolve_workout(workout_id.as_deref())?;
         let tuning = self.resolve_tuning()?;
         self.ensure_start_allowed()?;
-        // A loaded-but-unstarted or finished ride is replaced, but only once it has
-        // released its devices.
-        loop {
-            let ending = {
-                let st = self.0.state.lock().await;
-                match &st.session {
-                    None => None,
-                    Some(s) => {
-                        if StreamStatus::from(&s.handle.status()).in_progress() {
-                            return Err(ApiError::new(
-                                ErrorCode::Conflict,
-                                "a ride is in progress",
-                            ));
-                        }
-                        // `Stop` unloads a loaded ride; a finished one is refused, harmlessly.
-                        // Bounded like the one of `ride_end`: an engine that does not
-                        // answer is ended by force below, not waited for under the lock.
-                        let stopped =
-                            tokio::time::timeout(STOP_TIMEOUT, s.handle.send(EngineCmd::Stop))
-                                .await;
-                        let stuck =
-                            matches!(stopped, Err(_) | Ok(Err(CommandError::EngineStopped)));
-                        Some((s.ride_id.clone(), s.release.clone(), stuck))
-                    }
-                }
-            };
-            match ending {
-                Some((id, release, stuck)) => {
-                    if stuck {
-                        self.force_end(&id, false).await;
-                    } else {
-                        self.settle(&id).await;
-                    }
-                    release.wait().await;
-                }
-                None => break,
-            }
-        }
+        self.replace_unstarted().await?;
         {
             let st = self.0.state.lock().await;
             if st.session.is_some() || self.0.loading.swap(true, Ordering::SeqCst) {
@@ -2161,7 +2270,9 @@ impl Core {
         } = self.connect_links(&mut spans).await?;
         let (mut trainer, mut hr, how) = (handed.trainer, handed.strap, handed.how);
         let takeover = Arc::new(watch::channel(Takeover::Engine).0);
-        let (hold, release) = relay_links(&ride_id, &mut trainer, hr.as_mut(), &takeover);
+        let (hold, closed) = relay_links(&ride_id, &mut trainer, hr.as_mut(), &takeover);
+        // every way out from here gives the keeper hold back once the links are released
+        let (lease, release) = Lease::new(handed.hold, closed);
         let hr_linked = hr.is_some();
         #[cfg(test)]
         let pin = self.0.pin_active.clone();
@@ -2223,17 +2334,9 @@ impl Core {
         .await;
         if let Err(e) = loaded {
             if e.code == ErrorCode::EngineUnresponsive {
-                // A wedged engine holds the links it was built with: the core cuts it off
-                // and releases them itself, as a forced end does, so the next load finds the
-                // devices free.
-                release_links(&ride_id, &hold, &takeover);
-                task.abort();
-                release.wait().await;
-                return Err(ApiError::new(
-                    ErrorCode::EngineUnresponsive,
-                    "the ride engine did not take the ride in time; its devices were \
-                     released, try again",
-                ));
+                return Err(
+                    release_wedged(&ride_id, &hold, &takeover, &task, lease, release).await,
+                );
             }
             return Err(e);
         }
@@ -2248,7 +2351,7 @@ impl Core {
                 series,
                 spans,
                 release,
-                _hold: handed.hold,
+                _lease: lease,
                 trainer: hold,
                 takeover,
                 #[cfg(test)]
@@ -3620,6 +3723,12 @@ mod tests {
     }
     /// One engine tick: the tolerance of the §5.1.8 load bounds.
     pub(super) const TICK: Duration = Duration::from_millis(250);
+    /// Wait until the ride reaped last has handed its links back (its `LinkRelease`): the
+    /// drivers closed their streams and the keeper hold was given back (ADR-0002 §5.1.1, #573).
+    pub(super) async fn handed_back(core: &Core) {
+        let release = core.0.state.lock().await.last_release.clone();
+        release.expect("a ride was reaped").wait().await;
+    }
 
     /// #468, ADR-0002 §5.1.8: a cold load takes the longer of the two connects, not their sum.
     #[tokio::test(start_paused = true)]
@@ -4147,7 +4256,7 @@ mod tests {
     /// Kill the loaded ride's engine task, as a panic would: every command answers
     /// `EngineStopped`, its device links are dropped (the core's own hold on the trainer
     /// stays), and the ride-active signal stays up.
-    async fn break_engine(core: &Core) {
+    pub(super) async fn break_engine(core: &Core) {
         core.0
             .state
             .lock()
@@ -4450,9 +4559,12 @@ mod tests {
         // released by the core, with the engine still holding its links: both relays saw their
         // driver close its stream (the release finished, not just started), and the fake
         // counted the trainer's disconnect and the strap's release
-        assert!(*release.trainer.borrow(), "the trainer was not released");
         assert!(
-            release.hr.as_ref().is_some_and(|hr| *hr.borrow()),
+            *release.drivers.trainer.borrow(),
+            "the trainer was not released"
+        );
+        assert!(
+            release.drivers.hr.as_ref().is_some_and(|hr| *hr.borrow()),
             "the strap was not released"
         );
         assert_eq!(radio.disconnects.lock().unwrap().len(), 1, "trainer");
@@ -4584,9 +4696,12 @@ mod tests {
             .unwrap();
         let took = t.elapsed();
         // the immediate-release assumption of `end_bound`
-        assert!(*release.trainer.borrow(), "the trainer was not released");
         assert!(
-            release.hr.as_ref().is_none_or(|hr| *hr.borrow()),
+            *release.drivers.trainer.borrow(),
+            "the trainer was not released"
+        );
+        assert!(
+            release.drivers.hr.as_ref().is_none_or(|hr| *hr.borrow()),
             "the strap was not released"
         );
         assert!(
@@ -5176,7 +5291,7 @@ mod tests {
     }
 
     /// A core with a trainer (releasing in `trainer`) and a strap (in `strap`) paired.
-    async fn slow_release_core(
+    pub(super) async fn slow_release_core(
         dir: &std::path::Path,
         trainer: Duration,
         strap: Duration,

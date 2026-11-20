@@ -427,7 +427,16 @@ impl Task {
             };
             tokio::select! {
                 msg = rx.recv() => match msg {
-                    Some(msg) => self.message(msg),
+                    Some(msg) => {
+                        // A report sent before the message is applied before it, though the
+                        // two channels are polled in no order: a ride's `Released`, queued
+                        // before its `LinkRelease` resolved, comes before the load that waited
+                        // for that (#573), which a loaded ride would otherwise refuse.
+                        while let Ok(event) = internal.try_recv() {
+                            self.internal(event);
+                        }
+                        self.message(msg);
+                    }
                     None => break,
                 },
                 Some(event) = internal.recv() => self.internal(event),
@@ -523,9 +532,10 @@ impl Task {
                 drop(self.apply(Input::Discarded(id.clone(), discarded)));
                 let result = if discarded {
                     // The ride's release was taken first: `Devices::discard` reports a
-                    // discard only once it reaped the session, whose drop dropped the ride's
-                    // `Hold`, which sent `Released` before this on the same channel. So this
-                    // step's state is the one after the release, or a later one.
+                    // discard only once the session's links are released, which is after its
+                    // lease gave the ride's `Hold` back, which sent `Released` before this on
+                    // the same channel. So this step's state is the one after the release, or
+                    // a later one.
                     debug_assert!(
                         !self.keeper.is_loaded(&id),
                         "a discard is reported after its ride's release"
