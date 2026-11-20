@@ -1,0 +1,27 @@
+// Types of mvp-selectors.mjs, for the design harness's check of them (e2e/design/mvp-selectors.pw.ts).
+export const rail: (place: string) => string;
+export const heading: string;
+export const settingsSection: (label: string) => string;
+export const scanButton: string;
+export const pairButton: (role: "trainer" | "strap", name: string) => string;
+export const pairedMark: (role: "trainer" | "strap", name: string) => string;
+export const pairedRow: (roleLabel: string) => string;
+export const pairedLine: (roleLabel: string) => string;
+export const workoutOption: (name: string) => string;
+export const rideThis: string;
+export const readySheet: (state: string) => string;
+export const readyDevice: (device: "trainer" | "hr", phase: string) => string;
+export const readyPlan: string;
+export const ride: string;
+export const pill: (name: "NEO" | "HR") => string;
+export const key: (word: string) => string;
+export const slot: (name: string) => string;
+export const stateLine: string;
+export const banner: (id: string) => string;
+export const chart: (series: "power" | "hr" | "cadence") => string;
+export const confirmEnd: string;
+export const summary: string;
+export const outcome: string;
+export const stat: (term: string) => string;
+export const historyRows: string;
+export const reviewButton: (workoutName: string) => string;
