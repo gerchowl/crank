@@ -26,7 +26,7 @@ use crate::ui::{RideSlot, Ui, UiSink};
 use crank_ble::{Pairing, RideGate};
 use crank_devices::{
     Clock, CommandSeq, ControlMode, DeviceInfo, DeviceRef, HeartRateLink, RiderConfig, SeqSource,
-    TrainerCommand, TrainerEvent, TrainerLink,
+    TrainerCommand, TrainerEvent, TrainerLink, sim::SimLoss,
 };
 use crank_domain::workout::{
     CompileOptions, CompiledWorkout, Severity, Workout, WorkoutNode, compile_workout, parse_dsl,
@@ -1297,6 +1297,43 @@ impl Core {
             version: env!("CARGO_PKG_VERSION").into(),
             sim: self.0.backend.is_sim(),
             schema_version: self.0.store.schema_version()?,
+        })
+    }
+
+    /// Test hook (#668): the simulated trainer (`Trainer`) or strap (`HeartRate`) loses its
+    /// link now, for `down`, as a configured `SimFault::Dropout` / `SimFault::HrLoss` would
+    /// (`SimRig::inject`): the ride sees the loss and then the reconnect exactly as from a
+    /// real device. Only the desktop's `e2e` build exposes it, as the `sim_fault` command.
+    ///
+    /// # Errors
+    /// `Conflict` outside the simulator ([`DeviceMode::Sim`]) and before the simulator's
+    /// first connect (its fault times start there); `InvalidInput` for a zero `down`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn sim_fault(&self, role: DeviceRole, down: Duration) -> Result<(), ApiError> {
+        let Some(rig) = self.0.backend.sim() else {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "sim_fault needs the simulator (--sim)",
+            ));
+        };
+        if down.is_zero() {
+            return Err(ApiError::new(
+                ErrorCode::InvalidInput,
+                "a simulated loss needs a nonzero duration",
+            ));
+        }
+        let loss = match role {
+            DeviceRole::Trainer => SimLoss::Trainer,
+            DeviceRole::HeartRate => SimLoss::Strap,
+        };
+        rig.inject(loss, down).map(|_| ()).ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::Conflict,
+                "no simulated device has connected yet: its fault times start at the first connect",
+            )
         })
     }
 

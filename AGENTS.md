@@ -108,10 +108,15 @@ distribution signing is #47). The bundle must not depend on the Nix store at run
 gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and compares screenshots across them; on Linux it skips with a message.
 The specs share one app process per launch (the embedded WebDriver keeps it across sessions), so `app/e2e/wdio.conf.mjs` lists them in order:
 smoke (needs the fresh shell), `mvp.e2e.mjs` (#667: the #256 critical path through the UI: pair in Settings → Devices, Ride this,
-the Ready sheet, Start, soft start, ERG target, tiles and chart, Pause/Resume, Skip, End and the summary; it ends by closing the
+the Ready sheet, Start, soft start, ERG target, tiles and chart, Pause/Resume, Skip, a trainer then a strap dropout, End and the summary; it ends by closing the
 window, which quits the app), `mvp-relaunch.e2e.mjs` (the service starts the app again on the same data dir: the ride is in History),
 then stream (leaves its ride loaded). Their selectors live in `app/e2e/specs/mvp-selectors.mjs`, one per component, and
-`app/e2e/design/mvp-selectors.pw.ts` checks them against the design fixtures in CI. The sim dropout step waits on a test-only hook (#668).
+`app/e2e/design/mvp-selectors.pw.ts` checks them against the design fixtures in CI. The dropout step (7) causes each loss with
+`sim_fault` (#668), a command only the `e2e` build registers (`commands.rs` `sim_fault`, `crank_desktop::bindings`): it calls
+`Core::sim_fault`, which has the simulator's rig start a `SimFault::Dropout`/`HrLoss` at its present time (`SimRig::inject`)
+and refuses (`Conflict`) outside sim mode or before the rig's first connect. The exported bindings never name it (the spec invokes it by
+name); `tests/commands.rs` `only_the_e2e_build_registers_sim_fault` proves in CI that the production registry has no such command,
+and `deps-edges` that production never enables `e2e`.
 `just screens` awaits the UI waves (#229) and fails explicitly until then.
 **Design harness (#457, DESIGN §18.7):** `just design` (= `pnpm -C app exec playwright test`, in the devShell) opens every
 fixture of `app/e2e/design/scenarios.ts` at 1024×768 and 1440×900 in both themes, injects `app/e2e/design/layout-audit.js`

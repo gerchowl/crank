@@ -1,8 +1,8 @@
 //! Behaviour of `SimTrainer`/`SimHeart` per mode and per injected fault (#67).
 //! Time is tokio's paused clock behind the injected [`Clock`]; nothing sleeps for real.
 use crank_devices::sim::{
-    Drive, EchoFault, SPIRAL_ONSET_RPM, SimComponent, SimConfig, SimCore, SimFault, SimRig,
-    SimTelemetry, reconnect_backoff,
+    Drive, EchoFault, SPIRAL_ONSET_RPM, SimComponent, SimConfig, SimCore, SimFault, SimLoss,
+    SimRig, SimTelemetry, reconnect_backoff,
 };
 use crank_devices::*;
 use futures_util::future::BoxFuture;
@@ -489,6 +489,108 @@ async fn dropout_follows_the_supervisor_sequence_and_backoff() {
         "back only at the 17.5 s attempt"
     );
     assert_eq!(reconnect_backoff(5), Duration::from_secs(5));
+}
+// ---- injected losses (#668): the e2e app's `sim_fault` ----
+
+/// `inject` stamps the loss with the rig's clock now: 10 s after the first connect, plus the
+/// 1 ms `run` sleeps to collect.
+fn injected_at(fault: Option<SimFault>) -> (Duration, Duration) {
+    let (at, down) = match fault.expect("the rig has an epoch") {
+        SimFault::Dropout { at, down } | SimFault::HrLoss { at, down } => (at, down),
+        other => panic!("not a loss: {other:?}"),
+    };
+    assert_eq!(at, s(10) + Duration::from_millis(1));
+    (at, down)
+}
+#[tokio::test(start_paused = true)]
+async fn an_injected_dropout_loses_the_trainer_now_and_reconnects_after_down() {
+    let r = rig(vec![]);
+    let mut link = connect(&r).await;
+    set(&link, ControlMode::Erg { target_w: 200 }).await;
+    let before = run(&mut link, 10).await;
+    assert!(!lost(&before));
+    let (at, _) = injected_at(r.inject(SimLoss::Trainer, s(3)));
+    let ev = run(&mut link, 10).await;
+    // attempts 0.5, 1 and 2 s apart: at +0.5 and +1.5 s they fail, at +3.5 s (>= +3 s) it is back
+    assert_eq!(
+        link_trace(&ev),
+        [
+            "Lost",
+            "Reconnecting(1)",
+            "Fault",
+            "Reconnecting(2)",
+            "Fault",
+            "Reconnecting(3)",
+            "Connecting",
+            "Ready",
+        ]
+    );
+    let back = us(at) + 3_500_000;
+    let times: Vec<u64> = samples(&ev).iter().map(|x| x.at.0).collect();
+    assert!(
+        times.iter().all(|t| !(us(at)..back).contains(t)),
+        "no telemetry while lost: {times:?}"
+    );
+    assert!(
+        times.iter().any(|t| *t >= back),
+        "telemetry after the reconnect"
+    );
+}
+#[tokio::test(start_paused = true)]
+async fn an_injected_hr_loss_loses_the_strap_now_and_reconnects_after_down() {
+    let r = rig(vec![]);
+    let mut link = r
+        .heart()
+        .connect(&DeviceRef("hr".into()))
+        .await
+        .expect("sim");
+    let mut take = async |secs| {
+        sleep(s(secs) + Duration::from_millis(1)).await;
+        let mut out = Vec::new();
+        while let Ok(e) = link.events.try_recv() {
+            out.push(e);
+        }
+        out
+    };
+    let before = take(10).await;
+    assert!(!before.contains(&HrEvent::Link(LinkState::Lost)));
+    let (at, _) = injected_at(r.inject(SimLoss::Strap, s(3)));
+    let ev = take(10).await;
+    let links: Vec<_> = ev
+        .iter()
+        .filter_map(|e| match e {
+            HrEvent::Link(l) => Some(*l),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        links,
+        [LinkState::Lost, LinkState::Connecting, LinkState::Ready]
+    );
+    let back = us(at) + 3_500_000;
+    let times: Vec<u64> = hr_samples(&ev).iter().map(|x| x.at.0).collect();
+    assert!(
+        times.iter().all(|t| !(us(at)..back).contains(t)),
+        "no heart rate while lost: {times:?}"
+    );
+    assert!(
+        times.iter().any(|t| *t >= back),
+        "heart rate after the reconnect"
+    );
+}
+#[tokio::test(start_paused = true)]
+async fn nothing_is_injected_before_the_first_connect() {
+    // the rig's times run from its first connect: before it there is no "now" to stamp
+    let r = rig(vec![]);
+    sleep(s(5)).await;
+    assert_eq!(r.inject(SimLoss::Trainer, s(3)), None);
+    assert_eq!(r.inject(SimLoss::Strap, s(3)), None);
+    // and the refused injection leaves no fault behind
+    let mut link = connect(&r).await;
+    assert!(!lost(&run(&mut link, 10).await));
+}
+fn us(d: Duration) -> u64 {
+    u64::try_from(d.as_micros()).expect("sim")
 }
 #[tokio::test(start_paused = true)]
 async fn disconnect_while_lost_does_not_report_lost_twice() {

@@ -273,6 +273,25 @@ pub async fn ride_skip(core: State<'_, Core>) -> Result<(), ApiError> {
     core.ride_skip().await
 }
 
+/// Test hook of the `e2e` build only (#668): the simulated trainer or strap loses its link
+/// now for `down_ms` milliseconds, then reconnects, so the e2e walk can show the loss and
+/// the reconnect from the real core. Not in the production registry ([`crate::bindings`])
+/// nor in the exported bindings: the e2e spec invokes it by name.
+///
+/// # Errors
+/// As [`Core::sim_fault`].
+#[cfg(feature = "e2e")]
+#[tauri::command]
+#[specta::specta]
+pub async fn sim_fault(
+    core: State<'_, Core>,
+    role: DeviceRole,
+    down_ms: u32,
+) -> Result<(), ApiError> {
+    core.sim_fault(role, std::time::Duration::from_millis(u64::from(down_ms)))
+        .await
+}
+
 /// End the ride: the id of the finished ride (`null` for an unloaded one) and whether the
 /// core had to end it by force because the engine could not.
 ///

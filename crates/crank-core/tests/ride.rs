@@ -243,6 +243,109 @@ async fn a_dropout_shows_loss_then_reconnect_on_the_stream() {
     assert_eq!(states.last(), Some(&StreamRideState::Riding));
 }
 
+/// The link states of `device` in the frames from index `from` on.
+fn links_of(frames: &Frames, device: LinkDevice, from: usize) -> Vec<LinkStatus> {
+    frames.lock().expect("test mutex")[from..]
+        .iter()
+        .flat_map(|f| &f.links)
+        .filter(|l| l.device == device)
+        .map(|l| l.state)
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn sim_fault_loses_the_trainer_then_the_strap_now_and_both_come_back() {
+    // #668: the e2e app's hook. No fault is configured; each loss starts when it is asked for.
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path(), vec![])).unwrap();
+    pair_both(&core).await;
+    core.ride_load(Some(SENSOR_CHECK.into())).await.unwrap();
+    let frames: Frames = Arc::default();
+    let stream = core
+        .open_stream(Some("main".into()), sink(&frames))
+        .await
+        .unwrap();
+    core.ride_start().await.unwrap();
+    run_for(&core, stream, &frames, 20).await;
+    for device in [LinkDevice::Trainer, LinkDevice::Hr] {
+        assert!(
+            !links_of(&frames, device, 0).contains(&LinkStatus::Lost),
+            "nothing is lost before the hook: {device:?}"
+        );
+    }
+
+    let mark = frames.lock().expect("test mutex").len();
+    core.sim_fault(DeviceRole::Trainer, Duration::from_secs(3))
+        .await
+        .unwrap();
+    run_for(&core, stream, &frames, 15).await;
+    let trainer = links_of(&frames, LinkDevice::Trainer, mark);
+    let lost = trainer.iter().position(|s| *s == LinkStatus::Lost);
+    assert!(
+        lost.is_some_and(|i| trainer[i..].contains(&LinkStatus::Ready)),
+        "the trainer is lost, then ready: {trainer:?}"
+    );
+    let statuses: Vec<_> = frames.lock().expect("test mutex")[mark..]
+        .iter()
+        .filter_map(|f| f.status.clone())
+        .collect();
+    assert!(statuses.iter().any(|s| s.trainer_lost_since_s.is_some()));
+    let now = statuses.last().expect("status frames");
+    assert!(now.trainer_lost_since_s.is_none(), "{now:?}");
+    assert!(now.last_gap_s.is_some(), "the gap is reported: {now:?}");
+    assert_eq!(now.state, StreamRideState::Riding);
+    assert!(!links_of(&frames, LinkDevice::Hr, mark).contains(&LinkStatus::Lost));
+
+    let mark = frames.lock().expect("test mutex").len();
+    core.sim_fault(DeviceRole::HeartRate, Duration::from_secs(3))
+        .await
+        .unwrap();
+    run_for(&core, stream, &frames, 15).await;
+    let hr = links_of(&frames, LinkDevice::Hr, mark);
+    let lost = hr.iter().position(|s| *s == LinkStatus::Lost);
+    assert!(
+        lost.is_some_and(|i| hr[i..].contains(&LinkStatus::Ready)),
+        "the strap is lost, then ready: {hr:?}"
+    );
+    assert!(!links_of(&frames, LinkDevice::Trainer, mark).contains(&LinkStatus::Lost));
+    core.ride_end().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn sim_fault_is_refused_outside_the_simulator_before_a_connect_and_for_no_outage() {
+    let dir = tempfile::tempdir().unwrap();
+    // Bluetooth: the radio is created on first use only, so this core never touches it.
+    let ble = Core::open(CoreConfig {
+        devices: DeviceMode::Ble { capture_dir: None },
+        ..config(dir.path(), vec![])
+    })
+    .unwrap();
+    for role in [DeviceRole::Trainer, DeviceRole::HeartRate] {
+        let e = ble
+            .sim_fault(role, Duration::from_secs(3))
+            .await
+            .unwrap_err();
+        assert_eq!(code(&e), ErrorCode::Conflict, "{e:?}");
+    }
+    drop(ble);
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path(), vec![])).unwrap();
+    // The rig's times start at its first connect: before it there is no "now".
+    let e = core
+        .sim_fault(DeviceRole::Trainer, Duration::from_secs(3))
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::Conflict, "{e:?}");
+    pair_both(&core).await;
+    // A loss that lasts no time is no loss.
+    let e = core
+        .sim_fault(DeviceRole::Trainer, Duration::ZERO)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::InvalidInput, "{e:?}");
+}
+
 #[tokio::test(start_paused = true)]
 async fn commands_in_the_wrong_state_are_typed_errors() {
     let dir = tempfile::tempdir().unwrap();
