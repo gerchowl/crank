@@ -790,6 +790,26 @@ async fn force_end_mode(ride_id: &str, hold: &TrainerHold) -> bool {
     }
     confirmed
 }
+/// A build whose new engine did not take `Load` in time: a wedged engine holds the links it was
+/// built with, so the core cuts it off and releases them itself, as a forced end does, and
+/// waits until the keeper has them back, so the next load finds the devices free (#573).
+async fn release_wedged(
+    ride_id: &str,
+    hold: &TrainerHold,
+    takeover: &watch::Sender<Takeover>,
+    task: &EngineTask,
+    lease: Lease,
+    release: LinkRelease,
+) -> ApiError {
+    release_links(ride_id, hold, takeover);
+    task.abort();
+    drop(lease);
+    release.wait().await;
+    ApiError::new(
+        ErrorCode::EngineUnresponsive,
+        "the ride engine did not take the ride in time; its devices were released, try again",
+    )
+}
 /// Step 3 of [`Core::force_end`]: the relays stop and close the drivers' event streams (a
 /// closed stream is what makes a trainer's driver return and a strap's disconnect), and the
 /// trainer is told to disconnect through the core's own control sender. The engine, which may
@@ -2314,18 +2334,9 @@ impl Core {
         .await;
         if let Err(e) = loaded {
             if e.code == ErrorCode::EngineUnresponsive {
-                // A wedged engine holds the links it was built with: the core cuts it off
-                // and releases them itself, as a forced end does, so the next load finds the
-                // devices free, and the keeper has them back.
-                release_links(&ride_id, &hold, &takeover);
-                task.abort();
-                drop(lease);
-                release.wait().await;
-                return Err(ApiError::new(
-                    ErrorCode::EngineUnresponsive,
-                    "the ride engine did not take the ride in time; its devices were \
-                     released, try again",
-                ));
+                return Err(
+                    release_wedged(&ride_id, &hold, &takeover, &task, lease, release).await,
+                );
             }
             return Err(e);
         }
