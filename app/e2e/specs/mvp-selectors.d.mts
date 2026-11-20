@@ -13,6 +13,7 @@ export const readySheet: (state: string) => string;
 export const readyDevice: (device: "trainer" | "hr", phase: string) => string;
 export const readyPlan: string;
 export const ride: string;
+export const pill: (name: "NEO" | "HR") => string;
 export const key: (word: string) => string;
 export const slot: (name: string) => string;
 export const stateLine: string;
