@@ -330,7 +330,6 @@ class Easer:
         self.twin_answers = False  # tests: an injected refusal fails the first calculation only
         self.wasteful = 0          # calculations on an unchanged input (step 7 says: none)
         self.fail_brake = False    # fault injection: the braking plan of step 6 fails, twin included
-        self.x5_tick = False       # degraded on the current tick
         self.otg = Ruckig(1)
         self.inp = InputParameter(1)
         self.traj = Trajectory(1)
@@ -339,7 +338,12 @@ class Easer:
         self.twins = 0             # refusals the twin recovered
         self.plan_failures = 0     # needed calculations refused by Ruckig and the twin: degraded
         self.slow = 0              # Ruckig answers slower than P4/P7's bound for the move, not accepted
-        self.degraded = False      # `erg_easer_degraded`: the status the UI shows as a fault
+        self.degraded = False      # `erg_easer_degraded` on the current tick: the status the UI shows as a fault
+        self.invalid = 0           # ticks whose plan or cap was not a finite number (a fault: degraded, round 14)
+        self.plan_invalid = False  # the target ahead is not a number before the clamp (set by the caller each tick)
+        self.m_ok = math.inf       # the last valid cap, for the cuts while the cap is not a number
+        self.meet = False          # the trajectory in force meets a rising line at rest (step 5, round 14)
+        self.meet_fs = 0.0
         self.prev_piece = None
         self.key = None
         self.elapsed = 0.0
@@ -349,7 +353,7 @@ class Easer:
         self.braking = False
 
     def _input(self, st: State, rel: float, fs: float, vmax: float, vmin: float, vel_target,
-               twin: bool = False):
+               twin: bool = False, meet: bool = False):
         t, i = self.t, self.inp
         # The twin (X5a): every limit tightened by TWIN·max(1, |limit|), towards zero.
         tight = (lambda x: x - math.copysign(TWIN * max(1.0, abs(x)), x)) if twin else (lambda x: x)
@@ -357,7 +361,8 @@ class Easer:
         i.control_interface = ControlInterface.Velocity if vel_target is not None else ControlInterface.Position
         i.current_position, i.current_velocity, i.current_acceleration = [rel], [st.v - fs], [st.a]
         i.target_position = [0.0]
-        tv = 0.0 if vel_target is None else vel_target - fs
+        # Position: onto the line with its slope, or (meet) at rest on it, -fs in the line's frame.
+        tv = (-fs if meet else 0.0) if vel_target is None else vel_target - fs
         # Strictly inside the velocity limits: Ruckig 0.19.4 segfaults on a target velocity exactly
         # at max_velocity from some states (PR #625 round 8, seed 585 plan 19613).
         hi, lo = vmax - fs, vmin - fs
@@ -368,20 +373,23 @@ class Easer:
         i.max_acceleration, i.min_acceleration, i.max_jerk = [amax], [-amax], [jmax]
         return i
 
-    def _one(self, traj, st, rel, fs, vmax, vmin, vel_target, twin, injected) -> bool:
+    def _one(self, traj, st, rel, fs, vmax, vmin, vel_target, twin, injected, meet=False) -> bool:
         try:
             if injected:
                 raise RuckigError("injected")
-            res = self.otg.calculate(self._input(st, rel, fs, vmax, vmin, vel_target, twin), traj)
+            res = self.otg.calculate(self._input(st, rel, fs, vmax, vmin, vel_target, twin, meet), traj)
         except (RuckigError, ValueError):   # ValueError: a result code the bindings do not name
             res = None
         return res in (Result.Working, Result.Finished)
 
-    def _calc(self, traj, st, rel, fs, vmax, vmin, vel_target) -> bool:
+    def _calc(self, traj, st, rel, fs, vmax, vmin, vel_target, meet=False) -> bool:
         """Ruckig's calculate, then on a refusal its twin (X5a), on the same tick. An answer onto a
         held line (a flat frame, the rider's limits) slower than P4/P7's own landing_bound is not
         accepted, from either: Ruckig 0.19.4's second boundary symptom (a valid but slower profile:
         61.3 s where 31.4 s is time-optimal, persistent-suite plan 128) is handled like a refusal.
+        Round 14: the same on a ramp frame strictly within the rates against ramp_bound (P7 on every
+        line; seed 1 plan 1270: a return onto a -5 W/s ramp from 394 W above at the full descent rate was
+        answered with a constant 1.37 W/s² deceleration, 24 s where ramp_bound allows 18.75 s).
         False if both are refused (each refusal counted). Nothing is raised."""
         injected = (self.k in self.refuse_ticks) or (
             bool(self.inject) and self.k >= self.inject_from
@@ -389,9 +397,11 @@ class Easer:
             and self.inject_rng.random() < self.inject)
         for twin in (False, True):
             ok = self._one(traj, st, rel, fs, vmax, vmin, vel_target, twin,
-                           injected and not (twin and self.twin_answers))
-            if (ok and vel_target is None and fs == 0.0 and vmax == self.t.r_up and vmin == -self.t.r_dn
-                    and traj.duration > landing_bound(self.t, -rel, st.v, st.a)):
+                           injected and not (twin and self.twin_answers), meet)
+            if (ok and vel_target is None and vmax == self.t.r_up and vmin == -self.t.r_dn
+                    and -self.t.r_dn < fs < self.t.r_up
+                    and traj.duration > (landing_bound(self.t, -rel, st.v, st.a) if fs == 0.0
+                                         else ramp_bound(self.t, -rel, st.v, st.a, fs))):
                 ok = False
                 self.slow += 1
             if ok:
@@ -400,10 +410,10 @@ class Easer:
             self.errors += 1
         return False
 
-    def _plan(self, st, rel, fs, vmax, vmin, vel_target) -> bool:
+    def _plan(self, st, rel, fs, vmax, vmin, vel_target, meet=False) -> bool:
         """Calculate into the spare trajectory and swap it in only on success, so a refused
         calculation leaves the trajectory in force untouched."""
-        if not self._calc(self.spare, st, rel, fs, vmax, vmin, vel_target):
+        if not self._calc(self.spare, st, rel, fs, vmax, vmin, vel_target, meet):
             self.plan_failures += 1     # Ruckig and its twin refused a trajectory the command needed
             return False
         self.traj, self.spare = self.spare, self.traj
@@ -414,6 +424,8 @@ class Easer:
         if tt >= dur:
             p, v, a = self.traj.at_time(dur)
             extra = v[0] * (tt - dur) if vel_mode else 0.0
+            if self.meet and not vel_mode:   # met at rest: it holds (the line moves on, -fs in its frame)
+                return p[0] - self.meet_fs * (tt - dur), -self.meet_fs, 0.0
             return p[0] + extra, v[0], 0.0
         p, v, a = self.traj.at_time(tt)
         return p[0], v[0], a[0]
@@ -451,6 +463,18 @@ class Easer:
         t = self.t
         self.k = k
         exc = ""
+        # A plan or cap that is not a number (NaN, ±inf in the line; a NaN or −inf cap; round 14, f625i) is a
+        # fault, not a plan: degraded mode (the closed-form stop, then a hold), the status raised on every
+        # such tick, the cuts against the last valid cap. Normal planning resumes on the first valid tick.
+        if (self.plan_invalid or math.isnan(m) or m == -math.inf
+                or any(not (math.isfinite(q.r0) and math.isfinite(q.s)) for q in segs)):
+            self.invalid += 1
+            self.degraded = True
+            self.key, self.braking, self.chasing, self.prev_piece = None, False, False, None
+            return self._after(st, self._stop(st), k, [], self.m_ok, math.inf, "X5", brake=True)
+        # A cap below 0 W is 0 W: the output stays in [0, max(M, 0)] (round 14, f625i: M < 0 sent M).
+        m = max(m, 0.0)
+        self.m_ok = m
         # The step from tick k-1 to tick k belongs to the piece in force over that interval: at a
         # vertex on tick k (the line continuous there), that is still the previous piece. The new
         # piece takes over from the next step (the backward-slope convention of the line on the
@@ -508,12 +532,16 @@ class Easer:
         lead = fs != s_cur or c != r_k - s_cur * k * DT
         line = lambda kk: c + fs * kk * DT
         brake = self.braking
+        meet = False
         if brake:
             vel_target = 0.0
         elif trackable(fs) and fs > 0 and st.y - line(k) > EPS:
-            # Above a rising line the command never rises: it eases to rest and lets the line come
-            # up to it, then tracks it from below (no target that would raise it above the plan).
-            vel_target = 0.0
+            # Above a rising line (round 14, f625i): the command comes down to it at the descent rate and
+            # meets it at rest (a position target on the line, zero slope there), so it never rises above
+            # the plan (P5); from on the line, the next tick tracks it from below. Rounds 1-13 held and let
+            # the line come up: after a -50 % offset onto a 0.17 W/s ramp it held 151 W high for 280 s.
+            vel_target = None
+            meet = True
         elif trackable(fs):
             vel_target = None
         else:
@@ -523,6 +551,7 @@ class Easer:
             # On the line (within EPS) counts as behind it: the command chases, it does not hold.
             vel_target = t.r_up if (gap > -EPS and fs > 0) else (-t.r_dn if (gap < EPS and fs < 0) else 0.0)
         key = ((("brake",) if brake else
+                ("meet", c, fs) if meet else
                 ("lead", segs[1].k0, segs[1].r0, segs[1].s) if lead
                 else ("line", c, fs)),
                vmax, vmin, vel_target, m)
@@ -531,19 +560,19 @@ class Easer:
             self.recalcs += 1
             self.wasteful += unchanged
             if vel_target is None:
-                ok = self._plan(st, st.y - line(k - 1), fs, vmax, vmin, None)
+                ok = self._plan(st, st.y - line(k - 1), fs, vmax, vmin, None, meet)
             else:
                 ok = self._plan(st, 0.0, 0.0, t.r_up, -t.r_dn, vel_target)
             if not ok:
                 # X5, degraded (round 13): Ruckig and its twin refused the trajectory the command
                 # needs. The command follows the closed-form stop from its state, then holds; no key
                 # is kept, so Ruckig is tried first again on the next tick.
-                self.x5_tick = self.degraded = True
+                self.degraded = True
                 self.key, self.braking, self.chasing = None, False, False
                 return self._after(st, self._stop(st), k, segs, m, r_k, exc or "X5", brake=True)
             if vel_target is not None:
                 self.base = st.y
-            self.key, self.elapsed = key, DT
+            self.key, self.elapsed, self.meet, self.meet_fs = key, DT, meet, fs
         else:
             self.elapsed += DT
         self.degraded = False         # normal planning (resumed on Ruckig's first answer)
@@ -568,7 +597,7 @@ class Easer:
                 self.errors += 2
                 self.plan_failures += 1
             if not self.fail_brake and self._plan(st, 0.0, 0.0, t.r_up, -t.r_dn, 0.0):
-                self.braking = True
+                self.braking, self.meet = True, False
                 self.base, self.elapsed = st.y, DT
                 self.key = (("brake",), t.r_up, -t.r_dn, 0.0, m)
                 self.chasing = True
@@ -582,7 +611,7 @@ class Easer:
                 nst = self._stop(st)
                 self.key = None
                 exc = exc or "X5"
-                self.x5_tick = self.degraded = True
+                self.degraded = True
         if self.braking and abs(nst.v) <= 1e-9:
             self.braking = False
             self.key = None if self.traj.duration > self.elapsed + 1e-9 else self.key
@@ -674,14 +703,24 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
                         break
                     k0 += b.ticks
             elif e.kind == "engage" and st is not None:
-                st, reset, pending = State(clamp(e.value, m)), True, True
-        segs = segments(blocks, k, mult, m)
-        r = clamp(segs[0].at(k), m)
+                st, reset, pending = State(clamp(e.value, max(m, 0.0))), True, True
+        # The line under the effective cap max(M, 0) (round 14); the easer gets M as given (a NaN is a fault).
+        me = max(m, 0.0)
+        # The target before the clamp (the multiplier on every piece not yet ended): ±inf would clamp to M or 0 W,
+        # NaN to anything; either is a fault, not a target (round 14).
+        kk, finite = 0, math.isfinite(mult)
+        for b in blocks:
+            if kk + b.ticks > k:
+                finite = finite and math.isfinite(b.frm) and math.isfinite(b.to)
+            kk += b.ticks
+        ez.plan_invalid = not finite
+        segs = segments(blocks, k, mult, me)
+        r = clamp(segs[0].at(k), me)
         if segs[0].k0 == k and k > 0 and not segs[0].joined:
             disc = True
         if st is None:
             if origin is not None:
-                st, reset = State(clamp(origin, m)), True
+                st, reset = State(clamp(origin, me)), True
             else:
                 st = State(r if y0 is None else y0, v0, 0.0)
                 tr.y_init, tr.v_init = st.y, st.v
@@ -689,7 +728,6 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
             disc = True    # a raised cap lets the line jump up
         origin_k = st.y if reset else None
         failures_before = ez.plan_failures
-        ez.x5_tick = False
         st, exc = ez.step(st, k, segs, m, reset or disc)
         failed_now = ez.plan_failures > failures_before
         on = abs(r - st.y) <= EPS
@@ -708,9 +746,9 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
             settle_left -= 1
         for lst, val in ((tr.r, r), (tr.y, st.y), (tr.v, st.v), (tr.a, st.a), (tr.on, on),
                          (tr.settle, settle), (tr.exc, exc), (tr.reset, reset),
-                         (tr.fell, prev_r is not None and r < prev_r - 1e-12), (tr.m, m),
+                         (tr.fell, prev_r is not None and r < prev_r - 1e-12), (tr.m, me),
                          (tr.unforeseen, unforeseen_now), (tr.origin, origin_k),
-                         (tr.failed, failed_now), (tr.degraded, ez.x5_tick),
+                         (tr.failed, failed_now), (tr.degraded, ez.degraded),
                          (tr.flat, (r, segs[0].k0 + segs[0].n - 1) if segs[0].s == 0.0 else None),
                          (tr.piece, (segs[0].k0, segs[0].s, segs[0].k0 + segs[0].n - 1, segs[0].k0 == k and not segs[0].joined)),
                          (tr.events, bool(ev.get(k)))):
@@ -737,6 +775,7 @@ class Report:
         self.twins = 0            # refusals the twin recovered
         self.recoveries = 0       # recoveries from degraded mode whose landing was checked
         self.degraded_runs = 0    # degraded runs whose path was checked against the closed-form stop
+        self.above_checked = 0    # downward steps whose time above the line was checked (P7, round 14)
         self.plans = 0
         self.plans_with_errors = 0
 
@@ -816,23 +855,23 @@ def check_landing(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
 
 
 def ramp_bound(t: Tuning, delta: float, v0: float, a0: float, s: float) -> float:
-    """D5 onto a line of slope s strictly within the rates: landing_bound in the line's frame, with the
-    relative rates r↑ − s and r↓ + s, the slope taken relative to the line, and the ease to the
-    rider's full falling rate. The catch-up's direction is the sign of the gap left once the relative
-    slope is stopped (round 13b: from rest at a 16.5 W/s ramp's start, r↑ = 20 W/s, the gap opens
-    behind the line while the command speeds up and closes at r↑ − s, not r↓ + s); where that sign is
-    not known from the bounds, the slower rate. Where the line comes to a command that waits for it
-    (a falling line above it, a rising line below it), the command then changes its slope from rest to
-    s, and the line passes it meanwhile by at most |s|·T_s/2 (T_s = |s|/a_max + a_max/j_max bounds the
-    jerk-limited slope change's duration, which covers half the line's travel): that overshoot is closed at the opposite relative rate (round 13b, xs990000
-    #1063: 18.69 W/s down at r↓ = 20 W/s, the overshoot closed at 1.31 W/s)."""
+    """P7 (round 14) and D5 onto a line of slope s strictly within the rates: landing_bound in the line's
+    frame, with the real closing rates r↑ − s (catching up from below) and r↓ + s (coming down from
+    above), the slope taken relative to the line, and the ease to the rider's full falling rate. Both
+    stay finite and positive for every trackable s, so the bound stays finite and tight as s → 0±
+    (round 14: rounds 11–13 closed a gap above a rising line at s, the command holding while the line
+    came up to it; f625i: at 0.17 W/s the line never reached it).
+    - The catch-up's direction is the sign of the gap left once the relative slope is stopped (round
+      13b: from rest at a 16.5 W/s ramp's start, r↑ = 20 W/s, the gap opens behind the line while the
+      command speeds up); where that sign is not known from the bounds, the slower rate.
+    - Where the line comes to a command that waits for it (a falling line above it: safe braking) or
+      the command reaches it at rest (a rising line below it: step 5 meets the line at rest), the
+      command then changes its slope from rest to s, and the line passes it meanwhile by at most
+      |s|·T_s/2 (T_s = |s|/a_max + a_max/j_max bounds the jerk-limited slope change's duration, which
+      covers half the line's travel): that overshoot is closed at the opposite relative rate (round
+      13b, xs990000#1063: 18.69 W/s down at r↓ = 20 W/s, closed at 1.31 W/s)."""
     up, dn = t.r_up - s, t.r_dn + s
-    # Above a rising line the command holds (step 5) and the line comes up to it: the gap closes at the
-    # line's own slope, after the command has stopped. Below a falling line safe braking lets the command
-    # rise only as far as it can stop below the line ahead, so the line comes down to it: at worst at the
-    # line's own slope.
-    rate_up = min(up, -s) if s < 0 else up
-    rate_dn = s if s > 0 else dn
+    rate_up, rate_dn = up, dn
     v_rel = v0 - s
     v_eff = abs(v_rel) + a0 * a0 / (2 * t.j_max)
     stop_t = abs(a0) / t.j_max + v_eff / t.a_max + t.a_max / t.j_max if (v_rel or a0) else 0.0
@@ -891,6 +930,50 @@ def check_recovery(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
         if not any(ok(j) for j in range(k, end + 1)):
             rep.fail(f"{name} k={k}: X5 recovery not on the line (slope {s:.2f} W/s) within {bound:.2f} s"
                      f" (from {y0:.2f} W, {delta:+.2f} W off, slope {v0:.2f} W/s)")
+
+
+def check_above(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
+    """P7 on every line (round 14, f625i): after a downward step (a skip, ±/coach, cap or a jump down of
+    the line), a command above the line is at or below it within the bound: landing_bound onto a held
+    line (P7 as before), ramp_bound onto a line of slope s strictly within the rates, rising or falling.
+    The rider or coach lowering the load takes effect in bounded time whatever the line's slope.
+    Measured from the step's tick, if the piece and the plan last that long with no further event,
+    engagement or degraded tick."""
+    n = len(tr.y)
+    for k in range(1, n):
+        k0, s, last, jumped = tr.piece[k]
+        if tr.reset[k] or not (tr.events[k] or jumped) or not (-t.r_dn < s < t.r_up):
+            continue
+        y0, v0, a0 = tr.y[k - 1], tr.v[k - 1], tr.a[k - 1]
+        delta = (tr.r[k] - s * DT) - y0
+        if delta >= -EPS:
+            continue
+        bound = landing_bound(t, delta, v0, a0) if s == 0.0 else ramp_bound(t, delta, v0, a0, s)
+        end = k + int(math.ceil(bound / DT))
+        if (end > min(last, n - 1) or any(tr.events[k + 1:end + 1]) or any(tr.reset[k + 1:end + 1])
+                or any(tr.degraded[k:end + 1])):
+            continue
+        rep.above_checked += 1
+        if not any(tr.y[j] <= tr.r[j] + EPS for j in range(k, end + 1)):
+            rep.fail(f"{name} k={k}: P7 still above the line (slope {s:.2f} W/s) after {bound:.2f} s"
+                     f" (from {y0:.2f} W, {delta:+.2f} W off, slope {v0:.2f} W/s)")
+
+
+def check_state(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
+    """The state the easer plans from is the state it sent (round 14): over a tick at piecewise-constant
+    jerk, the position step is Δt·(v0 + v1)/2 − (a1 − a0)·Δt²/12 to within j_max·Δt³/6. Ticks with a cut
+    (a position step by definition) or an engagement are not tested. A trajectory sampled past its end
+    that moves the position but reports another slope fails here (mutant: the meet's end riding the
+    line while reporting rest)."""
+    tol = t.j_max * DT ** 3 / 6 + 1e-6
+    for k in range(1, len(tr.y)):
+        if tr.reset[k] or tr.exc[k] in CUTS:
+            continue
+        want = DT * (tr.v[k - 1] + tr.v[k]) / 2 - (tr.a[k] - tr.a[k - 1]) * DT * DT / 12
+        if abs(tr.y[k] - tr.y[k - 1] - want) > tol:
+            rep.fail(f"{name} k={k}: state not the one sent: Δy {tr.y[k] - tr.y[k - 1]:.6f} W, from the slope and"
+                     f" curvature {want:.6f} W (tolerance {tol:.2g} W)")
+            return
 
 
 def check_degraded(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
@@ -1033,6 +1116,8 @@ def check(tr: Trace, t: Tuning, rep: Report, name: str, y_start: float) -> None:
         if exc == "X4" and (tr.v[k] < -TOL or tr.a[k] < -TOL):
             rep.fail(f"{name} k={k}: X4 left a falling slope at 0 W")
     check_landing(tr, t, rep, name)
+    check_above(tr, t, rep, name)
+    check_state(tr, t, rep, name)
     check_recovery(tr, t, rep, name)
     check_degraded(tr, t, rep, name)
 
@@ -1277,14 +1362,14 @@ GOLDEN = {
     'ramp 37 -> 49.5 W/s (50, x2, 1)': (103768.044493, 29, 29),
     'rise into a falling ramp (15, x2, 2)': (16319.294248, 20, 20),
     'engagement 0->250 W': (22875.0, 55, 75),
-    'engagement above a rising ramp (50, x1.5, 1)': (9242.790611, 14, 21),
+    'engagement above a rising ramp (50, x1.5, 1)': (9214.604031, 10, 21),
     'cap drop mid-fall': (32440.0, 30, 50),
     'skip mid-rise': (14775.0, 15, 35),
     'fall -171.8 then -145.7 W/s (50, x4, 1.5)': (14198.054637, 33, 53),
     'engaged on a short fall (40, x1.25, 2.75)': (36451.869461, 43, 49),
     'engaged just above a steep rise': (49669.334359, 65, 66),
     'engaged just below a steep fall (50, x4, 1)': (3387.42123, 17, 37),
-    'engaged 0.98 W above a gentle rise (8, x3, 1)': (28405.528387, 3, 4),
+    'engaged 0.98 W above a gentle rise (8, x3, 1)': (28406.615467, 1, 21),
     'ramp 5 -> 5.004 W/s': (140803.204816, 6, 6),
     'ramp 5 -> 5.004 W/s at 1000 W': (375115.704816, 6, 6),
     'jump onto a ramp that bends 5 -> 5.004 W/s mid-landing': (148302.450899, 22, 42),
@@ -1326,7 +1411,31 @@ def persistent(rep: Report, report: bool):
 def constants(rep: Report, report: bool):
     """The tolerances #620 must match, at their boundaries: SLOPE_TOL (collinear lines merge at a
     relative slope difference of 0.5e-9, not at 2e-9) and VALUE_TOL (pieces 1e-7 W apart merge,
-    1e-5 W apart do not)."""
+    1e-5 W apart do not). And ramp_bound's rules, at the defaults, from its formula (round 14)."""
+    # ramp_bound: the real closing rates (finite as s -> 0±, the held line's rates at s = 0), and the slower rate where
+    # the catch-up's direction is not known: 2 W below a line falling at 15 W/s, at rest (the relative slope may carry
+    # the command past the line, then it comes down at r↓ + s).
+    t = DEFAULT
+    over = lambda s, r: abs(s) * (abs(s) / t.a_max + t.a_max / t.j_max) / 2 / r + abs(s) / t.a_max + t.a_max / t.j_max
+    for s in (1e-9, -1e-9, 0.17, -2.0):
+        b = ramp_bound(t, -100.0, s, 0.0, s)
+        want = 100.0 / (t.r_dn + s) + (over(s, t.r_up - s) if s > 0 else 0.0) + t.ease * (1 + t.factor) / 2 + 0.75
+        if not math.isfinite(b) or abs(b - want) > 1e-9:
+            rep.fail(f"constants: ramp_bound from above at slope {s} W/s: {b} s, expected {want} s (r↓ + s)")
+        b = ramp_bound(t, 100.0, s, 0.0, s)
+        want = 100.0 / (t.r_up - s) + (over(s, t.r_dn + s) if s < 0 else 0.0) + t.ease * (1 + t.factor) / 2 + 0.75
+        if not math.isfinite(b) or abs(b - want) > 1e-9:
+            rep.fail(f"constants: ramp_bound from below at slope {s} W/s: {b} s, expected {want} s (r↑ − s)")
+    s, delta = -15.0, 2.0
+    v = -s
+    stop_t = v / t.a_max + t.a_max / t.j_max
+    stop_d = v * stop_t / 2
+    t_s = abs(s) / t.a_max + t.a_max / t.j_max
+    want = ((delta + stop_d) / min(t.r_up - s, t.r_dn + s) + abs(s) * t_s / 2 / (t.r_dn + s) + t_s
+            + t.ease * (1 + t.factor) / 2 + stop_t + 0.75)
+    if abs(ramp_bound(t, delta, 0.0, 0.0, s) - want) > 1e-9:
+        rep.fail(f"constants: ramp_bound, direction not known: {ramp_bound(t, delta, 0.0, 0.0, s)} s, expected {want} s"
+                 " (the slower rate)")
     base = 7.0
     for rel, n_expected in ((0.5e-9, 1), (2e-9, 2)):
         s2 = base * (1 + rel)
@@ -1787,7 +1896,8 @@ def repros(rep: Report, report: bool) -> None:
         r5 = Report()
         tr = run([Block(*b) for b in bl5], ev5, t=t5, **kw5)
         check(tr, t5, r5, f"repro: D5 on a ramp, {name}", tr.y[0])
-        rep.fails += r5.fails
+        for f in r5.fails:
+            rep.fail(f)
         # (#2110: r↓ + s = 0.55 W/s, so its bound outlasts the ramp; checked for every other property.)
         if r5.recoveries == 0 and name != "xs990000#2110":
             rep.fail(f"repro: D5 on a ramp, {name}: no recovery checked")
@@ -2200,6 +2310,127 @@ def randoms(rep: Report, n: int, report: bool, seed: int = 585):
               f" ({(rep.plans_with_errors - with0) / max(1, n):.3%} of plans)")
 
 
+def above(rep: Report, report: bool):
+    """Round 14 (f625i): P7 on every line, the plan or cap not a number, and a cap below 0 W.
+    1. The falsifier's repro: a -50 % offset onto a 300 -> 350 W ramp over 300 s at the defaults. Rounds
+       1-13 held 303 W for the remaining 280 s, the line at 152 W; the command comes down within P7's bound.
+    2. A sweep over slopes, rising and falling, down to s -> 0+ and 0- and up to 0.99 of the rates, over
+       the defaults, the bound corners and a sixth of the grid: a downward offset (x0.5, x0.8) or a cap
+       drop on the ramp; every property holds, P7 on the ramp included (check_above).
+    3. A line or cap that is not a number (NaN, ±inf in a block or an offset; a NaN or -inf cap): degraded,
+       the status on every such tick, the output finite and in [0, the last valid cap], normal planning
+       again once the plan is valid.
+    4. A cap below 0 W: the output stays in [0, max(M, 0)] (round 13 sent M: the 0 W cut ran before the cap's).
+    5. The check itself: check_above fails a trace that holds above a rising line."""
+    tr = run([steady(300, 5), ramp(300, 350, 300)], [Event(100, "offset", 0.5)])
+    r1 = Report()
+    check(tr, DEFAULT, r1, "f625i: -50 % onto a 300 -> 350 W ramp", tr.y[0])
+    for f in r1.fails:
+        rep.fail(f)
+    rep.above_checked += r1.above_checked
+    above_s = sum(1 for k in range(100, len(tr.y)) if tr.y[k] > tr.r[k] + EPS) * DT
+    if r1.above_checked != 1 or above_s > 10.0:
+        rep.fail(f"f625i: P7 checked {r1.above_checked} times, {above_s:.2f} s above the line (expected 1, under 10 s)")
+    # 2. The slope sweep.
+    n = checked = 0
+    for t in [DEFAULT] + CORNERS + GRID[::6]:
+        fr = [1e-4, 1e-3, 0.01, 0.05, 0.2, 0.5, 0.8, 0.99]
+        for s in [f * t.r_up for f in fr] + [-f * t.r_dn for f in fr]:
+            d = min(120.0, 1200.0 / abs(s))
+            bl = [steady(1500, 5), ramp(1500, 1500 + s * d, d), steady(1500 + s * d, 10)]
+            ke = 20 + max(1, int(d / DT) // 4)
+            for ev in ([Event(ke, "offset", 0.5)], [Event(ke, "offset", 0.8)], [Event(ke, "cap", 1500 + s * ke * DT * 0.5 - 400)]):
+                r2 = Report()
+                tr = run(bl, ev, t=t, m0=4000.0)
+                check(tr, t, r2, f"above sweep {t} s {s:+.4g} W/s {ev}", tr.y[0])
+                for f in r2.fails:
+                    rep.fail(f)
+                n += 1
+                checked += r2.above_checked
+    rep.above_checked += checked
+    if checked < n // 2:
+        rep.fail(f"above sweep: P7 checked on {checked} of {n} plans (the sweep tests nothing)")
+    # 3. Not a number.
+    nan, inf = math.nan, math.inf
+    cases = [("a NaN offset", [steady(200, 10), ramp(200, 260, 30)], [Event(40, "offset", nan), Event(60, "offset", 1.0)], 40, 60),
+             ("an inf offset", [steady(200, 10), ramp(200, 260, 30)], [Event(40, "offset", inf), Event(60, "offset", 1.0)], 40, 60),
+             ("a NaN cap", [steady(200, 10), steady(300, 30)], [Event(30, "cap", nan), Event(70, "cap", 250.0)], 30, 70),
+             ("a -inf cap", [steady(200, 10), steady(300, 30)], [Event(30, "cap", -inf), Event(70, "cap", 250.0)], 30, 70),
+             ("a NaN block", [steady(200, 10), Block(20, nan, nan), steady(150, 20)], [], 0, 60),
+             ("an inf block", [steady(200, 10), Block(20, 200.0, inf), steady(150, 20)], [], 0, 60)]
+    for name, bl, ev, k0, k1 in cases:
+        tr = run(bl, ev, t=DEFAULT, m0=400.0)
+        caps = [400.0] + [e.value for e in ev if e.kind == "cap" and not math.isnan(e.value) and e.value != -inf]
+        bad = [k for k in range(len(tr.y)) if not (math.isfinite(tr.y[k]) and 0.0 <= tr.y[k] <= max(caps) + 1e-9)]
+        if bad or not all(tr.degraded[k0:k1]) or any(tr.exc[k] != "X5" for k in range(k0, k1)):
+            rep.fail(f"not a number, {name}: output out of range at {bad[:3]}, degraded {sum(tr.degraded[k0:k1])}/{k1 - k0}"
+                     f" ticks {k0}..{k1 - 1}")
+        if k1 < len(tr.y) and any(tr.degraded[k1 + 1:]):
+            rep.fail(f"not a number, {name}: still degraded after the plan is valid again (from tick {k1})")
+    # 4. A cap below 0 W.
+    for bl, ev, m0 in (([steady(200, 10), steady(300, 20)], [Event(20, "cap", -5.0)], 2000.0),
+                       ([steady(200, 10)], [], -5.0), ([steady(0, 10)], [Event(4, "cap", -1e-6)], 100.0)):
+        tr = run(bl, ev, t=DEFAULT, m0=m0)
+        r4 = Report()
+        check(tr, DEFAULT, r4, f"cap below 0 W: {bl} {ev} m0 {m0}", tr.y[0])
+        for f in r4.fails:
+            rep.fail(f)
+        k0 = ev[0].tick if ev else 0
+        if any(y < 0.0 or y > 0.0 for y in tr.y[k0:]):
+            rep.fail(f"cap below 0 W: output {min(tr.y[k0:]):g}..{max(tr.y[k0:]):g} W (expected 0 W)")
+    # The meet's end: sampled past its duration, the command holds where it met the line, at rest (in the line's frame
+    # it falls back at -s), so the state it reports is the state it sent (check_state).
+    for t, s in ((DEFAULT, 0.17), (DEFAULT, 8.0), (Tuning(50, 4.0, 1.0), 40.0)):
+        ez = Easer(t)
+        if not ez._plan(State(500.0, 0.0, 0.0), 120.0, s, t.r_up, -t.r_dn, None, True):
+            rep.fail(f"meet: Ruckig refused the meet onto a {s} W/s line {t}")
+            continue
+        ez.meet, ez.meet_fs = True, s
+        dur = ez.traj.duration
+        p_end, v_end, _ = ez.traj.at_time(dur)
+        ez.elapsed = dur + 0.3 * DT
+        got = ez._sample(False)
+        want = (p_end[0] - s * 0.3 * DT, -s, 0.0)
+        if abs(v_end[0] + s) > 1e-6 or any(abs(a - b) > 1e-9 for a, b in zip(got, want)):
+            rep.fail(f"meet onto a {s} W/s line {t}: past its end {got}, expected {want} (at rest where it met the"
+                     f" line; it ended with relative slope {v_end[0]})")
+    # The slow-answer rule on a ramp frame (round 14): seed 1 plan 1270 of the random generator, a return onto a
+    # -5 W/s ramp from 394 W above at the full descent rate after an offset, answered with a constant 1.37 W/s²
+    # deceleration (24 s where ramp_bound allows 18.75 s). Rejected as slow, the twin answers in time.
+    t = Tuning(30, 1.25, 2.0)
+    bl = [Block(8, 211.3162552851174, 155.94678244643234), Block(40, 567.75, 567.75), Block(2, 447.75, 447.75),
+          Block(4, 0.0, 0.0), Block(80, 0.0, 389.09222933136766), Block(20, 389.09222933136766, 389.09222933136766),
+          Block(1, 484.0704171388558, 485.77284654283574), Block(40, 485.77284654283574, 769.1445526888376),
+          Block(20, 829.1445526888376, 829.1445526888376), Block(120, 142.87990757461876, 0.0)]
+    ev = [Event(167, "skip", 0.0), Event(195, "offset", 1.05), Event(112, "engage", 65.87145234421628)]
+    tr = run(bl, ev, t=t, m0=2000.0)
+    r6 = Report()
+    check(tr, t, r6, "slow ramp answer: seed 1 plan 1270", tr.y[0])
+    for f in r6.fails:
+        rep.fail(f)
+    if tr.slow == 0 or any(tr.degraded):
+        rep.fail(f"slow ramp answer: seed 1 plan 1270: {tr.slow} slow answers rejected, {sum(tr.degraded)} degraded ticks"
+                 " (expected at least one, recovered by the twin)")
+    # The check itself: a sent position 0.5 W off the state the easer reports fails check_state.
+    tr = run([steady(100, 5), steady(300, 30)])
+    tr.y[30] += 0.5
+    r7 = Report()
+    check(tr, DEFAULT, r7, "self-test", tr.y[0])
+    if not any("state not the one sent" in f for f in r7.fails):
+        rep.fail("above: check_state() does not fail a sent position off the reported state")
+    # 5. The check itself: a held command above a rising line (rounds 1-13's step 5) fails check_above.
+    tr = run([steady(300, 5), ramp(300, 350, 300)], [Event(100, "offset", 0.5)])
+    for k in range(100, len(tr.y)):
+        tr.y[k], tr.v[k], tr.a[k] = tr.y[99], 0.0, 0.0
+    r5 = Report()
+    check_above(tr, DEFAULT, r5, "self-test")
+    if not any("P7 still above the line" in f for f in r5.fails):
+        rep.fail("above: check_above() does not fail a command held above a rising line")
+    if report:
+        print(f"P7 on every line (round 14): the f625i repro, {n} plans over slopes to 0± (P7 checked on {checked}),"
+              f" {len(cases)} not-a-number plans (degraded, then normal planning), caps below 0 W (output 0 W)")
+
+
 def main(argv):
     report = "--report" in argv
     n = int(argv[argv.index("--random") + 1]) if "--random" in argv else 2000
@@ -2222,6 +2453,7 @@ def main(argv):
     refusal_windows(rep, report)
     refusal_falls(rep, report)
     cap_events(rep, report)
+    above(rep, report)
     golden(rep, report)
     ramp_pairs(rep, report)
     injected(rep, report)
@@ -2233,7 +2465,7 @@ def main(argv):
               ", ".join(f"{k} {rep.cuts[k]} ticks, largest slope change {rep.worst.get(k, 0.0):.1f} W/s"
                         for k in ("X2", "X3", "X4")) + f"; X5a: {rep.twins} refusals recovered by the twin;"
               f" X5 degraded {rep.cuts['X5']} ticks ({rep.degraded_runs} runs checked against the stop,"
-              f" {rep.recoveries} recoveries' landings checked)")
+              f" {rep.recoveries} recoveries' landings checked); P7 on every line: {rep.above_checked} downward steps checked")
     if rep.fails:
         print("FAIL", rep.nfail, "failures by kind:", rep.kinds)
         for f in rep.fails:

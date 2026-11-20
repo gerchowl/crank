@@ -1614,6 +1614,13 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
   the twin is refused too, the easer is degraded (X5): the closed-form stop, then a hold, with the status
   `erg_easer_degraded`, and Ruckig again on every tick. Degraded mode makes no promise to follow the plan; it has its
   own (D1–D5). The clamp chain, the continuation, the off-plan lead, the refusal-excess bound and X5f are deleted.*
+- *Round 14, after a fresh falsifier at 3ace732 (f625i) passed degraded mode and found a gap in the planner:*
+  - *step 5 meets a rising line instead of waiting for it: above a rising line the command comes down at the
+    descent rate and meets the line at rest, then tracks it from below (rounds 1–13 held, so a −50 % offset onto a
+    0.17 W/s ramp held 151 W high for 280 s);*
+  - *P7 bounds the time above the line after any downward step on any line, ramps included, and `ramp_bound` uses
+    the real closing rates `r↑ − s` and `r↓ + s`, finite as `s → 0±`;*
+  - *a plan or cap that is not a number is a fault (degraded, the status raised), and a cap below 0 W is 0 W.*
 
 *The design's model drives the library itself: `docs/adr/models/erg_slew.py`, with Ruckig in the loop.*
 
@@ -1857,11 +1864,17 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
      pins it).
    - If the line is moving towards the command, the target velocity is 0: the command holds, and the line comes to it.
    - A line at *exactly* the rate counts here too. After an eased start, the command can only lag it.
-5. **Above a rising line, never rise.** If the command is above a rising line by more than ε on tick `k`, the target is
-   velocity 0: it eases to rest and lets the line come up to it, then tracks from below. This is a fall that meets a
-   rising ramp, or an engagement above one. Without it, Ruckig's time-optimal landing from above a fast-rising line
-   rises while still above it; for example, an engagement at 61.5 W on a 34.7 W/s ramp at (50, ×1.5, 1), found in seed
-   585's plan 442 and pinned.
+5. **Above a rising line, come down and meet it (round 14).** If the command is above a rising line by more than ε on
+   tick `k`, Ruckig plans in the line's frame onto the line with the command **at rest** there (target velocity `−s`
+   in the frame), within the rates. The command comes down at the descent rate, never rises while above the line, and
+   meets it at rest; from on the line, the next tick tracks it from below (step 4). This covers a downward step onto a
+   rising ramp (skip, ±/coach, cap), a fall that meets a rising ramp, and an engagement above one.
+   - Without the rest target, Ruckig's time-optimal landing from above a fast-rising line rises while still above it;
+     for example, an engagement at 61.5 W on a 34.7 W/s ramp at (50, ×1.5, 1), found in seed 585's plan 442 and pinned.
+   - Rounds 1–13 held at rest instead and let the line come up, so the time above the line was `Δ/s`. The round-14
+     falsifier (f625i) set a −50 % offset 25 s into a 300 → 350 W ramp over 300 s at the defaults: the line dropped to
+     152 W and the command held 303 W for the remaining 280 s. With the meet it is at the line within 6.25 s. The
+     repro is pinned, and failed P7's ramp check before the fix.
 6. **Safe braking.** A step after which the command **rises or will rise** is taken only if the new state itself, on
    its own tick, and then Ruckig's braking trajectory from it stay at or below the plan line known ahead, tick by
    tick, until the command is at rest. The candidate's own tick was added in round 6: a line that dips 0.5 W for one
@@ -1951,14 +1964,17 @@ follow the plan:
     limits carry the same boundary, shifted. From a state whose slope will reach the twin's own `min_velocity` exactly
     (`v − a²/(2j)` on it), at (20, ×1.25, 1), (845.72 W, −23.94 W/s, −13.05 W/s²) onto a held line 491.1 W below,
     Ruckig answers the first calculation in 20.2 s and the twin in 39.1 s, past `landing_bound` (24.1 s). The model
-    pins that input. Only flat frames are checked. On a frame near the
-    rider's rate a long answer is legitimate (a return at a small relative rate), and a bound there rejected valid
-    answers (257 in 3 000 plans, round 10).
-  - **Known limit: a slow answer on a ramp frame is accepted** (track 1's behaviour). In random plan 70000 + 1269 at
-    (20, ×1, 2.75), Ruckig answers a return onto a −15.1 W/s ramp from far above in 121.1 s, where the same input with
-    limits × (1 − 2⁻²⁰) takes 61.2 s. Against the faster answer, the command falls at 18.8–20 W/s instead of 20 W/s
-    (the rate), the time above the line is the same (30 s), it ends up to 18 W higher at the ramp's end, and the area
-    above the line is 179 W·s (2.7 %) larger.
+    pins that input.
+  - **Ramp frames too (round 14).** On a line of slope `s` strictly within the rates, with the rider's limits, an
+    answer slower than `ramp_bound` is a refusal as well. Round 10 had tried a bound on ramp frames and rejected valid
+    answers (257 in 3 000 plans), because a return at a small relative rate is legitimately long. `ramp_bound` closes
+    at the real relative rates `r↑ − s` and `r↓ + s`, so it grows exactly where the relative rate is small.
+  - The rule was needed once P7 covered ramps. In seed 1, plan 1270 at (30, ×1.25, 2), an offset forces a re-plan
+    while the command falls at the full rate 394 W above a −5 W/s ramp. Ruckig answers with a constant 1.37 W/s²
+    deceleration, 24 s where `ramp_bound` allows 18.75 s. Rejected, the twin answers in time.
+  - Over that seed's first 1 271 plans, 11 answers are rejected, all recovered by the twin, none degraded. Round 13's
+    known limit (random plan 70000 + 1269: a return onto a −15.1 W/s ramp answered in 121.1 s, the twin in 61.2 s) is
+    closed by the same rule. The plan is pinned.
 - **X5, degraded mode.** If the twin is refused too, the easer is **degraded** on that tick:
   - **The command comes to rest smoothly, then holds.** Each degraded tick takes one tick of the closed-form
     time-optimal stop from the state `(y, v, a)`: the jerk-limited change of slope to 0 under `a_max` and `j_max`
@@ -1969,6 +1985,11 @@ follow the plan:
   - **The status `erg_easer_degraded`** is raised on every degraded tick (`ergEaserDegraded`, §7.10.5) and shown by the
     UI as a fault. Every refusal, every twin recovery and every degraded tick is counted in the ride's diagnostics and
     its log.
+  - **A plan or cap that is not a number** (round 14, f625i: a NaN target held silently with no fault) is degraded
+    the same way, with the status raised on every such tick. That covers NaN or ±inf in the line before the clamp (a
+    block, an offset), and a NaN or −inf cap. The cuts use the last valid cap, the output stays finite and in
+    `[0, max(M, 0)]`, and normal planning resumes on the first tick whose plan is valid again. An infinite target
+    would otherwise clamp silently to `M` or 0 W, and a NaN compares false everywhere.
   - **A refused braking trajectory** (step 6 decided to brake and Ruckig and its twin refuse it) is the same: degraded,
     the same closed-form stop.
   - **No promise to follow the plan while degraded.** Degraded mode has its own promises (§7.10.6, D1–D5): the limits,
@@ -2030,11 +2051,11 @@ The input is in the upstream draft, and #620 tests `rsruckig` on it.
   123000 + 287 and 56000 + 656, 792 and 1227, the fall to 0 W with refusals 120–127 at (10, ×2, 1), the cap events
   777000 + 2717 and 0–119, and the 280/573 W plan falling to 0 W with refusals from tick 16 at (50, ×3, 3) and the
   defaults;
-- 5 × 20 000 random plans (seeds 1, 2, 3, 585 and 7; 29.7 M ticks), each run with the whole suite: every property
-  holds on every tick, all five exit 0. There are 0.51–0.64 % of plans with a refusal, and 742–766 refusals per run are
-  recovered by the twin. Worst cuts:
-  X2 50.0 W/s, X3 10.5 W/s, X4 85.7 W/s at 0 W, each in its domain;
-- round 13b's sweep of the falsifiers' schemes (f625e–f625g) at scale, 44 880 plans, 0 failing:
+- 5 × 20 000 random plans (seeds 1, 2, 3, 585 and 7; 29.7 M ticks; round 14), each run with the whole suite: every
+  property holds on every tick, P7 on every line included (11 924–12 082 downward steps checked per run), and all five
+  exit 0. There are 0.62–0.79 % of plans with a refusal or a rejected slow answer, and 772–803 per run are recovered by
+  the twin. Worst cuts: X2 50.0 W/s, X3 10.5 W/s, X4 85.7 W/s at 0 W, each in its domain;
+- round 13b's sweep of the falsifiers' schemes (f625e–f625g) at scale, 44 880 plans, 0 failing (again in round 14):
   - refusal windows on random plans (3 × 4 000);
   - cap events (6 000) and skips or caps during refusals (4 000);
   - planned falls (2 000) and refusals over a fall's vertex (3 000);
@@ -2055,7 +2076,7 @@ sweep's pattern, the slower answer, and the segfault input, as a comment on #269
 every tick, judged on the **sent positions**' finite differences (slope, curvature, jerk), except where one of these
 cuts breaks them. Each cut is allowed only in its domain and within its bound, and the model fails otherwise:
 
-| | Domain (anywhere else the model fails) | Bound on the slope change | Worst seen (round 13, 5 × 20 000 plans) | Why it is safe |
+| | Domain (anywhere else the model fails) | Bound on the slope change | Worst seen (round 14, 5 × 20 000 plans) | Why it is safe |
 |---|---|---|---|---|
 | X2 | Only while an **unforeseeable event** (skip, ±, coach, cap, engagement) is pending, until the command is next on the line and moving with it (round 11: no longer while only a Ruckig error is; round 13: degraded mode admits none of its own) | `r↑ + a_max·Δt` | 50.0 W/s | It only stops a rise; continuing would raise the load above a plan that was just lowered (P5) |
 | X3 | The same | a position step down to `M`; the slope changes by at most `r↑ + a_max·Δt` | 10.5 W/s | The cap is a limit; it only lowers the load |
@@ -2118,7 +2139,7 @@ An engagement in the middle of a plan (a reconnect on a ramp, for example) is th
 `(origin, 0, 0)` to the line in force, by the rules of §7.10.2.
 - An origin above a falling line is excess while the line falls (P6). At 260 W on a −20 W/s ramp: at most 14.2 W
   above it, on the line after 15.5 s.
-- An origin above a rising line holds, under step 5, and is tracked from below.
+- An origin above a rising line comes down and meets it at rest, under step 5, and is tracked from below.
 
 `SOFT_START_TICKS` and the five 1 Hz steps go.
 
@@ -2228,8 +2249,9 @@ Whether that is right for short intervals is an owner question (PR #625). The re
   - `easingToW`: the rounded plan line while the command is off it, else `null`.
   - `softStartTargetW`: keeps its meaning (an engagement after a recovered loss, until it completes, §7.10.3) and comes
     from the same state.
-  - `ergEaserDegraded` (round 13): `true` on every tick the easer is degraded (§7.10.2, X5: Ruckig and its twin refused;
-    the command stops and holds, not following the plan), else `false`. The UI shows it as a fault, like
+  - `ergEaserDegraded` (round 13): `true` on every tick the easer is degraded (§7.10.2, X5: Ruckig and its twin
+    refused, or, round 14, the plan or the cap is not a number; the command stops and holds, not following the plan),
+    else `false`. The UI shows it as a fault, like
     `not_following`, and the log records `erg_easer_degraded` with each degraded run's start, end and the refusals
     behind it. Seconds while degraded are settle, since the command is not on the line.
   - The commanded target is streamed and recorded per second as the metric `target`: W, the last tick of the second,
@@ -2334,17 +2356,24 @@ The properties:
 - **P5 no rise above the plan.** A command more than ε above the line never rises. No step ends more than ε above the
   line higher than it started.
 - **P6 excess and bounds.** `max(0, y − R − ε)` grows only on a tick where the line falls (a downward jump, a falling
-  ramp, the clamp), and `0 ≤ y ≤ M` after every tick.
-- **P7 time above the line after a fall.** After a downward jump onto a held line, the command is at or below the
-  line within `landing_bound`: `Δ/r↓ + τ·(1 + f)/2 + 0.75 s` from rest. This holds on every plan whenever the easer
-  is not degraded; after degraded mode, D5.
+  ramp, the clamp), and `0 ≤ y ≤ max(M, 0)` after every tick (round 14: a cap below 0 W is 0 W; round 13 sent `M`,
+  since the 0 W cut ran before the cap's).
+- **P7 time above the line after a downward step, on every line** (round 14). After a downward step (a skip, ±/coach,
+  a cap, or a jump down of the line), a command above the line is at or below it:
+  - onto a held line within `landing_bound`, `Δ/r↓ + τ·(1 + f)/2 + 0.75 s` from rest;
+  - onto a line of slope `s` strictly within the rates, rising or falling, within `ramp_bound`. It closes the gap at
+    the real rate `r↓ + s`, which is never below `r↓ − |s|` and is finite as `s → 0±`.
+
+  The rider or coach lowering the load takes effect in bounded time, whatever the line's slope. This holds on every
+  plan whenever the easer is not degraded; after degraded mode, D5. The model checks it on every downward step
+  (`check_above`), and a sweep covers slopes from `10⁻⁴` to 0.99 of either rate (2 064 plans).
 
 **Degraded mode's own promises** (round 13; §7.10.2, X5). P1–P7 hold whenever the easer is not degraded. While it is
 degraded there is no promise to follow the plan, and these hold instead, under any refusal pattern (persistent or
 intermittent) from any tick and state:
 - **D1 limits.** P2 and P3 on the sent positions, with no cut of degraded mode's own: X2–X4 only in their domain (an
   unforeseeable event), as everywhere.
-- **D2 bounds.** `0 ≤ y ≤ M` after every tick.
+- **D2 bounds.** `0 ≤ y ≤ max(M, 0)` after every tick.
 - **D3 no rise above the line.** A command more than ε above the line never rises (P5), and the excess grows only where
   the line falls (P6).
 - **D4 the stop.** From its first tick, the command follows the closed-form time-optimal stop from the state it had
@@ -2356,11 +2385,13 @@ intermittent) from any tick and state:
   `landing_bound`, and on a ramp strictly within the rates within `ramp_bound`, if the piece and the plan last that
   long with no further event or degraded tick. `ramp_bound` is the same bound in the line's frame, with three
   differences:
-  - the relative rates are `r↑ − s` and `r↓ + s`;
+  - the closing rates are the real ones, `r↑ − s` from below and `r↓ + s` from above (round 14; rounds 11–13 used the
+    line's own slope above a rising line, since step 5 waited for it, and the bound grew without limit as `s → 0`);
   - the catch-up's rate follows the sign of the gap left once the relative slope is stopped (the slower rate where
     that sign is not known);
-  - where the line comes to a command waiting for it (a falling line above it, a rising line below it), an overshoot
-    of at most `|s|·T_s/2`, with `T_s = |s|/a_max + a_max/j_max`, is closed at the opposite relative rate.
+  - where the line comes to a command waiting for it (a falling line above it, under safe braking) or the command
+    meets it at rest (a rising line, step 5), an overshoot of at most `|s|·T_s/2`, with
+    `T_s = |s|/a_max + a_max/j_max`, is closed at the opposite relative rate.
 
   The stop distance is the exact jerk-limited one, `v·T/2`. Round 13b's sweep found both cases. From rest at a
   16.5 W/s ramp's start, with `r↑` = 20 W/s, the gap opens behind the line and closes at 3.5 W/s. From rest below a
@@ -2371,14 +2402,16 @@ intermittent) from any tick and state:
 **Claim: no eased target holds the rider above the plan for longer than the documented bound.**
 
 1. *A rise never commands more than the plan.*
-   - A rising command never ends a tick more than ε above the line (P5): safe braking (step 6) and the hold above a
-     rising line (step 5), with X2 where an unforeseeable reversal leaves no room. Degraded mode is the very stop safe
+   - A rising command never ends a tick more than ε above the line (P5): safe braking (step 6) and the meet above a
+     rising line (step 5, which never rises while above it), with X2 where an unforeseeable reversal leaves no room. Degraded mode is the very stop safe
      braking accepted (round 13), so a refusal adds no rise.
    - On the line, it is the line.
    - The lead into a vertex only lowers it.
 2. *A fall never commands more than the rider was just riding, and ends in bounded time.*
    - When the line falls below the command, the command never rises (P5), so it stays at or below the load the rider
      was holding. Its excess never grows unless the line keeps falling (P6).
+   - Onto a ramp, rising or falling, it is at or below the line within `ramp_bound` (P7, round 14), closing at
+     `r↓ + s`.
    - Onto a held line it is at or below the line within `Δ/r↓ + τ·(1 + f)/2 + 0.75 s` (P7). With the bounds
      (`r↓ ≥ 20 W/s`, `τ ≤ 4 s`, `f ≤ 4`), that is at most `Δ/20 + 10.75 s`. For a 300 W drop the bound is 11.25 s at the
      defaults, and the model's trace takes 9.75 s.
@@ -2437,7 +2470,7 @@ about the workout, not the rider.
    eased corner or an unreached short block is excluded, never counted as a miss.
 9. **Mutation.** Deleting or breaking any rule of §7.10.2 must fail the property tests, as it fails the model:
    `just slew-mutants` (`docs/adr/models/erg_slew_mutants.py`) breaks each rule in turn and requires a non-zero exit
-   from the model. Round 13 has 71 mutants, all killed, and one shown equivalent: track 1's planning rules; round 7's falsifier survivors (the snap
+   from the model. Round 14 has 84 mutants, all killed, and one shown equivalent: track 1's planning rules; round 7's falsifier survivors (the snap
    threshold, no merge after the clamp, the raw join tolerance, the post-clamp join ignoring the raw join, and drop
    before merge); the closed-form helpers (`profile_extrema` with one root, `profile_at` without its constant-slope
    tail, the stop without its jerk ramp-down, safe braking's slack ε instead of ε/2), the lead's timing without the
@@ -2453,7 +2486,17 @@ about the workout, not the rider.
    tick 52, the first tick Ruckig answers). The equivalent mutant, a refused braking plan still braking, removed
    `self.braking = False` from a branch that runs only with `braking` already False (1 869 entries over 2 881
    fault-injected plans, `braking` True on none, traces identical to 0 W). The no-op assignment is deleted, and the
-   runner lists the mutant as equivalent instead of running it. The lead's timing from a moving
+   runner lists the mutant as equivalent instead of running it.
+   - Round 14 adds:
+     - step 5 holding above a rising line (rounds 1–13), the meet landing with the line's slope, and the meet's end
+       riding the line;
+     - a ±inf target or a NaN or −inf cap not a fault, and the cap not floored at 0 W in the easer or in the line;
+     - the status never cleared, and `ramp_bound` with `delta > 0` for the gap after the stop (the falsifier's two
+       survivors) or with round 13's rates;
+     - slow answers on ramp frames accepted, and P7 on ramps or the state check not run.
+   - The meet's end is pinned directly: sampled past its duration, it holds at rest where it met the line. The
+     ramp_bound rules are pinned against their formula.
+   - The lead's timing from a moving
    state changes traces without breaking a property, so a golden trace drawn from the generators pins it (random
    56000 + 87), and so do degraded traces (three planned falls with refusal windows). #620 runs a
    mutation tool (`cargo mutants`) over `crank_engine::slew` with the same requirement.
