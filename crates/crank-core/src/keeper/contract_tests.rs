@@ -495,8 +495,8 @@ async fn release_trainer_after_the_end_of_a_started_ride_is_accepted() {
 /// §5.1.3 with #269 (#561 review): a ride that finished on its own (its last block skipped)
 /// keeps its session until the reaper takes it, once the engine drops the ride-active gate
 /// after the end mode (delivered here 1 s late). Until then the ride holds the trainer:
-/// "Release trainer" is `Conflict` and the trainer is `riding`; after the reap it is `cold`
-/// and the release is accepted.
+/// "Release trainer" is `Conflict` and the trainer is `riding`; once the reaped ride has handed
+/// the trainer back it is `cold` and the release is accepted.
 #[tokio::test(start_paused = true)]
 async fn a_ride_that_finished_on_its_own_holds_its_devices_until_the_reap() {
     let dir = tempfile::tempdir().unwrap();
@@ -533,10 +533,14 @@ async fn a_ride_that_finished_on_its_own_holds_its_devices_until_the_reap() {
     );
     assert_eq!(phase(core.0.keeper.links())[0], Some(LinkPhase::Riding));
     sleep(S(3)).await;
+    assert!(core.0.state.lock().await.session.is_none(), "reaped");
+    // the trainer takes its queued modes (1 s each) before it is handed back, and the hold
+    // goes with that, not with the reap (ADR-0002 §5.1.1, #573)
+    super::tests::handed_back(&core).await;
     assert_eq!(
         phase(core.0.keeper.links())[0],
         Some(LinkPhase::Cold),
-        "reaped: the hold is gone with the session"
+        "handed back: the hold is gone"
     );
     release().await.unwrap();
     assert_eq!(phase(published(&core).links), [Some(LinkPhase::Cold), None]);
@@ -570,5 +574,90 @@ async fn a_page_stalled_across_a_ride_with_an_unlinked_strap_gets_one_frame() {
     assert_eq!(
         phase(got[0].links),
         [Some(LinkPhase::Cold), Some(LinkPhase::NotFound)]
+    );
+}
+
+/// The two calls of a "Release trainer" that races a reload of the loaded, unstarted ride
+/// (#573), sent in the order given: `release_first` spawns the release, yields once, then
+/// spawns the load; otherwise the other way round. Returns the release's and the load's
+/// answers once both resolved.
+async fn race_release_and_reload(
+    core: &Core,
+    release_first: bool,
+) -> (Result<(), ApiError>, Result<RideLoaded, ApiError>) {
+    let release = || {
+        tokio::spawn({
+            let core = core.clone();
+            async move {
+                core.links_intent(LinkIntent::Release {
+                    reason: ReleaseReason::RiderRelease,
+                })
+                .await
+            }
+        })
+    };
+    let load = || {
+        tokio::spawn({
+            let core = core.clone();
+            async move { core.ride_load(None).await }
+        })
+    };
+    let (release, load) = if release_first {
+        let release = release();
+        tokio::task::yield_now().await;
+        (release, load())
+    } else {
+        let load = load();
+        tokio::task::yield_now().await;
+        (release(), load)
+    };
+    let (release, load) = tokio::join!(release, load);
+    (release.unwrap(), load.unwrap())
+}
+
+/// A loaded, unstarted ride with both devices warm, on the simulator's latency model.
+async fn loaded_core(dir: &std::path::Path) -> (Core, super::tests::FakeRadio) {
+    let (core, radio) = latent_core(dir, SimLatency::default(), SimLatency::default()).await;
+    core.links_intent(likely(false)).await.unwrap();
+    sleep(TICK).await;
+    core.ride_load(None).await.unwrap();
+    (core, radio)
+}
+
+/// ADR-0002 §5.1.1 (#573): the ride's hold makes the keeper active again only once the ride's
+/// links are handed back. A "Release trainer" that discards the loaded ride, raced by a
+/// reload sent right after it, must not let the reload's attempt meet the old link still
+/// connected ("driver already connected"): the reload rides, and the trainer is not
+/// `not_found`.
+#[tokio::test(start_paused = true)]
+async fn a_reload_racing_release_trainer_finds_the_trainer_handed_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _radio) = loaded_core(dir.path()).await;
+    let (_release, load) = race_release_and_reload(&core, true).await;
+    load.unwrap();
+    assert_ne!(
+        phase(published(&core).links)[0],
+        Some(LinkPhase::NotFound),
+        "the trainer was handed back before the reload's attempt"
+    );
+    core.links_intent(likely(false)).await.unwrap();
+    sleep(S(5)).await;
+    assert_ne!(phase(published(&core).links)[0], Some(LinkPhase::NotFound));
+}
+
+/// #573, the load-first order: a reload sent just before a "Release trainer" replaces the
+/// loaded ride, and the release meets it. The reload rides, never "driver already connected",
+/// and the trainer is not left `not_found`.
+#[tokio::test(start_paused = true)]
+async fn release_trainer_racing_a_reload_sent_first_leaves_the_trainer_usable() {
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _radio) = loaded_core(dir.path()).await;
+    let (release, load) = race_release_and_reload(&core, false).await;
+    load.unwrap();
+    sleep(TICK).await;
+    assert_ne!(
+        phase(published(&core).links)[0],
+        Some(LinkPhase::NotFound),
+        "release {release:?}"
     );
 }
