@@ -55,6 +55,9 @@ Write down for each step whether it worked as expected.
    git switch -c grant-check && nix develop -c git commit --allow-empty -m "scratch: grant check rebuild" && nix develop -c just bundle
    ```
 
+   If the chain stops partway, you are left on `grant-check`: get back with
+   `git switch dev && git branch -D grant-check`, fix the cause, then run the line again.
+
    Relaunch the same way as in step 1 (when recording, with the same `CRANK_CAPTURE_DIR=$CAP open …` line: a
    Finder launch drops the variable, and `open` ignores it on an app that is still running). Expect **no**
    Bluetooth prompt. Confirm that the start screen and the window title now show the scratch commit's rev
@@ -120,8 +123,12 @@ mkdir -p "$OUT"
   rollover 64 s), and it was only ever seen at standstill (0) on fw 0.7.4. If it does read so, stop and file an
   issue with `check8.fecap` (redacted) attached.
 - Each run waits until you type **`y`** (or `yes`) and Enter in its window. Anything else aborts.
-- Every run except check 10 then cues *start pedalling at about 90 rpm*. If the trainer reports no cadence within
-  120 s of that cue, the run stops early (no result), so be on the bike before you type `y`.
+- Checks 5, 6, 7, 8, 9, 12, 11a and 11b then cue *start pedalling at about 90 rpm* (`Cue::Start`, from
+  `wait_pedalling` in `crates/crank-ble/examples/hil_fec/rider.rs`). If the trainer reports no cadence within 120 s
+  of that cue (`START_WAIT`), the run stops early (no result), so for these be on the bike before you type `y`.
+  Check 10 never cues it. Check 11c is the exception: stay off the pedals at its first `y`; it cues *start
+  pedalling the unplugged trainer now* instead (`Cue::ColdStart`), with 60 s for the trainer to advertise
+  (`ADVERT_WAIT` in `check11ac.rs`), and its 120 s cue comes only after its second `y`, while you are riding.
 - Follow the on-screen cues. A run that stops early exits with status 4 and gives no result. Read its last line:
   `STOPPED: … (trainer released)` means the release was confirmed. `STOPPED: … (release NOT confirmed: …)` means
   the trainer may still hold its target: stop pedalling; if it still resists, unplug it and wait until its lights
