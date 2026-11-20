@@ -106,6 +106,12 @@ hardened runtime or App Sandbox (library validation rejects the unsigned nix-sto
 distribution signing is #47). The bundle must not depend on the Nix store at runtime (#413): the `crank-app` derivation points the Darwin stdenv's libiconv load command at the system `/usr/lib/libiconv.2.dylib` (`install_name_tool`, then an ad-hoc re-sign, all before `just bundle` signs), and the `bundle-no-nix-store` flake check (aarch64-darwin, `scripts/check-bundle-no-nix-store.sh <crank.app>`, also runnable by hand on an installed app) fails if `otool` shows `/nix/store` in a load command or rpath of any Mach-O in the bundle. A new native dependency must be linked from the system or bundled under Contents/Frameworks, never left on a store path. `just e2e` (`scripts/e2e.sh`, ADR-0001 §8.3.1) builds `.#crank-desktop-e2e` and runs the WebdriverIO specs of
 `app/e2e/` (in sim mode, scratch data dir per launch) in the GUI session through Alacritty IPC (`CRANK_E2E_DIRECT=1` from a GUI terminal); output goes to the
 gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and compares screenshots across them; on Linux it skips with a message.
+The specs share one app process per launch (the embedded WebDriver keeps it across sessions), so `app/e2e/wdio.conf.mjs` lists them in order:
+smoke (needs the fresh shell), `mvp.e2e.mjs` (#667: the #256 critical path through the UI: pair in Settings → Devices, Ride this,
+the Ready sheet, Start, soft start, ERG target, tiles and chart, Pause/Resume, Skip, End and the summary; it ends by closing the
+window, which quits the app), `mvp-relaunch.e2e.mjs` (the service starts the app again on the same data dir: the ride is in History),
+then stream (leaves its ride loaded). Their selectors live in `app/e2e/specs/mvp-selectors.mjs`, one per component, and
+`app/e2e/design/mvp-selectors.pw.ts` checks them against the design fixtures in CI. The sim dropout step waits on a test-only hook (#668).
 `just screens` awaits the UI waves (#229) and fails explicitly until then.
 **Design harness (#457, DESIGN §18.7):** `just design` (= `pnpm -C app exec playwright test`, in the devShell) opens every
 fixture of `app/e2e/design/scenarios.ts` at 1024×768 and 1440×900 in both themes, injects `app/e2e/design/layout-audit.js`
