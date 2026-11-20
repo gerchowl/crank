@@ -1629,6 +1629,13 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
   - *X3 before the step keeps only the falling slope the command can still stop on the line, so it settles at `M`
     instead of falling through it (a 20 W cap under a 100 W/s fall sent 0 W, then climbed back), and X3's bound
     is `max(r↑, r↓) + a_max·Δt`.*
+- *Round 16, after the falsifier at 8f8f5f4 (f625k) confirmed round 15 and found one blocker and three test gaps:*
+  - *the input layer: for several events on one tick, each input keeps its last valid value and any invalid one
+    raises the fault (a NaN cap after a valid one on the same tick lost the valid cap in the easer, 27.5 s above `M`);*
+  - *below a falling line, safe braking meets the line at rest instead of braking to rest, so a catch-up no longer
+    climbs in pulses (a D5 landing in 6.25 s against 5.29 s, present since round 14);*
+  - *X3 keeps no negative curvature after reducing the slope, and a check that the command never falls below the
+    line it caps after X3; the last command for a state that is not a number, and X3's bound, are pinned.*
 
 *The design's model drives the library itself: `docs/adr/models/erg_slew.py`, with Ruckig in the loop.*
 
@@ -1895,6 +1902,19 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
      exactly at `M` (seed 585, plan 7929, pinned). With no tolerance, a time-optimal landing on a cap line was refused
      by float noise and re-approached in cycles (round 6).
    - A step that leaves the command falling is taken only if its braking trajectory stays at or above 0 W.
+   - **Below a falling line, it meets the line at rest (round 16, f625k).** Where a rising step is rejected below a
+     line falling at a trackable slope (not leading into a vertex), Ruckig plans in the line's frame onto the line
+     with the command at rest there, as step 5 does from above. The meet's step is checked by safe braking like any
+     other. Each tick tries the ordinary plan first and meets again where safe braking rejects it; a re-plan from a
+     state on the meet is the same meet, so nothing is kept.
+     - The time-optimal plan onto a falling line passes slope 0 still decelerating, so its peak is below the line.
+       The probe, a stop to rest, peaks higher from the same state, so the step was rejected. The command braked to
+       rest, re-planned and climbed in pulses: at (50, ×4, 1), about 6 W/s against `r↑` = 50 W/s, and stalled at rest
+       while the line came down to it.
+     - In the falsifier's case A353 (a recovery at rest 50 W below a line falling at 4.1 W/s), the landing took
+       6.25 s against D5's `ramp_bound` of 5.29 s. With the meet it lands in 2.5 s. D5's bound is right; the planner
+       missed it, and the case is pinned.
+     - The probe stays the stop to rest, so degraded mode is still the very stop safe braking accepts.
    - Otherwise the command eases out from the current state (velocity target 0) until it is at rest.
    - This is what eases, without a cut:
      - a short block followed by a lower one: the command reaches rest by the boundary, below the plan;
@@ -2006,6 +2026,16 @@ follow the plan:
     - **A state that is not a number** (a NaN or ±∞ origin, engagement, initial value or slope; round 15) is a fault
       too. It is replaced at rest: its value if that is a number, else the last command sent, else 0 W. The output is
       a number in `[0, max(M, 0)]` on every tick, as §7.10.7's "no NaN or infinity for any input" requires.
+    - **The input layer** (round 16, f625k; the rule the Rust port mirrors). Each input has its own validity:
+      - the cap is valid if it is a number or +∞ (none), and is 0 W if below 0 W;
+      - the ± offset and an engagement are valid if they are finite numbers.
+
+      For several events on one tick, each input takes them in the order they arrive: the **last valid value wins**,
+      and **any invalid value raises the fault** on that tick. The fault stays raised while that input's latest value
+      is invalid (an invalid value last on the tick, or alone). The easer gets the cap in force and the fault. In
+      round 15 it got the tick's last raw cap, so a valid cap followed by a NaN one on the same tick was lost: the
+      command held 300 W against `M` = 100 W for 27.5 s. The model tests every order, for the cap, the offset and the
+      engagement.
   - **A refused braking trajectory** (step 6 decided to brake and Ruckig and its twin refuse it) is the same: degraded,
     the same closed-form stop.
   - **No promise to follow the plan while degraded.** Degraded mode has its own promises (§7.10.6, D1–D5): the limits,
@@ -2067,10 +2097,10 @@ The input is in the upstream draft, and #620 tests `rsruckig` on it.
   123000 + 287 and 56000 + 656, 792 and 1227, the fall to 0 W with refusals 120–127 at (10, ×2, 1), the cap events
   777000 + 2717 and 0–119, and the 280/573 W plan falling to 0 W with refusals from tick 16 at (50, ×3, 3) and the
   defaults;
-- 5 × 20 000 random plans (seeds 1, 2, 3, 585 and 7; 29.7 M ticks; round 15), each run with the whole suite: every
-  property holds on every tick, P7 on every line included (11 924–12 085 downward steps checked per run), and all five
-  exit 0. There are 0.60–0.78 % of plans with a refusal or a rejected slow answer, and 772–803 per run are recovered by
-  the twin. Worst cuts: X2 50.0 W/s and X3 10.5 W/s, each in its domain. X4 cuts on no tick: up to round 14 it cut
+- 5 × 20 000 random plans (seeds 1, 2, 3, 585 and 7; 29.7 M ticks; round 16), each run with the whole suite: every
+  property holds on every tick, P7 on every line and X3's floor included (11 923–12 086 downward steps checked per
+  run), and all five exit 0. There are 0.73–0.86 % of plans with a refusal or a rejected slow answer, and 833–859 per
+  run are recovered by the twin. Worst cuts: X2 50.0 W/s and X3 10.5 W/s, each in its domain. X4 cuts on no tick: up to round 14 it cut
   1–9 ticks per run (up to 85.7 W/s at 0 W), and those were the cap undershoots round 15 fixes;
 - round 13b's sweep of the falsifiers' schemes (f625e–f625g) at scale, 44 880 plans, 0 failing (again in round 14):
   - refusal windows on random plans (3 × 4 000);
@@ -2096,7 +2126,7 @@ cuts breaks them. Each cut is allowed only in its domain and within its bound, a
 | | Domain (anywhere else the model fails) | Bound on the slope change | Worst seen (round 15, 5 × 20 000 plans) | Why it is safe |
 |---|---|---|---|---|
 | X2 | Only while an **unforeseeable event** (skip, ±, coach, cap, engagement) is pending, until the command is next on the line and moving with it (round 11: no longer while only a Ruckig error is; round 13: degraded mode admits none of its own) | `r↑ + a_max·Δt` | 50.0 W/s | It only stops a rise; continuing would raise the load above a plan that was just lowered (P5) |
-| X3 | The same | a position step down to `M`; the slope changes by at most `max(r↑, r↓) + a_max·Δt` (round 15: the command keeps only the falling slope it can still stop on the line at or below `M`, so it settles at `M`) | 10.5 W/s | The cap is a limit; it only lowers the load, and never below the line it caps |
+| X3 | The same | a position step down to `M`; the slope changes by at most `max(r↑, r↓) + a_max·Δt` (round 15: the command keeps only the falling slope it can still stop on the line at or below `M`, so it settles at `M`; round 16: and no negative curvature once the slope is reduced, checked: after X3 the command never falls below the line it capped at the cut, `min(line, M)`, by more than ε until it is on the line again, a lead into the line ahead excepted) | 10.5 W/s | The cap is a limit; it only lowers the load, and never below the line it caps |
 | X4 | The same | `r↓ + a_max·Δt` | none (round 14: 85.7 W/s at 0 W, a cap undershoot round 15 removes) | Nothing is below 0 W, and there is no load to feel at 0 W |
 
 **No corner is left in event-free riding:** X2, X3 and X4 never break the band without an unforeseeable event (round
@@ -2487,7 +2517,7 @@ about the workout, not the rider.
    eased corner or an unreached short block is excluded, never counted as a miss.
 9. **Mutation.** Deleting or breaking any rule of §7.10.2 must fail the property tests, as it fails the model:
    `just slew-mutants` (`docs/adr/models/erg_slew_mutants.py`) breaks each rule in turn and requires a non-zero exit
-   from the model. Round 15 has 90 mutants, all killed, and one shown equivalent: track 1's planning rules; round 7's falsifier survivors (the snap
+   from the model. Round 16 has 96 mutants, all killed, and one shown equivalent: track 1's planning rules; round 7's falsifier survivors (the snap
    threshold, no merge after the clamp, the raw join tolerance, the post-clamp join ignoring the raw join, and drop
    before merge); the closed-form helpers (`profile_extrema` with one root, `profile_at` without its constant-slope
    tail, the stop without its jerk ramp-down, safe braking's slack ε instead of ε/2), the lead's timing without the
@@ -2520,6 +2550,15 @@ about the workout, not the rider.
      - the line's cap NaN after a NaN cap.
    - The pre-step X3 skipped while degraded (E21) survived round 15's first run: X3 after the step also caps, at
      rest. A repro now asserts the documented rule: the stop continues falling from the cut state.
+   - Round 16 adds:
+     - the easer losing a valid cap to a later invalid one on the same tick (round 15's bug), no fault for an
+       invalid value on a tick, and no persisting fault;
+     - no meet from below a falling line;
+     - X3 keeping a negative curvature (K12), the last command never recorded (K6), X3's bound doubled (K11), and
+       X3's floor not checked;
+     - the fault branch applying no cap.
+   - Three input-layer mutants, which pass an invalid cap to the easer, are stopped by the easer's input contract
+     (an assertion: the cap is a number ≥ 0).
    - The lead's timing from a moving
    state changes traces without breaking a property, so a golden trace drawn from the generators pins it (random
    56000 + 87), and so do degraded traces (three planned falls with refusal windows). #620 runs a

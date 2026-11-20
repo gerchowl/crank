@@ -341,10 +341,10 @@ class Easer:
         self.degraded = False      # `erg_easer_degraded` on the current tick: the status the UI shows as a fault
         self.invalid = 0           # ticks whose plan or cap was not a finite number (a fault: degraded, round 14)
         self.plan_invalid = False  # the target ahead is not a number before the clamp (set by the caller each tick)
-        self.m_ok = math.inf       # the cap in force: the last valid one (a NaN or -inf cap is a fault, not a cap)
         self.y_ok = 0.0            # the last command sent, for a state that is not a number (round 15)
         self.meet = False          # the trajectory in force meets a rising line at rest (step 5, round 14)
         self.meet_fs = 0.0
+        self.frame = None          # the step's frame (c, slope, lead), for safe braking's meet from below
         self.prev_piece = None
         self.key = None
         self.elapsed = 0.0
@@ -431,6 +431,37 @@ class Easer:
         p, v, a = self.traj.at_time(tt)
         return p[0], v[0], a[0]
 
+    def _meet_below(self, st: State, nst: State, k: int, segs: list[Seg], m: float):
+        """Step 6 below a falling line (round 16, f625k): where safe braking rejects a rising step, the command
+        meets the line at rest (round 14's meet, from below) instead of braking to rest. The time-optimal plan
+        onto a falling line passes slope 0 still decelerating, so its peak is below the line, but the probe's
+        stop to rest from the same state peaks higher: braking to rest and re-planning climbed in pulses (at
+        (50, x4, 1), 6 W/s against r↑ = 50 W/s, and stalled at rest while the line came down: a D5 landing
+        in 6.25 s against 5.29 s). The meet's peak is the line at the meeting tick, below it before, so it
+        never rises above the line; its step is still checked by safe braking (else the brake). It is not kept as
+        a plan: each tick tries the ordinary plan first and meets again where safe braking rejects it (a re-plan
+        from a state on the meet is the same meet). Returns the new state, or None (not below a falling line, not
+        lead-free, refused or rejected: brake as before)."""
+        t = self.t
+        if self.frame is None or not rises(nst, t):
+            return None
+        c, fs, lead = self.frame
+        rel = st.y - (c + fs * (k - 1) * DT)
+        if lead or not (-t.r_dn < fs < 0) or rel >= 0:
+            return None
+        # Ruckig (and its twin), not _plan: a refused meet is not a needed calculation, braking follows.
+        if not self._calc(self.spare, st, rel, fs, t.r_up, -t.r_dn, None, True):
+            return None
+        self.traj, self.spare = self.spare, self.traj
+        self.meet, self.meet_fs, self.braking, self.chasing = True, fs, False, False
+        self.key, self.elapsed = (("meet", c, fs), t.r_up, -t.r_dn, None, m), DT
+        p, v, a = self._sample(False)
+        cand = State(c + fs * k * DT + p, v + fs, a)
+        if (rises(cand, t) and not self._brake_ok(cand, k, segs, m)) or (cand.v < -1e-9 and not self._floor_ok(cand)):
+            self.key, self.meet = None, False
+            return None
+        return cand
+
     def _at_cap(self, st: State, m: float, line: float) -> State:
         """X3 before the step (round 15, f625j): the command steps down to M and keeps its falling slope only
         as far as it can still stop at or above the line there (closed form), so it never undershoots: a cap
@@ -479,13 +510,10 @@ class Easer:
         t = self.t
         self.k = k
         exc = ""
-        # The cap first, whatever else is wrong (round 15, f625j: a cap drop during a NaN offset was never
-        # applied, 62.5 s above M): a valid cap (a number, or +inf for none; below 0 W it is 0 W) always takes
-        # effect; a NaN or -inf cap is a fault and the last valid cap stays in force.
-        cap_ok = not (math.isnan(m) or m == -math.inf)
-        if cap_ok:
-            self.m_ok = max(m, 0.0)
-        m = self.m_ok
+        # m is the cap in force from the input layer (run(), round 16): the last valid cap, a number >= 0 or +inf.
+        # It applies on every tick, whatever else is a fault (round 15, f625j: a cap drop during a NaN offset was
+        # never applied, 62.5 s above M). An invalid cap is the input layer's fault (plan_invalid).
+        assert not math.isnan(m) and m >= 0.0, m
         # A state that is not a number (a NaN or ±inf origin, engagement, initial value or slope; round 15) is
         # replaced, at rest: its value if that is a number, else the last command sent (0 W before the first).
         state_ok = math.isfinite(st.y) and math.isfinite(st.v) and math.isfinite(st.a)
@@ -494,7 +522,7 @@ class Easer:
         # A plan, cap or state that is not a number (NaN, ±inf in the line; round 14, f625i) is a fault, not a
         # plan: degraded mode (the closed-form stop, then a hold), the status raised on every such tick, the
         # cuts against the cap in force. Normal planning resumes on the first valid tick.
-        if (self.plan_invalid or not cap_ok or not state_ok
+        if (self.plan_invalid or not state_ok
                 or any(not (math.isfinite(q.r0) and math.isfinite(q.s)) for q in segs)):
             self.invalid += 1
             self.degraded = True
@@ -558,6 +586,7 @@ class Easer:
         line = lambda kk: c + fs * kk * DT
         brake = self.braking
         meet = False
+        self.frame = (c, fs, lead)
         if brake:
             vel_target = 0.0
         elif trackable(fs) and fs > 0 and st.y - line(k) > EPS:
@@ -621,7 +650,10 @@ class Easer:
             if self.fail_brake:
                 self.errors += 2
                 self.plan_failures += 1
-            if not self.fail_brake and self._plan(st, 0.0, 0.0, t.r_up, -t.r_dn, 0.0):
+            meet_nst = None if self.fail_brake else self._meet_below(st, nst, k, segs, m)
+            if meet_nst is not None:
+                nst = meet_nst
+            elif not self.fail_brake and self._plan(st, 0.0, 0.0, t.r_up, -t.r_dn, 0.0):
                 self.braking, self.meet = True, False
                 self.base, self.elapsed = st.y, DT
                 self.key = (("brake",), t.r_up, -t.r_dn, 0.0, m)
@@ -702,8 +734,14 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
     ez.refuse_ticks = set(refuse_ticks)
     ez.fail_brake = fail_brake
     ez.twin_answers = twin_answers
-    mult, m = 1.0, m0
-    m_line = max(m0, 0.0) if not (math.isnan(m0) or m0 == -math.inf) else math.inf   # the cap in force
+    # The input layer (round 16, f625k), for each input (the cap, the ± offset, the engagement), in the order its
+    # events arrive on a tick: the last valid value wins, and any invalid one raises the fault, which stays raised
+    # while that input's latest value is invalid. A cap is valid if it is a number or +inf (none), below 0 W it is
+    # 0 W; an offset or an engagement if it is a finite number. The easer gets the cap in force and the fault.
+    cap_ok = lambda x: not (math.isnan(x) or x == -math.inf)
+    mult = 1.0
+    m_line = max(m0, 0.0) if cap_ok(m0) else math.inf   # the cap in force
+    cap_bad, off_bad = not cap_ok(m0), False             # the latest cap / offset was invalid
     tr = Trace()
     st = None
     pending = origin is not None
@@ -713,16 +751,21 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
     k = 0
     while k < sum(b.ticks for b in blocks):
         disc = reset = False
+        tick_bad = False                 # an invalid value arrived on this tick
         if ev.get(k):
             unforeseen = True     # skip, ±/coach, cap or engagement: not known before it happens
         # A cap change applies first, so an engagement on the same tick starts at or below the new cap.
         for e in sorted(ev.get(k, []), key=lambda e: e.kind != "cap"):
             if e.kind == "offset":
-                mult, disc = e.value, True
+                if math.isfinite(e.value):
+                    mult, disc, off_bad = e.value, True, False
+                else:
+                    off_bad = tick_bad = True
             elif e.kind == "cap":
-                m = e.value          # as given to the easer (a NaN or -inf is its fault)
-                if not (math.isnan(m) or m == -math.inf):
-                    m_line = max(m, 0.0)
+                if cap_ok(e.value):
+                    m_line, cap_bad = max(e.value, 0.0), False
+                else:
+                    cap_bad = tick_bad = True
             elif e.kind == "skip":
                 k0 = 0
                 for idx, b in enumerate(blocks):
@@ -733,8 +776,12 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
                         break
                     k0 += b.ticks
             elif e.kind == "engage" and st is not None:
-                # (not a number: passed as given, the easer's fault, not clamped silently to M or 0 W)
-                st, reset, pending = State(clamp(e.value, m_line) if math.isfinite(e.value) else e.value), True, True
+                if math.isfinite(e.value):
+                    st, reset, pending = State(clamp(e.value, m_line)), True, True
+                else:
+                    tick_bad = True
+                    if not reset:        # (no valid engagement earlier on this tick: the easer's fault, at rest)
+                        st, reset, pending = State(e.value), True, True
         # The line under the cap in force, max(M, 0) of the last valid cap (round 14; round 15: a NaN or -inf
         # cap leaves the last valid one in force, as in the easer, so the checks never see M = NaN).
         me = m_line
@@ -745,7 +792,7 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
             if kk + b.ticks > k:
                 finite = finite and math.isfinite(b.frm) and math.isfinite(b.to)
             kk += b.ticks
-        ez.plan_invalid = not finite
+        ez.plan_invalid = not finite or cap_bad or off_bad or tick_bad
         segs = segments(blocks, k, mult, me)
         r = clamp(segs[0].at(k), me)
         if segs[0].k0 == k and k > 0 and not segs[0].joined:
@@ -760,7 +807,7 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
             disc = True    # a raised cap lets the line jump up
         origin_k = st.y if reset else None
         failures_before = ez.plan_failures
-        st, exc = ez.step(st, k, segs, m, reset or disc)
+        st, exc = ez.step(st, k, segs, me, reset or disc)
         failed_now = ez.plan_failures > failures_before
         on = abs(r - st.y) <= EPS
         unforeseen_now = unforeseen
@@ -993,6 +1040,31 @@ def check_above(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
                      f" (from {y0:.2f} W, {delta:+.2f} W off, slope {v0:.2f} W/s)")
 
 
+def check_cap_floor(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
+    """X3 never undershoots (round 16, f625k K12): after a cap cut at tick k, the command does not fall below the
+    line it capped there, min(line_k, M), by more than ε, until it is on the line again, the line moves on to its
+    next piece, an event, an engagement or degraded mode; that is the floor the cut keeps its slope for (_at_cap).
+    Falling below it is the failure. A line that rises past the command afterwards does not raise the floor, and a
+    lead into the line ahead (step 3: within one slope change, max(r↑, r↓)/a_max + a_max/j_max) lowers it.
+    The cut keeps only the falling slope (and curvature) whose stop stays on that line; keeping a negative
+    curvature after reducing the slope fell 237.5 W below a flat 300 W line at (50, ×4, 4)."""
+    n = len(tr.y)
+    ahead = int(math.ceil((max(t.r_up, t.r_dn) / t.a_max + t.a_max / t.j_max) / DT))
+    for k in range(n):
+        if tr.exc[k] != "X3":
+            continue
+        for j in range(k, n):
+            if j > k and (tr.events[j] or tr.reset[j] or tr.degraded[j] or tr.exc[j] in CUTS
+                          or tr.piece[j][0] != tr.piece[k][0]):
+                break
+            floor = min(tr.r[k], tr.m[k], min(tr.r[j:j + ahead + 1]))
+            if tr.y[j] < floor - EPS and (j == k or tr.y[j] < tr.y[j - 1] - 1e-9):
+                rep.fail(f"{name} k={j}: below the capped line after X3 at k={k}: {tr.y[j]:.3f} W < {floor:.3f} W - ε")
+                return
+            if abs(tr.y[j] - tr.r[j]) <= EPS and j > k:
+                break
+
+
 def check_state(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
     """The state the easer plans from is the state it sent (round 14): over a tick at piecewise-constant
     jerk, the position step is Δt·(v0 + v1)/2 − (a1 − a0)·Δt²/12 to within j_max·Δt³/6. Ticks with a cut
@@ -1152,6 +1224,7 @@ def check(tr: Trace, t: Tuning, rep: Report, name: str, y_start: float) -> None:
     check_landing(tr, t, rep, name)
     check_above(tr, t, rep, name)
     check_state(tr, t, rep, name)
+    check_cap_floor(tr, t, rep, name)
     check_recovery(tr, t, rep, name)
     check_degraded(tr, t, rep, name)
 
@@ -1414,7 +1487,7 @@ GOLDEN = {
     'planned fall #29 with refusals 29..68': (86839.674771, 106, 126),
     'planned fall #202 with refusals 35..74': (45390.863494, 52, 52),
     'planned fall #358 with refusals 65..67': (66150.415011, 71, 71),
-    'random 56000+87 (the lead from a moving state)': (164798.878085, 123, 161),
+    'random 56000+87 (the lead from a moving state)': (164763.945937, 122, 161),
 }
 
 
@@ -1460,6 +1533,11 @@ def constants(rep: Report, report: bool):
         want = 100.0 / (t.r_up - s) + (over(s, t.r_dn + s) if s < 0 else 0.0) + t.ease * (1 + t.factor) / 2 + 0.75
         if not math.isfinite(b) or abs(b - want) > 1e-9:
             rep.fail(f"constants: ramp_bound from below at slope {s} W/s: {b} s, expected {want} s (r↑ − s)")
+    # X3's bound (round 15) pinned from above too (f625k K11: doubling it survived): max(r↑, r↓) + a_max·Δt, the worst
+    # case measured being exactly r↓ (a cap under a command falling at the full rate).
+    for tb in [DEFAULT] + CORNERS:
+        if abs(bounds(tb)["X3"] - (max(tb.r_up, tb.r_dn) + tb.a_max * DT)) > 1e-12:
+            rep.fail(f"constants: X3's bound {bounds(tb)['X3']} at {tb}, expected max(r↑, r↓) + a_max·Δt")
     s, delta = -15.0, 2.0
     v = -s
     stop_t = v / t.a_max + t.a_max / t.j_max
@@ -2356,6 +2434,10 @@ def randoms(rep: Report, n: int, report: bool, seed: int = 585):
               f" ({(rep.plans_with_errors - with0) / max(1, n):.3%} of plans)")
 
 
+def cap_valid(x: float) -> bool:
+    return not (math.isnan(x) or x == -math.inf)
+
+
 def above(rep: Report, report: bool):
     """Round 14 (f625i): P7 on every line, the plan or cap not a number, and a cap below 0 W.
     1. The falsifier's repro: a -50 % offset onto a 300 -> 350 W ramp over 300 s at the defaults. Rounds
@@ -2460,6 +2542,88 @@ def above(rep: Report, report: bool):
         check(tr, DEFAULT, r9, f"a NaN cap, then {cap} W", tr.y[0])
         for f in r9.fails:
             rep.fail(f)
+    # Round 16 (f625k). The input layer: several events on one tick, for each input the last valid value wins and any
+    # invalid one raises the fault (a NaN cap after a valid one on the same tick kept 300 W against M = 100 W, 27.5 s).
+    for name, ev, want_m, deg_after in (
+            ("cap 100 then NaN", [Event(10, "cap", 100.0), Event(10, "cap", nan)], 100.0, True),
+            ("cap NaN then 100", [Event(10, "cap", nan), Event(10, "cap", 100.0)], 100.0, False),
+            ("cap 100 then -inf", [Event(10, "cap", 100.0), Event(10, "cap", -inf)], 100.0, True),
+            ("cap -inf then 100", [Event(10, "cap", -inf), Event(10, "cap", 100.0)], 100.0, False),
+            ("cap 100 then 50", [Event(10, "cap", 100.0), Event(10, "cap", 50.0)], 50.0, False),
+            ("cap 50 then 100", [Event(10, "cap", 50.0), Event(10, "cap", 100.0)], 100.0, False),
+            ("cap -5 then NaN", [Event(10, "cap", -5.0), Event(10, "cap", nan)], 0.0, True)):
+        tr = run([steady(300, 30)], ev, t=DEFAULT, m0=400.0)
+        bad = [k for k in range(len(tr.y)) if not (math.isfinite(tr.y[k]) and 0.0 <= tr.y[k] <= tr.m[k] + 1e-9)]
+        fault = any(not cap_valid(e.value) for e in ev)
+        if (bad or tr.m[10] != want_m or tr.y[10] > want_m + 1e-9 or tr.degraded[10] != fault
+                or any(tr.degraded[11:]) != deg_after):
+            rep.fail(f"same tick, {name}: M {tr.m[10]} (expected {want_m}), y {tr.y[10]:.2f}, out of [0, M] on {bad[:3]},"
+                     f" fault at the tick {tr.degraded[10]} (expected {fault}), after it {any(tr.degraded[11:])} (expected {deg_after})")
+    for name, ev, want_r, deg_after in (
+            ("offset 0.5 then NaN", [Event(10, "offset", 0.5), Event(10, "offset", nan)], 150.0, True),
+            ("offset NaN then 0.5", [Event(10, "offset", nan), Event(10, "offset", 0.5)], 150.0, False),
+            ("offset 0.5 then inf", [Event(10, "offset", 0.5), Event(10, "offset", inf)], 150.0, True)):
+        tr = run([steady(300, 30)], ev, t=DEFAULT, m0=400.0)
+        if tr.r[10] != want_r or not tr.degraded[10] or any(tr.degraded[11:]) != deg_after or not all(map(math.isfinite, tr.y)):
+            rep.fail(f"same tick, {name}: line {tr.r[10]} (expected {want_r}), fault {tr.degraded[10]}, after {any(tr.degraded[11:])}"
+                     f" (expected {deg_after})")
+    for name, ev, want_y in (("engage NaN then 150", [Event(10, "engage", nan), Event(10, "engage", 150.0)], 150.0),
+                             ("engage 150 then NaN", [Event(10, "engage", 150.0), Event(10, "engage", nan)], 150.0)):
+        tr = run([steady(300, 30)], ev, t=DEFAULT, m0=400.0)
+        if abs(tr.origin[10] - want_y) > 1e-9 or not tr.degraded[10] or not all(map(math.isfinite, tr.y)):
+            rep.fail(f"same tick, {name}: engaged at {tr.origin[10]} (expected {want_y}), fault {tr.degraded[10]}")
+    # K6: a state that is not a number takes the last command sent: a NaN engagement while riding 200 W holds 200 W.
+    tr = run([steady(200, 20)], [Event(10, "engage", nan)], t=DEFAULT)
+    if abs(tr.y[10] - tr.y[9]) > 1e-9 or abs(tr.y[9] - 200.0) > 1e-9:
+        rep.fail(f"a NaN engagement at 200 W: {tr.y[9]:.2f} -> {tr.y[10]:.2f} W (the last command, 200 W, expected)")
+    # K12: X3 with a non-zero curvature at the cut (the command easing into a fall): it settles on the capped line and
+    # never undershoots it (check_cap_floor). The falsifier's case and a grid of cap ticks over the fall's onset.
+    n12 = curved = 0
+    for t12 in (Tuning(50, 4.0, 4.0), DEFAULT, Tuning(20, 2.0, 2.0), Tuning(50, 1.0, 1.0)):
+        for kc in range(21, 45):
+            free = run([steady(900, 5), steady(300, 40)], t=t12)
+            cap = (free.y[kc - 1] + 300.0) / 2 if kc != 36 or t12 != Tuning(50, 4.0, 4.0) else 541.7
+            tr = run([steady(900, 5), steady(300, 40)], [Event(kc, "cap", cap)], t=t12)
+            r12 = Report()
+            check(tr, t12, r12, f"X3 with curvature, cap {cap:.1f} W at tick {kc} {t12}", tr.y[0])
+            for f in r12.fails:
+                rep.fail(f)
+            n12 += 1
+            curved += abs(free.a[kc - 1]) > 1e-6
+            if min(tr.y[kc:]) < 300.0 - EPS:
+                rep.fail(f"X3 with curvature, cap {cap:.1f} W at tick {kc} {t12}: fell to {min(tr.y[kc:]):.2f} W, below the 300 W line")
+    if curved < n12 // 3:
+        rep.fail(f"X3 with curvature: only {curved} of {n12} cuts had a non-zero curvature (the test misses its case)")
+    # The check itself: a command 2 W under the capped line after X3 fails check_cap_floor.
+    tr = run([steady(900, 5), steady(300, 40)], [Event(36, "cap", 541.7)], t=Tuning(50, 4.0, 4.0))
+    k3 = tr.exc.index("X3")
+    tr.y[k3 + 1] = min(tr.r[k3 + 1], tr.m[k3 + 1]) - 2.0
+    r13 = Report()
+    check(tr, Tuning(50, 4.0, 4.0), r13, "self-test", tr.y[0])
+    if not any("below the capped line" in f for f in r13.fails):
+        rep.fail("above: check_cap_floor() does not fail a command under the capped line after X3")
+    # A353 (f625k, also at 06071c8): a recovery at rest 50 W below a line falling at 4.1 W/s at (50, x4, 1) climbed in
+    # pulses under safe braking (6.25 s against D5's 5.29 s); safe braking now meets the line at rest from below.
+    t16 = Tuning(50, 4.0, 1.0)
+    bl16 = [Block(139, 246.25, 103.6302083333343), Block(46, 103.6302083333343, 56.4322916666661),
+            Block(55, 56.4322916666661, 0.0), Block(40, 0.0, 0.0), Block(25, 0.0, 3.359356511097046e-14),
+            Block(12, 3.359356511097046e-14, 6.103328415515826e-13), Block(203, 6.103328415515826e-13, 0.0),
+            Block(5, 117.14451348958849, 114.46443377265335), Block(3, 114.46443377265335, 112.85638594249403),
+            Block(32, 112.85638594249403, 95.70387575411249)]
+    ev16 = [Event(86, "skip", 0.0), Event(457, "engage", 105.96781858201494), Event(353, "cap", 616.5980753014405),
+            Event(373, "cap", 255.48177242744842), Event(0, "cap", 151.96156776433398), Event(194, "cap", 141.55408506668627),
+            Event(484, "cap", 1e-09), Event(101, "cap", 1e-09), Event(102, "cap", 0.0), Event(103, "cap", 0.0),
+            Event(104, "cap", 546.3312833820088), Event(105, "cap", -5.0), Event(106, "cap", 0.0), Event(107, "cap", 1e-09),
+            Event(108, "cap", 540.7693665647844), Event(109, "cap", 1e-09), Event(110, "cap", 190.28109936183873)]
+    tr = run(bl16, ev16, t=t16, m0=2000.0, refuse_ticks=range(100, 139))
+    r16 = Report()
+    check(tr, t16, r16, "A353: recovery under a falling line", tr.y[0])
+    for f in r16.fails:
+        rep.fail(f)
+    land = next((k for k in range(139, len(tr.y)) if abs(tr.y[k] - tr.r[k]) <= EPS), None)
+    if r16.recoveries == 0 or land is None or (land - 139) * DT > ramp_bound(t16, tr.r[139] - DT * tr.piece[139][1] - tr.y[138],
+                                                                             0.0, 0.0, tr.piece[139][1]):
+        rep.fail(f"A353: recovery checked {r16.recoveries}, on the line at tick {land} (D5's ramp_bound from tick 139)")
     # 4. A cap below 0 W.
     for bl, ev, m0 in (([steady(200, 10), steady(300, 20)], [Event(20, "cap", -5.0)], 2000.0),
                        ([steady(200, 10)], [], -5.0), ([steady(0, 10)], [Event(4, "cap", -1e-6)], 100.0)):
