@@ -1454,6 +1454,10 @@ def constants(rep: Report, report: bool):
     # ramp into the cap and a steeper ramp beyond it are one flat piece at M).
     for slope, flat in ((1e-10, True), (1e-8, False)):
         sg = segments([steady(100, 5), Block(400, 200.0, 200.0 + slope * 100), steady(300, 5)], 0, 1.0, 1e9)
+        if len(sg) != 3:          # 100 W, the near-flat block and 300 W are three pieces (jumps between them)
+            rep.fail(f"constants: the near-flat block of slope {slope:g} W/s between jumps gives {len(sg)} pieces,"
+                     " expected 3 (a jump is never merged: VALUE_TOL)")
+            continue
         got = sg[1].s == 0.0
         if got != flat:
             rep.fail(f"constants: a slope of {slope:g} W/s {'is not' if flat else 'is'} snapped to 0 (SLOPE_TOL 1e-9 relative)")
@@ -1952,7 +1956,10 @@ def repros(rep: Report, report: bool) -> None:
     for t in (DEFAULT, Tuning(20, 4.0, 2.0)):
         plan = [steady(600, 10), steady(100, 40)]
         free = run(plan, t=t)
-        kc = next(k for k in range(40, len(free.y)) if free.v[k] <= -0.9 * t.r_dn)
+        kc = next((k for k in range(40, len(free.y)) if free.v[k] <= -0.9 * t.r_dn), None)
+        if kc is None:
+            rep.fail(f"repro: cap drop while degraded {t}: the fall 600 -> 100 W never reaches 0.9 r↓")
+            continue
         tr = run(plan, [Event(kc, "offset", 1.0), Event(kc + 2, "cap", free.y[kc + 1] - 40.0)], t=t, inject=1.0,
                  inject_from=kc)
         check(tr, t, rep, f"repro: a cap drop below a degraded command at the full falling rate {t}", 600.0)
@@ -2194,7 +2201,7 @@ def held(rep: Report, report: bool, n: int = 3000):
             if lt > bound + 0.75:
                 rep.fail(f"P4 held {a:.1f}->{b:.1f} {t}: {lt} s > {bound:.2f} + 0.75")
         else:
-            above = next((k + 1) * DT for k in range(len(tr.y)) if tr.y[k] <= tr.r[k] + EPS)
+            above = next(((k + 1) * DT for k in range(len(tr.y)) if tr.y[k] <= tr.r[k] + EPS), math.inf)
             worst_dn = max(worst_dn, above - bound)
             if above > bound + 0.75:
                 rep.fail(f"P7 held {a:.1f}->{b:.1f} {t}: {above} s > {bound:.2f} + 0.75")
