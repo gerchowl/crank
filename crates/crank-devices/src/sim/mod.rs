@@ -102,7 +102,8 @@ pub enum EchoFault {
     DropWrites,
 }
 
-/// Scheduled test fault; times are measured from the rig's first connection.
+/// Scheduled test fault; times are measured from the rig's first connection. Configured in
+/// [`SimConfig::faults`], or a loss started at the present by [`SimRig::inject`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SimFault {
     /// Trainer link lost at `at` for `down`; recovers with no control mode.
@@ -814,11 +815,27 @@ impl SimRig {
         };
         !latency.not_advertising
     }
-    /// Start a loss of `loss` that lasts `down` now (#668): STUB.
+    /// Start a loss of `loss` now that lasts `down` (#668): `SimFault::Dropout { at, down }`
+    /// or `SimFault::HrLoss { at, down }` with `at` the rig's present time, read and added
+    /// to the plan under one lock. From there it is a scheduled fault like any in
+    /// [`SimConfig::faults`]: the first tick at or after `at` reports `Lost`, the reconnect
+    /// attempts follow [`reconnect_backoff`] and the link is back at the first attempt at or
+    /// after `at + down`; a loss that overlaps one of its kind is merged into it. Returns
+    /// the fault, or `None` (and adds nothing) before the rig's first connect, which is the
+    /// epoch its times are measured from.
     #[must_use]
     pub fn inject(&self, loss: SimLoss, down: Duration) -> Option<SimFault> {
-        let _ = (loss, down);
-        None
+        let mut w = lock(&self.world);
+        let start = w.start?;
+        let at = Duration::from_micros(self.clock.now().0.saturating_sub(start.0));
+        let fault = match loss {
+            SimLoss::Trainer => SimFault::Dropout { at, down },
+            SimLoss::Strap => SimFault::HrLoss { at, down },
+        };
+        let mut faults = std::mem::take(&mut w.cfg.faults);
+        faults.push(fault);
+        w.cfg.faults = merge_outages(faults);
+        Some(fault)
     }
     /// Register a side and make sure the stepping task runs. Returns the epoch.
     fn attach(

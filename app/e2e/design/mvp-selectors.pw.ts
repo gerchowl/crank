@@ -119,6 +119,26 @@ test("mvp selectors: paused", async ({ page }) => {
   await expect(await one(page, sel.key("Resume"))).toBeEnabled();
 });
 
+test("mvp selectors: a lost trainer, a lost strap, the reconnect", async ({
+  page,
+}) => {
+  await open(page, "ride-trainer-lost");
+  await one(page, sel.banner("loss-trainer"));
+  await expect(page.locator(sel.banner("loss-hr"))).toHaveCount(0);
+  await expect(await one(page, sel.pill("NEO"))).toHaveAttribute(
+    "data-link",
+    "lost",
+  );
+  await open(page, "ride-hr-lost");
+  await one(page, sel.banner("loss-hr"));
+  await expect(page.locator(sel.banner("loss-trainer"))).toHaveCount(0);
+  await expect(await one(page, sel.slot("hr"))).toHaveText("—");
+  await open(page, "ride-soft-start");
+  await expect(await one(page, sel.neoBack)).toHaveText(
+    /^NEO back · \d+:\d\d gap$/,
+  );
+});
+
 test("mvp selectors: the summary", async ({ page }) => {
   await open(page, "review");
   await one(page, sel.summary);
