@@ -469,19 +469,16 @@ impl Drop for Lease {
         let Some((hold, drivers, handed_back)) = self.give_back.take() else {
             return;
         };
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                runtime.spawn(async move {
-                    drivers.wait().await;
-                    drop(hold);
-                    handed_back.send_replace(true);
-                });
-            }
-            // No runtime left: the drivers went with it, and so does the keeper.
-            Err(_) => {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                drivers.wait().await;
                 drop(hold);
                 handed_back.send_replace(true);
-            }
+            });
+        } else {
+            // No runtime left: the drivers went with it, and so does the keeper.
+            drop(hold);
+            handed_back.send_replace(true);
         }
     }
 }
@@ -1958,27 +1955,13 @@ impl Core {
         Ok((e.workout.clone(), e.compiled.clone()))
     }
 
-    /// Load a workout (or a free ride for `None`): connect the paired devices, build
-    /// the engine and load the workout. The ride starts with `ride_start`.
-    ///
-    /// A request that is invalid (unknown workout, a workout with errors) changes
-    /// nothing. Otherwise the load first replaces any loaded-but-unstarted ride (stops
-    /// it and waits for its devices): if connecting then fails, nothing is loaded and
-    /// the status is idle. A cancelled or panicking load leaves the core usable.
+    /// The first step of a load: a loaded-but-unstarted or finished ride is replaced, but only
+    /// once it has released its devices; a ride reaped meanwhile by someone else is waited for
+    /// the same way.
     ///
     /// # Errors
-    /// `Conflict` if a ride is in progress; `NotFound` for an unknown workout;
-    /// `DeviceUnavailable` without a paired or reachable trainer; `Storage` if the stored
-    /// setting `"tuning"` does not resolve (ADR-0001 §7.2); `EngineUnresponsive` if the
-    /// new engine does not take the ride within 1 s (its devices are then released).
-    pub async fn ride_load(&self, workout_id: Option<String>) -> Result<RideLoaded, ApiError> {
-        // Nothing is touched until the request is known to be good: a failed load leaves
-        // the previous status as it was.
-        let (workout, compiled) = self.resolve_workout(workout_id.as_deref())?;
-        let tuning = self.resolve_tuning()?;
-        self.ensure_start_allowed()?;
-        // A loaded-but-unstarted or finished ride is replaced, but only once it has
-        // released its devices.
+    /// `Conflict` if a ride is in progress or another load is under way.
+    async fn replace_unstarted(&self) -> Result<(), ApiError> {
         loop {
             let (ending, reaped) = {
                 let st = self.0.state.lock().await;
@@ -2004,33 +1987,51 @@ impl Core {
                 };
                 (ending, st.last_release.clone())
             };
-            match ending {
-                Some((id, release, stuck)) => {
-                    if stuck {
-                        self.force_end(&id, false).await;
-                    } else {
-                        self.settle(&id).await;
-                    }
-                    release.wait().await;
+            let Some((id, release, stuck)) = ending else {
+                // Another load (or a cancelled one winding down) is refused at once, as
+                // `ride_load` does, not after waiting for a release that is not its to wait for.
+                if self.0.loading.load(Ordering::SeqCst) {
+                    return Err(ApiError::new(
+                        ErrorCode::Conflict,
+                        "another ride is loading or loaded",
+                    ));
                 }
-                None => {
-                    // Another load (or a cancelled one winding down) is refused at once, as
-                    // below, not after waiting for a release that is not this load's to wait for.
-                    if self.0.loading.load(Ordering::SeqCst) {
-                        return Err(ApiError::new(
-                            ErrorCode::Conflict,
-                            "another ride is loading or loaded",
-                        ));
-                    }
-                    // A ride reaped by someone else (an End, the keeper's discard) may still
-                    // be handing its links back: the keeper takes no load until it has (#573).
-                    if let Some(reaped) = reaped {
-                        reaped.wait().await;
-                    }
-                    break;
+                // A ride reaped by someone else (an End, the keeper's discard) may still be
+                // handing its links back: the keeper takes no load until it has (#573).
+                if let Some(reaped) = reaped {
+                    reaped.wait().await;
                 }
+                return Ok(());
+            };
+            if stuck {
+                self.force_end(&id, false).await;
+            } else {
+                self.settle(&id).await;
             }
+            release.wait().await;
         }
+    }
+
+    /// Load a workout (or a free ride for `None`): connect the paired devices, build
+    /// the engine and load the workout. The ride starts with `ride_start`.
+    ///
+    /// A request that is invalid (unknown workout, a workout with errors) changes
+    /// nothing. Otherwise the load first replaces any loaded-but-unstarted ride (stops
+    /// it and waits for its devices): if connecting then fails, nothing is loaded and
+    /// the status is idle. A cancelled or panicking load leaves the core usable.
+    ///
+    /// # Errors
+    /// `Conflict` if a ride is in progress; `NotFound` for an unknown workout;
+    /// `DeviceUnavailable` without a paired or reachable trainer; `Storage` if the stored
+    /// setting `"tuning"` does not resolve (ADR-0001 §7.2); `EngineUnresponsive` if the
+    /// new engine does not take the ride within 1 s (its devices are then released).
+    pub async fn ride_load(&self, workout_id: Option<String>) -> Result<RideLoaded, ApiError> {
+        // Nothing is touched until the request is known to be good: a failed load leaves
+        // the previous status as it was.
+        let (workout, compiled) = self.resolve_workout(workout_id.as_deref())?;
+        let tuning = self.resolve_tuning()?;
+        self.ensure_start_allowed()?;
+        self.replace_unstarted().await?;
         {
             let st = self.0.state.lock().await;
             if st.session.is_some() || self.0.loading.swap(true, Ordering::SeqCst) {
@@ -2250,8 +2251,7 @@ impl Core {
         let (mut trainer, mut hr, how) = (handed.trainer, handed.strap, handed.how);
         let takeover = Arc::new(watch::channel(Takeover::Engine).0);
         let (hold, closed) = relay_links(&ride_id, &mut trainer, hr.as_mut(), &takeover);
-        // From here every way out (an error, the build cancelled or panicking, the session's
-        // reap) gives the keeper hold back only once the links are released.
+        // every way out from here gives the keeper hold back once the links are released
         let (lease, release) = Lease::new(handed.hold, closed);
         let hr_linked = hr.is_some();
         #[cfg(test)]
