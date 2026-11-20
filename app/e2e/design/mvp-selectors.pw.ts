@@ -98,6 +98,11 @@ test("mvp selectors: riding, the tiles, the chart, End's dialog", async ({
     /· block \d+ of \d+$/,
   );
   await one(page, sel.slot("countdown"));
+  for (const name of ["NEO", "HR"] as const)
+    await expect(await one(page, sel.pill(name))).toHaveAttribute(
+      "data-link",
+      /^(ready|connecting|lost|none)$/,
+    );
   for (const series of ["power", "hr", "cadence"] as const)
     expect(await page.locator(sel.chart(series)).count()).toBeGreaterThan(0);
   await (await one(page, sel.key("End"))).click();

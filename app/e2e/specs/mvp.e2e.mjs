@@ -121,11 +121,16 @@ describe("MVP walk (#256 critical path, sim)", () => {
     await $(sel.rail("Workouts")).click();
     await $(sel.workoutOption(WORKOUT)).click();
     await $(sel.rideThis).click();
-    // #256: both devices connected for the ride: the Ready sheet is "ready" with both rows "connected"
-    // (the load links the paired devices, core.rs `Core::ride_load`).
+    // #256: both devices connected for the ride. The Ready sheet's rows say "connected" also when no link has been
+    // reported (ReadySheet.tsx `phase` defaults to the load's answer), so the proof is the status bar's pill: its
+    // `data-link` is the link the core reported, "none" until it does (Ride.tsx `Pill`).
     await expect($(sel.readySheet("ready"))).toBeDisplayed({ wait: UI_MS });
     await expect($(sel.readyDevice("trainer", "connected"))).toBeDisplayed();
     await expect($(sel.readyDevice("hr", "connected"))).toBeDisplayed();
+    for (const name of ["NEO", "HR"])
+      await expect($(sel.pill(name))).toHaveAttribute("data-link", "ready", {
+        wait: UI_MS,
+      });
     // #256: "ride it in ERG": the sheet's plan line says ERG and starts with the warm-up's 1:00.
     await expect($(sel.readyPlan)).toHaveText(/^ERG · starts with 1:00 /);
 

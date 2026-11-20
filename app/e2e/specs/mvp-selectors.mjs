@@ -55,6 +55,12 @@ export const readyPlan = `[data-testid="ready-plan"]`;
 // The ride screen (src/ride/Ride.tsx `Screen`).
 /** The screen's root. */
 export const ride = `[data-testid="ride"]`;
+/**
+ * A device's half of the status bar's pill ("NEO", "HR") (src/ride/Ride.tsx `Pill`): `data-link` is the link the core
+ * reported ("ready", "connecting", "lost"), or "none" while none is reported.
+ */
+export const pill = (name) =>
+  `//div[@aria-label="Devices"]/span[contains(concat(" ", @class, " "), " pill-half ") and starts-with(normalize-space(.), ${lit(`${name} `)})]`;
 /** A key-row button by its word ("Start", "Pause", "Resume", "Skip block", "End"); the key hint follows the word. */
 export const key = (word) =>
   `//div[@data-region="keys"]/button[normalize-space(.)=${lit(word)} or starts-with(normalize-space(.), ${lit(`${word} `)})]`;
