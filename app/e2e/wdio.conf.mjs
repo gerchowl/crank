@@ -12,7 +12,16 @@ if (!application) {
 
 export const config = {
   runner: "local",
-  specs: [fileURLToPath(new URL("./specs/*.e2e.mjs", import.meta.url))],
+  // In this order, because the specs share one app process (the embedded WebDriver keeps it across sessions) and its state.
+  // The smoke spec needs the fresh shell: its screenshots are compared across launches, and a ride would change Today.
+  // The MVP walk (#667) pairs and rides, then quits the app; the service starts it again on the same data dir for the
+  // relaunch spec (step 9). The stream spec leaves its ride loaded, so it goes last.
+  specs: [
+    "smoke.e2e.mjs",
+    "mvp.e2e.mjs",
+    "mvp-relaunch.e2e.mjs",
+    "stream.e2e.mjs",
+  ].map((spec) => fileURLToPath(new URL(`./specs/${spec}`, import.meta.url))),
   maxInstances: 1,
   framework: "mocha",
   mochaOpts: { timeout: 60_000 },
