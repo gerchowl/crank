@@ -148,6 +148,16 @@ pub enum SimFault {
     },
 }
 
+/// A link loss [`SimRig::inject`] can start: the trainer's ([`SimFault::Dropout`]) or the
+/// strap's ([`SimFault::HrLoss`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimLoss {
+    /// The trainer link.
+    Trainer,
+    /// The heart-rate strap link.
+    Strap,
+}
+
 /// Which FE-C pages the simulated trainer's samples stand for (#437).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SimTelemetry {
@@ -803,6 +813,12 @@ impl SimRig {
             w.cfg.heart_latency
         };
         !latency.not_advertising
+    }
+    /// Start a loss of `loss` that lasts `down` now (#668): STUB.
+    #[must_use]
+    pub fn inject(&self, loss: SimLoss, down: Duration) -> Option<SimFault> {
+        let _ = (loss, down);
+        None
     }
     /// Register a side and make sure the stepping task runs. Returns the epoch.
     fn attach(

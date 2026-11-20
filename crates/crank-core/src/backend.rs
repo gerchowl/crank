@@ -161,6 +161,13 @@ impl Backend {
     pub(crate) fn is_sim(&self) -> bool {
         matches!(self.kind, Kind::Sim(_))
     }
+    /// The simulator's rig, `None` on a real radio.
+    pub(crate) fn sim(&self) -> Option<&SimRig> {
+        match &self.kind {
+            Kind::Sim(rig) => Some(rig),
+            Kind::Radio { .. } => None,
+        }
+    }
     /// The radio is acquired on first use (that is where macOS asks for Bluetooth) and
     /// is given every stored pairing before anyone uses it.
     async fn radio<'a>(

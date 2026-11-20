@@ -1300,6 +1300,19 @@ impl Core {
         })
     }
 
+    /// Test hook (#668): STUB.
+    ///
+    /// # Errors
+    /// None yet.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn sim_fault(&self, role: DeviceRole, down: Duration) -> Result<(), ApiError> {
+        let _ = (role, down, self.0.backend.sim());
+        Ok(())
+    }
+
     /// Pairing, forgetting and scanning need the one BLE central and the pairing rows a
     /// ride uses: not while a ride is loaded, in progress or still ending. They also need the
     /// devices free (a connected NEO does not advertise, and pairing connects itself), so the
