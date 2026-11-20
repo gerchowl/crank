@@ -536,3 +536,36 @@
   gap: var(--space-3);
   font-size: var(--text-m);
 }
+
+/* The ride screen with no ride to draw (Ride.tsx `Ride`): a load on its way, or no ride. The page title, one line and
+   a way to Workouts, in the 32 px button family (§18.4). */
+.ride-empty {
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
+}
+.ride-empty h1,
+.ride-empty p {
+  margin: 0;
+}
+.ride-empty p {
+  max-width: 70ch;
+  color: var(--ink-2);
+}
+.ride-empty-actions {
+  justify-self: start;
+  display: flex;
+  gap: var(--space-2);
+}
+.ride-empty button {
+  display: inline-flex;
+  align-items: center;
+  height: var(--control-h);
+  min-height: 0;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-m);
+  background: var(--panel-2);
+  font-size: var(--text-s);
+  white-space: nowrap;
+}

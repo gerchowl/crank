@@ -105,6 +105,18 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Changed
 
+- The app reads its live state from the snapshot channel only (ADR-0001 §4.3, step 3b of #598): each window opens
+  one channel when the core is up, applies every frame by the one client rule and acks it; the ride, its devices
+  (the strap row of the Ready sheet follows `devices.strap`), how it ended, the load in flight and the traces
+  (built from the channel's series, so a reload mid-ride backfills them and shows a forced end) come from the
+  frames, no more from the ride stream, `device_links` or `ride_status` polling. A 2 s watchdog marks the state
+  stale and opens a new channel, which recovers a lost frame; the stale state shows on every route (a notice above the
+  page, and the ride screen's "Engine not answering" banner), a broken series update from the core is logged, shown
+  the same way and not acked, so the watchdog's reopen 2 s later repairs it by a backfill (a fault on every backfill
+  costs one reopen per 2 s), and a refused `ui_open` is said on every route. While a load has not installed its ride
+  the ride screen draws the Ready sheet's loading state from the frame, as before.
+  `ride_load` answers the ride id, `ride_end` and `device_pair` answer nothing
+  ([#598](https://github.com/gerchowl/crank/issues/598))
 - Rail item height (DESIGN §18.4): the labelled rail item has its own token, `--control-h-rail` (55 px, derived from its
   border, inset, icon, gap and word), instead of breaking the 40 px rule; the layout audit holds it to that token, and
   every railed design fixture drops its rail-only `button.height` and `button.inconsistentHeight` counts

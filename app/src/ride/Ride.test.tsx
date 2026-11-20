@@ -3,7 +3,6 @@ import {
   act,
   cleanup,
   render,
-  renderHook,
   screen,
   waitFor,
   within,
@@ -13,15 +12,56 @@ import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { setAthleteHr } from "../athleteHr";
 import { commands } from "../bindings";
-import type { MetricId, StreamStatus, SubSample } from "../bindings";
+import type { LiveValues, StreamStatus } from "../bindings";
 import { navigate, useRoute } from "../router";
 import { status as makeStatus } from "../stream/testBackend";
-import { resetForcedEnds, wasForcedEnd } from "./forcedEnds";
+import { UiClient, WATCHDOG_MS, type Timers } from "../stream/ui";
+import { UiProvider } from "../stream/uiHooks";
+import { rideView } from "../stream/uiBackend";
 import { Ride, clock, targetNow } from "./Ride";
 import { BLOCKS, block, installRide, type RideWorld } from "./rideBackend";
-import { beginRide, useSession } from "./session";
+import { resetLeft } from "./session";
 
-const loaded = { rideId: "ride-1", workoutId: "w1", hrLinked: true };
+/** A clock the watchdog cannot fire on: tests that are not about it. */
+const neverClock: Timers = {
+  setTimeout: () => 0,
+  clearTimeout: () => {},
+};
+
+/** A fake clock the engine-unresponsive test moves by hand (same shape as stream/ui.test.tsx's). */
+class FakeClock implements Timers {
+  now = 0;
+  private nextId = 1;
+  private readonly due = new Map<number, { at: number; fn: () => void }>();
+  setTimeout(fn: () => void, ms: number): unknown {
+    const id = this.nextId++;
+    this.due.set(id, { at: this.now + ms, fn });
+    return id;
+  }
+  clearTimeout(handle: unknown): void {
+    this.due.delete(handle as number);
+  }
+  async advance(ms: number): Promise<void> {
+    const end = this.now + ms;
+    for (;;) {
+      const first = [...this.due.entries()]
+        .filter(([, d]) => d.at <= end)
+        .sort((a, b) => a[1].at - b[1].at)[0];
+      if (!first) break;
+      this.due.delete(first[0]);
+      this.now = first[1].at;
+      first[1].fn();
+      await act(async () => {
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+      });
+    }
+    this.now = end;
+    await act(async () => {
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+    });
+  }
+}
+
 const routes: string[] = [];
 const Probe = () => {
   const r = useRoute();
@@ -35,7 +75,7 @@ beforeEach(() => {
   navigate("ride");
 });
 afterEach(() => {
-  resetForcedEnds();
+  resetLeft();
   cleanup();
   clearMocks();
 });
@@ -43,94 +83,128 @@ afterEach(() => {
 type Rig = ReturnType<typeof installRide>;
 const enabled = (name: string) =>
   !(screen.getByRole("button", { name }) as HTMLButtonElement).disabled;
+
 async function open(
   over: Partial<RideWorld> = {},
-  opts: { workoutId?: string | null; before?: (rig: Rig) => void } = {},
+  opts: {
+    workoutId?: string | null;
+    before?: (rig: Rig) => void;
+    clock?: Timers;
+  } = {},
 ) {
-  const rig = installRide(over);
+  const world: Partial<RideWorld> = { ...over };
+  if (opts.workoutId !== undefined) world.workoutId = opts.workoutId;
+  const rig = installRide(world);
   opts.before?.(rig);
-  beginRide({
-    ...loaded,
-    workoutId: opts.workoutId === undefined ? "w1" : opts.workoutId,
-  });
+  const client = new UiClient(opts.clock ?? neverClock);
   render(
-    <>
+    <UiProvider client={client}>
       <Probe />
       <Ride />
-    </>,
+    </UiProvider>,
   );
-  await waitFor(() => expect(rig.base.liveSubs()).toBe(3));
-  await waitFor(() => expect(rig.base.count("stream_snapshot")).toBe(1));
-  return rig;
+  await waitFor(() => expect(rig.ui.count("ui_open")).toBe(1));
+  await waitFor(() => expect(client.snapshot.received).toBe(true));
+  return { rig, client };
 }
-const subOf = (rig: Rig, metric: MetricId) => {
-  const i = rig.base.calls
-    .filter((c) => c.cmd === "stream_subscribe")
-    .findIndex((c) => c.args.metric === metric);
-  return rig.base.subOf(i);
-};
-const sample = (
-  rig: Rig,
-  metric: MetricId,
-  v: number | null,
-  t = 1,
-): SubSample => ({
-  sub: subOf(rig, metric),
-  t,
-  v,
-});
+
+/** A status (and optionally the big-number values) the next frame will carry. The setLive runs first because its
+ * `show()` rebuilds the frame's status from the last publish-ed one and so would clobber a preceding setStatus. */
 const push = (
   rig: Rig,
-  over: Partial<StreamStatus>,
-  samples: SubSample[] = [],
+  over: Partial<StreamStatus> = {},
+  live?: Partial<LiveValues>,
 ) =>
   act(async () => {
-    rig.base.truth.status = makeStatus(over);
-    rig.base.push({ status: rig.base.truth.status, samples });
+    if (live !== undefined) rig.setLive(live);
+    if (Object.keys(over).length > 0) rig.ui.setStatus(over);
   });
-const slot = (id: string) => document.querySelector(`[data-slot="${id}"]`);
 
-describe("session", () => {
-  test("one RideSession per load: useSession returns it, and the next load disposes it", () => {
-    const first = beginRide(loaded);
-    const a = renderHook(() => useSession());
-    const b = renderHook(() => useSession());
-    expect(a.result.current).toBe(first);
-    expect(b.result.current).toBe(first);
-    first.record(1, 10, 200);
-    expect(first.power).toHaveLength(1);
-    let second!: ReturnType<typeof beginRide>;
-    act(() => {
-      second = beginRide({ ...loaded, rideId: "ride-2" });
-    });
-    expect(second).not.toBe(first);
-    expect(first.disposed).toBe(true);
-    expect(first.power).toHaveLength(0);
-    first.record(2, 11, 210);
-    expect(first.power).toHaveLength(0);
-    expect(second.disposed).toBe(false);
-    expect(a.result.current).toBe(second);
-  });
-});
+const slot = (id: string) => document.querySelector(`[data-slot="${id}"]`);
 
 describe("Ride", () => {
   test("without a loaded ride it says so and offers Workouts", async () => {
-    vi.resetModules();
-    const fresh = await import("./Ride");
-    render(<fresh.Ride />);
+    const rig = installRide({ phase: "none" });
+    const client = new UiClient(neverClock);
+    render(
+      <UiProvider client={client}>
+        <Ride />
+      </UiProvider>,
+    );
+    await waitFor(() => expect(rig.ui.count("ui_open")).toBe(1));
+    await waitFor(() => expect(client.snapshot.received).toBe(true));
     expect(
       screen.getByRole("heading", { name: "No ride loaded" }),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Go to Workouts" })).toBeTruthy();
   });
 
+  test("a refused ui_open is shown on the ride route, not an endless Loading; Retry opens the channel again", async () => {
+    // `storage`: the keeper cannot read the pairings (core.rs `Core::ui_open`). No frame ever arrives.
+    const rig = installRide({}, { keeperStorage: true });
+    const client = new UiClient(neverClock);
+    render(
+      <UiProvider client={client}>
+        <Ride />
+      </UiProvider>,
+    );
+    expect(
+      await screen.findByRole("heading", {
+        name: "Live data is not available",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toBe(
+      "database is locked. Trying again every 2 s.",
+    );
+    expect(
+      screen.queryByRole("heading", { name: "Loading the ride…" }),
+    ).toBeNull();
+    rig.ui.truth.keeperStorage = false;
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByTestId("ride")).toBeTruthy();
+    expect(rig.ui.count("ui_open")).toBe(2);
+  });
+
+  test("the page without a ride shows a stalled channel too", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rig = installRide({ phase: "none" });
+    let due: (() => void) | null = null;
+    const clock: Timers = {
+      setTimeout: (fn) => {
+        due = fn;
+        return 1;
+      },
+      clearTimeout: () => {
+        due = null;
+      },
+    };
+    const client = new UiClient(clock);
+    render(
+      <UiProvider client={client}>
+        <Ride />
+      </UiProvider>,
+    );
+    expect(
+      await screen.findByRole("heading", { name: "No ride loaded" }),
+    ).toBeTruthy();
+    rig.ui.stall();
+    act(() => due?.());
+    expect(screen.getByTestId("channel-stale").textContent).toBe(
+      "⚠ Live data stopped: what is shown may be out of date. Reconnecting…",
+    );
+    rig.ui.resume();
+    await waitFor(() =>
+      expect(screen.queryByTestId("channel-stale")).toBeNull(),
+    );
+  });
+
   test("the tiles show the latest samples, the block countdown and the clocks", async () => {
-    const rig = await open();
-    await push(rig, { workoutS: 100, blockIndex: 1, blockElapsedS: 20 }, [
-      sample(rig, "power", 242.4),
-      sample(rig, "cadence", 91),
-      sample(rig, "hr", 150),
-    ]);
+    const { rig } = await open();
+    await push(
+      rig,
+      { workoutS: 100, blockIndex: 1, blockElapsedS: 20 },
+      { powerW: 242.4, cadenceRpm: 91, hrBpm: 150 },
+    );
     expect(slot("power")?.textContent).toBe("242");
     expect(slot("plan")?.textContent).toBe("Plan 250 W");
     expect(slot("cadence")?.textContent).toBe("91");
@@ -139,9 +213,7 @@ describe("Ride", () => {
     expect(slot("elapsed")?.textContent).toBe("1:40");
     expect(slot("left")?.textContent).toBe("8:20");
     expect(slot("block")?.textContent).toBe("WORK · block 2 of 3");
-    await push(rig, { workoutS: 101, blockIndex: 1, blockElapsedS: 21 }, [
-      sample(rig, "power", null, 2),
-    ]);
+    await push(rig, {}, { powerW: null });
     expect(slot("power")?.textContent).toBe("—");
   });
 
@@ -152,7 +224,7 @@ describe("Ride", () => {
   });
 
   test("Start calls ride_start and the core's status is shown", async () => {
-    const rig = await open();
+    const { rig } = await open();
     expect(screen.getByTestId("state").textContent).toMatch(/Press Start/);
     await userEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(rig.count("ride_start")).toBe(1));
@@ -165,18 +237,16 @@ describe("Ride", () => {
     );
   });
 
+  // The trainer-is-not-ready and "no ride loaded" rows the old matrix carried now live in the Ready sheet (its Start
+  // is disabled, ReadySheet.test.tsx) and in the "no ride loaded" Screen; they cannot be reached from a tap on Start.
   test.each([
-    [{ trainer: "none" }, "device_unavailable", "no trainer"],
-    [{ trainer: "connecting" }, "device_unavailable", "trainer not ready"],
     [{ cap: "requires_erg" }, "conflict", "cap_requires_erg"],
     [{ cap: "exceeds" }, "conflict", "cap_exceeded_target"],
     [{ recordFails: true }, "storage", "cannot open the record"],
-    [{ phase: "none" }, "conflict", "no ride loaded"],
   ] as [Partial<RideWorld>, string, string][])(
     "a refused start (%o) shows the core's reason",
     async (over, code, message) => {
-      const rig = await open({ ...over, phase: over.phase ?? "loaded" });
-      // The rig's world is what the core says; a world that is not loaded still shows Start (status says idle).
+      const { rig } = await open({ ...over, phase: over.phase ?? "loaded" });
       await userEvent.click(screen.getByRole("button", { name: "Start" }));
       const alert = await screen.findByRole("alert");
       expect(alert.textContent).toContain(message);
@@ -186,7 +256,7 @@ describe("Ride", () => {
   );
 
   test("pause, resume and skip call their commands; a refusal is shown, and the next command clears it", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
     await waitFor(() => expect(rig.count("ride_pause")).toBe(1));
@@ -211,7 +281,7 @@ describe("Ride", () => {
   });
 
   test("a Skip that would end the ride asks first; Keep riding sends nothing", async () => {
-    const rig = await open({ phase: "active", blockIdx: 2 });
+    const { rig } = await open({ phase: "active", blockIdx: 2 });
     await push(rig, { state: { kind: "riding" }, blockIndex: 2 });
     await userEvent.click(screen.getByRole("button", { name: "Skip block" }));
     const dialog = screen.getByRole("alertdialog");
@@ -229,7 +299,7 @@ describe("Ride", () => {
   });
 
   test("a second tap on Skip waits for the core's status to move past the block", async () => {
-    const rig = await open({ phase: "active", publishes: false });
+    const { rig } = await open({ phase: "active", publishes: false });
     await push(rig, { state: { kind: "riding" }, blockIndex: 0 });
     const skipBtn = () =>
       screen.getByRole("button", { name: "Skip block" }) as HTMLButtonElement;
@@ -243,7 +313,7 @@ describe("Ride", () => {
   });
 
   test("a refused Skip can be tried again", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" }, blockIndex: 0 });
     rig.world.phase = "loaded";
     await userEvent.click(screen.getByRole("button", { name: "Skip block" }));
@@ -255,28 +325,27 @@ describe("Ride", () => {
   });
 
   test("a double click on Start sends start and nothing else", async () => {
-    const rig = await open();
+    const { rig } = await open();
     await userEvent.dblClick(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(rig.count("ride_start")).toBe(1));
     await waitFor(() =>
       expect(screen.getByTestId("state").textContent).toBe("Riding"),
     );
     expect(rig.count("ride_pause")).toBe(0);
-    // Once the ride runs the key row has no Start (DESIGN §18.3), so there is nothing to start twice.
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
   });
 
   test("a refused Start can be tried again", async () => {
-    const rig = await open({ trainer: "connecting" });
+    const { rig } = await open({ recordFails: true });
     await userEvent.click(screen.getByRole("button", { name: "Start" }));
     await screen.findByRole("alert");
-    rig.world.trainer = "ready";
+    rig.world.recordFails = false;
     await userEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(rig.world.phase).toBe("active"));
   });
 
   test("while a command is in flight nothing else can be sent", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     const release = rig.hold("ride_skip");
     await userEvent.click(screen.getByRole("button", { name: "Skip block" }));
@@ -300,7 +369,7 @@ describe("Ride", () => {
   });
 
   test("the Pause button follows the core: a refused pause leaves Pause enabled and Resume off", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     rig.world.phase = "loaded";
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
@@ -310,7 +379,7 @@ describe("Ride", () => {
   });
 
   test("a double tap on Pause sends one pause, even when the status arrives between the taps", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     const pauseBtn = screen.getByRole("button", { name: "Pause" });
     await userEvent.click(pauseBtn);
@@ -321,7 +390,7 @@ describe("Ride", () => {
   });
 
   test("a double tap on Resume sends one resume, even when the status arrives between the taps", async () => {
-    const rig = await open({ phase: "active", userPause: true });
+    const { rig } = await open({ phase: "active", userPause: true });
     await push(rig, {
       state: { kind: "paused", reason: "user" },
       userPaused: true,
@@ -335,7 +404,7 @@ describe("Ride", () => {
   });
 
   test("with the status frame still on its way, a second tap on Pause waits; a refusal re-enables it", async () => {
-    const rig = await open({ phase: "active", publishes: false });
+    const { rig } = await open({ phase: "active", publishes: false });
     await push(rig, { state: { kind: "riding" } });
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
     await waitFor(() => expect(rig.count("ride_pause")).toBe(1));
@@ -355,7 +424,7 @@ describe("Ride", () => {
   });
 
   test("with the status frame still on its way, a second tap on Resume waits", async () => {
-    const rig = await open({
+    const { rig } = await open({
       phase: "active",
       userPause: true,
       publishes: false,
@@ -372,7 +441,7 @@ describe("Ride", () => {
   });
 
   test("with the status frame still on its way, a second tap on Start waits", async () => {
-    const rig = await open({ publishes: false });
+    const { rig } = await open({ publishes: false });
     await userEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(rig.count("ride_start")).toBe(1));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
@@ -383,7 +452,7 @@ describe("Ride", () => {
 
   test("Skip waits for the plan: with it unanswered the ride cannot skip", async () => {
     let release = () => {};
-    const rig = await open(
+    const { rig } = await open(
       { phase: "active" },
       { before: (r) => (release = r.hold("workout_get")) },
     );
@@ -394,7 +463,7 @@ describe("Ride", () => {
   });
 
   test("a free ride has no block to skip", async () => {
-    const rig = await open(
+    const { rig } = await open(
       { phase: "active", blocks: [] },
       { workoutId: null },
     );
@@ -413,7 +482,7 @@ describe("Ride", () => {
   ] as const)(
     "a %s pause enables %s only: Resume is for the rider's own pause",
     async (reason, label) => {
-      const rig = await open({ phase: "active" });
+      const { rig } = await open({ phase: "active" });
       await push(rig, {
         state: { kind: "paused", reason },
         userPaused: reason === "user",
@@ -432,7 +501,7 @@ describe("Ride", () => {
   ] as [string, Partial<RideWorld>, string][])(
     "%s with the engine stopped shows the core's internal error",
     async (name, over, kind) => {
-      const rig = await open({ ...over, engineStopped: true });
+      const { rig } = await open({ ...over, engineStopped: true });
       await push(rig, { state: { kind } as StreamStatus["state"] });
       await userEvent.click(screen.getByRole("button", { name }));
       const alert = await screen.findByRole("alert");
@@ -443,8 +512,8 @@ describe("Ride", () => {
     },
   );
 
-  test("a wedged engine: a command shows the core's refusal, the view says the engine is not answering, and End still leaves the ride (#351)", async () => {
-    const rig = await open({ phase: "active" });
+  test("a wedged engine: a command shows the core's refusal, the band says the engine is not answering, and End still leaves the ride (#351)", async () => {
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     rig.wedge();
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
@@ -454,52 +523,56 @@ describe("Ride", () => {
       return el as HTMLElement;
     });
     expect(refusal.textContent).toContain("The ride engine is not answering:");
-    expect(screen.queryByTestId("engine-unresponsive")).toBeNull();
-    // the next frame's ack meets the wedged engine: the stream's error, shown once, not retried
-    await push(rig, { state: { kind: "riding" } });
+    // ride.engineUnresponsive drives the band (ADR-0001 §4.3.2) as soon as the frame carries it.
     const banner = await screen.findByTestId("engine-unresponsive");
     expect(banner.getAttribute("role")).toBe("alert");
     expect(banner.textContent).toContain("End still ends the ride");
-    expect(rig.base.count("open_stream")).toBe(1);
+    // One snapshot channel for the window; the frame says the engine is wedged, not a reopen.
+    expect(rig.ui.count("ui_open")).toBe(1);
     await userEvent.click(screen.getByRole("button", { name: "End" }));
     await userEvent.click(screen.getByRole("button", { name: "End ride" }));
     await waitFor(() => expect(routeText()).toBe("history:ride-1"));
   });
 
   test("End with the engine stopped still leaves the ride: the core ends it by force (#331)", async () => {
-    const rig = await open({ phase: "active", engineStopped: true });
+    const { rig, client } = await open({
+      phase: "active",
+      engineStopped: true,
+    });
     await push(rig, { state: { kind: "riding" } });
     await userEvent.click(screen.getByRole("button", { name: "End" }));
     await userEvent.click(screen.getByRole("button", { name: "End ride" }));
     await waitFor(() => expect(routeText()).toBe("history:ride-1"));
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(wasForcedEnd("ride-1")).toBe(true);
+    // The forcing is in the frame's `ride.ended`, not a side set on the window (#598).
+    await waitFor(() => expect(client.snapshot.ride?.ended).toBe("forced"));
   });
 
-  test("a repeat End after a forced end answers forced again, as the core does (core.rs `end_ride`, `last_forced`)", async () => {
-    const rig = await open({ phase: "active", engineStopped: true });
+  test("a repeat End after a forced end still answers null (the end is in the frame's ride.ended)", async () => {
+    const { rig, client } = await open({
+      phase: "active",
+      engineStopped: true,
+    });
     await push(rig, { state: { kind: "riding" } });
     await userEvent.click(screen.getByRole("button", { name: "End" }));
     await userEvent.click(screen.getByRole("button", { name: "End ride" }));
     await waitFor(() => expect(routeText()).toBe("history:ride-1"));
+    expect(client.snapshot.ride?.ended).toBe("forced");
     const again = await commands.rideEnd();
-    expect(again).toEqual({
-      status: "ok",
-      data: { rideId: "ride-1", forced: true },
-    });
+    expect(again).toEqual({ status: "ok", data: null });
   });
 
   test("an End the engine answered is not a forced end", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig, client } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     await userEvent.click(screen.getByRole("button", { name: "End" }));
     await userEvent.click(screen.getByRole("button", { name: "End ride" }));
     await waitFor(() => expect(routeText()).toBe("history:ride-1"));
-    expect(wasForcedEnd("ride-1")).toBe(false);
+    await waitFor(() => expect(client.snapshot.ride?.ended).toBe("finished"));
   });
 
   test("Resume with the engine stopped shows the core's internal error", async () => {
-    const rig = await open({
+    const { rig } = await open({
       phase: "active",
       userPause: true,
       engineStopped: true,
@@ -515,7 +588,7 @@ describe("Ride", () => {
   });
 
   test("the TARGET tile shows what the engine commanded, the plan is the smaller line under it (#324)", async () => {
-    const rig = await open();
+    const { rig } = await open();
     // a soft start: the plan says 250 W, the trainer was told 120 W
     await push(rig, {
       workoutS: 100,
@@ -539,7 +612,7 @@ describe("Ride", () => {
   });
 
   test('the target is written like the plan, "250 W" with a space (DESIGN §18.3 "Metric grid", #581)', async () => {
-    const rig = await open();
+    const { rig } = await open();
     await push(rig, {
       blockIndex: 1,
       blockElapsedS: 20,
@@ -551,21 +624,21 @@ describe("Ride", () => {
   });
 
   test("nothing is commanded: the tile says — and the plan stays", async () => {
-    const rig = await open();
+    const { rig } = await open();
     await push(rig, { blockIndex: 1, blockElapsedS: 20, commanded: null });
     expect(slot("target")?.textContent).toBe("—");
     expect(slot("plan")?.textContent).toBe("Plan 250 W");
   });
 
   test("a release, a pause and a free block say so instead of a number", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     const shown = () => slot("target")?.textContent;
     await act(async () => {
       Object.assign(rig.world, { blockIdx: 1, ergReleased: true });
       rig.publish();
     });
     expect(shown()).toBe("Released");
-    expect(rig.base.truth.status.commanded).toEqual({
+    expect(rig.ui.truth.ride?.status.commanded).toEqual({
       kind: "resistance",
       pct: 0,
     });
@@ -595,52 +668,49 @@ describe("Ride", () => {
   });
 
   test("a rider pause outranks a release: paused and released says Paused, never Released (#330)", async () => {
-    const rig = await open({ phase: "active", blockIdx: 1 });
+    const { rig } = await open({ phase: "active", blockIdx: 1 });
     await act(async () => {
       Object.assign(rig.world, { ergReleased: true, userPause: true });
       rig.publish();
     });
-    expect(rig.base.truth.status.ergReleased).toBe(true);
-    expect(rig.base.truth.status.userPaused).toBe(true);
+    expect(rig.ui.truth.ride?.status.ergReleased).toBe(true);
+    expect(rig.ui.truth.ride?.status.userPaused).toBe(true);
     expect(slot("target")?.textContent).toBe("Paused");
   });
 
   test("a free block is judged before a release: the mock sends Free, as the engine does", async () => {
-    const rig = await open({
+    const { rig } = await open({
       phase: "active",
       blocks: [block(0, 600, 0, 0, "free")],
       blockIdx: 0,
       ergReleased: true,
     });
     await act(async () => rig.publish());
-    expect(rig.base.truth.status.commanded).toEqual({ kind: "free" });
+    expect(rig.ui.truth.ride?.status.commanded).toEqual({ kind: "free" });
     expect(slot("target")?.textContent).toBe("Free");
   });
 
   test('"Off" is never shown: Resume publishes the pause\'s command, then the soft start runs from 0 W (no pedalling) to the plan', async () => {
-    const rig = await open({ phase: "active", blockIdx: 1 });
+    const { rig } = await open({ phase: "active", blockIdx: 1 });
     await act(async () => rig.publish());
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
     await waitFor(() => expect(slot("target")?.textContent).toBe("Paused"));
     await userEvent.click(screen.getByRole("button", { name: "Resume" }));
-    await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
-    // the status Resume published: riding again, still the pause's resistance command, no reason to name
-    expect(rig.base.truth.status.commanded).toEqual({
+    await waitFor(() =>
+      expect(rig.ui.truth.ride?.status.userPaused).toBe(false),
+    );
+    expect(rig.ui.truth.ride?.status.commanded).toEqual({
       kind: "resistance",
       pct: 0,
     });
     expect(slot("target")?.textContent).toBe("—");
-    // the next ticks without a pedalling sample: the owed soft start holds 0 W, never the plan's 250
     await act(async () => rig.tick(null));
     expect(slot("target")?.textContent).toBe("0");
     await act(async () => rig.tick(null));
     expect(slot("target")?.textContent).toBe("0");
     expect(slot("plan")?.textContent).toBe("Plan 250 W");
-    // a soft start owed by a rider pause is not reported (engine.rs `Engine::publish` (~1398): `soft_start_target_w` only after a recovered
-    // loss; tests.rs `a_soft_start_owed_on_resume_is_not_shown_as_a_reconnected_state`), not in the hold and not in the ramp
-    expect(rig.base.truth.status.softStartTargetW).toBeNull();
+    expect(rig.ui.truth.ride?.status.softStartTargetW).toBeNull();
     expect(screen.queryByTestId("soft-start")).toBeNull();
-    // the first pedalling tick: step 0 is the rider's own 3 s power; then 1 Hz steps of (250 - 150) / 5 to the plan
     const seen: (string | null | undefined)[] = [];
     await act(async () => rig.tick(150));
     seen.push(slot("target")?.textContent);
@@ -654,36 +724,44 @@ describe("Ride", () => {
   });
 
   test("Resume to a pedalling rider starts the soft start at the rider's power, not the plan", async () => {
-    const rig = await open({ phase: "active", blockIdx: 1, userPause: true });
+    const { rig } = await open({
+      phase: "active",
+      blockIdx: 1,
+      userPause: true,
+    });
     await act(async () => rig.publish());
     await userEvent.click(screen.getByRole("button", { name: "Resume" }));
-    await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
+    await waitFor(() =>
+      expect(rig.ui.truth.ride?.status.userPaused).toBe(false),
+    );
     await act(async () => rig.tick(200));
     expect(slot("target")?.textContent).toBe("200");
-    // a rider pause is not a recovered loss: the engine's `RideStatus` `soft_start_target_w` is `live.filter(|s| s.after_loss)`,
-    // so the ramp runs without a reported soft start, in the hold and in the ramp
-    expect(rig.base.truth.status.softStartTargetW).toBeNull();
+    expect(rig.ui.truth.ride?.status.softStartTargetW).toBeNull();
     expect(screen.queryByTestId("soft-start")).toBeNull();
     await act(async () => rig.tick(200));
     expect(slot("target")?.textContent).toBe("210");
-    expect(rig.base.truth.status.softStartTargetW).toBeNull();
+    expect(rig.ui.truth.ride?.status.softStartTargetW).toBeNull();
     expect(screen.queryByTestId("soft-start")).toBeNull();
   });
 
   test("pedalling stops mid-ramp: the engine sends nothing and the tile holds the last step; the ramp restarts when pedalling returns", async () => {
-    const rig = await open({ phase: "active", blockIdx: 1, userPause: true });
+    const { rig } = await open({
+      phase: "active",
+      blockIdx: 1,
+      userPause: true,
+    });
     await act(async () => rig.publish());
     await userEvent.click(screen.getByRole("button", { name: "Resume" }));
-    await waitFor(() => expect(rig.base.truth.status.userPaused).toBe(false));
+    await waitFor(() =>
+      expect(rig.ui.truth.ride?.status.userPaused).toBe(false),
+    );
     await act(async () => rig.tick(150));
     await act(async () => rig.tick(150));
     expect(slot("target")?.textContent).toBe("170");
-    // samples stop: erg/policy.rs `ErgPolicy::desired` (~237), `last_sent` is already `Erg`, so nothing is sent (not 0 W)
     await act(async () => rig.tick(null));
     expect(slot("target")?.textContent).toBe("170");
     await act(async () => rig.tick(null));
     expect(slot("target")?.textContent).toBe("170");
-    // pedalling returns: the ramp restarts from the then-current power
     await act(async () => rig.tick(100));
     expect(slot("target")?.textContent).toBe("100");
     await act(async () => rig.tick(100));
@@ -691,17 +769,17 @@ describe("Ride", () => {
   });
 
   test("a ride without blocks commands Free, as the engine does for a free ride", async () => {
-    const rig = await open(
+    const { rig } = await open(
       { phase: "active", blocks: [], blockIdx: 0 },
       { workoutId: null },
     );
     await act(async () => rig.publish());
-    expect(rig.base.truth.status.commanded).toEqual({ kind: "free" });
+    expect(rig.ui.truth.ride?.status.commanded).toEqual({ kind: "free" });
     expect(slot("target")?.textContent).toBe("Free");
   });
 
   test("a lost trainer commands nothing, and the tile does not keep showing the old target", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await act(async () => {
       Object.assign(rig.world, { blockIdx: 1, commandedW: 180 });
       rig.publish();
@@ -711,12 +789,12 @@ describe("Ride", () => {
       Object.assign(rig.world, { trainerLost: true });
       rig.publish();
     });
-    expect(rig.base.truth.status.commanded).toBeNull();
+    expect(rig.ui.truth.ride?.status.commanded).toBeNull();
     expect(slot("target")?.textContent).toBe("—");
   });
 
   test("the tile shows the engine's watts as they are: no rounding or arithmetic of its own", async () => {
-    const rig = await open();
+    const { rig } = await open();
     await push(rig, {
       blockIndex: 1,
       blockElapsedS: 20,
@@ -727,7 +805,7 @@ describe("Ride", () => {
   });
 
   test("Escape closes the confirm and does not end the ride", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     await userEvent.click(screen.getByRole("button", { name: "End" }));
     expect(screen.getByRole("alertdialog")).toBeTruthy();
@@ -736,29 +814,19 @@ describe("Ride", () => {
     expect(rig.count("ride_end")).toBe(0);
   });
 
-  test("ending an unstarted ride disposes its session: a late Start finds no ride", async () => {
-    const rig = await open();
-    const session = renderHook(() => useSession()).result.current;
-    await userEvent.click(screen.getByRole("button", { name: "End" }));
-    await userEvent.click(screen.getByRole("button", { name: "End ride" }));
-    await waitFor(() => expect(routeText()).toBe("workouts:"));
-    expect(session?.disposed).toBe(true);
-    expect(renderHook(() => useSession()).result.current).toBeNull();
-    expect(rig.world.phase).toBe("none");
-  });
-
-  test("a new load re-opens the stream for the new ride", async () => {
-    const rig = await open();
-    expect(rig.base.count("open_stream")).toBe(1);
-    act(() => {
-      beginRide({ ...loaded, rideId: "ride-2" });
-    });
-    await waitFor(() => expect(rig.base.count("open_stream")).toBe(2));
-    await waitFor(() => expect(rig.base.liveSubs()).toBe(3));
+  test("a new load replaces the ride in the frame and the screen follows it (#598)", async () => {
+    const { rig, client } = await open();
+    expect(rig.ui.count("ui_open")).toBe(1);
+    await act(async () => rig.ui.loadStarted());
+    await waitFor(() => expect(client.snapshot.loading).toBe(true));
+    await act(async () => rig.ui.installed(rideView({ id: "ride-2" })));
+    await waitFor(() => expect(client.snapshot.ride?.id).toBe("ride-2"));
+    // The client holds one channel across loads (ADR-0001 §4.3).
+    expect(rig.ui.count("ui_open")).toBe(1);
   });
 
   test("End asks first; Keep riding sends nothing, End ride ends and shows the summary route with the ride id", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     await userEvent.click(screen.getByRole("button", { name: "End" }));
     const dialog = screen.getByRole("alertdialog");
@@ -779,16 +847,18 @@ describe("Ride", () => {
   });
 
   test("ending a ride that never started unloads it and returns to Workouts", async () => {
-    const rig = await open();
+    const { rig, client } = await open();
     await userEvent.click(screen.getByRole("button", { name: "End" }));
     expect(screen.getByRole("alertdialog").textContent).toMatch(/not started/);
     await userEvent.click(screen.getByRole("button", { name: "End ride" }));
     await waitFor(() => expect(routeText()).toBe("workouts:"));
     expect(rig.count("ride_end")).toBe(1);
+    await waitFor(() => expect(client.snapshot.ride).toBeNull());
+    expect(rig.world.phase).toBe("none");
   });
 
   test("a refused end shows the core's reason and stays", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     rig.world.phase = "none";
     await userEvent.click(screen.getByRole("button", { name: "End" }));
@@ -799,11 +869,10 @@ describe("Ride", () => {
   });
 
   test("state: finished navigates to the summary route exactly once, with the ride id", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     await push(rig, { state: { kind: "finished" } });
     await waitFor(() => expect(routeText()).toBe("history:ride-1"));
-    // The effect fires again each time the state flips back to finished: still one navigation.
     for (const workoutS of [600, 601]) {
       await push(rig, { state: { kind: "riding" }, workoutS });
       await push(rig, { state: { kind: "finished" }, workoutS });
@@ -815,7 +884,7 @@ describe("Ride", () => {
   });
 
   test("a finished ride cannot be ended again", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "finished" } });
     expect(
       (screen.getByRole("button", { name: "End" }) as HTMLButtonElement)
@@ -824,14 +893,10 @@ describe("Ride", () => {
   });
 
   test("the device pill follows the links, with a word besides the colour", async () => {
-    const rig = await open();
+    const { rig } = await open();
     await act(async () => {
-      rig.base.push({
-        links: [
-          { device: "trainer", state: "ready" },
-          { device: "hr", state: "lost" },
-        ],
-      });
+      rig.world.hrLost = true;
+      rig.publish();
     });
     const pill = screen.getByLabelText("Devices");
     expect(pill.textContent).toContain("NEO");
@@ -840,8 +905,8 @@ describe("Ride", () => {
     expect(pill.textContent).toContain("lost");
   });
 
-  test("the chart draws the target profile and the cursor advances with the workout clock", async () => {
-    const rig = await open({ phase: "active" });
+  test("the chart draws the target profile and the cursor advances with the workout clock, and the traces draw ui.series points as the channel appends them", async () => {
+    const { rig } = await open({ phase: "active" });
     await waitFor(() =>
       expect(screen.getAllByTestId("chart-block")).toHaveLength(3),
     );
@@ -852,24 +917,26 @@ describe("Ride", () => {
     await push(rig, { workoutS: 300 });
     expect(cursor()).toBeCloseTo(500);
     expect(screen.queryByTestId("chart-power")).toBeNull();
-    await push(rig, { workoutS: 301 }, [sample(rig, "power", 240, 5)]);
-    await push(rig, { workoutS: 302 }, [sample(rig, "power", 250, 6)]);
+    // Points come through ui.series: the channel appends; the trace redraws (ADR-0001 §4.3).
+    await act(async () => {
+      rig.ui.setStatus({ workoutS: 301 });
+      rig.ui.append("power", 5, 5, 240);
+    });
+    await act(async () => {
+      rig.ui.setStatus({ workoutS: 302 });
+      rig.ui.append("power", 6, 6, 250);
+    });
     expect(
       screen.getByTestId("chart-power").getAttribute("points")?.split(" "),
     ).toHaveLength(2);
   });
 
-  test("a sample delivered twice is one point of the history", async () => {
-    const rig = await open({ phase: "active" });
-    await push(rig, { workoutS: 10 }, [sample(rig, "power", 240, 5)]);
-    await push(rig, { workoutS: 11 });
-    await push(rig, { workoutS: 12 }, [sample(rig, "power", 240, 5)]);
-    const session = renderHook(() => useSession()).result.current;
-    expect(session?.power).toHaveLength(1);
-  });
+  // The old "a sample delivered twice is one point of the history" tested session.ts's dedup, which issue #598
+  // removed: the snapshot channel is additive (the core sends each point once from the cursor, stream/ui.test.tsx's
+  // "appends the series…" covers it). Deleted.
 
   test("no layout shift: a slot's size is set by its widest form, not by the value", async () => {
-    const rig = await open();
+    const { rig } = await open();
     const sizes = () =>
       [
         "power",
@@ -881,21 +948,38 @@ describe("Ride", () => {
         "elapsed",
         "left",
       ].map((id) => (slot(id) as HTMLElement | null)?.style.width ?? "");
-    await push(rig, { workoutS: 5, blockElapsedS: 1 }, [
-      sample(rig, "power", 5),
-      sample(rig, "hr", 61),
-    ]);
+    await push(
+      rig,
+      { workoutS: 5, blockElapsedS: 1 },
+      { powerW: 5, hrBpm: 61 },
+    );
     const short = sizes();
-    await push(rig, { workoutS: 3599, blockElapsedS: 99 }, [
-      sample(rig, "power", 1234, 2),
-      sample(rig, "hr", 188, 2),
-    ]);
+    await push(
+      rig,
+      { workoutS: 3599, blockElapsedS: 99 },
+      { powerW: 1234, hrBpm: 188 },
+    );
     expect(slot("power")?.textContent).toBe("1234");
     expect(sizes()).toEqual(short);
     expect(short.every((w) => /^\d+ch$/.test(w) || w === "")).toBe(true);
-    // The tiles' own slots and the clocks reserve a width; the countdown is sized by the tier token.
     expect(short.slice(0, 5).every((w) => /^\d+ch$/.test(w))).toBe(true);
     expect(short[6]).toBe("7ch");
+  });
+
+  test("the band says the engine is not answering when the channel is silent for 2 s, and recovers (ADR-0001 §4.3.4)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fake = new FakeClock();
+    const { rig } = await open({ phase: "active" }, { clock: fake });
+    expect(screen.queryByTestId("engine-unresponsive")).toBeNull();
+    rig.ui.stall();
+    await fake.advance(WATCHDOG_MS);
+    await waitFor(() =>
+      expect(screen.getByTestId("engine-unresponsive")).toBeTruthy(),
+    );
+    rig.ui.resume();
+    await waitFor(() =>
+      expect(screen.queryByTestId("engine-unresponsive")).toBeNull(),
+    );
   });
 });
 
@@ -913,16 +997,12 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
       rig.publish();
     });
   const rideWith = async (samples = true) => {
-    const rig = await open({ phase: "active" });
-    await push(rig, { workoutS: 100, blockIndex: 1, blockElapsedS: 65 }, [
-      ...(samples
-        ? [
-            sample(rig, "power", 240),
-            sample(rig, "cadence", 90),
-            sample(rig, "hr", 150),
-          ]
-        : []),
-    ]);
+    const { rig } = await open({ phase: "active" });
+    await push(
+      rig,
+      { workoutS: 100, blockIndex: 1, blockElapsedS: 65 },
+      samples ? { powerW: 240, cadenceRpm: 90, hrBpm: 150 } : undefined,
+    );
     return rig;
   };
 
@@ -931,7 +1011,6 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
     await publish(rig, { trainerLost: true, blockIdx: 1 });
     const banner = screen.getByTestId("loss-trainer");
     expect(banner.textContent).toContain("NEO lost");
-    // The frozen countdown's caption says where the block paused (DESIGN §5.2); the banner keeps the rider's choice.
     expect(screen.getByTestId("caption").textContent).toMatch(/^paused at /);
     expect(banner.textContent).toContain("keep pedalling or stop");
     expect(banner.textContent).toContain("reconnecting");
@@ -962,7 +1041,7 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
   });
 
   test("no links frame yet: the trainer-lost banner is neutral, not 'reconnecting'", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, {
       state: { kind: "paused", reason: "trainer_lost" },
       trainerLostSinceS: 5,
@@ -983,10 +1062,9 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
     const rig = await rideWith();
     await publish(rig, { ergReleased: true, blockIdx: 1 });
     expect(screen.getByTestId("loss-erg")).toBeTruthy();
-    // The core keeps the release set across a stop: paused with `ergReleased: true` is a real shape.
     await publish(rig, { stoppedPedalling: true });
-    expect(rig.base.truth.status.ergReleased).toBe(true);
-    expect(rig.base.truth.status.state.kind).toBe("paused");
+    expect(rig.ui.truth.ride?.status.ergReleased).toBe(true);
+    expect(rig.ui.truth.ride?.status.state.kind).toBe("paused");
     expect(screen.queryByTestId("loss-erg")).toBeNull();
   });
 
@@ -1031,19 +1109,21 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
 
   test("never inferred: no trainer-lost flag and an empty power tile show no lost banner", async () => {
     const rig = await rideWith(false);
-    await push(rig, { state: { kind: "riding" } }, [
-      sample(rig, "power", null),
-      sample(rig, "cadence", null),
-    ]);
+    await push(
+      rig,
+      { state: { kind: "riding" } },
+      { powerW: null, cadenceRpm: null },
+    );
     expect(slot("power")?.textContent).toBe("—");
     expect(screen.queryByTestId("loss-trainer")).toBeNull();
     expect(screen.queryByTestId("loss-hr")).toBeNull();
   });
 
   test("no loss rows without a live ride: a lost link before Start or after the end is not a loss", async () => {
-    const rig = await open({ phase: "loaded" });
+    const { rig } = await open({ phase: "loaded" });
     await act(async () => {
-      rig.base.push({ links: [{ device: "hr", state: "lost" }] });
+      rig.world.hrLost = true;
+      rig.publish();
     });
     expect(screen.queryByTestId("loss-hr")).toBeNull();
   });
@@ -1051,7 +1131,7 @@ describe("loss and reconnect states (#100 MVP, DESIGN §6.5)", () => {
 
 describe("End stays usable (#327)", () => {
   test("a ride command that never answers does not hold End", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     rig.hold("ride_pause"); // never released
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
@@ -1065,8 +1145,7 @@ describe("End stays usable (#327)", () => {
   });
 
   test("an End that never answers can be asked again; the window still leaves once", async () => {
-    // The engine has not processed the first End: no status frame follows it.
-    const rig = await open({ phase: "active", publishes: false });
+    const { rig } = await open({ phase: "active", publishes: false });
     await push(rig, { state: { kind: "riding" } });
     rig.hold("ride_end"); // the first never answers
     await userEvent.click(screen.getByRole("button", { name: "End" }));
@@ -1080,7 +1159,7 @@ describe("End stays usable (#327)", () => {
   });
 
   test("Pause is free again once the status shows the pause was lifted by someone else", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, { state: { kind: "riding" } });
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
     await waitFor(() => expect(enabled("Resume")).toBe(true));
@@ -1093,7 +1172,7 @@ describe("End stays usable (#327)", () => {
   });
 
   test("an external pause after a screen Resume: Pause is enabled again", async () => {
-    const rig = await open({ phase: "active", userPause: true });
+    const { rig } = await open({ phase: "active", userPause: true });
     await push(rig, {
       state: { kind: "paused", reason: "user" },
       userPaused: true,
@@ -1121,7 +1200,7 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
     });
   const text = (id: string) => screen.queryByTestId(id)?.textContent ?? null;
   const lostRide = async (over: Partial<RideWorld> = {}) => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await publish(rig, {
       trainerLost: true,
       sessionS: 100,
@@ -1138,7 +1217,6 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
     expect(text("loss-trainer")).not.toContain("attempt");
     await publish(rig, { attempt: 3 });
     expect(text("loss-trainer")).toContain("reconnecting (attempt 3)");
-    // 8 silent ticks on a link that is still ready: lost, but not reconnecting, so no attempt either.
     await publish(rig, { trainerLost: false, trainerSilent: true });
     expect(text("loss-trainer")).toContain("No data from the NEO");
     expect(text("loss-trainer")).not.toContain("reconnecting");
@@ -1146,14 +1224,16 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
   });
 
   test("the key row says nothing of the trainer's mode or following while it is lost: `commanded` is stale then", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     const keyRow = () =>
       document.querySelector(".ride-status")?.textContent ?? "";
     await publish(rig, { blockIdx: 1 });
     expect(keyRow()).toContain("trainer in ERG at 250 W, following");
-    // No samples on a ready link: the engine still reports its last mode (`Erg { 0 }`), which nothing follows.
     await publish(rig, { trainerSilent: true, sessionS: 100, lostSinceS: 100 });
-    expect(rig.base.truth.status.commanded).toEqual({ kind: "erg", watts: 0 });
+    expect(rig.ui.truth.ride?.status.commanded).toEqual({
+      kind: "erg",
+      watts: 0,
+    });
     expect(keyRow()).not.toMatch(/trainer in|following/);
     await publish(rig, {
       trainerSilent: false,
@@ -1220,7 +1300,7 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
   ])(
     "trainer back after a %i s loss: the Back-after row shown: %s",
     async (gapS, shown) => {
-      const rig = await open({ phase: "active" });
+      const { rig } = await open({ phase: "active" });
       await publish(rig, {
         pausedAfterLoss: true,
         gapS,
@@ -1235,8 +1315,7 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
   );
 
   test("the re-entry row states the fact only: no policy words until the engine reports a re-entry plan (#50)", async () => {
-    const rig = await open({ phase: "active" });
-    // Over 15 min DESIGN §6.6 says "no resume"; the engine does none of it, so the row says none of it either.
+    const { rig } = await open({ phase: "active" });
     await publish(rig, {
       pausedAfterLoss: true,
       gapS: 1000,
@@ -1248,7 +1327,7 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
   });
 
   test("soft start and re-entry both reported: both rows show, each is its own field", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await publish(rig, {
       pausedAfterLoss: true,
       gapS: 200,
@@ -1262,7 +1341,7 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
   });
 
   test("the re-entry text ends when the ride is riding again", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await publish(rig, { pausedAfterLoss: true, gapS: 190, reconnectedAtS: 5 });
     expect(text("re-entry")).toContain("↻ Back after 3:10");
     await publish(rig, { pausedAfterLoss: false });
@@ -1270,7 +1349,7 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
   });
 
   test("reconnected soft start: 'easing back in to <W> W' while the core reports a target", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await publish(rig, { gapS: 14, reconnectedAtS: 200, sessionS: 202 });
     expect(screen.queryByTestId("soft-start")).toBeNull();
     await publish(rig, { softStartW: 253 });
@@ -1280,14 +1359,13 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
   });
 
   test("the 'NEO back · m:ss gap' chip lives 10 s on the session clock", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await publish(rig, { gapS: 14, reconnectedAtS: 200, sessionS: 200 });
     expect(text("neo-back")).toBe("NEO back · 0:14 gap");
     await publish(rig, { sessionS: 209 });
     expect(text("neo-back")).toBe("NEO back · 0:14 gap");
     await publish(rig, { sessionS: 210 });
     expect(text("neo-back")).toBe("");
-    // The next loss clears the chip (the core clears the gap with it).
     await publish(rig, { sessionS: 212, trainerLost: true, lostSinceS: 212 });
     expect(text("neo-back")).toBe("");
   });
@@ -1300,11 +1378,11 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
 
   test("#327.3: under a loss the core still holds the rider pause: Resume follows it and Pause is off with a reason", async () => {
     const rig = await lostRide({ userPause: true, sessionS: 105 });
-    expect(rig.base.truth.status.state).toEqual({
+    expect(rig.ui.truth.ride?.status.state).toEqual({
       kind: "paused",
       reason: "trainer_lost",
     });
-    expect(rig.base.truth.status.userPaused).toBe(true);
+    expect(rig.ui.truth.ride?.status.userPaused).toBe(true);
     expect(enabled("Resume")).toBe(true);
     expect(enabled("Pause")).toBe(false);
     expect(
@@ -1312,7 +1390,6 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
     ).toBe("Already paused");
     await userEvent.click(screen.getByRole("button", { name: "Resume" }));
     await waitFor(() => expect(rig.count("ride_resume")).toBe(1));
-    // The rider pause is lifted; the loss goes on.
     await waitFor(() => expect(enabled("Pause")).toBe(true));
     expect(enabled("Resume")).toBe(false);
     expect(screen.getByTestId("loss-trainer")).toBeTruthy();
@@ -1336,30 +1413,26 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
   });
 
   test("never inferred: the pause reason, the links and the clock alone show no loss rows", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     // `trainer_lost` with every loss field null (a shape the core makes only when no loss is reported): nothing to show.
     await act(async () => {
-      rig.base.truth.status = makeStatus({
+      rig.ui.truth.ride!.status = makeStatus({
         state: { kind: "paused", reason: "trainer_lost" },
         sessionS: 900,
       });
-      rig.base.push({
-        status: rig.base.truth.status,
-        links: [{ device: "trainer", state: "lost" }],
-      });
+      rig.ui.changed();
     });
     for (const id of ["loss-trainer", "loss-help", "re-entry", "soft-start"])
       expect(screen.queryByTestId(id)).toBeNull();
     expect(text("neo-back")).toBe("");
     expect(text("state")).toBe("Paused: waiting for you to pedal");
-    // Riding, long after a reconnect that the core reports no gap for: no chip, no rows.
     await push(rig, { state: { kind: "riding" }, sessionS: 901 });
     expect(text("neo-back")).toBe("");
     expect(screen.queryByTestId("re-entry")).toBeNull();
   });
 
   test("never inferred: a lost stamp with no session clock gives no duration, so no ≥ 30 s row", async () => {
-    const rig = await open({ phase: "active" });
+    const { rig } = await open({ phase: "active" });
     await push(rig, {
       state: { kind: "paused", reason: "trainer_lost" },
       trainerLostSinceS: 1,
@@ -1373,10 +1446,12 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
 describe("the heart-rate zone (DESIGN §18.3, #586)", () => {
   afterEach(() => setAthleteHr(null));
   const riding = async (hr: number | null) => {
-    const rig = await open({ phase: "active" });
-    await push(rig, { workoutS: 100, blockIndex: 1, blockElapsedS: 65 }, [
-      sample(rig, "hr", hr),
-    ]);
+    const { rig } = await open({ phase: "active" });
+    await push(
+      rig,
+      { workoutS: 100, blockIndex: 1, blockElapsedS: 65 },
+      { hrBpm: hr },
+    );
     return rig;
   };
   const sub = () =>
@@ -1386,18 +1461,18 @@ describe("the heart-rate zone (DESIGN §18.3, #586)", () => {
     setAthleteHr({ lthrBpm: 165, hrMaxBpm: 190 });
     const rig = await riding(141.6);
     expect(slot("hr")?.textContent).toBe("142");
-    // 142 / 165 = 86 % of LTHR: Z2 ("81% to 89%").
     expect(slot("hr-zone")?.textContent).toBe("Z2 · LTHR");
-    await push(rig, { workoutS: 101, blockIndex: 1, blockElapsedS: 66 }, [
-      sample(rig, "hr", 166, 2),
-    ]);
+    await push(
+      rig,
+      { workoutS: 101, blockIndex: 1, blockElapsedS: 66 },
+      { hrBpm: 166 },
+    );
     expect(slot("hr-zone")?.textContent).toBe("Z5a · LTHR");
   });
 
   test("with only an HR max it names the five-zone zone", async () => {
     setAthleteHr({ hrMaxBpm: 190 });
     await riding(142);
-    // 142 / 190 = 75 % of HR max: Z3.
     expect(slot("hr-zone")?.textContent).toBe("Z3 · HRmax");
   });
 

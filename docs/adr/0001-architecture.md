@@ -231,7 +231,16 @@ appends them otherwise; (3) calls `ui_ack(frame.channel, frame.seq)`. It compare
 command's answer, keeps nothing from an earlier frame but the series, and drops the frames of a channel it replaced. It
 routes on the frame's `ride`, never on `ride_load`'s id. **Watchdog:** no frame for 2 s on an open channel, and it calls
 `ui_open` again (§4.3.4). The core guarantees `from` equals the length the page holds (tested, §4.3.9); a mismatch is a
-core bug, reported as `internal`, not repaired.
+core bug, reported as `internal`, not repaired: the page logs each kind of fault once while it lasts, shows its state as stale on
+every route (as for a silent channel) and does not ack the frame, so the core sends nothing more on that channel and
+the watchdog's reopen 2 s later brings a backfill from index 0 that replaces the series. A fault that repeats on every
+backfill costs one reopen per 2 s, never a loop (#598).
+
+**The e2e probe (#598).** The page defines one read-only global, `window.__crankUi()`, which answers the client's
+current state (the object the views render). `just e2e` (§8.3) drives `.#crank-desktop-e2e`, whose frontend is the
+production build (`appDist`), and asserts on the page's own state after a freeze, a lost frame or a reload; a dev-only
+global would not exist there. It changes nothing, carries nothing the page does not already show, and stays local to
+the window.
 
 #### 4.3.3 Series, size and rate
 
@@ -251,7 +260,10 @@ It never sees a channel or awaits a page and publishes its status on its `watch`
 **Ride lifetime.** From the start of `ride_load`, `loading` is true, `ride` is `null` and the series are dropped, so the
 next frame carries `from: 0` and no points (today the core keeps the previous status until the new session is installed,
 `crates/crank-core/src/core.rs:1834`). A failed load leaves `ride` `null`; an unload makes it `null`; an ended ride
-stays, with `ended` set, until the next load.
+stays, with `ended` set, until the next load. While `loading` is true and `ride` is `null` the ride screen draws the
+Ready sheet's loading state from the frame (the ride layout, each device "checking…", Start waiting); the frame does not
+name the workout being loaded, so its plan is the requesting window's own (`useRideLoad`) and another window draws the
+layout without it until #657 adds the workout to the frame.
 
 **Frame bound.** Each bound is measured by a test with every part at its cap:
 

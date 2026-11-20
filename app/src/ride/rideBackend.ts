@@ -1,5 +1,8 @@
-// The core's ride commands behind `mockIPC`, on top of the stream backend (`stream/testBackend.ts`), for the ride
-// tests. It models every refusal the core returns, in the core's order, and accepts nothing the core refuses:
+// The core's ride commands behind `mockIPC`, on top of the snapshot channel's backend (`stream/uiBackend.ts`, which
+// models `ui_open` and `ui_ack`), for the ride tests and the design fixtures. Every effect reaches the page as the
+// channel's next frame (ADR-0001 §4.3): `ride` from the engine's status, and `devices` with the ride's link overlaid on
+// each device it holds (§4.3.6). It models every refusal the core returns, in the core's order, and accepts nothing
+// the core refuses:
 //
 //   ride_start  no ride loaded            conflict            "no ride loaded"      crank-core core.rs `Core::engine` (~1666)
 //               not in the loaded phase   conflict            "not valid in this state"  crank-engine engine.rs `Engine::command` (~1266), `Start` arm
@@ -14,18 +17,20 @@
 //   ride_skip   as pause, and no block left (a free ride has none)  conflict  "not valid in this state"  engine.rs `Engine::command` (~1266), `SkipBlock` arm;
 //               skipping the last block finishes the ride  engine.rs `command` `SkipBlock`
 //   ride_end    no ride loaded or just finished  conflict     "no ride loaded"      core.rs `end_ride` (~1742)
-//               ends a started ride (id), unloads an unstarted one (null), a finished one answers its id again  core.rs `end_ride` (reaped: `last`; `Stop` unless Finished, `Ended(finishes.then_some(id))`)
-//               (`forced` again for a ride ended by force: `last_forced`, core.rs `end_ride`, set in core.rs `Core::force_end` (~1831))
-//   ride_end    answers `{ rideId, forced }`: an engine that is gone or stuck is ended by force (`forced: true`, the ride's id,
-//               recorded as aborted) instead of failing  crank-core core.rs `Core::end_ride` (~1742) / core.rs `Core::force_end` (~1831) (#331)
+//               answers `null` (app/src-tauri commands.rs `ride_end`): it ends a started ride (`ride.ended: finished`),
+//               unloads an unstarted one (`ride: null`, core.rs `Core::end_ride`, ui.rs `Ui::unload`), and answers a
+//               finished one again  core.rs `end_ride` (reaped: `last`; `Stop` unless Finished)
+//               an engine that is gone or stuck is ended by force instead of failing (`ride.ended: forced`, recorded as
+//               aborted)  crank-core core.rs `Core::end_ride` (~1742) / core.rs `Core::force_end` (~1831) (#331), ui.rs `Ui::ended`
 //   every other ride_* command, engine wedged  engine_unresponsive  (the core's text)  after the 1 s bound, core.rs
-//               `bounded` / `REQUEST_TIMEOUT` via `ride_cmd` (#351); checked after "no ride loaded". The stream commands
-//               answer the same (stream/testBackend.ts `truth.unresponsive`). `ride_end` ends such a ride by force.
+//               `bounded` / `REQUEST_TIMEOUT` via `ride_cmd` (#351); checked after "no ride loaded". The frame's
+//               `ride.engineUnresponsive` says so (core.rs `Core::watched`, ui.rs `Ui::unresponsive`). `ride_end` ends such a
+//               ride by force.
 //   every other ride_* command, engine task ended  internal  "engine stopped"  engine.rs `EngineHandle::send` (~226) via
 //               core.rs `ride_cmd` (~1676), mapped error.rs `ApiError` (~65), its `From<CommandError>`; checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
 //   links_intent (the link keeper, ADR-0002 §5.1; answers `null` once the intent is applied, #597: its effect reaches the
-//               page only as the link channel's next frame), in the core's order:
+//               page only as the snapshot channel's next frame, in `devices`), in the core's order:
 //               "Release trainer" while the ride's session is started: an active ride, or one that finished (its last
 //                 block skipped) and that the reaper has not taken yet (`world.unreaped`)  conflict
 //                 "the ride holds the trainer: end the ride first"  core.rs `Core::links_intent` (~1250), the
@@ -47,22 +52,19 @@
 //                 modelled)
 //               `sleep` or `rider_release` with a loaded, unstarted ride discards it (the path of Cancel); every other
 //               intent leaves a loaded or started ride alone (keeper/mod.rs `Keeper::loaded_intent` (~490))
-//   links_open  answers the channel id and sends the state at once; replaces the window's earlier channel
-//   links_ack   unknown or replaced channel  not_found  "unknown link channel"  keeper/channel.rs `Channels::ack`;
-//               one frame in flight: a change waits for the ack of the last frame sent, then goes out as one frame of
-//               the latest state; an ack of any other seq is ignored (the core's 10 Hz spacing is not modelled)
-//   seq         the keeper state's number, +1 per change (keeper/run.rs `change`); its one use is `links_ack`
 // A call without its required argument is Tauri's plain-string rejection, not an `ApiError`.
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { Channel } from "@tauri-apps/api/core";
 import type {
   ApiError,
   DeviceLinkView,
-  LinkChange,
-  LinkFrame,
+  DeviceView,
   LinkIntent,
+  LinkStatus,
   LinkView,
+  LiveValues,
+  PairedDevice,
   Phase,
+  RideEnding,
   StreamCommanded,
   StreamPauseReason,
   StreamRideState,
@@ -70,11 +72,8 @@ import type {
   WorkoutBlock,
   WorkoutDetail,
 } from "../bindings";
-import {
-  UNRESPONSIVE,
-  installBackend,
-  status as makeStatus,
-} from "../stream/testBackend";
+import { UNRESPONSIVE, status as makeStatus } from "../stream/testBackend";
+import { installUi, type UiOptions } from "../stream/uiBackend";
 
 export const block = (
   startS: number,
@@ -115,13 +114,36 @@ export const COLD_LINKS: LinkView = {
   strap: { phase: "cold", sample: null },
 };
 
+/** The paired trainer and strap of the mock's core. */
+export const NEO: PairedDevice = {
+  role: "trainer",
+  id: "neo-1",
+  name: "Tacx Neo 55624",
+  serial: "55624",
+  model: "Neo",
+};
+export const HRM: PairedDevice = {
+  role: "heart_rate",
+  id: "hrm-1",
+  name: "HRM-Dual",
+  serial: null,
+  model: null,
+};
+const NO_LIVE: LiveValues = { powerW: null, cadenceRpm: null, hrBpm: null };
+
 export interface RideWorld {
   /** A ride is loaded; the phase of it. */
   phase: "none" | "loaded" | "active" | "finished";
+  /** How the loaded ride ended, kept until the next load (ui.rs `Ui::ended`); `null` while it runs. */
+  ended: RideEnding | null;
+  /** The loaded ride's workout, `null` for a free ride (`ride.workoutId`). */
+  workoutId: string | null;
+  /** This tick's values, the frame's `ride.live` (the engine nulls them while paused or lost, ui.rs `Ui::read`). */
+  live: LiveValues;
+  /** What is paired per role (`devices.<role>.paired`). */
+  paired: { trainer: PairedDevice | null; strap: PairedDevice | null };
   /** Reaped ride whose end is still answerable: `ride_end` returns its id. */
   lastId: string | null;
-  /** The ride the core ended by force; a repeat End answers it as forced again (core.rs `end_ride`, `last_forced`). */
-  lastForced: string | null;
   rideId: string;
   userPause: boolean;
   /** The trainer link is lost in an active ride: the engine pauses with `trainer_lost`, which outranks a rider pause (engine.rs `Pauses::reason` (~336)). */
@@ -172,12 +194,13 @@ export interface RideWorld {
    */
   rampHold: boolean;
   blockIdx: number;
-  trainer: "none" | "ready" | "connecting";
+  /** The trainer link before and between losses: `ride_start` needs it `ready`; `lost` is a link that went down. */
+  trainer: "none" | "ready" | "connecting" | "lost";
   cap: "none" | "requires_erg" | "exceeds";
   recordFails: boolean;
   /** The engine task has ended: every command that reaches it answers `internal`. */
   engineStopped: boolean;
-  /** The engine is wedged: every command and stream request answers `engine_unresponsive` (#351). */
+  /** The engine is wedged: every ride command answers `engine_unresponsive` and the frame says so (#351). */
   engineUnresponsive: boolean;
   /** Publish the status frame after a command (the core does; false models the frame still on its way). */
   publishes: boolean;
@@ -190,12 +213,12 @@ export interface RideWorld {
   blocks: WorkoutBlock[];
   /** The workout's name as `workout_get` answers it. */
   workoutName: string;
-  /** The link keeper's state of the devices no ride holds (the link channel's frames). */
+  /** The link keeper's state of the devices no ride holds (`devices.<role>.phase` and `.sample`). */
   keeper: LinkView;
   /**
-   * The strap was warm at the load and the ride holds it (`RideLoaded.hrLinked`). When false it stayed the keeper's
-   * and keeps its own phase, e.g. `not_found` for a strap that did not advertise (keeper/mod.rs `Keeper::settle`
-   * hands over only `warm` devices; core.rs `Core::connect_links`).
+   * The strap was warm at the load and the ride holds it (`devices.strap.phase` is `riding`). When false it stayed the
+   * keeper's and keeps its own phase, e.g. `not_found` for a strap that did not advertise (keeper/mod.rs
+   * `Keeper::settle` hands over only `warm` devices; core.rs `Core::connect_links`).
    */
   strapHanded: boolean;
   /** The keeper's store read fails when it first starts: `links_intent` answers `storage`. */
@@ -206,8 +229,8 @@ export interface RideWorld {
   quitting: boolean;
 }
 
-export function installRide(over: Partial<RideWorld> = {}) {
-  const base = installBackend();
+export function installRide(over: Partial<RideWorld> = {}, ui: UiOptions = {}) {
+  const channel = installUi(ui);
   const inner = (
     window as unknown as {
       __TAURI_INTERNALS__: {
@@ -217,8 +240,11 @@ export function installRide(over: Partial<RideWorld> = {}) {
   ).__TAURI_INTERNALS__.invoke;
   const world: RideWorld = {
     phase: "loaded",
+    ended: null,
+    workoutId: "w1",
+    live: NO_LIVE,
+    paired: { trainer: NEO, strap: HRM },
     lastId: null,
-    lastForced: null,
     rideId: "ride-1",
     userPause: false,
     trainerLost: false,
@@ -256,8 +282,6 @@ export function installRide(over: Partial<RideWorld> = {}) {
     quitting: false,
     ...over,
   };
-  // one engine: the stream commands are wedged with it
-  base.truth.unresponsive = world.engineUnresponsive;
   const calls: { cmd: string; args: Record<string, unknown> }[] = [];
   const holds = new Map<string, Promise<void>[]>();
 
@@ -310,16 +334,19 @@ export function installRide(over: Partial<RideWorld> = {}) {
     }
     return { kind: "erg", watts: target };
   };
-  const links = (): LinkChange[] =>
-    world.phase === "active"
-      ? [
-          {
-            device: "trainer",
-            state: world.trainerLost ? "lost" : "ready",
-          },
-          { device: "hr", state: world.hrLost ? "lost" : "ready" },
-        ]
-      : [];
+  /**
+   * The ride's link of each device it holds (engine `RideStatus`, which carries it beside the status, so a loss and
+   * its pause share a frame, ADR-0001 §4.3.6): the trainer's from `trainer` and the loss, the strap's from `hrLost`.
+   */
+  const rideLink = {
+    trainer: (): LinkStatus =>
+      world.trainerLost || world.trainer === "lost" || world.trainer === "none"
+        ? "lost"
+        : world.trainer === "connecting"
+          ? "connecting"
+          : "ready",
+    strap: (): LinkStatus => (world.hrLost ? "lost" : "ready"),
+  };
   /**
    * The loss fields as the engine reports them: only while the session is Active, `trainerLostSinceS` and the attempt
    * only while lost, the soft start, the last gap and its end only while not (a new loss clears them), and `userPaused`
@@ -337,7 +364,13 @@ export function installRide(over: Partial<RideWorld> = {}) {
       reconnectedAtS: lost ? null : world.reconnectedAtS,
     };
   };
-  /** The engine's `publish`: the status frame after a command. */
+  /** The engine's last published status. */
+  let current: StreamStatus = makeStatus({
+    state: state(),
+    loaded: world.phase !== "none",
+    blockIndex: 0,
+  });
+  /** The engine's `publish`: the status after a command, and the frame it causes. */
   let clockS = 0;
   const publish = (workoutS?: number) => {
     // The session clock only runs forward (engine `session_s`): a test that rewinds it models a status the core cannot send.
@@ -347,13 +380,17 @@ export function installRide(over: Partial<RideWorld> = {}) {
       );
     clockS = world.sessionS;
     settleLinks();
-    if (!world.publishes) return;
-    base.truth.status = makeStatus({
+    // The status is still on its way; a device the ride let go is the keeper's at once (the next frame carries it).
+    if (!world.publishes) {
+      show(false);
+      return;
+    }
+    current = makeStatus({
       ...lossFields(),
       sessionS: world.sessionS,
       state: state(),
       loaded: world.phase !== "none",
-      workoutS: workoutS ?? base.truth.status.workoutS,
+      workoutS: workoutS ?? current.workoutS,
       blockIndex: world.blockIdx < world.blocks.length ? world.blockIdx : null,
       blockElapsedS: 0,
       ergReleased: world.ergReleased,
@@ -361,8 +398,7 @@ export function installRide(over: Partial<RideWorld> = {}) {
       userPaused: world.phase === "active" && world.userPause,
       commanded: commanded(),
     });
-    base.truth.links = links();
-    base.push({ status: base.truth.status, links: links() });
+    show();
   };
   /** The ride's session is started: an active ride, or a finished one the reaper has not taken yet. */
   const started = () =>
@@ -375,24 +411,67 @@ export function installRide(over: Partial<RideWorld> = {}) {
   const rideHolds = () => world.phase === "loaded" || started();
   let held = rideHolds();
   /**
-   * What the keeper reports, per device: one the ride holds is `riding` (its live state is the ride stream's), every
-   * other device its own phase (ADR-0002 §5.1.4).
+   * `devices` (ADR-0001 §4.3.6, ui.rs `Ui::read`): per role its pairing; a device the ride holds is `riding` with the
+   * ride's link, every other one the keeper's phase and sample; `phase` is `null` exactly when nothing is paired.
    */
-  const linkView = (): LinkView => {
-    if (!rideHolds()) return world.keeper;
-    const riding = (d: DeviceLinkView | null): DeviceLinkView | null =>
-      d && { phase: "riding", sample: null };
+  const device = (
+    paired: PairedDevice | null,
+    keeper: DeviceLinkView | null,
+    holds: boolean,
+    link: () => LinkStatus,
+  ): DeviceView => {
+    if (paired === null)
+      return { paired: null, phase: null, link: null, sample: null };
+    if (holds) return { paired, phase: "riding", link: link(), sample: null };
     return {
-      trainer: riding(world.keeper.trainer),
-      strap: world.strapHanded
-        ? riding(world.keeper.strap)
-        : world.keeper.strap,
+      paired,
+      phase: keeper?.phase ?? "cold",
+      link: null,
+      sample: keeper?.sample ?? null,
     };
   };
   /**
+   * The frame's state from the world, sent as the core's next frame; without `ride` only the devices move (the
+   * engine's status, and the end it carries, are still on their way).
+   */
+  const show = (ride = true) => {
+    const holds = rideHolds();
+    channel.truth.devices = {
+      trainer: device(
+        world.paired.trainer,
+        world.keeper.trainer,
+        holds,
+        rideLink.trainer,
+      ),
+      strap: device(
+        world.paired.strap,
+        world.keeper.strap,
+        holds && world.strapHanded,
+        rideLink.strap,
+      ),
+    };
+    if (!ride) {
+      channel.changed();
+      return;
+    }
+    channel.truth.ride =
+      world.phase === "none"
+        ? null
+        : {
+            id: world.rideId,
+            workoutId: world.workoutId,
+            status: current,
+            live: world.live,
+            ended: world.ended,
+            // set by a timed-out request or a silent status, kept until the ride ends (ui.rs `Ui::read`)
+            engineUnresponsive:
+              world.engineUnresponsive && world.ended === null,
+          };
+    channel.changed();
+  };
+  /**
    * The ride's hold is released (an unload, a discard, a ride's end): the devices it held come back `cold`, with no
-   * sample, and a strap it never held keeps its phase (keeper/mod.rs `Keeper::free`, `Phase::Cold`). Then the link
-   * channel gets the change.
+   * sample, and a strap it never held keeps its phase (keeper/mod.rs `Keeper::free`, `Phase::Cold`).
    */
   const settleLinks = () => {
     const now = rideHolds();
@@ -404,38 +483,6 @@ export function installRide(over: Partial<RideWorld> = {}) {
           : world.keeper.strap,
       };
     held = now;
-    linksChanged();
-  };
-  let linkCh: {
-    id: number;
-    ch: Channel<LinkFrame>;
-    seq: number;
-    acked: boolean;
-    due: boolean;
-  } | null = null;
-  let nextLinks = 1;
-  let numbered = { seq: 0, json: "" };
-  /** The keeper's state with its number: a change since the last look takes the next seq (keeper/run.rs `change`). */
-  const linkState = (): LinkFrame => {
-    const links = linkView();
-    const json = JSON.stringify(links);
-    if (json !== numbered.json)
-      numbered = { seq: (numbered.seq + 1) >>> 0, json };
-    return { seq: numbered.seq, links };
-  };
-  const linkSend = () => {
-    if (!linkCh) return;
-    const frame = linkState();
-    linkCh.seq = frame.seq;
-    linkCh.acked = false;
-    linkCh.due = false;
-    linkCh.ch.onmessage(frame);
-  };
-  /** The keeper's state may have changed: a frame goes out now, or once the last one is acked. */
-  const linksChanged = () => {
-    if (!linkCh || linkState().seq === linkCh.seq) return;
-    if (linkCh.acked) linkSend();
-    else linkCh.due = true;
   };
   const reach = () => {
     if (world.phase === "none") throw err("conflict", "no ride loaded");
@@ -502,24 +549,25 @@ export function installRide(over: Partial<RideWorld> = {}) {
           // an End of a ride that finished on its own waits for its reap (core.rs `Core::settle`)
           world.unreaped = false;
           settleLinks();
-          return { rideId: id, forced: id !== null && id === world.lastForced };
+          show();
+          return null;
         }
         if (world.engineStopped || world.engineUnresponsive) {
           // Forced: the core ended the ride itself; it is recorded, as aborted.
           world.phase = "finished";
-          world.lastForced = world.rideId;
+          world.ended = "forced";
           publish();
-          return { rideId: world.rideId, forced: true };
+          return null;
         }
-        const started = world.phase === "active";
-        if (started) {
+        if (world.phase === "active") {
           world.phase = "finished";
+          world.ended = "finished";
           publish();
-          return { rideId: world.rideId, forced: false };
+          return null;
         }
         world.phase = "none";
         publish();
-        return { rideId: null, forced: false };
+        return null;
       }
       case "links_intent": {
         const intent = args.intent as LinkIntent | undefined;
@@ -554,29 +602,11 @@ export function installRide(over: Partial<RideWorld> = {}) {
               trainer: cold(world.keeper.trainer),
               strap: cold(world.keeper.strap),
             };
-            linksChanged();
+            show();
           }
         }
         return null;
       }
-      case "links_open":
-        linkCh = {
-          id: nextLinks++,
-          ch: args.channel as Channel<LinkFrame>,
-          seq: 0,
-          acked: true,
-          due: false,
-        };
-        linkSend();
-        return linkCh.id;
-      case "links_ack":
-        if (!linkCh || args.id !== linkCh.id)
-          throw err("not_found", "unknown link channel");
-        if (args.seq === linkCh.seq && !linkCh.acked) {
-          linkCh.acked = true;
-          if (linkCh.due) linkSend();
-        }
-        return null;
       case "workout_get": {
         if (typeof args.id !== "string")
           throw "missing required key id for command `workout_get`";
@@ -612,8 +642,6 @@ export function installRide(over: Partial<RideWorld> = {}) {
     "ride_skip",
     "ride_end",
     "links_intent",
-    "links_open",
-    "links_ack",
     "workout_get",
   ]);
   mockIPC((cmd, payload) => {
@@ -634,13 +662,11 @@ export function installRide(over: Partial<RideWorld> = {}) {
     };
     return gate ? gate.then(settle) : settle();
   });
-  base.truth.status = makeStatus({
-    state: state(),
-    loaded: world.phase !== "none",
-    blockIndex: 0,
-  });
+  // The core's state at the start: the first frame of a channel opened now carries it.
+  show();
   return {
-    base,
+    /** The snapshot channel (`ui_open`, `ui_ack`) and the series it reads. */
+    ui: channel,
     world,
     calls,
     count: (cmd: string) => calls.filter((c) => c.cmd === cmd).length,
@@ -649,16 +675,22 @@ export function installRide(over: Partial<RideWorld> = {}) {
     reap(): void {
       world.unreaped = false;
       settleLinks();
+      show();
     },
-    /** The keeper's phases or samples change (warm-up, cool-down): the link channel sends them as the core would. */
+    /** The keeper's phases or samples change (warm-up, cool-down): the next frame carries them, as the core's would. */
     setKeeper(view: LinkView): void {
       world.keeper = view;
-      linksChanged();
+      show();
     },
-    /** The engine wedges (#351): from now on the ride and stream commands answer `engine_unresponsive`. */
+    /** This tick's values (`ride.live`), sent as the next frame. */
+    setLive(live: Partial<LiveValues>): void {
+      world.live = { ...world.live, ...live };
+      show();
+    },
+    /** The engine wedges (#351): the ride commands answer `engine_unresponsive`, and the frame says so. */
     wedge(): void {
       world.engineUnresponsive = true;
-      base.truth.unresponsive = true;
+      show();
     },
     /**
      * One soft-start step of the engine (the engine ticks at 4 Hz and steps the ramp once per second, 4 ticks; this

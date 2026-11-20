@@ -2,18 +2,25 @@
 // The anatomy is fixed (§18.2): status bar, the traces column (banner band, power / heart rate / cadence traces) beside
 // the metric column (countdown and next, power, heart rate, cadence), the block timeline and the key row; each region
 // carries `data-region`, and the design harness checks its box is the same in every state (rule 10, #498). It renders
-// what the stream and the core's answers say and branches on `ApiError.code`, never on `message` (ADR-0001 §4.4); the
-// core's text is shown as the reason of a refusal. The key hints are labels: the bindings come with the dispatcher (#104).
+// what the snapshot channel's last frame says (`useUi`, ADR-0001 §4.3: the ride, its devices and its series) and the
+// commands' refusals, and branches on `ApiError.code`, never on `message` (ADR-0001 §4.4); the core's text is shown as
+// the reason of a refusal. A command's answer never feeds what is drawn: its effect arrives as the next frame. The key
+// hints are labels: the bindings come with the dispatcher (#104).
 //
-// Loss and reconnect states (#100, DESIGN §6.5/§6.6) are read from the status and the links only, never inferred: the
-// loss fields #329 added (`trainerLostSinceS`, `reconnectAttempt`, `softStartTargetW`, `lastGapS`, `reconnectedAtS`,
-// `userPaused`) are reported only while the ride is Active, and every duration is a difference on the session clock
-// (`sessionS`, which the heartbeat refreshes), never a timer of this screen.
+// Loss and reconnect states (#100, DESIGN §6.5/§6.6) are read from the status and the devices' links only, never
+// inferred: the loss fields #329 added (`trainerLostSinceS`, `reconnectAttempt`, `softStartTargetW`, `lastGapS`,
+// `reconnectedAtS`, `userPaused`) are reported only while the ride is Active, and every duration is a difference on the
+// session clock (`sessionS`, which the heartbeat refreshes), never a timer of this screen.
 // Out of this subset, each with its issue: density modes, the coach lane (#99) and its coach marks on the timeline,
 // phase templates and the ERG band (#97), sound and the input dispatcher (#104), the symptom stop (#103), the rest of
 // the failure states (#100), the Review/summary
 // (#106: a finished ride routes to History with the ride id until it exists) and the phone layout.
-// A window reload loses the session; the core keeps the ride loaded, and picking it up again is the Resume sheet (#259).
+// The screen draws the frame's ride (it routes on `ride`, never on `ride_load`'s answer), so a reload mid-ride shows it
+// again, its traces backfilled from index 0 (§4.3.4); the Resume sheet after a crash is #259. When no frame has
+// arrived for 2 s the channel's watchdog marks the state stale and the band says the engine is not answering (the values
+// are not live) until the next frame.
+// The screen re-renders on every frame, the 1 s heartbeat included; measuring that cost on the real app is #655
+// (ADR-0001 §4.3.11).
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Bluetooth,
@@ -31,7 +38,9 @@ import "./ride.css";
 import { commands } from "../bindings";
 import type {
   ApiError,
+  DevicesView,
   LinkStatus,
+  RideView,
   StreamFollowing,
   StreamStatus,
   WorkoutBlock,
@@ -40,26 +49,15 @@ import type {
 import { useAthleteHr } from "../athleteHr";
 import { Num } from "../Num";
 import { navigate } from "../router";
-import {
-  StreamProvider,
-  useCommand,
-  useLinks,
-  useStatus,
-  useStreamError,
-} from "../stream";
-import { useSubscribe } from "../stream";
+import { useCommand } from "../stream";
+import type { UiSnapshot } from "../stream/ui";
+import { useUi, useUiClient } from "../stream/uiHooks";
 import { openKeys } from "../shell/keys";
 import { BannerBand, banners, trainerNow } from "./banners";
 import { useFit } from "./fit";
-import { markForcedEnd } from "./forcedEnds";
 import { hrZone, zoneText } from "./hrZone";
-import {
-  releaseRide,
-  useSeries,
-  useSession,
-  type RideSession,
-  type Series,
-} from "./session";
+import { useRideLoad } from "../views/rideLoad";
+import { leaveOnce } from "./session";
 import {
   ReadyBody,
   readyBanner,
@@ -289,9 +287,8 @@ function Pill({
   );
 }
 
-function useDetail(session: RideSession): WorkoutDetail | null {
+function useDetail(id: string | null): WorkoutDetail | null {
   const [detail, setDetail] = useState<WorkoutDetail | null>(null);
-  const id = session.workoutId;
   useEffect(() => {
     if (id === null) return;
     let live = true;
@@ -339,32 +336,46 @@ const FOLLOWING: Record<StreamFollowing, string | null> = {
   not_following: "not following",
 };
 
-/** Records one subscription's samples into the session's history of `of`. */
-function useRecord(
-  session: RideSession,
-  of: Series,
-  s: { t: number | null; v: number | null } | null,
-  workoutS: number | null,
-) {
-  const [t, v] = [s?.t ?? null, s?.v ?? null];
-  useEffect(() => {
-    if (t !== null && v !== null && workoutS !== null)
-      session.record(t, workoutS, v, of);
-  }, [session, of, t, v, workoutS]);
-}
+/** The ride's link of each device it holds (`riding`); a device it does not hold has none (ADR-0001 §4.3.6). */
+const linksOf = (
+  d: DevicesView,
+): { trainer?: LinkStatus; hr?: LinkStatus } => ({
+  trainer: d.trainer.link ?? undefined,
+  hr: d.strap.link ?? undefined,
+});
 
-function Screen({ session }: { session: RideSession }) {
-  const status = useStatus();
-  const links = useLinks();
-  // A wedged engine (#351): the stream's commands are refused after the core's bound, so the values below are stale.
-  const unresponsive = useStreamError()?.code === "engine_unresponsive";
-  const power = useSubscribe("power", { rateHz: 4 }).sample;
-  const cadence = useSubscribe("cadence", { rateHz: 2 }).sample;
-  const hr = useSubscribe("hr", { rateHz: 2 }).sample;
+/**
+ * The workout the screen shows: the ride's, or while a load is under way the one this window asked to load
+ * (`useRideLoad`); `null` when it is not known (a load another window started, or one this window started before a
+ * reload: the frame does not name the workout being loaded, #657). `workoutId` is `null` for a free ride.
+ */
+type Plan = { workoutId: string | null } | null;
+
+function Screen({
+  ride,
+  devices,
+  plan,
+  ui,
+}: {
+  /** `null` while a load is under way: the screen is the Ready sheet's loading state until the ride is installed. */
+  ride: RideView | null;
+  devices: DevicesView;
+  plan: Plan;
+  ui: UiSnapshot;
+}) {
+  const status: StreamStatus | null = ride?.status ?? null;
+  // The ride's links; before the ride is installed it holds no device, so there is none (the pills say "not connected").
+  const links = ride ? linksOf(devices) : {};
+  // A wedged engine (#351, the core's `engineUnresponsive`), or a channel silent for 2 s (the watchdog's `stale`): the
+  // values below are not live.
+  const unresponsive = (ride?.engineUnresponsive ?? false) || ui.stale;
+  const power = ride?.live.powerW ?? null;
+  const cadence = ride?.live.cadenceRpm ?? null;
+  const hr = ride?.live.hrBpm ?? null;
   const hrRefs = useAthleteHr();
-  const detail = useDetail(session);
+  const detail = useDetail(plan?.workoutId ?? null);
   const compiled = detail?.compiled ?? null;
-  const series = useSeries(session);
+  const series = ui.series;
   const tooSmall = useTooSmall();
 
   const start = useCommand(commands.rideStart);
@@ -396,14 +407,13 @@ function Screen({ session }: { session: RideSession }) {
 
   const workoutS = status?.workoutS ?? null;
   const kind = status?.state.kind ?? "idle";
-  const finished = kind === "finished";
+  const rideId = ride?.id ?? null;
+  // Over: the engine finished it, or the core says it ended (also by force, `ended: forced`).
+  const finished = kind === "finished" || (ride?.ended ?? null) !== null;
   useEffect(() => {
-    if (finished) session.leaveOnce(() => navigate("history", session.rideId));
-  }, [finished, session]);
-  // Each measured sample joins its history on the workout clock; a gap (`v` null) or a frozen clock adds nothing.
-  useRecord(session, "power", power, workoutS);
-  useRecord(session, "hr", hr, workoutS);
-  useRecord(session, "cadence", cadence, workoutS);
+    if (finished && rideId !== null)
+      leaveOnce(rideId, () => navigate("history", rideId));
+  }, [finished, rideId]);
 
   const run = async <T,>(
     command: RideCommand,
@@ -438,21 +448,15 @@ function Screen({ session }: { session: RideSession }) {
   };
   const endRide = async () => {
     setConfirming(null);
+    // An End before the start unloads the ride (the next frame has no ride): nothing to review.
+    const unloads = kind === "idle";
     const outcome = await run("end", end.run);
-    // The summary says so when the core ended the ride by force (`forced`, not the recorded outcome). Marked
-    // before leaving, and also when the `finished` frame already routed: the summary follows the mark.
-    if (outcome.status === "ok" && outcome.data.forced && outcome.data.rideId)
-      markForcedEnd(outcome.data.rideId);
-    if (outcome.status === "ok")
-      session.leaveOnce(() => {
-        if (outcome.data.rideId !== null) {
-          navigate("history", outcome.data.rideId);
-        } else {
-          // Never started: unloaded, nothing to review.
-          releaseRide(session);
-          navigate("workouts");
-        }
-      });
+    // How it ended (also by force) is the frame's `ride.ended`, which the summary reads; the answer is only `null`.
+    // End is disabled until the ride is installed, so there is a ride to leave.
+    if (outcome.status === "ok" && rideId !== null)
+      leaveOnce(rideId, () =>
+        unloads ? navigate("workouts") : navigate("history", rideId),
+      );
   };
 
   const blocks = compiled?.blocks ?? [];
@@ -497,13 +501,14 @@ function Screen({ session }: { session: RideSession }) {
   const round = (v: number | null | undefined, blank = false) =>
     v == null || blank ? null : Math.round(v);
   // The zone of the value the tile shows, so the two never disagree (§18.3 "Heart-rate zone").
-  const zone = hrZone(round(hr?.v, loss.hr), hrRefs);
+  const zone = hrZone(round(hr, loss.hr), hrRefs);
 
   const next = blockIdx === null ? undefined : blocks[blockIdx + 1];
   // The plan dims while it does not run: the rider's pause and a trainer loss (§5.2 States).
   const dim = userPaused || loss.trainer ? "" : undefined;
   const xMax = Math.max(total ?? 0, workoutS ?? 0, 1);
-  const free = session.workoutId === null;
+  // A free ride has no plan; `null` while the workout is not known (`Plan`).
+  const free = plan === null ? null : plan.workoutId === null;
   const counted = status?.compliance.countedS ?? 0;
   // The trainer as the engine commands it and whether it follows (the same words as the pause banner, #324).
   // Not while the trainer is lost: `commanded` then still holds the engine's last mode, which nothing is following.
@@ -527,15 +532,13 @@ function Screen({ session }: { session: RideSession }) {
   // after an engine that does not answer (the values are not live); the sheet's plan line says a free ride is free.
   const ready = kind === "idle";
   const sheet = readyView({
-    status: status !== null,
-    links,
-    hrLinked: session.loaded.hrLinked,
+    loading: ride === null,
+    devices,
     refused: refused?.command ?? null,
   });
   // The usual choice is primary and focused (§5.4): focus goes to Start once it can be pressed, unless the rider has
   // put it on a control already.
-  const startable =
-    ready && status !== null && sheet.canStart && !busy && !startSent;
+  const startable = ready && sheet.canStart && !busy && !startSent;
   const offeredStart = useRef(false);
   useEffect(() => {
     if (!startable || offeredStart.current) return;
@@ -549,7 +552,7 @@ function Screen({ session }: { session: RideSession }) {
     unresponsive,
     loss,
     userPaused,
-    free,
+    free: free === true,
     commanded: status?.commanded,
     clock,
   });
@@ -574,7 +577,7 @@ function Screen({ session }: { session: RideSession }) {
     <div className="ride" data-testid="ride">
       <header className="ride-bar" data-region="status">
         <span className="ride-title">
-          {free ? "Free ride" : (detail?.workout.name ?? "")}
+          {free === true ? "Free ride" : (detail?.workout.name ?? "")}
         </span>
         <span className="ride-times num" data-testid="times">
           <span data-slot="elapsed" style={{ width: "7ch" }}>
@@ -674,7 +677,7 @@ function Screen({ session }: { session: RideSession }) {
                   ? `${PHASE_WORD[block.phase]} · block ${(blockIdx ?? 0) + 1} of ${blocks.length}`
                   : status !== null && blocks.length > 0 && blockIdx === null
                     ? "Last block done"
-                    : free
+                    : free === true
                       ? "FREE RIDE"
                       : "Loading the plan…"}
               </span>
@@ -733,7 +736,7 @@ function Screen({ session }: { session: RideSession }) {
                 id="power"
                 ch={T2_CH}
                 tier="t2"
-                value={round(power?.v, loss.trainer)}
+                value={round(power, loss.trainer)}
               />
               <span className="tile-unit">W</span>
             </span>
@@ -757,12 +760,7 @@ function Screen({ session }: { session: RideSession }) {
               )}
             </span>
             <span className="readout-value">
-              <Value
-                id="hr"
-                ch={T2_CH}
-                tier="t2"
-                value={round(hr?.v, loss.hr)}
-              />
+              <Value id="hr" ch={T2_CH} tier="t2" value={round(hr, loss.hr)} />
               <span className="tile-unit">bpm</span>
             </span>
           </div>
@@ -779,7 +777,7 @@ function Screen({ session }: { session: RideSession }) {
                 id="cadence"
                 ch={T2_CH}
                 tier="t2"
-                value={round(cadence?.v, loss.trainer)}
+                value={round(cadence, loss.trainer)}
               />
               <span className="tile-unit">rpm</span>
             </span>
@@ -798,7 +796,7 @@ function Screen({ session }: { session: RideSession }) {
           <button
             ref={startButton}
             className="primary"
-            disabled={busy || status === null || startSent || !sheet.canStart}
+            disabled={busy || startSent || !sheet.canStart}
             onClick={() => void startRide()}
           >
             <Play {...icon} />
@@ -848,7 +846,7 @@ function Screen({ session }: { session: RideSession }) {
         </button>
         <button
           className="ride-end"
-          disabled={finished || status === null}
+          disabled={finished || ride === null}
           onClick={() => setConfirming("end")}
         >
           <Square {...icon} />
@@ -894,24 +892,61 @@ function Screen({ session }: { session: RideSession }) {
 }
 
 export function Ride() {
-  const session = useSession();
-  if (session === null)
+  const ui = useUi();
+  const client = useUiClient();
+  const load = useRideLoad();
+  // The frame's ride, or while a load is under way (`loading`, no ride yet) the Ready sheet's loading state, drawn
+  // from the same frame: the ride layout with the devices "checking…" and the plan of the workout this window asked
+  // to load. Only before the first frame is there nothing to draw it from.
+  if (ui.devices !== null && (ui.ride !== null || ui.loading)) {
+    const plan: Plan =
+      ui.ride !== null
+        ? { workoutId: ui.ride.workoutId }
+        : load.phase === "loading"
+          ? { workoutId: load.workoutId }
+          : null;
     return (
-      <div className="page">
-        <div className="page-head">
-          <h1>No ride loaded</h1>
-          <p className="muted">
-            Pick a workout in Workouts and choose Ride this.
-          </p>
-          <button onClick={() => navigate("workouts")}>Go to Workouts</button>
-        </div>
+      <div className="ride-root">
+        <Screen
+          key={ui.ride?.id ?? "loading"}
+          ride={ui.ride}
+          devices={ui.devices}
+          plan={plan}
+          ui={ui}
+        />
       </div>
     );
+  }
+  // `ui_open` was refused (`storage`: the pairings cannot be read; `conflict`: 16 channels open) and no frame came:
+  // the screen says so instead of waiting; the watchdog asks again every 2 s, Retry at once.
+  const refused = !ui.received ? ui.error : null;
+  const coming = !ui.received;
   return (
-    <div className="ride-root">
-      <StreamProvider key={session.rideId}>
-        <Screen session={session} />
-      </StreamProvider>
+    <div className="page ride-empty">
+      <h1>
+        {refused
+          ? "Live data is not available"
+          : coming
+            ? "Loading the ride…"
+            : "No ride loaded"}
+      </h1>
+      <p role={refused ? "alert" : undefined}>
+        {refused
+          ? `${refused.message}. Trying again every 2 s.`
+          : coming
+            ? "Connecting your devices and loading the ride."
+            : "Pick a workout in Workouts and choose Ride this."}
+      </p>
+      {ui.stale && (
+        <p role="alert" data-testid="channel-stale">
+          <span data-state-label>⚠</span> Live data stopped: what is shown may
+          be out of date. Reconnecting…
+        </p>
+      )}
+      <span className="ride-empty-actions">
+        {refused && <button onClick={() => client.reopen()}>Retry</button>}
+        <button onClick={() => navigate("workouts")}>Go to Workouts</button>
+      </span>
     </div>
   );
 }
