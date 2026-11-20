@@ -2,6 +2,8 @@
 
 - **Status:** Accepted (owner, 2026-11-09)
 - **Date:** 2026-11-09
+- **Amended:** 2026-11-14 (PR #626: §2's cue stamp text, the 8 W power floor, the sagging-ERG known limit); 2026-11-15
+  (PR #626: `erg` has no minimum update count, stated as a known limit)
 - **Issue:** #516 (PR #521)
 - **Related:** #44 (HIL), #576, ADR-0002 §4.2, §5, §7.9, `docs/hil/part-b.md`, `docs/hil/part-b-runbook.md`
 
@@ -70,7 +72,7 @@ cadence × 0.09 m/s, `sim.rs:461`), but it has the same form, so its r also lies
 Even at a standstill the limit is c = 75/85 = 0.88. Under ERG, r stays near 1.
 
 **What does the rider tell us?** Whether the pedals went light. Compared with the 90 rpm part under `Free`, 70 rpm
-on a flat road is lighter in every gear, and 70 rpm under ERG 200 W is heavier per stroke. The rider's answer is
+on a flat road is lighter in every gear if the rider does not shift, and 70 rpm under ERG 200 W is heavier per stroke. The rider's answer is
 an independent channel that no frame can reach.
 
 **Which of #521's rules go?** Every rule that defended against byte sequences our stack does not produce. The
@@ -82,7 +84,10 @@ table, rule by rule, is in the PR #587 body.
 
 1. ERG 200 W at 90 rpm.
 2. `Free`, with the cue **"stay in this gear from now until the question"**, then hold 90 rpm for 15 s (was 10 s).
-3. Stamp the cue `# 12 70rpm <µs>` and hold 70 rpm for 15 s.
+3. Stamp the cue `# check12 <µs> 46` and hold 70 rpm for 15 s. This is the capture's note grammar `# <tag> <µs> <hex>`,
+   like check 10's `# check10 <µs> 01`, and the code 0x46 is 70 rpm. (Amended. This ADR first wrote `# 12 70rpm <µs>`, but
+   `Timeline::parse` reads a line with no number after its tag as a plain comment and drops it, so the text follows
+   the code.)
 4. Ask: **"Compared with the 90 rpm part right after the switch, did pedalling at 70 rpm get clearly easier? (y =
    easier / n = not easier / s = I shifted gear)"**. Record the answer with the existing answer note (`rider.rs`
    `answer`), which stamps it.
@@ -106,6 +111,11 @@ control writes must equal check 12's fixed program, compared item by item (§4).
   stamp of its own: it is asked at the end of the 15 s hold, and the window ends at the answer note's stamp. t₇₀ is the first
   update in that band after the cue. The band itself leaves out the rider's change of cadence.
 - **`r`** = `free70` / `free90`.
+- **Power floor = 8 W** on both `free90` and `free70` (amended, PR #626). The slowest road §1 models is 10 km/h at
+  90 rpm. There, the flat road needs 8.75 W at 65 rpm, the lowest cadence of either band, and more at every other
+  in-band cadence (9.8 W at 70 rpm, 13.4 W at 85 rpm). Rounded down to page 25's whole watts, that gives 8 W. Below it, r is a ratio of
+  a few 1 W steps or of 0 W: at 3 km/h both windows read about 2 W and r = 1, and a 0 W window makes r 0 or
+  infinite. Doubt gives no result.
 
 **Verdict:**
 
@@ -114,6 +124,7 @@ control writes must equal check 12's fixed program, compared item by item (§4).
 | no timeline; the program differs; the run is not completed; the cue or the answer is missing | no result |
 | `erg` outside 180–220 W (ERG never held, so a release cannot be seen) | no result |
 | fewer than 15 updates in `free90` or `free70` (fewer than 2 per second; about 37 are expected at 269 ms) | no result |
+| `free90` or `free70` below the 8 W floor | no result |
 | the answer is `s` | no result |
 | r ≤ 0.85 **and** the answer is `y` | **PASS** (`released: true`) |
 | r ≥ 0.95 **and** the answer is `n` | **FAIL** (`released: false`) |
@@ -121,12 +132,29 @@ control writes must equal check 12's fixed program, compared item by item (§4).
 
 **Margins.**
 
-- **Released:** r ≤ 0.81 at any speed from 10 to 65 km/h and any cadence in the bands, and ≤ 0.88 at the limit of
+- **Released:** above the floor at any speed from 10 km/h, and r ≤ 0.81 at any speed from 10 to 65 km/h and any cadence in the bands, and ≤ 0.88 at the limit of
   zero speed. So it is never ≥ 0.95, never FAIL, and PASS in every realistic gear.
 - **Held:** r ≈ 1. Only an ERG that sags by more than 15 % from 90 to 70 rpm could read ≤ 0.85. The rider then
   feels it heavier and answers `n`, which gives no result, never PASS. Check 9 measures the NEO's ERG holding
-  down to its stall in the same session.
+  down to its stall in the same session. This premise has a limit (below).
 - The median means that a minority of wrong frames cannot move the result.
+
+**Known limit: an ERG that sags at 70 rpm, answered `y`** (#631, for the owner to rule on). At ERG 200 W the torque per
+stroke is 21.2 Nm at 90 rpm and 27.3 Nm at 70 rpm. A sag of 15 % at 70 rpm (170 W, r = 0.85) gives 23.2 Nm, still
+heavier per stroke. A sag of 22 % (156 W, r = 0.78) gives 21.2 Nm, the same as at 90 rpm, and beyond that the stroke
+is lighter. So in 15–22 % the rider's answer rests on perception, not on a lighter stroke. Over 22 %, an honest `y`
+makes such a trainer read PASS, released, although it held ERG and sagged. PR #626's falsifier reproduced PASS at
+r = 0.78. The rule is unchanged. Check 9 of the same session shows how the NEO holds ERG as the cadence falls.
+
+**Known limit: `erg` has no minimum update count** (decided as stated, not changed; PR #626 safety round 2). `erg` is the
+median of the updates in its 5 s, however few there are, and no update at all is no result. So one update at 200 W
+whose count then holds for the rest of the 5 s reads `erg` = 200 W. That is sound within §3's fault model: a held count
+is a repeat, and a repeat carries the update's own bytes (§1: 68 of 68), so the frames after that one update say
+nothing different. A capture whose held-count frames carry other power (one update at 200 W, then 18 frames at
+60 W with its count) has bytes the NEO does not send. That is out of scope, like any forged input (§1). What
+remains is a sparse but honest window: losses that leave 1–7 of the about 18 expected updates. Then `erg` rests on
+a few true readings, and its job is only to show that ERG was engaged. Checks 6 and 9 of the same session read ERG
+at length. A minimum for this window is calibrated with the rest of §2 on the first live check 12 (§7, #44).
 
 **#521's falsifier fixtures under this rule.** Evaluated by hand, with the cue at `free` + 10 s as those
 captures were made, and before the question existed:
@@ -258,4 +286,4 @@ bands, and no accumulated-power reading after a drop.
 
 | Question | Issue | Milestone |
 |---|---|---|
-| Calibrate the r thresholds (0.85 / 0.95), the bands and the 5 s settle on the first live check 12 | #44 | Part B session 1 |
+| Calibrate the r thresholds (0.85 / 0.95), the bands, the 5 s settle and whether `erg`'s 5 s needs a minimum update count on the first live check 12 | #44 | Part B session 1 |
