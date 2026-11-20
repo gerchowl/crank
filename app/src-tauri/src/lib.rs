@@ -5,6 +5,7 @@
 //! and link channels belong to the calling window's label; destroying a window drops them.
 //! Devices and the data directory follow [`RuntimeConfig`]. Window and quit handling is
 //! [`lifecycle`].
+mod build_rev;
 pub mod commands;
 mod config;
 pub mod display;
@@ -128,7 +129,7 @@ pub fn run() -> tauri::Result<()> {
                 // The build's string in the title (#552, DESIGN §5.9); tauri.conf.json names the one window.
                 app.get_webview_window("main")
                     .ok_or("the main window is missing")?
-                    .set_title(&version::window_title(&version::build_label()))?;
+                    .set_title(&version::window_title(version::BUILD_LABEL))?;
                 let config = RuntimeConfig::from_env();
                 let plan =
                     logging::LogPlan::new(config.capture_dir.as_deref(), app.path().app_log_dir()?);

@@ -645,7 +645,7 @@ const BOOTS: Partial<Record<ScenarioName, WaitForCore>> = {
     Promise.reject(new Error("its saved state could not be opened")),
 };
 
-/** The fixtures' build string (version.rs `build_label`'s shape); its spin-up counts as played (a later launch). */
+/** The fixtures' build string (version.rs `BUILD_LABEL`'s shape); its spin-up counts as played (a later launch). */
 const BUILD = "0.2.0-rc.1 · 7516045";
 const readBuild = () => Promise.resolve(BUILD);
 markSeen(BUILD);

@@ -107,13 +107,20 @@
         doCheck = false;
         preBuild = ''export TAURI_CONFIG='{"build":{"frontendDist":"${appDist}"}}' '';
       });
-      # A desktop package with this build's rev compiled in (#552), checked for the exact string it will show.
-      stamped = drv: if buildRev == null then drv else drv.overrideAttrs (old: {
-        CRANK_BUILD_REV = buildRev;
+      # The desktop binary must carry the exact `<version> · <rev>` it will show (#552): version.rs compiles it in
+      # as one constant (#659), so it is a contiguous string in the binary; a miss names what it looked for.
+      labelled = label: drv: drv.overrideAttrs (old: {
         postInstall = (old.postInstall or "") + ''
-          grep -aqF ${lib.escapeShellArg "${version} · ${buildRev}"} $out/bin/crank-desktop
+          grep -aqF ${lib.escapeShellArg label} $out/bin/crank-desktop || {
+            echo "error: $out/bin/crank-desktop lacks the version string (#552, #659):" ${lib.escapeShellArg label} >&2
+            exit 1
+          }
         '';
       });
+      # A desktop package with `rev` compiled in, checked for the exact string it will show.
+      stampedWith = rev: drv: labelled "${version} · ${rev}" (drv.overrideAttrs { CRANK_BUILD_REV = rev; });
+      # The packages take this build's rev; a source without one builds the `dev` fallback, checked the same way.
+      stamped = drv: if buildRev == null then labelled "${version} · dev" drv else stampedWith buildRev drv;
       cli = craneLib.buildPackage (rustCheck // {
         pname = "crank-cli"; cargoExtraArgs = "--locked -p crank-cli"; doCheck = false;
       });
@@ -163,7 +170,10 @@
           '';
         } // lib.optionalAttrs (cargoVendorDir != null) { inherit cargoVendorDir; });
       checks = {
-        build = desktop "";
+        # The unstamped build carries the `dev` fallback; `build-stamped` takes the packages' stamping path with a
+        # fixed rev (#659), so CI exercises it on every run while the checks stay independent of the commit.
+        build = labelled "${version} · dev" (desktop "");
+        build-stamped = stampedWith "0000000" (desktop "");
         # The e2e package must keep building where CI runs (ADR-0001 §8.3, #35); the harness itself is `just e2e`.
         build-e2e = desktop ",e2e";
         fmt = craneLib.cargoFmt { pname = "crank"; inherit version; src = source cargoFiles; };

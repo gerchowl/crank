@@ -51,8 +51,8 @@ error type that crosses) and manages one `Core`. Runtime configuration: `--sim` 
 drives the seeded device simulator instead of Bluetooth; `CRANK_DATA_DIR` sets the directory of `crank.db` and `ride.lock` (default:
 the app-data directory of the bundle identifier). **Version string (#552):** `<version> · <rev>` from `CARGO_PKG_VERSION`
 and the build-time `CRANK_BUILD_REV`, which only the flake's `crank-desktop` packages set (`self.shortRev`, or
-`dirtyShortRev` with `-dirty`, through `stamped`; the checks do not, so they stay cached), else `dev` (also a flake
-source without git metadata) (`app/src-tauri/src/version.rs`;
+`dirtyShortRev` with `-dirty`, through `stamped`; the checks do not, so they stay cached, except `build-stamped` with a fixed rev), else `dev` (also a flake
+source without git metadata) (`app/src-tauri/src/version.rs`, one `concat!` constant over `build.rs`'s `CRANK_BUILD_REV_SHOWN` (#659), which the flake greps for in the binary;
 the window title and the `app_build` command; never `git` at run time). **Logs and raw-frame captures (#411, #414, ADR-0001 §7.1)**: the desktop main (`app/src-tauri/src/logging.rs`,
 never a library crate) installs vigil (`vigil-telemetry`, tag `0.2.0`; tests that start a pipeline need nextest, one per process). Records
 are OTLP/JSON Lines, one `LogsData` per line: `logs.jsonl` (records sit under `resourceLogs[].scopeLogs[].logRecords[]`) and `traces.jsonl`,
