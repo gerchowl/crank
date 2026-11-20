@@ -272,6 +272,8 @@ async fn an_abandoned_load_is_discarded_at_t_abandon() {
     sleep(S(1) + SETTLE).await;
     assert!(!loaded(&core).await);
     assert_eq!((disconnects(&radio), straps_released(&radio)), (1, 1));
+    // `cold` once the simulated links are handed back, not at the reap (#573)
+    super::tests::handed_back(&core).await;
     assert_eq!(phases(&core).await, [Some(Phase::Cold); 2]);
     assert!(
         core.rides_list().await.unwrap().is_empty(),
@@ -1026,5 +1028,116 @@ async fn a_quit_with_a_load_waiting_in_handed_connects_nothing() {
             "sleep {sleep_recorded}"
         );
         assert_eq!(connects(&radio), [1, 1], "nothing connected after the quit");
+    }
+}
+
+/// The instant the keeper's published trainer first shows a phase other than `riding`, watched
+/// from now (call it while the trainer is `riding`).
+fn left_riding(core: &Core) -> tokio::task::JoinHandle<Instant> {
+    let mut view = core.keeper().unwrap().view();
+    tokio::spawn(async move {
+        view.wait_for(|f| {
+            f.links
+                .trainer
+                .is_some_and(|t| t.phase != crate::dto::LinkPhase::Riding)
+        })
+        .await
+        .unwrap();
+        Instant::now()
+    })
+}
+/// The instant the fake trainer finished its last release (its `Disconnect` taken, or its
+/// control channel closed, then `disconnect_delay`).
+fn trainer_released_at(radio: &FakeRadio) -> Instant {
+    radio
+        .order
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(what, _)| *what == "disconnect")
+        .map(|(_, at)| *at)
+        .expect("the trainer was released")
+}
+
+/// ADR-0002 §5.1.1 (#573), every way a session ends: an End, the keeper's discard ("Release
+/// trainer" on an unstarted ride), a forced end (the engine never answers), a dead engine (its
+/// task gone, as after a panic) and a load that fails after its links were handed over. With a
+/// trainer that takes 1 s to release, the keeper leaves `riding` only once the release is done,
+/// never before (the hold is not given back early); it does leave it, `cold`, and a load then
+/// gets the trainer again (the hold is not kept: the keeper is active).
+#[tokio::test(start_paused = true)]
+async fn every_session_end_gives_the_hold_back_after_the_links_and_never_keeps_it() {
+    for path in ["end", "discard", "forced end", "dead engine", "failed load"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, radio) = super::tests::slow_release_core(dir.path(), S(1), Duration::ZERO).await;
+        let left = if path == "failed load" {
+            super::tests::stall_engine(&core);
+            let load = {
+                let core = core.clone();
+                tokio::spawn(async move { core.ride_load(None).await })
+            };
+            sleep(Duration::from_millis(100)).await;
+            assert_eq!(
+                phases(&core).await[0],
+                Some(Phase::Riding),
+                "{path}: handed"
+            );
+            let left = left_riding(&core);
+            let failed = load.await.unwrap().unwrap_err();
+            assert_eq!(failed.code, ErrorCode::EngineUnresponsive, "{path}");
+            core.0.stall.release();
+            left
+        } else {
+            core.ride_load(None).await.unwrap();
+            assert_eq!(
+                phases(&core).await[0],
+                Some(Phase::Riding),
+                "{path}: loaded"
+            );
+            let left = left_riding(&core);
+            match path {
+                "end" => {
+                    core.ride_start().await.unwrap();
+                    sleep(S(2)).await;
+                    core.ride_end().await.unwrap();
+                }
+                "discard" => {
+                    core.links_intent(release(ReleaseReason::RiderRelease))
+                        .await
+                        .unwrap();
+                }
+                "forced end" => {
+                    core.ride_start().await.unwrap();
+                    super::tests::stall_engine(&core);
+                    core.ride_end().await.unwrap();
+                    core.0.stall.release();
+                }
+                "dead engine" => {
+                    core.ride_start().await.unwrap();
+                    super::tests::break_engine(&core).await;
+                    core.ride_end().await.unwrap();
+                }
+                other => unreachable!("{other}"),
+            }
+            left
+        };
+        let left = tokio::time::timeout(S(10), left)
+            .await
+            .unwrap_or_else(|_| panic!("{path}: the hold was kept"))
+            .unwrap();
+        let released = trainer_released_at(&radio);
+        assert!(
+            left >= released,
+            "{path}: the keeper was active {:?} before the trainer was released",
+            released - left
+        );
+        sleep(SETTLE).await;
+        assert_eq!(phases(&core).await[0], Some(Phase::Cold), "{path}");
+        let before = connects(&radio)[0];
+        core.ride_load(None)
+            .await
+            .unwrap_or_else(|e| panic!("{path}: the next load: {e:?}"));
+        assert_eq!(connects(&radio)[0], before + 1, "{path}: connected again");
     }
 }
