@@ -38,16 +38,34 @@ codesigning identity" over ssh or on a host without the identity.
 Write down for each step whether it worked as expected.
 
 1. Open `~/Applications/crank.app` from Finder (or with recording, below). When asked, **allow Bluetooth**. This
-   must be the only time.
+   must be the only time. **Write down the version · build string** the start screen shows (also in the window
+   title, `crank — <version> · <rev>`), e.g. `0.2.0 · 88a30c2`. It should not end in `-dirty` (uncommitted
+   changes in the checkout).
 2. **Settings → Devices:** press **Scan**, then **Pair as trainer** on the NEO and **Pair as strap** on the
    strap.
 3. **Workouts → Sensor check (3 min)** (Warm-up 1 min 50 %, Work 1 min 80 %, Cool-down 1 min 40 % of FTP) →
    **Ride this** → **Start**, then pedal.
 4. During the ride: **Pause** and **Resume**, **Skip block** once, then **End**, then **End ride**.
 5. **History:** is the ride there? Do power, cadence and heart rate look plausible?
-6. **Grant check (#44):** quit crank fully, run `nix develop -c just bundle` again, relaunch the same way as
-   in step 1 (when recording, with the same `CRANK_CAPTURE_DIR=$CAP open …` line: a Finder launch drops the
-   variable, and `open` ignores it on an app that is still running). Expect **no** Bluetooth prompt. Use the bundle for this, not `hil_fec` or any CLI.
+6. **Grant check (#44):** the rebuild must give a **different** binary. The build carries its commit's short
+   rev, so `just bundle` again on the same commit is a cache hit that only re-signs the same binary; build from a
+   throwaway commit on a local scratch branch instead. Quit crank fully, then:
+
+   ```sh
+   git switch -c grant-check && nix develop -c git commit --allow-empty -m "scratch: grant check rebuild" && nix develop -c just bundle
+   ```
+
+   Relaunch the same way as in step 1 (when recording, with the same `CRANK_CAPTURE_DIR=$CAP open …` line: a
+   Finder launch drops the variable, and `open` ignores it on an app that is still running). Expect **no**
+   Bluetooth prompt. Confirm that the start screen and the window title now show the scratch commit's rev
+   (`git rev-parse --short=7 HEAD`), not the string from step 1. Use the bundle for this, not `hil_fec` or any
+   CLI. Then go back to the build you ride on: quit crank fully, run
+
+   ```sh
+   git switch dev && git branch -D grant-check && nix develop -c just bundle
+   ```
+
+   and relaunch the same way. Again expect no Bluetooth prompt, and the string from step 1.
 7. Revoke Bluetooth once (System Settings → Privacy & Security → Bluetooth → crank off) and relaunch the same way (quit fully first). Devices
    should say **Bluetooth access is denied** and how to fix it; then switch it back on (#43).
 8. Ride a few minutes more and look for: the **HR lost** banner (strap off for about 10 s, then back on);
@@ -80,27 +98,30 @@ Build once, in `nix develop` (use your own `CARGO_TARGET_DIR` on a shared host):
 
 ```sh
 nix develop -c cargo build -p crank-ble --features hil --example hil_fec
+H=$(cd "${CARGO_TARGET_DIR:-target}" && pwd)/debug/examples/hil_fec
+test -x "$H" && echo "$H"
 OUT=~/crank-captures/$(date +%F)-partb
 mkdir -p "$OUT"
 ```
 
-Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10, 11a, 11b and 11c), with the same `--out`**, from an Alacritty window on `[mac-studio]`. The binary is
-`${CARGO_TARGET_DIR:-target}/debug/examples/hil_fec`:
+`hil_fec` is not on `PATH`: every command below runs it as `"$H"`. Run the checks **in this order (5, 6, 7, 8, 9, 12, then 10, 11a, 11b and 11c), with the same `--out`**, from that same Alacritty window on `[mac-studio]` (in a new window, set `H` and `OUT` again, from the checkout):
 
 | # | Command | You do | About |
 |---|---|---|---|
-| 5 | `hil_fec check5 --out "$OUT"` | 90 rpm through ERG 150 W then 200 W (30 s each); steady cadence is all that is asked | 1.5 min |
-| 6 | `hil_fec check6 --out "$OUT"` | 90 rpm through ERG 100 → 150 → 250 → 100 → 200 W, then 60 rpm and back | 2.5 min |
-| 7 | `hil_fec check7 --out "$OUT"` | 90 rpm at 150 W; the harness stays silent for 40 s | 1 min |
-| 8 | `hil_fec check8 --out "$OUT"` | Easy gear, steady; grades 0 / 5 / 5 / 10 %, shift down when steep | 2.5 min |
-| 9 | `hil_fec check9 --out "$OUT"` | 90 rpm at 250 W, then follow the cue down about 5 rpm every 10 s; keep turning | up to 3 min |
-| 12 | `hil_fec check12 --out "$OUT"` | 90 rpm at 200 W; it switches to Free and cues *stay in this gear*: hold 90 rpm 15 s, at the cue go to 70 rpm for 15 s, then answer whether 70 rpm got clearly easier than the 90 rpm part right after the switch (`y` easier / `n` not easier / `s` I shifted gear), keeping 70 rpm until you have answered. **Stay in this gear from the switch until the question; answer `s` if you shifted** (ADR-0007 §2) | 1 min |
+| 5 | `"$H" check5 --out "$OUT"` | 90 rpm through ERG 150 W then 200 W (30 s each); steady cadence is all that is asked | 1.5 min |
+| 6 | `"$H" check6 --out "$OUT"` | 90 rpm through ERG 100 → 150 → 250 → 100 → 200 W, then 60 rpm and back | 2.5 min |
+| 7 | `"$H" check7 --out "$OUT"` | 90 rpm at 150 W; the harness stays silent for 40 s | 1 min |
+| 8 | `"$H" check8 --out "$OUT"` | Easy gear, steady; grades 0 / 5 / 5 / 10 %, shift down when steep | 2.5 min |
+| 9 | `"$H" check9 --out "$OUT"` | 90 rpm at 250 W, then follow the cue down about 5 rpm every 10 s; keep turning | up to 3 min |
+| 12 | `"$H" check12 --out "$OUT"` | 90 rpm at 200 W; it switches to Free and cues *stay in this gear*: hold 90 rpm 15 s, at the cue go to 70 rpm for 15 s, then answer whether 70 rpm got clearly easier than the 90 rpm part right after the switch (`y` easier / `n` not easier / `s` I shifted gear), keeping 70 rpm until you have answered; answer within 3 min of the question, or the run stops with no result. **Stay in this gear from the switch until the question; answer `s` if you shifted** (ADR-0007 §2) | 1 min |
 
 - **After check 8:** confirm its row does not read `page 16 counters did not advance`. Check 8 reads speed only
   from page 16 frames whose elapsed time moves (ANT+ FE-C General FE Data page 16: page byte 2, 0.25 s units,
   rollover 64 s), and it was only ever seen at standstill (0) on fw 0.7.4. If it does read so, stop and file an
   issue with `check8.fecap` (redacted) attached.
 - Each run waits until you type **`y`** (or `yes`) and Enter in its window. Anything else aborts.
+- Every run except check 10 then cues *start pedalling at about 90 rpm*. If the trainer reports no cadence within
+  120 s of that cue, the run stops early (no result), so be on the bike before you type `y`.
 - Follow the on-screen cues. A run that stops early exits with status 4 and gives no result. Read its last line:
   `STOPPED: … (trainer released)` means the release was confirmed. `STOPPED: … (release NOT confirmed: …)` means
   the trainer may still hold its target: stop pedalling; if it still resists, unplug it and wait until its lights
@@ -135,7 +156,7 @@ Run it after check 12, with the same `--out`, while the trainer is powered. Have
 the Tacx app installed but **not** connected to the NEO.
 
 ```sh
-hil_fec check10 --out "$OUT"
+"$H" check10 --out "$OUT"
 ```
 
 1. Type **`y`** and Enter when asked. Stay off the pedals.
@@ -156,7 +177,7 @@ This measures the assumption of ADR-0002 §5.1.2: does a connect find the device
 does it have to scan (`via=scan`)? Each run is a fresh process that scans like Settings → Devices, waits
 `--idle-secs`, connects once through the app's own drivers (`first`), releases, and connects again at once
 (`after_disconnect`). It writes no mode or target page (a trainer connect writes page 55, the rider configuration, as pairing does). Run it per device, with the trainer free (no ride, phone apps
-closed) and the strap worn: `hil_fec reuse --scan-secs 5 --idle-secs 0 --target <id> --out "$OUT/reuse-now"` gives
+closed) and the strap worn: `"$H" reuse --scan-secs 5 --idle-secs 0 --target <id> --out "$OUT/reuse-now"` gives
 "right after a Devices scan", and the same with `--idle-secs 60` and `--out "$OUT/reuse-60s"` gives "after that scan
 stopped"; both give "after a disconnect". The ids of the paired devices are listed by
 `sqlite3 ~/Library/Application\ Support/io.github.gerchowl.crank/crank.db 'select kind, platform_id from device'`;
@@ -171,7 +192,7 @@ Run it after check 10, with the same `--out`, **with the trainer plugged in**. H
 reach from the saddle.
 
 ```sh
-hil_fec check11a --out "$OUT"
+"$H" check11a --out "$OUT"
 ```
 
 1. Type **`y`** and Enter when asked, then ride at about 90 rpm through the 100 W soft start and 20 s.
@@ -193,7 +214,7 @@ Run it after check 11a, with the same `--out`. **The trainer stays unplugged fro
 not); get on and pedal easily so that it is powered (its lights on).
 
 ```sh
-hil_fec check11b --out "$OUT"
+"$H" check11b --out "$OUT"
 ```
 
 1. Type **`y`** and Enter when asked, then ride at about 90 rpm through the 100 W soft start and 20 s.
@@ -214,7 +235,7 @@ Run it right after check 11b, still unplugged. **Before you start, wait until th
 out)**, and stay off the pedals.
 
 ```sh
-hil_fec check11c --out "$OUT"
+"$H" check11c --out "$OUT"
 ```
 
 1. When asked whether the trainer is unplugged and off, type **`y`** and Enter.
@@ -232,7 +253,8 @@ as you see it.
 
 ## 4. Afterwards
 
-Tell the architect "done", with notes and the `$OUT` and app capture folder names. They will redact the
+Tell the architect "done", with notes, the version · build string from step 1 of section 2, and the `$OUT` and
+app capture folder names. They will redact the
 captures into `docs/hil/captures`, run `hil_fec analyse` on the raw captures first, write
 `docs/hil/<date>-fec.md` and file whatever broke.
 
