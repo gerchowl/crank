@@ -290,10 +290,10 @@ async fn sim_fault_loses_the_trainer_then_the_strap_now_and_both_come_back() {
         .filter_map(|f| f.status.clone())
         .collect();
     assert!(statuses.iter().any(|s| s.trainer_lost_since_s.is_some()));
-    let last = statuses.last().expect("status frames");
-    assert!(last.trainer_lost_since_s.is_none(), "{last:?}");
-    assert!(last.last_gap_s.is_some(), "the gap is reported: {last:?}");
-    assert_eq!(last.state, StreamRideState::Riding);
+    let now = statuses.last().expect("status frames");
+    assert!(now.trainer_lost_since_s.is_none(), "{now:?}");
+    assert!(now.last_gap_s.is_some(), "the gap is reported: {now:?}");
+    assert_eq!(now.state, StreamRideState::Riding);
     assert!(!links_of(&frames, LinkDevice::Hr, mark).contains(&LinkStatus::Lost));
 
     let mark = frames.lock().expect("test mutex").len();
