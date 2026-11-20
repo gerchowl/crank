@@ -809,7 +809,17 @@ Each paired device (trainer, strap) has one **link phase**, owned by a new core 
 
 Ownership is one way: **keeper → session**, at `ride_load`. A session never hands a link back. The ride's end
 releases its links exactly as today (end mode, release, disconnect: §7.9, `LinkRelease`), and the phase becomes
-`cold`. If a warm view is shown again, the keeper warms up again from `cold`. All of §6 and §7 stays attached to the
+`cold`. If a warm view is shown again, the keeper warms up again from `cold`.
+
+**The ride's hold makes the keeper active again only after the ride's links are handed back** (#573). The session
+keeps the keeper's hold until its drivers have closed their event streams (the peripherals are handed back; at most
+`RELEASE_TIMEOUT`, as for pairing); only then is the hold given back (`Released`). This holds for every way a session
+ends: an End, a discard, a forced end, a dead engine, and a load that fails, is cancelled or panics after the links were
+handed to it. Giving the hold back at the reap instead let a load racing a "Release trainer" discard start an attempt
+while the ride's link was still connected, which the driver refuses ("driver already connected") and which left the
+trainer `not_found`. Whoever waits for a ride's release (a replacing load, `ride_end`, the keeper's discard) therefore
+acts on a keeper that has the `Released` report before anything it sends next, and the keeper applies its own reports
+queued before a core message ahead of that message. All of §6 and §7 stays attached to the
 session and is not touched: reconnect backoff, `RideGate`, end mode, forced end, command gate.
 
 **The keeper's ride states (implementation, #469).** Beside the per-device phases, the keeper is in one of three ride
@@ -820,7 +830,7 @@ test enumerates every state × input):
 |---|---|---|
 | `Free` | no ride: the keeper is active (warm-up, cool-down, scan) | the handover → `Handed` |
 | `Handed` | the links are handed to a load that has not installed its ride yet (its engine's `Load` is under way, bounded by 1 s) | `Loaded` (the ride is installed) → `Loaded`; `Refused` (the load was cancelled before it took the links: they come back `warm`) → `Free`; `Released` (the load failed after taking them: they are gone, `cold`) → `Free` |
-| `Loaded` | a ride holds the links, started or not | `Released` (the ride's end or discard) → `Free`, every link `cold` |
+| `Loaded` | a ride holds the links, started or not | `Released` (the ride's end or discard, once its links are handed back) → `Free`, every link `cold` |
 
 In `Handed` an intent is **recorded**, never dropped, and applied the moment the load resolves: on `Loaded` as in
 `Loaded` (`Sleep` discards the unstarted ride; `RiderRelease` unloads it, releases and latches), on `Refused` or
