@@ -2265,7 +2265,10 @@ calculation (rare: a known upstream bug class), it is asked once more with its l
 every measured case answers (ADR-0002 §7.10.2, X5a). If that is refused too, the easer is **degraded** (X5, round 13):
 the target comes to rest smoothly (the same S-curve, eased out) and holds there, without following the plan, until the
 library answers again; then it eases back onto the plan line as after any change. While degraded the target never
-rises while above the plan line, and stays between 0 W and the cap, and the ride shows a fault (§19.4). The soft start is the same curve, started
+rises while above the plan line, and stays between 0 W and the cap, and the ride shows a fault (§19.4). A plan or
+cap that is not a number is the same fault (round 14). When the rider or the coach lowers the load, the target comes
+down at the descent rate and reaches the lowered line in bounded time, also on a ramp: on a rising ramp it comes down
+to the line and meets it at rest, then follows it up (ADR-0002 §7.10.2 step 5, P7). The soft start is the same curve, started
 from the rider's current power. "Caught up" below means the command is
 on the plan line. This section says what the rider sees of it. It amends §5.2, §5.9, §6.5, §17.3 and §18.3,
 which point here.
@@ -2319,7 +2322,8 @@ prediction and behind it as ridden. Whether the editor warns about such blocks i
   catching up is the power row's job.
 - **Pause, ERG released, end, free ride:** unchanged, and immediate: none of them waits for an ease (ADR-0002
   §7.10.5).
-- **Easer degraded** (ADR-0002 §7.10.2 X5, `ergEaserDegraded`, round 13): a warning banner in row 4, "⚠ ERG easing
+- **Easer degraded** (ADR-0002 §7.10.2 X5, `ergEaserDegraded`, round 13; also a plan or cap that is not a number,
+  round 14): a warning banner in row 4, "⚠ ERG easing
   fault · target held at 253 W", with the warning tone of §6.5, for as long as the status is raised. The target holds
   (after easing to rest) instead of following the plan, so the power row says "settling" and those seconds are
   excluded from compliance, as any off-line second. When the easer recovers the banner goes and the target eases back

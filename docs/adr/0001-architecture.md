@@ -326,7 +326,8 @@ newest state wins; points accumulate. A ride sends at its 4 Hz tick; outside one
 (`crates/crank-engine/src/stream/types.rs:293-364`) and in `git show 2de24c5:docs/adr/0001-architecture.md`.
 Thresholds and flags (#243 part b) and nudges (#248) enter later, each a field with its own size test. The ERG
 easer's fields (ADR-0002 §7.10.5, #622) are among them: `easingToW`, `softStartTargetW` and the fault flag
-`ergEaserDegraded` (round 13: Ruckig and its twin refused, the command stops and holds).
+`ergEaserDegraded` (round 13: Ruckig and its twin refused, the command stops and holds; round 14: also a plan or
+cap that is not a number).
 
 #### 4.3.7 Per-widget rates or filters
 
