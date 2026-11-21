@@ -437,8 +437,16 @@ class Easer:
         onto a falling line passes slope 0 still decelerating, so its peak is below the line, but the probe's
         stop to rest from the same state peaks higher: braking to rest and re-planning climbed in pulses (at
         (50, x4, 1), 6 W/s against r↑ = 50 W/s, and stalled at rest while the line came down: a D5 landing
-        in 6.25 s against 5.29 s). The meet's peak is the line at the meeting tick, below it before, so it
-        never rises above the line; its step is still checked by safe braking (else the brake). It is not kept as
+        in 6.25 s against 5.29 s).
+        Round 17 (f625l): it meets the line one tick of its fall early, at rest |fs|·Δt below it. Meeting the
+        line itself, the command comes to rest between ticks, and by the next tick boundary the line has fallen
+        up to |fs|·Δt below that rest point: the probe (sampled on ticks) rejected the meet unless that was at
+        most ε/2, so A353 passed by luck (7 of 400 recoveries at (50, x1, 1) missed D5, worst 1.31x). Comparing
+        with the line at the stop's real end instead would let the meet's last step rise to its peak and end
+        that tick up to |fs|·Δt above the line (P5, and X2 would cut it). One tick early, the rest point is at
+        or below the line at every tick boundary, the probe from the candidate (the meet's own tail, or a
+        lower stop) passes on its own terms, and the line comes down to the command within one tick. Its
+        step is still checked by safe braking (else the brake). It is not kept as
         a plan: each tick tries the ordinary plan first and meets again where safe braking rejects it (a re-plan
         from a state on the meet is the same meet). Returns the new state, or None (not below a falling line, not
         lead-free, refused or rejected: brake as before)."""
@@ -449,14 +457,17 @@ class Easer:
         rel = st.y - (c + fs * (k - 1) * DT)
         if lead or not (-t.r_dn < fs < 0) or rel >= 0:
             return None
-        # Ruckig (and its twin), not _plan: a refused meet is not a needed calculation, braking follows.
-        if not self._calc(self.spare, st, rel, fs, t.r_up, -t.r_dn, None, True):
+        # Ruckig (and its twin), not _plan: a refused meet is not a needed calculation, braking follows. The
+        # target is one tick of the line's fall below it (fs·Δt in the line's frame): planned in a frame shifted
+        # by that, the command's position is the plan's plus fs·Δt.
+        early = fs * DT
+        if not self._calc(self.spare, st, rel - early, fs, t.r_up, -t.r_dn, None, True):
             return None
         self.traj, self.spare = self.spare, self.traj
         self.meet, self.meet_fs, self.braking, self.chasing = True, fs, False, False
         self.key, self.elapsed = (("meet", c, fs), t.r_up, -t.r_dn, None, m), DT
         p, v, a = self._sample(False)
-        cand = State(c + fs * k * DT + p, v + fs, a)
+        cand = State(c + fs * k * DT + p + early, v + fs, a)
         if (rises(cand, t) and not self._brake_ok(cand, k, segs, m)) or (cand.v < -1e-9 and not self._floor_ok(cand)):
             self.key, self.meet = None, False
             return None
@@ -1042,8 +1053,11 @@ def check_above(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
 
 def check_cap_floor(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
     """X3 never undershoots (round 16, f625k K12): after a cap cut at tick k, the command does not fall below the
-    line it capped there, min(line_k, M), by more than ε, until it is on the line again, the line moves on to its
-    next piece, an event, an engagement or degraded mode; that is the floor the cut keeps its slope for (_at_cap).
+    line it capped there, min(line_k, M), by more than ε, until it has landed on the line (within ε and moving
+    with it: its slope the line's, no curvature), the line moves on to its next piece, an event, an engagement or
+    degraded mode; that is the floor the cut keeps its slope for (_at_cap). Round 17 (f625l): it stopped at the
+    first tick within ε of the line, so a command falling through the line there went on to 179 W under a 300 W
+    line unchecked; passing through is not landing. Near the trace's end the line ahead is unseen, so it stops.
     Falling below it is the failure. A line that rises past the command afterwards does not raise the floor, and a
     lead into the line ahead (step 3: within one slope change, max(r↑, r↓)/a_max + a_max/j_max) lowers it.
     The cut keeps only the falling slope (and curvature) whose stop stays on that line; keeping a negative
@@ -1057,12 +1071,15 @@ def check_cap_floor(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
             if j > k and (tr.events[j] or tr.reset[j] or tr.degraded[j] or tr.exc[j] in CUTS
                           or tr.piece[j][0] != tr.piece[k][0]):
                 break
+            if j + ahead >= n:      # the line ahead runs past the trace (the plan's end): the lead into it is unseen
+                break
+            if j > k and abs(tr.y[j - 1] - tr.r[j - 1]) <= EPS and abs(tr.v[j - 1] - tr.piece[j - 1][1]) <= 1e-6 \
+                    and abs(tr.a[j - 1]) <= 1e-5:
+                break               # landed on the line, moving with it (not merely passing through)
             floor = min(tr.r[k], tr.m[k], min(tr.r[j:j + ahead + 1]))
             if tr.y[j] < floor - EPS and (j == k or tr.y[j] < tr.y[j - 1] - 1e-9):
                 rep.fail(f"{name} k={j}: below the capped line after X3 at k={k}: {tr.y[j]:.3f} W < {floor:.3f} W - ε")
                 return
-            if abs(tr.y[j] - tr.r[j]) <= EPS and j > k:
-                break
 
 
 def check_state(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
@@ -1487,7 +1504,7 @@ GOLDEN = {
     'planned fall #29 with refusals 29..68': (86839.674771, 106, 126),
     'planned fall #202 with refusals 35..74': (45390.863494, 52, 52),
     'planned fall #358 with refusals 65..67': (66150.415011, 71, 71),
-    'random 56000+87 (the lead from a moving state)': (164763.945937, 122, 161),
+    'random 56000+87 (the lead from a moving state)': (164859.775134, 124, 161),
 }
 
 
@@ -2624,6 +2641,70 @@ def above(rep: Report, report: bool):
     if r16.recoveries == 0 or land is None or (land - 139) * DT > ramp_bound(t16, tr.r[139] - DT * tr.piece[139][1] - tr.y[138],
                                                                              0.0, 0.0, tr.piece[139][1]):
         rep.fail(f"A353: recovery checked {r16.recoveries}, on the line at tick {land} (D5's ramp_bound from tick 139)")
+    # Round 17 (f625l). D5 below a falling line at (50, x1, 1): the meet from below now meets the line one tick of its
+    # fall early, so safe braking accepts it on its own terms (7 of 400 recoveries missed D5, worst 1.31x). The
+    # falsifier's repro, its second case (s = -3.75 W/s, 52 W below) and a sweep of 360 recoveries, 0 misses.
+    t17 = Tuning(50, 1.0, 1.0)
+    cases = [("f625l repro", [ramp(1000, 600, 80)], 950.0, 2)]
+    misses = n17 = 0
+    for s in (-0.5, -1.0, -2.0, -3.75, -5.0, -7.5, -10.0, -15.0, -20.0, -30.0, -40.0, -49.0):
+        for d in (5, 10, 20, 30, 40, 52, 70, 100, 150, 200):
+            for R in (2, 4, 5):
+                cases.append((f"below a {s} W/s line, {d} W, refusals 0..{R - 1}",
+                              [ramp(1000, 1000 + s * min(80.0, 950 / abs(s)), min(80.0, 950 / abs(s))), steady(1000 + s * min(80.0, 950 / abs(s)), 20)],
+                              1000.0 - d, R))
+    for name, bl, y0, R in cases:
+        tr = run(bl, [], t=t17, y0=y0, m0=5000.0, refuse_ticks=range(0, R))
+        r17 = Report()
+        check(tr, t17, r17, f"D5 below a falling line {t17}: {name}", tr.y[0])
+        for f in r17.fails:
+            rep.fail(f)
+        n17 += 1
+        misses += any("recovery" in f for f in r17.fails)
+        if name == "f625l repro" and r17.recoveries == 0:
+            rep.fail("D5 below a falling line: the f625l repro checks no recovery")
+    # K12's pass-through (f625l): a falling command passing within ε of the line, then on through it, is caught over
+    # the whole window; the model itself stays on the 300 W line.
+    t12b = Tuning(50, 4.0, 4.0)
+    tr = run([steady(900, 5), steady(300, 40)], [Event(28, "cap", 358.33)], t=t12b)
+    r18 = Report()
+    check(tr, t12b, r18, "X3 at 358.33 W, tick 28 (K12's pass-through)", tr.y[0])
+    for f in r18.fails:
+        rep.fail(f)
+    if min(tr.y[28:]) < 300.0 - EPS:
+        rep.fail(f"X3 at 358.33 W, tick 28: the command falls to {min(tr.y[28:]):.2f} W under the 300 W line")
+    # The check itself, on K12's own trace: an X3 that keeps the negative curvature passes within ε of the line
+    # (299.7 W) still falling, then falls through it to 179.2 W; check() must report it (the self-test swaps the
+    # cut for K12's for this one run).
+    good = Easer._at_cap
+    def k12(self, st, m, line):          # _at_cap with K12's change: the curvature kept after the slope is reduced
+        floor = min(line, m)
+        ok = lambda v, a: profile_extrema(m, v, a, slope_change(v, a, 0.0, self.t))[0] >= floor - 1e-9
+        v, a = min(st.v, 0.0), min(st.a, 0.0)
+        if ok(v, a):
+            return State(m, v, a)
+        lo, hi = v, 0.0
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            lo, hi = (lo, mid) if ok(mid, 0.0) else (mid, hi)
+        return State(m, hi, a)
+    Easer._at_cap = k12
+    try:
+        tr = run([steady(900, 5), steady(300, 40)], [Event(28, "cap", 358.33)], t=t12b)
+    finally:
+        Easer._at_cap = good
+    passed = any(abs(tr.y[j] - tr.r[j]) <= EPS for j in range(28, len(tr.y)))
+    r19 = Report()
+    check(tr, t12b, r19, "self-test", tr.y[0])
+    if not passed or min(tr.y[28:]) > 300.0 - 10 * EPS:
+        rep.fail(f"above: K12's self-test trace does not pass the line and fall through it (min {min(tr.y[28:]):.1f} W)")
+    if not any("below the capped line" in f for f in r19.fails):
+        rep.fail("above: check_cap_floor() does not catch a fall through the line after a pass within ε of it")
+    # An invalid initial cap (f625l L12): a NaN m0 is a fault from the first tick (no cap known), and the command holds.
+    tr = run([steady(100, 5), steady(300, 20)], [], t=DEFAULT, m0=nan)
+    if not all(tr.degraded) or max(tr.y) > 100.0 + 1e-9:
+        rep.fail(f"a NaN initial cap: degraded on {sum(tr.degraded)} of {len(tr.y)} ticks, up to {max(tr.y):.2f} W (expected"
+                 " degraded throughout, holding 100 W)")
     # 4. A cap below 0 W.
     for bl, ev, m0 in (([steady(200, 10), steady(300, 20)], [Event(20, "cap", -5.0)], 2000.0),
                        ([steady(200, 10)], [], -5.0), ([steady(0, 10)], [Event(4, "cap", -1e-6)], 100.0)):
