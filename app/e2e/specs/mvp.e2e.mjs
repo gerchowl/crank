@@ -421,6 +421,11 @@ describe("MVP walk (#256 critical path, sim)", () => {
     // the runner's teardown (@wdio/runner `endSession`) sends DELETE /session to the dead server, which throws outside
     // the framework, so the worker fails and its reporter output (steps 1–8 above) is lost. A cleared `sessionId` is
     // the runner's own mark for a session that has ended (it clears it after its DELETE), and makes it skip that.
-    browser.sessionId = undefined;
+    // It is cleared on the runner's instance: `browser` from @wdio/globals is a read-only proxy (no `set` trap), and
+    // the runner also puts the instance itself on `globalThis.browser` (`injectGlobals`, on by default).
+    const session = globalThis.browser;
+    expect(session?.sessionId).toBe(browser.sessionId);
+    session.sessionId = undefined;
+    expect(browser.sessionId).toBeUndefined();
   });
 });
