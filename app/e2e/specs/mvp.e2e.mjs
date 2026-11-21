@@ -418,11 +418,17 @@ describe("MVP walk (#256 critical path, sim)", () => {
     // That switch was sent to a window being destroyed on an app that is exiting: it cannot have succeeded.
     expect((await followUp).error).toBeInstanceOf(Error);
     // The WebDriver session ended with the app's process, just asserted gone: nothing is left to delete. Without this,
-    // the runner's teardown (@wdio/runner `endSession`) sends DELETE /session to the dead server, which throws outside
-    // the framework, so the worker fails and its reporter output (steps 1–8 above) is lost. A cleared `sessionId` is
-    // the runner's own mark for a session that has ended (it clears it after its DELETE), and makes it skip that.
-    // It is cleared on the runner's instance: `browser` from @wdio/globals is a read-only proxy (no `set` trap), and
-    // the runner also puts the instance itself on `globalThis.browser` (`injectGlobals`, on by default).
+    // the runner's teardown sends DELETE /session to the dead server, which throws outside the framework, so the
+    // worker fails and its reporter output (steps 1–8 above) is lost (#671). In @wdio/runner 9.31.9 (build/index.js):
+    // `run` calls `endSession()` after the framework, outside its try/catch (:811); `endSession` (:959) computes
+    // `hasSessionId` from `this._browser.sessionId` (:962) and returns before any request when it is unset and no
+    // session is passed to attach to (:970); otherwise it awaits `deleteSession()` (:980), and after that DELETE it
+    // clears `sessionId` itself (:991). wdio has no public option for "this session is already gone"; an unset
+    // `sessionId` is the runner's own mark for an ended session, the one state in which `endSession` skips the DELETE.
+    // It must be set on the runner's instance: `browser` from @wdio/globals is a proxy with only a `get` trap
+    // (@wdio/globals 9.31.3 build/index.js:6), so an assignment through it never reaches the runner, and the runner puts
+    // that instance on `globalThis.browser` (@wdio/runner :879 → @wdio/globals `_setGlobal`, :94–97; `injectGlobals`
+    // is on by default). The assertions check it is the same session, and that the runner's instance now has none.
     const session = globalThis.browser;
     expect(session?.sessionId).toBe(browser.sessionId);
     session.sessionId = undefined;
