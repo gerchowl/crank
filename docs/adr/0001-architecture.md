@@ -1,6 +1,6 @@
 # ADR-0001: Architecture, crate layout, Rust↔UI contract, persistence, testing
 
-- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10)
+- **Status:** Proposed; amended 2026-11-09 (#588: §4.2, §4.3, §10); 2026-11-11 (#585: §7.2 `slew` fields; 2026-11-15 rounds 10–12, the hybrid, and 2026-11-16 round 13, degraded mode, keep them)
 - **Date:** 2026-10-13
 - **Issue:** #26
 - **Related:** ADR-0002 (BLE + `Trainer`), #24 (first-principles UX), #28 (scaffold), #2 #4 #12–#19
@@ -324,7 +324,10 @@ newest state wins; points accumulate. A ride sends at its 4 Hz tick; outside one
 
 **Status notes** (#219, #243, #324, #329) stay in force, documented on each field of `StreamStatus`
 (`crates/crank-engine/src/stream/types.rs:293-364`) and in `git show 2de24c5:docs/adr/0001-architecture.md`.
-Thresholds and flags (#243 part b) and nudges (#248) enter later, each a field with its own size test.
+Thresholds and flags (#243 part b) and nudges (#248) enter later, each a field with its own size test. The ERG
+easer's fields (ADR-0002 §7.10.5, #622) are among them: `easingToW`, `softStartTargetW` and the fault flag
+`ergEaserDegraded` (round 13: Ruckig and its twin refused, the command stops and holds; round 14: also a plan or
+cap that is not a number).
 
 #### 4.3.7 Per-widget rates or filters
 
@@ -773,8 +776,8 @@ ran with.
 
 **Decision.**
 
-- **One typed struct.** `crank_engine::tuning::Tuning { version, erg: ErgTuning }`. Later groups (auto-pause #594,
-  coach #596, smoothing #585) are new fields of `Tuning`, each a struct of its own. Durations are **seconds** and
+- **One typed struct.** `crank_engine::tuning::Tuning { version, erg: ErgTuning, slew: SlewTuning }` (`slew` from
+  #585, below). Later groups (auto-pause #594, coach #596) are new fields of `Tuning`, each a struct of its own. Durations are **seconds** and
   cadences **rpm**, never ticks: the tick is an engine detail (§5). A duration must lie on the 0.25 s tick grid,
   so the engine never rounds a rider's value; `validate()` refuses one that does not.
 - **Documented in code.** Every field has rustdoc with its unit, what it does and the decision behind its default.
@@ -795,6 +798,43 @@ ran with.
   reads which layer set each leaf. hil_fec reads the recorded values instead of its own copies (#593).
 - **No config files.** Settings live in SQLite (§6, table `setting`); the environment stays for process-level
   configuration (above).
+
+**The fields (amended 2026-11-11, #585).** JSON paths, units and defaults; the bounds, the cross-field rules and
+the reasons are in the ADR section named:
+
+| Field | Unit | Default | Bounds | Decided in |
+|---|---|---|---|---|
+| `erg.releaseEnabled` | bool | `true` | — | ADR-0002 §7.4 (#589) |
+| `erg.releaseRpm` | rpm | 30 | 20–50 | ADR-0002 §7.4 |
+| `erg.releaseAfterS` | s, 0.25 s grid | 5 | 1–8 | ADR-0002 §7.4 |
+| `erg.reengageRpm` | rpm, above `releaseRpm` | 45 | 30–90 | ADR-0002 §7.4 |
+| `erg.reengageAfterS` | s, 0.25 s grid | 1.5 | 1.5–5 | ADR-0002 §7.4 |
+| `slew.riseWPerS` | W/s, integer | 20 | 5–50 | ADR-0002 §7.10.4 (#585) |
+| `slew.fallFactor` | × `riseWPerS`, on a 0.25 grid; the product ≥ 20 W/s | 2.0 | 1–4 | ADR-0002 §7.10.4 |
+| `slew.easeS` | s, 0.25 s grid: the ease time, rest to full rise rate; Ruckig's acceleration limit `2·rise/τ` and jerk limit `4·rise/τ²` | 2 | 1–4 | ADR-0002 §7.10.4 |
+
+`slew` is implemented by #620. A new group changes no existing field's meaning or unit, so `Tuning::VERSION` stays
+1; a stored layer written before it resolves unchanged, because the merge starts from the defaults.
+
+ADR-0002 §7.10's round 10 (2026-11-15, the owner's hybrid: track 1's planning) keeps these three fields and their
+mapping, and so do its fix rounds 11 and 12 and round 13 (2026-11-16, the owner's simple degraded mode). Its own
+constants are engine constants, not tuning: a rider has no reason to change them, and the properties of ADR-0002
+§7.10.6 are checked for them. As of round 13 they are, completely (#620 uses these values; the model,
+`docs/adr/models/erg_slew.py`, pins each):
+- `DT` = 0.25 s: the engine tick the easer steps on;
+- `EPS` = 0.5 W: "on the line" is `|R − y| ≤ EPS` (half the 1 W resolution); X2's threshold;
+- `SETTLE_AFTER_TICKS` = 20 (5 s): settle after landing following a discontinuity or an engagement;
+- the line on the tick grid: `SLOPE_TOL` = 10⁻⁹ relative to `max(1, |slope|)` (one slope; a slope within it of 0 is
+  0), `VALUE_TOL` = 10⁻⁶ W (a piece continues the previous one after the clamp), the raw join 10⁻⁹ W (a block that
+  starts within it of the previous end is joined), and frame keys compared within 10⁻⁹ relative;
+- safe braking's slack: a stop may pass the line ahead by at most `EPS/2`, and `M` by at most 10⁻⁶ W;
+- `ROUND_SNAP` = 10⁻⁹ W: a landing this close outside `[0, M]` is rounding, snapped to the bound, not cut;
+- a cut is named only when it changes the state by more than 10⁻⁶ W, 10⁻⁵ W/s or 10⁻⁴ W/s²;
+- a target velocity kept `2⁻²⁰·max(1, |limit|)` inside its limits (Ruckig 0.19.4's segfault boundary);
+- `TWIN` = 2⁻²⁰: the twin calculation on a refusal tightens every limit by `TWIN·max(1, |limit|)`.
+
+Round 13 deletes round 12's `N_ERRORS` (the continuation before the clamp chain), the chain's hand-off margin,
+`X5F_JERK` and `CHAIN_C` with the clamp chain.
 
 **Alternatives.** A config file (TOML) next to the database: a second source of truth that a ride does not record,
 rejected. Ticks in the struct: ties a rider's setting to the engine's sampling, rejected. Falling back to the
