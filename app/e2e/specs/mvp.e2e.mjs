@@ -385,7 +385,20 @@ describe("MVP walk (#256 critical path, sim)", () => {
     // so the relaunch never meets this one's `ride.lock`. The bound is far above the 3 s quit cap.
     const app = process.env.CRANK_E2E_APP;
     expect(app).toBeTruthy();
-    await browser.closeWindow();
+    // The embedded WebDriver answers Close Window before the window is gone (tauri-plugin-wdio-webdriver 1.5.0
+    // `close_window`: `destroy()` only queues it), so the handles it returns still name it. WebdriverIO 9 then switches
+    // to the first of them on its own (its ContextManager, on closeWindow's result), a request nobody awaits that meets
+    // the quitting app. Wait for that request to settle, so it never outlives this test (#671).
+    const followUp = new Promise((resolve) => {
+      const onResult = (event) => {
+        if (event.command !== "switchToWindow") return;
+        browser.off("result", onResult);
+        resolve(event.result);
+      };
+      browser.on("result", onResult);
+    });
+    const handles = await browser.closeWindow();
+    expect(handles).toHaveLength(1);
     const running = () => {
       try {
         execFileSync("pgrep", ["-f", app], { stdio: "ignore" });
@@ -402,5 +415,12 @@ describe("MVP walk (#256 critical path, sim)", () => {
         );
       await new Promise((r) => setTimeout(r, 100));
     }
+    // That switch was sent to a window being destroyed on an app that is exiting: it cannot have succeeded.
+    expect((await followUp).error).toBeInstanceOf(Error);
+    // The WebDriver session ended with the app's process, just asserted gone: nothing is left to delete. Without this,
+    // the runner's teardown (@wdio/runner `endSession`) sends DELETE /session to the dead server, which throws outside
+    // the framework, so the worker fails and its reporter output (steps 1–8 above) is lost. A cleared `sessionId` is
+    // the runner's own mark for a session that has ended (it clears it after its DELETE), and makes it skip that.
+    browser.sessionId = undefined;
   });
 });
