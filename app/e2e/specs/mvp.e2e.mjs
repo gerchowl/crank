@@ -385,7 +385,20 @@ describe("MVP walk (#256 critical path, sim)", () => {
     // so the relaunch never meets this one's `ride.lock`. The bound is far above the 3 s quit cap.
     const app = process.env.CRANK_E2E_APP;
     expect(app).toBeTruthy();
-    await browser.closeWindow();
+    // The embedded WebDriver answers Close Window before the window is gone (tauri-plugin-wdio-webdriver 1.5.0
+    // `close_window`: `destroy()` only queues it), so the handles it returns still name it. WebdriverIO 9 then switches
+    // to the first of them on its own (its ContextManager, on closeWindow's result), a request nobody awaits that meets
+    // the quitting app. Wait for that request to settle, so it never outlives this test (#671).
+    const followUp = new Promise((resolve) => {
+      const onResult = (event) => {
+        if (event.command !== "switchToWindow") return;
+        browser.off("result", onResult);
+        resolve(event.result);
+      };
+      browser.on("result", onResult);
+    });
+    const handles = await browser.closeWindow();
+    expect(handles).toHaveLength(1);
     const running = () => {
       try {
         execFileSync("pgrep", ["-f", app], { stdio: "ignore" });
@@ -402,5 +415,23 @@ describe("MVP walk (#256 critical path, sim)", () => {
         );
       await new Promise((r) => setTimeout(r, 100));
     }
+    // That switch was sent to a window being destroyed on an app that is exiting: it cannot have succeeded.
+    expect((await followUp).error).toBeInstanceOf(Error);
+    // The WebDriver session ended with the app's process, just asserted gone: nothing is left to delete. Without this,
+    // the runner's teardown sends DELETE /session to the dead server, which throws outside the framework, so the
+    // worker fails and its reporter output (steps 1–8 above) is lost (#671). In @wdio/runner 9.31.9 (build/index.js):
+    // `run` calls `endSession()` after the framework, outside its try/catch (:811); `endSession` (:959) computes
+    // `hasSessionId` from `this._browser.sessionId` (:962) and returns before any request when it is unset and no
+    // session is passed to attach to (:970); otherwise it awaits `deleteSession()` (:980), and after that DELETE it
+    // clears `sessionId` itself (:991). wdio has no public option for "this session is already gone"; an unset
+    // `sessionId` is the runner's own mark for an ended session, the one state in which `endSession` skips the DELETE.
+    // It must be set on the runner's instance: `browser` from @wdio/globals is a proxy with only a `get` trap
+    // (@wdio/globals 9.31.3 build/index.js:6), so an assignment through it never reaches the runner, and the runner puts
+    // that instance on `globalThis.browser` (@wdio/runner :879 → @wdio/globals `_setGlobal`, :94–97; `injectGlobals`
+    // is on by default). The assertions check it is the same session, and that the runner's instance now has none.
+    const session = globalThis.browser;
+    expect(session?.sessionId).toBe(browser.sessionId);
+    session.sessionId = undefined;
+    expect(browser.sessionId).toBeUndefined();
   });
 });
