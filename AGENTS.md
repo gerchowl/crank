@@ -81,6 +81,11 @@ the same shutdown synchronously on `Exit`; macOS may kill a terminating app a fe
 If the core cannot open (a second crank holds `ride.lock`) a native
 dialog says so and the process exits with status 1. Tauri rejects malformed arguments with a plain string, not an `ApiError`:
 `app/src/api.ts` (`api()`, `toApiError`) maps it to `{code: "internal", message}`. The UI waves (#229) call the generated commands through it.
+**The keeper's intent sources (#680, ADR-0002 §5.1.2)** are the page's only `links_intent` caller: `app/src/links/intent.ts` (`viewIntent`, `IntentReporter`), mounted once beside the destination
+(`LinkIntents.tsx`). Today, Workouts and the Ready sheet send `Likely` (`ready` over a load in flight), Settings → Devices `Release(Devices)`, any other view (a started ride's screen included) `Left`; Tauri's
+`onFocusChanged` sends `Background` and `visibilitychange` `Release(Hidden)` (hidden, then unfocused, outrank the view). Each is sent once per change; rider input re-sends a standing `Likely` at most once per
+30 s (leading edge, injected clock); one call is in flight at a time and only the latest waits. Every mock backend passes `links_intent` on to `stream/uiBackend.ts`, which models the keeper's refusals
+with no ride or a loaded one (`rideBackend.ts` keeps its own for the ride's side).
 `app/src/stream/` is the window's typed stream client (#89, ADR-0001 §4.3): one `Channel<StreamFrame>` (`StreamClient`),
 `StreamProvider` (mount it where a ride is loaded: `open_stream` needs one and the stream ends with it), and the hooks
 `useSubscribe(metric, opts)`, `useStatus`, `useLinks`, `useStreamError` and `useCommand`. It acks every applied frame

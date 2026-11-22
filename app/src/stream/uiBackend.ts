@@ -8,6 +8,27 @@
 //            answers the next id from 1 (never reused), closes the window's older channel and sends the state at once
 //   ui_ack   a channel the window does not hold (closed by a reopen, a page load or a failed send)  not_found
 //              "unknown snapshot channel"  ui.rs `Ui::ack`; an ack of any `seq` but the last one sent is ignored
+//   links_intent  the link keeper (ADR-0002 §5.1.2; answers `null` once the intent is applied, #597: its effect reaches
+//              the page only as the channel's next frame, in `devices`), in the core's order:
+//            "Release trainer" while the loaded ride is started (`ride` not ended and not `idle`)  conflict
+//              "the ride holds the trainer: end the ride first"  core.rs `Core::links_intent` (~1404)
+//            the keeper cannot read the pairings when it first starts  storage  core.rs `Core::keeper` (~1371), through
+//              core.rs `Core::pairings` (~1361) (the same `keeperStorage` as `ui_open`'s)
+//            a release recorded while the links are handed to a load in flight (`loading`, no ride yet), superseded by
+//              a later rider action ("Ride this", Retry; #520)  conflict  keeper/run.rs `Task::answer` (~614), text
+//              keeper/mod.rs `SUPERSEDED` (~316); recorded only in `Ride::Handed` (keeper/mod.rs `Keeper::intent` (~458);
+//              `supersedes`, the race itself is not modelled)
+//            `likely` / `retry` after the quit  conflict  "the application is quitting"
+//              keeper/mod.rs `Keeper::free_intent` (~541), text keeper/mod.rs `QUITTING` (~314) (`quitting`)
+//            ("the link keeper is gone", `internal`, keeper/run.rs `Handle::intent` (~206), needs a dropped core, and the
+//              discard that races a Start, keeper/run.rs `Task::internal` (~501): neither is modelled)
+//            Effects: `sleep` or `rider_release` over a loaded, unstarted ride discards it (the path of Cancel: no ride,
+//              its devices `cold`); every other intent leaves a loaded or started ride alone
+//              (keeper/mod.rs `Keeper::loaded_intent` (~490)). With no ride, a release makes every paired device `cold`
+//              (keeper/mod.rs `Keeper::free_intent`); a `likely` changes no phase here: the keeper's attempts run on
+//              their own, and a test moves the phases through `truth.devices`. While a load is in flight the core
+//              answers once the load resolved and the intent is applied; here it is answered at once and changes
+//              nothing (the resolution is not modelled). Every call is in `calls`.
 //
 // The frame rule is the core's (ui.rs `run`): one frame in flight; once it is acked, the next goes out when the state
 // changed or points are past the channel's cursors; sending moves the cursors, at most 256 points per series
@@ -21,6 +42,7 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   DeviceView,
   DevicesView,
+  LinkIntent,
   LinkPhase,
   LinkStatus,
   PairedDevice,
@@ -95,7 +117,20 @@ export interface UiTruth {
   keeperStorage: boolean;
   /** Channels other windows hold. */
   otherWindows: number;
+  /** The next release reaches the keeper while the links are handed to a load, and a rider action supersedes it. */
+  supersedes: boolean;
+  /** The app is quitting: `likely` and `retry` are refused. */
+  quitting: boolean;
 }
+
+/** The keeper's answer to a superseded release, keeper/mod.rs `SUPERSEDED`. */
+export const SUPERSEDED = "superseded by the rider's request for a ride";
+
+/** A device back to `cold` with no sample, as a release or the end of a ride's hold leaves it. */
+const cooled = (d: DeviceView): DeviceView =>
+  d.paired === null
+    ? d
+    : { paired: d.paired, phase: "cold", link: null, sample: null };
 
 interface Open {
   id: number;
@@ -122,6 +157,8 @@ export function installUi({ heartbeatMs, ...over }: UiOptions = {}) {
     series: { power: [], cadence: [], hr: [] },
     keeperStorage: false,
     otherWindows: 0,
+    supersedes: false,
+    quitting: false,
     ...over,
   };
   let open: Open | null = null;
@@ -207,12 +244,64 @@ export function installUi({ heartbeatMs, ...over }: UiOptions = {}) {
         }
         return null;
       }
+      case "links_intent": {
+        const intent = args.intent as LinkIntent | undefined;
+        if (intent === undefined)
+          throw "missing required key intent for command `links_intent`";
+        const release = intent.kind === "release" ? intent.reason : null;
+        const ride = truth.ride;
+        const loaded = ride !== null && ride.ended === null;
+        const started = loaded && ride.status.state.kind !== "idle";
+        if (release === "rider_release" && started)
+          throw err(
+            "conflict",
+            "the ride holds the trainer: end the ride first",
+          );
+        if (truth.keeperStorage) throw err("storage", "database is locked");
+        if (release !== null && truth.supersedes && truth.loading && !loaded) {
+          truth.supersedes = false;
+          throw err("conflict", SUPERSEDED);
+        }
+        // In `Handed` the keeper records the intent and applies it when the load resolves (§5.1.1): answered here at
+        // once and applied never, as nothing of a load in flight is the keeper's to change.
+        if (truth.loading && !loaded) return null;
+        if (loaded) {
+          if (
+            !started &&
+            (release === "sleep" || release === "rider_release")
+          ) {
+            truth.ride = null;
+            truth.devices = {
+              trainer: cooled(truth.devices.trainer),
+              strap:
+                truth.devices.strap.phase === "riding"
+                  ? cooled(truth.devices.strap)
+                  : truth.devices.strap,
+            };
+            pump();
+          }
+          return null;
+        }
+        if (
+          truth.quitting &&
+          (intent.kind === "likely" || intent.kind === "retry")
+        )
+          throw err("conflict", "the application is quitting");
+        if (release !== null) {
+          truth.devices = {
+            trainer: cooled(truth.devices.trainer),
+            strap: cooled(truth.devices.strap),
+          };
+          pump();
+        }
+        return null;
+      }
       default:
         return undefined;
     }
   };
 
-  const ours = new Set(["ui_open", "ui_ack"]);
+  const ours = new Set(["ui_open", "ui_ack", "links_intent"]);
   const inner = (
     window as unknown as {
       __TAURI_INTERNALS__?: {
