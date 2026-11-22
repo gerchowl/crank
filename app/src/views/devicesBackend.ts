@@ -12,7 +12,8 @@
 // new row was written. `device_pair` and `device_forget` answer `null` (app/src-tauri commands.rs `device_pair`): the
 // pairings reach the page as the snapshot channel's `devices` (`ui`, stream/uiBackend.ts; core.rs `Core::device_pair`
 // and core.rs `Core::device_forget` call ui.rs `Ui::set_paired`), also when the pair's later store step fails.
-// `ui_open` and `ui_ack` go to that backend, installed first.
+// `ui_open`, `ui_ack` and `links_intent` (the link keeper, which Settings → Devices tells to release, ADR-0002 §5.1.3) go
+// to that backend, installed first.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   ApiError,
@@ -134,7 +135,8 @@ export function installDevices(
     if (st.rideLoaded) fail("conflict", "a ride is loaded: end it first");
   };
   mockIPC(async (cmd, args) => {
-    if (cmd === "ui_open" || cmd === "ui_ack") return prev(cmd, args);
+    if (cmd === "ui_open" || cmd === "ui_ack" || cmd === "links_intent")
+      return prev(cmd, args);
     const a = (args ?? {}) as Record<string, unknown>;
     st.calls.push({ cmd, args: a });
     switch (cmd) {
