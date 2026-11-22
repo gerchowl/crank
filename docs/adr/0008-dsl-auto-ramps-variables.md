@@ -1,6 +1,6 @@
 # ADR-0008: Workout DSL: auto ramps pinned to neighbouring blocks, and variables
 
-- **Status:** Proposed (awaiting owner review; no code until accepted)
+- **Status:** Accepted (owner, 2026-11-22: all 11 decisions below approved as written); not implemented yet
 - **Date:** 2026-11-22
 - **Issue:** #694
 - **Related:** `docs/DSL.md` (the production grammar, #68), the compiler (#69, `crates/crank-domain/src/workout/compile.rs`),
@@ -200,11 +200,15 @@ the error blocks riding, so the value is never sent to the trainer.
 - Phase and work classification use **only the ramp's number ends**: `ramp 90%-auto` is work (90 % ≥ 80 %, as an
   explicit ramp's maximum would be), `ramp 40%-auto` is not, and `ramp auto-auto` is never work; a non-work auto ramp
   is an easy block placed by position as today (warm-up before the first work block, cool-down after the last,
-  recovery between). A label containing "warm"/"cool" still forces the phase. So a phase never depends on a pinned
-  end, and re-pinning (§2.13.1) changes power only.
+  recovery between). A label containing "warm"/"cool" still forces the phase. When no block reaches 80 %, the
+  compiler's fallback marks as work every block within 95 % of the strongest (`phases`, `compile.rs`); there an auto
+  ramp counts with its number end alone (`ramp 40%-auto` counts as 40 %), an `auto` end never counts, and
+  `ramp auto-auto` takes no part, like a free block: it neither sets the strongest value nor becomes work. So a phase
+  never depends on a pinned end, and re-pinning (§2.13.1) changes power only.
 - **Rejected:** classifying by the resolved ends (`max(power_from, power_to)`, as `target_pct` does for explicit
   ramps). The phase would follow the neighbour: in `10m 50%, 3x(4m 60%, 1m ramp auto-auto), 5m 90%` the last ramp
-  (60 → 90 %) would be work and the others (60 → 60 %) recovery, so adding a rep would change a phase, and the phase
+  (60 → 90 %) would be work and the others (60 → 60 %) warm-up (the 5 min at 90 % is the only work block), so adding
+  a rep would turn a work ramp into a warm-up one, and the phase
   of a bridge would say more about its neighbour than about itself.
 - **Rejected:** "an auto ramp compiles exactly like the explicit ramp with the pinned number written in", which would
   progress the pinned end a second time inside a progressing repeat.
@@ -510,7 +514,10 @@ frozen at accept (below) are skipped. `repin` is one function in `crank-domain`,
 **Why this satisfies the equality.** Let `E` be the sequence after step 2 and `S` the flat sequence of compiling with
 `count + n`, progression held. §17.1 already establishes that `E` and `S` have the same blocks in the same order with
 the same identities, durations and un-pinned targets (it is the equality step 2 promises today, including the restored
-child), and the same phases, because a phase never depends on a pinned end (§2.4). Pinned flags come from the
+child). Phases are outside this proof: §17.1 step 5 copies them, and a copied phase can differ from the one compiling
+with `count + n` gives, because the compiler places easy blocks by position (warm-up before the first work block,
+cool-down after the last); that gap exists today without pins and is #698. Pins add nothing to it, because a phase
+never depends on a pinned end (§2.4). Pinned flags come from the
 source node, so `E` and `S` pin the same ends. In `S` each pinned end equals its
 neighbour's adjacent end (that is how the compiler resolves it); after step 2b the same holds in `E`; and the
 neighbour's adjacent end is un-pinned (§2.3), so it is equal in `E` and `S`. Hence every pinned end is equal too, and
@@ -538,8 +545,8 @@ prevent, and the overlay would hold a target that is neither compiled nor re-pin
 `effective`'s pure function of the log.
 
 **Amended equality and invariant:** the result equals compiling with `count + n`, progression held, in every field
-of every block (identity, timing, `power_from`, `power_to`, `phase`, `pinned_from`, `pinned_to`, `dur_range_s`),
-except the powers of blocks frozen at accept; the overlay invariant "no block's target is changed" becomes "no block's
+of every block (identity, timing, `power_from`, `power_to`, `pinned_from`, `pinned_to`, `dur_range_s`) except the
+phase label, which keeps §17.1's copy rule (#698), and except the powers of blocks frozen at accept; the overlay invariant "no block's target is changed" becomes "no block's
 target is changed, except a pinned end that step 2b re-resolves after a `repeat_once`, on a block that had not
 started" (phases never change, §2.4), and step 5's "`power_from/to` untouched" gets the same exception. These texts
 go into DESIGN §17.1 and §17.2 in the
@@ -658,7 +665,9 @@ with `[+5w]` (last iteration's progressed power); auto ramp as a repeat's first 
 ramp as a repeat's last child; HR recovery neighbour (planned power); progression not applied to the auto ramp;
 phase from the number ends only (`ramp 90%-auto` work, `ramp 40%-auto` and `ramp auto-auto` easy, also when the
 pinned end is above 80 %), with and without a "warm" label; `10m 50%, 3x(4m 60%, 1m ramp auto-auto), 5m 90%` (every
-ramp recovery, the last one 60 → 90 %).
+ramp warm-up, since the 5 min at 90 % is the only work block, the last one 60 → 90 %); the 95 % fallback with no block
+at 80 % (`10m 50%, 2m ramp 70%-auto, 5m 72%`: the ramp counts as 70 % and is work with the 72 %; the same with
+`ramp auto-auto` in its place: the ramp takes no part and is warm-up).
 
 **Facing and no-neighbour goldens (errors):** `ramp 40%-auto, ramp auto-auto, 10m 95%` (facing, reported once on the
 first ramp, naming the second); `3x(1m ramp auto-auto)` after a steady block (pinned to itself across the repeat,
@@ -672,8 +681,8 @@ a literal with more decimals than `Ratio<i128>` holds is `NumericOverflow`.
 
 **§2.13.1 overlay goldens:** `10m 50%, 3x(4m 100%, 2m ramp auto-auto), 5m 40%` and
 `10m 50%, 3x[+5%, !last](4m 100%, 2m ramp auto-auto), 5m 40%`, each with one `repeat_once`: `effective` equals the
-compile with `count = 4` and progression held (the restored ramp 110 → 110 %, the last ramp into the cool-down only
-at the end); `3x[!last](4m 100%, 1m ramp 100%-auto, 2m 50%), 5m 40%`: compiled, iteration 2's ramp is 100 → 40 % (its
+compile with `count = 4` and progression held in every field except the phase label, which keeps §17.1's copy rule
+(#698) (the restored ramp 110 → 110 %, the last ramp into the cool-down only at the end); `3x[!last](4m 100%, 1m ramp 100%-auto, 2m 50%), 5m 40%`: compiled, iteration 2's ramp is 100 → 40 % (its
 rest is skipped, so it meets the cool-down); after one `repeat_once` it meets the restored rest and is re-pinned to
 100 → 50 %, and the added rep's ramp is 100 → 40 %; the same with the seam ramp current at accept (frozen, only its
 power differs); a skip next to a pinned ramp (no pin moves); and the undo window: `10m 50%, 3x(4m 100%, 2m ramp
@@ -682,7 +691,7 @@ auto-auto), 5m 40%` with `repeat_once` accepted during iteration 2's 4 min, Undo
 
 **§2.13.1 overlay (in the `workout::overlay` property tests of §17.7):** for generated workouts with pinned ramps
 inside and around repeats, `effective(compiled, repeat_once × n)` equals `compile` with `count + n` and progression
-held, in every field including phase; with a block frozen, only its power differs; an undo inside its window restores
+held, in every field except the phase label, which keeps §17.1's copy rule (#698); with a block frozen, only its power differs; an undo inside its window restores
 the compiled targets, and no undo is accepted once a `repinned` block has started; the engine invariant (nothing at or before the cursor changes) holds with pins in the generator.
 
 **Error cases:** each row of §2.3 (issue kind, severity, `node_id`, message) and of §2.14 (kind, message, offset and
