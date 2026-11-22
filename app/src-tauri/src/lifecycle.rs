@@ -455,7 +455,17 @@ impl<R: Runtime> Runner<R> for tauri::App<R> {
 }
 
 /// Run `app` with the quit handling of this module registered.
-pub fn run<R: Runtime>(app: impl Runner<R>) {
+///
+/// `until_quit` is held until the quit starts (the first `ExitRequested`, or `Exit` on the
+/// backstop path) and dropped then, before the ride is ended: the sleep observer
+/// ([`crate::sleep`]) is unregistered that way. It is never sent to another thread.
+pub fn run<R: Runtime, G: 'static>(app: impl Runner<R>, until_quit: G) {
     let quit = Arc::new(Quit::default());
-    app.run(move |handle, event| on_run_event(handle, &event, &quit));
+    let mut until_quit = Some(until_quit);
+    app.run(move |handle, event| {
+        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            drop(until_quit.take());
+        }
+        on_run_event(handle, &event, &quit);
+    });
 }

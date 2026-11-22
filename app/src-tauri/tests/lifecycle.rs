@@ -501,11 +501,49 @@ async fn run_registers_the_run_event_handler_that_backstops_an_exit() {
     app.manage(core.clone());
     let delivered = Arc::new(Mutex::new(false));
     let runner = ExitOnly(app.handle().clone(), delivered.clone());
-    tokio::task::spawn_blocking(move || lifecycle::run(runner))
+    tokio::task::spawn_blocking(move || lifecycle::run(runner, ()))
         .await
         .unwrap();
     assert!(*delivered.lock().unwrap());
     assert_eq!(outcomes(&core).await, [RideOutcome::Finished]);
+}
+
+/// Sets its flag when dropped.
+struct DropFlag(Arc<Mutex<bool>>);
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        *self.0.lock().expect("lock") = true;
+    }
+}
+
+/// An app that reports, on `Exit`, whether the run's held value was dropped by then.
+struct SeesDrop(
+    AppHandle<MockRuntime>,
+    Arc<Mutex<bool>>,
+    Arc<Mutex<Vec<bool>>>,
+);
+impl Runner<MockRuntime> for SeesDrop {
+    fn run<F: FnMut(&AppHandle<MockRuntime>, RunEvent) + 'static>(self, mut callback: F) {
+        let seen = || *self.1.lock().expect("lock");
+        self.2.lock().expect("lock").push(seen());
+        callback(&self.0, RunEvent::Ready);
+        self.2.lock().expect("lock").push(seen());
+        callback(&self.0, RunEvent::Exit);
+        self.2.lock().expect("lock").push(seen());
+    }
+}
+
+/// The value `run` holds (the sleep observer, #679) lives until the quit starts and is dropped
+/// then: kept through other events, gone once `Exit` arrives.
+#[test]
+fn run_holds_its_value_until_the_quit_starts() {
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let (dropped, seen) = (Arc::new(Mutex::new(false)), Arc::default());
+    let runner = SeesDrop(app.handle().clone(), dropped.clone(), Arc::clone(&seen));
+    lifecycle::run(runner, DropFlag(dropped));
+    assert_eq!(*seen.lock().unwrap(), [false, false, true]);
 }
 
 // ---- the Quit menu item (the replacement itself is checked by `examples/quit_check.rs`) ----

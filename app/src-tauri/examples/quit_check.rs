@@ -174,7 +174,7 @@ mod macos {
             std::thread::sleep(RIDE_FOR);
             handle.run_on_main_thread(terminate).expect("main thread");
         });
-        lifecycle::run(app);
+        lifecycle::run(app, ());
     }
 
     /// Run the child, then read what it left in the store.
