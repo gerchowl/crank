@@ -21,7 +21,8 @@ no; the section in brackets has the reasons and the rejected alternatives.
    that is itself `auto` (two ramps pinned to each other, or one ramp pinned to itself across a repeat) is an error
    that blocks Ride this, not a warning with a fallback (§2.3).
 4. **A pinned ramp is never progressed** by `[+5w]` / `[+2%]`; its pinned end already follows the progressed
-   neighbour (§2.4).
+   neighbour. Its **phase depends only on the numbers written in it**, never on a pinned end (`ramp auto-auto` is
+   never work), so moving a pin never changes a phase (§2.4).
 5. **Variables** are `$name = value` lines before the first block, one scope for the whole workout (§2.6).
 6. **Arithmetic only in declarations** (`$rest = $work / 2`, `$tempo = $thr - 10%`); a block uses a variable by
    name only (`4m $thr`) (§2.8).
@@ -39,7 +40,7 @@ no; the section in brackets has the reasons and the rejected alternatives.
 11. **Amend DESIGN §17.1 for pins**: when the rider adds a rep (`repeat_once`), every pinned end of the expanded
     sequence is worked out again (before skips apply), so the result provably equals compiling with one more rep,
     the `!last` restore included; a ramp that would move but has already started keeps
-    its target (§2.13.1).
+    its target, and the rep can no longer be undone once a re-pinned block has started (amends §17.2, §2.13.1).
 
 Everything else (error wording, canonical printing, limits, tests) follows from these.
 
@@ -196,8 +197,15 @@ the error blocks riding, so the value is never sent to the trainer.
 - A pinned end is the neighbour's compiled power, **progression included**. The ramp itself receives **no**
   progression offset, on either end: its pinned end has it already, and its number end stays as written. This makes
   `3x[+5w](30s ramp auto-auto, 4m 100%, …)` behave as written: the bridge follows the intervals as they grow.
-- Phase and work classification use the resolved ends: the occurrence's `max(power_from, power_to) / ftp` against
-  80 %, as for explicit ramps (`target_pct` uses the maximum). A label containing "warm"/"cool" still forces the phase.
+- Phase and work classification use **only the ramp's number ends**: `ramp 90%-auto` is work (90 % ≥ 80 %, as an
+  explicit ramp's maximum would be), `ramp 40%-auto` is not, and `ramp auto-auto` is never work; a non-work auto ramp
+  is an easy block placed by position as today (warm-up before the first work block, cool-down after the last,
+  recovery between). A label containing "warm"/"cool" still forces the phase. So a phase never depends on a pinned
+  end, and re-pinning (§2.13.1) changes power only.
+- **Rejected:** classifying by the resolved ends (`max(power_from, power_to)`, as `target_pct` does for explicit
+  ramps). The phase would follow the neighbour: in `10m 50%, 3x(4m 60%, 1m ramp auto-auto), 5m 90%` the last ramp
+  (60 → 90 %) would be work and the others (60 → 60 %) recovery, so adding a rep would change a phase, and the phase
+  of a bridge would say more about its neighbour than about itself.
 - **Rejected:** "an auto ramp compiles exactly like the explicit ramp with the pinned number written in", which would
   progress the pinned end a second time inside a progressing repeat.
 
@@ -274,17 +282,33 @@ would freeze the workout to one FTP). `$thr - 10%` is therefore **percentage poi
 relative meaning (85.5 %) is written `$thr * 0.9`. Rejected: reading `- 10%` as relative, which would make `-` mean
 one thing for % FTP and another for watts and durations, and would leave no way to write points.
 
-**Rounding: exact in declarations, rounded once at each use.** Declarations are evaluated in exact `f64` arithmetic
-with no intermediate rounding, so `$a = 250w / 3`, `$b = $a * 3` makes `$b` 250 W, not 249 W. A value is rounded
-only where a block uses it, to what a literal **in that position** can say, with the printer's rule (ties towards
-+∞, DSL.md "Rust port notes"):
+**Arithmetic is exact: rationals.** Every literal is a finite decimal, so it is an exact rational (`1.1` = 11/10,
+`1m30s` = 90/1 s), and `+ − × ÷` of rationals stay exact. Declarations are evaluated as `num_rational::Ratio<i128>`
+with checked operations; an overflow is today's `NumericOverflow` error, a zero divisor `Division by zero`. So
+`$d = 1m30s * 1.1` is exactly 99 s (in `f64` it would be 99.00000000000001 and wrongly refused as not whole), and the
+whole-number checks below are exact comparisons, not tolerances. The value a block receives is converted to the
+tree's `f64` only after rounding (below), by printing the rounded rational as a decimal and reading it with the DSL's
+own number parser, so a variable's value is bit-for-bit the `f64` its literal spelling gives. Evaluation happens only
+in the Rust core: the app shows the core's values and never evaluates an expression, and the frozen TS reference has
+no variables, so there is no second implementation to keep in step (parity tests keep covering today's grammar only).
+
+- **Library (owner rule 2026-11-14):** `num-rational` 0.4.2 (rust-num, MIT OR Apache-2.0, MSRV 1.60, checked
+  arithmetic on `Ratio<i128>`), checked 2026-11-22; a new dependency, justified in the implementation PR.
+  **Rejected:** `f64` with a tolerance (a tolerance has to be argued per operation and still makes goldens depend on
+  evaluation order); fixed-point in the literal's units (`/ 3` and `* 1.1` would round at every step, so
+  `$a = 250w / 3`, `$b = $a * 3` would give 249 W).
+
+**Rounding: once, at each use.** No intermediate value is rounded, so `$a = 250w / 3`, `$b = $a * 3` makes `$b`
+exactly 250 W. A value is rounded only where a block uses it, to **the printer's precision for that position** (the
+precision at which DSL.md promises a round trip; the parser accepts more decimals in a `%` literal, but those do not
+survive printing), with the printer's rule (ties towards +∞, DSL.md "Rust port notes"):
 
 | Position | Today's literal | A variable's value there |
 |---|---|---|
-| `w` target | `INT "w"` | rounded to whole watts (`5m $a` with `$a = 250w / 3` → 83 W) |
-| watts progression `[+$p]` | `SIGNED "w"`, decimals allowed (`[+2.5w]`) | rounded to 0.001 W (`$p = 2.5w` behaves exactly like `[+2.5w]`) |
-| `%` target, range ends, ramp ends | `NUMBER "%"` | rounded to 0.001 % (`100% / 3` → 33.333 %) |
-| % progression `[+$p]` | `SIGNED "%"` | rounded to 0.001 % |
+| `w` target | `INT "w"` (whole watts only) | rounded to whole watts (`5m $a` with `$a = 250w / 3` → 83 W) |
+| watts progression `[+$p]` | `SIGNED "w"`, any decimals parse, printed to 0.001 | rounded to 0.001 W (`$p = 2.5w` behaves exactly like `[+2.5w]`) |
+| `%` target, range ends, ramp ends | `NUMBER "%"`, any decimals parse, printed to 0.001 | rounded to 0.001 % (`100% / 3` → 33.333 %) |
+| % progression `[+$p]` | `SIGNED "%"`, any decimals parse, printed to 0.001 | rounded to 0.001 % |
 | time step, `hr<` bounds | `DURATION`, whole seconds | must be whole seconds, else an error (below); never rounded |
 | repeat count | `INT` | must be a whole number, else an error; never rounded |
 
@@ -292,8 +316,9 @@ Durations and counts are not rounded because they move the timeline and the stru
 is a different workout; a power below 1 W or 0.001 % is not. Since every value a block receives is exactly a literal
 the DSL can write in that position, Inline (§2.12) is exact: a **use in a block** is replaced by that literal, and a
 **use in another declaration** is replaced by the inlined variable's expression in parentheses (never by a rounded
-value), so `$b = $a * 3` becomes `$b = 250w / 3 * 3` and keeps 250 W. The inlined text compiles identically and
-prints and parses back to the same values.
+value), so `$b = $a * 3` becomes `$b = (250w / 3) * 3` and keeps exactly 250 W (the printer then writes
+`250w / 3 * 3`, the same expression tree, since `*` and `/` group left to right). The inlined text compiles
+identically and prints and parses back to the same values.
 
 **Checks**, made by the parser at each use, with the use's span (§2.14), and again by `resolve_vars` for a tree that
 did not come from text:
@@ -380,7 +405,9 @@ Names live in the tree (fact in §1), so a numeric field the user can bind holds
 pub enum Num { Lit(f64), Var { var: String } }
 
 pub struct VarDecl { pub name: String, pub expr: Expr }          // value is derived, never stored
-pub enum Expr { Lit { value: f64, unit: Unit }, Var { name: String }, Neg(Box<Expr>), Bin { op: Op, l: Box<Expr>, r: Box<Expr> } }
+pub enum Expr { Lit { value: String, unit: Unit }, Var { name: String }, Neg(Box<Expr>), Bin { op: Op, l: Box<Expr>, r: Box<Expr> } }
+// Lit.value is the literal's exact decimal text ("1.1", "90" for 1m30s in seconds): exact (§2.8), and JSON-safe,
+// which an i128 numerator/denominator would not be in the app
 pub struct Workout { /* id, name, ftp, nodes as today */ #[serde(default)] pub vars: Vec<VarDecl> }
 ```
 
@@ -483,7 +510,8 @@ frozen at accept (below) are skipped. `repin` is one function in `crank-domain`,
 **Why this satisfies the equality.** Let `E` be the sequence after step 2 and `S` the flat sequence of compiling with
 `count + n`, progression held. §17.1 already establishes that `E` and `S` have the same blocks in the same order with
 the same identities, durations and un-pinned targets (it is the equality step 2 promises today, including the restored
-child). Pinned flags come from the source node, so `E` and `S` pin the same ends. In `S` each pinned end equals its
+child), and the same phases, because a phase never depends on a pinned end (§2.4). Pinned flags come from the
+source node, so `E` and `S` pin the same ends. In `S` each pinned end equals its
 neighbour's adjacent end (that is how the compiler resolves it); after step 2b the same holds in `E`; and the
 neighbour's adjacent end is un-pinned (§2.3), so it is equal in `E` and `S`. Hence every pinned end is equal too, and
 `repin(E) = S`. With no `repeat_once` in the overlay, `E` is the compiled sequence and `repin` changes nothing,
@@ -493,16 +521,28 @@ in steps 3 and 4, after 2b).
 **The cursor.** A block that is current or done never changes (the engine invariant of §17.1), so `effective` leaves
 blocks frozen at accept as they were. So a rider who asks for one more rep while already in the last iteration's ramp keeps that
 ramp as it is and meets a step into the added rep: the one case where the equality does not hold, stated in the
-amended text. The undo of a `repeat_once` removes its row from the fold, so the re-pinned ramps return to their compiled
-targets.
+amended text.
 
-**The frozen blocks** are those whose pinned end step 2b would change and that had started when the `repeat_once`
-was accepted; the edit row lists them (`frozen: [BlockId]`).
+**The edit row** lists, when the `repeat_once` is accepted, the blocks whose pinned end step 2b changes: those that
+had started are `frozen: [BlockId]` (left as they were), the others `repinned: [BlockId]`.
 
-**Amended equality and invariant:** the result equals compiling with `count + n`, progression held, **pinned ends
-included**, except blocks frozen at accept; the overlay invariant "no block's target is changed" becomes "no block's
+**Undo (amends DESIGN §17.2's undo table).** Undo of a `repeat_once` removes its row from the fold, so every
+re-pinned block returns to its compiled target. That must not change a block that has started, so the undo window of
+`repeat_once` becomes: "the first block of the added rep starts, **or a block in the row's `repinned` list starts**,
+or the added rep is `set_ended`", whichever is first; after that Undo refuses it like any edit past its window. In
+`10m 50%, 3x(4m 100%, 2m ramp auto-auto), 5m 40%` with `repeat_once` accepted during iteration 2's 4 min, iteration
+2's ramp is re-pinned to 100 → 100 %; once that ramp starts the rep can no longer be undone, so it is never thrown back
+to 100 → 40 % mid-ramp. **Rejected:** let undo restore from the next block on and leave the started ramp as re-pinned:
+the rider would ride 100 → 100 % into the 40 % cool-down (a step of 60 % FTP), the exact thing the pin exists to
+prevent, and the overlay would hold a target that is neither compiled nor re-pinned, so the fold would no longer be
+`effective`'s pure function of the log.
+
+**Amended equality and invariant:** the result equals compiling with `count + n`, progression held, in every field
+of every block (identity, timing, `power_from`, `power_to`, `phase`, `pinned_from`, `pinned_to`, `dur_range_s`),
+except the powers of blocks frozen at accept; the overlay invariant "no block's target is changed" becomes "no block's
 target is changed, except a pinned end that step 2b re-resolves after a `repeat_once`, on a block that had not
-started", and step 5's "`power_from/to` untouched" gets the same exception. These texts go into DESIGN §17.1 in the
+started" (phases never change, §2.4), and step 5's "`power_from/to` untouched" gets the same exception. These texts
+go into DESIGN §17.1 and §17.2 in the
 implementation PR.
 
 - **Rejected:** leave the copy as it is (no re-pinning): the rider gets a step of up to the whole work-to-rest
@@ -601,7 +641,10 @@ cases.
 - Arbitrary strings over the extended alphabet (`$ = * / auto` added) complete with `Ok` or a typed error.
 
 **Resolution (properties).**
-- Inlining: `compile(d) == compile(inline(d))`, where `inline` replaces each use by its value as a literal.
+- Inlining: for every variable `$x` of a generated document, `compile(d) == compile(inline(d, $x))`, where `inline`
+  follows §2.8 and §2.12: a use in a block becomes the literal of its rounded value, a use in another declaration
+  becomes `$x`'s expression in parentheses, then `$x` is deleted; and `parse(print(inline(d, $x)))` gives the same
+  values.
 - Pin equivalence: for a top-level pinned ramp outside any progressing repeat, `compile` equals the compile of the
   same workout with the pinned end replaced by the neighbour's resolved value, except the `pinned_*` flags.
 - Continuity: for every resolved pin, `previous.power_to == ramp.power_from` (and the mirror for a pinned end),
@@ -613,7 +656,9 @@ ramp; an `auto` start after an explicit ramp's number end (`ramp 40%-80%, ramp a
 between two steady blocks (`5m 50%, 30s ramp auto-auto, 10m 95%`); repeat after (iteration 0, first child); repeat before with `!last` (second-last child) and
 with `[+5w]` (last iteration's progressed power); auto ramp as a repeat's first child (iteration 0 vs. later); auto
 ramp as a repeat's last child; HR recovery neighbour (planned power); progression not applied to the auto ramp;
-phase from resolved ends, with and without a "warm" label.
+phase from the number ends only (`ramp 90%-auto` work, `ramp 40%-auto` and `ramp auto-auto` easy, also when the
+pinned end is above 80 %), with and without a "warm" label; `10m 50%, 3x(4m 60%, 1m ramp auto-auto), 5m 90%` (every
+ramp recovery, the last one 60 → 90 %).
 
 **Facing and no-neighbour goldens (errors):** `ramp 40%-auto, ramp auto-auto, 10m 95%` (facing, reported once on the
 first ramp, naming the second); `3x(1m ramp auto-auto)` after a steady block (pinned to itself across the repeat,
@@ -622,19 +667,23 @@ two nodes); first-block pinned start and last-block pinned end.
 
 **Rounding and inlining:** `250w / 3` used as a target is 83 W and `100% / 3` 33.333 %; `$a = 250w / 3`,
 `$b = $a * 3`, `5m $b` is 250 W, and inlining `$a` keeps 250 W; `$p = 2.5w` in `[+$p]` compiles exactly like
-`[+2.5w]`; `hr<118 $z..4m` with `$z = 0s` is valid; for generated documents,
-`inline(d)` prints to text that parses to the same values, and `compile(d) == compile(inline(d))` exactly.
+`[+2.5w]`; `hr<118 $z..4m` with `$z = 0s` is valid; `$d = 1m30s * 1.1` is exactly 99 s and accepted as a duration;
+a literal with more decimals than `Ratio<i128>` holds is `NumericOverflow`.
 
 **§2.13.1 overlay goldens:** `10m 50%, 3x(4m 100%, 2m ramp auto-auto), 5m 40%` and
 `10m 50%, 3x[+5%, !last](4m 100%, 2m ramp auto-auto), 5m 40%`, each with one `repeat_once`: `effective` equals the
 compile with `count = 4` and progression held (the restored ramp 110 → 110 %, the last ramp into the cool-down only
-at the end); the same with the seam ramp current at accept (frozen, only it differs); and a skip next to a pinned
-ramp (no pin moves).
+at the end); `3x[!last](4m 100%, 1m ramp 100%-auto, 2m 50%), 5m 40%`: compiled, iteration 2's ramp is 100 → 40 % (its
+rest is skipped, so it meets the cool-down); after one `repeat_once` it meets the restored rest and is re-pinned to
+100 → 50 %, and the added rep's ramp is 100 → 40 %; the same with the seam ramp current at accept (frozen, only its
+power differs); a skip next to a pinned ramp (no pin moves); and the undo window: `10m 50%, 3x(4m 100%, 2m ramp
+auto-auto), 5m 40%` with `repeat_once` accepted during iteration 2's 4 min, Undo accepted while that 4 min is current
+(the ramp returns to 100 → 40 %) and refused once the re-pinned ramp has started.
 
 **§2.13.1 overlay (in the `workout::overlay` property tests of §17.7):** for generated workouts with pinned ramps
 inside and around repeats, `effective(compiled, repeat_once × n)` equals `compile` with `count + n` and progression
-held, pinned ends included; with a seam block frozen, only that block differs; undo restores the compiled targets;
-the engine invariant (nothing at or before the cursor changes) holds with pins in the generator.
+held, in every field including phase; with a block frozen, only its power differs; an undo inside its window restores
+the compiled targets, and no undo is accepted once a `repinned` block has started; the engine invariant (nothing at or before the cursor changes) holds with pins in the generator.
 
 **Error cases:** each row of §2.3 (issue kind, severity, `node_id`, message) and of §2.14 (kind, message, offset and
 length), and each bound of §2.14 at the limit (succeeds) and one past it (refused).
