@@ -86,10 +86,14 @@ async fn on_will_sleep_releases_through_the_managed_core() {
 
     // The intent runs on Tauri's runtime (real time) while the core's timers follow this test's
     // paused clock: advance the clock and give the other runtime real time, until the ride is
-    // gone (bounded, 10 s of real time), as `tests/lifecycle.rs` waits for the quit.
+    // gone and its trainer released (bounded, 10 s of real time), as `tests/lifecycle.rs` waits
+    // for the quit. Both are awaited: the ride's unload is visible before the release that the
+    // intent answers after (`links_intent`, ADR-0002 §5.1.3) has made the trainer `cold`.
     for _ in 0..2000 {
         tokio::time::sleep(Duration::from_millis(20)).await;
-        if !core.ride_status().await.unwrap().status.loaded {
+        if !core.ride_status().await.unwrap().status.loaded
+            && trainer(&core).await == Some(LinkPhase::Cold)
+        {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
