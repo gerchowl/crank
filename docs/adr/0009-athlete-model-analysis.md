@@ -27,14 +27,20 @@ in brackets has the reasons and the rejected alternatives.
 6. **No silent writes to the eight parameters.** Analysis only *proposes*; the rider confirms each proposal. Derived
    baselines that set no prescription (HR at power, usual HR-recovery τ, typical distributions) update on their own,
    versioned and visible (§2.2.5).
-7. **Three proposal kinds in v1**: HR max from a clean peak HR, CP/W′ refit when a self-paced effort beats the
-   model, and the ramp-test FTP of ADR-0004. LTHR, resting HR and weight are set by hand only (§2.2.4).
+7. **Tests and analysis calibrate FTP, CP/W′, HR max and LTHR**, each as a proposal with ± and source that the rider
+   confirms (owner ruling 2026-11-22, "HR calibration wanted"): FTP from the ramp test (ADR-0004) and from CP; CP/W′
+   from the CP assessment (ADR-0004 "next") and from self-paced rides; HR max from a verified ramp peak and from a
+   clean ride peak; LTHR from a 30-min threshold effort (Friel's protocol, a test or a matching ride segment) and from
+   steady ERG blocks at threshold. A value typed in Settings wins: it is current until the rider accepts a later
+   proposal, and it supersedes every open proposal for that parameter. Resting HR and weight are typed in only
+   (§2.1.1, §2.2.4).
 8. **An upward FTP proposal from a valid CP fit** ("from your power-duration curve"), never downward. Recommended: yes
-   (§2.2.4, row P4).
+   (§2.2.4, row P8).
 9. **Re-analysing an old ride never proposes over a newer estimate**: a proposal needs a ride newer than the
    parameter's current value (or a current value that is still the prior) (§2.2.4).
 10. **ERG seconds never feed the CP fit**: in ERG the power is the target, not what the rider could do; only
-    self-paced seconds (free ride, resistance, SIM, test) count (§2.2.4, §2.3).
+    self-paced seconds (free ride, resistance, SIM, a self-paced test) count. Rides recorded before the per-second
+    target existed count as self-paced only when the whole ride was (a free or route ride) (§2.2.4, §2.3.2).
 11. **The record gains two per-second metrics**, the controlled target and the on-target class, so compliance and
     per-interval comparison work on stored rides, not only live (§2.3.2).
 12. **Fitness / fatigue / form (CTL/ATL/TSB) is shown as a descriptive trend** with the generic 42/7-day constants and
@@ -48,6 +54,11 @@ in brackets has the reasons and the rejected alternatives.
 16. **Analysis results are stored** in derived tables keyed by ride and an analysis version, and recomputed in the
     background when the version changes (§2.2.2, §2.5).
 17. **ADR-0004 is amended** so its `athlete_confirm_ftp` becomes the generic proposal accept of §2.2.6 (§2.2.4).
+18. **A proposal is accepted against the evidence it froze** (the rides, MMP points and analysis version it was
+    computed from), so new rides never make it unacceptable; only a version bump or a deleted ride makes it stale, and
+    then a fresh one is raised (§2.2.4).
+19. **A gap or a pause never fails a ride's analysis**: each metric has its own gap and coverage rule, rolling windows
+    never bridge a gap, and a metric below its coverage is shown as missing with the reason (§2.3.1.1).
 
 ## 1. Context
 
@@ -62,7 +73,7 @@ type/tags; totals, distributions, time in zone, MMP over the set, trends) and ho
 |---|---|---|
 | FTP | a constant, 250 W, written into every library workout's `Workout.ftp` | `crates/crank-core/src/library.rs` `FTP_W` |
 | Athlete store | `athlete_estimate (param, value, sd, source, n, updated_at)` exists, append-only by design; **no code reads or writes it**; `athlete_profile.weight` exists, unused | `migrations/0001_initial.sql`, ADR-0001 §6 |
-| Athlete inputs to the ride | #247 (open): resolve CP, W′, τ onto `RideSetup`; `compile.rs` still hardcodes CP 280 W, W′ 20 kJ | #247 |
+| Athlete inputs to the ride | #247 (open): resolve CP, W′, τ onto `RideSetup`; `compile.rs` `reserve_diagnostic` uses CP = the workout's FTP and a hardcoded W′ of 20 kJ (the 280 W in #247's text is the simulator rider's default FTP, `sim/core.rs` `SimRider`, not a compile constant) | #247 |
 | HR references | `app/src/athleteHr.ts` placeholder: LTHR and HR max are always `null`, nothing sets them; the HR-zone tables live in `app/src/ride/hrZone.ts` | #586, #645 |
 | Settings → Athlete model | lists HR max and LTHR as "Not set"; estimates, ± and override are #113 | DESIGN §5.9 |
 | Stored ride summary | `RideSummary { duration_s, avg_power_w, np_w, avg_hr_bpm, kj, blocks[planned_s, planned_w, actual_s, actual_w] }`, written at finish | `dto.rs` `RideSummary`, `recorder.rs` `summarize` |
@@ -82,6 +93,11 @@ type/tags; totals, distributions, time in zone, MMP over the set, trends) and ho
 
 - `spec/ONBOARDING.md` §3: every athlete parameter is an estimate with uncertainty and provenance; the coach is
   conservative in proportion to the uncertainty.
+- **Owner rulings of 2026-11-22 on ADR-0004** (being finalised on `docs/486-threshold-test-v2`): the ramp test first,
+  a CP assessment next; FTP ± 8 % as a convention floor; **HR calibration wanted**: tests and analysis estimate HR max
+  and LTHR with ± and source, the rider confirms before anything is written, and manual entry in Settings wins; the
+  safety stop at HR max + 5 bpm for 10 s uses a measured or self-reported HR max; a rider over 45 may test after an
+  acknowledgement. This ADR matches them.
 - ADR-0004 §2.5: a value that rescales every workout is never written without an explicit confirm, and the confirm
   recomputes in the core so a UI can never write a value the core did not derive. This ADR generalises that rule.
 - The knowledge pack separates evidence from convention. FTP is not a physiological threshold (03); TSS/CTL are
@@ -102,13 +118,16 @@ The four parts ship in order; each is useful when the parts before it have lande
 | Param (`AthleteParam`) | Unit | Used by | Sources allowed |
 |---|---|---|---|
 | `ftp` | W | % FTP → W at load, power zones, IF/TSS, generation (#699) | prior, self_report, test, rides, imported |
-| `cp` | W | W′bal, coach (#247), kJ above CP | prior, self_report, rides, imported |
-| `w_prime` | J | W′bal, coach (#247) | prior, self_report, rides, imported |
+| `cp` | W | W′bal, coach (#247), kJ above CP | prior, self_report, test (the CP assessment), rides, imported |
+| `w_prime` | J | W′bal, coach (#247) | prior, self_report, test (the CP assessment), rides, imported |
 | `pmax` | W | OmPD fit (#18), MMP model display | self_report, rides, imported |
-| `hr_max` | bpm | HR zones (5 zones), ADR-0004 HR limit | prior, self_report, rides, imported |
-| `lthr` | bpm | HR zones (Friel 7, wins over HR max, DESIGN §18.3) | self_report, imported |
+| `hr_max` | bpm | HR zones (5 zones), ADR-0004 HR safety stop (non-prior only) | prior, self_report, test (ramp peak), rides (clean peak), imported |
+| `lthr` | bpm | HR zones (Friel 7, wins over HR max, DESIGN §18.3) | self_report, test (30-min effort), rides (threshold segment or steady ERG block), imported |
 | `hr_rest` | bpm | display; HR reserve later | self_report, imported |
 | `weight` | kg | W/kg, kJ/kg (durability §2.3) | self_report, imported |
+
+`test` means a result of a dedicated assessment ride (ADR-0004); `rides` is ONBOARDING's name for "from analysis of
+ordinary rides". Each method behind a `test` or `rides` value, with its evidence or convention status, is in §2.2.4.
 
 The two τ of ONBOARDING §3 (`tauRecovery`, `wbalRecoveryTau`) and `hrAtPower` are **derived baselines** (§2.2.5), not
 rider-set parameters. `lt1Hr`, `durability` and `economyByCadence` wait for the issues that compute them (#18).
@@ -220,8 +239,12 @@ The DESIGN §5.9 amendment comes with the app issue.
 
 #### 2.2.2 Idempotence and versioning
 
-- The output is a pure function of (record, compiled blocks, snapshot, kind, `ANALYSIS_VERSION`). Recomputing writes
-  the same rows. One ride's derived rows are replaced in **one transaction**, so a reader never sees half an analysis.
+- **Per-ride analysis** (`RideAnalysis` and its narrow tables, §2.2.3) is a pure function of (record, compiled
+  blocks, snapshot, kind, record version, `ANALYSIS_VERSION`). Recomputing writes the same rows. One ride's derived
+  rows are replaced in **one transaction**, so a reader never sees half an analysis.
+- **Proposals are not a function of one ride**: a CP fit spans 90 days of rides, and "newer than the current
+  estimate" depends on the model. A proposal therefore **freezes its inputs** in `evidence_json` when it is raised,
+  and is accepted against that frozen evidence, never against today's window (§2.2.4 "Evidence and acceptance").
 - `ANALYSIS_VERSION` is bumped by any change that changes an output (a formula, a validity rule, a bin width). A
   golden test pins it: a committed fixture ride (`crates/crank-domain/tests/fixtures/analysis/`) and its expected
   `RideAnalysis` JSON; changing the output without bumping the version fails the test, and the bump regenerates the
@@ -250,18 +273,40 @@ tables are projections, never a second computation.
 
 A proposal is a value the analysis derived for one of the eight parameters; nothing changes until the rider accepts it.
 
-| # | Kind (`method`) | Fires when | Proposed value, sd | Class |
+| # | Param, source (`method`) | Fires when | Proposed value, sd | Class |
 |---|---|---|---|---|
-| P1 | HR max from peak (`peak_hr_v1`) | the ride's peak 5 s mean HR exceeds the current `hr_max` (prior or not), the HR signal around the peak is clean (no step > 15 bpm between seconds in the 30 s before it, ≥ 90 % HR coverage in that window) | the peak, rounded; sd 2 bpm | an observed peak is a lower bound of HR max (definition); the 5 s mean and the step guard are convention against strap artefacts |
-| P2 | CP/W′ refit (`cp_ols_v1`) | a self-paced MMP point of this ride between 2 and 15 min exceeds the current CP model's prediction `CP + W′/t` by more than 2 sd of the prediction | CP and W′ from the fit below, each with its standard error | evidence for the model and the effort range [L22, leo2021]; the 2 sd trigger is convention |
-| P3 | ramp-test FTP (`ramp_v1_0.75`) | an assessment ride with a valid result (ADR-0004 §2.5) | ADR-0004's value and 8 % sd | as ADR-0004 |
-| P4 | FTP from CP (`ftp_from_cp_v1`) | a P2 fit is accepted or current with n ≥ 3 efforts and relative se ≤ 5 %, and its CP exceeds the current FTP by > 5 % | the CP, sd = the fit's se combined with the 13 W spread of [K21] | convention: CP ≈ FTP on the mean with wide LoA [K21]; only upward (owner decision 8) |
+| P1 | `hr_max`, test (`ramp_peak_hr_v1`) | an assessment ride that ended `Exhausted` (ADR-0004 §2.4) with a valid result, and its HR gap-free over the last 3 min of the ramp with no step > 15 bpm between seconds | the peak 5 s mean HR, rounded; sd 3 bpm. Proposed when above the current value, **or** when the current value is the prior (a verified maximal effort beats an age formula even when lower) | an observed peak is a lower bound of HR max (definition); a ramp to exhaustion usually ends within a few bpm of it, so sd 3 bpm and the replace-the-prior rule are convention |
+| P2 | `hr_max`, rides (`peak_hr_v1`) | any ride's peak 5 s mean HR exceeds the current `hr_max` (prior or not), the HR clean around the peak (no step > 15 bpm between seconds in the 30 s before it, ≥ 90 % HR coverage in that window) | the peak, rounded; sd 2 bpm | lower bound (definition); the 5 s mean and the step guard are convention against strap artefacts |
+| P3 | `lthr`, test or rides (`lthr_friel30_v1`) | a 30-min self-paced continuous effort: an LTHR test ride (with the self-paced test ADR) or a ride segment of ≥ 30 min, all self-paced, VI ≤ 1.05, mean power ≥ 95 % of the snapshot FTP, ≥ 95 % HR coverage | mean HR of the last 20 min; sd 4 bpm | convention: Friel's field protocol [Fr]; no validation against a lactate threshold is cited |
+| P4 | `lthr`, rides (`lthr_erg_steady_v1`) | an ERG block at 95–105 % of the snapshot FTP lasting ≥ 12 min, decoupling valid on it (§2.3.1) and below 5 %, ≥ 95 % HR coverage, HR on-kinetics excluded (first 5 min) | mean HR of the block after its first 5 min; sd 5 bpm (wider: it inherits FTP's error) | convention, weaker than P3: HR at threshold power holds only as far as FTP does (03: FTP ≠ threshold); the 5 % is a validity gate here, not a verdict |
+| P5 | `cp` + `w_prime`, test (`cp_assessment_v1`) | a valid CP assessment (its own ADR, ADR-0004 "next") | the fit of its efforts, as below | evidence [L22, leo2021] |
+| P6 | `cp` + `w_prime`, rides (`cp_ols_v1`) | a self-paced MMP point of this ride between 2 and 15 min exceeds the current CP model's prediction `CP + W′/t` by more than 2 sd of the prediction | CP and W′ from the 90-day fit below, each with its standard error | evidence for the model and the effort range [L22, leo2021]; the 2 sd trigger is convention |
+| P7 | `ftp`, test (`ramp_v1_0.75`) | an assessment ride with a valid ramp result (ADR-0004 §2.5) | ADR-0004's value, sd 8 % (the owner's convention floor) | as ADR-0004 |
+| P8 | `ftp`, rides (`ftp_from_cp_v1`) | a current or accepted CP estimate from P5 or P6 with n ≥ 3 efforts and relative se ≤ 5 % exceeds the current FTP by > 5 % | the CP, sd = the fit's se combined with the 13 W spread of [K21] | convention: CP ≈ FTP on the mean with wide LoA [K21]; only upward (owner decision 8) |
 
-**The CP fit** (P2): over the last 90 days of `ride_mmp` rows flagged `self_paced`, take the best point per duration
-for durations 2–15 min; require ≥ 3 points spanning at least 2–10 min [L22]; fit `P = CP + W′ · (1/t)` by ordinary least
-squares (closed form; linear in CP and W′, so no optimiser and no library is needed; standard errors from the residual
-variance). Two-point fits are refused (they always fit exactly and give no error, [leo2021]). The OmPD fit with Pmax
-(#18) needs a nonlinear optimiser; its issue does the library search the owner rule requires.
+**The CP fit** (P5, P6): P6 takes, over the last 90 days of `ride_mmp` rows flagged `self_paced` (§2.3.2), the best
+point per duration for durations 2–15 min; P5 takes the assessment's efforts. Both require ≥ 3 points spanning at least
+2–10 min [L22] and fit `P = CP + W′ · (1/t)` by ordinary least squares (closed form; linear in CP and W′, so no
+optimiser and no library is needed; standard errors from the residual variance). Two-point fits are refused (they
+always fit exactly and give no error, [leo2021]). The OmPD fit with Pmax (#18) needs a nonlinear optimiser; its issue
+does the library search the owner rule requires.
+
+**Evidence and acceptance.** When a proposal is raised, `evidence_json` freezes everything its value was computed
+from: the `ANALYSIS_VERSION`; the ride ids and, per ride, the inputs used (P1–P4, P7: the ride's seconds range and
+its record version; P5, P6: each fit point as `(ride_id, duration_s, watts, start_s)` and the window's dates; P8: the
+CP estimate id it read); and the value and sd it produced. `athlete_proposal_accept`:
+
+1. recomputes the value from the frozen evidence with the domain function of its method (a pure function of the
+   evidence, so the same inputs give the same value);
+2. checks the evidence still holds: the analysis version equals the frozen one, and every frozen ride still exists
+   with the same `ride_analysis.version` (P5/P6: with the same `ride_mmp` watts at each frozen point);
+3. writes the estimate (method, the triggering ride id, n) and marks the proposal accepted.
+
+A failed check means the evidence is **stale** (a version bump re-analysed the rides, or a ride was deleted): accept
+refuses with `Conflict`, the proposal becomes `stale`, and the executor's re-analysis raises a fresh one if its rule
+still fires. New rides, and old points ageing out of the 90-day window, do **not** make a proposal stale: it states
+what it is based on ("CP 274 ± 6 W from 4 efforts, 12 Aug–3 Nov"), and the rider decides. A proposal older than 30
+days says so beside its Accept button (convention), and a newer proposal for the same parameter supersedes it.
 
 **Rules for every proposal:**
 
@@ -269,14 +314,20 @@ variance). Two-point fits are refused (they always fit exactly and give no error
   (self_report or prior), onboarding (prior, self_report), an intervals.icu import (ONBOARDING §2, `imported`), and
   `athlete_proposal_accept`. The store API takes an `EstimateOrigin` enum that only those paths construct; a test
   analyses a ride that triggers every proposal kind and asserts the current model is unchanged.
+- **Manual entry wins.** `athlete_set`, `athlete_revert` and `athlete_clear` mark every open proposal for that
+  parameter `superseded`, in the same transaction as the new row; accept also refuses (`Conflict`) a proposal raised
+  before the parameter's current `updated_at`.
 - **Newer only.** A proposal is raised only if the ride started after the parameter's current `updated_at`, or the
   current value is the prior. Backfilling two years of rides does not bury the rider in old peaks.
-- **One open proposal per param.** A new one for the same param supersedes the open one (`superseded`); an accepted or
-  dismissed proposal is never raised again by a recompute of the same ride (the key is `(ride_id, param, method)`).
+- **One open proposal per param.** A new one for the same param supersedes the open one (`superseded`).
+- **Never raised twice.** Proposals are keyed `(ride_id, param, method, analysis_version)`. The executor raises none
+  for a `(ride_id, param, method)` that already has an `accepted`, `dismissed` or `superseded` row at any version: a
+  superseded proposal lost to a newer value or to a manual entry, and re-raising it would undo that (intended). Only a
+  `stale` row lets a re-analysis at a new version raise the proposal again.
 - **Shown** on that ride's Review ("Peak HR 194 bpm is above your HR max 188 bpm. Use 194 as your HR max?") and in
   Settings → Athlete model, with Accept and Dismiss; Today may show a one-line card (DESIGN amendment with the app issue).
 
-**ADR-0004 amendment** (it is still Proposed): the ramp result is produced by this executor as P3, and
+**ADR-0004 amendment** (it is still Proposed): the ramp result is produced by this executor as P7 (and its peak HR as P1), and
 `athlete_confirm_ftp { ride_id }` becomes `athlete_proposal_accept { proposal_id }` with the same guarantees.
 
 #### 2.2.5 Derived baselines (automatic)
@@ -306,11 +357,13 @@ is a proposal; a value that only describes the rider's recent rides is a baselin
 
 #### 2.2.7 Failure handling
 
-- A ride whose analysis fails (a chunk that does not decode, a `MetricError`, a store error) gets `status = failed` and
-  the error text; it is logged at WARN with the ride id and the error kind; the worker moves on. It is retried only by
+- **`failed` is for the ride, not a metric**: only a record that cannot be read (a chunk that does not decode, a
+  store error) or a panic fails the ride. It gets `status = failed` and the error text; it is logged at WARN with the ride id and the error kind; the worker moves on. It is retried only by
   a version bump or `analysis_rerun`, never in a loop. Review shows "Analysis failed: …" with Recompute.
-- A metric that is not valid for a ride (no HR, too short, not steady) is stored as `invalid { reason }`, never as 0
-  or a guess; Review lists only valid metrics (DESIGN §5.5 item 5) and says why the others are missing in *Show as
+- **One metric's trouble never fails the ride.** A metric that is not valid for a ride (no HR, too short, not steady,
+  below its coverage minimum of §2.3.1.1) or whose domain function returns an error (`MetricError`, `CompileError`) is
+  stored as `invalid { reason }` for **that metric** (an error is also logged at WARN with the metric name), and every
+  other metric is analysed. Never 0 or a guess; Review lists only valid metrics (DESIGN §5.5 item 5) and says why the others are missing in *Show as
   table*.
 - No `unwrap`; a panic in an analysis is a bug that the blocking task contains (the `JoinError` becomes `failed`).
 - Crash during an analysis: the transaction never committed, so the ride has its old rows or none; the next start's
@@ -320,20 +373,48 @@ is a proposal; a value that only describes the rider's recent rides is a baselin
 
 #### 2.3.1 Metric set
 
+##### 2.3.1.1 Seconds, pauses and gaps
+
+The record has one row per **session** second, paused seconds included (`record.rs` `SecondRow`); a value is NaN when
+no sample arrived (a dropout, a strap that lost contact, a #610-style speed gap).
+
+- **Riding seconds** are seconds with a riding tick (`workout_s` finite). A paused second has none and is excluded from
+  every metric except *duration*.
+- **Per-metric valid seconds**: a riding second with a finite value of the metric's own channel (power, HR, cadence,
+  speed). A gap in one channel never removes a second from another: an HR loss leaves every power metric intact.
+- **No bridging.** A rolling window (NP's 30 s, MMP windows, the 5 s peak HR) never spans a gap or a pause. NP is
+  computed per run of consecutive valid power seconds: each run of ≥ 30 s contributes its 30 s windows to one common
+  fourth-power mean, `NP = (Σ_runs Σ_windows mean⁴ / total windows)^¼`, which calls the existing `normalized_power` on
+  each run (it rejects NaN, `compile.rs` `normalized_power`) and weights each run's fourth-power mean by its window
+  count; shorter runs add to average power and work, not to NP. Today's `recorder.rs` `summarize` concatenates the
+  power seconds across gaps; issue 6 (§4.1) moves it onto this rule, so the stored summary and the analysis agree.
+- **Coverage minimum** (convention): a power metric needs valid power on ≥ 50 % of riding seconds and ≥ 60 s; an HR
+  metric ≥ 60 % (decoupling and the LTHR proposals state their own, higher, minimum); a cadence metric ≥ 50 %.
+  Below it the metric is `invalid { reason: "power for 0:41 of 1:00:00" }`. Every valid metric carries its coverage, and
+  Review shows it when below 100 % (DESIGN §5.5 item 1 already lists gaps per sensor).
+- **W′bal across a gap**: the balance is held unchanged through gap seconds (no expenditure, no recovery; convention),
+  and the minimum says how many gaps it spans.
+- **Speed and distance** (route rides, ADR-0005): distance sums finite speed seconds only, never interpolates, and
+  states "excludes 0:12 without speed".
+- **Duration** is all recorded seconds (paused included); **riding time** excludes paused seconds; **moving time** is
+  riding seconds with power > 0 or cadence > 0.
+
+##### 2.3.1.2 Metrics
+
 "Evidence" means a peer-reviewed study supports the metric's use as stated; "convention" means a coaching or platform
 rule. Every metric excludes NaN seconds unless stated; `estimated` seconds count (ADR-0001 §6). All are per ride; set
 aggregates are §2.4.4.
 
 | Metric | Formula | Valid when | Class, source |
 |---|---|---|---|
-| Duration, moving time | recorded seconds; seconds with power > 0 or cadence > 0 | always | definition |
+| Duration, riding time, moving time | §2.3.1.1 | always | definition |
 | Work | Σ P · 1 s / 1000, kJ (exists) | any power | definition |
 | kJ/kg | work / snapshot weight | weight set | definition; the durability axis (01) |
 | Avg power, NP | mean; NP = (mean of 30 s rolling mean⁴)^¼ (`normalized_power`, exists) | ≥ 30 s power | convention [AC] |
 | IF | NP / snapshot FTP | FTP resolved | convention [AC]; FTP ≠ threshold (03) |
-| TSS | s × NP × IF / (FTP × 3600) × 100 | FTP resolved | convention [AC]; behaves differently at high vs low IF [vanerp2019] (#570 lands this) |
+| TSS | s × NP × IF / (FTP × 3600) × 100, s = valid power seconds (paused and gap seconds excluded, so a dropout never inflates it) | FTP resolved | convention [AC]; behaves differently at high vs low IF [vanerp2019] (#570 lands this) |
 | VI | NP / avg power | ≥ 30 s power | convention [AC] |
-| MMP curve | best gap-free mean per duration: 1, 2, 3, 5, 10, 15, 20, 30 s; 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30, 40, 50, 60, 75, 90, 120, 150, 180, 240 min (up to the ride's length); each point flagged `self_paced` when all its seconds were outside ERG | the window fits | definition; its use for CP/W′ is evidence [L22] |
+| MMP curve | best gap-free mean per duration: 1, 2, 3, 5, 10, 15, 20, 30 s; 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30, 40, 50, 60, 75, 90, 120, 150, 180, 240 min (up to the ride's length); each point flagged `self_paced` by the rule of §2.3.2 | the window fits (gap-free, no pause) | definition; its use for CP/W′ is evidence [L22] |
 | W′bal min, kJ above CP | `wbal_series` with snapshot CP, W′; Σ max(0, P − CP) | CP, W′ resolved | Skiba model [skiba2012]: evidence B (02); kJ above CP: 01 |
 | Power time in zone | Coggan 7 at snapshot FTP (the `compile.rs` bounds), beside the planned `time_in_zone_s` | FTP | convention [AC] |
 | HR avg, peak | mean; max 5 s mean | ≥ 60 % HR coverage | definition |
@@ -345,11 +426,15 @@ aggregates are §2.4.4.
 | On target (compliance) | share of counted ERG seconds within ±5 % of the controlled target, settling excluded, per block and ride | recorded target (§2.3.2) | the one definition, DESIGN §5.5 / ADR-0002 §7.8 |
 | Durability | MMP 1, 5, 20 min after 10/20/30 kJ/kg, as % of the ride's own fresh MMP | weight set, the ride crosses the checkpoint and has ≥ the duration after it; shown for self-paced points only | field durability repeatable: evidence B [mateomarch2025reliability]; checkpoints from 01 |
 | HR recoveries | τ ± fit uncertainty against usual τ (exists, DESIGN §5.5 item 4) | recovery blocks | as DESIGN |
-| Ride category | the zone (Coggan 7, at snapshot FTP) holding the most work-phase seconds, mapped to endurance (Z2), tempo (Z3), threshold (Z4), VO2 (Z5), anaerobic (Z6–7), recovery (Z1); `test` for an assessment, `free` for a free ride | always | convention (this ADR) |
+| Ride category | the **highest** zone (Coggan 7, at snapshot FTP) holding ≥ 25 % of the work-phase seconds (all riding seconds when the ride has no work phase: free and route rides), mapped to recovery (Z1), endurance (Z2), tempo (Z3), threshold (Z4), VO2 (Z5), anaerobic (Z6–7); `test` for an assessment. Free and route rides get a category too; their kind is a separate filter (§2.4.3) | valid power | convention (this ADR). "Highest zone over a share" rather than "most seconds", so a 5 × 3 min VO2 session is VO2 even with long recoveries, and an over-under set is not filed under its lower zone. Known weakness: a short hard block inside a long ride (under 25 % of it) leaves the ride "endurance", and the 25 % is arbitrary; the category is a filter aid, never a load measure |
 
 **Trends** (set level, §2.4.4): weekly hours, kJ, TSS; time in 3 zones (06; the polarization index is evidence C
 [treff2019] and is shown with its formula); CTL/ATL/TSB as exponentially weighted daily TSS with 42- and 7-day
-constants, labelled "descriptive trend (model with generic constants)" (13: fitness–fatigue models fit history but
+constants: `CTL_d = CTL_{d−1} + (TSS_d − CTL_{d−1}) · (1 − e^(−1/42))` (ATL the same with 7), TSB_d = CTL_{d−1} −
+ATL_{d−1}. The exact decay `1 − e^(−1/τ)` is used rather than the common `1/τ` approximation (they differ by ~1 % at
+τ = 42: 0.0235 vs 0.0238), so other tools' numbers will not match to the unit. Both start at 0 on the day of the first
+ride (or the first imported day) and the first 42 days are drawn "building"; a day's TSS is the sum of its rides'
+TSS; a ride without TSS (no FTP) adds 0 and the chart says "n rides without TSS". Labelled "descriptive trend (model with generic constants)" (13: fitness–fatigue models fit history but
 predict an individual poorly [busso2023]; generic constants are not appropriate for individuals [vermeire2022]).
 
 **Not in this ADR**: DFA-α1 on Review (the domain has it; it needs the RR record and the guard rules of 04), OmPD,
@@ -369,6 +454,20 @@ The executor's per-interval stats come from one pure domain function over the re
 equal that function on the same seconds: a test feeds the engine's per-second rows to the domain function and compares
 it with the engine's lap output (one definition, as the following-model fixture ties the engine to its model). Rides
 recorded before this change have no `target_w`: their on-target is `invalid { reason: "not recorded" }`.
+
+**Record version and `self_paced`.** A NaN `target_w` must not be read as "outside ERG" on a ride that never recorded
+the target. So `ride.record_version` (migration 0005: `INTEGER NOT NULL DEFAULT 1`, every existing ride is 1) says
+which metrics the record holds; the recorder writes **2** from the change that adds `target_w` and `compliance`, and
+any later record change bumps it again. A second is self-paced when:
+
+- **record version ≥ 2**: it is a riding second and its `target_w` is NaN (no ERG target: free ride, resistance, SIM,
+  a self-paced test, the ADR-0004 cool-down);
+- **record version 1**: only when the ride's `kind` is `free` or `route` (no ERG anywhere in the ride). Every other
+  version-1 ride, ERG workouts and their free blocks included, has **no** self-paced seconds, because the record
+  cannot tell its blocks apart. Its MMP is stored and shown, flagged `self_paced = false`, and never feeds a fit,
+  a durability figure or a proposal.
+
+A version-1 ride never becomes version 2 by re-analysis; the record is what it is.
 
 #### 2.3.3 Review and History
 
@@ -472,9 +571,13 @@ Two migrations, each with the part that needs it:
   `ADD COLUMN kind TEXT CHECK (kind IN ('workout','free','assessment','route'))`, back-filled from what each row
   holds (`route_json` → route; the free-ride workout id `free-ride`, as `core.rs` maps it to a `null` `workout_id` → free;
   else workout). ADR-0004's `RideKind` writes it.
+- `ALTER TABLE ride ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1` (§2.3.2): every existing ride is
+  version 1; the recorder keeps writing 1 until issue 5 makes it 2.
 - `athlete_proposal (id INTEGER PRIMARY KEY, ride_id NOT NULL REFERENCES ride(id), param, value, sd, method,
-  evidence_json, status CHECK (status IN ('open','accepted','dismissed','superseded')), created_at, decided_at,
-  estimate_id REFERENCES athlete_estimate(id), UNIQUE (ride_id, param, method))`.
+  evidence_json NOT NULL, analysis_version INTEGER NOT NULL,
+  status CHECK (status IN ('open','accepted','dismissed','superseded','stale')), created_at, decided_at,
+  estimate_id REFERENCES athlete_estimate(id), UNIQUE (ride_id, param, method, analysis_version))` (the raise rules
+  of §2.2.4 "Never raised twice" sit in the core, not in a constraint).
 
 **`0006_ride_analysis.sql`** (Part 2): `ride_analysis`, `ride_metric`, `ride_mmp`, `ride_zone_time`, `ride_hist`,
 `athlete_baseline (kind, key, value_json, version, computed_at, PRIMARY KEY (kind, key))`, each with
@@ -509,13 +612,25 @@ what this ADR makes available, not what is sent.
   compiled TSS agree on a ride that rides the plan exactly; the CP OLS fit recovers CP and W′ from points generated
   by the model with noise, refuses two points and refuses a span below 2–10 min; each validity rule on its own;
   priors and bounds; the golden fixture pins `ANALYSIS_VERSION` (§2.2.2).
+- **Gaps and pauses (§2.3.1.1)**, each a domain test: a 10 s power dropout in the middle of a 30 s NP window (NP equals
+  the run-wise reference, never the concatenated trace, and the ride is not `failed`); a 20 s run between two gaps
+  (counts for average power and work, not NP); power below the coverage minimum (power metrics `invalid`, HR metrics
+  still valid); an HR loss for half the ride (HR metrics `invalid` or valid by coverage, every power metric unchanged);
+  #610-style speed gaps (distance excludes them, nothing interpolated, nothing else affected); a ride with no power at
+  all; paused seconds (in duration only; TSS's s and every window exclude them); W′bal held across a gap; a metric
+  whose domain function returns an error is `invalid` while the rest is stored (`ok`).
+- **Self-paced rule (§2.3.2)**: a version-1 ERG ride flags no MMP point self-paced; a version-1 free ride flags all;
+  a version-2 ride flags exactly its NaN-target riding seconds.
 - **Engine/domain tie**: the live lap stats equal the domain interval function on the same seconds (§2.3.2).
 - **Store**: migrations 0005 and 0006 on a v4 database with rows (weight copied, kinds back-filled, estimates kept);
   the derived rows of one ride are replaced atomically; `EstimateOrigin` is the only way to append an estimate.
 - **Core**: the executor runs on ride end, on rerun, and on backfill (version bump re-runs; a failed ride is not
-  retried in a loop; backfill pauses while a ride is loaded); proposals P1–P4 fire and do not fire at their edges, never
-  write an estimate, respect "newer only" and supersede; accept recomputes and refuses stale, superseded and decided
-  proposals; the snapshot is frozen at load (a Settings change mid-ride does not reach the ride); IF/TSS use the
+  retried in a loop; backfill pauses while a ride is loaded); proposals P1–P8 fire and do not fire at their edges, never
+  write an estimate, respect "newer only" and supersede; a P6 proposal is still acceptable after new rides arrive and
+  after its oldest point leaves the 90-day window (accept uses the frozen evidence), and becomes `stale` (`Conflict`)
+  after a version bump or a deleted ride, after which re-analysis raises a fresh one; `athlete_set` supersedes the
+  parameter's open proposals; a superseded, accepted or dismissed proposal is not raised again; accept refuses stale,
+  superseded and decided proposals; the snapshot is frozen at load (a Settings change mid-ride does not reach the ride); IF/TSS use the
   snapshot; a model change re-analyses nothing.
 - **App**: each mock backend models every refusal of the commands it calls (repo convention, with the core
   `file.rs symbol`); Settings → Athlete model edit, revert, clear, proposals; History filter, selection, Compare;
@@ -572,11 +687,15 @@ what this ADR makes available, not what is sent.
 
 **Part 2: executor**
 
-5. engine: record `target_w` and `compliance` per second (§2.3.2), with the engine/domain lap tie test.
-6. domain: `analysis` module, metrics of §2.3.1, intervals, `ANALYSIS_VERSION`, golden fixture.
+5. engine + store: record `target_w` and `compliance` per second and write `record_version = 2` (§2.3.2; the
+   column comes with migration 0005), with the engine/domain lap tie test.
+6. domain: `analysis` module, metrics of §2.3.1 with the gap rules of §2.3.1.1 (run-wise NP; `recorder.rs`
+   `summarize` moves onto it), intervals, the self-paced rule, `ANALYSIS_VERSION`, golden fixture.
 7. store + core: migration 0006, the executor (triggers, backfill, failure handling), `lap` rows, `ride_analysis`,
    `analysis_rerun`, baselines (§2.2.5).
-8. domain + core: proposals P1–P4, the CP fit, `athlete_proposals`, accept and dismiss; the ADR-0004 amendment applied.
+8. domain + core: proposals P1, P2, P4, P6, P7, P8, the CP fit, frozen evidence and accept against it,
+   `athlete_proposals`, accept and dismiss, manual entry superseding; the ADR-0004 amendment applied. P3 (LTHR from a
+   30-min effort, the ride-segment form) lands here; its test form and P5 land with the self-paced test ADR.
 
 **Part 3: ride analysis**
 
@@ -596,10 +715,10 @@ Follow-ups filed on acceptance: rider tags (§2.4.3); OmPD and Pmax fit, with th
 
 | Question | Recommendation | Issue | Milestone |
 |---|---|---|---|
-| The 17 decisions of "For the owner" | as written | filed on acceptance | — |
+| The 19 decisions of "For the owner" | as written | filed on acceptance | — |
 | Should a prior HR max ever drive HR zones (with a "calibrating" badge) instead of showing none? | no (decision 5) | filed on acceptance | — |
 | Should CP/W′ estimates widen their sd with age instead of only being marked stale? | not in v1 | filed on acceptance | — |
-| LTHR proposal from a self-paced 30-min effort (Friel: mean HR of its last 20 min)? | later, with a self-paced test (ADR-0004 "CP next") | filed on acceptance | — |
+| The LTHR test ride (30-min self-paced effort) and the CP assessment: protocol, UI and safety | their own ADR after ADR-0004 (owner: CP assessment next); this ADR only defines where their results land (P3, P5) | filed on acceptance | — |
 
 ## 6. References (checked 2026-11-22)
 
