@@ -69,7 +69,8 @@ mod mac {
     }
 
     define_class!(
-        // SAFETY: `NSObject` has no subclassing requirements, and the class implements no `Drop`.
+        // SAFETY: `NSObject` has no subclassing requirements. The class implements no `Drop` of its own; its
+        // ivars (the boxed handler) are dropped by objc2 when the instance is deallocated.
         #[unsafe(super(NSObject))]
         #[name = "CrankSleepTarget"]
         #[ivars = Ivars]
