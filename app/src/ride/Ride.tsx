@@ -389,7 +389,11 @@ function Screen({
   const cadence = ride?.live.cadenceRpm ?? null;
   const hr = ride?.live.hrBpm ?? null;
   const hrRefs = useAthleteHr();
-  const detail = usePlan(ride?.id ?? null, plan?.workoutId ?? null);
+  // A free ride has no workout to draw: nothing is asked for it.
+  const detail = usePlan(
+    plan?.workoutId != null ? (ride?.id ?? null) : null,
+    plan?.workoutId ?? null,
+  );
   const compiled = detail?.compiled ?? null;
   const series = ui.series;
   const tooSmall = useTooSmall();

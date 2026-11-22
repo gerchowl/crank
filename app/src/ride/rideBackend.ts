@@ -618,9 +618,18 @@ export function installRide(over: Partial<RideWorld> = {}, ui: UiOptions = {}) {
           (end, b) => Math.max(end, (b.startS ?? 0) + (b.durS ?? 0)),
           0,
         );
+        // A free ride's plan is the core's free ride (core.rs `Core::resolve_workout`): no steps, FTP 0.
+        const free = world.workoutId === null;
         return {
           rideId: world.rideId,
-          workout: { id: "w1", name: world.workoutName, ftp: 250, nodes: [] },
+          workout: free
+            ? { id: "free-ride", name: "Free ride", ftp: 0, nodes: [] }
+            : {
+                id: world.workoutId,
+                name: world.workoutName,
+                ftp: 250,
+                nodes: [],
+              },
           compiled: {
             blocks: world.blocks,
             totalS,
