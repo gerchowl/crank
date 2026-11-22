@@ -23,6 +23,8 @@ function instrument() {
     frames: [],
     /** Frames to lose, in order: each entry loses the next frame of at least that many bytes of JSON. */
     drops: [],
+    /** Until this `performance.now()`, every frame is lost: the channel stalls, whatever the watchdog reopens. */
+    stallUntil: 0,
     dropped: [],
     /** Each callback registered (an invoke's answer, a channel) and run, for the round trip. */
     events: [],
@@ -42,8 +44,11 @@ function instrument() {
         data !== null && typeof data === "object" ? data.message : undefined;
       if (isFrame(message)) {
         const bytes = JSON.stringify(message).length;
-        if (e2e.drops.length > 0 && bytes >= e2e.drops[0]) {
-          e2e.drops.shift();
+        if (
+          t < e2e.stallUntil ||
+          (e2e.drops.length > 0 && bytes >= e2e.drops[0])
+        ) {
+          if (t >= e2e.stallUntil) e2e.drops.shift();
           e2e.dropped.push({ t, bytes, channel: message.channel });
           return undefined;
         }
@@ -83,14 +88,22 @@ async function until(pred, ms, what) {
   }
 }
 
-/** The page's series are one ride's, contiguous: power at 4 Hz, cadence and heart rate at 2 Hz, no hole, no repeat. */
+/**
+ * The page's series are one ride's, contiguous: power at 4 Hz and cadence at 2 Hz with no hole and no repeat; heart
+ * rate at 2 Hz on the same grid, strictly increasing, with holes allowed: the simulated strap drops out for 2 to 6
+ * readings now and then (crates/crank-devices/src/sim/core.rs), and a reading it never sent is no point.
+ */
 function contiguous(series) {
   const step = { power: 0.25, cadence: 0.5, hr: 0.5 };
   for (const [name, points] of Object.entries(series))
     for (let i = 1; i < points.length; i++) {
       const d = points[i].t - points[i - 1].t;
-      if (Math.abs(d - step[name]) > 1e-6)
-        return `${name}: ${points[i - 1].t} -> ${points[i].t} at ${i}`;
+      const n = d / step[name];
+      const ok =
+        name === "hr"
+          ? n >= 1 - 1e-6 && Math.abs(n - Math.round(n)) < 1e-6
+          : Math.abs(d - step[name]) < 1e-6;
+      if (!ok) return `${name}: ${points[i - 1].t} -> ${points[i].t} at ${i}`;
     }
   return null;
 }
@@ -108,7 +121,11 @@ function replay(frames, channel, name) {
   return out;
 }
 
-/** Lose the next frame of any size: the channel stalls, the watchdog reopens it. */
+/**
+ * Lose the next frame of any size: the channel stalls, the watchdog reopens it 2 s after the last frame. The new
+ * channel's first frame follows within milliseconds, so the stale state of one lost frame lasts too short to see;
+ * a test that needs it stalls the channel instead (`stallUntil`).
+ */
 const loseOne = () =>
   page(() => {
     window.__e2e.drops.push(0);
@@ -178,14 +195,23 @@ describe("the snapshot channel", function () {
   it("a stalled channel shows the stale state within 2 s and recovers on a new channel", async () => {
     const before = await ui();
     const channel = await page(() => window.__e2e.frames.at(-1).frame.channel);
-    // The next frame never arrives: unacked, the core holds everything back.
-    await loseOne();
+    // For 3 s no frame arrives: unacked, the core holds everything back, and the frames of the channel the watchdog
+    // reopens are lost too.
+    const stalledAt = await page(() => {
+      const t = performance.now();
+      window.__e2e.stallUntil = t + 3000;
+      return t;
+    });
     await $("[data-testid='engine-unresponsive']").waitForDisplayed({
       timeout: 3500,
     });
     const stale = await ui();
     expect(stale.stale).toBe(true);
-    expect(stale.reopens).toBe(before.reopens + 1);
+    expect(stale.reopens).toBeGreaterThanOrEqual(before.reopens + 1);
+    console.log(
+      `ui.e2e: stalled channel shown as stale ${Math.round(stale.now - stalledAt)} ms after the stall began`,
+    );
+    // The stall ends at 3 s; the next reopen (at most 2 s later) recovers.
     const s = await until((x) => !x.stale, 5000, "recovered");
     await $("[data-testid='engine-unresponsive']").waitForDisplayed({
       reverse: true,
@@ -235,8 +261,9 @@ describe("the snapshot channel", function () {
     // A backfill: lose one frame, the watchdog reopens, the new channel sends the ride's series 256 points at a time.
     const from = await page(() => window.__e2e.events.length);
     const sizesFrom = await page(() => window.__e2e.frames.length);
+    const reopens = (await ui()).reopens;
     await loseOne();
-    await until((s) => s.stale, 3500, "stale");
+    await until((s) => s.reopens > reopens, 3500, "reopened");
     await until(
       (s) => !s.stale && s.series.hr.length >= 300,
       8000,
@@ -298,6 +325,11 @@ describe("the snapshot channel", function () {
     expect(s.ride.id).toBe(before.ride.id);
     expect(s.series.power[0].t).toBe(before.series.power[0].t);
     expect(contiguous(s.series)).toBeNull();
+    // The backfill is the series the page held before the reload, point for point.
+    for (const name of ["power", "cadence", "hr"])
+      expect(s.series[name].slice(0, before.series[name].length)).toEqual(
+        before.series[name],
+      );
     // End the ride through the commands; the frame says how it ended.
     const ended = await browser.executeAsync((done) =>
       window.__TAURI_INTERNALS__.invoke("ride_end").then(
