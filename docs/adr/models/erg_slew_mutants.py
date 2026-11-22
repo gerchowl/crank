@@ -8,7 +8,7 @@ with a reduced random-plan count. A mutant is KILLED when the suite exits non-ze
 exits 0 only if every mutant is killed and the unmutated model passes.
 
 Run with the interpreter that has Ruckig (see erg_slew.py):
-    .venv/bin/python docs/adr/models/erg_slew_mutants.py [--random N]
+    .venv/bin/python docs/adr/models/erg_slew_mutants.py [--random N] [--jobs J] [--only TEXT]
 `just slew-mutants` does the same.
 """
 from __future__ import annotations
@@ -34,7 +34,7 @@ MUTANTS = [
      '        elif trackable(fs) and fs > 0 and st.y - line(k) > EPS:',
      '        elif False:'),
     ('braking may pass the cap by EPS', 'step 6',
-     '            if y > min(line_at(segs, k + i, m) + EPS / 2, m + 1e-6):',
+     '            if y > min(line_at(segs, k + i, m) + EPS / 2, m + ROUND_SNAP):',
      '            if y > line_at(segs, k + i, m) + EPS / 2:'),
     ('no X2 after the step', 'step 8',
      '        if nst.y > r_k + EPS and (nst.v > 1e-9 or nst.y > st.y + 1e-7):',
@@ -139,8 +139,8 @@ MUTANTS = [
      "            out.append(piece)\n            last, kk = piece, end\n    # Merge first, then drop the pieces that end at or before tick k: dropping first made a merged\n    # piece's start depend on the tick that asked (round-7 falsifier, blocker 1).\n    return [p for p in merge_collinear(out) if p.k0 + p.n > k]",
      '            if end > k:\n                out.append(piece)\n            last, kk = piece, end\n    return merge_collinear(out)'),
     ('a slower Ruckig answer accepted', 'X5 (answers not accepted)',
-     '                    and traj.duration > (landing_bound(self.t, -rel, st.v, st.a) if fs == 0.0',
-     '                    and False and traj.duration > (landing_bound(self.t, -rel, st.v, st.a) if fs == 0.0'),
+     '                    and traj.duration > (answer_bound(lim, -rel, st.v, st.a) if fs == 0.0',
+     '                    and False and traj.duration > (answer_bound(lim, -rel, st.v, st.a) if fs == 0.0'),
     ('target velocity exactly at its limit allowed', "Ruckig's segfault guard",
      '        tv = min(max(tv, lo + (1 - TARGET_SCALE) * max(1.0, abs(lo))), hi - (1 - TARGET_SCALE) * max(1.0, abs(hi)))',
      '        tv = min(max(tv, lo), hi)'),
@@ -163,8 +163,8 @@ MUTANTS = [
      's_dur = sum(d for d, _ in slope_change(st.v, st.a, nxt.s, t))',
      's_dur = sum(d for d, _ in slope_change(st.v, 0.0, nxt.s, t))'),
     ('safe braking slack ε, not ε/2 (N20)', 'step 6',
-     '            if y > min(line_at(segs, k + i, m) + EPS / 2, m + 1e-6):',
-     '            if y > min(line_at(segs, k + i, m) + EPS, m + 1e-6):'),
+     '            if y > min(line_at(segs, k + i, m) + EPS / 2, m + ROUND_SNAP):',
+     '            if y > min(line_at(segs, k + i, m) + EPS, m + ROUND_SNAP):'),
     ('drop pieces ending at k too (E13)', 'the line on the tick grid',
      '    return [p for p in merge_collinear(out) if p.k0 + p.n > k]',
      '    return [p for p in merge_collinear(out) if p.k0 + p.n >= k]'),
@@ -225,12 +225,8 @@ MUTANTS = [
     ('degraded: the stop passed through safe braking', 'X5 (degraded)',
      'return self._after(st, self._stop(st), k, segs, m, r_k, exc or "X5", brake=True)',
      'return self._after(st, self._stop(st), k, segs, m, r_k, exc or "X5", brake=False)'),
-    ('a refused braking plan lets the step stand', 'X5 (the braking plan)',
-     '                nst = self._stop(st)\n                self.key = None\n                exc = exc or "X5"',
-     '                self.key = None\n                exc = exc or "X5"'),
-    ('a refused braking plan not degraded', 'X5 (the braking plan)',
-     '                exc = exc or "X5"\n                self.degraded = True',
-     '                exc = exc or "X5"'),
+    # Round 18 deletes the two mutants of a refused braking plan (letting the step stand, not degrading): a brake is
+    # the closed-form stop and cannot be refused, so their code is gone.
     ('recovery landing bound from the recovery state ignores its slope', 'the check (recovery)',
      '            bound = landing_bound(t, delta, v0, a0)\n        elif',
      '            bound = landing_bound(t, delta, 0.0, 0.0)\n        elif'),
@@ -287,7 +283,7 @@ MUTANTS = [
     # Round 16 (f625k): the input layer (several events on a tick), safe braking's meet from below, X3's curvature,
     # the last command for a state that is not a number, X3's bound from above.
     ('safe braking brakes to rest below a falling line (no meet from below, rounds 1-15)', 'step 6',
-     '            meet_nst = None if self.fail_brake else self._meet_below(st, nst, k, segs, m)',
+     '            meet_nst = self._meet_below(st, nst, k, segs, m)',
      '            meet_nst = None'),
     ('the fault branch applies no cap (round 14: it applied the previous one)', 'the cap',
      '            return self._after(st, self._stop(st), k, [], m, math.inf, "X5", brake=True)',
@@ -298,6 +294,23 @@ MUTANTS = [
     ('an invalid value on a tick raises no fault', 'the input layer',
      '        ez.plan_invalid = not finite or cap_bad or off_bad or tick_bad',
      '        ez.plan_invalid = not finite or cap_bad or off_bad'),
+    # Round 18 (PR #693's findings): a stop is the closed-form stop, and the slow-answer rule's bound is answer_bound.
+    ('a stop calculated by Ruckig and its twin (rounds 4-17: the twin brakes under tighter limits than the probe)',
+     'step 6 (the brake)',
+     '        if vel_target == 0.0:\n            self.traj = StopTrajectory(st.v, st.a, self.t)',
+     '        if False:\n            self.traj = StopTrajectory(st.v, st.a, self.t)'),
+    ('slow answers onto a held line judged against landing_bound (rounds 13-17)', 'X5a (answers not accepted)',
+     '                    and traj.duration > (answer_bound(lim, -rel, st.v, st.a) if fs == 0.0',
+     '                    and traj.duration > (landing_bound(lim, -rel, st.v, st.a) if fs == 0.0'),
+    ("the twin's answer judged under the rider's limits (rounds 13-17)", 'X5a (answers not accepted)',
+     '            lim = TwinLimits.of(self.t) if twin else self.t   # judged under the limits it ran with (round 18)',
+     '            lim = self.t'),
+    ('braking may pass the cap by 1e-6 W (rounds 6-17; more than step 8 snaps)', 'step 6',
+     '            if y > min(line_at(segs, k + i, m) + EPS / 2, m + ROUND_SNAP):',
+     '            if y > min(line_at(segs, k + i, m) + EPS / 2, m + 1e-6):'),
+    ('answer_bound without the rest-to-rest move in the gap\'s own direction', 'X5a (answer_bound)',
+     '    up = gap > 0\n    r = t.r_up if up else t.r_dn',
+     '    up = delta > 0\n    r = t.r_up if up else t.r_dn'),
     ('the fault not kept while the latest cap is invalid', 'the input layer',
      '                    m_line, cap_bad = max(e.value, 0.0), False\n                else:\n                    cap_bad = tick_bad = True',
      '                    m_line, cap_bad = max(e.value, 0.0), False\n                else:\n                    tick_bad = True'),
@@ -330,13 +343,9 @@ MUTANTS = [
 
 
 # Mutants shown equivalent, not run (each with its evidence; ADR-0002 §7.10.7 item 9).
-EQUIVALENT = [
-    ('a refused braking plan keeps braking', 'X5 (the braking plan)',
-     'equivalent: self.braking is already False in that branch (it runs only for brake=False, which the '
-     'normal path passes as self.braking; only the other branch sets it True). Measured before the '
-     'assignment was deleted: 1869 entries over 2881 fault-injected plans, braking True on 0, traces '
-     'identical to 0 W (round 13b).'),
-]
+# Round 18 deletes round 13b's entry ("a refused braking plan keeps braking"): a brake can no longer be refused, so
+# the branch it was about is gone.
+EQUIVALENT: list = []
 
 def run(path: pathlib.Path, n: int) -> tuple[int, str]:
     p = subprocess.run([sys.executable, str(path), "--random", str(n)], capture_output=True, text=True)
@@ -346,6 +355,10 @@ def run(path: pathlib.Path, n: int) -> tuple[int, str]:
 
 def main(argv) -> int:
     n = int(argv[argv.index("--random") + 1]) if "--random" in argv else 400
+    # --jobs: mutants run at once (8 by default; 1 on a shared host); --only: mutants whose name contains one of the
+    # comma-separated texts.
+    jobs_n = int(argv[argv.index("--jobs") + 1]) if "--jobs" in argv else 8
+    only = argv[argv.index("--only") + 1] if "--only" in argv else None
     src = SRC.read_text(encoding="utf-8")
     rows, ok = [], True
     code, first = run(SRC, n)
@@ -354,6 +367,8 @@ def main(argv) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         jobs = []
         for i, (name, rule, old, new) in enumerate(MUTANTS):
+            if only is not None and not any(o in name for o in only.split(",")):
+                continue
             if src.count(old) != 1:
                 jobs.append((name, rule, None))
                 continue
@@ -361,7 +376,7 @@ def main(argv) -> int:
             path.parent.mkdir()
             path.write_text(src.replace(old, new), encoding="utf-8")
             jobs.append((name, rule, path))
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=jobs_n) as pool:
             results = list(pool.map(lambda j: run(j[2], n) if j[2] else None, jobs))
         for (name, rule, path), res in zip(jobs, results):
             if res is None:

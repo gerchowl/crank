@@ -1716,6 +1716,20 @@ policy below lives in `crank-engine::erg`, so it applies to every driver and is 
     terms (7 of 400 recoveries at (50, ×1, 1) still missed D5, worst 1.31×);*
   - *X3's floor is checked over the whole window, and an invalid initial cap is a fault (pinned);*
   - *documented: in a cap or offset fault, degraded mode holds even if a valid lower offset arrives.*
+- *Round 18 (2026-11-22), after the Rust port (#620, PR #693) found two design findings, both reproduced in the
+  model with upstream Ruckig (the owner: fix the design first, then the port):*
+  - *a stop is the closed-form stop, not a Ruckig calculation: step 6's brake and step 4's hold are the very profile
+    the probes accept, under the same limits, so the twin never answers one. Finding 1: the twin's brake, under limits
+    2⁻²⁰ tighter, braked longer than its probe and ended 1.6·10⁻⁶ W past 0 W, or overshot rest from the probe's
+    boundary and rose; 45 of 20 000 port plans with 20 % refusals cut outside X2–X4's domain;*
+  - *the slow-answer rule judges an answer onto a held line against `answer_bound`, never below the duration of a
+    feasible landing, instead of `landing_bound`, which bounds a fall only to at or below the line. Finding 2: from a
+    fall whose stop passes the line, the landing ends with a rise at r↑; both answers were refused, and the easer
+    degraded in fault-free riding;*
+  - *the same rule twice more, found by the model's 20 000-plan run of the twin answering: safe braking's tolerance
+    at `M` is `ROUND_SNAP`, what step 8 snaps (a twin's landing 10⁻⁷ W above `M` was accepted, then cut by X3), and
+    the twin's answer is judged under the twin's own limits (near the rate, its tighter rate was refused as slow);*
+  - *a new promise, P8: a fault-free plan is never degraded, checked on every fault-free random plan.*
 
 *The design's model drives the library itself: `docs/adr/models/erg_slew.py`, with Ruckig in the loop.*
 
@@ -1958,6 +1972,7 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
      command engaged a fraction of a watt above a steep rise chases it rather than holding (round 6; a golden plan
      pins it).
    - If the line is moving towards the command, the target velocity is 0: the command holds, and the line comes to it.
+     Since round 18 the hold, a stop like step 6's brake, is the closed-form stop, not a Ruckig calculation.
    - A line at *exactly* the rate counts here too. After an eased start, the command can only lag it.
 5. **Above a rising line, come down and meet it (round 14).** If the command is above a rising line by more than ε on
    tick `k`, Ruckig plans in the line's frame onto the line with the command **at rest** there (target velocity `−s`
@@ -1971,16 +1986,23 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
      152 W and the command held 303 W for the remaining 280 s. With the meet it is at the line within 6.25 s. The
      repro is pinned, and failed P7's ramp check before the fix.
 6. **Safe braking.** A step after which the command **rises or will rise** is taken only if the new state itself, on
-   its own tick, and then Ruckig's braking trajectory from it stay at or below the plan line known ahead, tick by
+   its own tick, and then the braking trajectory from it stay at or below the plan line known ahead, tick by
    tick, until the command is at rest. The candidate's own tick was added in round 6: a line that dips 0.5 W for one
    tick and then climbs steeply let a chase step overshoot the dip (seed 1, plan 10743 of round 6's generator).
    - "Will rise" means `v > 0`, or a braking fall whose curvature will carry it past rest: `a > 0` and
      `v + a²/(2·j_max) > 0`.
-   - The braking trajectory is the velocity interface to `v = 0` under the same limits. It may pass the line by at
+   - The braking trajectory is the time-optimal stop to `v = 0` under the same limits, in closed form (round 11 for the
+     probe, round 18 for the brake that runs; below). It may pass the line by at
      most ε/2, strictly inside X2's ε, so a braking path that is accepted is never cut (seed 2, plan 19521, pinned).
-     It may not pass the cap `M` beyond floating point (1e-6 W), so a ramp that runs into the cap is braked to rest
-     exactly at `M` (seed 585, plan 7929, pinned). With no tolerance, a time-optimal landing on a cap line was refused
-     by float noise and re-approached in cycles (round 6).
+     It may not pass the cap `M` beyond floating point, `ROUND_SNAP` = 10⁻⁹ W, so a ramp that runs into the cap is
+     braked to rest exactly at `M` (seed 585, plan 7929, pinned). With no tolerance, a time-optimal landing on a cap
+     line was refused by float noise and re-approached in cycles (round 6).
+     - Round 18: the tolerance is `ROUND_SNAP`, what step 8 snaps, instead of 10⁻⁶ W, so the probe accepts nothing that
+       step 8 then cuts. The 0 W probe already had it. At 10⁻⁶ W a landing onto `M` answered by the twin (its tighter
+       limits overshoot `M` by about 10⁻⁷ W from a state the rider's limits stop exactly at `M`) passed the probe, and
+       X3 cut it with no event pending (the model's plan 18585 + 12602, pinned; likely the class of the port's one X3 in
+       finding 1, which the port re-runs). Ruckig's
+       own landings stay within 10⁻⁹ W (round 12), and seed 585's plan 7929 still passes.
    - A step that leaves the command falling is taken only if its braking trajectory stays at or above 0 W.
    - **Below a falling line, it meets the line at rest (round 16, f625k).** Where a rising step is rejected below a
      line falling at a trackable slope (not leading into a vertex), Ruckig plans in the line's frame onto the line
@@ -2008,7 +2030,32 @@ falling rate `r↓ = f·r↑` in `τ·(1 + f)/2`.
        - Pinned: the falsifier's repro, its second case (−3.75 W/s, 52 W below) and 360 recoveries at (50, ×1, 1),
          with 0 misses. No rising tick ends more than 0.25 W above the line.
      - The probe stays the stop to rest, so degraded mode is still the very stop safe braking accepts.
-   - Otherwise the command eases out from the current state (velocity target 0) until it is at rest.
+   - Otherwise the command eases out from the current state until it is at rest.
+   - **The brake is the probe's own stop (round 18, finding 1 of PR #693).** The brake is the closed-form
+     time-optimal stop from the current state, the profile the probe accepted that state on, under the same limits.
+     It is not a Ruckig calculation, and neither is step 4's hold, which is a stop as well.
+     - Rounds 4–17 calculated the brake with Ruckig's velocity interface. Where Ruckig refused it, the twin answered,
+       with every limit 2⁻²⁰ tighter than the probe's, and that is a different profile:
+       - It brakes slightly longer. A landing the probe accepted exactly on 0 W ended 1.6·10⁻⁶ W below it, past
+         `ROUND_SNAP`, and X4 cut it with no event pending.
+       - From a state exactly on the probe's will-rise boundary (`v + a²/(2j) = 0`, a chase's brake at (30, ×3, 1.5)),
+         its smaller jerk carried the stop past rest, so the command rose while 8.8 W above a line at 0 W, and X2 cut it.
+       - The port measured 45 such cuts in 20 000 plans with 20 % of first calculations refused and the twin
+         answering (29 X4, 15 X2, 1 X3). The model's own generator finds the same (2 of the first 300 plans with
+         seed 1), and both of its plans are pinned with a single refused tick.
+     - Why not a margin: a margin for the twin's slack (10⁻⁶ W here, growing with the stop) would be a tolerance with
+       no derivation. Probing under both limit sets would still leave a mixed path unchecked: a twin brake continued
+       by a Ruckig re-plan from its state, which is how the X4 plan ended. With the brake being the probe's own
+       profile, what the probe accepts is exactly what runs.
+     - The stop is the closed form that degraded mode already runs (round 13) and the probes already use (round 11),
+       covered by property tests against dense sampling. Ruckig's own answer to it is the same profile, so it added
+       only the refusal path.
+     - Consequences:
+       - A brake cannot be refused, so round 13's "a refused braking trajectory degrades" is gone.
+       - The twin now answers only landings, meets and chases, and safe braking probes every one of their steps
+         again.
+       - Degraded mode is still this stop. It differs from the brake only in being entered on a refusal and in
+         raising its status.
    - This is what eases, without a cut:
      - a short block followed by a lower one: the command reaches rest by the boundary, below the plan;
      - a fall that meets a drop;
@@ -2079,13 +2126,53 @@ follow the plan:
   injection is recovered by the twin (all 19 of the Δ = rise·ease steps over every 35th tuning, and every refusal in
   the random plans).
   - **What counts as a refusal.** Ruckig's errors, and an answer the engine does not accept: a trajectory onto a held
-    line (a flat frame, the rider's limits) slower than P4/P7's own `landing_bound` for that move (the second symptom
-    above). Without it the persistent-suite plan 128 was answered with 61.3 s where 31.4 s is time-optimal. **The rule
+    line (a flat frame, the rider's limits) slower than `answer_bound` for that move (round 18, below; the second
+    symptom above). Without it the persistent-suite plan 128 was answered with 61.3 s where 31.4 s is time-optimal. **The rule
     applies to the twin's answer too: a slow twin answer is a refusal.** The twin is not always fast: its tightened
     limits carry the same boundary, shifted. From a state whose slope will reach the twin's own `min_velocity` exactly
     (`v − a²/(2j)` on it), at (20, ×1.25, 1), (845.72 W, −23.94 W/s, −13.05 W/s²) onto a held line 491.1 W below,
-    Ruckig answers the first calculation in 20.2 s and the twin in 39.1 s, past `landing_bound` (24.1 s). The model
-    pins that input.
+    Ruckig answers the first calculation in 20.2 s and the twin in 39.1 s, past `landing_bound` (24.1 s), which is
+    `answer_bound` there. The model pins that input.
+  - **`answer_bound` (round 18, finding 2 of PR #693).** An answer's duration is the time to be on the line at rest.
+    `landing_bound` bounds that only where the command does not pass the line on its way: for a fall it is P7's bound,
+    at or below the line. From a state whose stop passes the line (a fall that overshoots below it), the landing ends
+    with a rise at r↑, and even the time-optimal answer can take longer than `landing_bound`.
+    - The finding: at (10, ×4, 1.5), the line jumps 7.5 W up while the command falls at −31.3 W/s, 0.47 W above the new
+      line. Ruckig and its twin both land in 12.38 s, against `landing_bound`'s 11.83 s. Both answers were refused,
+      and the easer degraded in fault-free riding (2 of 20 000 port plans). The plan is pinned in the model.
+    - `answer_bound = max(landing_bound, feasible_landing)`. `feasible_landing` is the duration of one landing crank
+      computes in closed form: the time-optimal stop from the state (`T_s`, ending `x_s` away), then a rest-to-rest
+      move over the gap left, `g = Δ − x_s`, in its own direction, `|g|/r + T_e` (r↑ and τ for `g > 0`, r↓ and
+      τ(1 + f)/2 for `g < 0`), plus P4's 0.75 s. For the finding that is 13.13 s.
+    - The derivation:
+      - The stop ends at rest where the move starts, so the two form one feasible trajectory under the rider's
+        limits that lands at rest on the line.
+      - A rest-to-rest move of `D` takes at most `D/r + T_e`. It takes exactly that where it reaches the rate, and
+        less where it does not: its time is concave in `D`, with slope `1/r` where the rate is first reached.
+      - So the time-optimal landing never takes longer than `feasible_landing`, and a time-optimal answer is never
+        refused.
+      - The 0.75 s covers floating point and the twin's tightening (about 2⁻¹⁹ of the duration).
+    - Where the stop does not pass the line, `feasible_landing ≤ landing_bound`. Its stop is the exact one, within
+      `landing_bound`'s bounds on the stop's time (`|a|/j + v_eff/a_max + a_max/j_max`) and distance (`v_eff·T`), and
+      the move is in the same direction as `landing_bound`'s. So `answer_bound` is `landing_bound` there, the rule is
+      round 13's, and an accepted answer keeps P4/P7 as before. The bound grows only where the stop passes the line,
+      and only to the duration of a landing crank can name.
+    - It is not a widened tolerance: every answer slower than a named feasible landing is still refused. The pinned
+      slow answers (61.3 s against 31.4 s; the twin's 39.1 s against 24.1 s) are falls whose stop does not pass the
+      line, so their bound is unchanged.
+    - The model checks the two inequalities on 20 000 random states. No Ruckig answer away from the velocity boundary
+      is slower than `feasible_landing`, and wherever the stop does not pass the line, `feasible_landing ≤
+      landing_bound` holds.
+    - Ramp frames keep `ramp_bound`, which already takes the gap after the stop in either direction (round 13b) and
+      the slower rate where the direction is not known.
+  - **Each answer is judged under its own limits (round 18).** The twin's answer is judged against `answer_bound` or
+    `ramp_bound` with the twin's limits, the ones it ran with: the rates, `a_max` and `j_max` each times 1 − 2⁻²⁰
+    (each is at least 1), the ease times unchanged.
+    - Rounds 13–17 judged it under the rider's limits. On a ramp near the rate, the closing rate `r↑ − s` (or
+      `r↓ + s`) is small, and the twin's 2⁻²⁰ tighter rate makes its time-optimal answer slower than the rider's
+      `ramp_bound` by far more than the 0.75 s margin. With the first calculation refused, the easer degraded on a
+      valid twin answer (the model's plans 18585 + 16175 and + 1882, ramps at 39.98 W/s against r↑ = 40 W/s and
+      at −49.99 W/s against r↓ = 50 W/s).
   - **Ramp frames too (round 14).** On a line of slope `s` strictly within the rates, with the rider's limits, an
     answer slower than `ramp_bound` is a refusal as well. Round 10 had tried a bound on ramp frames and rejected valid
     answers (257 in 3 000 plans), because a return at a small relative rate is legitimately long. `ramp_bound` closes
@@ -2139,8 +2226,9 @@ follow the plan:
         braking distance (D4).
       - The valid offset is not lost: it is in the line, and it takes effect on the first tick the fault clears.
       - P7 is not promised while degraded; the status `erg_easer_degraded` shows the fault.
-  - **A refused braking trajectory** (step 6 decided to brake and Ruckig and its twin refuse it) is the same: degraded,
-    the same closed-form stop.
+  - **A braking trajectory is never refused** (round 18): it is the closed-form stop (step 6). In rounds 13–17, where
+    step 6 decided to brake and Ruckig and its twin refused the braking trajectory, the easer degraded into the same
+    closed-form stop.
   - **No promise to follow the plan while degraded.** Degraded mode has its own promises (§7.10.6, D1–D5): the limits,
     `[0, M]`, no rise while above the line, the stop's path, and the landing after the recovery.
 - *Why it is safe without following the plan.* The state degraded mode starts from was accepted by the planner, and
@@ -2159,7 +2247,9 @@ hold at rest where it is. The status stays raised on every tick. P4/P7 are not p
 *Termination.* Each re-plan makes at most two calculations (Ruckig, then its twin). Degraded mode is closed form per
 tick. No step waits on a later success.
 
-*Probes cannot be refused* (round 11). Safe braking's stop (step 6), the floor check against 0 W and the lead's timing
+*Probes cannot be refused* (round 11), *and what they vouch for is the probe* (round 18). Since round 18 the brake that
+follows a probe is that probe's own profile (step 6), so nothing a probe vouches for runs under other limits. Safe
+braking's stop (step 6), the floor check against 0 W and the lead's timing
 (step 3) use the closed-form profile, not Ruckig, so no probe refusal exists. Before round 11 they were Ruckig
 calculations, and a refused one counted as "not safe": one forced probe refusal mid-fall made the fall to 0 W take
 15.75 s against P7's 13.75 s.
@@ -2196,7 +2286,8 @@ The input is in the upstream draft, and #620 tests `rsruckig` on it.
   400 plans): every property holds;
 - the falsifiers' plans of rounds 11–13 run through the twin and degraded mode (f625e–f625g): the 100/400/100 W plan
   with refusals (no cut, never above the plan), the round-6 plans under a cap, the 2 100 W plan onto a −20 W/s ramp,
-  every braking plan refused, the −39.5 and −30 W/s falls with refusal windows over the vertex, random plans
+  every braking plan refused (since round 18 every calculation refused while a rise is in flight: the brake still
+  runs, being closed form), the −39.5 and −30 W/s falls with refusal windows over the vertex, random plans
   123000 + 287 and 56000 + 656, 792 and 1227, the fall to 0 W with refusals 120–127 at (10, ×2, 1), the cap events
   777000 + 2717 and 0–119, and the 280/573 W plan falling to 0 W with refusals from tick 16 at (50, ×3, 3) and the
   defaults;
@@ -2214,6 +2305,22 @@ The input is in the upstream draft, and #620 tests `rsruckig` on it.
   - the lead plans (288) and the deep refusal grid (11 592).
 
   It first found two plans where `ramp_bound` was too tight (D5 above). Both are fixed and pinned.
+- round 18 (PR #693's findings), `erg_slew.py --report` and two longer runs of its generators:
+  - the twin answering: 20 000 random plans (round 7's generator with engagements and caps, seed 18585) with 20 %
+    of first calculations refused and the twin answering every refusal, 41 550 twin answers. X2–X4 cut only in
+    their domain, and every property holds.
+    - Two plans degrade, both on a double fault: the injected refusal, then the twin's own answer refused as slow
+      from a state on the twin's velocity boundary (`v ± a²/(2j)` within 4·10⁻⁵ W/s of the rate; 18585 + 4677 and
+      + 19560). Ruckig's first answer to the same inputs lands in 16.65 s and 22.14 s, within the bound, so neither
+      is a fault-free degradation.
+    - The suite runs the first 2 000. The same generator on round 17's model fails 7 of the first 2 000 plans (4 X4,
+      2 X2 and 1 X3 outside the domain) and degrades 1;
+  - fault-free: 50 000 random plans (seed 18001, 14 825 634 ticks) plus the suite's 2 000 (seed 585), never
+    degraded (P8) and every property holding. 573 Ruckig refusals or rejected slow answers in 566 plans (1.13 %),
+    each recovered by the twin;
+  - the full suite: every check passes. That covers 40 golden plans, the 1 068 Δ = rise·ease steps (19 refusals, all
+    recovered by the twin), 9 792 recovery runs, 2 064 P7 plans, the suite's 2 000 twin-answering and 2 000
+    fault-free random plans, and 4 864 twin recoveries over the suite.
 
 *`rsruckig`* (read, not built): `lib/src/rsruckig/position_third_step1.rs` filters the same roots strictly, at lines
 487, 535 and 575 (`if t < t_min_… || t > t_max_… { continue; }`), the lines #270 changes upstream. So the port
@@ -2461,12 +2568,15 @@ The model's runs, with no violation:
 - A persistent refusal (every calculation refused, the twin too) on steps at the defaults and the corners, from the
   step's tick or mid-landing: 108 runs. The recovery from degraded mode over every grid tuning: 9 792 runs.
 - Split ramps against the single block, tick for tick: 300 plans, difference 0 W.
-- Golden traces: Σ y, off-line ticks and settle ticks of 34 plans, pinned, including six degraded ones (three from
-  persistent refusals, three planned falls with refusal windows). They pin what the properties leave free: the
+- Golden traces: Σ y, off-line ticks and settle ticks of 40 plans, pinned, including six degraded ones (three from
+  persistent refusals, three planned falls with refusal windows) and round 18's six (PR #693's findings and the three
+  plans of its own twin run). They pin what the properties leave free: the
   lead's timing and cap, the chase, the will-rise test, the boundary of `trackable`.
 - Ramp-to-ramp vertices: 1 421 slope pairs at the defaults and the 8 bound corners.
 - Fault injection: 300 random plans with 20 % of Ruckig calculations forced to fail, the twin too (degraded mode,
-  intermittently), and the same plans with the twin answering (never degraded).
+  intermittently), and the same plans with the twin answering (never degraded). Round 18 adds 2 000 random plans of
+  round 7's generator with 20 % of first calculations refused and the twin answering: X2–X4 only in their domain.
+  Degraded mode may run there only on a double fault, where the twin's own answer is refused as slow, and is counted.
 - 3 000 held-line cases, and 80 runs at the corners of the bounds.
 - Pinned regressions from the falsifications:
   - the bare #269-class input: upstream refuses it;
@@ -2480,7 +2590,12 @@ The model's runs, with no violation:
   - a fall that meets a rising ramp;
   - a cap drop mid-fall;
   - a falling ramp to 0 W, then a jump;
-  - a ramp into the cap whose braking plan fails;
+  - a ramp into the cap with every calculation refused from each tick of its approach (rounds 6–17: its braking plan
+    refused; since round 18 its brake still runs);
+  - PR #693's findings (round 18): the twin answering on a brake's tick at (30, ×3, 1.5) (X2) and (15, ×4, 3) (X4),
+    and the fault-free jump up during a fall at (10, ×4, 1.5); and from round 18's twin run, the twin's landing onto
+    `M` (X3 at a 10⁻⁶ W cap tolerance) and the twin on ramps near either rate (degraded when judged under the rider's
+    limits); each with no cut, never degraded, no slow answer;
   - twelve random plans by (seed, plan) that broke an earlier variant of a rule, or that need the hold of step 5 or
     the cap term of step 6. Without either rule, two 20 000-plan seeds fail.
 - The figures this section quotes, pinned: a change that moves one fails the model.
@@ -2518,6 +2633,16 @@ The properties:
   The rider or coach lowering the load takes effect in bounded time, whatever the line's slope. This holds on every
   plan whenever the easer is not degraded; after degraded mode, D5. The model checks it on every downward step
   (`check_above`), and a sweep covers slopes from `10⁻⁴` to 0.99 of either rate (2 064 plans).
+- **P8 never degraded without a fault** (round 18, finding 2 of PR #693). On a plan with no fault, meaning no
+  injected refusal and every input valid, the easer is never degraded and `erg_easer_degraded` is never raised.
+  - Why it holds: a stop is never a calculation (step 6), and the slow-answer rule refuses no time-optimal answer
+    (`answer_bound`, §7.10.2). The twin recovers every refusal of the #269 class (all 516 of the sweep), and a slow
+    answer from Ruckig is answered in time by the twin.
+  - The model checks it on every fault-free random plan, and #620 tests it as a property.
+  - If Ruckig and its twin ever both refused a valid input, the model would fail: that is a Ruckig defect to report
+    upstream, not a state the easer hides. The status stays a fault.
+  - Before round 18 it did not hold. "None degraded" in 5 × 20 000 plans was a measurement of the model's generator,
+    not a stated property, and the port's generator drew 2 degraded plans in 20 000.
 
 **Degraded mode's own promises** (round 13; §7.10.2, X5). P1–P7 hold whenever the easer is not degraded. While it is
 degraded there is no promise to follow the plan, and these hold instead, under any refusal pattern (persistent or
@@ -2597,7 +2722,7 @@ about the workout, not the rider.
    - a release during an engagement still fires on its dwell;
    - an engagement mid-plan above a falling line and below a rising one;
    - completion behind a line the command cannot follow.
-5. **The properties at the bounds.** P1–P7, D1–D5 and the bounds of X2–X4 at the corners of the bounds. `validate` refuses a
+5. **The properties at the bounds.** P1–P8, D1–D5 and the bounds of X2–X4 at the corners of the bounds. `validate` refuses a
    falling rate under 20 W/s, and an off-grid factor or ease. The engine passes Ruckig exactly the mapped limits.
 6. **Ruckig in the loop:**
    - re-plan only on a change, with no `calculate` call on an unchanged input;
@@ -2607,8 +2732,13 @@ about the workout, not the rider.
    - degraded mode under persistent and intermittent refusals from any tick and state: D1–D5 (the stop to 10⁻⁶ W,
      the landing from the recovery tick), no cut of its own; refusal windows of 1–40 ticks anywhere in a plan, at
      planned falls and around cap events, break no property;
-   - the probes (the stop, the floor, the lead's timing) are closed form; a refused braking plan degrades;
-   - an answer slower than `landing_bound` onto a held line is not accepted, from Ruckig or its twin;
+   - the probes (the stop, the floor, the lead's timing) are closed form, and so are the brake and the hold, so a
+     brake is never refused (round 18);
+   - an answer slower than `answer_bound` onto a held line is not accepted, from Ruckig or its twin, and a
+     time-optimal answer is never refused (round 18: finding 2's input accepted; `feasible_landing ≤ landing_bound`
+     where the stop does not pass the line);
+   - with 20 % of first calculations refused and the twin answering, X2–X4 cut only in their domain (round 18,
+     finding 1), and a fault-free plan is never degraded (P8);
    - the bare #269-class input (§7.10.2, X5) against `rsruckig`: refused as given, calculated by the twin (port
      pantor/ruckig#270 if `rsruckig` refuses the twin too);
    - the segfault input of §7.10.2 against `rsruckig`: no panic, no hang;
@@ -2663,6 +2793,14 @@ about the workout, not the rider.
      - the fault branch applying no cap.
    - Round 17 adds the meet meeting the line itself (round 16), X3's floor checked only until the command is within ε
      of the line, and an invalid initial cap not a fault. X3's floor self-test runs K12's own cut through `check()`.
+   - Round 18 adds a stop calculated by Ruckig and its twin (rounds 4–17), slow answers judged against
+     `landing_bound` (rounds 13–17), `feasible_landing` moving in Δ's direction instead of the gap's, the twin's answer
+     judged under the rider's limits, and safe braking passing `M` by 10⁻⁶ W. It deletes the two mutants of a refused
+     braking plan and the equivalent one, whose code is gone (a brake cannot be refused): 102 mutants. The runner takes `--jobs` and `--only`, so it can run one mutant at a time on a shared
+     host. Round 18 ran the unmutated model and its 8 new or changed mutants one at a time (`--random 400 --jobs 1`,
+     67 min): the model passes and all 8 are killed. The cap tolerance mutant is killed by 18585 + 12602, the twin's
+     limits by 18585 + 16175 and + 1882, and the brake through Ruckig by 927 failures, X2 and X4 outside the domain
+     among them. The other 94 were not re-run (about 11 h on one core of the shared host): #711.
    - Three input-layer mutants, which pass an invalid cap to the easer, are stopped by the easer's input contract
      (an assertion: the cap is a number ≥ 0).
    - The lead's timing from a moving
@@ -2727,10 +2865,11 @@ are checked on hardware by a new check in #624 (§7.10.1).
      dependency, justified here);
    - `SlewTuning` (Default, BOUNDS, validate) and the mapping to Ruckig's limits;
    - X5 as round 13 has it: on a refusal the twin (every limit tightened by 2⁻²⁰·max(1, |limit|)), an answer slower
-     than `landing_bound` onto a held line not accepted from either, then degraded mode (the closed-form stop, then a
+     than `answer_bound` onto a held line not accepted from either (round 18), then degraded mode (the closed-form stop, then a
      hold; Ruckig first on every tick; the status `erg_easer_degraded`); the target velocity strictly inside its
      limits;
-   - property tests P1–P7 (not degraded), D1–D5 (degraded, under persistent and intermittent fault injection that
+   - a stop (step 6's brake, step 4's hold) as the closed-form stop, never a Ruckig calculation (round 18);
+   - property tests P1–P8 (not degraded; P8: never degraded without a fault), D1–D5 (degraded, under persistent and intermittent fault injection that
      fails the twin too), the bounds of X2–X4, and the line's tick-independence, over the model's cases and random
      plans;
    - golden vectors that agree with `erg_slew.py` within 1e-6;

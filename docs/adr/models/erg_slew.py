@@ -9,13 +9,16 @@ The motion is Ruckig's (https://github.com/pantor/ruckig, MIT, Community edition
 It then takes the state Ruckig reaches one tick (0.25 s) later. This replaces round 3's
 hand-written limiter. Only the choice of the target frame and limits (§7.10.2), the cuts
 X2-X4, and what happens when Ruckig refuses (round 13: the twin X5a, then degraded mode X5) are
-crank's own. The model checks the properties of §7.10.6 on every tick, with Ruckig in
+crank's own. Since round 18 a stop (velocity target 0: step 6's brake, step 4's hold) is not a Ruckig
+calculation: it is the closed-form stop safe braking probes, so the probe and the trajectory it vouches
+for are one profile. The model checks the properties of §7.10.6 on every tick, with Ruckig in
 the loop, and `--report` prints the tables the ADR quotes.
 
 Setup: Ruckig is not in nixpkgs, so this model is not a flake check. #620 carries the same
 properties as Rust property tests on `rsruckig`, and #634 tracks running it in CI.
     python3 -m venv .venv && .venv/bin/pip install ruckig==0.19.4
-    .venv/bin/python docs/adr/models/erg_slew.py [--random N] [--report]
+    .venv/bin/python docs/adr/models/erg_slew.py [--random N] [--seeds a,b] [--twin N] [--report]
+`--twin N` sets the plans of the twin-answering generator (round 18; 2 000 by default).
 Exit 0 means every check passed.
 """
 from __future__ import annotations
@@ -294,6 +297,46 @@ def rises(st: "State", t: Tuning) -> bool:
     return st.v > 1e-9 or (st.a > 1e-9 and st.v + st.a * st.a / (2 * t.j_max) > 1e-9)
 
 
+class StopTrajectory:
+    """Round 18: a stop as a trajectory, the closed-form time-optimal stop (slope_change to slope 0) from a
+    state, positions relative to that state's. Step 6's brake and step 4's hold are this, not a Ruckig
+    calculation: it is the very profile safe braking and the floor check probe, under the rider's limits,
+    so it cannot be refused and never runs under other limits than the probe's (finding 1 of PR #693: a
+    brake answered by the twin ran with limits 2⁻²⁰ tighter, braked longer than its probe and ended past
+    0 W, or overshot rest from a state on the probe's boundary and rose above the line). Same interface as
+    Ruckig's Trajectory for _sample: `duration` and `at_time`."""
+
+    def __init__(self, v: float, a: float, t: Tuning):
+        self.v0, self.a0 = v, a
+        self.prof = slope_change(v, a, 0.0, t)
+        self.duration = sum(d for d, _ in self.prof)
+
+    def at_time(self, tt: float):
+        p, v, a = profile_at(0.0, self.v0, self.a0, self.prof, tt)
+        return [p], [v], [a]
+
+
+@dataclass(frozen=True)
+class TwinLimits:
+    """Round 18: the twin's limits as the bounds read them (X5a: every limit tightened by TWIN·max(1, |limit|); each
+    of the rates, a_max and j_max is at least 1, so each is scaled by 1 − TWIN). The ease times T_e = r/a_max +
+    a_max/j_max keep their values. The slow-answer rule judges the twin's answer under these, the limits it ran
+    with: on a ramp near the rate the closing rate r↑ − s is small, and the twin's tighter rate made its time-optimal
+    answer slower than ramp_bound under the rider's limits by far more than the 0.75 s margin (18585#16175: degraded)."""
+    rise: float
+    factor: float
+    ease: float
+
+    @staticmethod
+    def of(t: "Tuning") -> "TwinLimits":
+        return TwinLimits(t.rise * (1 - TWIN), t.factor, t.ease)
+
+    r_up = property(lambda self: float(self.rise))
+    r_dn = property(lambda self: self.rise * self.factor)
+    a_max = property(lambda self: 2 * self.rise / self.ease)
+    j_max = property(lambda self: 4 * self.rise / self.ease ** 2)
+
+
 def _cut(old: State, new: State, name: str, exc: str) -> tuple[State, str]:
     """Apply a cut; it is named (an exception) only if it changes the state by more than floating
     point: a landing that ends 1e-9 W past the line is clamped, not cut."""
@@ -314,7 +357,11 @@ class Easer:
     every limit tightened by TWIN·max(1, |limit|) (the twin, X5a). If the twin is refused too, the
     easer is DEGRADED (X5): the command follows the closed-form jerk-limited stop from its state,
     then holds, and the status `erg_easer_degraded` is raised. Ruckig is tried first again on every
-    tick, and normal planning resumes on the first answer."""
+    tick, and normal planning resumes on the first answer.
+
+    Round 18: a stop (velocity target 0) is the closed-form stop (StopTrajectory), never Ruckig's, so it
+    cannot be refused and the twin never answers one; and an answer onto a held line is slow only past
+    answer_bound, which never falls below a feasible profile's duration (finding 2 of PR #693)."""
 
     def __init__(self, t: Tuning, inject: float = 0.0, seed: int = 0, inject_from: int = 0):
         self.t = t
@@ -329,7 +376,6 @@ class Easer:
         self.refuse_ticks: set[int] = set()   # ticks on which every trajectory calculation is refused (tests)
         self.twin_answers = False  # tests: an injected refusal fails the first calculation only
         self.wasteful = 0          # calculations on an unchanged input (step 7 says: none)
-        self.fail_brake = False    # fault injection: the braking plan of step 6 fails, twin included
         self.otg = Ruckig(1)
         self.inp = InputParameter(1)
         self.traj = Trajectory(1)
@@ -385,8 +431,9 @@ class Easer:
 
     def _calc(self, traj, st, rel, fs, vmax, vmin, vel_target, meet=False) -> bool:
         """Ruckig's calculate, then on a refusal its twin (X5a), on the same tick. An answer onto a
-        held line (a flat frame, the rider's limits) slower than P4/P7's own landing_bound is not
-        accepted, from either: Ruckig 0.19.4's second boundary symptom (a valid but slower profile:
+        held line (a flat frame, the rider's limits) slower than answer_bound is not accepted, from
+        either (round 18: answer_bound, not landing_bound, which bounds a fall only to at or below the line;
+        a fall whose stop passes the line lands from below, at r↑, and was refused in fault-free riding): Ruckig 0.19.4's second boundary symptom (a valid but slower profile:
         61.3 s where 31.4 s is time-optimal, persistent-suite plan 128) is handled like a refusal.
         Round 14: the same on a ramp frame strictly within the rates against ramp_bound (P7 on every
         line; seed 1 plan 1270: a return onto a -5 W/s ramp from 394 W above at the full descent rate was
@@ -399,10 +446,11 @@ class Easer:
         for twin in (False, True):
             ok = self._one(traj, st, rel, fs, vmax, vmin, vel_target, twin,
                            injected and not (twin and self.twin_answers), meet)
+            lim = TwinLimits.of(self.t) if twin else self.t   # judged under the limits it ran with (round 18)
             if (ok and vel_target is None and vmax == self.t.r_up and vmin == -self.t.r_dn
                     and -self.t.r_dn < fs < self.t.r_up
-                    and traj.duration > (landing_bound(self.t, -rel, st.v, st.a) if fs == 0.0
-                                         else ramp_bound(self.t, -rel, st.v, st.a, fs))):
+                    and traj.duration > (answer_bound(lim, -rel, st.v, st.a) if fs == 0.0
+                                         else ramp_bound(lim, -rel, st.v, st.a, fs))):
                 ok = False
                 self.slow += 1
             if ok:
@@ -413,12 +461,23 @@ class Easer:
 
     def _plan(self, st, rel, fs, vmax, vmin, vel_target, meet=False) -> bool:
         """Calculate into the spare trajectory and swap it in only on success, so a refused
-        calculation leaves the trajectory in force untouched."""
+        calculation leaves the trajectory in force untouched. A stop (velocity target 0, the rider's
+        limits) is the closed-form stop (round 18): no calculation, so nothing to refuse."""
+        if vel_target == 0.0:
+            self.traj = StopTrajectory(st.v, st.a, self.t)
+            return True
         if not self._calc(self.spare, st, rel, fs, vmax, vmin, vel_target, meet):
             self.plan_failures += 1     # Ruckig and its twin refused a trajectory the command needed
             return False
-        self.traj, self.spare = self.spare, self.traj
+        self._swap()
         return True
+
+    def _swap(self):
+        """The spare trajectory (just calculated) takes over; a closed-form stop in force is dropped, so
+        the spare is always one of Ruckig's."""
+        old = self.traj
+        self.traj = self.spare
+        self.spare = old if isinstance(old, Trajectory) else Trajectory(1)
 
     def _sample(self, vel_mode: bool):
         dur, tt = self.traj.duration, self.elapsed
@@ -463,7 +522,7 @@ class Easer:
         early = fs * DT
         if not self._calc(self.spare, st, rel - early, fs, t.r_up, -t.r_dn, None, True):
             return None
-        self.traj, self.spare = self.spare, self.traj
+        self._swap()
         self.meet, self.meet_fs, self.braking, self.chasing = True, fs, False, False
         self.key, self.elapsed = (("meet", c, fs), t.r_up, -t.r_dn, None, m), DT
         p, v, a = self._sample(False)
@@ -499,7 +558,7 @@ class Easer:
         until it is at rest."""
         t = self.t
         # The candidate itself first: on its own tick it may not end above the line either.
-        if st.y > min(line_at(segs, k, m) + EPS / 2, m + 1e-6):
+        if st.y > min(line_at(segs, k, m) + EPS / 2, m + ROUND_SNAP):
             return False
         prof = slope_change(st.v, st.a, 0.0, t)
         dur = sum(d for d, _ in prof)
@@ -507,8 +566,9 @@ class Easer:
         for i in range(1, n + 1):
             y = profile_at(st.y, st.v, st.a, prof, min(i * DT, dur))[0]
             # The line may be passed by at most EPS/2, strictly inside X2's EPS, so a braking path
-            # that is accepted can never be cut; the cap not at all.
-            if y > min(line_at(segs, k + i, m) + EPS / 2, m + 1e-6):
+            # that is accepted can never be cut; the cap only by ROUND_SNAP, what step 8 snaps (round 18: at
+            # 1e-6 W a twin's landing 1e-7 W above M was accepted, then cut by X3 with no event pending).
+            if y > min(line_at(segs, k + i, m) + EPS / 2, m + ROUND_SNAP):
                 return False
         return True
 
@@ -658,28 +718,19 @@ class Easer:
         # stays at or above 0 W, nothing being below it.
         if (not brake and ((rises(nst, t) and not self._brake_ok(nst, k, segs, m))
                            or (nst.v < -1e-9 and not self._floor_ok(nst)))):
-            if self.fail_brake:
-                self.errors += 2
-                self.plan_failures += 1
-            meet_nst = None if self.fail_brake else self._meet_below(st, nst, k, segs, m)
+            meet_nst = self._meet_below(st, nst, k, segs, m)
             if meet_nst is not None:
                 nst = meet_nst
-            elif not self.fail_brake and self._plan(st, 0.0, 0.0, t.r_up, -t.r_dn, 0.0):
+            else:
+                # The brake (round 18): the closed-form stop from st, the profile the probe accepted st on (its
+                # own tick's probe), under the same limits. It cannot be refused, so no degraded mode here.
+                self._plan(st, 0.0, 0.0, t.r_up, -t.r_dn, 0.0)
                 self.braking, self.meet = True, False
                 self.base, self.elapsed = st.y, DT
                 self.key = (("brake",), t.r_up, -t.r_dn, 0.0, m)
                 self.chasing = True
                 p, v, a = self._sample(True)
                 nst = State(self.base + p, v, a)
-            else:
-                # Ruckig and its twin refused the braking trajectory: degraded (X5), the same stop in
-                # closed form, which cannot be refused.
-                # (self.braking is already False here: this branch runs only for brake=False, which the
-                # normal path passes as self.braking, and only the branch above sets it.)
-                nst = self._stop(st)
-                self.key = None
-                exc = exc or "X5"
-                self.degraded = True
         if self.braking and abs(nst.v) <= 1e-9:
             self.braking = False
             self.key = None if self.traj.duration > self.elapsed + 1e-9 else self.key
@@ -734,7 +785,7 @@ class Trace:
 
 def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=2000.0,
         y0: float | None = None, v0: float = 0.0, inject: float = 0.0, inject_seed: int = 0,
-        fail_brake: bool = False, inject_from: int = 0, refuse_until: int | None = None,
+        inject_from: int = 0, refuse_until: int | None = None,
         refuse_ticks=(), twin_answers: bool = False) -> Trace:
     blocks = [Block(b.ticks, b.frm, b.to) for b in blocks if b.ticks > 0]
     ev = {}
@@ -743,7 +794,6 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
     ez = Easer(t, inject, inject_seed, inject_from)
     ez.inject_until = refuse_until
     ez.refuse_ticks = set(refuse_ticks)
-    ez.fail_brake = fail_brake
     ez.twin_answers = twin_answers
     # The input layer (round 16, f625k), for each input (the cap, the ± offset, the engagement), in the order its
     # events arrive on a tick: the last valid value wins, and any invalid one raises the fault, which stays raised
@@ -913,6 +963,38 @@ def landing_bound(t: Tuning, delta: float, v0: float, a0: float = 0.0) -> float:
     stop_t = abs(a0) / t.j_max + v_eff / t.a_max + t.a_max / t.j_max
     stop_d = v_eff * stop_t
     return (abs(delta) + stop_d) / r + t_e + stop_t + 0.75
+
+
+def feasible_landing(t: Tuning, delta: float, v0: float, a0: float = 0.0) -> float:
+    """Round 18: the duration of one landing on a held line `delta` away (signed) that crank computes in closed
+    form, plus P4's 0.75 s: the time-optimal stop from (v0, a0) (slope_change; T_s, ending x_s away), then a
+    rest-to-rest move of the gap left, g = delta − x_s, in its own direction: |g|/r + T_e with r and T_e of that
+    direction (r↑ and τ for g > 0, r↓ and τ(1 + f)/2 for g < 0). The stop ends at rest and the rest-to-rest move
+    starts there, so the two are one feasible trajectory under the rider's limits that lands at rest on the line;
+    a rest-to-rest move of D takes at most D/r + T_e (equal where the move reaches the rate, less where it does
+    not: its time is concave in D with slope 1/r where the rate is reached). So the time-optimal landing never
+    takes longer, and the 0.75 s covers floating point and the twin's 2⁻²⁰ tightening (about 2⁻¹⁹ of the
+    duration)."""
+    prof = slope_change(v0, a0, 0.0, t)
+    t_s = sum(d for d, _ in prof)
+    gap = delta - profile_at(0.0, v0, a0, prof, t_s)[0]
+    up = gap > 0
+    r = t.r_up if up else t.r_dn
+    t_e = t.ease if up else t.ease * (1 + t.factor) / 2
+    return t_s + abs(gap) / r + t_e + 0.75
+
+
+def answer_bound(t: Tuning, delta: float, v0: float, a0: float = 0.0) -> float:
+    """Round 18 (finding 2 of PR #693): the slow-answer rule's bound for an answer onto a held line, the larger of
+    landing_bound and feasible_landing. An answer's duration is the time to be on the line at rest, in either
+    direction; landing_bound bounds a fall only to at or below the line (P7). Where the stop from the state passes
+    the line (a fall that overshoots below it: the landing ends with a rise at r↑), the time-optimal landing can
+    exceed landing_bound: at (10, ×4, 1.5), 0.47 W above a held line while falling at −31.3 W/s, Ruckig and its twin
+    land in 12.38 s, a feasible profile in 13.13 s, landing_bound 11.83 s, and the easer degraded fault-free.
+    feasible_landing is never below the time-optimal landing, so a time-optimal answer is never refused; where
+    the stop does not pass the line it is at most landing_bound (the self-test in constants()), so the rule is
+    round 13's there, and an accepted answer keeps P4/P7 as before."""
+    return max(landing_bound(t, delta, v0, a0), feasible_landing(t, delta, v0, a0))
 
 
 def check_landing(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
@@ -1469,6 +1551,51 @@ GOLDEN_PLANS = {
     "persistent error while chasing a steep fall": (DEFAULT, [steady(500, 5), ramp(500, 100, 4), steady(100, 30)],
                                                     [], None, dict(inject=1.0, inject_from=26)),
 }
+# Round 18: the findings of PR #693 as plans (tuning, blocks, events, origin, kw). Finding 1: one refused calculation
+# on the tick a brake starts, the twin answering (before round 18 the twin's brake rose from the probe's boundary and
+# was cut by X2, or ended 1e-6 W past 0 W and was cut by X4). Finding 2: fault-free, a 7.5 W jump up while the command
+# falls at -31 W/s (before round 18 Ruckig's answer and the twin's were both refused as slower than landing_bound).
+FINDINGS = {
+    "finding 1: the twin on a brake's tick, X2 (30, x3, 1.5)": (
+        Tuning(30, 3.0, 1.5), [Block(120, 573.1468849073444, 0.0), Block(2, 388.75, 388.75),
+                               Block(16, 388.75, 233.2499999999994), Block(7, 233.2499999999994, 165.2187499999991),
+                               Block(17, 165.2187499999991, 0.0), Block(4, 0.0, 0.0), Block(20, 0.0, 0.0)],
+        [], None, dict(m0=471.0385022477104, refuse_ticks={163}, twin_answers=True)),
+    "finding 1: the twin on a brake's tick, X4 (15, x4, 3)": (
+        Tuning(15, 4.0, 3.0), [Block(40, 224.0, 0.0), Block(4, 0.0, 0.684538790944913),
+                               Block(8, 852.4764354272369, 852.4764354272369), Block(4, 852.4764354272369, 0.0),
+                               Block(40, 0.0, 0.0)],
+        [], None, dict(refuse_ticks={42}, twin_answers=True)),
+    "finding 2: fault-free, a jump up while falling (10, x4, 1.5)": (
+        Tuning(10, 4.0, 1.5), [Block(8, 392.25, 392.25), Block(8, 392.25, 374.774), Block(4, 374.774, 340.330),
+                               Block(240, 347.830, 347.830), Block(2, 347.830, 299.738)],
+        [], None, dict(m0=647.623)),
+    # The model's 20 000-plan run of the twin answering (twin_answering, seed 18585), one refused tick each, trimmed:
+    # a twin's landing onto M from a state the rider's limits stop exactly at M overshot it by ~1e-7 W, which safe
+    # braking's 1e-6 W at M accepted and X3 cut; and on ramps near the rate the twin's valid answer was refused as slow
+    # under the rider's limits (degraded).
+    "round 18: the twin's landing onto M, X3 (50, x1.5, 2), 18585+12602": (
+        Tuning(50, 1.5, 2.0), [Block(8, 75.0, 36.51408651827683), Block(4, 1248.3279485702865, 1248.3279485702865),
+                               Block(2, 1248.3279485702865, 0.0), Block(120, 0.0, 0.0), Block(240, 36.51408651827683, 0.0),
+                               Block(240, 0.0, 2108.427508249026), Block(2, 2108.427508249026, 2133.0071857237167)],
+        [Event(27, "engage", 215.08491013613659)], None, dict(refuse_ticks={602}, twin_answers=True)),
+    "round 18: the twin on a ramp near r↑, judged under its limits (40, x1.25, 2), 18585+16175": (
+        Tuning(40, 1.25, 2.0), [Block(8, 325.5, 325.5), Block(120, 544.1067856127271, 0.0), Block(60, 0.0, 73.336877797305),
+                                Block(32, 1262.598270768813, 1262.598270768813), Block(4, 1262.598270768813, 39.81314370614384),
+                                Block(60, 39.81314370614384, 39.81314370614384), Block(9, 423.95614841416784, 513.9160620017757),
+                                Block(7, 513.9160620017757, 583.8848836810258), Block(4, 583.8848836810258, 623.8670674977413),
+                                Block(40, 153.25, 153.25)],
+        [], None, dict(refuse_ticks={284}, twin_answers=True)),
+    "round 18: the twin on a ramp near r↓, judged under its limits (40, x1.25, 1), 18585+1882": (
+        Tuning(40, 1.25, 1.0), [Block(4, 0.0, 0.0), Block(20, 0.0, 86.69795859499938), Block(20, 86.69795859499938, 86.69795859499938),
+                                Block(120, 468.25, 348.6787409977853), Block(120, 563.6259588947523, 563.6259588947523),
+                                Block(20, 48.00393773860583, 48.00393773860583), Block(1, 147.4584636016121, 147.4584636016121),
+                                Block(2, 187.4584636016121, 187.4584636016121), Block(2, 187.4584636016121, 164.74085082646377),
+                                Block(120, 599.9059047739407, 599.9059047739407)],
+        [Event(120, "offset", 1.1), Event(235, "engage", 84.87717201898519), Event(295, "skip", 0.0)], None,
+        dict(m0=576.8259894897612, refuse_ticks={299}, twin_answers=True)),
+}
+GOLDEN_PLANS.update(FINDINGS)
 # From `--golden`; a change to any rule that moves one of these traces fails.
 GOLDEN = {
     'degraded mid-rise, 100 -> 400 W, defaults': (25575.0, 160, 160),
@@ -1505,6 +1632,12 @@ GOLDEN = {
     'planned fall #202 with refusals 35..74': (45390.863494, 52, 52),
     'planned fall #358 with refusals 65..67': (66150.415011, 71, 71),
     'random 56000+87 (the lead from a moving state)': (164859.775134, 124, 161),
+    "finding 1: the twin on a brake's tick, X2 (30, x3, 1.5)": (36789.373511, 54, 69),
+    "finding 1: the twin on a brake's tick, X4 (15, x4, 3)": (5170.582089, 47, 67),
+    'finding 2: fault-free, a jump up while falling (10, x4, 1.5)': (89816.945472, 56, 76),
+    "round 18: the twin's landing onto M, X3 (50, x1.5, 2), 18585+12602": (262417.284193, 65, 109),
+    'round 18: the twin on a ramp near r↑, judged under its limits (40, x1.25, 2), 18585+16175': (58810.364785, 132, 192),
+    'round 18: the twin on a ramp near r↓, judged under its limits (40, x1.25, 1), 18585+1882': (172737.193925, 171, 251),
 }
 
 
@@ -1641,6 +1774,46 @@ def constants(rep: Report, report: bool):
                                                                           - ys[-1] - profile_at(y, v, a, prof, dur)[1]) > 1e-6:
             rep.fail(f"constants: profile_at does not continue at constant slope after the profile {tt}")
             break
+    # Round 18: answer_bound. (1) A time-optimal answer is never refused: over random states onto a held line, Ruckig's
+    # duration (and its twin's) never exceeds feasible_landing except where Ruckig itself is slow, which the boundary
+    # states are (the second symptom); away from that boundary, none may. (2) Where the stop does not pass the line,
+    # feasible_landing is at most landing_bound, so the rule is round 13's there and P4/P7 follow from acceptance.
+    # (3) Finding 2's input, pinned: Ruckig's 12.38 s is accepted, landing_bound is 11.83 s.
+    rng = random.Random(1818)
+    over_feasible = passes = 0
+    for i in range(20000):
+        tt = rng.choice(GRID)
+        v, a = rng.uniform(-tt.r_dn, tt.r_up), rng.uniform(-tt.a_max, tt.a_max)
+        if v + a * abs(a) / (2 * tt.j_max) > tt.r_up or v + a * abs(a) / (2 * tt.j_max) < -tt.r_dn:
+            continue          # no trajectory from this state keeps the rates: not a state the easer reaches
+        delta = rng.choice([rng.uniform(-600, 600), rng.uniform(-20, 20), rng.uniform(-1, 1)])
+        prof = slope_change(v, a, 0.0, tt)
+        x_s = profile_at(0.0, v, a, prof, sum(d for d, _ in prof))[0]
+        passes_line = (delta - x_s) * delta < 0
+        passes += passes_line
+        if not passes_line and feasible_landing(tt, delta, v, a) > landing_bound(tt, delta, v, a) + 1e-9:
+            rep.fail(f"constants: feasible_landing {feasible_landing(tt, delta, v, a):.4f} s above landing_bound"
+                     f" {landing_bound(tt, delta, v, a):.4f} s where the stop does not pass the line {tt} {(delta, v, a)}")
+            break
+        ez = Easer(tt)
+        tr1 = Trajectory(1)
+        if ez._one(tr1, State(500.0 - delta, v, a), -delta, 0.0, tt.r_up, -tt.r_dn, None, False, False):
+            near = (abs(v + a * abs(a) / (2 * tt.j_max) - tt.r_up) < 1e-6
+                    or abs(v + a * abs(a) / (2 * tt.j_max) + tt.r_dn) < 1e-6)
+            if tr1.duration > feasible_landing(tt, delta, v, a) and not near:
+                over_feasible += 1
+    if over_feasible:
+        rep.fail(f"constants: {over_feasible} Ruckig answers off the velocity boundary slower than feasible_landing"
+                 " (a time-optimal answer would be refused)")
+    if passes < 100:
+        rep.fail(f"constants: only {passes} random states whose stop passes the line (the case round 18 changes)")
+    t2 = Tuning(10, 4.0, 1.5)
+    y2, v2, a2 = 348.3042, -31.253, -10.652       # finding 2's state at tick 19 (to 4 digits), the line at 347.83 W
+    ez = Easer(t2)
+    if not ez._calc(Trajectory(1), State(y2, v2, a2), y2 - 347.83, 0.0, t2.r_up, -t2.r_dn, None) or ez.slow:
+        rep.fail("constants: finding 2's answer onto a held line (a fall whose stop passes the line) is refused as slow")
+    if not landing_bound(t2, 347.83 - y2, v2, a2) < 12.0 < feasible_landing(t2, 347.83 - y2, v2, a2):
+        rep.fail("constants: finding 2's bounds moved (landing_bound 11.83 s, feasible_landing 13.13 s): re-pin")
     # Safe braking's slack: a stop may pass the line by up to ε/2, not more (strictly inside X2's ε).
     ez = Easer(DEFAULT)
     segs = segments([steady(100, 60)], 0, 1.0, 2000.0)
@@ -1883,9 +2056,13 @@ def pinned(rep: Report, report: bool):
     check(tr, t5, rep, "pinned: engagement 2 W off a rise in flight, then every calculation failing", tr.y[0])
     if not all(tr.degraded[100:]) or abs(tr.y[100] - ref.y[99] - 2.0) > 1e-9:
         rep.fail("pinned: engagement 2 W off a rise in flight: not degraded at the engagement's state")
-    # X3 after the step: a ramp into the cap whose braking plan fails (a Ruckig error at that moment).
-    tr = run([steady(580.7, 5), ramp(580.7, 1131.0, 60)], t=Tuning(40, 2.0, 2.0), m0=790.99, fail_brake=True)
-    check(tr, Tuning(40, 2.0, 2.0), rep, "pinned: ramp into the cap, braking plan fails", tr.y[0])
+    # A ramp into the cap with every calculation refused from each tick of its approach (rounds 6-17: its braking plan
+    # refused). Round 18: the brake onto M is the closed-form stop, so it runs whatever Ruckig answers; degraded mode
+    # takes over only where a calculation is needed, and never passes M.
+    tc = Tuning(40, 2.0, 2.0)
+    for k0 in range(36, 52, 3):
+        tr = run([steady(580.7, 5), ramp(580.7, 1131.0, 60)], t=tc, m0=790.99, inject=1.0, inject_from=k0)
+        check(tr, tc, rep, f"pinned: ramp into the cap, every calculation refused from tick {k0}", tr.y[0])
     # Random plans the falsifications of PR #625 found, by (seed, plan).
     # (585, 2694), (585, 4693), (7, 2536) need the hold of step 5; (585, 3020), (7, 1773), (7, 5618)
     # need the cap term of step 6 (each fails when that rule is deleted).
@@ -1980,6 +2157,14 @@ def repros(rep: Report, report: bool) -> None:
     for name, t, bl, kw in REPROS:
         tr = run_plan(t, bl, kw)
         check(tr, t, rep, f"repro: {name}", tr.y[0])
+    # Round 18, PR #693's findings (FINDINGS, also golden plans): every property, no cut at all (no event is pending
+    # in either finding-1 plan, so any cut is outside its domain), and finding 2 never degraded nor slow.
+    for name, (t, bl, ev, origin, kw) in FINDINGS.items():
+        tr = run(bl, ev, t=t, origin=origin, **kw)
+        check(tr, t, rep, f"repro: {name}", tr.y[0])
+        if any(e in CUTS for e in tr.exc) or any(tr.degraded) or tr.slow:
+            rep.fail(f"repro: {name}: cuts {[(k, e) for k, e in enumerate(tr.exc) if e in CUTS]}, degraded"
+                     f" {sum(tr.degraded)} ticks, slow answers {tr.slow}")
     # X5's mechanism (round 13): Ruckig and its twin refused degrade the easer on that tick; Ruckig is
     # tried first again on every tick, so a single refusal is one degraded tick. (An offset at tick 25
     # forces a re-plan while the step's trajectory is in force.)
@@ -2054,11 +2239,24 @@ def repros(rep: Report, report: bool) -> None:
     # Round 11's hand-back plan (2100 W, then a -20 W/s ramp), refusals 40..61: degraded, then the recovery.
     ho = run([steady(2100, 10), ramp(1800, 0, 90), steady(0, 30)], t=DEFAULT, m0=4000.0, refuse_ticks=set(range(40, 62)))
     check(ho, DEFAULT, rep, "repro: 2100 W, then a -20 W/s ramp (refusals 40..61)", 2100.0)
-    # A braking plan refused (every one, the twin too): degraded, the closed-form stop; P4/P7 after.
+    # Round 18: a brake cannot be refused (rounds 6-17 refused "every braking plan" here: degraded, the same stop).
+    # A short block above the next one: the rise is in flight when every calculation starts failing, safe braking
+    # brakes before the boundary, and the brake runs as the closed-form stop, not degraded: no degraded tick before
+    # the boundary (a needed calculation after it, the line's jump down, is degraded as it should be).
+    braked = 0
     for t in [DEFAULT] + CORNERS:
-        for hi, lo in ((400.0, 0.0), (400.0, 100.0), (600.0, 200.0)):
-            tr = run([steady(hi, 10), steady(lo, 60)], t=t, fail_brake=True)
-            check(tr, t, rep, f"repro: every braking plan refused, {hi:g} -> {lo:g} W {t}", hi)
+        for lo, hi, hold in ((100.0, 400.0, 5), (100.0, 400.0, 3), (200.0, 600.0, 4)):
+            plan = [steady(lo, 10), steady(hi, hold), steady(150.0, 40)]
+            tr = run(plan, t=t, inject=1.0, inject_from=41)
+            name = f"repro: every calculation refused from tick 41, the brake before {hi:g} -> 150 W ({hold} s) {t}"
+            check(tr, t, rep, name, lo)
+            b = 40 + int(hold / DT)
+            if any(tr.degraded[:b]):
+                rep.fail(f"{name}: degraded at tick {tr.degraded.index(True)}, before the boundary at {b}: the brake"
+                         " was refused")
+            braked += abs(tr.v[b - 1]) <= 1e-9 and max(tr.y[40:b]) < hi - EPS
+    if braked < 6:
+        rep.fail(f"repro: every calculation refused from tick 41: only {braked} plans brake to rest before the boundary")
     # The hard clamp is absolute whatever the planner returns (round 11: since the closed-form floor and
     # braking checks, X3 after the step and X4 never act in the suites, so pin them directly).
     for t in (DEFAULT, Tuning(50, 4.0, 1.0)):
@@ -2291,6 +2489,39 @@ def injected(rep: Report, report: bool, n: int = 300, share: float = 0.2):
               f" ({deg} degraded ticks), twin answering ({twins} recoveries, never degraded)")
 
 
+def twin_answering(rep: Report, report: bool, n: int = 2000, share: float = 0.2, seed: int = 18585):
+    """Round 18 (finding 1 of PR #693): random plans (round 7's generator, with engagements and caps, as randoms())
+    with a share of first calculations refused and the twin answering every one. Every property holds, X2-X4 only
+    in their domain. Before round 18 the twin answered brakes, under limits 2⁻²⁰ tighter than the probes': 0.23 % of
+    the port's plans cut outside the domain (29 X4, 15 X2, 1 X3 in 20 000).
+    Degraded mode may run here, and only on a double fault: the injected refusal, then the twin's own answer refused
+    as slow (the twin's limits carry the same boundary, shifted: a state on the twin's velocity boundary, as the
+    pinned slow-twin input in constants()). It is counted, not failed; D1-D5 hold there as everywhere."""
+    rng = random.Random(seed)
+    twins = deg = 0
+    for i in range(n):
+        t = rng.choice(GRID)
+        blocks, events = random_plan_v7(rng, t)
+        origin = rng.uniform(0, 300) if rng.random() < 0.3 else None
+        m0 = rng.choice([2000.0, rng.uniform(200, 800)])
+        tr = run(blocks, events, t=t, origin=origin, m0=m0, inject=share, inject_seed=seed * 100000 + i,
+                 twin_answers=True)
+        if not tr.y:
+            continue
+        name = f"twin answering {seed}#{i} {t} {blocks} {events} origin {origin} m0={m0}"
+        check(tr, t, rep, name, tr.y[0])
+        twins += tr.twins
+        if any(tr.degraded):
+            deg += 1
+            if report:
+                print(f"  degraded (the twin's own answer refused as slow): {name[:60]}… tick {tr.degraded.index(True)}")
+            if tr.slow == 0:
+                rep.fail(f"{name}: degraded at tick {tr.degraded.index(True)} with the twin answering and no slow answer")
+    if report:
+        print(f"The twin answering (round 18): {n} random plans with {share:.0%} of first calculations refused,"
+              f" {twins} twin answers; X2-X4 in their domain; {deg} plans degraded on a slow twin answer")
+
+
 def ramp_pairs(rep: Report, report: bool):
     """Ramp-to-ramp vertices (continuous, every slope pair) at the corners of the bounds and the
     defaults: steady, ramp s1 for 10 s, ramp s2 for 5 s, steady."""
@@ -2445,6 +2676,11 @@ def randoms(rep: Report, n: int, report: bool, seed: int = 585):
         if tr.y:
             check(tr, t, rep, f"random#{i} {t} {blocks} {events} origin {origin}", tr.y[0])
             ticks += len(tr.y)
+            # Round 18 (finding 2 of PR #693): a fault-free plan is never degraded. Ruckig refusals the twin recovers
+            # and slow answers the twin answers in time are not faults; the status is a fault only where both fail.
+            if any(tr.degraded):
+                rep.fail(f"random#{i} seed {seed}: degraded without a fault at tick {tr.degraded.index(True)}"
+                         f" {t} {blocks} {events} origin {origin}")
     if report:
         print(f"Random plans, seed {seed}: {n} plans, {ticks} ticks, every property checked on every tick;"
               f" Ruckig errors {rep.errors - errors0} in {rep.plans_with_errors - with0} plans"
@@ -2795,6 +3031,7 @@ def main(argv):
     golden(rep, report)
     ramp_pairs(rep, report)
     injected(rep, report)
+    twin_answering(rep, report, int(argv[argv.index("--twin") + 1]) if "--twin" in argv else 2000)
     held(rep, report)
     for seed in seeds:
         randoms(rep, n, report, seed)
