@@ -10,6 +10,11 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- The app tells the link keeper when a ride is likely (ADR-0002 §5.1.2), so it can connect the trainer and strap
+  before "Ride this": Today, Workouts and the Ready sheet report `Likely` (the Ready sheet over a load in flight holds
+  without input), Settings → Devices releases the devices for pairing, other views start the idle cool-down, losing
+  focus starts the 60 s background grace and hiding the window releases at once; rider input on a warm view refreshes
+  the intent at most once per 30 s ([#680](https://github.com/gerchowl/crank/issues/680))
 - The start screen plays F · Spin-up in full once per version (BRAND.md §Start screen, DESIGN §12): the app now paints
   the brand's launch motion, and on the first launch after an install or update the hand-off waits until it is at
   rest (1080 ms); later launches hand off the moment the core is ready. "Seen" is kept in the app's local settings,

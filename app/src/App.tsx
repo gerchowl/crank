@@ -17,6 +17,7 @@ import { StartScreen, reducedMotion, type Boot } from "./shell/StartScreen";
 import { useApplyTheme } from "./theme";
 import { Ride } from "./ride/Ride";
 import { UiProvider } from "./stream/uiHooks";
+import { LinkIntents } from "./links/LinkIntents";
 import { History } from "./views/History";
 import { Placeholder } from "./views/Placeholder";
 import { RideLoadNotice } from "./views/RideLoadNotice";
@@ -173,9 +174,11 @@ export function App({
         </a>
       )}
       {/* The window's snapshot channel opens with the destination, once the core is up and the start screen hands off,
-          and stays open for the window's life (ADR-0001 §4.3): every view reads the live state from it. */}
+          and stays open for the window's life (ADR-0001 §4.3): every view reads the live state from it. The link keeper
+          hears the window's intent from then on too (ADR-0002 §5.1.2): the view, focus, visibility and rider input. */}
       {handoff && (
         <UiProvider>
+          <LinkIntents />
           <Destination views={views} />
         </UiProvider>
       )}

@@ -73,7 +73,7 @@ import type {
   WorkoutDetail,
 } from "../bindings";
 import { UNRESPONSIVE, status as makeStatus } from "../stream/testBackend";
-import { installUi, type UiOptions } from "../stream/uiBackend";
+import { SUPERSEDED, installUi, type UiOptions } from "../stream/uiBackend";
 
 export const block = (
   startS: number,
@@ -104,8 +104,8 @@ const err = (code: ApiError["code"], message: string): ApiError => ({
   code,
   message,
 });
-/** The keeper's answer to a superseded release, keeper/mod.rs `SUPERSEDED`. */
-export const SUPERSEDED = "superseded by the rider's request for a ride";
+/** The keeper's answer to a superseded release (stream/uiBackend.ts models the keeper without a ride). */
+export { SUPERSEDED };
 const cold = (d: DeviceLinkView | null): DeviceLinkView | null =>
   d && { phase: "cold", sample: null };
 /** The keeper's state with both devices paired and `cold`, as at launch. */
