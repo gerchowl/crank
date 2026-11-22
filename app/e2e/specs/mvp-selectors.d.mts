@@ -12,6 +12,14 @@ export const linkRetry: string;
 export const linkHint: (text: string) => string;
 export const workoutOption: (name: string) => string;
 export const rideThis: string;
+export const newWorkout: string;
+export const editorName: string;
+export const editorText: string;
+export const editorButton: (
+  word: "Save" | "Save as new" | "Ride this",
+) => string;
+export const editorChip: string;
+export const backToLibrary: string;
 export const readySheet: (state: string) => string;
 export const readyDevice: (device: "trainer" | "hr", phase: string) => string;
 export const readyPlan: string;

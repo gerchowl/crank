@@ -52,6 +52,21 @@ export const workoutOption = (name) =>
   `//ul[@role="listbox" and @aria-label="Library"]/li[@role="option"][span[@class="workouts-name" and normalize-space(.)=${lit(name)}]]`;
 /** The picked workout's Ride this. */
 export const rideThis = `//div[@class="workouts-buttons"]/button[normalize-space(.)="Ride this"]`;
+/** New workout, beside the page title. */
+export const newWorkout = `//div[@class="workouts-head"]/button[normalize-space(.)="New workout"]`;
+
+// The workout editor (src/editor/WorkoutEditor.tsx `WorkoutEditor`, #110).
+/** The workout's name. */
+export const editorName = `//label[@class="editor-name"]/input`;
+/** The DSL text. */
+export const editorText = `textarea#editor-dsl`;
+/** A button of the saving row ("Save", "Save as new", "Ride this"). */
+export const editorButton = (word) =>
+  `//div[@class="editor-store"]//button[normalize-space(.)=${lit(word)}]`;
+/** The chip saying where the workout stands ("Not saved", "Unsaved changes", "Saved"). */
+export const editorChip = `//div[@class="editor-title"]/span[@class="workouts-chip"]`;
+/** Back to library. */
+export const backToLibrary = `//div[@class="editor-head"]//button[normalize-space(.)="Back to library"]`;
 
 // The Ready sheet (src/ride/ReadySheet.tsx `ReadyBody`).
 /** The sheet in a state (`ReadyState`). */

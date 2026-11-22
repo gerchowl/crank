@@ -1,5 +1,5 @@
-// The core's workout commands behind `mockIPC` (`workouts_list`, `workout_get`, `ride_load`, and the editor's
-// `parse_dsl`, `print_dsl` and `compile_workout` from editorFixture.ts), for the Workouts tests and the design fixtures
+// The core's workout commands behind `mockIPC` (`workouts_list`, `workout_get`, `workout_new`, `workout_save`,
+// `workout_delete`, `ride_load`, and the editor's `parse_dsl`, `print_dsl` and `compile_workout` from editorFixture.ts), for the Workouts tests and the design fixtures
 // (app/e2e/design/fixture.tsx, #457). With a snapshot channel (`ui`, stream/uiBackend.ts) a load shows there as the core
 // shows it (ADR-0001 §4.3.3): `loading` and no ride from its start, the ride once installed, `loading` off at its end.
 // Any other command goes to the backend installed before this one.
@@ -7,6 +7,7 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   CompiledView,
   WorkoutDetail,
+  WorkoutDraft,
   Workout,
   WorkoutIssue,
   WorkoutNode,
@@ -17,8 +18,22 @@ import { DRAFTS, editorCommands } from "./editorFixture";
 export const apiError = (code: string, message: string) => ({ code, message });
 
 export const SUMMARIES: WorkoutSummary[] = [
-  { id: "w-ss", name: "Sweet spot 3x12", totalS: 3000, tss: 52.4, ftp: 250 },
-  { id: "w-easy", name: "Easy spin", totalS: 1800, tss: 20, ftp: 250 },
+  {
+    id: "w-ss",
+    name: "Sweet spot 3x12",
+    totalS: 3000,
+    tss: 52.4,
+    ftp: 250,
+    builtin: true,
+  },
+  {
+    id: "w-easy",
+    name: "Easy spin",
+    totalS: 1800,
+    tss: 20,
+    ftp: 250,
+    builtin: false,
+  },
 ];
 export const compiled = (over: Partial<CompiledView> = {}): CompiledView => ({
   blocks: [],
@@ -43,6 +58,7 @@ export const detail = (
   },
   dsl: "",
   compiled: c,
+  builtin: summaries.find((s) => s.id === id)?.builtin ?? false,
 });
 export const ERROR_ISSUE: WorkoutIssue = {
   kind: "invalid_ftp",
@@ -73,6 +89,10 @@ export interface Backend {
   summaries: WorkoutSummary[];
   /** The compiled view each workout of `summaries` answers with (a listed id without one is a broken fixture). */
   compiled: Record<string, CompiledView>;
+  /** The workouts `workout_save` stored, as `workout_get` answers them; each is listed in `summaries` too. */
+  stored: Record<string, WorkoutDetail>;
+  /** The id the next workout saved as new gets: `workout-<n>` (the core's are `workout-<hex>`, library.rs `new_id`). */
+  nextId: number;
   /**
    * Library workouts whose tree, text and compiled view are a draft of the core's editor fixture (editorFixture.ts), by
    * workout id → draft name: what "Duplicate & edit" opens. Others answer with an empty tree and `compiled`.
@@ -132,6 +152,19 @@ export type ApiErr = { code: string; message: string };
  * (The strap's failures never refuse a load: the ride runs without heart rate, `connect_links`.)
  * The editor's commands answer, and refuse, as editorFixture.ts documents: only from the core's own answers.
  *
+ * The library's own commands (library.rs, #110):
+ * - `workout_new` never fails (core.rs `Core::workout_new`): "New workout", the reference FTP, no steps.
+ * - `workout_save` refuses, in the core's order (library.rs `Library::save`): a blank name, `invalid_input` "a workout
+ *   needs a name"; a name over 120 characters once trimmed, `invalid_input`; a built-in id, `invalid_input` (library.rs
+ *   `Library::read_only`; the core knows a built-in by its `builtin-` id prefix, the mock by its summary's `builtin`); a
+ *   tree the domain cannot compile, `invalid_input` (the fixture's `refused`, as `compile_workout`); an error-severity
+ *   issue, `invalid_input` with its message (library.rs `refuse_errors`); an id that is no stored workout, `not_found`.
+ *   `storage` (the store fails, crank-store's `Store::insert_workout` / `Store::update_workout`) is `fail`. A tree not in
+ *   editor.json throws, as the editor's commands do: the mock cannot compile it.
+ * - `workout_delete` refuses a built-in id with `invalid_input` and an unknown id with `not_found` (library.rs
+ *   `Library::delete`); `storage` is `fail`.
+ * - Tauri rejects a `null` FTP in the draft (`WorkoutDraft.ftp` is an `f64`) with a plain string.
+ *
  * core.rs `Core::ensure_start_allowed` (~1505) always passes today and is not modelled. A free ride (null id) skips the
  * workout checks only. Tauri itself rejects a call without its `workoutId` argument with a plain string.
  */
@@ -141,6 +174,8 @@ export function install(over: Partial<Backend> = {}): Backend {
     fail: {},
     summaries: SUMMARIES,
     compiled: { "w-ss": compiled(), "w-easy": compiled({ tss: 20 }) },
+    stored: {},
+    nextId: 1,
     trees: {},
     rideActive: false,
     trainerPaired: true,
@@ -175,6 +210,50 @@ export function install(over: Partial<Backend> = {}): Backend {
     return c;
   };
   const editor = editorCommands();
+  const readOnly = (id: string) =>
+    apiError(
+      "invalid_input",
+      `workout "${id}" is built in and read-only: duplicate it to change it`,
+    );
+  const save = (id: string | null, draft: WorkoutDraft): string => {
+    if (draft.ftp === null)
+      throw "invalid args `draft` for command `workout_save`: invalid type: null, expected f64";
+    const name = draft.name.trim();
+    if (name === "") throw apiError("invalid_input", "a workout needs a name");
+    if ([...name].length > 120)
+      throw apiError(
+        "invalid_input",
+        "a workout name is at most 120 characters",
+      );
+    const listed = b.summaries.find((w) => w.id === id);
+    if (id !== null && listed?.builtin) throw readOnly(id);
+    const saved = id ?? `workout-${b.nextId++}`;
+    const workout = { id: saved, name, ftp: draft.ftp, nodes: draft.nodes };
+    const c = editor.compile_workout(workout);
+    const issue = c.issues.find((i) => i.severity === "error");
+    if (issue) throw apiError("invalid_input", issue.message);
+    if (id !== null && !listed)
+      throw apiError("not_found", `no workout "${id}"`);
+    b.stored[saved] = {
+      workout,
+      dsl: editor.print_dsl(draft.nodes),
+      compiled: c,
+      builtin: false,
+    };
+    b.compiled[saved] = c;
+    const summary: WorkoutSummary = {
+      id: saved,
+      name,
+      totalS: c.totalS,
+      tss: c.tss,
+      ftp: draft.ftp,
+      builtin: false,
+    };
+    b.summaries = listed
+      ? b.summaries.map((w) => (w.id === saved ? summary : w))
+      : [...b.summaries, summary];
+    return saved;
+  };
   mockIPC((cmd, payload) => {
     const args = (payload ?? {}) as Record<string, unknown>;
     b.calls.push({ cmd, args });
@@ -184,6 +263,8 @@ export function install(over: Partial<Backend> = {}): Backend {
         return b.summaries;
       case "workout_get": {
         const id = args.id as string;
+        const kept = b.stored[id];
+        if (kept && b.summaries.some((w) => w.id === id)) return kept;
         const d = detail(id, compiledOf(id), b.summaries);
         const tree =
           b.trees[id] === undefined ? undefined : DRAFTS[b.trees[id]];
@@ -194,6 +275,7 @@ export function install(over: Partial<Backend> = {}): Backend {
           workout: { ...d.workout, ftp: tree.ftp, nodes: tree.nodes },
           dsl: tree.printed,
           compiled: tree.compiled,
+          builtin: d.builtin,
         } satisfies WorkoutDetail;
       }
       case "ride_load": {
@@ -247,6 +329,24 @@ export function install(over: Partial<Backend> = {}): Backend {
           }
         };
         return load();
+      }
+      case "workout_new":
+        return {
+          name: "New workout",
+          ftp: 250,
+          nodes: [],
+        } satisfies WorkoutDraft;
+      case "workout_save":
+        return save(args.id as string | null, args.draft as WorkoutDraft);
+      case "workout_delete": {
+        const id = args.id as string;
+        const w = b.summaries.find((x) => x.id === id);
+        if (w?.builtin) throw readOnly(id);
+        if (!w) throw apiError("not_found", `no workout "${id}"`);
+        b.summaries = b.summaries.filter((x) => x.id !== id);
+        delete b.stored[id];
+        delete b.compiled[id];
+        return null;
       }
       case "parse_dsl":
         return editor.parse_dsl(args.text as string, args.ftp as number | null);

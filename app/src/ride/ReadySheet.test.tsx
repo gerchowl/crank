@@ -247,7 +247,14 @@ const start = () =>
 async function openLoading(own: boolean) {
   const library = installWorkouts({
     summaries: [
-      { id: "w1", name: "Steady 10 min", totalS: 600, tss: 10, ftp: 250 },
+      {
+        id: "w1",
+        name: "Steady 10 min",
+        totalS: 600,
+        tss: 10,
+        ftp: 250,
+        builtin: true,
+      },
     ],
     compiled: { w1: compiled({ blocks: BLOCKS, totalS: 600 }) },
     gate: new Promise<void>(() => {}),

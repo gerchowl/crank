@@ -137,9 +137,12 @@ export async function focusWalk(page: Page) {
     }
 
     // The skip link (§6.7): the first stop, onto `#main`, and the next Tab is main's first control. A page with no
-    // `#main` (the start screen, before the hand-off) has no blocks to bypass and so no skip link (WCAG 2.4.1).
+    // `#main` (the start screen, before the hand-off) has no blocks to bypass and so no skip link (WCAG 2.4.1); nor
+    // does an open modal dialog, whose page behind is inert (Dialog.tsx): the walk cycles inside the dialog.
     const target = first.skipTo;
-    const hasMain = (await page.locator("#main").count()) > 0;
+    const hasMain =
+      (await page.locator("#main").count()) > 0 &&
+      (await page.locator("[role=dialog][aria-modal=true]").count()) === 0;
     if (!target) {
       if (hasMain)
         add("focus.order", `first stop ${first.sel} is no skip link`);

@@ -404,6 +404,8 @@ pub struct WorkoutSummary {
     pub tss: f64,
     /// Reference FTP, W.
     pub ftp: f64,
+    /// One of crank's own workouts: read-only, so editing it means a copy (DESIGN §5.7, #110).
+    pub builtin: bool,
 }
 
 /// A workout with its compiled form.
@@ -416,6 +418,21 @@ pub struct WorkoutDetail {
     pub dsl: String,
     /// The compiled timeline.
     pub compiled: CompiledView,
+    /// One of crank's own workouts: read-only (`workout_save` and `workout_delete` refuse its id).
+    pub builtin: bool,
+}
+
+/// What `workout_save` stores: a workout without its id, which the library owns (#110). The
+/// editor's new workout starts as one (`workout_new`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkoutDraft {
+    /// Display name: not blank, and at most 120 characters once trimmed.
+    pub name: String,
+    /// Reference FTP, W.
+    pub ftp: f64,
+    /// The workout tree.
+    pub nodes: Vec<WorkoutNode>,
 }
 
 /// One compiled block. The boundary owns this type: `crank-domain`'s `FlatBlock` indexes

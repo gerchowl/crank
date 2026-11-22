@@ -15,12 +15,12 @@ use crate::dto::{
     CompiledView, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, DslProblem, KnownDevice,
     LinkIntent, LinkPhase, LinksId, PairedDevice, ReleaseReason, RideEnding, RideLoaded,
     RideOutcome, RideRecord, RideStatusView, RideSummary, ScannedDevice, UiChannelId, UiState,
-    WorkoutDetail, WorkoutSummary,
+    WorkoutDetail, WorkoutDraft, WorkoutSummary,
 };
 use crate::error::{ApiError, ErrorCode};
 use crate::keeper::channel::{Channels, LinkSink};
 use crate::keeper::run::{self as keeper, Hold, Note};
-use crate::library::Library;
+use crate::library::{Library, refuse_errors};
 use crate::recorder::{RideMeta, StoreRecorder};
 use crate::ui::{RideSlot, Ui, UiSink};
 use crank_ble::{Pairing, RideGate};
@@ -30,8 +30,7 @@ use crank_devices::{
     sim::{SimLatency, SimLoss},
 };
 use crank_domain::workout::{
-    CompileOptions, CompiledWorkout, Severity, Workout, WorkoutNode, compile_workout, parse_dsl,
-    print_dsl,
+    CompileOptions, CompiledWorkout, Workout, WorkoutNode, compile_workout, parse_dsl, print_dsl,
 };
 use crank_engine::{
     CommandError, Engine, EngineCmd, EngineHandle, MetricId, MonotonicClock, RideSetup, RideState,
@@ -1773,28 +1772,74 @@ impl Core {
             .collect())
     }
 
-    /// The workout library.
+    /// The workout library: the built-ins, then the rider's workouts in the order first saved.
     ///
     /// # Errors
-    /// Never fails today; async and fallible for the store-backed library (#110).
+    /// `Storage` when the store fails, or a stored workout does not read or compile.
     #[expect(
         clippy::unused_async,
         reason = "every facade method is async (ADR-0001 §4)"
     )]
     pub async fn workouts_list(&self) -> Result<Vec<WorkoutSummary>, ApiError> {
-        Ok(self.0.library.summaries())
+        self.0.library.summaries(&self.0.store)
     }
 
     /// One workout with its DSL and compiled timeline.
     ///
     /// # Errors
-    /// `NotFound`.
+    /// `NotFound`; `Storage` as [`Core::workouts_list`].
     #[expect(
         clippy::unused_async,
         reason = "every facade method is async (ADR-0001 §4)"
     )]
     pub async fn workout_get(&self, id: String) -> Result<WorkoutDetail, ApiError> {
-        self.0.library.detail(&id)
+        self.0.library.detail(&self.0.store, &id)
+    }
+
+    /// The draft the editor's new workout starts from: a name, the reference FTP, no steps.
+    ///
+    /// # Errors
+    /// Never fails; async and fallible as every facade method.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn workout_new(&self) -> Result<WorkoutDraft, ApiError> {
+        Ok(Library::new_draft())
+    }
+
+    /// Save a workout to the library (#110, DESIGN §5.7): update the rider's workout `id`, or
+    /// store a new one when `id` is `None`. Answers the stored id, which `ride_load` takes; the
+    /// library itself is read again with [`Core::workouts_list`] (ADR-0001 §4.2: a command
+    /// answers an id, never state). Built-ins are read-only.
+    ///
+    /// # Errors
+    /// `InvalidInput` for a blank name or one over 120 characters, a built-in id, a tree that
+    /// does not compile, or an error-severity issue (with its message, as `ride_load`
+    /// refuses it); `NotFound` for an id that is no stored workout; `Storage`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn workout_save(
+        &self,
+        id: Option<String>,
+        draft: WorkoutDraft,
+    ) -> Result<String, ApiError> {
+        Library::save(&self.0.store, id.as_deref(), draft, unix_now())
+    }
+
+    /// Delete the rider's workout `id`. Its rides keep their own copy of it.
+    ///
+    /// # Errors
+    /// `InvalidInput` for a built-in id; `NotFound` for an id that is no stored workout;
+    /// `Storage`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn workout_delete(&self, id: String) -> Result<(), ApiError> {
+        Library::delete(&self.0.store, &id)
     }
 
     /// Parse workout DSL text (docs/DSL.md) for the editor, with `ftp` as the reference FTP
@@ -2021,19 +2066,9 @@ impl Core {
             };
             return Ok((workout, compiled));
         };
-        let e = self.0.library.get(id)?;
-        if let Some(issue) = e
-            .compiled
-            .issues
-            .iter()
-            .find(|i| i.severity == Severity::Error)
-        {
-            return Err(ApiError::new(
-                ErrorCode::InvalidInput,
-                issue.message.clone(),
-            ));
-        }
-        Ok((e.workout.clone(), e.compiled.clone()))
+        let e = self.0.library.get(&self.0.store, id)?;
+        refuse_errors(&e.compiled)?;
+        Ok((e.workout, e.compiled))
     }
 
     /// The first step of a load: a loaded-but-unstarted or finished ride is replaced, but only

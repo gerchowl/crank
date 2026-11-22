@@ -191,7 +191,9 @@ The workout editor's commands (`parse_dsl`, `print_dsl`, `compile_workout`, #111
 no DSL parser. Their mock (`app/src/views/editorFixture.ts`, behind `workoutsBackend.ts`) answers only from
 `crates/crank-core/tests/fixtures/editor.json`, which the `editor_fixture` test checks against the core; a draft a test
 types must be added to that test's `DRAFTS` and the file regenerated with `just editor-fixture`. A draft not in the file
-throws in the test, never a guessed answer.
+throws in the test, never a guessed answer. The library's own commands (`workout_new`, `workout_save`, `workout_delete`, #110) are mocked in
+`workoutsBackend.ts` with the core's refusals (library.rs `Library::save`); a saved tree is compiled through the same
+fixture, so a test saves only drafts that are in it.
 
 Citing Rust from app/ (comments, docs, test backends): always `<name>.rs <symbol>` with an optional ` (~N)` line hint directly after
 the symbol, e.g. ``core.rs `Core::end_ride` (~1742)``; the symbol is an identifier path (`A::b`), in backticks or not. Never a bare

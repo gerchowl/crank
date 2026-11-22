@@ -1,4 +1,5 @@
-// The MVP walk, step 9 (#667): the ride is in History after a relaunch, read back from the data dir.
+// The MVP walk, step 9 (#667): the ride is in History after a relaunch, read back from the data dir, and the workout
+// step 0 saved is still in the library (#110).
 // mvp.e2e.mjs ends by closing the window, which quits the app. Before this spec, the service finds the embedded
 // WebDriver gone and starts the app again with the same environment, so on the same `CRANK_DATA_DIR`
 // (@wdio/tauri-service `ensureEmbeddedServersHealthy`). Nothing of the first process is left: the ride session and the
@@ -43,5 +44,12 @@ describe("MVP walk, after a relaunch (#256 critical path, sim)", () => {
     await expect($(sel.stat("Duration"))).toHaveText(rode.duration);
     await expect($(sel.stat("Average power"))).toHaveText(/^\d+ W$/);
     await expect($(sel.stat("Average heart rate"))).toHaveText(/^\d+ bpm$/);
+
+    // #110: the workout step 0 wrote and saved is still in the library, beside the built-in it copied.
+    await $(sel.rail("Workouts")).click();
+    await expect($(sel.workoutOption(rode.workout))).toBeDisplayed({
+      wait: UI_MS,
+    });
+    await expect($(sel.workoutOption("Sensor check (3 min)"))).toBeDisplayed();
   });
 });

@@ -75,7 +75,7 @@ test("Duplicate & edit opens a copy with its three views; Back returns to the li
   expect(screen.getByRole("heading", { level: 1 }).textContent).toContain(
     "Sweet spot 3x12 (copy)",
   );
-  expect(screen.getByText("Draft, not saved")).toBeTruthy();
+  expect(screen.getByText("Not saved")).toBeTruthy();
   expect(box.value).toBe(text("sweet-spot"));
   expect(rows()).toEqual([
     "Warm-up · 10:00 · ramp 45–70 %",

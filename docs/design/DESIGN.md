@@ -433,21 +433,28 @@ Undo/redo spans all three views; tree ops, undo/redo and DSL ↔ tree sync are u
 then on the 12-column grid (§18.2) the library in 7 columns and the picked workout in one panel in 5. The library is a
 table of Name, Duration and TSS whose rows are the options of a single-select listbox (selection follows focus: one tab
 stop, ↑ / ↓ / Home / End walk it and pick as they go); a row is as tall as its name needs, so a long name wraps and is
-never cut, and while a ride is loading every row is disabled (#320). The panel holds the name and the reference FTP, the
-profile (blocks by height over the workout's length), **Ride this** (32 px primary, §18.4) and **Duplicate & edit** (32 px
-default; disabled while a load is in flight; Ride this: disabled with the reason
+never cut, and while a ride is loading every row is disabled (#320). The panel holds the name, **Built-in, read-only** for one of crank's own workouts, and the reference FTP, the
+profile (blocks by height over the workout's length), **Ride this** (32 px primary, §18.4), then for the rider's own workouts
+**Edit**, always **Duplicate & edit**, and for the rider's own **Delete** (each 32 px default, disabled while a load is in
+flight; Ride this: disabled with the reason
 under it for an error-severity issue; while its load is in flight it reads "Loading ride…", and with nothing picked the
 panel says "Loading ride…" while a load started elsewhere runs), then the compiled summary (Duration, a
 range for open-ended steps; TSS; IF; the issues, each with ⚠ and its word; time in zone, one bar per zone) and every
 block (phase, length, watts). Ride this sits above the summary, so a long block list never pushes it down. A refused load is a notice with ⚠ under Ride this, or at the top naming the workout (#333); "no workouts yet" says
-where workouts come from. Ride this leads to the Ready check (§5.4) as before. Desk screens bind no keys (§5.9), the
+where workouts come from. **New workout** (32 px default, beside the page title, disabled while a load is in flight)
+opens the editor on an empty workout (`workout_new`: "New workout", the reference FTP, no steps); starting from a template
+is Duplicate & edit. The list is the built-ins in their order, then the rider's workouts in the order first saved.
+**Delete** asks in a dialog ("Delete <name>?", "It leaves the library for good. Your rides of it stay in History.",
+**Delete** · **Cancel**, Cancel focused): a ride keeps its own copy of its workout, so history never blocks it. Ride this leads to the Ready check (§5.4) as before. Desk screens bind no keys (§5.9), the
 editor's undo and redo excepted.
 
-**The editor in direction A** (#111, `app/src/editor/`): a state of the Workouts place, opened by **Duplicate & edit**,
-so a library workout stays read-only and the editor works on a copy ("<name> (copy)"). It replaces the 7 / 5 page
-until **Back to library**, which returns to the library with the same workout picked and drops the draft. The header
-holds the name, the chip **Draft, not saved** (the draft lives in memory; saving is the library's, #110), **Undo**,
-**Redo** and **Back to library**; then the profile across the page, the selected node's blocks drawn with a heavier
+**The editor in direction A** (#111, `app/src/editor/`): a state of the Workouts place, opened by **New workout**, by
+**Edit** on one of the rider's workouts, or by **Duplicate & edit** on any, which works on a copy ("<name> (copy)", not
+yet saved): a built-in is read-only, so changing one always starts with a copy. It replaces the 7 / 5 page until it is
+left (below), which returns to the library with the workout last saved picked, else the one picked before. The header
+holds the name as its title (or "Untitled workout" while the name is blank), a chip saying where the workout stands
+(**Not saved**: never saved; **Unsaved changes**; **Saved**), **Undo**, **Redo** and **Back to library**; then the
+saving row; then the profile across the page, the selected node's blocks drawn with a heavier
 edge; then **Outline · Text · Summary** in one row, 4 / 4 / 4 on the grid at 1024 and 1440. The outline is the tree as
 one single-select listbox (selection follows focus, as the library; a nested row is indented and a long label wraps).
 It is read-only for now: selecting a row marks its blocks, and the tree is edited through the text; outline edits
@@ -460,7 +467,26 @@ last compiled view. Undo and redo restore a saved tree with its text, and the se
 exists. **Undo groups:** the commits of one burst of typing are one undo step; a burst ends at a pause of 500 ms
 between two keystrokes, or at any other commit, undo or redo, and a structural edit is a step of its own. The history
 keeps the last 100 steps and drops the oldest past that. Both numbers are the text-editor convention
-(prosemirror-history's `newGroupDelay` and `depth` defaults; `editor/model.ts` `GROUP_MS`, `HISTORY_LIMIT`). Riding a draft is #643.
+(prosemirror-history's `newGroupDelay` and `depth` defaults; `editor/model.ts` `GROUP_MS`, `HISTORY_LIMIT`). Riding a draft is not done (#643, architect decision 2026-11-22): Ride this rides the saved workout by its id.
+
+**Saving (#110).** The saving row holds **Name** (a text box, at most 120 characters), **Save** (32 px primary),
+**Save as new** (once the workout has been saved) and **Ride this**. Save stores the workout in the library
+(`workout_save`): an update of the rider's workout, or a new one for a copy or a new workout; Save as new always stores a
+second one. Save is disabled, with the reason under the row, while the text does not parse ("Fix the text to save the
+workout."), the name is blank ("Give the workout a name to save it."), the tree does not compile, or the compiled workout
+has an error-severity issue ("Can’t save until the error is fixed: <message>"); warnings save. The core refuses the same
+(blank or long name, a built-in's id, a tree that does not compile, an error: `invalid_input`), and a refusal it gives
+anyway is shown with ⚠ and leaves the workout unsaved. With nothing changed since the last save, Save is disabled and
+the chip reads Saved. **Unsaved changes** are a name, tree or typed text that differs from the saved version (undoing
+back to it is clean again); a copy or a new workout that is never saved has none until it is changed. Undo and redo
+cover the tree, not the name. Ride this is disabled until the workout has been saved ("Save the workout to ride it.");
+it rides the saved workout through the library's guarded load (`ride_load` by its id). **Before leaving or riding with
+unsaved changes the editor asks** in a modal dialog: Back to library and any place of the rail give "Save changes to
+<name>?", Ride this gives "Save changes to <name> before riding?", each with **Save** (primary, focused), **Discard** and
+**Cancel**; Escape is Cancel, Tab stays inside, focus returns where it was. Save stores, then leaves or rides (if the core
+refuses, the dialog closes and the refusal shows); Discard leaves without storing, or rides the workout as last saved;
+Cancel stays. Save in the dialog is disabled, with its reason under the answers, for the reasons above. Routing the app
+does itself (a load completing, a mode) never asks: only the rider's own way out does.
 
 ### 5.8 Onboarding (first run)
 Eight steps (spec/ONBOARDING §1; §15.1 added *Training for*): About you · Background · Current numbers · Health

@@ -469,7 +469,14 @@ const longLibrary = (
 ): Partial<WorkoutsBackend> => ({
   summaries: [
     ...SUMMARIES,
-    { id: "w-long", name: LONG_NAME, totalS: 12420, tss: 251.6, ftp: 250 },
+    {
+      id: "w-long",
+      name: LONG_NAME,
+      totalS: 12420,
+      tss: 251.6,
+      ftp: 250,
+      builtin: false,
+    },
   ],
   compiled: { "w-long": LONG },
   ...over,
@@ -542,13 +549,24 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "workouts-long": workouts({
     summaries: [
       ...SUMMARIES,
-      { id: "w-long", name: LONG_NAME, totalS: 12420, tss: 251.6, ftp: 250 },
+      {
+        id: "w-long",
+        name: LONG_NAME,
+        totalS: 12420,
+        tss: 251.6,
+        ftp: 250,
+        builtin: false,
+      },
     ],
     compiled: { "w-ss": SWEET_SPOT, "w-long": LONG },
   }),
   // The editor on the core's `sweet-spot` draft (editorFixture.ts): a real tree, text and compiled view.
   "workouts-editor": workouts({ trees: { "w-ss": "sweet-spot" } }),
   "workouts-editor-invalid": workouts({ trees: { "w-ss": "sweet-spot" } }),
+  "workouts-mine": workouts(),
+  "workouts-delete-confirm": workouts(),
+  // The new workout's empty tree is the core's `empty` draft (editorFixture.ts): compiled, with its error.
+  "workouts-editor-new": workouts(),
   "devices-empty": devices({}),
   // The scan never answers: the button stays "Scanning…".
   "devices-scanning": devices({ gate: new Promise<void>(() => {}) }),
@@ -572,7 +590,14 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "ready-loading": () => {
     const library = installWorkouts({
       summaries: [
-        { id: "w1", name: "Steady 10 min", totalS: 600, tss: 10, ftp: 250 },
+        {
+          id: "w1",
+          name: "Steady 10 min",
+          totalS: 600,
+          tss: 10,
+          ftp: 250,
+          builtin: true,
+        },
       ],
       compiled: { w1: compiled({ blocks: BLOCKS, totalS: 600 }) },
       gate: new Promise<void>(() => {}),
@@ -588,7 +613,14 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "ready-loading-progress": () => {
     const library = installWorkouts({
       summaries: [
-        { id: "w1", name: "Steady 10 min", totalS: 600, tss: 10, ftp: 250 },
+        {
+          id: "w1",
+          name: "Steady 10 min",
+          totalS: 600,
+          tss: 10,
+          ftp: 250,
+          builtin: true,
+        },
       ],
       compiled: { w1: compiled({ blocks: BLOCKS, totalS: 600 }) },
       gate: new Promise<void>(() => {}),

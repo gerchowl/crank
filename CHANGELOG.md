@@ -10,6 +10,15 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- Workouts save (#110, DESIGN §5.7): **New workout** opens the editor on an empty workout; the editor has a name box,
+  **Save** and **Save as new**, which store the workout in the library (the store's `workout` table), and **Ride this**,
+  which rides the saved workout by its id (#643: no draft riding). Leaving the editor (Back or the rail) or riding with
+  unsaved changes asks Save / Discard / Cancel. Built-in workouts are read-only (Duplicate & edit makes the rider's own
+  copy); the rider's own have **Edit** and **Delete** (after a confirmation; their rides stay in History). New commands
+  `workout_new`, `workout_save` (refuses a blank or long name, a built-in's id, a tree that does not compile and an
+  error-severity issue) and `workout_delete`; `WorkoutSummary` and `WorkoutDetail` carry `builtin`. The MVP walk writes,
+  saves and rides its own workout, and finds it in the library after the relaunch
+  ([#110](https://github.com/gerchowl/crank/issues/110))
 - Link chips show each paired device's connection (ADR-0002 §5.1.4): on Today, Workouts (under Ride this) and Settings →
   Devices, "searching…", "connecting…", "ready", "not found" (with "is another app using it?" for the trainer and "keeps
   looking" for the strap), or the ride's "connected" / "lost" while a ride holds the device, read from the snapshot

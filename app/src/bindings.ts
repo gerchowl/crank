@@ -91,6 +91,27 @@ export const commands = {
 	 */
 	workoutGet: (id: string) => typedError<WorkoutDetail, ApiError>(__TAURI_INVOKE("workout_get", { id })),
 	/**
+	 *  The draft a new workout starts from.
+	 * 
+	 *  # Errors
+	 *  As [`Core::workout_new`].
+	 */
+	workoutNew: () => typedError<WorkoutDraft, ApiError>(__TAURI_INVOKE("workout_new")),
+	/**
+	 *  Save a workout to the library: update `id`, or store a new one for `None`; answers its id.
+	 * 
+	 *  # Errors
+	 *  As [`Core::workout_save`].
+	 */
+	workoutSave: (id: string | null, draft: WorkoutDraft) => typedError<string, ApiError>(__TAURI_INVOKE("workout_save", { id, draft })),
+	/**
+	 *  Delete one of the rider's workouts.
+	 * 
+	 *  # Errors
+	 *  As [`Core::workout_delete`].
+	 */
+	workoutDelete: (id: string) => typedError<null, ApiError>(__TAURI_INVOKE("workout_delete", { id })),
+	/**
 	 *  Parse workout DSL text for the editor.
 	 * 
 	 *  # Errors
@@ -1293,6 +1314,21 @@ export type WorkoutDetail = {
 	dsl: string,
 	/**  The compiled timeline. */
 	compiled: CompiledView,
+	/**  One of crank's own workouts: read-only (`workout_save` and `workout_delete` refuse its id). */
+	builtin: boolean,
+};
+
+/**
+ *  What `workout_save` stores: a workout without its id, which the library owns (#110). The
+ *  editor's new workout starts as one (`workout_new`).
+ */
+export type WorkoutDraft = {
+	/**  Display name: not blank, and at most 120 characters once trimmed. */
+	name: string,
+	/**  Reference FTP, W. */
+	ftp: number | null,
+	/**  The workout tree. */
+	nodes: WorkoutNode[],
 };
 
 /**  A prescription diagnostic of the compiled workout. */
@@ -1330,6 +1366,8 @@ export type WorkoutSummary = {
 	tss: number | null,
 	/**  Reference FTP, W. */
 	ftp: number | null,
+	/**  One of crank's own workouts: read-only, so editing it means a copy (DESIGN §5.7, #110). */
+	builtin: boolean,
 };
 
 /* Tauri Specta runtime */

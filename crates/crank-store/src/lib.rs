@@ -4,6 +4,7 @@
 //! Coordinates are session seconds; timestamps are UTC Unix seconds.
 mod json;
 mod route;
+mod workout;
 mod writer;
 pub use json::*;
 pub use route::{RouteListing, RouteOriginal, StoredRoute, decode_points, encode_points};
@@ -13,6 +14,7 @@ use std::sync::{
     Mutex,
     atomic::{AtomicUsize, Ordering},
 };
+pub use workout::StoredWorkout;
 use writer::WriterHandle;
 /// Typed persistence failures (ADR-0001 §7).
 #[derive(Debug, thiserror::Error)]
@@ -554,6 +556,44 @@ impl Store {
     pub fn delete_route(&self, id: &str) -> Result<bool, StoreError> {
         let id = id.to_owned();
         self.write(move |w| route::delete(&w.db, &id))
+    }
+    /// The rider's workouts, oldest first (by first save, then id), each tree validated.
+    /// # Errors
+    /// `InvalidJson` for a row whose tree does not parse or names another id; SQL or worker errors.
+    pub fn workouts(&self) -> Result<Vec<StoredWorkout>, StoreError> {
+        self.read(workout::list)
+    }
+    /// One of the rider's workouts; `None` for an unknown id.
+    /// # Errors
+    /// `InvalidJson` for a row whose tree does not parse or names another id; SQL or worker errors.
+    pub fn workout(&self, id: &str) -> Result<Option<StoredWorkout>, StoreError> {
+        self.read(|db| workout::select(db, id))
+    }
+    /// Store a new workout under its tree's id, with its canonical DSL text.
+    /// # Errors
+    /// `InvalidInput` for a taken id; read-only, SQL or worker errors.
+    pub fn insert_workout(
+        &self,
+        tree: WorkoutTreeJson,
+        dsl: String,
+        created_at: i64,
+    ) -> Result<(), StoreError> {
+        self.write(move |w| workout::insert(&w.db, &tree, &dsl, created_at))
+    }
+    /// Replace the workout with its tree's id (name, FTP, tree and text), keeping when it was
+    /// first saved. Returns whether a row existed; nothing is written when none did.
+    /// # Errors
+    /// Read-only, SQL or worker errors.
+    pub fn update_workout(&self, tree: WorkoutTreeJson, dsl: String) -> Result<bool, StoreError> {
+        self.write(move |w| workout::update(&w.db, &tree, &dsl))
+    }
+    /// Delete one of the rider's workouts. Rides of it stay readable: each keeps its own copy
+    /// of the workout (`ride.workout_json`). Returns whether a row existed.
+    /// # Errors
+    /// Read-only, SQL or worker errors.
+    pub fn delete_workout(&self, id: &str) -> Result<bool, StoreError> {
+        let id = id.to_owned();
+        self.write(move |w| workout::delete(&w.db, &id))
     }
     /// Decode persisted metric chunks ordered by session second.
     /// # Errors
