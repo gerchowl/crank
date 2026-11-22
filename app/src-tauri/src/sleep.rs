@@ -5,7 +5,7 @@
 //! keeper releases its warm links, cancels an attempt still connecting, and a loaded ride that
 //! has not started is discarded. A started ride is untouched (sleep during a ride is #51).
 //!
-//! **Where it lives and how long.** [`Observer`] (macOS only) is registered on
+//! **Where it lives and how long.** `Observer` (macOS only, so not linked here) is registered on
 //! `NSWorkspace.sharedWorkspace.notificationCenter` by [`crate::run`] once the app is built (the
 //! core is managed by then), moved into the run-event callback ([`crate::lifecycle::run`]) and
 //! dropped, which unregisters it, when the quit starts (the first `ExitRequested`, or `Exit` on
