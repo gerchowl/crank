@@ -202,7 +202,7 @@ test("a refused load is the notice's, and today's ride is back to nothing planne
   expect(panel("Today’s ride").getByText("Nothing planned")).toBeTruthy();
 });
 
-test("devices list who is paired for each role", async () => {
+test("devices list who is paired for each role, with its link chip (the keeper's phase, #681)", async () => {
   setup({}, { devices: paired({ trainer: neo, strap: hrm }) });
   open();
   const list = await panel("Devices").findByRole("list", {
@@ -210,8 +210,8 @@ test("devices list who is paired for each role", async () => {
   });
   const rows = within(list).getAllByRole("listitem");
   expect(rows.map((r) => r.textContent)).toEqual([
-    "TrainerTacx Neo 55624✓ paired",
-    "Heart-rate strapHRM-Dual✓ paired",
+    "TrainerTacx Neo 55624– not connected",
+    "Heart-rate strapHRM-Dual– not connected",
   ]);
   await userEvent.click(
     panel("Devices").getByRole("button", { name: "Devices" }),
@@ -243,7 +243,7 @@ test("while a ride is loaded the devices show its links", async () => {
   let release = () => {};
   w.gate = new Promise<void>((r) => (release = r));
   open();
-  await panel("Devices").findAllByText(/paired/);
+  await panel("Devices").findAllByText(/not connected/);
   const loading = startRideLoad("w-easy", "Easy spin");
   release();
   await act(() => loading);
@@ -257,7 +257,7 @@ test("while a ride is loaded the devices show its links", async () => {
     const rows = panel("Devices").getAllByRole("listitem");
     expect(rows.map((r) => r.textContent)).toEqual([
       "TrainerTacx Neo 55624✓ connected",
-      "Heart-rate strapHRM-Dual↻ connecting",
+      "Heart-rate strapHRM-Dual↻ connecting…",
     ]);
   });
 });

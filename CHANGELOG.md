@@ -10,6 +10,12 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- Link chips show each paired device's connection (ADR-0002 §5.1.4): on Today, Workouts (under Ride this) and Settings →
+  Devices, "searching…", "connecting…", "ready", "not found" (with "is another app using it?" for the trainer and "keeps
+  looking" for the strap), or the ride's "connected" / "lost" while a ride holds the device, read from the snapshot
+  channel; Today and Workouts offer Retry while a device is not found. The Ready sheet's device rows show each device's
+  phase while the load connects instead of "checking…". The e2e build adds the `sim_latency` test hook, and the MVP walk
+  checks the chips, Retry and the losses of step 7 ([#681](https://github.com/gerchowl/crank/issues/681))
 - The app tells the link keeper when a ride is likely (ADR-0002 §5.1.2), so it can connect the trainer and strap
   before "Ride this": Today, Workouts and the Ready sheet report `Likely` (the Ready sheet over a load in flight holds
   without input), Settings → Devices releases the devices for pairing, other views start the idle cool-down, losing

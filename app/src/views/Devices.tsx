@@ -20,6 +20,7 @@ import type {
   ScannedDevice,
 } from "../bindings";
 import { useCommand } from "../stream";
+import { LinkChip } from "../links/chips";
 import { useUi } from "../stream/uiHooks";
 
 const ROLE_LABEL: Record<DeviceRole, string> = {
@@ -346,6 +347,21 @@ export function Devices() {
                         : device
                           ? pairedLine(device)
                           : "Not paired"}
+                      {/* Its link (links/chips.tsx, #681): this view releases the keeper's links for pairing, so it reads
+                          "not connected" unless a ride holds the device; no Retry here. */}
+                      {device && ui.devices && (
+                        <>
+                          {" "}
+                          <LinkChip
+                            of={role === "trainer" ? "trainer" : "strap"}
+                            device={
+                              role === "trainer"
+                                ? ui.devices.trainer
+                                : ui.devices.strap
+                            }
+                          />
+                        </>
+                      )}
                     </span>
                     {device && (
                       <span className="device-actions">

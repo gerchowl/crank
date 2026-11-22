@@ -296,6 +296,35 @@ pub async fn sim_fault(
         .await
 }
 
+/// Test hook (#681): from the simulated trainer's or strap's next connect on, finding it takes
+/// `resolve_ms`, its GATT connect `gatt_ms` and the trainer's handshake `handshake_ms`, and
+/// with `advertising` false it is not found. Registered only in the `e2e` build, as
+/// [`sim_fault`] is: never in a production build nor in the exported bindings.
+///
+/// # Errors
+/// As [`Core::sim_latency`].
+#[cfg(feature = "e2e")]
+#[tauri::command]
+#[specta::specta]
+pub async fn sim_latency(
+    core: State<'_, Core>,
+    role: DeviceRole,
+    resolve_ms: u32,
+    gatt_ms: u32,
+    handshake_ms: u32,
+    advertising: bool,
+) -> Result<(), ApiError> {
+    let ms = |v: u32| std::time::Duration::from_millis(u64::from(v));
+    let latency = crank_devices::sim::SimLatency {
+        resolve: ms(resolve_ms),
+        gatt: ms(gatt_ms),
+        handshake: ms(handshake_ms),
+        never_answers: false,
+        not_advertising: !advertising,
+    };
+    core.sim_latency(role, latency).await
+}
+
 /// End the ride, or unload an unstarted one; answers nothing: the end shows in the snapshot
 /// channel's next frame, as `ride.ended` (`forced` when the core had to end it because the
 /// engine could not), and an unload as `ride: null` (ADR-0001 §4.3.8).

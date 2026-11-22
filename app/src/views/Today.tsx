@@ -13,9 +13,9 @@ import {
   type ApiError,
   type DeviceRole,
   type DeviceView,
-  type LinkStatus,
   type RideRecord,
 } from "../bindings";
+import { LinkChip, LinkHints, RetryLinks } from "../links/chips";
 import { navigate } from "../router";
 import { useCommand } from "../stream";
 import { useUi, useUiClient } from "../stream/uiHooks";
@@ -100,43 +100,35 @@ function TodaysRide() {
   );
 }
 
-const LINK: Record<LinkStatus, [glyph: string, word: string]> = {
-  ready: ["✓", "connected"],
-  connecting: ["↻", "connecting"],
-  lost: ["⚠", "lost"],
-};
 const ROLE = {
-  trainer: { label: "Trainer", Icon: Bluetooth },
-  heart_rate: { label: "Heart-rate strap", Icon: Heart },
+  trainer: { label: "Trainer", Icon: Bluetooth, chip: "trainer" },
+  heart_rate: { label: "Heart-rate strap", Icon: Heart, chip: "strap" },
 } as const;
 
-/** One role: who is paired, and the ride's link while a ride holds it (the frame's `devices`, ADR-0001 §4.3.6). */
+/**
+ * One role: who is paired, and its link chip (links/chips.tsx): the keeper's phase, or the ride's link while a ride
+ * holds it (the frame's `devices`, ADR-0001 §4.3.6, ADR-0002 §5.1.4).
+ */
 function DeviceRow({ of: role, info }: { of: DeviceRole; info: DeviceView }) {
-  const { label, Icon } = ROLE[role];
+  const { label, Icon, chip } = ROLE[role];
   const d = info.paired;
-  const [glyph, word] = d
-    ? info.link
-      ? LINK[info.link]
-      : ["✓", "paired"]
-    : role === "trainer"
-      ? ["⚠", "not paired"]
-      : ["–", "not paired"];
   return (
     <li
       className="today-device"
-      data-state={
-        d
-          ? (info.link ?? "paired")
-          : role === "trainer"
-            ? "missing"
-            : "unpaired"
-      }
+      data-state={d ? "paired" : role === "trainer" ? "missing" : "unpaired"}
     >
       <Icon {...icon} />
       <span className="today-device-role">{label}</span>
       <span className="today-device-name">{d ? (d.name ?? d.id) : "—"}</span>
       <span className="today-device-state">
-        <span data-state-label>{glyph}</span> {word}
+        {d ? (
+          <LinkChip of={chip} device={info} />
+        ) : (
+          <>
+            <span data-state-label>{role === "trainer" ? "⚠" : "–"}</span> not
+            paired
+          </>
+        )}
       </span>
     </li>
   );
@@ -166,6 +158,7 @@ function Devices() {
           <DeviceRow of="heart_rate" info={devices.strap} />
         </ul>
       )}
+      {devices && <LinkHints devices={devices} />}
       {noTrainer && (
         <p className="today-hint" data-state="warning">
           <span data-state-label>⚠</span> A ride needs a paired trainer. Pair it
@@ -181,6 +174,7 @@ function Devices() {
           <Bluetooth {...icon} />
           {noTrainer ? "Pair a trainer" : "Devices"}
         </button>
+        {devices && <RetryLinks devices={devices} />}
       </div>
     </section>
   );
