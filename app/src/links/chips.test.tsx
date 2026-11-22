@@ -209,9 +209,9 @@ describe("Workouts", () => {
     );
     const group = await screen.findByRole("group", { name: "Device links" });
     await waitFor(() =>
-      expect(group.textContent).toContain("Trainer↻ connecting…"),
+      expect(group.textContent).toContain("Trainer ↻ connecting…"),
     );
-    expect(group.textContent).toContain("HR⚠ not found");
+    expect(group.textContent).toContain("HR ⚠ not found");
     expect(group.textContent).toContain("HR: keeps looking");
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(intents(ui.calls).at(-1)).toEqual(RETRY));

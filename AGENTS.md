@@ -113,7 +113,7 @@ distribution signing is #47). The bundle must not depend on the Nix store at run
 `app/e2e/` (in sim mode, scratch data dir per launch) in the GUI session through Alacritty IPC (`CRANK_E2E_DIRECT=1` from a GUI terminal); output goes to the
 gitignored `app/e2e-out/`. `just e2e` runs the specs in two app launches and compares screenshots across them; on Linux it skips with a message.
 The specs share one app process per launch (the embedded WebDriver keeps it across sessions), so `app/e2e/wdio.conf.mjs` lists them in order:
-smoke (needs the fresh shell), `mvp.e2e.mjs` (#667: the #256 critical path through the UI: pair in Settings → Devices, the link chips' phases, a trainer not found and Retry (#681), Ride this,
+smoke (needs the fresh shell), `mvp.e2e.mjs` (#667: the #256 critical path through the UI: pair in Settings → Devices, a trainer not found (its link chip, hint and Retry) and the chips' connect phases (#681), Ride this,
 the Ready sheet, Start, soft start, ERG target, tiles and chart, Pause/Resume, Skip, a trainer then a strap dropout, End and the summary; it ends by closing the
 window, which quits the app), `mvp-relaunch.e2e.mjs` (the service starts the app again on the same data dir: the ride is in History),
 then stream (leaves its ride loaded). Their selectors live in `app/e2e/specs/mvp-selectors.mjs`, one per component, and
@@ -124,8 +124,8 @@ and refuses (`Conflict`) outside sim mode or before the rig's first connect. The
 name); `tests/commands.rs` `only_the_e2e_build_registers_sim_fault` proves in CI that the production registry has no such command,
 and `deps-edges` that production never enables `e2e`. The e2e build's second hook, `sim_latency` (#681, `commands.rs` `sim_latency`,
 `Core::sim_latency`), sets the simulated trainer's or strap's connect latency per phase from its next connect on, or makes it not
-advertise (`SimRig::set_latency`), so the walk sees the link chips' phases, a trainer that is not found, and Retry (step 1b); the
-same test proves it absent from production.
+advertise (`SimRig::set_latency`), so the walk sees the link chips' phases and a trainer that is not found (step 1b; the warm views' `Likely` and Retry's effect
+need an unlocked GUI session, #687); the same test proves it absent from production.
 `just screens` awaits the UI waves (#229) and fails explicitly until then.
 **Design harness (#457, DESIGN §18.7):** `just design` (= `pnpm -C app exec playwright test`, in the devShell) opens every
 fixture of `app/e2e/design/scenarios.ts` at 1024×768 and 1440×900 in both themes, injects `app/e2e/design/layout-audit.js`
