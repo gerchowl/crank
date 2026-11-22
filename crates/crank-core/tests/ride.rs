@@ -371,7 +371,12 @@ async fn sim_latency_hides_a_device_or_slows_its_next_connect() {
     let asked = tokio::time::Instant::now();
     core.ride_load(Some(SENSOR_CHECK.into())).await.unwrap();
     let took = asked.elapsed();
-    assert!(took >= Duration::from_secs(3), "the three phases: {took:?}");
+    // The three phases, and nothing more (ADR-0002 §5.1.8 "Parallel bound": max of the attempts ± one tick), also
+    // right after the trainer was not found, while the keeper scans for it.
+    assert!(
+        took >= Duration::from_secs(3) && took < Duration::from_secs(4),
+        "the three phases: {took:?}"
+    );
     core.ride_end().await.unwrap();
 
     // Bluetooth: refused, and the radio is never touched.

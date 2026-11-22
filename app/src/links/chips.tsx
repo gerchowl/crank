@@ -117,7 +117,9 @@ export function LinkChip({
       data-state={c.state}
       data-phase={device.phase ?? "none"}
     >
+      {/* A space between the name and the glyph for a reader of the text; the flex gap draws it. */}
       {label !== undefined && <span className="link-chip-name">{label}</span>}
+      {label !== undefined && " "}
       <span data-state-label>{c.glyph}</span> {c.word}
     </span>
   );
