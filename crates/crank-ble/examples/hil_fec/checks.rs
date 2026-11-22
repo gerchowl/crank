@@ -33,6 +33,9 @@ pub enum Outcome {
     /// A Part B procedure completed but its release was not confirmed (e.g. after a drop): the
     /// error and the rider instruction; the summary is at this path.
     Unconfirmed(PathBuf, String),
+    /// A measurement completed with a negative verdict (the `phase` sweep's FAIL): its line; the
+    /// summary is at this path.
+    Failed(PathBuf, String),
 }
 
 impl Outcome {
@@ -45,9 +48,24 @@ impl Outcome {
         }
     }
 
+    /// The outcome of a `phase` sweep whose summary is at `path` ([`crate::phase::sweep_verdict`]):
+    /// PASS is done, FAIL failed, INCOMPLETE (a link drop or a partial sweep) stopped early.
+    fn of_phase(path: PathBuf, summary: &Value) -> Self {
+        let line = summary["verdict"]
+            .as_str()
+            .unwrap_or("no verdict")
+            .to_string();
+        match summary["result"].as_str() {
+            Some("pass") => Self::Done(path),
+            Some("fail") => Self::Failed(path, line),
+            _ => Self::Stopped(path, line),
+        }
+    }
+
     /// The lines `hil_fec` prints, the last one the operator reads, and its exit status:
     /// 0 done, 3 blocked, 4 stopped early (no result), 5 completed with the release NOT
-    /// confirmed (`main.rs` adds 1 for an error and 2 for bad arguments).
+    /// confirmed, 6 completed with a FAIL verdict (`main.rs` adds 1 for an error and 2 for bad
+    /// arguments).
     pub fn lines(&self) -> (Vec<String>, u8) {
         match self {
             Self::Done(path) => (vec![format!("wrote {}", path.display())], 0),
@@ -62,6 +80,9 @@ impl Outcome {
                 ],
                 5,
             ),
+            Self::Failed(path, line) => {
+                (vec![format!("wrote {}", path.display()), line.clone()], 6)
+            }
         }
     }
 }
@@ -147,6 +168,9 @@ pub async fn run(args: &Args) -> Result<Outcome> {
         summary
     };
     let path = write_summary(&args.out, args.check, &summary)?;
+    if args.check == Check::Phase {
+        return Ok(Outcome::of_phase(path, &summary));
+    }
     Ok(Outcome::of(path, ending))
 }
 
@@ -1074,11 +1098,12 @@ mod tests {
                 5,
             ),
             (
-                Outcome::Stopped(path, "Aborted(\"x\") (trainer released)".into()),
+                Outcome::Stopped(path.clone(), "Aborted(\"x\") (trainer released)".into()),
                 "STOPPED: Aborted(\"x\") (trainer released); wrote out/check11a.json".into(),
                 4,
             ),
             (Outcome::Blocked("y".into()), "BLOCKED: y".into(), 3),
+            (Outcome::Failed(path, "FAIL: z".into()), "FAIL: z".into(), 6),
         ] {
             let (lines, code) = outcome.lines();
             assert_eq!((lines.last(), code), (Some(&last), status));
@@ -1092,6 +1117,27 @@ mod tests {
             .1,
             5
         );
+    }
+
+    /// A `phase` sweep exits 0 only on PASS: FAIL is 6 and INCOMPLETE (a link drop, a partial
+    /// sweep) is 4, each ending on its verdict line.
+    #[test]
+    fn a_phase_sweep_exits_non_zero_unless_it_passes() {
+        let path = PathBuf::from("out/phase.json");
+        for (result, verdict, last, status) in [
+            ("pass", "PASS: v", "wrote out/phase.json".to_string(), 0),
+            ("fail", "FAIL: v", "FAIL: v".to_string(), 6),
+            (
+                "incomplete",
+                "INCOMPLETE: v",
+                "STOPPED: INCOMPLETE: v; wrote out/phase.json".into(),
+                4,
+            ),
+        ] {
+            let summary = json!({"result": result, "verdict": verdict});
+            let (lines, code) = Outcome::of_phase(path.clone(), &summary).lines();
+            assert_eq!((lines.last(), code), (Some(&last), status), "{result}");
+        }
     }
 
     /// The two settled-invalid endpoints (#215) are still sent to the NEO: the codec now

@@ -15,7 +15,12 @@ checks do and writes no control page. For each offset `D` of 0, 50, …, 950 ms,
 after the last page-16 slot (`PhaseLock`, the same fallback the amendment proposes). Each offset
 runs for 40 s. In `latency.fecap` the outages began 20.8–23.8 s after the request took the relation
 that preceded them, so 40 s is 1.7 × the longest onset. Each offset's start is stamped in the
-capture as `# phase <µs> <offset ms, u16 LE>`. The first 3 s of each offset are not counted.
+capture as `# phase <µs> <offset ms, u16 LE>`, and its end as `# phase-end <µs> <code>` (0 completed,
+1 link dropped). The first 3 s of each offset are not counted. A page-16 gap is charged to the offset
+in force when it began, from 3 s after that offset's note to 3 s after the next one's (an outage
+begins 20.8–23.8 s after its offset is taken, so one beginning in the first 3 s is the previous
+offset's). The whole gap counts there, even when it runs into the next offset, and its tail does
+not count against that next offset. If the link drops, the sweep stops at once.
 
 **Duration:** 26 × 40 s = 17 min 20 s, plus up to 30 s scan and connect: **about 18 minutes**.
 No pedalling. The trainer must be awake (mains plugged in) and no other app may be connected (phone
@@ -48,20 +53,24 @@ The window prints `phase: offset <D> ms for 40 s` per step. Leave the trainer al
 ## Result
 
 `<out>/phase.json` holds, for each offset (`steps`): requests, page-71 replies and page-16 frames
-counted after the settle time, the longest page-16 gap (`max_page16_gap_ms`) and a verdict. An
-offset is **safe** when page 16 kept arriving with no gap over 2.5 s (more than two missing page-16
-periods); otherwise **unsafe**. `safe_bands_ms` lists the runs of adjacent safe offsets, widest
-first. The last line printed before `wrote …` is the verdict:
+counted after the settle time, the longest page-16 gap charged to it (`max_page16_gap_ms`) and a
+verdict. An offset is **safe** when page 16 kept arriving with no gap over 2.5 s (more than two
+missing page-16 periods); otherwise **unsafe**. `safe_bands_ms` lists the runs of adjacent safe
+offsets, widest first. `result` is `pass`, `fail` or `incomplete`. The verdict line:
 
-- **PASS:** `PASS: safe band A–B ms after page 16 (centre C ms); …`, where the widest band is at least
-  150 ms wide. That leaves 75 ms to either edge, against BLE delivery quantised to the ~30 ms
+- **PASS** (exit 0, printed before `wrote …`): `PASS: safe band A–B ms after page 16 (centre C ms); …`,
+  where the widest band is at least 150 ms wide. That leaves 75 ms to either edge, against BLE delivery quantised to the ~30 ms
   connection interval. PR 2 sets the amendment's offset to `C`. It also re-derives the reply-gap
   distribution and `T_unknown` from this capture before the amendment is accepted.
-- **FAIL:** no band that wide, or none at all. The amendment as drafted does not hold; report the
-  steps table on #610 for a design decision.
+- **FAIL** (exit 6, the last line): no band that wide, or none at all. The amendment as drafted does
+  not hold; report the steps table on #610 for a design decision.
+- **INCOMPLETE** (exit 4, last line `STOPPED: INCOMPLETE: …; wrote …`): the link dropped, or the
+  capture lacks the 26 full steps or the end note. It names the last completed step. No verdict,
+  whatever the completed steps showed: rerun the whole sweep.
 
-The same JSON carries `outages` (page-16 gaps of 6 s or more, with the request offsets at their start
-and end) and `free_running_bins` (requests binned by 50 ms of offset, for captures without steps).
+The same JSON carries `page16_gaps_over_2_5_s` and `max_page16_gap_ms` (over the whole capture; the
+measure of the PR 2 acceptance ride), `outages` (page-16 gaps of 6 s or more, with the request
+offsets at their start and end) and `free_running_bins` (requests binned by 50 ms of offset, for captures without steps).
 `hil_fec analyse --target <capture> --out DIR` recomputes the same analysis offline for any capture.
 It goes under `page16_phase` in `<stem>.analysis.json`, and the verdict line is printed when the
 capture has sweep steps.

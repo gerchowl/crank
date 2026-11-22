@@ -452,8 +452,9 @@ these values on the capture):
 
 - **Lock.** While page 16 arrives, the page-71 request is due at `last16 + D + n·T_poll`: the first
   such instant (n ≥ 0) at least `T_poll`/2 after the previous request. `last16` is the arrival of
-  the last page 16; `T_poll` = 1 s. This is `hil_fec`'s `PhaseLock`, so the sweep measures exactly
-  the scheduler production will run.
+  the last page 16; `T_poll` = 1 s. This is `hil_fec`'s `PhaseLock`, so the sweep measures this
+  request timing. It writes nothing else: no SIM keep-alive or control page is interleaved, so the
+  sweep does not test the SIM alignment below. PR 2's acceptance ride does.
 - **`D` is TBD by the sweep.** It will be the centre of the widest safe band, which must be
   ≥ 150 ms wide: 75 ms to either edge against the ~30 ms BLE connection-interval quantisation.
 - **Provisional band from the capture:** 650–750 ms safe. Avoid 150–450 ms and 900–1000 ms.
@@ -477,9 +478,12 @@ these values on the capture):
   reply-interval distribution under the lock from the sweep capture and re-derives the silent rates
   of the `T_unknown` row from it before this amendment is accepted. If they exceed the rates stated
   there, `T_unknown` changes in the same PR.
-- **Acceptance.** A `hil_fec phase` PASS (runbook `docs/hil/phase.md`) sets `D`. Then a ride
-  captured with `CRANK_CAPTURE_DIR` under PR 2 must show no page-16 gap over 2.5 s
-  (`hil_fec analyse`, `page16_phase.outages` empty).
+- **Acceptance.** A `hil_fec phase` PASS (runbook `docs/hil/phase.md`) sets `D`; only a complete
+  sweep has a verdict (a link drop or a partial capture is INCOMPLETE). Then a ride captured with
+  `CRANK_CAPTURE_DIR` under PR 2, in ERG and in SIM (which verifies the SIM alignment with control
+  and keep-alive writes interleaved), must show no page-16 gap over 2.5 s: `hil_fec analyse` gives
+  `page16_phase.page16_gaps_over_2_5_s` empty (`max_page16_gap_ms` ≤ 2500). `outages` lists only
+  gaps of 6 s or more and does not decide acceptance.
 - **Firmware.** This is NEO fw 0.7.4 behaviour. Another firmware or trainer may rotate its pages
   differently; the lock only assumes that the trainer broadcasts page 16 periodically.
 

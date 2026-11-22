@@ -26,8 +26,14 @@ pub const MIN_GAP_US: u64 = PERIOD_US / 2;
 /// page-16 slot otherwise moved about once every 12–24 s. 40 s is 1.7 × the longest onset, so an
 /// offset that triggers an outage shows it within its own dwell.
 pub const DWELL_US: u64 = 40_000_000;
-/// The start of each dwell left out of its statistics: a page-16 gap begun under the previous
-/// offset belongs to that offset.
+/// The start of each dwell left out of its counts, and the shift of its attribution window: a
+/// page-16 gap is charged to the step whose offset was in force when the gap began, where a step
+/// is in force from `SETTLE_US` after its note to `SETTLE_US` after the next one (an outage begins
+/// 20.8–23.8 s after its offset is taken, so one beginning in a step's first 3 s is the previous
+/// offset's). The whole gap goes to that step, however far it runs into the next one, and its
+/// tail is not counted against the next step ([`steps`]). The alternative, a settle as long as
+/// the longest outage (25.2 s) plus its onset, would leave each step under 15 s to show its own
+/// outage, shorter than the onset, or cost another 26 × 25 s.
 pub const SETTLE_US: u64 = 3_000_000;
 /// A page-16 gap longer than this inside a step makes the offset unsafe: more than two missing
 /// page-16 periods. (Speed is held for 6 s, `SPEED_HOLD_TICKS`; an offset that only thins page
@@ -47,6 +53,14 @@ pub const MIN_BIN_N: usize = 5;
 pub const MIN_SAFE_WIDTH_MS: u16 = 150;
 /// The tag of the step notes: `# phase <us> <offset ms, u16 LE>`.
 pub const STEP_TAG: &str = "phase";
+/// The tag of the note that ends a sweep: `# phase-end <us> <code>`, [`END_COMPLETED`] or
+/// [`END_LINK_DROPPED`]. A sweep capture without it stopped early (the process died or the
+/// capture failed).
+pub const END_TAG: &str = "phase-end";
+/// [`END_TAG`] code: every offset ran its full dwell with the link up.
+pub const END_COMPLETED: u8 = 0;
+/// [`END_TAG`] code: the link dropped; the sweep stopped at once.
+pub const END_LINK_DROPPED: u8 = 1;
 
 /// The swept offsets after page 16, in ms, ascending: every 50 ms over the period, plus 25 ms
 /// steps between 150 and 450 ms, around the edges of the band `latency.fecap` showed
@@ -305,8 +319,9 @@ pub struct Step {
     pub replies: usize,
     /// Page 16s received after the settle time.
     pub page16: usize,
-    /// Longest page-16 gap that ends after the settle time (counting the step's edges as gap
-    /// ends), µs.
+    /// Longest page-16 gap that began while this step was in force (from [`SETTLE_US`] after its
+    /// note to [`SETTLE_US`] after the next; the sweep's first note and the capture's end count as
+    /// gap ends), µs. The whole gap counts here even when it runs into the next step.
     pub max_gap_us: u64,
     /// Safe: no gap over [`SAFE_GAP_US`] and at least one page 16; else unsafe.
     pub verdict: Verdict,
@@ -325,6 +340,24 @@ pub fn steps(records: &[Record], notes: &[Note]) -> Vec<Step> {
         .collect();
     let end = records.last().map_or(0, |r| r.at_us);
     let t16 = page16_times(records);
+    // Each gap goes to the step in force when it began (see SETTLE_US); a gap that begins before
+    // the first step's settle ends goes to the first step.
+    let owner = |t: u64| {
+        marks
+            .iter()
+            .rposition(|m| t >= m.1 + SETTLE_US)
+            .unwrap_or(0)
+    };
+    let mut max_gap = vec![0_u64; marks.len()];
+    if let Some(&(_, first)) = marks.first() {
+        let mut ends = vec![first];
+        ends.extend(t16.iter().copied().filter(|&t| t > first && t <= end));
+        ends.push(end.max(first));
+        for w in ends.windows(2) {
+            let i = owner(w[0]);
+            max_gap[i] = max_gap[i].max(w[1] - w[0]);
+        }
+    }
     marks
         .iter()
         .enumerate()
@@ -338,12 +371,8 @@ pub fn steps(records: &[Record], notes: &[Note]) -> Vec<Step> {
                     .filter(|r| r.rx == rx && within(r.at_us) && page_of(&r.bytes) == Some(page))
                     .count()
             };
-            // gaps between page 16s, with the counted window's edges as the outer ends
-            let mut edges: Vec<u64> = vec![counted.min(to_us)];
-            edges.extend(t16.iter().copied().filter(|&t| within(t)));
-            edges.push(to_us);
-            let max_gap_us = edges.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
-            let page16 = edges.len() - 2;
+            let page16 = t16.iter().filter(|&&t| within(t)).count();
+            let max_gap_us = max_gap[i];
             Step {
                 offset_ms,
                 from_us,
@@ -369,8 +398,7 @@ pub fn safe_bands(steps: &[Step]) -> Vec<(u16, u16)> {
     let mut runs: Vec<(u16, u16)> = Vec::new();
     let mut open: Option<(u16, u16)> = None;
     for s in steps {
-        let full = s.to_us - s.from_us + 1_000_000 >= DWELL_US;
-        open = match (open, s.verdict == Verdict::Safe && full) {
+        open = match (open, s.verdict == Verdict::Safe && full(s)) {
             (Some((a, _)), true) => Some((a, s.offset_ms)),
             (None, true) => Some((s.offset_ms, s.offset_ms)),
             (Some(r), false) => {
@@ -404,6 +432,83 @@ pub fn verdict_line(bands: &[(u16, u16)]) -> (bool, String) {
         ),
         None => (false, "FAIL: no offset kept page 16 flowing".into()),
     }
+}
+
+/// How a sweep ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sweep {
+    /// Complete, with a safe band at least [`MIN_SAFE_WIDTH_MS`] wide.
+    Pass,
+    /// Complete, without one.
+    Fail,
+    /// Stopped early (link drop, or no end note): no verdict.
+    Incomplete,
+}
+
+impl Sweep {
+    /// Its name in the summary (`result`).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::Incomplete => "incomplete",
+        }
+    }
+}
+
+/// A step that ran its full dwell (1 s of slack for the last frame before its end).
+fn full(s: &Step) -> bool {
+    s.to_us - s.from_us + 1_000_000 >= DWELL_US
+}
+
+/// The sweep's verdict and the operator's line. Only a complete sweep has one: every offset of
+/// [`offsets_ms`] in order, each for its full dwell, and an [`END_TAG`] note saying
+/// [`END_COMPLETED`]. Anything else is [`Sweep::Incomplete`], naming the last completed step, so a
+/// partial sweep can never PASS.
+#[must_use]
+pub fn sweep_verdict(steps: &[Step], notes: &[Note]) -> (Sweep, String) {
+    let ended = notes
+        .iter()
+        .rev()
+        .find(|n| n.tag == END_TAG)
+        .and_then(|n| n.bytes.first().copied());
+    let planned = offsets_ms();
+    let done = steps
+        .iter()
+        .zip(&planned)
+        .take_while(|(s, o)| s.offset_ms == **o && full(s))
+        .count();
+    if ended == Some(END_COMPLETED) && done == planned.len() && steps.len() == planned.len() {
+        let (pass, line) = verdict_line(&safe_bands(steps));
+        return (if pass { Sweep::Pass } else { Sweep::Fail }, line);
+    }
+    let why = match ended {
+        Some(END_LINK_DROPPED) => "the link dropped",
+        Some(END_COMPLETED) => "the steps do not match the planned sweep",
+        _ => "the capture has no end note (the run stopped)",
+    };
+    let last = done
+        .checked_sub(1)
+        .and_then(|i| planned.get(i))
+        .map_or_else(|| "none".to_string(), |o| format!("{o} ms"));
+    (
+        Sweep::Incomplete,
+        format!(
+            "INCOMPLETE: {why}; {done} of {} offsets completed, last completed step: {last}; no verdict, rerun the sweep",
+            planned.len()
+        ),
+    )
+}
+
+/// Every page-16 gap over [`SAFE_GAP_US`] in the capture, as `(start, length)` µs: the measure of
+/// ADR-0002 §4.4's acceptance ride ("no page-16 gap over 2.5 s").
+#[must_use]
+pub fn long_gaps(t16: &[u64]) -> Vec<(u64, u64)> {
+    t16.windows(2)
+        .map(|w| (w[0], w[1] - w[0]))
+        .filter(|&(_, g)| g > SAFE_GAP_US)
+        .collect()
 }
 
 /// Milliseconds of `us` (a capture is far shorter than the `u32` range of µs, 71 min, beyond
@@ -454,22 +559,32 @@ pub fn analyse(records: &[Record], notes: &[Note]) -> Value {
         })
         .collect();
     let bands = safe_bands(&steps);
-    let (pass, line) = verdict_line(&bands);
+    let (sweep, line) = sweep_verdict(&steps, notes);
+    let gap_rows: Vec<Value> = long_gaps(&t16)
+        .iter()
+        .map(|&(at, len)| json!({"from_s": ms(at) / 1000.0, "len_s": ms(len) / 1000.0}))
+        .collect();
+    let max_gap = t16.windows(2).map(|w| w[1] - w[0]).max();
     json!({
         "page16_period_ms": period.map(ms),
         "page16_frames": t16.len(),
         "requests": treq.len(),
+        "max_page16_gap_ms": max_gap.map(ms),
+        "page16_gaps_over_2_5_s": gap_rows,
         "outages": outage_rows,
         "free_running_bins": bin_rows,
         "steps": step_rows,
         "safe_bands_ms": bands,
-        "pass": !steps.is_empty() && pass,
+        "pass": !steps.is_empty() && sweep == Sweep::Pass,
+        "result": if steps.is_empty() { "none" } else { sweep.name() },
         "verdict": if steps.is_empty() { "no sweep steps in this capture".to_string() } else { line },
     })
 }
 
 /// The sweep on a live session: every offset of [`offsets_ms`] for [`DWELL_US`], then the
-/// analysis of what was captured. Prints the verdict line.
+/// analysis of what was captured. A link drop stops the sweep at once (stamped [`END_TAG`]
+/// [`END_LINK_DROPPED`]), and its verdict is INCOMPLETE. Prints a PASS line; `checks` ends a FAIL
+/// or INCOMPLETE run on that line with a non-zero exit status.
 pub async fn run(s: &crate::session::Session) -> Value {
     use std::time::Duration;
     use tokio::time::sleep;
@@ -482,7 +597,8 @@ pub async fn run(s: &crate::session::Session) -> Value {
         DWELL_US / 1_000_000,
         sweep_us().div_ceil(60_000_000)
     );
-    for offset_ms in offsets_ms() {
+    let mut dropped = false;
+    'sweep: for offset_ms in offsets_ms() {
         lock = PhaseLock::new(u64::from(offset_ms) * 1000, lock.last16(), lock.last_sent());
         let start = s
             .capture
@@ -493,6 +609,11 @@ pub async fn run(s: &crate::session::Session) -> Value {
             DWELL_US / 1_000_000
         );
         while s.elapsed_us() < start + DWELL_US {
+            if s.pump_ended() {
+                dropped = true;
+                println!("phase: the link dropped during offset {offset_ms} ms; stopping");
+                break 'sweep;
+            }
             let fresh = s.since(seen);
             seen += fresh.len();
             for rx in fresh {
@@ -513,10 +634,19 @@ pub async fn run(s: &crate::session::Session) -> Value {
             sleep(Duration::from_millis(5)).await;
         }
     }
+    let code = if dropped {
+        END_LINK_DROPPED
+    } else {
+        END_COMPLETED
+    };
+    // a failed write leaves no end note, which reads as INCOMPLETE
+    let _ = s.capture.record_aux_now(&*s.clock, END_TAG, &[code]);
     let text = std::fs::read_to_string(&s.capture_path).unwrap_or_default();
     let (records, notes) = parse(&text);
     let mut summary = analyse(&records, &notes);
-    if let Some(line) = summary["verdict"].as_str() {
+    if summary["pass"] == json!(true)
+        && let Some(line) = summary["verdict"].as_str()
+    {
         println!("{line}");
     }
     summary["check"] = json!("phase");
@@ -681,29 +811,56 @@ mod tests {
         format!("# phase {at} {lo:02X} {hi:02X}\n")
     }
 
-    /// A synthetic sweep: page 16 every second except a 10 s outage in the 300 ms step and a
-    /// 3 s gap in the 350 ms step; the safe band is the run of full, gap-free steps.
-    #[test]
-    fn steps_give_verdicts_and_the_widest_safe_band() {
+    fn end(at: u64, code: u8) -> String {
+        format!("# {END_TAG} {at} {code:02X}\n")
+    }
+
+    /// A synthetic sweep over `offsets`: page 16 every second (10 ms into it), each followed by
+    /// the request; `gap(offset, k)` drops the page 16 of second `k` of that step. The capture is
+    /// cut at `stop_us` and ends on an end note `code` if given.
+    fn sweep(
+        offsets: &[u16],
+        gap: impl Fn(u16, u64) -> bool,
+        stop_us: u64,
+        code: Option<u8>,
+    ) -> String {
         let mut text = String::new();
-        let offsets = [200_u16, 250, 300, 350, 400, 450];
         for (i, &o) in offsets.iter().enumerate() {
             let from = u64::try_from(i).unwrap() * DWELL_US;
+            if from >= stop_us {
+                break;
+            }
             text += &step(from, o);
             for k in 0..40 {
                 let t = from + k * 1_000_000 + 10_000;
-                let gap = match o {
-                    300 => (10..20).contains(&k),
-                    350 => (20..23).contains(&k),
-                    _ => false,
-                };
-                if !gap {
+                if t >= stop_us {
+                    break;
+                }
+                if !gap(o, k) {
                     text += &rx16(t);
                 }
                 text += &tx70(t + u64::from(o) * 1000);
             }
         }
-        text += &rx16(u64::try_from(offsets.len()).unwrap() * DWELL_US);
+        let last = (u64::try_from(offsets.len()).unwrap() * DWELL_US).min(stop_us);
+        text += &rx16(last);
+        if let Some(c) = code {
+            text += &end(last, c);
+        }
+        text
+    }
+
+    /// A synthetic sweep: page 16 every second except a 10 s outage in the 300 ms step and a
+    /// 3 s gap in the 350 ms step; the safe band is the run of full, gap-free steps.
+    #[test]
+    fn steps_give_verdicts_and_the_widest_safe_band() {
+        let offsets = [200_u16, 250, 300, 350, 400, 450];
+        let gap = |o: u16, k: u64| match o {
+            300 => (10..20).contains(&k),
+            350 => (20..23).contains(&k),
+            _ => false,
+        };
+        let text = sweep(&offsets, gap, u64::MAX, Some(END_COMPLETED));
         let (records, notes) = parse(&text);
         let s = steps(&records, &notes);
         let v: Vec<(u16, Verdict)> = s.iter().map(|s| (s.offset_ms, s.verdict)).collect();
@@ -719,6 +876,7 @@ mod tests {
             ]
         );
         assert_eq!(s[2].max_gap_us, 11_000_000);
+        assert_eq!(s[3].max_gap_us, 4_000_000);
         assert_eq!(s[0].requests, 37); // the first 3 s settle
         assert_eq!(safe_bands(&s), vec![(200, 250), (400, 450)]);
         let (pass, line) = verdict_line(&safe_bands(&s));
@@ -727,5 +885,102 @@ mod tests {
         let a = analyse(&records, &notes);
         assert_eq!(a["pass"], json!(false));
         assert_eq!(a["steps"].as_array().map(Vec::len), Some(6));
+        // six of the 26 planned offsets: not a sweep, so no verdict
+        assert_eq!(a["result"], json!("incomplete"));
+    }
+
+    /// An outage that begins 22 s into the 300 ms step and lasts 25 s runs 7 s into the 350 ms
+    /// step. It is the 300 ms step's (in force when it began); its tail does not make the 350 ms
+    /// step unsafe.
+    #[test]
+    fn an_outage_spilling_into_the_next_step_is_charged_to_the_step_it_began_in() {
+        let offsets = [250_u16, 300, 350, 400];
+        // page 16s missing from second 22 of the 300 ms step to second 6 of the 350 ms step
+        let gap = |o: u16, k: u64| (o == 300 && k >= 22) || (o == 350 && k < 7);
+        let (records, notes) = parse(&sweep(&offsets, gap, u64::MAX, Some(END_COMPLETED)));
+        let s = steps(&records, &notes);
+        let v: Vec<(u16, Verdict)> = s.iter().map(|s| (s.offset_ms, s.verdict)).collect();
+        assert_eq!(
+            v,
+            vec![
+                (250, Verdict::Safe),
+                (300, Verdict::Unsafe),
+                (350, Verdict::Safe),
+                (400, Verdict::Safe),
+            ]
+        );
+        assert_eq!(
+            s[1].max_gap_us, 26_000_000,
+            "the whole outage, in its own step"
+        );
+        assert_eq!(s[2].max_gap_us, 1_000_000, "the tail is not counted");
+        // one that begins in the 350 ms step's first 3 s is still the 300 ms step's
+        let gap = |o: u16, k: u64| o == 350 && (2..9).contains(&k);
+        let (records, notes) = parse(&sweep(&offsets, gap, u64::MAX, Some(END_COMPLETED)));
+        let s = steps(&records, &notes);
+        assert_eq!(
+            (s[1].verdict, s[2].verdict),
+            (Verdict::Unsafe, Verdict::Safe)
+        );
+        assert_eq!(s[1].max_gap_us, 8_000_000);
+    }
+
+    /// Only a complete sweep has a verdict: all 26 offsets, each for its dwell, ending on the
+    /// completed note. A link drop (or a capture with no end note) is INCOMPLETE, names the last
+    /// completed step, and never PASSes, even with every completed step safe.
+    #[test]
+    fn a_partial_sweep_is_incomplete_and_never_passes() {
+        let all = offsets_ms();
+        let clean = |_: u16, _: u64| false;
+        let (rec, notes) = parse(&sweep(&all, clean, u64::MAX, Some(END_COMPLETED)));
+        let (v, line) = sweep_verdict(&steps(&rec, &notes), &notes);
+        assert_eq!(v, Sweep::Pass, "{line}");
+        assert!(line.starts_with("PASS: safe band 0–950 ms"), "{line}");
+        let bad = |o: u16, k: u64| o.is_multiple_of(100) && (10..20).contains(&k);
+        let (rec, notes) = parse(&sweep(&all, bad, u64::MAX, Some(END_COMPLETED)));
+        let (v, line) = sweep_verdict(&steps(&rec, &notes), &notes);
+        assert_eq!(v, Sweep::Fail, "{line}");
+        // the link drops 15 s into the 10th offset (300 ms): every completed step was safe
+        let stop = 9 * DWELL_US + 15_000_000;
+        let (rec, notes) = parse(&sweep(&all, clean, stop, Some(END_LINK_DROPPED)));
+        let st = steps(&rec, &notes);
+        assert_eq!(safe_bands(&st), vec![(0, 275)], "a safe, wide band so far");
+        let (v, line) = sweep_verdict(&st, &notes);
+        assert_eq!(v, Sweep::Incomplete);
+        assert_eq!(
+            line,
+            "INCOMPLETE: the link dropped; 9 of 26 offsets completed, last completed step: 275 ms; no verdict, rerun the sweep"
+        );
+        let a = analyse(&rec, &notes);
+        assert_eq!(
+            (a["pass"].clone(), a["result"].clone()),
+            (json!(false), json!("incomplete"))
+        );
+        // the run died: no end note
+        let (rec, notes) = parse(&sweep(&all, clean, stop, None));
+        let (v, line) = sweep_verdict(&steps(&rec, &notes), &notes);
+        assert_eq!(v, Sweep::Incomplete);
+        assert!(line.contains("no end note"), "{line}");
+        // a drop in the last second of the last step still makes it incomplete
+        let (rec, notes) = parse(&sweep(&all, clean, u64::MAX, Some(END_LINK_DROPPED)));
+        assert_eq!(
+            sweep_verdict(&steps(&rec, &notes), &notes).0,
+            Sweep::Incomplete
+        );
+    }
+
+    /// The acceptance measure: every page-16 gap over 2.5 s, not only the outages of 6 s or more.
+    #[test]
+    fn gaps_over_2_5_s_are_listed_below_the_outage_length() {
+        let t16 = [0, 1_000_000, 4_000_000, 5_000_000, 7_500_000, 15_000_000];
+        assert_eq!(
+            long_gaps(&t16),
+            vec![(1_000_000, 3_000_000), (7_500_000, 7_500_000)]
+        );
+        let (records, _) = latency();
+        let a = analyse(&records, &[]);
+        let gaps = a["page16_gaps_over_2_5_s"].as_array().unwrap();
+        assert!(gaps.len() >= 2, "{a}");
+        assert_eq!(a["max_page16_gap_ms"], json!(25_232.387));
     }
 }

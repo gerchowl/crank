@@ -14,7 +14,8 @@
 //! Exit status: 0 done; 1 error; 2 bad arguments; 3 blocked (the owner must act); 4 a Part B
 //! procedure stopped early (no result; the `STOPPED:` line says whether the release was
 //! confirmed); 5 a Part B procedure completed but its release was NOT confirmed (the last line
-//! says so, with what the rider does; expected after an 11a or 11b drop).
+//! says so, with what the rider does; expected after an 11a or 11b drop); 6 a measurement
+//! completed with a FAIL verdict (`phase`; an INCOMPLETE sweep, e.g. after a link drop, is 4).
 mod check10;
 mod check11;
 mod check11ac;
