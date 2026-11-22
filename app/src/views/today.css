@@ -166,12 +166,7 @@
 .today-device[data-state="unpaired"] .today-device-name {
   color: var(--ink-3);
 }
-.today-device[data-state="ready"] [data-state-label],
-.today-device[data-state="paired"] [data-state-label] {
-  color: var(--status-good);
-}
-.today-device[data-state="lost"] [data-state-label],
-.today-device[data-state="missing"] [data-state-label] {
+.today-device[data-state="missing"] .today-device-state [data-state-label] {
   color: var(--status-warning);
 }
 

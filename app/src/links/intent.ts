@@ -14,6 +14,8 @@
 // (`T_cool`, and `T_abandon` on the Ready sheet over a loaded ride). The refresh is leading-edge only: input inside the
 // window is dropped, never deferred, so nothing is sent after the rider stopped.
 //
+// Retry (`retry()`, the link chips' button) is sent on the same path, only while the window is `Likely`.
+//
 // One call is in flight at a time and the core applies intents in the order sent: a call made while one is answered
 // waits, and only the latest waits (each one is the whole truth of now, so an older queued one says nothing more). A
 // release is answered once the links are let go (up to 2 s), so a quick Today → Devices never lets a `Likely` overtake
@@ -33,6 +35,7 @@ const LEFT: LinkIntent = { kind: "left" };
 const BACKGROUND: LinkIntent = { kind: "background" };
 const HIDDEN: LinkIntent = { kind: "release", reason: "hidden" };
 const DEVICES: LinkIntent = { kind: "release", reason: "devices" };
+const RETRY: LinkIntent = { kind: "retry" };
 const likely = (ready: boolean): LinkIntent => ({ kind: "likely", ready });
 
 /** What the ride screen reads of the snapshot channel's last frame (`UiSnapshot`). */
@@ -214,9 +217,22 @@ export class IntentReporter {
     this.send(now);
   }
 
+  /**
+   * The rider pressed Retry on a link chip (chips.tsx): `Retry`, which is a `Likely` too (ADR-0002 §5.1.2), so it is
+   * sent only while the window's intent is `Likely` (a warm view, visible and frontmost) and restarts the refresh's
+   * window. It waits behind a call in flight like any intent, and a `Likely` queued after it does not replace it: the
+   * Retry says that `Likely` and more.
+   */
+  retry(): void {
+    if (this.current()?.kind !== "likely") return;
+    this.refresh.mark();
+    this.send(RETRY);
+  }
+
   private send(intent: LinkIntent): void {
     if (this.inFlight) {
-      this.queued = intent;
+      if (!(this.queued?.kind === "retry" && intent.kind === "likely"))
+        this.queued = intent;
       return;
     }
     this.inFlight = true;

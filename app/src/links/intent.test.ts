@@ -20,6 +20,7 @@ const LEFT: LinkIntent = { kind: "left" };
 const BACKGROUND: LinkIntent = { kind: "background" };
 const HIDDEN: LinkIntent = { kind: "release", reason: "hidden" };
 const DEVICES: LinkIntent = { kind: "release", reason: "devices" };
+const RETRY: LinkIntent = { kind: "retry" };
 
 describe("viewIntent", () => {
   const at = (view: Route["view"], sub?: string): Route =>
@@ -349,6 +350,69 @@ describe("IntentReporter", () => {
       'links_intent {"kind":"likely","ready":false} refused: conflict: the application is quitting',
     );
     warn.mockRestore();
+  });
+
+  // §5.1.2 `Retry` (#681): the link chips' Retry reaches the core on the reporter's path, only while the window is
+  // `Likely`, and keeps the order of the intents around it.
+  test("Retry is sent on a warm view, visible and frontmost, and nowhere else", async () => {
+    const w = fakeEnv();
+    const r = new IntentReporter(w.env);
+    r.start();
+    r.retry();
+    for (const step of [
+      () => r.setView(DEVICES),
+      () => r.retry(),
+      () => r.setView(LIKELY),
+      () => w.focus(false),
+      () => r.retry(),
+      () => w.focus(true),
+      () => w.hide(true),
+      () => r.retry(),
+      () => w.hide(false),
+    ]) {
+      step();
+      await flush();
+    }
+    expect(w.sent).toEqual([
+      DEVICES,
+      LIKELY,
+      BACKGROUND,
+      LIKELY,
+      HIDDEN,
+      LIKELY,
+    ]);
+    r.retry();
+    await flush();
+    expect(w.sent.at(-1)).toEqual(RETRY);
+    // The standing Likely is not sent again after it: Retry is a Likely too.
+    r.setView({ kind: "likely", ready: false });
+    await flush();
+    expect(w.sent.at(-1)).toEqual(RETRY);
+  });
+
+  test("Retry waits behind a call in flight, and a Likely refresh queued after it does not replace it", async () => {
+    const w = fakeEnv({ hold: true });
+    const r = new IntentReporter(w.env);
+    r.start();
+    r.setView(DEVICES);
+    r.setView(LIKELY);
+    r.retry();
+    w.advance(LIKELY_REFRESH_MS);
+    w.input();
+    await flush();
+    expect(w.sent).toEqual([DEVICES]);
+    await w.answer();
+    expect(w.sent).toEqual([DEVICES, RETRY]);
+    await w.answer();
+    expect(w.sent).toEqual([DEVICES, RETRY]);
+    // A later change does replace it: the rider left the warm view before it went out.
+    r.setView(LEFT);
+    r.setView(LIKELY);
+    r.retry();
+    r.setView(LEFT);
+    await flush();
+    await w.answer();
+    expect(w.sent).toEqual([DEVICES, RETRY, LEFT, LEFT]);
   });
 
   test("stop unsubscribes from focus, visibility and input", () => {

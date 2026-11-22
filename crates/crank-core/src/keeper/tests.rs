@@ -331,6 +331,17 @@ fn an_abandoned_load_is_discarded_at_t_abandon_and_input_restarts_it() {
     assert_eq!(run(&mut k, 21, 5000), []);
 }
 
+/// #681: Retry while a ride is loaded changes nothing (ADR-0002 §5.1.3: only rider input on
+/// the Ready sheet, its throttled `Likely`, holds an unstarted ride): it does not move
+/// `T_abandon`.
+#[test]
+fn retry_while_loaded_does_not_move_t_abandon() {
+    let mut k = loaded(10);
+    assert_eq!(k.st(at(550), Input::Intent(LinkIntent::Retry)), []);
+    assert_eq!(run(&mut k, 11, 609), []);
+    assert_eq!(k.st(at(610), Input::Tick), [Effect::Discard("ride".into())]);
+}
+
 /// §5.1.8 "Sleep discards an unstarted ride", and the architect's decision on "Release
 /// trainer" with a ride loaded (ADR-0002 §5.1.3): both discard an unstarted ride ("Release
 /// trainer" also latches the trainer); a started ride is untouched by either.

@@ -26,7 +26,8 @@ use crate::ui::{RideSlot, Ui, UiSink};
 use crank_ble::{Pairing, RideGate};
 use crank_devices::{
     Clock, CommandSeq, ControlMode, DeviceInfo, DeviceRef, HeartRateLink, RiderConfig, SeqSource,
-    TrainerCommand, TrainerEvent, TrainerLink, sim::SimLoss,
+    TrainerCommand, TrainerEvent, TrainerLink,
+    sim::{SimLatency, SimLoss},
 };
 use crank_domain::workout::{
     CompileOptions, CompiledWorkout, Severity, Workout, WorkoutNode, compile_workout, parse_dsl,
@@ -1335,6 +1336,29 @@ impl Core {
                 "no simulated device has connected yet: its fault times start at the first connect",
             )
         })
+    }
+
+    /// Test hook (#681): from the simulated trainer's (`Trainer`) or strap's (`HeartRate`) next
+    /// connect on, each connect phase takes `latency` (`SimRig::set_latency`, the latency model
+    /// of ADR-0002 §5.1.8), so the link keeper's phases last long enough for the e2e walk to see
+    /// them on the link chips; `not_advertising` makes it not found. Only the desktop's `e2e`
+    /// build exposes it, as the `sim_latency` command.
+    ///
+    /// # Errors
+    /// `Conflict` outside the simulator ([`DeviceMode::Sim`]).
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn sim_latency(&self, role: DeviceRole, latency: SimLatency) -> Result<(), ApiError> {
+        let Some(rig) = self.0.backend.sim() else {
+            return Err(ApiError::new(
+                ErrorCode::Conflict,
+                "sim_latency needs the simulator (--sim)",
+            ));
+        };
+        rig.set_latency(role == DeviceRole::Trainer, latency);
+        Ok(())
     }
 
     /// Pairing, forgetting and scanning need the one BLE central and the pairing rows a

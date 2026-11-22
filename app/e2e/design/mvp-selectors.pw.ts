@@ -61,10 +61,40 @@ test("mvp selectors: both paired", async ({ page }) => {
   await one(page, sel.pairedLine("Heart-rate strap"));
 });
 
+test("mvp selectors: the link chips, their hint and Retry", async ({
+  page,
+}) => {
+  await open(page, "today-links-warming");
+  await expect(await one(page, sel.linkChip("trainer"))).toHaveAttribute(
+    "data-state",
+    "searching",
+  );
+  await expect(await one(page, sel.linkChip("strap"))).toHaveAttribute(
+    "data-state",
+    "connecting",
+  );
+  await expect(page.locator(sel.linkRetry)).toHaveCount(0);
+  await open(page, "today-links-not-found");
+  await expect(await one(page, sel.linkChip("trainer"))).toHaveAttribute(
+    "data-state",
+    "not-found",
+  );
+  await one(page, sel.linkHint("Trainer: is another app using it?"));
+  await expect(await one(page, sel.linkRetry)).toHaveText("Retry");
+  await open(page, "devices-paired");
+  await expect(await one(page, sel.linkChip("trainer"))).toHaveAttribute(
+    "data-state",
+    "cold",
+  );
+  await one(page, sel.linkChip("strap"));
+});
+
 test("mvp selectors: Workouts, pick and Ride this", async ({ page }) => {
   await open(page, "workouts");
   await (await one(page, sel.workoutOption("Sweet spot 3x12"))).click();
   await expect(await one(page, sel.rideThis)).toBeEnabled();
+  for (const role of ["trainer", "strap"] as const)
+    await one(page, sel.linkChip(role));
 });
 
 test("mvp selectors: the Ready sheet", async ({ page }) => {
@@ -80,6 +110,15 @@ test("mvp selectors: the Ready sheet", async ({ page }) => {
   await one(page, sel.key("End"));
   for (const word of ["Pause", "Resume", "Skip block"])
     await expect(page.locator(sel.key(word))).toHaveCount(0);
+});
+
+test("mvp selectors: the Ready sheet's rows during a load", async ({
+  page,
+}) => {
+  await open(page, "ready-loading-progress");
+  await one(page, sel.readySheet("loading"));
+  await one(page, sel.readyDevice("trainer", "searching"));
+  await one(page, sel.readyDevice("hr", "lost"));
 });
 
 test("mvp selectors: riding, the tiles, the chart, End's dialog", async ({

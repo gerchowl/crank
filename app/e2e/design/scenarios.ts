@@ -51,6 +51,12 @@ export const SCENARIOS = [
     name: "today-link-lost",
     ready: "role=listitem >> text=lost",
   },
+  // The link chips (ADR-0002 §5.1.4, #681): the keeper's phases on Today, a warm view.
+  {
+    name: "today-links-warming",
+    ready: "[data-link-chip='strap'][data-state='connecting']",
+  },
+  { name: "today-links-not-found", ready: "role=button[name='Retry']" },
   // Workouts (§5.7, #528): the library and the picked workout, in each of their states.
   { name: "workouts-empty", ready: "text=No workouts yet" },
   { name: "workouts-list-error", ready: "role=button[name='Retry']" },
@@ -58,6 +64,11 @@ export const SCENARIOS = [
   {
     name: "workouts-selected",
     ready: "role=region[name='Compiled summary']",
+    picks: ["Sweet spot 3x12"],
+  },
+  {
+    name: "workouts-links",
+    ready: "role=group[name='Device links'] >> role=button[name='Retry']",
     picks: ["Sweet spot 3x12"],
   },
   {
@@ -143,6 +154,12 @@ export const SCENARIOS = [
   // A load is under way and has not installed its ride: the sheet's loading state, drawn from the frame's `loading`
   // (the held answer is the load's).
   { name: "ready-loading", ready: "[data-ready='loading']", held: 1 },
+  // The same over cold devices: each row in its device's keeper phase (#681).
+  {
+    name: "ready-loading-progress",
+    ready: "li.ready-device[data-device='trainer'][data-state='searching']",
+    held: 1,
+  },
   { name: "ready-connecting", ready: "[data-ready='connecting']" },
   { name: "ready-trainer-missing", ready: "[data-ready='trainer-missing']" },
   { name: "ready-strap-missing", ready: "[data-ready='strap-missing']" },
@@ -221,6 +238,8 @@ export const TODAY_SCENARIOS: readonly ScenarioName[] = [
   "today-ride-loaded",
   "today-ride-refused",
   "today-link-lost",
+  "today-links-warming",
+  "today-links-not-found",
 ];
 
 /** The fixtures of Settings and Devices (#527): nothing on them is cut, and every control is inside the window. */
@@ -243,6 +262,7 @@ export const WORKOUTS_SCENARIOS: readonly ScenarioName[] = [
   "workouts-list-error",
   "workouts",
   "workouts-selected",
+  "workouts-links",
   "workouts-blocked",
   "workouts-loading",
   "workouts-load-error",
@@ -269,6 +289,7 @@ export const HISTORY_SCENARIOS: readonly ScenarioName[] = [
 export const RIDE_SCENARIOS: readonly ScenarioName[] = [
   "ready",
   "ready-loading",
+  "ready-loading-progress",
   "ready-connecting",
   "ready-trainer-missing",
   "ready-strap-missing",

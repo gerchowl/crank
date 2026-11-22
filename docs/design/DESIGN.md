@@ -193,8 +193,13 @@ started in Workouts (§5.7): "Nothing planned" with **Pick a workout** (32 px pr
 load runs its name and a disabled **Start** that reads "Loading ride…"; once loaded its name and **Start** `⏎`, which
 opens the Ready check (§5.4). The loaded-ride notice (#320) does not repeat it on Today; a refused load stays the
 notice's. The notice leads the main region of every place, above the view and in its flow (it covers nothing): ⚠ or ✓,
-its words, an edge in its state's colour, and 32 px buttons (Go to ride, Dismiss). **Devices** lists each role (`device_links`): who is paired, and the loaded ride's link with ✓ ↻ ⚠ and its word
-(§18.7 rule 11); without a paired trainer it says a ride needs one, and **Pair a trainer** opens Settings → Devices
+its words, an edge in its state's colour, and 32 px buttons (Go to ride, Dismiss). **Devices** lists each role (the snapshot channel's `devices`): who is paired, and its **link chip** (#681, ADR-0002
+§5.1.4): the keeper's phase ("– not connected", "↻ searching…", "↻ connecting…", "✓ ready", "⚠ not found" with a hint
+line, "is another app using it?" for the trainer, "keeps looking" for the strap) or, while a ride holds it, the ride's
+link ("✓ connected", "↻ connecting…", "⚠ lost"), a glyph and a word (§18.7 rule 11); **Retry** beside Devices while a
+device is not found and no ride is loaded. While a loaded ride holds the links the keeper is inactive: a strap that
+missed the load stays out of it (#450), so its hint is "the ride runs without it" and no Retry is offered. Workouts shows the same chips under Ride this, and Settings → Devices in each paired row, without
+Retry (it releases the devices for pairing); without a paired trainer it says a ride needs one, and **Pair a trainer** opens Settings → Devices
 (**Devices** when one is paired). **Last 7 days** is seven day cells, oldest first, today last and marked, each with its
 weekday, date, the minutes ridden (the stored summary has no TSS yet, #570; an empty day reads "no ride" to a screen reader, not a bare dash) and "rest", "no ride yet" or the number of rides; the days
 are local calendar days. **Last ride** is the newest stored ride with its start, duration, work and outcome, and
@@ -337,9 +342,13 @@ the sheet: its state as one banner in the band (§6.1: "Ready to ride", "Loading
 the refused command, "Could not start" or "Could not unload the ride"), then at T3 one fixed row per device (word and
 glyph ✓ ↻ ⚠, and a reserved hint line) — the connect-progress region of ADR-0002 §5.1.4, in its final geometry — the
 mode and how the ride starts ("ERG · starts with 3:00 warm-up", "Free ride · no targets"), and the refused command's
-reason. Start is disabled while the trainer link is connecting or lost. #471 fills the rows with `LoadProgress` (#470)
-and adds Retry, and "Retry now" before "Start without HR"; opening the screen from Today is #471 / #530; the health
-cap row is #244.
+reason. Start is disabled while the trainer link is connecting or lost. While the load connects, each row shows its
+device's link phase from the snapshot channel (#681: "checking…" before its attempt, "searching…", "connecting…",
+"connected", "not found"), then the ride's link. The rows offer no Retry: a loaded ride holds its links and the keeper
+ignores Retry then (ADR-0002 §5.1.2), so "Retry now" before "Start without HR" waits for a strap that can join a loaded
+ride (#450). Ride this routes here only once the load succeeded (#320), so a cold load's progress shows on Workouts'
+link chips beside "Loading ride…", and on this sheet only in a window that opened it during the load. The health cap
+row is #244.
 
 **Release trainer is End on an unstarted ride** (owner decision 2026-11-08): there is no separate button. End, after
 the End dialog ("The ride has not started; it will be unloaded"), unloads the ride (`ride_end`), which releases its

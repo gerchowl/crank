@@ -4,7 +4,7 @@ use crank_core::{
     ApiError, Core, CoreConfig, DeviceMode, DeviceRole, EngineHost, ErrorCode, RideOutcome,
     SinkClosed,
 };
-use crank_devices::sim::{SimConfig, SimFault};
+use crank_devices::sim::{SimConfig, SimFault, SimLatency};
 use crank_engine::stream::types::StreamPauseReason;
 use crank_engine::{
     LinkChange, LinkDevice, LinkStatus, MetricId, StreamFrame, StreamId, StreamRideState,
@@ -344,6 +344,53 @@ async fn sim_fault_is_refused_outside_the_simulator_before_a_connect_and_for_no_
         .await
         .unwrap_err();
     assert_eq!(code(&e), ErrorCode::InvalidInput, "{e:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn sim_latency_hides_a_device_or_slows_its_next_connect() {
+    // #681: the e2e app's hook. A trainer that does not advertise fails the load; once it
+    // advertises again, the load's connect takes the phases' latency.
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path(), vec![])).unwrap();
+    pair_both(&core).await;
+    let hidden = SimLatency {
+        not_advertising: true,
+        ..SimLatency::default()
+    };
+    core.sim_latency(DeviceRole::Trainer, hidden).await.unwrap();
+    let e = core.ride_load(Some(SENSOR_CHECK.into())).await.unwrap_err();
+    assert_eq!(code(&e), ErrorCode::DeviceUnavailable, "{e:?}");
+
+    let slow = SimLatency {
+        resolve: Duration::from_secs(1),
+        gatt: Duration::from_secs(1),
+        handshake: Duration::from_secs(1),
+        ..SimLatency::default()
+    };
+    core.sim_latency(DeviceRole::Trainer, slow).await.unwrap();
+    let asked = tokio::time::Instant::now();
+    core.ride_load(Some(SENSOR_CHECK.into())).await.unwrap();
+    let took = asked.elapsed();
+    // The three phases, and nothing more (ADR-0002 §5.1.8 "Parallel bound": max of the attempts ± one tick), also
+    // right after the trainer was not found, while the keeper scans for it.
+    assert!(
+        took >= Duration::from_secs(3) && took < Duration::from_secs(4),
+        "the three phases: {took:?}"
+    );
+    core.ride_end().await.unwrap();
+
+    // Bluetooth: refused, and the radio is never touched.
+    let dir = tempfile::tempdir().unwrap();
+    let ble = Core::open(CoreConfig {
+        devices: DeviceMode::Ble { capture_dir: None },
+        ..config(dir.path(), vec![])
+    })
+    .unwrap();
+    let e = ble
+        .sim_latency(DeviceRole::Trainer, slow)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), ErrorCode::Conflict, "{e:?}");
 }
 
 #[tokio::test(start_paused = true)]

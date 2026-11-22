@@ -14,6 +14,7 @@ import type { WaitForCore } from "../../src/core";
 import "../../src/theme.css";
 import "../../src/shell.css";
 import type {
+  LinkPhase,
   LinkStatus,
   LiveValues,
   PairedDevice,
@@ -424,6 +425,8 @@ interface TodayDevices {
   quiet?: boolean;
   /** The channel cannot open: the keeper cannot read the pairings (`ui_open` answers `storage`). */
   keeperStorage?: boolean;
+  /** The keeper's phase of each paired device with no ride (`cold` unless given). */
+  phases?: { trainer?: LinkPhase; strap?: LinkPhase };
 }
 
 /**
@@ -440,7 +443,11 @@ const today =
     navigate("today");
     const ui = installUi({
       ...BEAT,
-      devices: devicesOf(dev.paired ?? { trainer: neo, strap: hrm }),
+      devices: devicesOf(
+        dev.paired ?? { trainer: neo, strap: hrm },
+        {},
+        dev.phases,
+      ),
       keeperStorage: dev.keeperStorage ?? false,
     });
     if (dev.quiet) ui.stall();
@@ -495,6 +502,14 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "today-link-lost": today({}, longLibrary(), {
     links: { trainer: "lost", strap: "ready" },
   }),
+  // The link chips (ADR-0002 §5.1.4, #681): the keeper warms both devices up on Today, a warm view.
+  "today-links-warming": today({}, undefined, {
+    phases: { trainer: "searching", strap: "connecting" },
+  }),
+  // The trainer is not found (another app may hold it): ⚠ with the hedged hint, and Retry; the strap is ready.
+  "today-links-not-found": today({}, undefined, {
+    phases: { trainer: "not_found", strap: "warm" },
+  }),
   // The library as the core lists it (the built-in one is never empty today; the store-backed one, #110, can be).
   "workouts-empty": workouts({ summaries: [] }),
   // The list cannot be read (Tauri's own rejection, or the store-backed library to come).
@@ -503,6 +518,19 @@ const SETUPS: Record<ScenarioName, () => void> = {
   }),
   workouts: workouts(),
   "workouts-selected": workouts(),
+  // The link chips under Ride this (#681): the trainer in its handshake, the strap not found with its hint, and Retry.
+  "workouts-links": () => {
+    workouts({
+      ui: installUi({
+        ...BEAT,
+        devices: devicesOf(
+          { trainer: neo, strap: hrm },
+          {},
+          { trainer: "handshake", strap: "not_found" },
+        ),
+      }),
+    })();
+  },
   // An error-severity issue: the core refuses to load it (core.rs `Core::resolve_workout`), so Ride this is disabled.
   "workouts-blocked": workouts({
     compiled: { "w-ss": { ...SWEET_SPOT, issues: [ERROR_ISSUE, WARNING] } },
@@ -552,6 +580,25 @@ const SETUPS: Record<ScenarioName, () => void> = {
     // The ride commands, `workout_get` among them, are the ride backend's; `ride_load` falls through to the library's.
     const rig = installRide({ phase: "none", blocks: BLOCKS }, BEAT);
     library.ui = rig.ui;
+    void startRideLoad("w1", "Steady 10 min");
+    navigate("ride");
+  },
+  // The same load over cold devices (#681): each row shows its device's keeper phase, the trainer searching and the
+  // strap not found.
+  "ready-loading-progress": () => {
+    const library = installWorkouts({
+      summaries: [
+        { id: "w1", name: "Steady 10 min", totalS: 600, tss: 10, ftp: 250 },
+      ],
+      compiled: { w1: compiled({ blocks: BLOCKS, totalS: 600 }) },
+      gate: new Promise<void>(() => {}),
+    });
+    const rig = installRide({ phase: "none", blocks: BLOCKS }, BEAT);
+    library.ui = rig.ui;
+    rig.setKeeper({
+      trainer: { phase: "searching", sample: null },
+      strap: { phase: "not_found", sample: null },
+    });
     void startRideLoad("w1", "Steady 10 min");
     navigate("ride");
   },
