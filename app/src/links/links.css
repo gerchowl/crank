@@ -1,0 +1,41 @@
+/* The link chips (ADR-0002 §5.1.4, #681): a word and a glyph, the glyph in its state's colour (DESIGN §18.7 rule 11);
+   the view's own button family draws Retry (§18.4). */
+.link-chips {
+  display: grid;
+  gap: var(--space-1);
+}
+.link-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+.link-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+.link-chip-name {
+  color: var(--ink-2);
+}
+.link-chip[data-state="ready"] [data-state-label],
+.link-chip[data-state="connected"] [data-state-label] {
+  color: var(--status-good);
+}
+.link-chip[data-state="searching"] [data-state-label],
+.link-chip[data-state="connecting"] [data-state-label] {
+  color: var(--status-info);
+}
+.link-chip[data-state="not-found"] [data-state-label],
+.link-chip[data-state="lost"] [data-state-label] {
+  color: var(--status-warning);
+}
+.link-chip[data-state="cold"],
+.link-chip[data-state="unpaired"] {
+  color: var(--ink-2);
+}
+.link-hint {
+  margin: 0;
+  color: var(--ink-2);
+}

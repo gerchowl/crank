@@ -5,7 +5,8 @@
 // Direction A (§18, #528): the page title, then on the 12-column grid (§18.2) the library in 7 columns and the picked
 // workout in one panel in 5. The library is a single-select listbox whose selection follows focus (WAI-ARIA APG): a row
 // is a workout of any name length, not a 32 px button (§18.4), and Up/Down/Home/End walk it. The panel puts "Ride this"
-// right under the workout's profile and figures, so it stays in the window however long the block list runs.
+// right under the workout's profile and figures, so it stays in the window however long the block list runs, with the
+// link chips under it (links/chips.tsx, #681): the devices warming up while the view shows, Retry when one is not found.
 import { Copy, Play } from "lucide-react";
 import {
   useCallback,
@@ -24,6 +25,7 @@ import {
 } from "../bindings";
 import { WorkoutEditor } from "../editor/WorkoutEditor";
 import { PHASE_NAME, watts } from "../ride/Timeline";
+import { LinkChips } from "../links/chips";
 import { useCommand } from "../stream";
 import { useUi } from "../stream/uiHooks";
 import { dismissRideLoad, startRideLoad, useRideLoad } from "./rideLoad";
@@ -238,7 +240,8 @@ export function Workouts() {
   // appear under the new one (#320). "In flight" is not this view's state: the app-scope controller (rideLoad.ts)
   // knows a load this window started, and the snapshot channel's `loading` (ADR-0001 §4.3.6) is the core's own word for
   // one that started anywhere (a window reloaded mid-load), in every frame until it is over.
-  const coreLoading = useUi().loading;
+  const ui = useUi();
+  const coreLoading = ui.loading;
   const loading = load.phase === "loading" || coreLoading;
   // A refusal is shown where the rider is looking (#333), whether it arrived while this view was mounted or while
   // they were elsewhere (then on return). The notice hides on this view, and leaving it marks the refusal seen
@@ -435,6 +438,8 @@ export function Workouts() {
                     Duplicate &amp; edit
                   </button>
                 </div>
+                {/* The links the ride will take (ADR-0002 §5.1.4): warming up while this view shows, then the load's. */}
+                {ui.devices && <LinkChips devices={ui.devices} />}
                 {blocking && (
                   <p id="ride-blocked" className="workouts-blocked">
                     Can’t ride this until the error is fixed: {blocking.message}

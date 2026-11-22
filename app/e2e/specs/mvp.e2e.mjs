@@ -3,8 +3,11 @@
 // Only DOM and visible text are asserted (selectors in mvp-selectors.mjs, each with its component), and no test probe
 // is read: #656's `window.__crankUi` is not used. The one helper this file puts in the page (`record`) only reads the
 // ride screen's slots, so a soft start's ramp and the live tiles can be seen between two WebDriver calls. The one
-// `invoke` is step 7's cause: `sim_fault`, the e2e build's test hook (#668, app/src-tauri/src/commands.rs), makes the
-// simulated trainer or strap drop out in the real core; what the rider then sees is read from the DOM like the rest.
+// `invoke`s are causes, the e2e build's test hooks (app/src-tauri/src/commands.rs): step 7's `sim_fault` (#668) makes the
+// simulated trainer or strap drop out in the real core, and `sim_latency` (#681) makes their connects take long enough
+// for the link chips' phases to be seen (the sim connects at once otherwise), or hides the trainer. What the rider then
+// sees is read from the DOM like the rest. The other helper (`watch`) records one attribute of one node on every DOM
+// change, so a phase that lasts a second is seen however the WebDriver calls fall.
 //
 // The ride is the built-in "Sensor check (3 min)" (crates/crank-core/src/library.rs `BUILTIN`): FTP 250 W, 1 min each at
 // 50 %, 80 % and 40 %, so its plan targets are 125 W, 200 W and 100 W. The simulator's scan offers "crank sim trainer"
@@ -63,6 +66,81 @@ const simFault = (role, downMs) =>
     role,
     downMs,
   );
+
+/**
+ * The e2e build's test hook (#681): from the simulated trainer's (`"trainer"`) or strap's (`"heart_rate"`) next connect
+ * on, finding it takes `resolveMs`, its GATT connect `gattMs` and the trainer's handshake `handshakeMs`; with
+ * `advertising` false it is not found (crank-core `Core::sim_latency`). Resolves to `null`, or to its refusal.
+ */
+const simLatency = (role, resolveMs, gattMs, handshakeMs, advertising = true) =>
+  browser.executeAsync(
+    (role, resolveMs, gattMs, handshakeMs, advertising, done) => {
+      window.__TAURI_INTERNALS__
+        .invoke("sim_latency", {
+          role,
+          resolveMs,
+          gattMs,
+          handshakeMs,
+          advertising,
+        })
+        .then(() => done(null), done);
+    },
+    role,
+    resolveMs,
+    gattMs,
+    handshakeMs,
+    advertising,
+  );
+/** Each phase of a slow connect, ms: long enough to be on screen for several frames (at most 10 Hz). */
+const PHASE_MS = 1_500;
+
+/**
+ * Starts recording `attr` of the node `selector` names (CSS, or XPath when it starts with `//`, as in
+ * mvp-selectors.mjs) into `window.__mvpWatch[name]`: its value now (`null` while there is no such node), then each
+ * change, on every DOM change of the page (a MutationObserver on the body).
+ */
+function watch(name, selector, attr) {
+  return browser.execute(
+    (name, selector, attr) => {
+      const node = () =>
+        selector.startsWith("//")
+          ? document.evaluate(
+              selector,
+              document,
+              null,
+              XPathResult.FIRST_ORDERED_NODE_TYPE,
+              null,
+            ).singleNodeValue
+          : document.querySelector(selector);
+      const read = () => node()?.getAttribute(attr) ?? null;
+      const seen = [read()];
+      new MutationObserver(() => {
+        const now = read();
+        if (now !== seen.at(-1)) seen.push(now);
+      }).observe(document.body, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        characterData: true,
+      });
+      window.__mvpWatch = { ...window.__mvpWatch, [name]: seen };
+    },
+    name,
+    selector,
+    attr,
+  );
+}
+/** What `watch(name, …)` has recorded so far, `null`s (no node) left out. */
+const watched = async (name) =>
+  (await browser.execute((name) => window.__mvpWatch[name], name)).filter(
+    (v) => v !== null,
+  );
+/** `seq` holds each of `want` in this order (other values may come between). */
+function inOrder(seq, want) {
+  let at = 0;
+  for (const v of seq) if (v === want[at]) at += 1;
+  return at === want.length;
+}
 
 /**
  * Starts recording the ride screen's live slots into `window.__mvpRecord`. Each change of any of them appends one
@@ -133,15 +211,114 @@ describe("MVP walk (#256 critical path, sim)", () => {
     await expect($(sel.pairedLine("Trainer"))).toBeDisplayed();
   });
 
+  it("1b. the link chips show the keeper's phases, a trainer that is not found, and Retry", async () => {
+    // #681, ADR-0002 §5.1.4 "Failure UX". Settings → Devices released the links for pairing (`Release(Devices)`): each
+    // paired row's chip says so.
+    for (const role of ["trainer", "strap"])
+      await expect($(sel.linkChip(role))).toHaveAttribute(
+        "data-state",
+        "cold",
+        {
+          wait: UI_MS,
+        },
+      );
+    // Slow connects, so each phase is on screen for a while.
+    expect(
+      await simLatency("trainer", PHASE_MS, PHASE_MS, PHASE_MS),
+    ).toBeNull();
+    expect(await simLatency("heart_rate", PHASE_MS, PHASE_MS, 0)).toBeNull();
+    await watch("trainer", sel.linkChip("trainer"), "data-state");
+    await watch("strap", sel.linkChip("strap"), "data-state");
+    // Today is a warm view (`Likely`): the keeper warms both devices up, in parallel, and the chips follow its phases.
+    await $(sel.rail("Today")).click();
+    for (const role of ["trainer", "strap"])
+      await expect($(sel.linkChip(role))).toHaveAttribute(
+        "data-state",
+        "ready",
+        { wait: UI_MS },
+      );
+    for (const role of ["trainer", "strap"]) {
+      const seen = await watched(role);
+      expect(inOrder(seen, ["cold", "searching", "connecting", "ready"])).toBe(
+        true,
+      );
+    }
+    await expect($(sel.linkChip("trainer"))).toHaveText("✓ ready");
+    await expect($(sel.linkRetry)).not.toExist();
+
+    // A trainer that does not advertise (asleep, or held by another app): Devices lets it go, Today attempts it, and it
+    // is not found: ⚠, the hedged hint, and Retry.
+    expect(
+      await simLatency("trainer", PHASE_MS, PHASE_MS, PHASE_MS, false),
+    ).toBeNull();
+    await $(sel.rail("Settings")).click();
+    await $(sel.settingsSection("Devices")).click();
+    await expect($(sel.linkChip("trainer"))).toHaveAttribute(
+      "data-state",
+      "cold",
+      { wait: UI_MS },
+    );
+    await $(sel.rail("Today")).click();
+    await expect($(sel.linkChip("trainer"))).toHaveAttribute(
+      "data-state",
+      "not-found",
+      { wait: UI_MS },
+    );
+    await expect($(sel.linkChip("trainer"))).toHaveText("⚠ not found");
+    await expect(
+      $(sel.linkHint("Trainer: is another app using it?")),
+    ).toBeDisplayed();
+    // Retry attempts it at once (`links_intent(Retry)`): searching again, then not found again. Nothing else starts an
+    // attempt of a device that does not advertise (keeper/mod.rs `Keeper::advertised` needs an advertisement).
+    await watch("retry", sel.linkChip("trainer"), "data-state");
+    await $(sel.linkRetry).click();
+    await browser.waitUntil(
+      async () =>
+        inOrder(await watched("retry"), [
+          "not-found",
+          "searching",
+          "not-found",
+        ]),
+      {
+        timeout: UI_MS,
+        timeoutMsg:
+          "Retry did not attempt the trainer again (searching, then not found)",
+      },
+    );
+  });
+
   it("2. picks a workout, Ride this, the Ready sheet, Start", async () => {
+    // #681: the trainer advertises again, still slow to connect. Settings → Devices lets both devices go; Workouts is a
+    // warm view, so its fresh `Likely` attempts them, and its chips, under Ride this, show the trainer's connect. Ride
+    // this takes the links, waiting for an attempt that is still running (ADR-0002 §5.1.4).
+    expect(
+      await simLatency("trainer", PHASE_MS, PHASE_MS, PHASE_MS),
+    ).toBeNull();
+    await $(sel.rail("Settings")).click();
+    await $(sel.settingsSection("Devices")).click();
+    for (const role of ["trainer", "strap"])
+      await expect($(sel.linkChip(role))).toHaveAttribute(
+        "data-state",
+        "cold",
+        {
+          wait: UI_MS,
+        },
+      );
+    await watch("workouts", sel.linkChip("trainer"), "data-state");
     // #256: "pick a workout" (Workouts → the row → Ride this) loads the ride and opens the ride screen.
     await $(sel.rail("Workouts")).click();
     await $(sel.workoutOption(WORKOUT)).click();
     await $(sel.rideThis).click();
-    // #256: both devices connected for the ride. The Ready sheet's rows say "connected" also when no link has been
-    // reported (ReadySheet.tsx `phase` defaults to the load's answer), so the proof is the status bar's pill: its
-    // `data-link` is the link the core reported, "none" until it does (Ride.tsx `Pill`).
+    // #256: both devices connected for the ride. The Ready sheet's rows read the frame's devices: the ride holds both
+    // (`riding`) on ready links (ReadySheet.tsx `phase`); the status bar's pill shows the same links (Ride.tsx `Pill`).
     await expect($(sel.readySheet("ready"))).toBeDisplayed({ wait: UI_MS });
+    // The Workouts chip went through the trainer's connect: the keeper's attempt, then the ride's link once it took it
+    // ("ready" if it was warm before Ride this, straight to "connected" if the load awaited the attempt).
+    const chip = await watched("workouts");
+    expect(inOrder(chip, ["searching", "connecting"])).toBe(true);
+    // Instant connects again, so step 7's reconnects take the sim's usual time.
+    expect(await simLatency("trainer", 0, 0, 0)).toBeNull();
+    expect(await simLatency("heart_rate", 0, 0, 0)).toBeNull();
     await expect($(sel.readyDevice("trainer", "connected"))).toBeDisplayed();
     await expect($(sel.readyDevice("hr", "connected"))).toBeDisplayed();
     for (const name of ["NEO", "HR"])
@@ -295,8 +472,9 @@ describe("MVP walk (#256 critical path, sim)", () => {
 
   it("7. a trainer dropout, then a strap dropout: each shows its loss, then the reconnect", async () => {
     // #256: "a sim dropout of the trainer […] shows the loss state, then the reconnect". The trainer's banner says it
-    // is lost (banners.tsx, DESIGN §6.5). The pill is not checked here: between attempts it reads "lost" or
-    // "connecting".
+    // is lost (banners.tsx, DESIGN §6.5), and so does its chip, the status bar's pill (#681): between attempts it reads
+    // "lost" or "connecting", so its values are recorded and the loss must be among them.
+    await watch("neo-pill", sel.pill("NEO"), "data-link");
     expect(await simFault("trainer", DOWN_MS)).toBeNull();
     await expect($(sel.banner("loss-trainer"))).toBeDisplayed({ wait: UI_MS });
     // The reconnect: the banner goes, the pill is ready again, and the status bar's chip names the gap for 10 s
@@ -315,6 +493,9 @@ describe("MVP walk (#256 critical path, sim)", () => {
     await expect($(sel.pill("NEO"))).toHaveAttribute("data-link", "ready", {
       wait: UI_MS,
     });
+    expect(inOrder(await watched("neo-pill"), ["ready", "lost", "ready"])).toBe(
+      true,
+    );
     // The ride goes on after the trainer is back: Riding, and the soft start brings TARGET back to the plan (block 2's,
     // or block 3's if block 2 ran out meanwhile, so it is read from the plan slot).
     await textUntil(
@@ -339,6 +520,7 @@ describe("MVP walk (#256 critical path, sim)", () => {
 
     // #256: "[…] and the strap shows the loss state, then the reconnect". HR lost: its banner, and the HR tile shows —
     // (Ride.tsx `Value`); the ride goes on.
+    await watch("hr-pill", sel.pill("HR"), "data-link");
     expect(await simFault("heart_rate", DOWN_MS)).toBeNull();
     await expect($(sel.banner("loss-hr"))).toBeDisplayed({ wait: UI_MS });
     await expect($(sel.slot("hr"))).toHaveText("—");
@@ -348,6 +530,9 @@ describe("MVP walk (#256 critical path, sim)", () => {
     await expect($(sel.pill("HR"))).toHaveAttribute("data-link", "ready", {
       wait: UI_MS,
     });
+    expect(inOrder(await watched("hr-pill"), ["ready", "lost", "ready"])).toBe(
+      true,
+    );
     await textUntil(
       sel.slot("hr"),
       (t) => numeric(t) !== null,

@@ -429,7 +429,7 @@ async fn the_editor_commands_agree_with_the_library() {
     );
 }
 
-/// #668: the test hook `sim_fault` exists only in the `e2e` build. The desktop installs the
+/// #668, #681: the test hooks `sim_fault` and `sim_latency` exist only in the `e2e` build. The desktop installs the
 /// invoke handler of `crank_desktop::bindings`, and that handler and the exported function
 /// list come from one `collect_commands!`: so this exports the registry, built as CI's
 /// nextest builds it (without `e2e`), and looks for the command, with `core_ready` as the
@@ -443,9 +443,11 @@ fn only_the_e2e_build_registers_sim_fault() {
         .expect("export");
     let ts = std::fs::read_to_string(&out).expect("exported");
     assert!(ts.contains(r#"__TAURI_INVOKE("core_ready")"#), "{ts}");
-    assert_eq!(
-        ts.contains(r#"__TAURI_INVOKE("sim_fault""#),
-        cfg!(feature = "e2e"),
-        "sim_fault is registered exactly in the e2e build"
-    );
+    for hook in ["sim_fault", "sim_latency"] {
+        assert_eq!(
+            ts.contains(&format!(r#"__TAURI_INVOKE("{hook}""#)),
+            cfg!(feature = "e2e"),
+            "{hook} is registered exactly in the e2e build"
+        );
+    }
 }

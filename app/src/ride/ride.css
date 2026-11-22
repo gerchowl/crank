@@ -256,6 +256,7 @@
 .ready-device[data-state="connected"] .ready-device-word {
   color: var(--good);
 }
+.ready-device[data-state="searching"] .ready-device-word,
 .ready-device[data-state="connecting"] .ready-device-word {
   color: var(--warn);
 }

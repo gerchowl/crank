@@ -80,14 +80,40 @@ describe("readyView", () => {
     });
   });
 
-  test("while a load has not installed its ride nothing is the ride's: both rows check and Start waits", () => {
-    // The frame's devices during a load are the keeper's (here both connecting); the ride holds none of them yet.
-    expect(view({ loading: true, devices: TRAINER_CONNECTING })).toMatchObject({
+  test("while a load has not installed its ride each row shows its device's keeper phase and Start waits (#681)", () => {
+    // ADR-0002 §5.1.4 "Load phases": "Trainer: searching… / connecting… / ready", "HR: not found". Before an attempt
+    // starts (`cold`) the row is still checking.
+    const loading = (trainer: LinkPhase, strap: LinkPhase) =>
+      view({ loading: true, devices: devices({}, { trainer, strap }) });
+    expect(loading("cold", "cold")).toMatchObject({
       state: "loading",
       trainer: "checking",
       hr: "checking",
       canStart: false,
       line: "Start is enabled once the ride has loaded",
+    });
+    expect(loading("searching", "connecting")).toMatchObject({
+      state: "loading",
+      trainer: "searching",
+      hr: "connecting",
+      canStart: false,
+    });
+    expect(loading("handshake", "not_found")).toMatchObject({
+      trainer: "connecting",
+      hr: "lost",
+      canStart: false,
+    });
+    expect(loading("warm", "warm")).toMatchObject({
+      trainer: "connected",
+      hr: "connected",
+      canStart: false,
+    });
+    // From the hand-over until the ride is installed the ride holds them, in the state they were handed over in.
+    expect(view({ loading: true, devices: BOTH_READY })).toMatchObject({
+      state: "loading",
+      trainer: "connected",
+      hr: "connected",
+      canStart: false,
     });
     expect(readyBanner(view({ loading: true })).title.text).toBe(
       "Loading the ride…",
@@ -284,6 +310,55 @@ describe("the ride screen while a load has not installed its ride", () => {
     expect(
       screen.queryByRole("heading", { name: "Loading the ride…" }),
     ).toBeNull();
+  });
+
+  test("the rows follow the keeper's phases frame by frame as the load connects (#681)", async () => {
+    const { rig } = await openLoading(true);
+    await waitFor(() => expect(sheet().dataset.ready).toBe("loading"));
+    const rows = () =>
+      within(sheet())
+        .getAllByRole("listitem")
+        .map((r) => [
+          r.dataset.state,
+          r.querySelector("[data-state-label]")?.textContent,
+        ]);
+    const walk: [LinkPhase, LinkPhase, [string, string][]][] = [
+      [
+        "searching",
+        "searching",
+        [
+          ["searching", "↻ searching…"],
+          ["searching", "↻ searching…"],
+        ],
+      ],
+      [
+        "handshake",
+        "not_found",
+        [
+          ["connecting", "↻ connecting…"],
+          ["lost", "⚠ not found"],
+        ],
+      ],
+      [
+        "warm",
+        "not_found",
+        [
+          ["connected", "✓ connected"],
+          ["lost", "⚠ not found"],
+        ],
+      ],
+    ];
+    for (const [trainer, strap, want] of walk) {
+      act(() =>
+        rig.setKeeper({
+          trainer: { phase: trainer, sample: null },
+          strap: { phase: strap, sample: null },
+        }),
+      );
+      await waitFor(() => expect(rows()).toEqual(want));
+      expect(band()).toContain("Loading the ride…");
+      expect(start().disabled).toBe(true);
+    }
   });
 
   test("the installed ride replaces the loading state in the same layout", async () => {

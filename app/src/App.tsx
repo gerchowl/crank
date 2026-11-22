@@ -178,8 +178,9 @@ export function App({
           hears the window's intent from then on too (ADR-0002 §5.1.2): the view, focus, visibility and rider input. */}
       {handoff && (
         <UiProvider>
-          <LinkIntents />
-          <Destination views={views} />
+          <LinkIntents>
+            <Destination views={views} />
+          </LinkIntents>
         </UiProvider>
       )}
       {!gone && (

@@ -34,7 +34,19 @@ export const pairedRow = (roleLabel) =>
 export const pairedLine = (roleLabel) =>
   `//section[@aria-labelledby="paired-h"]//li[.//strong[normalize-space(.)=${lit(roleLabel)}]]/span[@class="device-line"]`;
 
-// Workouts (src/views/Workouts.tsx `Workouts`).
+// The link chips (src/links/chips.tsx `LinkChip`, `RetryLinks`) on Today, Workouts and Settings → Devices.
+/**
+ * A device's chip ("trainer", "strap"): `data-state` is what it says ("cold", "searching", "connecting", "ready",
+ * "not-found", "connected", "lost"), `data-phase` the keeper's phase. One per device on each of those views.
+ */
+export const linkChip = (role) => `[data-link-chip=${lit(role)}]`;
+/** The Retry of a warm view, shown while a device is not found. */
+export const linkRetry = `button.link-retry`;
+/** The hint line of a device that is not found ("Trainer: is another app using it?"). */
+export const linkHint = (text) =>
+  `//p[@class="link-hint" and normalize-space(.)=${lit(text)}]`;
+
+// Workouts (src/views/Workouts.tsx `Workouts`).// Workouts (src/views/Workouts.tsx `Workouts`).
 /** A library row, by the workout's name. */
 export const workoutOption = (name) =>
   `//ul[@role="listbox" and @aria-label="Library"]/li[@role="option"][span[@class="workouts-name" and normalize-space(.)=${lit(name)}]]`;

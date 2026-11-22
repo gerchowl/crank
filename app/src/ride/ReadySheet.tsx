@@ -6,11 +6,11 @@
 // row per device, the mode and how the ride starts, and the reason of a refused command.
 //
 // Every word comes from the snapshot channel's frame (ADR-0001 §4.3): `loading` while a load has not installed its ride
-// (the sheet's loading state: nothing on it is the ride's yet, and each device row says "checking…" until #471 maps the
-// keeper's phases during a load onto the rows), the ride's status and `devices`, where a device the ride holds is `riding` with the ride's link (§4.3.6; a loaded ride holds its trainer, core.rs `Core::ride_load` (~1566)
+// (the sheet's loading state: nothing on it is the ride's yet, and each device row shows the keeper's phase of that
+// device, #681), the ride's status and `devices`, where a device the ride holds is `riding` with the ride's link (§4.3.6; a loaded ride holds its trainer, core.rs `Core::ride_load` (~1566)
 // fails the load without one, and holds the strap only if it was warm at the load), and the compiled plan. The device
 // rows are the connect-progress region of ADR-0002 §5.1.4, in their final geometry: one fixed row per device, a T3 line
-// and one hint line. What #471 plugs in once #470's `LoadProgress` exists is listed in `DEVICE_WORD`'s comment.
+// and one hint line (`DEVICE_WORD`).
 import { Bluetooth, Heart } from "lucide-react";
 import type { ReactNode } from "react";
 import type { DeviceView, DevicesView, WorkoutBlock } from "../bindings";
@@ -30,8 +30,12 @@ export type ReadyState =
 /** The ride commands of the screen; before Start only Start and End reach the core. */
 export type RideCommand = "start" | "pause" | "resume" | "skip" | "end";
 
-/** One device row's phase, from the frame's `devices`; `checking` while the load has not installed its ride. */
-export type DevicePhase = "checking" | "connected" | "connecting" | "lost";
+/**
+ * One device row's phase, from the frame's `devices`: while the load has not installed its ride, the keeper's phase of
+ * the device (`checking` before its attempt starts), then the ride's link (ADR-0002 §5.1.4 "Load phases").
+ */
+export type DevicePhase =
+  "checking" | "searching" | "connected" | "connecting" | "lost";
 
 export interface ReadyInput {
   /** The frame says `loading` and has no ride yet: the ride holds no device, nothing is the ride's yet. */
@@ -59,18 +63,39 @@ export interface ReadyView {
 
 /**
  * A device as the sheet says it: the ride's link when the ride holds it (`link` is set exactly when `phase` is
- * `riding`); a device the ride does not hold (a strap that missed the load, or none paired) is not found for this ride.
+ * `riding`, also from the hand-over until the ride is installed). While the load runs, a device the ride does not hold
+ * yet is in the keeper's phase (ADR-0002 §5.1.4: "Trainer: searching… / connecting… / ready", "HR: not found"). Once
+ * the ride is loaded, a device it does not hold (a strap that missed the load, or none paired) is not found for this
+ * ride: the keeper is inactive while a ride is loaded and it stays out of the ride (§5.1.2, #450).
  */
-function phase(d: DeviceView): DevicePhase {
-  if (d.link === "ready") return "connected";
-  if (d.link === "connecting") return "connecting";
-  return "lost";
+function phase(d: DeviceView, loading: boolean): DevicePhase {
+  if (d.phase === "riding")
+    return d.link === "ready"
+      ? "connected"
+      : d.link === "connecting"
+        ? "connecting"
+        : "lost";
+  if (!loading) return "lost";
+  switch (d.phase) {
+    case "cold":
+      return "checking";
+    case "searching":
+      return "searching";
+    case "connecting":
+    case "handshake":
+      return "connecting";
+    case "warm":
+      return "connected";
+    case "not_found":
+    case null:
+      return "lost";
+  }
 }
 
 /** The sheet's state and its device rows: a pure function of the frame, tested on its own. */
 export function readyView(i: ReadyInput): ReadyView {
-  const trainer = i.loading ? "checking" : phase(i.devices.trainer);
-  const hr = i.loading ? "checking" : phase(i.devices.strap);
+  const trainer = phase(i.devices.trainer, i.loading);
+  const hr = phase(i.devices.strap, i.loading);
   const devices: ReadyState = i.loading
     ? "loading"
     : trainer === "lost"
@@ -166,14 +191,17 @@ export function readyBanner(view: ReadyView): Banner {
 }
 
 /**
- * A device row's word and glyph (rule 11: never colour alone). The words for the keeper's phases during a load, which
- * #471 maps onto these rows from the frame's `devices` (ADR-0001 §4.3.6, ADR-0002 §5.1.4): `searching` "searching…" ↻,
- * `connecting`/`handshake` as `connecting` here, `warm`/`riding` as `connected`, `not_found` "not found" ⚠ with the
- * hint line "keeps looking" (reserved and empty today: the band and the key row say what a missing device means). #471 also adds Retry (the `Retry` intent) to a row that is not found, and "Retry now" before
- * "Start without HR" on the HR row (DESIGN §5.4); no command for either exists today.
+ * A device row's word and glyph (rule 11: never colour alone), for the keeper's phases during a load and the ride's
+ * link after it (`phase`): `cold` "checking…" (its attempt starts with the load), `searching` "searching…",
+ * `connecting`/`handshake` "connecting…", `warm`/`riding` "connected", `not_found` "not found". The hint line stays
+ * reserved and empty: the band and the key row say what a missing device means. No Retry here: a loaded ride holds its
+ * links and the keeper ignores `Retry` then (keeper/mod.rs `Keeper::loaded_intent` (~490)), and a load in flight
+ * resolves on its own (a trainer that is not found fails it). "Retry now" before "Start without HR" on the HR row
+ * (DESIGN §5.4) needs a strap that joins a loaded ride, #450.
  */
 const DEVICE_WORD: Record<DevicePhase, { glyph: string; word: string }> = {
   checking: { glyph: "↻", word: "checking…" },
+  searching: { glyph: "↻", word: "searching…" },
   connected: { glyph: "✓", word: "connected" },
   connecting: { glyph: "↻", word: "connecting…" },
   lost: { glyph: "⚠", word: "not found" },
