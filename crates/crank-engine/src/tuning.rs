@@ -6,6 +6,9 @@
 //! environment or a file; the core resolves it with [`Tuning::resolve`] from layers over the
 //! defaults (the stored setting `"tuning"`; the environment layer is #592, the per-ride record
 //! with a source tag per field #591).
+//!
+//! Groups: [`ErgTuning`], the ERG release (ADR-0002 §7.4, #589), and [`SlewTuning`], the eased
+//! ERG target's rates (ADR-0002 §7.10.4, #585; the easer is [`crate::slew`]).
 use crate::ticks::TICKS_PER_SECOND;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,6 +27,8 @@ pub struct Tuning {
     pub version: u32,
     /// The ERG low-cadence release (ADR-0002 §7.4).
     pub erg: ErgTuning,
+    /// The eased ERG target's rates (ADR-0002 §7.10.4).
+    pub slew: SlewTuning,
 }
 
 /// The ERG low-cadence release and its re-engagement (ADR-0002 §7.4, amended 2026-11-09,
@@ -52,6 +57,41 @@ pub struct ErgTuning {
     pub reengage_after_s: f64,
 }
 
+/// The eased ERG target (ADR-0002 §7.10.4, #585): the rider's limits on the commanded target,
+/// handed to Ruckig by [`crate::slew`] as `max_velocity = rise`, `min_velocity = −rise·factor`,
+/// `max_acceleration = 2·rise/τ` and `max_jerk = 4·rise/τ²`, one pair of limits for every move.
+/// The defaults are guesses to tune from rides (#624); [`SlewBounds`] the ranges.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SlewTuning {
+    /// The rising rate `rise`, in W/s (an integer): Ruckig's `max_velocity`. Default 20 W/s, so
+    /// the 83 W step of a recovery-to-work transition is a 5.5 s S-curve (ADR-0002 §7.10.4).
+    pub rise_w_per_s: u16,
+    /// The falling rate as a multiple of [`rise_w_per_s`](Self::rise_w_per_s), on a 0.25 grid:
+    /// Ruckig's `min_velocity = −rise·factor`. Default 2 (the owner's: a fall twice as fast as a
+    /// rise). At least 1, so a fall is never slower than a rise; `rise × factor ≥ 20 W/s` bounds
+    /// the time above the plan (ADR-0002 §7.10.6).
+    pub fall_factor: f64,
+    /// The ease time `τ`, in seconds on the 0.25 s grid: from rest to the full rising rate in
+    /// exactly `τ`, as one S-curve. Ruckig's `max_acceleration = 2·rise/τ` and
+    /// `max_jerk = 4·rise/τ²`. Default 2 s: each corner spread over a second of rising and a
+    /// second of falling acceleration (ADR-0002 §7.10.4).
+    pub ease_s: f64,
+}
+
+/// Inclusive ranges of the [`SlewTuning`] fields (ADR-0002 §7.10.4: design choices).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlewBounds {
+    /// [`SlewTuning::rise_w_per_s`], W/s: at most 50 keeps every engagement a ramp (its first
+    /// second adds at most 25 W); at least 5 keeps a 300 W rise to about a minute.
+    pub rise_w_per_s: RangeInclusive<u16>,
+    /// [`SlewTuning::fall_factor`], on a 0.25 grid; `rise × factor ≥ 20 W/s` as well.
+    pub fall_factor: RangeInclusive<f64>,
+    /// [`SlewTuning::ease_s`], seconds on the 0.25 s grid.
+    pub ease_s: RangeInclusive<f64>,
+}
+
 /// Inclusive ranges of the [`ErgTuning`] fields (ADR-0002 §7.4 amendment, its safety
 /// argument).
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +112,8 @@ pub struct ErgBounds {
 pub struct TuningBounds {
     /// The ERG release.
     pub erg: ErgBounds,
+    /// The eased ERG target.
+    pub slew: SlewBounds,
 }
 
 /// Why a tuning is refused. The message names the field by its JSON path.
@@ -114,6 +156,18 @@ pub enum TuningError {
         /// The re-engage cadence.
         reengage: u8,
     },
+    /// The falling rate `rise × factor` is below 20 W/s (ADR-0002 §7.10.4): the floor that
+    /// bounds the time above the plan.
+    #[error(
+        "slew.riseWPerS × slew.fallFactor ({rise} × {factor}) must be at least {} W/s",
+        Tuning::MIN_FALL_W_PER_S
+    )]
+    FallRate {
+        /// [`SlewTuning::rise_w_per_s`].
+        rise: u16,
+        /// [`SlewTuning::fall_factor`], as written by `f64`'s `Display`.
+        factor: String,
+    },
     /// The layers do not deserialise into a tuning (unknown field, wrong type).
     #[error("tuning is malformed: {0}")]
     Malformed(String),
@@ -124,6 +178,18 @@ impl Default for Tuning {
         Self {
             version: Self::VERSION,
             erg: ErgTuning::default(),
+            slew: SlewTuning::default(),
+        }
+    }
+}
+
+impl Default for SlewTuning {
+    /// The ADR-0002 §7.10.4 defaults: 20 W/s, ×2, 2 s.
+    fn default() -> Self {
+        Self {
+            rise_w_per_s: 20,
+            fall_factor: 2.0,
+            ease_s: 2.0,
         }
     }
 }
@@ -159,7 +225,11 @@ fn in_range<T: PartialOrd + ToString>(
 }
 #[expect(clippy::cast_precision_loss, reason = "TICKS_PER_SECOND is 4")]
 fn on_grid(field: &'static str, value: f64) -> Result<(), TuningError> {
-    let ticks = value * TICKS_PER_SECOND as f64;
+    on_quarter_grid(field, value, TICKS_PER_SECOND as f64)
+}
+/// `value` is a multiple of `1/per_unit` (the 0.25 grid for `per_unit` = 4).
+fn on_quarter_grid(field: &'static str, value: f64, per_unit: f64) -> Result<(), TuningError> {
+    let ticks = value * per_unit;
     if (ticks - ticks.round()).abs() < 1e-9 {
         Ok(())
     } else {
@@ -207,7 +277,14 @@ impl Tuning {
             reengage_rpm: 30..=90,
             reengage_after_s: 1.5..=5.0,
         },
+        slew: SlewBounds {
+            rise_w_per_s: 5..=50,
+            fall_factor: 1.0..=4.0,
+            ease_s: 1.0..=4.0,
+        },
     };
+    /// The floor of the falling rate `rise × factor`, W/s (ADR-0002 §7.10.4).
+    pub const MIN_FALL_W_PER_S: f64 = 20.0;
 
     /// Check the version, every range of [`Tuning::BOUNDS`], the tick grid of the durations
     /// and the cross-field rules.
@@ -233,6 +310,18 @@ impl Tuning {
             return Err(TuningError::Hysteresis {
                 release: e.release_rpm,
                 reengage: e.reengage_rpm,
+            });
+        }
+        let (s, b) = (&self.slew, &Self::BOUNDS.slew);
+        in_range("slew.riseWPerS", &s.rise_w_per_s, &b.rise_w_per_s)?;
+        in_range("slew.fallFactor", &s.fall_factor, &b.fall_factor)?;
+        // The factor is on a 0.25 grid like a duration (ADR-0001 §7.2), so the same check.
+        on_quarter_grid("slew.fallFactor", s.fall_factor, 4.0)?;
+        duration("slew.easeS", s.ease_s, &b.ease_s)?;
+        if f64::from(s.rise_w_per_s) * s.fall_factor < Self::MIN_FALL_W_PER_S {
+            return Err(TuningError::FallRate {
+                rise: s.rise_w_per_s,
+                factor: s.fall_factor.to_string(),
             });
         }
         Ok(())
@@ -290,11 +379,21 @@ pub(crate) mod tests {
                 reengage_after_s: 1.5,
             }
         );
+        // ADR-0002 §7.10.4 (#585): 20 W/s, ×2, 2 s
+        assert_eq!(
+            t.slew,
+            SlewTuning {
+                rise_w_per_s: 20,
+                fall_factor: 2.0,
+                ease_s: 2.0,
+            }
+        );
         assert_eq!(t.validate(), Ok(()));
         assert_eq!(
             serde_json::to_value(t).expect("json"),
             json!({"v": 1, "erg": {"releaseEnabled": true, "releaseRpm": 30,
-                "releaseAfterS": 5.0, "reengageRpm": 45, "reengageAfterS": 1.5}})
+                "releaseAfterS": 5.0, "reengageRpm": 45, "reengageAfterS": 1.5},
+                "slew": {"riseWPerS": 20, "fallFactor": 2.0, "easeS": 2.0}})
         );
     }
     #[test]
@@ -304,6 +403,108 @@ pub(crate) mod tests {
         assert_eq!(b.release_after_s, 1.0..=8.0);
         assert_eq!(b.reengage_rpm, 30..=90);
         assert_eq!(b.reengage_after_s, 1.5..=5.0);
+        let s = Tuning::BOUNDS.slew;
+        assert_eq!(s.rise_w_per_s, 5..=50);
+        assert_eq!(s.fall_factor, 1.0..=4.0);
+        assert_eq!(s.ease_s, 1.0..=4.0);
+        assert!((Tuning::MIN_FALL_W_PER_S - 20.0).abs() < f64::EPSILON);
+    }
+    fn with_slew(f: impl FnOnce(&mut SlewTuning)) -> Result<(), TuningError> {
+        let mut t = Tuning::default();
+        f(&mut t.slew);
+        t.validate()
+    }
+    #[test]
+    fn validate_refuses_slew_values_out_of_bounds_off_grid_or_below_the_fall_floor() {
+        let field = |r: Result<(), TuningError>| match r {
+            Err(TuningError::OutOfBounds { field, .. } | TuningError::OffGrid { field, .. }) => {
+                field
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(field(with_slew(|s| s.rise_w_per_s = 4)), "slew.riseWPerS");
+        assert_eq!(field(with_slew(|s| s.rise_w_per_s = 51)), "slew.riseWPerS");
+        assert_eq!(
+            field(with_slew(|s| s.fall_factor = 0.75)),
+            "slew.fallFactor"
+        );
+        assert_eq!(
+            field(with_slew(|s| s.fall_factor = 4.25)),
+            "slew.fallFactor"
+        );
+        assert_eq!(field(with_slew(|s| s.fall_factor = 2.1)), "slew.fallFactor");
+        assert_eq!(
+            field(with_slew(|s| s.fall_factor = f64::NAN)),
+            "slew.fallFactor"
+        );
+        assert_eq!(field(with_slew(|s| s.ease_s = 0.75)), "slew.easeS");
+        assert_eq!(field(with_slew(|s| s.ease_s = 4.25)), "slew.easeS");
+        assert_eq!(field(with_slew(|s| s.ease_s = 2.1)), "slew.easeS");
+        assert_eq!(field(with_slew(|s| s.ease_s = f64::INFINITY)), "slew.easeS");
+        // the falling rate's floor: rise × factor ≥ 20 W/s, both fields named
+        assert_eq!(
+            with_slew(|s| {
+                s.rise_w_per_s = 19;
+                s.fall_factor = 1.0;
+            }),
+            Err(TuningError::FallRate {
+                rise: 19,
+                factor: "1".into()
+            })
+        );
+        let msg = with_slew(|s| {
+            s.rise_w_per_s = 5;
+            s.fall_factor = 3.75;
+        })
+        .expect_err("18.75 W/s")
+        .to_string();
+        assert!(
+            msg.contains("slew.riseWPerS") && msg.contains("slew.fallFactor"),
+            "{msg}"
+        );
+        for (rise, factor) in [(20, 1.0), (5, 4.0), (16, 1.25), (10, 2.0)] {
+            assert_eq!(
+                with_slew(|s| {
+                    s.rise_w_per_s = rise;
+                    s.fall_factor = factor;
+                }),
+                Ok(()),
+                "{rise} × {factor}"
+            );
+        }
+        // the corners of the bounds that pass the floor
+        for (rise, factor, ease) in [
+            (5, 4.0, 4.0),
+            (50, 1.0, 1.0),
+            (50, 4.0, 4.0),
+            (20, 1.0, 4.0),
+        ] {
+            assert_eq!(
+                with_slew(|s| *s = SlewTuning {
+                    rise_w_per_s: rise,
+                    fall_factor: factor,
+                    ease_s: ease
+                }),
+                Ok(())
+            );
+        }
+    }
+    #[test]
+    fn a_stored_layer_without_slew_resolves_to_the_slew_defaults() {
+        // ADR-0001 §7.2: Tuning::VERSION stays 1; a layer written before #620 resolves unchanged.
+        assert_eq!(Tuning::VERSION, 1);
+        let t = Tuning::resolve([&json!({"v": 1, "erg": {"releaseRpm": 25}})]).expect("valid");
+        assert_eq!(t.slew, SlewTuning::default());
+        let t =
+            Tuning::resolve([&json!({"slew": {"riseWPerS": 50, "easeS": 1.0}})]).expect("valid");
+        assert_eq!(
+            (t.slew.rise_w_per_s, t.slew.fall_factor, t.slew.ease_s),
+            (50, 2.0, 1.0)
+        );
+        assert!(matches!(
+            Tuning::resolve([&json!({"slew": {"riseWPerSec": 5}})]),
+            Err(TuningError::Malformed(_))
+        ));
     }
     fn with(f: impl FnOnce(&mut ErgTuning)) -> Result<(), TuningError> {
         let mut t = Tuning::default();
@@ -453,7 +654,7 @@ pub(crate) mod tests {
     proptest! {
         #[test]
         fn every_drawn_tuning_validates(erg in in_bounds()) {
-            prop_assert_eq!(Tuning { version: 1, erg }.validate(), Ok(()));
+            prop_assert_eq!(Tuning { version: 1, erg, slew: SlewTuning::default() }.validate(), Ok(()));
         }
     }
 }

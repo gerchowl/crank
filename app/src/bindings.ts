@@ -223,7 +223,7 @@ export const commands = {
 };
 
 /* Constants */
-export const TUNING_DEFAULT = {"erg":{"reengageAfterS":1.5,"reengageRpm":45,"releaseAfterS":5.0,"releaseEnabled":true,"releaseRpm":30},"v":1} as const;
+export const TUNING_DEFAULT = {"erg":{"reengageAfterS":1.5,"reengageRpm":45,"releaseAfterS":5.0,"releaseEnabled":true,"releaseRpm":30},"slew":{"easeS":2.0,"fallFactor":2.0,"riseWPerS":20},"v":1} as const;
 
 /* Types */
 /**  A failed command: a code plus a human-readable message. */
@@ -874,6 +874,34 @@ export type Severity =
 /**  Potentially unsuitable prescription. */
 "warning";
 
+/**
+ *  The eased ERG target (ADR-0002 §7.10.4, #585): the rider's limits on the commanded target,
+ *  handed to Ruckig by [`crate::slew`] as `max_velocity = rise`, `min_velocity = −rise·factor`,
+ *  `max_acceleration = 2·rise/τ` and `max_jerk = 4·rise/τ²`, one pair of limits for every move.
+ *  The defaults are guesses to tune from rides (#624); [`SlewBounds`] the ranges.
+ */
+export type SlewTuning = {
+	/**
+	 *  The rising rate `rise`, in W/s (an integer): Ruckig's `max_velocity`. Default 20 W/s, so
+	 *  the 83 W step of a recovery-to-work transition is a 5.5 s S-curve (ADR-0002 §7.10.4).
+	 */
+	riseWPerS: number,
+	/**
+	 *  The falling rate as a multiple of [`rise_w_per_s`](Self::rise_w_per_s), on a 0.25 grid:
+	 *  Ruckig's `min_velocity = −rise·factor`. Default 2 (the owner's: a fall twice as fast as a
+	 *  rise). At least 1, so a fall is never slower than a rise; `rise × factor ≥ 20 W/s` bounds
+	 *  the time above the plan (ADR-0002 §7.10.6).
+	 */
+	fallFactor: number | null,
+	/**
+	 *  The ease time `τ`, in seconds on the 0.25 s grid: from rest to the full rising rate in
+	 *  exactly `τ`, as one S-curve. Ruckig's `max_acceleration = 2·rise/τ` and
+	 *  `max_jerk = 4·rise/τ²`. Default 2 s: each corner spread over a second of rising and a
+	 *  second of falling acceleration (ADR-0002 §7.10.4).
+	 */
+	easeS: number | null,
+};
+
 /**  Condition ending a workout step; boundary times are seconds (ADR-0001 §4). */
 export type StepEnd = 
 /**  Fixed duration. */
@@ -1182,6 +1210,8 @@ export type Tuning = {
 	v: number,
 	/**  The ERG low-cadence release (ADR-0002 §7.4). */
 	erg: ErgTuning,
+	/**  The eased ERG target's rates (ADR-0002 §7.10.4). */
+	slew: SlewTuning,
 };
 
 /**
