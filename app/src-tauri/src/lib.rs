@@ -4,7 +4,7 @@
 //! Tauri state, and exposes its methods one-to-one as commands ([`commands`]). Streams
 //! and link channels belong to the calling window's label; destroying a window drops them.
 //! Devices and the data directory follow [`RuntimeConfig`]. Window and quit handling is
-//! [`lifecycle`].
+//! [`lifecycle`]; the Mac's sleep releases the links ([`sleep`]).
 mod build_rev;
 pub mod commands;
 mod config;
@@ -12,6 +12,7 @@ pub mod display;
 pub mod lifecycle;
 pub mod logging;
 pub mod report;
+pub mod sleep;
 pub mod version;
 
 use commands::{
@@ -200,6 +201,14 @@ pub fn run() -> tauri::Result<()> {
     #[cfg(feature = "e2e")]
     let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     let app = builder.build(tauri::generate_context!())?;
-    lifecycle::run(app);
+    // The setup above has run, so the core is managed; the observer lives until the quit starts.
+    #[cfg(target_os = "macos")]
+    {
+        let handle = app.handle().clone();
+        let observer = sleep::Observer::new(move || sleep::on_will_sleep(&handle));
+        lifecycle::run(app, observer);
+    }
+    #[cfg(not(target_os = "macos"))]
+    lifecycle::run(app, ());
     Ok(())
 }

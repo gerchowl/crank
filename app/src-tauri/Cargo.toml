@@ -38,8 +38,9 @@ time = { version = "0.3", default-features = false, features = ["std", "formatti
 core-graphics = "0.25"
 # The window's own display id (`NSWindow.screen` -> `NSScreenNumber`, #313); in the lockfile through tao and wry.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSScreen", "NSWindow", "NSResponder"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSDictionary", "NSString", "NSValue"] }
+# The sleep observer (ADR-0002 §5.1.3, #679): `NSWorkspace`'s notification center and `NSNotification`.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSScreen", "NSWindow", "NSResponder", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSDictionary", "NSString", "NSValue", "NSNotification"] }
 
 [dev-dependencies]
 # The reconnect supervisor and the monotonic clock, to prove its events reach the log file (#411).

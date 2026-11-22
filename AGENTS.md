@@ -77,6 +77,7 @@ complete state, so there is no resync); it is the only way the keeper's state re
 devices to be released, vigil shuts down within what is left of 3 s, then the app exits (`app/src-tauri/src/lifecycle.rs`). Exits that never ask (Dock Quit, logout, system shutdown:
 `NSApp terminate:` gives tao only `applicationWillTerminate:`, hence `RunEvent::Exit` and no `ExitRequested`) hit a backstop that runs
 the same shutdown synchronously on `Exit`; macOS may kill a terminating app a few seconds in, so the cap must stay at or below 3 s.
+**Sleep (#679, ADR-0002 §5.1.3)**: on macOS `app/src-tauri/src/sleep.rs` registers an observer of `NSWorkspaceWillSleepNotification` once the app is built; it sends `links_intent(Release{Sleep})` (spawned, never blocking the main thread: the release races the sleep and is applied at wake if it loses), which releases the keeper's links and discards an unstarted ride; `lifecycle::run` holds it until the quit starts and dropping it unregisters it. Other platforms have none (#41).
 `just quit-test` (macOS, GUI session) terminates a real Wry app mid-ride with `NSApp terminate:` and checks the ride was recorded `Finished`.
 If the core cannot open (a second crank holds `ride.lock`) a native
 dialog says so and the process exits with status 1. Tauri rejects malformed arguments with a plain string, not an `ApiError`:
