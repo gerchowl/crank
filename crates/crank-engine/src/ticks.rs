@@ -12,8 +12,10 @@ pub const TRAINER_HOLD_TICKS: u64 = 4;
 /// the last sample that carried it, and only while page 25 is within [`TRAINER_HOLD_TICKS`]
 /// (#437). The NEO sends page 16 instead of about one page 25 in four; in the #44 Part A
 /// captures its interval is 1.0 s at the median but 5.0 s to 5.5 s at the 99th percentile
-/// (`latency.fecap`, `spacing.fecap`), up to 5.97 s, so a 1.0 s hold would blank speed most
-/// seconds. ADR-0001 §5, implementation notes.
+/// (`latency.fecap`, `spacing.fecap`), so a 1.0 s hold would blank speed most seconds. It is at
+/// most 5.97 s only in `spacing.fecap`: `latency.fecap` also has two page-16 outages, of 25.2 s
+/// and 22.2 s. Those are the NEO suppressing page 16 against the page-71 request's phase, which
+/// this hold does not bridge (#610, ADR-0002 §4.4). ADR-0001 §5, implementation notes.
 pub const SPEED_HOLD_TICKS: u64 = 24;
 /// A heart-rate value is held for up to 3.0 s (12 ticks) after its sample's tick.
 pub const HR_HOLD_TICKS: u64 = 12;

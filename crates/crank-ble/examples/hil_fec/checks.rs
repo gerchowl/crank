@@ -67,8 +67,8 @@ impl Outcome {
 }
 
 const BLOCKED_NO_NEO: &str = "NEO not advertising — owner: power the trainer (mains plugged in) and keep the phone/Tacx app disconnected";
-const XOR: Checksum = Checksum::XorInclSync;
-const ACK: u8 = 0x4f;
+pub(crate) const XOR: Checksum = Checksum::XorInclSync;
+pub(crate) const ACK: u8 = 0x4f;
 const BROADCAST: u8 = 0x4e;
 
 /// Dispatch one subcommand.
@@ -120,6 +120,7 @@ pub async fn run(args: &Args) -> Result<Outcome> {
             Check::Check3 => check3(&s).await,
             Check::Check4 => check4(&s).await,
             Check::Spacing => spacing(&s).await,
+            Check::Phase => crate::phase::run(&s).await,
             Check::Scan
             | Check::Known
             | Check::Latency
@@ -307,6 +308,16 @@ fn analyse(args: &Args) -> Result<Outcome> {
         }
         v["part_b"] = part_b;
     }
+    // Page-16 outages against the page-71 request's offset (#610), and the sweep verdict of a
+    // `phase` capture.
+    let (frames, notes) = crate::phase::parse(&text);
+    let phase = crate::phase::analyse(&frames, &notes);
+    if phase["steps"].as_array().is_some_and(|s| !s.is_empty())
+        && let Some(line) = phase["verdict"].as_str()
+    {
+        println!("{line}");
+    }
+    v["page16_phase"] = phase;
     let mut body = serde_json::to_string_pretty(&v)?;
     body.push('\n');
     std::fs::write(&dest, body)?;
@@ -431,7 +442,7 @@ async fn idle(s: &Session, args: &Args) -> Value {
     })
 }
 
-fn request(page: u8, times: u8, msg: u8, sum: Checksum) -> [u8; 13] {
+pub(crate) fn request(page: u8, times: u8, msg: u8, sum: Checksum) -> [u8; 13] {
     build(&ControlPage::Request { page, times }, msg, sum).expect("request encodes")
 }
 

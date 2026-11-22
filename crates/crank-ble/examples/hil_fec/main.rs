@@ -5,7 +5,8 @@
 //! The Part B control checks (`check5`, `check6`, `check7`, `check8`, `check9`, `check12`) drive the
 //! trainer under a rider and always release it (`rider.rs`); `check10` holds the link while the
 //! operator tries a second central (`check10.rs`); `check11b` drops and reconnects the link
-//! (`check11.rs`); `docs/hil/part-b.md` is the runbook.
+//! (`check11.rs`); `docs/hil/part-b.md` is the runbook. `phase` sweeps the page-71 request's offset
+//! after page 16 (`phase.rs`, #610; runbook `docs/hil/phase.md`).
 //! Each subcommand writes `<check>.fecap` (raw frames, both directions, the
 //! `crank-ble` capture format) and `<check>.json` into `--out`. Raw captures carry
 //! the device serial; commit only the output of `redact`.
@@ -24,6 +25,7 @@ mod cps;
 mod desktop_capture;
 mod frames;
 mod partb;
+mod phase;
 mod reuse;
 mod rider;
 mod session;

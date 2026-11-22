@@ -2,7 +2,7 @@
 
 - **Status:** Proposed, Amended (#54, #250, #264, #266, #435, #588, #589, #585)
 - **Date:** 2026-10-13
-- **Issue:** #27 (decides the design questions of #23); amendment #54 (trainer-following state machine, §4.4.1); amendment #435 (connection lifecycle, §5.1); amendment #585 (eased ERG target, §7.10)
+- **Issue:** #27 (decides the design questions of #23); amendment #54 (trainer-following state machine, §4.4.1); amendment #435 (connection lifecycle, §5.1); amendment #585 (eased ERG target, §7.10); amendment #610 (phase-locked page-71 request, §4.4, proposed)
 - **Related:** ADR-0001 (crate layout, clock, testing), `spec/TRAINER-BLE.md`
 
 ## 1. Context
@@ -412,6 +412,76 @@ one tick of single-page delay remains inside the control latency budget.
 - **Connect sequence:** connect → discover → subscribe `fec2` → read DIS → page 55 (rider config) →
   request page 54 (capabilities) → `TrainerLink` returned with `Link(Ready)` → engine sets the mode. The
   driver never chooses a control mode itself; restoring control is always the engine's `SetMode`.
+
+**Amendment (#610): phase-locked page-71 request. Status: proposed, pending the `hil_fec phase`
+sweep.** Production still runs the free 1 s `T_poll` grid above. PR 2 of #610 implements this once
+the owner's sweep has fixed `D`.
+
+*Evidence (NEO 55624, firmware 0.7.4).* The NEO stops broadcasting page 16 (speed, distance) for
+22–25 s at a time when the page-71 request keeps one relation to the page-16 slot. In
+`docs/hil/captures/latency.fecap` (#44 Part A, crank's own writer, 1 Hz polls, 348 s):
+
+- **Matched rates.** The NEO's broadcast frames sit on a 250.015 ms grid, four frames per
+  1000.06 ms. That equals the poll period (1000.08 ms, 344 polls). So the request keeps its place
+  among the trainer's frames (always about 0.8–0.88 of a frame slot); what moves is page 16's slot.
+- **Plateaus.** Page 16's slot moves relative to the request in steps of one frame slot. Between
+  steps the request sits 12–24 s on one offset after page 16 (plateaus near 470, 980, 720, 500 and
+  200 ms).
+- **Outages.** After 21–24 s on the plateau near 200 ms (one slot after page 16), page 16 stopped
+  entirely: 25.23 s from 108.6 s (ERG) and 22.23 s from 240.6 s (SIM). The NEO kept sending at its
+  normal rate and put page 25 in the slots page 16 was due in. Page 16 came back at a new slot.
+  Inside the outages the request's offset, extrapolated from the last page-16 slot, ran from
+  192–193 ms to 393–424 ms.
+- **Thinning.** Near 940 ms (the request just before page 16), page 16 thins out to about one per
+  2 s: the reply takes its slot.
+- **The owner's ride (#610, 2026-11-08).** Speed was blank for 21–22 s every 131–133 s; here the two
+  outages start 132.0 s apart. The `speed` hold of 6 s (ADR-0001 §5, #437) is not meant to bridge an
+  outage; widening it would hide one, not follow a slower page.
+- **Without polls** (`idle.fecap`), page 16 is every fifth frame (gaps of 1.23–1.26 s) and there are
+  no outages.
+
+Binned by offset (requests followed by page 16 within 1.5 s; `hil_fec/phase.rs`, whose tests assert
+these values on the capture):
+
+- 250–400 ms: 0–18 % followed. Unsafe.
+- 900–950 ms: 36 %. Unsafe.
+- 650–750 ms: ≥ 90 %. Safe.
+- The other offsets are mixed or were never visited.
+
+*Decision (proposed).*
+
+- **Lock.** While page 16 arrives, the page-71 request is due at `last16 + D + n·T_poll`: the first
+  such instant (n ≥ 0) at least `T_poll`/2 after the previous request. `last16` is the arrival of
+  the last page 16; `T_poll` = 1 s. This is `hil_fec`'s `PhaseLock`, so the sweep measures exactly
+  the scheduler production will run.
+- **`D` is TBD by the sweep.** It will be the centre of the widest safe band, which must be
+  ≥ 150 ms wide: 75 ms to either edge against the ~30 ms BLE connection-interval quantisation.
+- **Provisional band from the capture:** 650–750 ms safe. Avoid 150–450 ms and 900–1000 ms.
+- **Absent page 16.** The same formula with the last page 16 seen gives one request per `T_poll`,
+  still `D` after the last known slot. A missing page 16 therefore never moves the request into the
+  band relative to where page 16 was. Before a connection's first page 16 (the connect sequence),
+  the free 1 s grid applies; page 16 arrives within about 1.25 s.
+- **Writing the request.** It is written at its due instant, not on the next 4 Hz writer tick. A
+  tick-quantised poll would need a safe band ≥ 250 ms plus jitter. One write stays in flight at a
+  time: a poll due while a control write is in flight goes out when that write completes. The
+  reserved-poll-tick amendment above becomes "a poll is never more than one write late against its
+  due time". Control pages keep the 4 Hz tick grid and lose no tick to a poll.
+- **SIM alignment.** Today each SIM keep-alive page (50, 51; alternating, each every 2 s) is followed
+  by the poll on the next free tick. Under the lock the poll's time is set by page 16, so the
+  alternating keep-alive page moves instead: it is written on the last writer tick before the poll's
+  due time. Each SIM component still gets a reply every 2 s (`P_c` unchanged), and ERG and
+  resistance every 1 s. A changed SIM page is still written at once, as before.
+- **Reply timeouts (§4.4.1).** `T_poll` stays 1 s on average, so `P_c`, `T_unknown(c)` = `4·P_c` +
+  1 s and the per-hour silent rates keep their form. A step of page 16's slot stretches one reply
+  interval, by up to `T_poll`/2 plus one slot under the half-period rule. PR 2 measures the
+  reply-interval distribution under the lock from the sweep capture and re-derives the silent rates
+  of the `T_unknown` row from it before this amendment is accepted. If they exceed the rates stated
+  there, `T_unknown` changes in the same PR.
+- **Acceptance.** A `hil_fec phase` PASS (runbook `docs/hil/phase.md`) sets `D`. Then a ride
+  captured with `CRANK_CAPTURE_DIR` under PR 2 must show no page-16 gap over 2.5 s
+  (`hil_fec analyse`, `page16_phase.outages` empty).
+- **Firmware.** This is NEO fw 0.7.4 behaviour. Another firmware or trainer may rotate its pages
+  differently; the lock only assumes that the trainer broadcasts page 16 periodically.
 
 #### 4.4.1 Trainer-following state machine (amendment, #54)
 

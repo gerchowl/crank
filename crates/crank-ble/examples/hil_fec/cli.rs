@@ -26,6 +26,8 @@ pub enum Check {
     Check4,
     /// Check 3 extension: reply loss against request and control spacing.
     Spacing,
+    /// Check 3 extension: page-16 suppression against the page-71 request's phase (#610).
+    Phase,
     /// Redact a raw capture for committing.
     Redact,
     /// Reply accounting and stale-echo ages of a capture (offline).
@@ -55,7 +57,7 @@ pub enum Check {
 }
 
 impl Check {
-    const ALL: [(&'static str, Self); 22] = [
+    const ALL: [(&'static str, Self); 23] = [
         ("scan", Self::Scan),
         ("known", Self::Known),
         ("idle", Self::Idle),
@@ -65,6 +67,7 @@ impl Check {
         ("latency", Self::Latency),
         ("check4", Self::Check4),
         ("spacing", Self::Spacing),
+        ("phase", Self::Phase),
         ("redact", Self::Redact),
         ("analyse", Self::Analyse),
         ("check5", Self::Check5),
@@ -121,7 +124,7 @@ pub struct Args {
 }
 
 /// Usage text.
-pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|redact|analyse|check5|check6|check7|check8|check9|check10|check11a|check11b|check11c|check12|reuse> \
+pub const USAGE: &str = "usage: hil_fec <scan|known|idle|check1|check2|check3|latency|check4|spacing|phase|redact|analyse|check5|check6|check7|check8|check9|check10|check11a|check11b|check11c|check12|reuse> \
 [--out DIR] [--scan-secs N] [--idle-secs N] [--target ID_OR_PATH]";
 
 fn number(flag: &str, text: &str) -> Result<u64, String> {
