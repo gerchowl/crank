@@ -454,12 +454,27 @@ describe("Ride", () => {
     let release = () => {};
     const { rig } = await open(
       { phase: "active" },
-      { before: (r) => (release = r.hold("workout_get")) },
+      { before: (r) => (release = r.hold("ride_plan")) },
     );
     await push(rig, { state: { kind: "riding" }, blockIndex: 0 });
     expect(enabled("Skip block")).toBe(false);
     await act(async () => release());
     await waitFor(() => expect(enabled("Skip block")).toBe(true));
+  });
+
+  // #110: Ride this, then the workout is edited or deleted in the library before the ride is opened. The screen draws
+  // the ride as the core loaded it (`ride_plan`), never the library's current workout: here the library no longer
+  // has it (`workout_get` is `not_found` for this id), and the name, the block and Skip still come from the ride.
+  test("the screen draws the loaded ride's own workout, not the library's", async () => {
+    const { rig } = await open(
+      { phase: "active", workoutName: "As loaded" },
+      { workoutId: "w-deleted" },
+    );
+    await push(rig, { state: { kind: "riding" }, blockIndex: 0 });
+    expect(await screen.findByText("As loaded")).toBeTruthy();
+    await waitFor(() => expect(enabled("Skip block")).toBe(true));
+    expect(rig.count("ride_plan")).toBeGreaterThan(0);
+    expect(rig.count("workout_get")).toBe(0);
   });
 
   test("a free ride has no block to skip", async () => {

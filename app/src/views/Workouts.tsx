@@ -550,7 +550,7 @@ export function Workouts() {
               onClick: () => setDeleting(null),
             },
           ]}
-          focus="Cancel"
+          focus={["Cancel"]}
           onCancel={() => setDeleting(null)}
         >
           <p>

@@ -22,6 +22,7 @@ import { resetRideLoad } from "../views/rideLoad";
 import { apiError, install } from "../views/workoutsBackend";
 import { GROUP_MS } from "./model";
 import { lineColumn, typingClock } from "./WorkoutEditor";
+import { windowClose } from "./windowClose";
 
 afterEach(() => {
   cleanup();
@@ -34,6 +35,9 @@ beforeEach(() => {
   navigate("workouts");
   now = 0;
   typingClock.now = () => (now += GROUP_MS);
+  // No Tauri window here: the close-request listener of an editor with unsaved changes is held by nobody.
+  windowClose.listen = () => Promise.resolve(() => {});
+  windowClose.destroy = () => Promise.resolve();
 });
 const text = (name: string) => DRAFTS[name]!.text;
 const problemOf = (name: string) => {

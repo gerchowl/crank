@@ -241,3 +241,58 @@ async fn ride_this_loads_the_saved_workout_by_its_id() {
     assert_eq!(loaded.workout_id.as_deref(), Some(id.as_str()));
     assert!(core.ride_status().await.unwrap().status.loaded);
 }
+
+/// #110: a loaded ride runs, and shows, the workout as loaded: editing or deleting the library
+/// workout afterwards leaves the ride's plan unchanged, before and after Start.
+#[tokio::test(start_paused = true)]
+async fn editing_or_deleting_the_workout_leaves_the_loaded_ride_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path())).unwrap();
+    let found = core.devices_scan(None).await.unwrap();
+    let trainer = found.iter().find(|d| d.trainer).unwrap();
+    core.device_pair(trainer.id.clone(), DeviceRole::Trainer)
+        .await
+        .unwrap();
+    let id = core
+        .workout_save(
+            None,
+            draft(&core, "Two", "\"A\" 1m 60%, \"B\" 1m 70%").await,
+        )
+        .await
+        .unwrap();
+    let ride = core.ride_load(Some(id.clone())).await.unwrap().ride_id;
+    let plan = core.ride_plan(ride.clone()).await.unwrap();
+    assert_eq!(
+        (plan.ride_id.as_str(), plan.workout.name.as_str()),
+        (ride.as_str(), "Two")
+    );
+    assert_eq!(plan.compiled.blocks.len(), 2);
+
+    // Loaded, not started: an edit changes the library, not the ride.
+    core.workout_save(
+        Some(id.clone()),
+        draft(&core, "Three", "\"A\" 1m 60%, \"B\" 1m 70%, \"C\" 1m 50%").await,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        core.workout_get(id.clone())
+            .await
+            .unwrap()
+            .compiled
+            .blocks
+            .len(),
+        3
+    );
+    assert_eq!(core.ride_plan(ride.clone()).await.unwrap(), plan);
+
+    // Started, then the workout deleted: the ride still has its plan.
+    core.ride_start().await.unwrap();
+    core.workout_delete(id.clone()).await.unwrap();
+    assert_eq!(core.ride_plan(ride.clone()).await.unwrap(), plan);
+    // Another id is not found.
+    assert_eq!(
+        core.ride_plan("ride-other".into()).await.unwrap_err().code,
+        ErrorCode::NotFound
+    );
+}

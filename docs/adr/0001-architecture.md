@@ -148,7 +148,7 @@ are what Tauri itself uses for download progress and child-process output
 
 | Mechanism | Used for |
 |---|---|
-| **Commands** (request/response, async) | every query and mutation: `history`, `histogram`, `heatmap`, `mmp`, `hr_recovery`, `streams`, `recoveries`, `laps`, `compile_workout`, `parse_dsl`, `print_dsl`, ride control (`ride_load/start/pause/resume/stop/adjust/skip_block`), `coach_decisions`, `ui_ack`, layouts, snippets, workouts, athlete model, coach respond/rate, planner propose/rewrite, devices, settings |
+| **Commands** (request/response, async) | every query and mutation: `history`, `histogram`, `heatmap`, `mmp`, `hr_recovery`, `streams`, `recoveries`, `laps`, `compile_workout`, `parse_dsl`, `print_dsl`, ride control (`ride_load/start/pause/resume/stop/adjust/skip_block`), `ride_plan` (the loaded ride's own workout as loaded, keyed by the frame's ride id and fixed for it, so the ride screen never draws a library workout edited since, #110), `coach_decisions`, `ui_ack`, layouts, snippets, workouts, athlete model, coach respond/rate, planner propose/rewrite, devices, settings |
 | **One `Channel<UiFrame>` per window** (§4.3, amendment #588) | all live data, with or without a ride: the full UI state (ride, devices, nudges) and the series points not yet acknowledged. Acked with a window of 1. Until #588 step 3 the code has two channels instead: `Channel<StreamFrame>` (subscribed samples, ride status, link changes) and `Channel<LinkFrame>` (the link keeper's state, ADR-0002 §5.1.4) |
 | **Events** | only low-rate, app-wide invalidation hints for multiple windows: `store_changed { table }` |
 

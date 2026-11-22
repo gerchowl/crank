@@ -186,6 +186,13 @@ export const commands = {
 	 */
 	rideStatus: () => typedError<RideStatusView, ApiError>(__TAURI_INVOKE("ride_status")),
 	/**
+	 *  The workout a loaded ride runs, as loaded: what the ride screen draws.
+	 * 
+	 *  # Errors
+	 *  As [`Core::ride_plan`].
+	 */
+	ridePlan: (rideId: string) => typedError<RidePlan, ApiError>(__TAURI_INVOKE("ride_plan", { rideId })),
+	/**
 	 *  Open the calling window's multiplexed stream on the loaded ride.
 	 * 
 	 *  # Errors
@@ -799,6 +806,20 @@ export type RideOutcome =
 "finished" | 
 /**  Closed by crash recovery. */
 "aborted";
+
+/**
+ *  The workout a loaded ride runs, as the core took it at `ride_load` (#110): the ride screen
+ *  draws it (profile, blocks, targets, name), so editing or deleting the library workout after
+ *  the load never changes what the ride shows. Read with `ride_plan` by the frame's ride id.
+ */
+export type RidePlan = {
+	/**  The ride it belongs to (`RideView.id`). */
+	rideId: string,
+	/**  The workout as loaded; the free ride's has no steps. */
+	workout: Workout,
+	/**  Its compiled timeline, the blocks the engine runs. */
+	compiled: CompiledView,
+};
 
 /**  A stored ride (`rides_list`, `ride_summary`). */
 export type RideRecord = {

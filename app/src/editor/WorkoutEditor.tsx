@@ -24,6 +24,7 @@ import {
 } from "../bindings";
 import { setLeaveGuard } from "../router";
 import { Dialog } from "../shell/Dialog";
+import { windowClose } from "./windowClose";
 import { ErrorLine, Profile, Summary, formatDuration } from "../views/Workouts";
 import {
   canRedo,
@@ -317,15 +318,21 @@ export function WorkoutEditor({
     s.draft !== s.saved.text;
   const error = compiled?.issues.find((i) => i.severity === "error") ?? null;
   // Why Save cannot store this now; the core refuses the same (library.rs `Library::save`), the page says so first.
+  // A text typed past the saved tree is not stored until the core has parsed it: Save waits, so it never stores the
+  // tree from before the last keystrokes.
   const unsaveable = s.problem
     ? "Fix the text to save the workout."
-    : name.trim() === ""
-      ? "Give the workout a name to save it."
-      : compileFailure
-        ? "A workout that does not compile cannot be saved."
-        : error
-          ? `Can’t save until the error is fixed: ${error.message}`
-          : null;
+    : parseFailure
+      ? "The text could not be read, so the workout cannot be saved."
+      : s.draft !== s.saved.text
+        ? "Reading the text…"
+        : name.trim() === ""
+          ? "Give the workout a name to save it."
+          : compileFailure
+            ? "A workout that does not compile cannot be saved."
+            : error
+              ? `Can’t save until the error is fixed: ${error.message}`
+              : null;
   const canSave =
     unsaveable === null && !saving && (stored.id === null || dirty);
 
@@ -372,6 +379,26 @@ export function WorkoutEditor({
       }),
     [leaveWith],
   );
+  // Closing the window (its close button, or Cmd+Q, which asks each window to close) asks the same while there are
+  // unsaved changes; without any, nothing listens and the window closes as always.
+  useEffect(() => {
+    if (!dirty) return;
+    let remove: (() => void) | null = null;
+    let gone = false;
+    void windowClose
+      .listen((e) => {
+        e.preventDefault();
+        setAsk({ why: "leave", then: () => void windowClose.destroy() });
+      })
+      .then((r) => {
+        if (gone) r();
+        else remove = r;
+      });
+    return () => {
+      gone = true;
+      remove?.();
+    };
+  }, [dirty]);
 
   const rideThis = () => {
     if (stored.id === null) return;
@@ -595,7 +622,7 @@ export function WorkoutEditor({
             { label: "Discard", onClick: () => void answer("discard") },
             { label: "Cancel", onClick: () => setAsk(null) },
           ]}
-          focus="Save"
+          focus={["Save", "Cancel"]}
           onCancel={() => setAsk(null)}
         >
           <p>

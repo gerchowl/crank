@@ -594,6 +594,20 @@ pub enum DslParse {
     },
 }
 
+/// The workout a loaded ride runs, as the core took it at `ride_load` (#110): the ride screen
+/// draws it (profile, blocks, targets, name), so editing or deleting the library workout after
+/// the load never changes what the ride shows. Read with `ride_plan` by the frame's ride id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RidePlan {
+    /// The ride it belongs to (`RideView.id`).
+    pub ride_id: String,
+    /// The workout as loaded; the free ride's has no steps.
+    pub workout: Workout,
+    /// Its compiled timeline, the blocks the engine runs.
+    pub compiled: CompiledView,
+}
+
 /// Answer of `ride_load`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]

@@ -483,9 +483,15 @@ cover the tree, not the name. Ride this is disabled until the workout has been s
 it rides the saved workout through the library's guarded load (`ride_load` by its id). **Before leaving or riding with
 unsaved changes the editor asks** in a modal dialog: Back to library and any place of the rail give "Save changes to
 <name>?", Ride this gives "Save changes to <name> before riding?", each with **Save** (primary, focused), **Discard** and
-**Cancel**; Escape is Cancel, Tab stays inside, focus returns where it was. Save stores, then leaves or rides (if the core
-refuses, the dialog closes and the refusal shows); Discard leaves without storing, or rides the workout as last saved;
-Cancel stays. Save in the dialog is disabled, with its reason under the answers, for the reasons above. Routing the app
+**Cancel**; Escape is Cancel, Tab stays inside, focus returns where it was. Closing the window (its close button, or Cmd+Q, which asks each window to close) asks the
+same "Save changes to <name>?" and closes the window once answered Save or Discard. Save stores, then leaves, closes or
+rides (if the core refuses, the dialog closes and the refusal shows); Discard leaves or closes without storing, or rides
+the workout as last saved; Cancel stays. Save in the dialog is disabled, with its reason under the answers, for the
+reasons above; focus then starts on Cancel, never on Discard, so one Enter never drops the changes. A text typed
+past the saved tree is saved only once the core has read it: Save is disabled meanwhile ("Reading the text…"), and if
+reading it failed ("The text could not be read, so the workout cannot be saved."). **The ride draws the ride as
+loaded:** once a ride is loaded, its screen draws the workout the core took at the load (`ride_plan`), so editing or
+deleting that workout in the library while the ride is loaded or running changes neither the ride nor what it shows. Routing the app
 does itself (a load completing, a mode) never asks: only the rider's own way out does.
 
 ### 5.8 Onboarding (first run)

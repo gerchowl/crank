@@ -1,8 +1,9 @@
 // A modal question with its answers (DESIGN §5.7 "Unsaved changes", #110): the WAI-ARIA dialog pattern, as the keys
 // dialog (KeysDialog.tsx). It is rendered on `document.body` and everything else there is `inert` while it is open, so
-// neither focus, a click nor assistive technology reaches the page behind it. Focus moves to the answer named `focus`
-// (the safe one: Save, or Cancel before a delete), Tab and Shift+Tab wrap inside it, Escape is Cancel, and focus
-// returns to where it came from when it closes.
+// neither focus, a click nor assistive technology reaches the page behind it. Focus moves to the first enabled answer
+// of `focus`, the safe ones in order (Save, else Cancel; Cancel before a delete), never to whatever answer comes first,
+// so one Enter can never discard. Tab and Shift+Tab wrap inside it, Escape is Cancel, and focus returns to where it
+// came from when it closes.
 import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
@@ -30,8 +31,8 @@ export function Dialog({
   children?: ReactNode;
   /** The answers in their order, Cancel included. */
   answers: readonly Answer[];
-  /** The label of the answer focused first. */
-  focus: string;
+  /** The labels of the answers to focus first, in order: the first enabled one gets focus. */
+  focus: readonly string[];
   /** Escape. */
   onCancel: () => void;
 }) {
@@ -52,10 +53,12 @@ export function Dialog({
     const buttons = [
       ...(box.current?.querySelectorAll<HTMLButtonElement>("button") ?? []),
     ];
-    (
-      buttons.find((b) => b.textContent === first.current && !b.disabled) ??
-      box.current?.querySelector<HTMLElement>(FOCUSABLE)
-    )?.focus();
+    first.current
+      .map((label) =>
+        buttons.find((b) => b.textContent === label && !b.disabled),
+      )
+      .find((b) => b !== undefined)
+      ?.focus();
     return () => {
       for (const e of behind) e.removeAttribute("inert");
       from?.focus();

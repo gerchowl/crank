@@ -29,6 +29,7 @@
 //   every other ride_* command, engine task ended  internal  "engine stopped"  engine.rs `EngineHandle::send` (~226) via
 //               core.rs `ride_cmd` (~1676), mapped error.rs `ApiError` (~65), its `From<CommandError>`; checked after "no ride loaded" and before the engine judges the command.
 //   workout_get unknown id                not_found           Library::get (library.rs)
+//   ride_plan   not the ride installed last  not_found     core.rs `Core::ride_plan` (the loaded ride's own workout, #110)
 //   links_intent (the link keeper, ADR-0002 §5.1; answers `null` once the intent is applied, #597: its effect reaches the
 //               page only as the snapshot channel's next frame, in `devices`), in the core's order:
 //               "Release trainer" while the ride's session is started: an active ride, or one that finished (its last
@@ -70,6 +71,7 @@ import type {
   StreamRideState,
   StreamStatus,
   WorkoutBlock,
+  RidePlan,
   WorkoutDetail,
 } from "../bindings";
 import { UNRESPONSIVE, status as makeStatus } from "../stream/testBackend";
@@ -607,6 +609,29 @@ export function installRide(over: Partial<RideWorld> = {}, ui: UiOptions = {}) {
         }
         return null;
       }
+      case "ride_plan": {
+        if (typeof args.rideId !== "string")
+          throw "missing required key rideId for command `ride_plan`";
+        if (args.rideId !== world.rideId)
+          throw err("not_found", `no loaded ride "${args.rideId}"`);
+        const totalS = world.blocks.reduce(
+          (end, b) => Math.max(end, (b.startS ?? 0) + (b.durS ?? 0)),
+          0,
+        );
+        return {
+          rideId: world.rideId,
+          workout: { id: "w1", name: world.workoutName, ftp: 250, nodes: [] },
+          compiled: {
+            blocks: world.blocks,
+            totalS,
+            totalRangeS: [totalS, totalS],
+            tss: 10,
+            if: 0.7,
+            timeInZoneS: [0, 0, 0, 0, 0, 0, 0],
+            issues: [],
+          },
+        } as unknown as RidePlan;
+      }
       case "workout_get": {
         if (typeof args.id !== "string")
           throw "missing required key id for command `workout_get`";
@@ -643,6 +668,7 @@ export function installRide(over: Partial<RideWorld> = {}, ui: UiOptions = {}) {
     "ride_end",
     "links_intent",
     "workout_get",
+    "ride_plan",
   ]);
   mockIPC((cmd, payload) => {
     const args = (payload ?? {}) as Record<string, unknown>;

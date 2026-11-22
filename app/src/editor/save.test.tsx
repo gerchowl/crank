@@ -13,7 +13,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
-import { clearMocks } from "@tauri-apps/api/mocks";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { navigate, useRoute } from "../router";
 import { Rail } from "../shell/Rail";
@@ -29,6 +29,7 @@ import {
 } from "../views/workoutsBackend";
 import { GROUP_MS } from "./model";
 import { typingClock } from "./WorkoutEditor";
+import { windowClose, type CloseRequest } from "./windowClose";
 
 afterEach(() => {
   cleanup();
@@ -40,7 +41,22 @@ beforeEach(() => {
   navigate("workouts");
   now = 0;
   typingClock.now = () => (now += GROUP_MS);
+  closing = null;
+  destroyed = 0;
+  windowClose.listen = (h) => {
+    closing = h;
+    return Promise.resolve(() => {
+      if (closing === h) closing = null;
+    });
+  };
+  windowClose.destroy = () => {
+    destroyed++;
+    return Promise.resolve();
+  };
 });
+/** The window's close-request listener while the editor holds one (only with unsaved changes), and its closes. */
+let closing: ((e: CloseRequest) => void) | null = null;
+let destroyed = 0;
 
 function Routed() {
   const route = useRoute();
@@ -373,4 +389,83 @@ test("the mock's library commands refuse what the core refuses", async () => {
   expect(await invoke("workouts_list")).toContainEqual(
     expect.objectContaining({ id, name: "Mine", builtin: false }),
   );
+});
+
+test("with Save disabled the dialog focuses Cancel, so one Enter discards nothing", async () => {
+  const { b, user } = open();
+  await edit(user, /Easy spin/);
+  setText(text("missing-target"));
+  await screen.findByText("Fix the text to save the workout.");
+  await user.click(button("Back to library"));
+  const save = within(dialog()).getByRole("button", { name: "Save" });
+  expect((save as HTMLButtonElement).disabled).toBe(true);
+  expect(document.activeElement).toBe(
+    within(dialog()).getByRole("button", { name: "Cancel" }),
+  );
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(box().value).toBe(text("missing-target"));
+  expect(calls(b, "workout_save")).toEqual([]);
+});
+
+test("Save waits for the text being read, so it stores the last keystrokes, also from the dialog", async () => {
+  const { b, user } = open();
+  await edit(user, /Easy spin/);
+  // Hold the core's answer to the next parse: the text runs ahead of the saved tree meanwhile.
+  const inner = (
+    window as unknown as {
+      __TAURI_INTERNALS__: {
+        invoke: (c: string, a?: unknown, o?: unknown) => Promise<unknown>;
+      };
+    }
+  ).__TAURI_INTERNALS__.invoke;
+  let release = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  mockIPC((cmd, payload) =>
+    cmd === "parse_dsl"
+      ? held.then(() => inner(cmd, payload))
+      : inner(cmd, payload),
+  );
+  setText(text("sweet-spot-4x"));
+  expect(screen.getByText("Reading the text…")).toBeTruthy();
+  expect((button("Save") as HTMLButtonElement).disabled).toBe(true);
+  await user.click(button("Back to library"));
+  expect(
+    (
+      within(dialog()).getByRole("button", {
+        name: "Save",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  release();
+  const save = within(dialog()).getByRole("button", { name: "Save" });
+  await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false));
+  await user.click(save);
+  await screen.findByRole("listbox", { name: "Library" });
+  const four = DRAFTS["sweet-spot-4x"]!;
+  expect(b.stored["w-easy"]?.dsl).toBe("printed" in four ? four.printed : null);
+});
+
+test("closing the window with unsaved changes asks first; Discard then closes it", async () => {
+  const { user } = open();
+  await edit(user, /Easy spin/);
+  // No unsaved changes: nothing holds the close request, the window closes as always.
+  expect(closing).toBeNull();
+  setText(text("sweet-spot-4x"));
+  await screen.findByText("Unsaved changes");
+  await waitFor(() => expect(closing).not.toBeNull());
+  let prevented = false;
+  closing!({ preventDefault: () => (prevented = true) });
+  expect(prevented).toBe(true);
+  await screen.findByRole("dialog");
+  // Cancel keeps the window and the edits.
+  await user.click(within(dialog()).getByRole("button", { name: "Cancel" }));
+  expect(destroyed).toBe(0);
+  closing!({ preventDefault: () => {} });
+  await user.click(
+    await within(await screen.findByRole("dialog")).findByRole("button", {
+      name: "Discard",
+    }),
+  );
+  expect(destroyed).toBe(1);
 });

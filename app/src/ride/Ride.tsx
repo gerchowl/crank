@@ -287,19 +287,35 @@ function Pill({
   );
 }
 
-function useDetail(id: string | null): WorkoutDetail | null {
-  const [detail, setDetail] = useState<WorkoutDetail | null>(null);
+/**
+ * The workout the screen draws (profile, blocks, targets, name, FTP). Once a ride is installed it is that ride's own,
+ * as the core loaded it (`ride_plan` by the frame's ride id, #110): editing or deleting the library workout afterwards
+ * changes nothing here, and the blocks are the ones the engine runs. Before that, while the load runs, it is the
+ * library's workout the rider asked for (`workout_get`), for the Ready sheet's loading state.
+ */
+function usePlan(
+  rideId: string | null,
+  workoutId: string | null,
+): Pick<WorkoutDetail, "workout" | "compiled"> | null {
+  const [plan, setPlan] = useState<Pick<
+    WorkoutDetail,
+    "workout" | "compiled"
+  > | null>(null);
   useEffect(() => {
-    if (id === null) return;
+    if (rideId === null && workoutId === null) return;
     let live = true;
-    void commands.workoutGet(id).then((r) => {
-      if (live && r.status === "ok") setDetail(r.data);
+    const asked =
+      rideId !== null
+        ? commands.ridePlan(rideId)
+        : commands.workoutGet(workoutId!);
+    void asked.then((r) => {
+      if (live && r.status === "ok") setPlan(r.data);
     });
     return () => {
       live = false;
     };
-  }, [id]);
-  return detail;
+  }, [rideId, workoutId]);
+  return plan;
 }
 
 /** "next Cool-down 2:00 @ 120 W", shedding the word "next", then the watts, to fit (§16.1). */
@@ -373,7 +389,7 @@ function Screen({
   const cadence = ride?.live.cadenceRpm ?? null;
   const hr = ride?.live.hrBpm ?? null;
   const hrRefs = useAthleteHr();
-  const detail = useDetail(plan?.workoutId ?? null);
+  const detail = usePlan(ride?.id ?? null, plan?.workoutId ?? null);
   const compiled = detail?.compiled ?? null;
   const series = ui.series;
   const tooSmall = useTooSmall();

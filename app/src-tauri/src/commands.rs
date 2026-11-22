@@ -4,7 +4,7 @@
 use crate::logging::Logging;
 use crank_core::{
     ApiError, CompiledView, Core, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, FrameSink,
-    LinkFrame, LinkIntent, LinkSink, LinksId, RideRecord, RideStatusView, ScannedDevice,
+    LinkFrame, LinkIntent, LinkSink, LinksId, RidePlan, RideRecord, RideStatusView, ScannedDevice,
     SinkClosed, UiChannelId, UiFrame, UiSink, Workout, WorkoutDetail, WorkoutDraft, WorkoutNode,
     WorkoutSummary,
 };
@@ -384,6 +384,16 @@ pub async fn ride_end(core: State<'_, Core>, logging: State<'_, Logging>) -> Res
 #[specta::specta]
 pub async fn ride_status(core: State<'_, Core>) -> Result<RideStatusView, ApiError> {
     core.ride_status().await
+}
+
+/// The workout a loaded ride runs, as loaded: what the ride screen draws.
+///
+/// # Errors
+/// As [`Core::ride_plan`].
+#[tauri::command]
+#[specta::specta]
+pub async fn ride_plan(core: State<'_, Core>, ride_id: String) -> Result<RidePlan, ApiError> {
+    core.ride_plan(ride_id).await
 }
 
 /// Open the calling window's multiplexed stream on the loaded ride.

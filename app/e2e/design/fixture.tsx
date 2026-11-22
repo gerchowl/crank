@@ -59,6 +59,11 @@ import {
 import { status as makeStatus } from "../../src/stream/testBackend";
 import { startRideLoad } from "../../src/views/rideLoad";
 import { SCENARIOS, type ScenarioName } from "./scenarios";
+import { windowClose } from "../../src/editor/windowClose";
+
+// The page has no Tauri window here: the editor's close-request listener (windowClose.ts) is held by nobody.
+windowClose.listen = () => Promise.resolve(() => {});
+windowClose.destroy = () => Promise.resolve();
 
 /** Mock answers (and fixture frames) in flight; see `settled()`. */
 let pending = 0;

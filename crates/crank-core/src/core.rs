@@ -14,8 +14,8 @@ use crate::backend::{Backend, DeviceMode};
 use crate::dto::{
     CompiledView, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, DslProblem, KnownDevice,
     LinkIntent, LinkPhase, LinksId, PairedDevice, ReleaseReason, RideEnding, RideLoaded,
-    RideOutcome, RideRecord, RideStatusView, RideSummary, ScannedDevice, UiChannelId, UiState,
-    WorkoutDetail, WorkoutDraft, WorkoutSummary,
+    RideOutcome, RidePlan, RideRecord, RideStatusView, RideSummary, ScannedDevice, UiChannelId,
+    UiState, WorkoutDetail, WorkoutDraft, WorkoutSummary,
 };
 use crate::error::{ApiError, ErrorCode};
 use crate::keeper::channel::{Channels, LinkSink};
@@ -838,6 +838,9 @@ struct State {
     /// Id of the loaded ride that `ride_start` was asked to start: from then on the keeper's
     /// discard of an unstarted ride (`T_ABANDON`, sleep, "Release trainer") leaves it alone.
     starting: Option<String>,
+    /// The workout of the ride installed last, as loaded (#110): kept from its install until
+    /// the next one, so `ride_plan` answers for the ride every frame names, ended or not.
+    plan: Option<RidePlan>,
 }
 /// A ride's claim on the ride-active signal (`signal_of`), from just before its `Load` until
 /// `build_session` hands the session on.
@@ -2145,6 +2148,7 @@ impl Core {
         // Nothing is touched until the request is known to be good: a failed load leaves
         // the previous status as it was.
         let (workout, compiled) = self.resolve_workout(workout_id.as_deref())?;
+        let plan_view = (workout.clone(), CompiledView::try_from(&compiled)?);
         let tuning = self.resolve_tuning()?;
         self.ensure_start_allowed()?;
         self.replace_unstarted().await?;
@@ -2190,6 +2194,12 @@ impl Core {
         st.forcing = None;
         st.starting = None;
         let ride_id = session.ride_id.clone();
+        let (workout, compiled) = plan_view;
+        st.plan = Some(RidePlan {
+            ride_id: ride_id.clone(),
+            workout,
+            compiled,
+        });
         self.0.ui.install(RideSlot::new(
             ride_id.clone(),
             workout_id.clone(),
@@ -2850,6 +2860,27 @@ impl Core {
                 .then(|| self.0.keeper.load_progress()),
             status,
         })
+    }
+
+    /// The workout ride `ride_id` runs, as it was loaded (#110): what the ride screen draws.
+    /// The ride's id comes from the snapshot channel's `ride`; the answer never changes for
+    /// one id, so the page reads it once per ride (ADR-0001 §4.2: a query of a ride's fixed
+    /// data, not live state).
+    ///
+    /// # Errors
+    /// `NotFound` unless `ride_id` is the ride installed last (a newer load replaces it).
+    pub async fn ride_plan(&self, ride_id: String) -> Result<RidePlan, ApiError> {
+        self.0
+            .state
+            .lock()
+            .await
+            .plan
+            .as_ref()
+            .filter(|p| p.ride_id == ride_id)
+            .cloned()
+            .ok_or_else(|| {
+                ApiError::new(ErrorCode::NotFound, format!("no loaded ride {ride_id:?}"))
+            })
     }
 
     // ---- streams ----------------------------------------------------------------
