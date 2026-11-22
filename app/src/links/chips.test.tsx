@@ -20,7 +20,7 @@ import { devicesOf, installUi, type UiBackend } from "../stream/uiBackend";
 import { installDevices } from "../views/devicesBackend";
 import { install as installToday } from "../views/todayBackend";
 import { install as installWorkouts } from "../views/workoutsBackend";
-import { chipWord, type ChipWord } from "./chips";
+import { chipWord, offersRetry, type ChipWord } from "./chips";
 
 const BUILD = "0.2.0-rc.1 · 7516045";
 const readBuild = () => Promise.resolve(BUILD);
@@ -91,6 +91,33 @@ describe("chipWord", () => {
     for (const p of ["cold", "searching", "connecting", "warm"] as const)
       expect(chipWord("trainer", keeper(p)).hint).toBeNull();
     expect(chipWord("trainer", riding("lost")).hint).toBeNull();
+  });
+});
+
+describe("a loaded ride holds the links", () => {
+  // keeper/contract_tests.rs `each_device_has_one_source_an_unlinked_strap_stays_the_keepers`: the strap that missed
+  // the load stays the keeper's, `not_found`, beside the ride's trainer.
+  const held = devicesOf(
+    { trainer: neo, strap: hrm },
+    { trainer: "ready" },
+    { strap: "not_found" },
+  );
+  test("a strap not found is out of the ride: no 'keeps looking', no Retry", () => {
+    expect(chipWord("strap", held.strap, true)).toMatchObject({
+      state: "not-found",
+      hint: "the ride runs without it",
+    });
+    expect(offersRetry(held)).toBe(false);
+    // the same strap with no ride: the keeper keeps looking, and Retry is offered
+    const free = devicesOf(
+      { trainer: neo, strap: hrm },
+      {},
+      { trainer: "warm", strap: "not_found" },
+    );
+    expect(chipWord("strap", free.strap)).toMatchObject({
+      hint: "keeps looking",
+    });
+    expect(offersRetry(free)).toBe(true);
   });
 });
 
@@ -189,6 +216,24 @@ describe("Today", () => {
     expect(chip("strap")?.textContent).toBe("✓ connected");
     // The ride holds the links: Retry would change nothing (the keeper is inactive), so none is offered.
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+  test("with a ride loaded and the strap not in it, Today says so and offers no Retry", async () => {
+    const ui = installUi({
+      devices: devicesOf(
+        { trainer: neo, strap: hrm },
+        { trainer: "ready" },
+        { strap: "not_found" },
+      ),
+    });
+    installToday({ others: invoke() });
+    render(<App readBuild={readBuild} />);
+    await ready();
+    await waitFor(() => expect(chip("strap")?.textContent).toBe("⚠ not found"));
+    expect(chip("trainer")?.textContent).toBe("✓ connected");
+    expect(screen.getByText("HR: the ride runs without it")).toBeTruthy();
+    expect(screen.queryByText(/keeps looking/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(intents(ui.calls)).not.toContainEqual(RETRY);
   });
 });
 

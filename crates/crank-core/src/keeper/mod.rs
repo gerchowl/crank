@@ -498,14 +498,18 @@ impl Keeper {
             return Ack::Applied;
         };
         let cause = match intent {
-            // rider input on the Ready sheet
-            LinkIntent::Likely { .. } | LinkIntent::Retry => {
+            // rider input on the Ready sheet: its throttled refresh counts for `T_abandon`
+            // (ADR-0002 §5.1.3)
+            LinkIntent::Likely { .. } => {
                 if !*started {
                     *input_at = now;
                 }
                 return Ack::Applied;
             }
-            LinkIntent::Left
+            // a chip's Retry is no Ready-sheet input: the ride holds the links, so it changes
+            // nothing, `T_abandon` included (#681)
+            LinkIntent::Retry
+            | LinkIntent::Left
             | LinkIntent::Background
             | LinkIntent::Release {
                 reason: ReleaseReason::Hidden | ReleaseReason::Devices,
