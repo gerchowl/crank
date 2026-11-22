@@ -95,8 +95,8 @@ describe("chipWord", () => {
 });
 
 describe("a loaded ride holds the links", () => {
-  // keeper/contract_tests.rs `each_device_has_one_source_an_unlinked_strap_stays_the_keepers`: the strap that missed
-  // the load stays the keeper's, `not_found`, beside the ride's trainer.
+  // The strap that missed the load stays the keeper's, `not_found`, beside the ride's trainer, as the core's contract
+  // test says (keeper/contract_tests.rs `each_device_has_one_source_an_unlinked_strap_stays_the_keepers`).
   const held = devicesOf(
     { trainer: neo, strap: hrm },
     { trainer: "ready" },
