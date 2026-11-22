@@ -10,8 +10,8 @@ workspace = true
 
 [dependencies]
 crank-domain.workspace = true
-rusqlite = { version = "0.40", features = ["bundled"] }
-rusqlite_migration = "2.6"
+rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite_migration = "2.7"
 serde.workspace = true
 serde_json.workspace = true
 # SHA-256 of a route's original file (ADR-0005 §2.1 `original_sha256`); already in the tree via other crates.
