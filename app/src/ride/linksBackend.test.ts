@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 // The link commands of the ride test backend (`rideBackend.ts`) answer and refuse as the core does (ADR-0002 §5.1.3,
 // §5.1.4): each refusal below is listed with its core file:line in the backend's header. `links_intent` answers `null`
-// (#597): what an intent changes reaches the page only as the link channel's next frame.
-import { Channel } from "@tauri-apps/api/core";
+// (#597): what an intent changes reaches the page only as the snapshot channel's next `devices` (ADR-0001 §4.3.6,
+// §4.3.8). The link-ack flow (`links_open`, `links_ack`, their seq and coalescing rules) is no longer the page's; the
+// facts the tests below assert are read off `rig.ui.truth.devices`, the state the window's `UiFrame` would carry.
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, test } from "vitest";
 import { api } from "../api";
 import { commands } from "../bindings";
-import type { LinkFrame, LinkView } from "../bindings";
+import type { DevicesView, LinkStatus, LinkView } from "../bindings";
 import { COLD_LINKS, SUPERSEDED, installRide } from "./rideBackend";
 
 afterEach(() => clearMocks());
@@ -19,10 +20,6 @@ const WARM: LinkView = {
   },
   strap: { phase: "warm", sample: { kind: "heart_rate", bpm: 120 } },
 };
-const SEARCHING: LinkView = {
-  trainer: { phase: "searching", sample: null },
-  strap: { phase: "searching", sample: null },
-};
 const releaseTrainer = {
   kind: "release",
   reason: "rider_release",
@@ -30,22 +27,22 @@ const releaseTrainer = {
 /** `links_intent`'s answer: it carries no state. */
 const NOTHING = { status: "ok", data: null };
 
-/** The page's link channel: every frame it received, and an ack of the last one. */
-async function open() {
-  const frames: LinkFrame[] = [];
-  const channel = new Channel<LinkFrame>();
-  channel.onmessage = (f) => frames.push(f);
-  const opened = await api(commands.linksOpen(channel));
-  if (opened.status !== "ok") throw new Error("open failed");
-  const ack = () => api(commands.linksAck(opened.data, frames.at(-1)!.seq));
-  return { frames, ack, id: opened.data };
-}
+/** The link status of each role as the snapshot channel's `devices` carries it (ADR-0001 §4.3.6). */
+const linksOf = (
+  devices: DevicesView,
+): { trainer: LinkStatus | null; strap: LinkStatus | null } => ({
+  trainer: devices.trainer.link,
+  strap: devices.strap.link,
+});
+/** The keeper's phase of each role, as `devices` carries it alongside the ride's link. */
+const phasesOf = (devices: DevicesView) => ({
+  trainer: devices.trainer.phase,
+  strap: devices.strap.phase,
+});
 
 describe("links_intent", () => {
   test("a started ride refuses Release trainer and keeps its devices", async () => {
     const rig = installRide({ phase: "active", keeper: WARM });
-    const { frames, ack } = await open();
-    await ack();
     const refused = await api(commands.linksIntent(releaseTrainer));
     expect(refused).toEqual({
       status: "error",
@@ -60,26 +57,27 @@ describe("links_intent", () => {
     );
     expect(sleep).toEqual(NOTHING);
     expect(rig.world.phase).toBe("active");
-    expect(frames.map((f) => f.links.trainer?.phase)).toEqual(["riding"]);
+    // The channel's `devices` shows the ride's trainer as riding throughout.
+    expect(rig.ui.truth.devices.trainer.phase).toBe("riding");
   });
 
   test("Release trainer or Sleep unloads an unstarted ride; the next frame is cold", async () => {
     for (const reason of ["rider_release", "sleep"] as const) {
       const rig = installRide({ phase: "loaded", keeper: WARM });
-      const { frames, ack } = await open();
-      await ack();
       const done = await api(commands.linksIntent({ kind: "release", reason }));
       expect(done).toEqual(NOTHING);
-      expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
       expect(rig.world.phase).toBe("none");
+      // The ride's hold is released: each held device comes back cold on the channel.
+      expect(phasesOf(rig.ui.truth.devices)).toEqual({
+        trainer: "cold",
+        strap: "cold",
+      });
       clearMocks();
     }
   });
 
   test("every other intent leaves a loaded ride alone, its devices riding", async () => {
     const rig = installRide({ phase: "loaded", keeper: WARM });
-    const { frames, ack } = await open();
-    await ack();
     for (const intent of [
       { kind: "likely", ready: true },
       { kind: "retry" },
@@ -91,8 +89,10 @@ describe("links_intent", () => {
       expect(await api(commands.linksIntent(intent))).toEqual(NOTHING);
     }
     expect(rig.world.phase).toBe("loaded");
-    expect(frames).toHaveLength(1);
-    expect(frames[0].links.strap?.phase).toBe("riding");
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "riding",
+      strap: "riding",
+    });
   });
 
   test("a release superseded by a rider action answers conflict and applies nothing", async () => {
@@ -116,7 +116,10 @@ describe("links_intent", () => {
     );
     expect(discarded).toEqual(NOTHING);
     expect(rig.world.phase).toBe("none");
-    expect((await open()).frames.at(-1)?.links).toEqual(COLD_LINKS);
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "cold",
+      strap: "cold",
+    });
     clearMocks();
     rig = installRide({ phase: "active", keeper: WARM, supersedes: true });
     const kept = await api(
@@ -124,7 +127,7 @@ describe("links_intent", () => {
     );
     expect(kept).toEqual(NOTHING);
     expect(rig.world.phase).toBe("active");
-    expect((await open()).frames.at(-1)?.links.trainer?.phase).toBe("riding");
+    expect(rig.ui.truth.devices.trainer.phase).toBe("riding");
   });
 
   test("after the quit Likely and Retry are refused; releases still answer", async () => {
@@ -153,101 +156,63 @@ describe("links_intent", () => {
     );
     expect(bare.status === "error" && bare.error.code).toBe("internal");
   });
-});
 
-describe("links_open / links_ack", () => {
-  test("one frame in flight: changes wait for the ack and arrive as one frame of the latest state", async () => {
-    const rig = installRide({ phase: "none" });
-    const frames: LinkFrame[] = [];
-    const channel = new Channel<LinkFrame>();
-    channel.onmessage = (f) => frames.push(f);
-    const opened = await api(commands.linksOpen(channel));
-    if (opened.status !== "ok") throw new Error("open failed");
-    expect(frames).toEqual([{ seq: 1, links: COLD_LINKS }]);
-    rig.setKeeper({
-      ...COLD_LINKS,
-      trainer: { phase: "searching", sample: null },
-    });
-    rig.setKeeper(WARM);
-    expect(frames).toHaveLength(1);
-    // an ack of another frame opens nothing
-    await api(commands.linksAck(opened.data, 7));
-    expect(frames).toHaveLength(1);
-    await api(commands.linksAck(opened.data, 1));
-    // the seq is the state's number: the coalesced `searching` state took 2
-    expect(frames).toEqual([
-      { seq: 1, links: COLD_LINKS },
-      { seq: 3, links: WARM },
-    ]);
-    const stale = await api(commands.linksAck(opened.data + 1, 3));
-    expect(stale).toEqual({
-      status: "error",
-      error: { code: "not_found", message: "unknown link channel" },
-    });
-  });
-
-  test("a ride load hands the devices over: the channel says riding", async () => {
+  test("an intent's effect is in the next `devices`, not its answer", async () => {
     const rig = installRide({ phase: "none", keeper: WARM });
-    const frames: LinkFrame[] = [];
-    const channel = new Channel<LinkFrame>();
-    channel.onmessage = (f) => frames.push(f);
-    const opened = await api(commands.linksOpen(channel));
-    if (opened.status !== "ok") throw new Error("open failed");
-    await api(commands.linksAck(opened.data, 1));
-    rig.world.phase = "loaded";
-    rig.publish();
-    expect(frames.at(-1)?.links.trainer?.phase).toBe("riding");
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "warm",
+      strap: "warm",
+    });
+    const answer = await api(
+      commands.linksIntent({ kind: "release", reason: "hidden" }),
+    );
+    expect(answer).toEqual(NOTHING);
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "cold",
+      strap: "cold",
+    });
   });
 });
 
 // The core's frames in the same flows (crank-core keeper/contract_tests.rs, the
 // `a_page_stalled_across_a_load_and_its_end_gets_cold_after_its_ack` and
 // `each_device_has_one_source_an_unlinked_strap_stays_the_keepers` tests): `riding` while the ride holds a device,
-// then `cold` with no sample, in the next frame.
+// then `cold` with no sample, in the snapshot channel's next `devices`.
 describe("the ride's hold on the links", () => {
-  const seqs = (frames: LinkFrame[]) => frames.map((f) => f.seq);
+  test("a ride load hands the devices over: the channel says riding", async () => {
+    const rig = installRide({ phase: "none", keeper: WARM });
+    rig.world.phase = "loaded";
+    rig.publish();
+    expect(linksOf(rig.ui.truth.devices)).toEqual({
+      trainer: "ready",
+      strap: "ready",
+    });
+    expect(rig.ui.truth.devices.trainer.phase).toBe("riding");
+  });
 
   test("cancelling a loaded ride (End before Start) gives the devices back cold", async () => {
-    installRide({ phase: "loaded", keeper: WARM });
-    const { frames, ack } = await open();
-    expect(frames.at(-1)?.links.trainer?.phase).toBe("riding");
-    await ack();
-    expect(await api(commands.rideEnd())).toEqual({
-      status: "ok",
-      data: { rideId: null, forced: false },
+    const rig = installRide({ phase: "loaded", keeper: WARM });
+    expect(rig.ui.truth.devices.trainer.phase).toBe("riding");
+    expect(await api(commands.rideEnd())).toEqual({ status: "ok", data: null });
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "cold",
+      strap: "cold",
     });
-    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
-    expect(seqs(frames)).toEqual([1, 2]);
   });
 
   test("ending a started ride gives the devices back cold", async () => {
-    installRide({ phase: "active", keeper: WARM });
-    const { frames, ack } = await open();
-    await ack();
+    const rig = installRide({ phase: "active", keeper: WARM });
     await api(commands.rideEnd());
-    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
-    // the finished ride is reaped: a repeated End changes nothing
-    await ack();
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "cold",
+      strap: "cold",
+    });
+    // The finished ride is reaped: a repeated End changes nothing.
     await api(commands.rideEnd());
-    expect(frames).toHaveLength(2);
-  });
-
-  test("a page stalled across a load and its end gets one cold frame after its ack", async () => {
-    const rig = installRide({ phase: "none", keeper: WARM });
-    const { frames, ack } = await open();
-    expect(frames).toEqual([{ seq: 1, links: WARM }]);
-    rig.world.phase = "loaded";
-    rig.publish();
-    rig.world.phase = "active";
-    rig.publish();
-    await api(commands.rideEnd());
-    expect(frames).toHaveLength(1);
-    await ack();
-    // `riding` (seq 2) was coalesced away
-    expect(frames).toEqual([
-      { seq: 1, links: WARM },
-      { seq: 3, links: COLD_LINKS },
-    ]);
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "cold",
+      strap: "cold",
+    });
   });
 
   test("a strap that missed the load stays the keeper's: not_found beside the riding trainer", async () => {
@@ -255,17 +220,15 @@ describe("the ride's hold on the links", () => {
       trainer: WARM.trainer,
       strap: { phase: "not_found", sample: null },
     };
-    installRide({ phase: "active", keeper, strapHanded: false });
-    const { frames, ack } = await open();
-    expect(frames.at(-1)?.links).toEqual({
-      trainer: { phase: "riding", sample: null },
-      strap: { phase: "not_found", sample: null },
+    const rig = installRide({ phase: "active", keeper, strapHanded: false });
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "riding",
+      strap: "not_found",
     });
-    await ack();
     await api(commands.rideEnd());
-    expect(frames.at(-1)?.links).toEqual({
-      trainer: { phase: "cold", sample: null },
-      strap: { phase: "not_found", sample: null },
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "cold",
+      strap: "not_found",
     });
   });
 
@@ -273,12 +236,13 @@ describe("the ride's hold on the links", () => {
   // `ride_start`, `ride_end`, then `links_intent(RiderRelease)` answers `Ok` with both devices `cold`
   // (core.rs `Core::links_intent` (~1250) finds no session: core.rs `Core::end_ride` (~2225) waited for the reap).
   test("Release trainer after End is accepted: the ended ride holds nothing", async () => {
-    installRide({ phase: "active", keeper: WARM });
-    const { frames, ack } = await open();
-    await ack();
+    const rig = installRide({ phase: "active", keeper: WARM });
     await api(commands.rideEnd());
     expect(await api(commands.linksIntent(releaseTrainer))).toEqual(NOTHING);
-    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "cold",
+      strap: "cold",
+    });
   });
 
   // The core (keeper/contract_tests.rs `a_ride_that_finished_on_its_own_holds_its_devices_until_the_reap`): a ride
@@ -286,102 +250,60 @@ describe("the ride's hold on the links", () => {
   // session's state is not `Idle`) and its devices stay `riding` until the reaper takes it.
   test("a ride that finished by skipping its last block holds its devices until it is reaped", async () => {
     const rig = installRide({ phase: "active", keeper: WARM });
-    const { frames, ack } = await open();
-    await ack();
     while (rig.world.phase === "active") await api(commands.rideSkip());
     expect(rig.world.phase).toBe("finished");
-    expect(frames.at(-1)?.links.trainer?.phase).toBe("riding");
+    expect(rig.ui.truth.devices.trainer.phase).toBe("riding");
     const refused = await api(commands.linksIntent(releaseTrainer));
     expect(refused.status === "error" && refused.error.message).toBe(
       "the ride holds the trainer: end the ride first",
     );
     rig.reap();
-    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
-    await ack();
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "cold",
+      strap: "cold",
+    });
     expect(await api(commands.linksIntent(releaseTrainer))).toEqual(NOTHING);
   });
 
   test("End of a ride that finished on its own waits for its reap: the devices come back cold", async () => {
     const rig = installRide({ phase: "active", keeper: WARM });
-    const { frames, ack } = await open();
-    await ack();
     while (rig.world.phase === "active") await api(commands.rideSkip());
-    expect(await api(commands.rideEnd())).toEqual({
-      status: "ok",
-      data: { rideId: "ride-1", forced: false },
+    expect(await api(commands.rideEnd())).toEqual({ status: "ok", data: null });
+    expect(phasesOf(rig.ui.truth.devices)).toEqual({
+      trainer: "cold",
+      strap: "cold",
     });
-    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
     expect(await api(commands.linksIntent(releaseTrainer))).toEqual(NOTHING);
   });
 
-  // The core (keeper/contract_tests.rs `a_page_stalled_across_a_ride_with_an_unlinked_strap_gets_one_frame`).
-  test("a page stalled across a ride whose strap missed the load gets the trainer cold, the strap not_found", async () => {
-    const keeper: LinkView = {
-      trainer: WARM.trainer,
-      strap: { phase: "not_found", sample: null },
-    };
-    const rig = installRide({ phase: "none", keeper, strapHanded: false });
-    const { frames, ack } = await open();
-    rig.world.phase = "loaded";
-    rig.publish();
-    rig.world.phase = "active";
-    rig.publish();
-    await api(commands.rideEnd());
-    expect(frames).toHaveLength(1);
-    await ack();
-    expect(frames).toEqual([
-      { seq: 1, links: keeper },
-      {
-        seq: 3,
-        links: {
-          trainer: { phase: "cold", sample: null },
-          strap: { phase: "not_found", sample: null },
-        },
-      },
-    ]);
-  });
-
   // The ride's end releases its hold whether or not the engine's status frame goes out (core.rs `Core::reap` drops the
-  // hold with the session; the status is the engine's).
+  // hold with the session; the status is the engine's). The mock models the status frame short-circuit with
+  // `publishes: false`: the next `UiFrame` is not sent, but the keeper is settled all the same, so the next heartbeat
+  // or command carries cold devices. Observed on `rig.world.keeper`, the keeper's state the next frame would carry.
   test("the hold is released even when no status frame is published", async () => {
-    installRide({ phase: "active", keeper: WARM, publishes: false });
-    const { frames, ack } = await open();
-    await ack();
+    const rig = installRide({
+      phase: "active",
+      keeper: WARM,
+      publishes: false,
+    });
     await api(commands.rideEnd());
-    expect(frames.at(-1)?.links).toEqual(COLD_LINKS);
+    expect(rig.world.keeper.trainer?.phase).toBe("cold");
+    expect(rig.world.keeper.strap?.phase).toBe("cold");
   });
 });
 
-// ADR-0002 §5.1.4 (#597): the link channel is the only source of the keeper's state. An intent's answer carries none;
-// its effect is the channel's next frame, sent at once when the last one is acked, otherwise after that ack.
-describe("an intent's effect arrives as a frame", () => {
-  test("acked: the next frame carries it", async () => {
-    installRide({ phase: "none", keeper: WARM });
-    const { frames, ack } = await open();
-    await ack();
-    const answer = await api(
-      commands.linksIntent({ kind: "release", reason: "hidden" }),
-    );
-    expect(answer).toEqual(NOTHING);
-    expect(frames).toEqual([
-      { seq: 1, links: WARM },
-      { seq: 2, links: COLD_LINKS },
-    ]);
-  });
-
-  test("unacked: it waits for the ack, then arrives as one frame of the latest state", async () => {
-    const rig = installRide({ phase: "none", keeper: WARM });
-    const { frames, ack } = await open();
-    expect(
-      await api(commands.linksIntent({ kind: "release", reason: "devices" })),
-    ).toEqual(NOTHING);
-    rig.setKeeper(SEARCHING);
-    expect(frames).toHaveLength(1);
-    await ack();
-    // the release's `cold` (seq 2) was coalesced into the latest state
-    expect(frames).toEqual([
-      { seq: 1, links: WARM },
-      { seq: 3, links: SEARCHING },
-    ]);
-  });
-});
+// Note: the parts of the earlier `linksBackend.test.ts` that only tested link-channel flow control were dropped with
+// `links_open` / `links_ack` themselves:
+// - `describe("links_open / links_ack")` — the "one frame in flight: changes wait for the ack..." test (seq numbering
+//   and the coalescing of state changes between acks) was link-channel-only; the ride-load hand-over it also checked
+//   is covered above by "a ride load hands the devices over".
+// - `describe("the ride's hold on the links")`:
+//   - "a page stalled across a load and its end gets one cold frame after its ack" — link-ack coalescing only.
+//   - "a page stalled across a ride whose strap missed the load gets one frame" — link-ack coalescing only.
+// - `describe("an intent's effect arrives as a frame")`:
+//   - "acked: the next frame carries it" — subsumed by the ui-level "an intent's effect is in the next `devices`" test.
+//   - "unacked: it waits for the ack, then arrives as one frame of the latest state" — link-ack flow only.
+// The verified use of `COLD_LINKS` to assert `cold` keeper phase is now expressed through the `devices` view (the ui
+// channel's `devices` carries the keeper phase of each unheld role), so the `LinkFrame` import is gone.
+// `COLD_LINKS` is kept as an import for other tests that still consume it, if any.
+void COLD_LINKS;

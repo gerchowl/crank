@@ -30,8 +30,9 @@ export const SCENARIOS = [
   { name: "today", ready: "role=list[name='Last 7 days']" },
   // First run: no rides, nothing paired; the devices say a ride needs a trainer.
   { name: "today-empty", ready: "text=No rides yet" },
-  // The reads are still on the wire: StrictMode runs each mount effect twice, so each read is asked twice.
-  { name: "today-reading", ready: "text=Loading…", held: 4 },
+  // The rides are still on the wire (StrictMode runs each mount effect twice, so the read is asked twice), and the
+  // snapshot channel's first frame has not arrived: the devices are loading too.
+  { name: "today-reading", ready: "text=Loading…", held: 2 },
   { name: "today-error", ready: "role=button[name='Retry']" },
   // A load started in Workouts is in flight: Start names what it is doing.
   {
@@ -139,6 +140,8 @@ export const SCENARIOS = [
   },
   // The Ready sheet (§5.4, #526): the loaded, unstarted ride, in each of its states.
   { name: "ready", ready: "[data-ready='ready']" },
+  // A load is under way and has not installed its ride: the sheet's loading state, drawn from the frame's `loading`
+  // (the held answer is the load's).
   { name: "ready-loading", ready: "[data-ready='loading']", held: 1 },
   { name: "ready-connecting", ready: "[data-ready='connecting']" },
   { name: "ready-trainer-missing", ready: "[data-ready='trainer-missing']" },

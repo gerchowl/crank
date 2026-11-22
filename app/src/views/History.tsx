@@ -6,7 +6,7 @@
 // Direction A (§18, #529): the page title, then the list as a table of rides (date, ride, duration, work, outcome), each
 // row with a 32 px Review button (§18.4); the ride last opened is marked when the rider comes back to the list.
 // Review: the title with the way back, the outcome and start, then on the 12-column grid the recorded traces in 8
-// columns (RideTraces.tsx, the ride session's history) and the summary figures in 4, then planned against ridden.
+// columns (RideTraces.tsx, the snapshot channel's series of the ride) and the summary figures in 4, then planned against ridden.
 import { useEffect, useRef, useState } from "react";
 import {
   commands,
@@ -15,8 +15,8 @@ import {
   type RideRecord,
 } from "../bindings";
 import { navigate } from "../router";
-import { useForcedEnd } from "../ride/forcedEnds";
-import { useSeries, useSession, type RideSession } from "../ride/session";
+import type { Point, Series } from "../stream/ui";
+import { useUi } from "../stream/uiHooks";
 import { useCommand } from "../stream";
 import { RideTraces } from "./RideTraces";
 import { formatDuration } from "./Workouts";
@@ -93,24 +93,19 @@ function Leave() {
   );
 }
 
-/** The traces of the ride this window rode, from its session; re-renders while that ride still records. */
-function Recorded({
-  session,
-  durationS,
-}: {
-  session: RideSession;
-  durationS: number | null;
-}) {
-  const series = useSeries(session);
-  return <RideTraces series={series} durationS={durationS} />;
-}
-
 function SummaryBody({ ride }: { ride: RideRecord }) {
   const s = ride.summary;
-  const forced = useForcedEnd(ride.id);
-  const session = useSession();
-  // Only this window's own ride has its traces: the session that rode it, until the next load replaces it.
-  const recorded = session?.rideId === ride.id ? session : null;
+  // The snapshot channel's ride is the loaded one or the last ended one, with its series, until the next load
+  // (ADR-0001 §4.3.3): a reload keeps it. Its `ended` says whether the core ended it by force; the stored outcome
+  // says `aborted` for that and for any other abort, so the note keys on `ended`, never on `outcome` (#346).
+  const ui = useUi();
+  const own = ui.ride?.id === ride.id;
+  const forced = own && ui.ride?.ended === "forced";
+  // Its traces once it has points: a ride ended before its first point (a forced end at the start) has none to draw.
+  const recorded: Readonly<Record<Series, readonly Point[]>> | null =
+    own && Object.values(ui.series).some((p) => p.length > 0)
+      ? ui.series
+      : null;
   return (
     <section aria-label="Ride summary" className="review-body">
       <p className="review-meta">
@@ -132,7 +127,7 @@ function SummaryBody({ ride }: { ride: RideRecord }) {
         <div className="review-panel review-main">
           <h2>Traces</h2>
           {recorded ? (
-            <Recorded session={recorded} durationS={s?.durationS ?? null} />
+            <RideTraces series={recorded} durationS={s?.durationS ?? null} />
           ) : (
             <p className="history-hint">
               Traces show for the ride you have just ridden, until you load the

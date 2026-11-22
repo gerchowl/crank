@@ -1,6 +1,6 @@
 //! Window and quit lifecycle (ADR-0001 §4.3, ADR-0002 §7.9) and the startup failure text.
 use crank_core::{
-    Core, CoreConfig, DeviceMode, DeviceRole, EngineHost, ErrorCode, RideOutcome, Shutdown,
+    Core, CoreConfig, DeviceMode, DeviceRole, EngineHost, ErrorCode, RideOutcome, Shutdown, UiFrame,
 };
 use crank_desktop::{
     RuntimeConfig, commands as cmd,
@@ -112,6 +112,49 @@ async fn a_page_load_drops_the_windows_streams_a_finished_one_does_not() {
     );
     lifecycle::page_load(app.handle(), "main", PageLoadEvent::Started);
     assert!(!owns(&app, stream).await, "a reload of the window drops it");
+}
+
+/// The snapshot channel's lifecycle through the commands (ADR-0001 §4.3.5, #564): a page load
+/// closes the channel the old page held, at the event, and never the one the new page opens
+/// after it, even though the handler's spawned task runs later.
+#[tokio::test]
+async fn a_page_load_closes_the_old_pages_channel_and_never_the_new_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = app(dir.path());
+    let core = app.state::<Core>();
+    let frames: Arc<Mutex<Vec<UiFrame>>> = Arc::default();
+    let sink = frames.clone();
+    let channel = move || {
+        let sink = sink.clone();
+        Channel::<UiFrame>::new(move |body| {
+            let tauri::ipc::InvokeResponseBody::Json(json) = body else {
+                panic!("frames are JSON");
+            };
+            sink.lock()
+                .expect("test mutex")
+                .push(serde_json::from_str(&json).expect("a UiFrame"));
+            Ok(())
+        })
+    };
+    let first = |id| {
+        let frames = frames.lock().expect("test mutex");
+        frames.iter().find(|f| f.channel == id).map(|f| f.seq)
+    };
+    let old = cmd::ui_open(core.clone(), win(&app), channel())
+        .await
+        .expect("command");
+    lifecycle::page_load(app.handle(), "main", PageLoadEvent::Started);
+    // Closed at the event: no task has run yet.
+    let gone = cmd::ui_ack(core.clone(), win(&app), old, 0).await;
+    assert_eq!(gone.map_err(|e| e.code), Err(ErrorCode::NotFound));
+    let new = cmd::ui_open(core.clone(), win(&app), channel())
+        .await
+        .expect("command");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let seq = first(new).expect("the new channel's first frame");
+    cmd::ui_ack(core.clone(), win(&app), new, seq)
+        .await
+        .expect("the new page's channel is alive after the close ran");
 }
 
 #[test]
