@@ -13,6 +13,7 @@ result).
 | [0005](0005-routes.md) | Routes: GPX/FIT/grade-profile import, SIM-mode ride, speed model, OSM surface from a local regional extract | Accepted (owner, 2026-11-06) | #523 |
 | [0006](0006-build-cache.md) | Build speed: Nix layout (one build for both binaries, one test derivation, per-crate next), fleet self-hosted CI on trusted events, the fleet attic as the one cache | Accepted (owner, 2026-11-10) | #580 |
 | [0007](0007-check12-release.md) | HIL check 12 judges release from physics and the rider (fault model of the Part B analyser) | Accepted (owner, 2026-11-09) | #516 |
+| [0008](0008-dsl-auto-ramps-variables.md) | Workout DSL: auto ramps pinned to neighbouring blocks, and variables | Accepted (owner, 2026-11-22; not implemented) | #694 |
 
 ## Process
 

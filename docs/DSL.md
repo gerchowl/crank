@@ -5,6 +5,10 @@
 into canonical text. The two round-trip: `parse_dsl(print_dsl(t), ftp, &mut ids)` equals `t` structurally (ids
 aside), and `print_dsl` of that is byte-identical. Loosely inspired by intervals.icu.
 
+Accepted, not implemented: auto ramps pinned to the neighbouring block (`ramp auto-75%`) and variables
+(`$thr = 95%`), [ADR-0008](adr/0008-dsl-auto-ramps-variables.md) (#694, accepted 2026-11-22). This document changes
+when that ADR is implemented; until then the grammar below is the whole grammar.
+
 ```text
 "Warm-up" 8m ramp 45-75% 90rpm
 3m 60%
