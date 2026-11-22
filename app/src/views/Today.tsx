@@ -11,12 +11,14 @@ import { useEffect, useState } from "react";
 import {
   commands,
   type ApiError,
-  type DeviceLinkInfo,
+  type DeviceRole,
+  type DeviceView,
   type LinkStatus,
   type RideRecord,
 } from "../bindings";
 import { navigate } from "../router";
 import { useCommand } from "../stream";
+import { useUi, useUiClient } from "../stream/uiHooks";
 import { OUTCOME, startedText, work } from "./History";
 import { goToRide, useRideLoad } from "./rideLoad";
 import { formatDuration } from "./Workouts";
@@ -108,15 +110,15 @@ const ROLE = {
   heart_rate: { label: "Heart-rate strap", Icon: Heart },
 } as const;
 
-/** One role: who is paired, and its link while a ride is loaded (`device_links`). */
-function DeviceRow({ info }: { info: DeviceLinkInfo }) {
-  const { label, Icon } = ROLE[info.role];
-  const d = info.device;
+/** One role: who is paired, and the ride's link while a ride holds it (the frame's `devices`, ADR-0001 §4.3.6). */
+function DeviceRow({ of: role, info }: { of: DeviceRole; info: DeviceView }) {
+  const { label, Icon } = ROLE[role];
+  const d = info.paired;
   const [glyph, word] = d
     ? info.link
       ? LINK[info.link]
       : ["✓", "paired"]
-    : info.role === "trainer"
+    : role === "trainer"
       ? ["⚠", "not paired"]
       : ["–", "not paired"];
   return (
@@ -125,7 +127,7 @@ function DeviceRow({ info }: { info: DeviceLinkInfo }) {
       data-state={
         d
           ? (info.link ?? "paired")
-          : info.role === "trainer"
+          : role === "trainer"
             ? "missing"
             : "unpaired"
       }
@@ -140,25 +142,28 @@ function DeviceRow({ info }: { info: DeviceLinkInfo }) {
   );
 }
 
-function Devices({ reload }: { reload: unknown }) {
-  const links = useCommand(commands.deviceLinks);
-  const { run } = links;
-  useEffect(() => {
-    void run();
-  }, [run, reload]);
-  const error = links.pending ? null : links.error;
-  const trainer = links.data?.find((i) => i.role === "trainer");
-  const noTrainer = links.data !== null && !trainer?.device;
+/**
+ * The paired devices, from the snapshot channel (a pairing, a forget or a load shows in its next frame). Until the
+ * first frame they are loading; a channel that cannot open says why (`ui_open`: the pairings cannot be read), and the
+ * channel's watchdog opens it again every 2 s, Retry at once.
+ */
+function Devices() {
+  const ui = useUi();
+  const client = useUiClient();
+  const devices = ui.devices;
+  const error = devices === null ? ui.error : null;
+  const noTrainer = devices !== null && devices.trainer.paired === null;
   return (
     <section aria-labelledby="today-devices" className="today-panel">
       <h2 id="today-devices">Devices</h2>
-      {links.pending && !links.data && <p className="today-hint">Loading…</p>}
-      {error && <ErrorLine error={error} onRetry={() => void run()} />}
-      {links.data && (
+      {devices === null && error === null && (
+        <p className="today-hint">Loading…</p>
+      )}
+      {error && <ErrorLine error={error} onRetry={() => client.reopen()} />}
+      {devices && (
         <ul className="today-devices" aria-label="Paired devices">
-          {links.data.map((i) => (
-            <DeviceRow key={i.role} info={i} />
-          ))}
+          <DeviceRow of="trainer" info={devices.trainer} />
+          <DeviceRow of="heart_rate" info={devices.strap} />
         </ul>
       )}
       {noTrainer && (
@@ -358,7 +363,6 @@ function Rides({ now }: { now: number }) {
 }
 
 export function Today() {
-  const load = useRideLoad();
   // "Today" is the day the view opened: the shell mounts it afresh on every visit.
   const [now] = useState(() => Date.now());
   return (
@@ -375,8 +379,7 @@ export function Today() {
       </div>
       <div className="today-grid">
         <TodaysRide />
-        {/* A ride that loads connects the devices: their links are read again when the load settles. */}
-        <Devices reload={load.phase} />
+        <Devices />
         <Rides now={now} />
       </div>
     </div>

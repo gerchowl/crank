@@ -2,7 +2,9 @@
 // `?scenario=<name>` names (scenarios.ts). Dev and test only: it has its own Vite root (vite.config.ts here), so the
 // production build (app/index.html) never sees it. Each screen installs only the backend it calls, so every refusal
 // is the backend's own (their headers cite the core); a command no backend answers is Tauri's plain-string rejection.
-// `window.__fixture.settled()` resolves once no mock answer is in flight (bar the scenario's `held` ones).
+// Every screen reads the live state from the window's snapshot channel (ADR-0001 §4.3), so every scenario has one
+// (stream/uiBackend.ts) that sends the core's 1 s heartbeat: without it the channel's watchdog would mark the state stale
+// after 2 s. `window.__fixture.settled()` resolves once no mock answer is in flight (bar the scenario's `held` ones).
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { mockIPC } from "@tauri-apps/api/mocks";
@@ -11,7 +13,12 @@ import { markSeen } from "../../src/build";
 import type { WaitForCore } from "../../src/core";
 import "../../src/theme.css";
 import "../../src/shell.css";
-import type { LinkStatus, MetricId, PairedDevice } from "../../src/bindings";
+import type {
+  LinkStatus,
+  LiveValues,
+  PairedDevice,
+  RideView,
+} from "../../src/bindings";
 import { navigate } from "../../src/router";
 import { setAthleteHr } from "../../src/athleteHr";
 import {
@@ -20,14 +27,12 @@ import {
   installRide,
   type RideWorld,
 } from "../../src/ride/rideBackend";
-import { beginRide } from "../../src/ride/session";
 import {
   installDevices,
   strap,
   trainer,
   type DevicesState,
 } from "../../src/views/devicesBackend";
-import { markForcedEnd } from "../../src/ride/forcedEnds";
 import {
   RIDES,
   install as installHistory,
@@ -43,11 +48,30 @@ import {
   type Backend as WorkoutsBackend,
 } from "../../src/views/workoutsBackend";
 import { install as installToday } from "../../src/views/todayBackend";
+import {
+  devicesOf,
+  installUi,
+  rideView,
+  type UiBackend,
+  type UiOptions,
+} from "../../src/stream/uiBackend";
+import { status as makeStatus } from "../../src/stream/testBackend";
 import { startRideLoad } from "../../src/views/rideLoad";
 import { SCENARIOS, type ScenarioName } from "./scenarios";
 
 /** Mock answers (and fixture frames) in flight; see `settled()`. */
 let pending = 0;
+
+/**
+ * The snapshot channel for scenarios whose backends do not install one (workouts, history, settings): nothing
+ * paired, no ride. Installed once, before the scenario's own backends, which pass its commands on; a backend that
+ * installs its own channel (the ride's, the devices', Today's) answers them itself.
+ */
+let baseUi: UiBackend | null = null;
+const base = (): UiBackend => {
+  if (baseUi === null) throw new Error("the base channel is installed first");
+  return baseUi;
+};
 
 type Invoke = (cmd: string, args?: unknown) => Promise<unknown>;
 const internals = () =>
@@ -69,17 +93,18 @@ const hrm: PairedDevice = {
   model: null,
 };
 
+/** The core's heartbeat (ui.rs `HEARTBEAT`): a frame at least every second, so the watchdog never fires. */
+const BEAT: UiOptions = { heartbeatMs: 1000 };
+
 const devices = (over: Partial<DevicesState>) => () => {
-  installDevices({ nearby: [trainer, strap], ...over });
+  installDevices({ nearby: [trainer, strap], ...over }, BEAT);
   navigate("settings", "devices");
 };
 
-/** Live values per metric, set as the core's sample when the ride view subscribes. */
-const RIDING: Partial<Record<MetricId, number | null>> = {
-  power: 248,
-  cadence: 89,
-  hr: 142,
-};
+/** This tick's values (`ride.live`). */
+const RIDING: LiveValues = { powerW: 248, cadenceRpm: 89, hrBpm: 142 };
+/** Nothing live: before the start. */
+const NO_LIVE: LiveValues = { powerW: null, cadenceRpm: null, hrBpm: null };
 
 /**
  * The traces' history up to `until` session seconds, 1 Hz, from fixed formulas (no randomness): power near the plan of
@@ -96,82 +121,66 @@ const HISTORY = (until: number) =>
     };
   });
 
-/** The devices of a loaded ride: each link as the core reports it (`null`: paired, no link), and the load's answer. */
+/** The devices of a loaded ride: the trainer's link before the start, and whether the strap linked at the load. */
 interface Devices {
-  trainer?: LinkStatus | null;
-  hr?: LinkStatus | null;
-  /** `RideLoaded.hrLinked`; defaults to a ready strap link. */
-  hrLinked?: boolean;
-  /** A stream command whose answer never comes (the scenario's `held`): `stream_snapshot` keeps the status unknown. */
-  hold?: string;
+  trainer?: "ready" | "connecting" | "lost";
+  /** The strap was not warm at the load: the ride does not hold it, the keeper has not found it. */
+  strapMissed?: boolean;
 }
 
 /** A loaded ride in `over`'s state, 3:20 into its 10-minute workout (rideBackend `BLOCKS`), or a free ride. */
 const ride =
   (
     over: Partial<RideWorld>,
-    values = RIDING,
+    live: LiveValues = RIDING,
     workoutS = 200,
     workoutId: string | null = "w1",
-    /** The engine wedges once the view has subscribed (#351): its next frame's ack is refused. */
+    /** The engine is wedged (#351): the frame says so. */
     wedge = false,
     devices: Devices = {},
   ) =>
   () => {
-    const rig = installRide({ blocks: BLOCKS, ...over });
-    const { trainer: t = "ready", hr = "ready" } = devices;
-    // a loaded or started ride holds both devices, which the keeper reports `riding`; after it they are `cold`
-    // (core.rs `Core::device_links`)
-    const held =
-      (over.phase ?? "loaded") === "loaded" || over.phase === "active";
-    const phase = held ? ("riding" as const) : ("cold" as const);
-    rig.base.truth.infos = [
-      { role: "trainer", device: neo, link: t, phase },
-      { role: "heart_rate", device: hrm, link: hr, phase },
-    ];
-    rig.publish(workoutS);
-    // Before Start the core reports the loaded ride's links in the snapshot as `device_links` does.
-    if (over.phase === "loaded")
-      rig.base.truth.links = [
-        ...(t === null ? [] : [{ device: "trainer" as const, state: t }]),
-        ...(hr === null ? [] : [{ device: "hr" as const, state: hr }]),
-      ];
-    if (devices.hold) rig.base.hold(devices.hold);
-    // The ride view's subscriptions get the scenario's values as the core's latest sample, read by the snapshot.
-    const inner = internals().invoke;
-    let subscribed = 0;
-    mockIPC(async (cmd, payload) => {
-      const answer = await inner(cmd, payload);
-      if (cmd === "stream_subscribe") {
-        const metric = (payload as { metric: MetricId }).metric;
-        const sample = {
-          sub: answer as number,
-          t: rig.world.sessionS,
-          v: values[metric] ?? null,
-        };
-        rig.base.setSample(sample);
-        // The view takes values from frames (the snapshot is read on a re-query only): send one once the client
-        // holds the answer, i.e. after its continuation, counted as in flight so `settled()` waits for it.
-        pending++;
-        setTimeout(() => {
-          rig.base.push({ samples: [sample] });
-          if (wedge && ++subscribed === 3) {
-            rig.wedge();
-            rig.base.push({ status: rig.base.truth.status });
-          }
-          pending--;
-        });
-      }
-      return answer;
-    });
-    const session = beginRide({
-      rideId: rig.world.rideId,
-      workoutId,
-      hrLinked: devices.hrLinked ?? hr === "ready",
-    });
+    const rig = installRide(
+      {
+        blocks: BLOCKS,
+        workoutId,
+        live,
+        trainer: devices.trainer ?? "ready",
+        ...(devices.strapMissed
+          ? {
+              strapHanded: false,
+              keeper: {
+                trainer: { phase: "cold", sample: null },
+                strap: { phase: "not_found", sample: null },
+              },
+            }
+          : {}),
+        ...over,
+      },
+      BEAT,
+    );
+    // The traces so far, as the engine appended them (ADR-0001 §4.3.3); the channel backfills them from index 0.
     for (const h of HISTORY(workoutS))
       for (const of of ["power", "hr", "cadence"] as const)
-        session.record(h.t, h.t, h[of], of);
+        rig.ui.truth.series[of].push({ t: h.t, w: h.t, v: h[of] });
+    // This tick's values, which the engine appends as it publishes them (§4.3.3; a gap appends nothing).
+    const tick = {
+      power: live.powerW,
+      hr: live.hrBpm,
+      cadence: live.cadenceRpm,
+    };
+    if (workoutS > 0)
+      for (const of of ["power", "hr", "cadence"] as const) {
+        const v = tick[of];
+        if (v !== null)
+          rig.ui.truth.series[of].push({
+            t: rig.world.sessionS,
+            w: workoutS,
+            v,
+          });
+      }
+    if (wedge) rig.wedge();
+    rig.publish(workoutS);
     navigate("ride");
   };
 const active = { phase: "active", blockIdx: 1, sessionS: 200 } as const;
@@ -238,6 +247,7 @@ const workouts =
   (over: Partial<WorkoutsBackend> = {}) =>
   () => {
     installWorkouts({
+      ui: base(),
       compiled: { "w-ss": SWEET_SPOT, "w-easy": compiled({ tss: 20 }) },
       ...over,
     });
@@ -324,31 +334,49 @@ const SHORT_RIDE: RideRecord = {
 };
 
 /**
- * The window's session of `rideId` holding `seconds` of its traces, from fixed formulas (no randomness): power at
- * 4 Hz around a 6-minute pattern, heart rate and cadence at 2 Hz. Set at once, as `record` would leave them
- * (appending each sample is #557's O(n²), not what a fixture shows).
+ * The snapshot channel holding the ended ride `rideId` with `seconds` of its series, from fixed formulas (no
+ * randomness): power at 4 Hz around a 6-minute pattern, heart rate and cadence at 2 Hz (ADR-0001 §4.3.3); the channel
+ * backfills them, 256 points per series per frame. `ended` is how it ended.
  */
-const rodeIt = (rideId: string, seconds: number) => {
-  const session = beginRide({ rideId, workoutId: null, hrLinked: true });
+const rodeIt = (
+  rideId: string,
+  seconds: number,
+  ended: RideView["ended"] = "finished",
+) => {
   const at = (hz: number, v: (t: number) => number) =>
     Array.from({ length: seconds * hz }, (_, i) => {
       const t = i / hz;
-      return { t, workoutS: t, v: Math.round(v(t)) };
+      return { t, w: t, v: Math.round(v(t)) };
     });
   const work = (t: number) => (t % 540 < 360 && t > 600 ? 1 : 0);
-  session.series = {
-    power: at(
-      4,
-      (t) =>
-        140 + 100 * work(t) + 8 * Math.sin(t * 1.7) + 4 * Math.sin(t * 0.45),
-    ),
-    hr: at(
-      2,
-      (t) =>
-        110 + 35 * work(t) * Math.min(1, (t % 540) / 120) + 3 * Math.sin(t / 7),
-    ),
-    cadence: at(2, (t) => 88 + 3 * Math.sin(t * 1.3) + 2 * Math.sin(t * 0.31)),
-  };
+  installUi({
+    ...BEAT,
+    ride: rideView({
+      id: rideId,
+      workoutId: null,
+      status: makeStatus({ state: { kind: "finished" } }),
+      ended,
+    }),
+    devices: devicesOf({ trainer: neo, strap: hrm }),
+    series: {
+      power: at(
+        4,
+        (t) =>
+          140 + 100 * work(t) + 8 * Math.sin(t * 1.7) + 4 * Math.sin(t * 0.45),
+      ),
+      hr: at(
+        2,
+        (t) =>
+          110 +
+          35 * work(t) * Math.min(1, (t % 540) / 120) +
+          3 * Math.sin(t / 7),
+      ),
+      cadence: at(
+        2,
+        (t) => 88 + 3 * Math.sin(t * 1.3) + 2 * Math.sin(t * 0.31),
+      ),
+    },
+  });
 };
 const history =
   (sub?: string, over: Partial<HistoryBackend> = {}) =>
@@ -388,26 +416,46 @@ const WEEK: RideRecord[] = [
   },
   ...RIDES,
 ];
-/** Today on the core's reads; `load` starts a ride load from Workouts first (the workouts backend answers it). */
+/** Today's devices: what is paired, and the loaded ride's link of each device it holds. */
+interface TodayDevices {
+  paired?: { trainer?: PairedDevice; strap?: PairedDevice };
+  links?: { trainer?: LinkStatus; strap?: LinkStatus };
+  /** The snapshot channel sends nothing yet (its first frame is on its way). */
+  quiet?: boolean;
+  /** The channel cannot open: the keeper cannot read the pairings (`ui_open` answers `storage`). */
+  keeperStorage?: boolean;
+}
+
+/**
+ * Today on the core's reads: the rides, and the devices on the snapshot channel; `load` starts a ride load from
+ * Workouts first (the workouts backend answers it and shows it on the channel).
+ */
 const today =
   (
     over: Parameters<typeof installToday>[0] = {},
     load?: Partial<WorkoutsBackend>,
+    dev: TodayDevices = {},
   ) =>
   () => {
     navigate("today");
-    let others: Invoke | null = null;
-    if (load) {
-      installWorkouts(load);
-      others = internals().invoke;
-    }
-    installToday({
-      rides: WEEK,
-      paired: { trainer: neo, heart_rate: hrm },
-      others,
-      ...over,
+    const ui = installUi({
+      ...BEAT,
+      devices: devicesOf(dev.paired ?? { trainer: neo, strap: hrm }),
+      keeperStorage: dev.keeperStorage ?? false,
     });
-    if (load) void startRideLoad("w-long", LONG_NAME);
+    if (dev.quiet) ui.stall();
+    if (load) installWorkouts({ ...load, ui });
+    installToday({ rides: WEEK, others: internals().invoke, ...over });
+    if (load)
+      void startRideLoad("w-long", LONG_NAME).then(() => {
+        if (dev.links) {
+          ui.truth.devices = devicesOf(
+            dev.paired ?? { trainer: neo, strap: hrm },
+            dev.links,
+          );
+          ui.changed();
+        }
+      });
   };
 const longLibrary = (
   over: Partial<WorkoutsBackend> = {},
@@ -422,34 +470,31 @@ const longLibrary = (
 
 const SETUPS: Record<ScenarioName, () => void> = {
   today: today(),
-  "today-empty": today({ rides: [], paired: {} }),
-  "today-reading": today({
-    hold: {
-      rides_list: new Promise<void>(() => {}),
-      device_links: new Promise<void>(() => {}),
-    },
-  }),
-  "today-error": today({
-    fail: {
-      rides_list: { code: "storage", message: "disk I/O error" },
-      device_links: { code: "storage", message: "database is locked" },
-    },
-  }),
+  "today-empty": today({ rides: [] }, undefined, { paired: {} }),
+  // The rides are still on the wire, and the channel's first frame too.
+  "today-reading": today(
+    { hold: { rides_list: new Promise<void>(() => {}) } },
+    undefined,
+    { quiet: true },
+  ),
+  "today-error": today(
+    { fail: { rides_list: { code: "storage", message: "disk I/O error" } } },
+    undefined,
+    { keeperStorage: true },
+  ),
   // The load never answers: Start reads "Loading ride…".
   "today-ride-loading": today(
     {},
     longLibrary({ gate: new Promise<void>(() => {}) }),
   ),
-  "today-ride-loaded": today(
-    { links: { trainer: "ready", heart_rate: "connecting" } },
-    longLibrary(),
-  ),
+  "today-ride-loaded": today({}, longLibrary(), {
+    links: { trainer: "ready", strap: "connecting" },
+  }),
   // No trainer is paired in the workouts backend's core: `ride_load` is refused with `device_unavailable`.
   "today-ride-refused": today({}, longLibrary({ trainerPaired: false })),
-  "today-link-lost": today(
-    { links: { trainer: "lost", heart_rate: "ready" } },
-    longLibrary(),
-  ),
+  "today-link-lost": today({}, longLibrary(), {
+    links: { trainer: "lost", strap: "ready" },
+  }),
   // The library as the core lists it (the built-in one is never empty today; the store-backed one, #110, can be).
   "workouts-empty": workouts({ summaries: [] }),
   // The list cannot be read (Tauri's own rejection, or the store-backed library to come).
@@ -492,35 +537,37 @@ const SETUPS: Record<ScenarioName, () => void> = {
     adapter: { code: "permission_denied", message: "Bluetooth denied" },
   }),
   // The Ready sheet (DESIGN §5.4, #526): the loaded, unstarted ride in each of its states.
-  ready: ride({ phase: "loaded" }, {}, 0),
-  // The stream has not answered: no status yet (its snapshot is held), so nothing is the core's.
-  "ready-loading": ride({ phase: "loaded" }, {}, 0, "w1", false, {
-    hold: "stream_snapshot",
-  }),
+  ready: ride({ phase: "loaded" }, NO_LIVE, 0),
+  // This window's `ride_load` of w1 is under way and never answers: the channel's frame says `loading` and has no ride
+  // yet (ui.rs `Ui::load_started`), and the screen draws the Ready sheet's loading state from it, with the plan of the
+  // workout asked for (`useRideLoad`).
+  "ready-loading": () => {
+    const library = installWorkouts({
+      summaries: [
+        { id: "w1", name: "Steady 10 min", totalS: 600, tss: 10, ftp: 250 },
+      ],
+      compiled: { w1: compiled({ blocks: BLOCKS, totalS: 600 }) },
+      gate: new Promise<void>(() => {}),
+    });
+    // The ride commands, `workout_get` among them, are the ride backend's; `ride_load` falls through to the library's.
+    const rig = installRide({ phase: "none", blocks: BLOCKS }, BEAT);
+    library.ui = rig.ui;
+    void startRideLoad("w1", "Steady 10 min");
+    navigate("ride");
+  },
   // The trainer link is coming back up; the core refuses Start until it is ready (rideBackend `trainer`).
-  "ready-connecting": ride(
-    { phase: "loaded", trainer: "connecting" },
-    {},
-    0,
-    "w1",
-    false,
-    { trainer: "connecting" },
-  ),
-  "ready-trainer-missing": ride(
-    { phase: "loaded", trainer: "connecting" },
-    {},
-    0,
-    "w1",
-    false,
-    { trainer: "lost" },
-  ),
+  "ready-connecting": ride({ phase: "loaded" }, NO_LIVE, 0, "w1", false, {
+    trainer: "connecting",
+  }),
+  "ready-trainer-missing": ride({ phase: "loaded" }, NO_LIVE, 0, "w1", false, {
+    trainer: "lost",
+  }),
   // The strap did not link at the load: the ride runs without heart rate.
-  "ready-strap-missing": ride({ phase: "loaded" }, {}, 0, "w1", false, {
-    hr: null,
-    hrLinked: false,
+  "ready-strap-missing": ride({ phase: "loaded" }, NO_LIVE, 0, "w1", false, {
+    strapMissed: true,
   }),
   // Start was pressed and the core refused it: the record cannot be opened.
-  "ready-error": ride({ phase: "loaded", recordFails: true }, {}, 0),
+  "ready-error": ride({ phase: "loaded", recordFails: true }, NO_LIVE, 0),
   // Back 6 s after a 4 s loss, ramping to the plan from 120 W, two of its five steps taken
   // (erg/policy.rs `ErgPolicy::desired`, the soft start).
   "ride-soft-start": ride({
@@ -553,9 +600,9 @@ const SETUPS: Record<ScenarioName, () => void> = {
   }),
   "ride-paused": ride(
     { ...active, userPause: true },
-    { ...RIDING, power: 0, cadence: 0 },
+    { ...RIDING, powerW: 0, cadenceRpm: 0 },
   ),
-  "ride-hr-lost": ride({ ...active, hrLost: true }, { ...RIDING, hr: null }),
+  "ride-hr-lost": ride({ ...active, hrLost: true }, { ...RIDING, hrBpm: null }),
   "ride-trainer-lost": ride(
     {
       ...active,
@@ -564,7 +611,7 @@ const SETUPS: Record<ScenarioName, () => void> = {
       lostSinceS: 200,
       attempt: 12,
     },
-    { ...RIDING, power: null, cadence: null },
+    { ...RIDING, powerW: null, cadenceRpm: null },
   ),
   // The longest trainer-loss copy (banners.tsx): no samples on a ready link with the strap lost, 59:59 into the loss,
   // so the bold line is its widest and End… and what to try show.
@@ -576,7 +623,7 @@ const SETUPS: Record<ScenarioName, () => void> = {
       hrLost: true,
       lostSinceS: 200,
     },
-    { ...RIDING, power: null, cadence: null, hr: null },
+    { powerW: null, cadenceRpm: null, hrBpm: null },
   ),
   // Two banners at once: the engine stops answering while the trainer is lost (#351, §6.5).
   "ride-engine-silent": ride(
@@ -587,18 +634,18 @@ const SETUPS: Record<ScenarioName, () => void> = {
       lostSinceS: 200,
       attempt: 3,
     },
-    { ...RIDING, power: null, cadence: null },
+    { ...RIDING, powerW: null, cadenceRpm: null },
     200,
     "w1",
     true,
   ),
   "ride-paused-hr-lost": ride(
     { ...active, userPause: true, hrLost: true },
-    { ...RIDING, power: 0, cadence: 0, hr: null },
+    { powerW: 0, cadenceRpm: 0, hrBpm: null },
   ),
   "ride-erg-released": ride(
     { ...active, ergReleased: true },
-    { ...RIDING, power: 40, cadence: 31 },
+    { ...RIDING, powerW: 40, cadenceRpm: 31 },
   ),
   "ride-free": ride({ ...active, blocks: [] }, RIDING, 200, null),
   review: history("ride-1"),
@@ -610,8 +657,10 @@ const SETUPS: Record<ScenarioName, () => void> = {
     rodeIt("ride-long", 10_800);
     history("ride-long", { rides: [LONG_RIDE, ...RIDES] })();
   },
+  // The core ended ride-2 by force (`ride.ended: forced`); the channel keeps it until the next load. Dev's fixture marked
+  // the forced end and had no traces for the ride, so the frame carries the ride and no points.
   "review-aborted": () => {
-    markForcedEnd("ride-2");
+    rodeIt("ride-2", 0, "forced");
     history("ride-2")();
   },
   "review-error": history("ride-1", {
@@ -630,7 +679,7 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "settings-athlete": () => navigate("settings", "athlete"),
   "settings-ride-loaded": () => {
     navigate("settings");
-    installWorkouts(longLibrary());
+    installWorkouts({ ...longLibrary(), ui: base() });
     void startRideLoad("w-long", LONG_NAME);
   },
   // The destination (Today) is never reached; the start screen calls nothing.
@@ -655,6 +704,7 @@ const scenario = SCENARIOS.find((s) => s.name === name);
 if (!scenario) throw new Error(`unknown scenario ${String(name)}`);
 // Screens that call nothing still get a backend: an unknown command is Tauri's plain-string rejection.
 mockIPC((cmd) => Promise.reject(`command ${cmd} not found`));
+baseUi = installUi(BEAT);
 SETUPS[scenario.name]();
 
 // Count the answers in flight, on top of whatever the scenario installed.

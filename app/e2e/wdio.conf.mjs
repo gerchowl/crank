@@ -14,12 +14,12 @@ if (!application) {
 // In this order, because the specs share one app process (the embedded WebDriver keeps it across sessions) and its state.
 // The smoke spec needs the fresh shell: its screenshots are compared across launches, and a ride would change Today.
 // The MVP walk (#667) pairs and rides, then quits the app; the service starts it again on the same data dir for the
-// relaunch spec (step 9). The stream spec leaves its ride loaded, so it goes last.
+// relaunch spec (step 9). The ui spec leaves its ride loaded, so it goes last.
 const ORDER = [
   "smoke.e2e.mjs",
   "mvp.e2e.mjs",
   "mvp-relaunch.e2e.mjs",
-  "stream.e2e.mjs",
+  "ui.e2e.mjs",
 ];
 // A spec that is not in ORDER would never run, and one listed but missing would be an error deep in the run: refuse
 // both up front, by name.

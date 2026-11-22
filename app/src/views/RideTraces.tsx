@@ -1,14 +1,14 @@
 // The recorded ride's traces on Review (DESIGN §5.5 item 4, §18.3; #529): power, heart rate and cadence stacked on one
 // x axis of session time with time ticks (P05), each in its series colour with its word (§18.7 rule 11). The data path
-// is the ride session's own history (session.ts): the window keeps the traces of the ride it rode until the next load,
-// and the core has no command that returns a stored ride's samples, so a ride opened from the list has none (#107 is
+// is the snapshot channel's series (ADR-0001 §4.3.3): the core keeps the series of the loaded or last ended ride until
+// the next load, a reload included, and has no command that returns a stored ride's samples, so a ride opened from the list has none (#107 is
 // Review Evidence; #557's `ride_series` would bring them back). Drawn as Trace.tsx draws: one vertex per second of
 // session time (`perSecond`), a missing second is a gap and never bridged, no smoothing. Heart rate is on 80–200 bpm
 // (§5.5: a 0-based axis flattens the differences that matter). Ranges are found by a loop, never by spreading a
 // ride-length array into `Math.min`/`Math.max` (a 3 h ride at 4 Hz is 43 200 points; #557).
 import { useMemo } from "react";
 import { perSecond } from "../ride/Trace";
-import type { Point, Series } from "../ride/session";
+import type { Point, Series } from "../stream/ui";
 import { formatDuration } from "./Workouts";
 
 const W = 1000;

@@ -1,5 +1,5 @@
-// A stand-in for the core's device commands behind `mockIPC`, for the Devices tests only. It enforces what the core
-// does (crank-core `Core::devices_scan` / `device_pair` / `device_forget` / `device_links`), not more permissive:
+// A stand-in for the core's device commands behind `mockIPC`, for the Devices tests and the design fixtures. It
+// enforces what the core does (crank-core `Core::devices_scan` / `device_pair` / `device_forget`), not more permissive:
 // every one of them is `conflict` while a ride is loaded (core.rs `require_no_ride` (~1104)); pair refuses an empty
 // id (`invalid_input`, core.rs `device_pair` (~1170)), and, on the SIM core only (`core: "sim"`), any id but the sim's fixed one for the
 // role, `trainer` / `strap` (`invalid_input`; backend.rs `Backend::accepts` (~206), `SIM_TRAINER` / `SIM_STRAP`). The
@@ -9,15 +9,23 @@
 // role. `storage` (`store`): scan and forget read the store first (core.rs `devices_scan` (~1125), `device_forget`), so they fail before
 // anything else happens; pair writes it after the connect succeeded (core.rs `device_pair`): `store` then leaves nothing paired,
 // `storeAfterWrite` models the later reads and forgets of the replaced pairing failing (core.rs `device_pair`, `device_forget`), after the
-// new row was written.
+// new row was written. `device_pair` and `device_forget` answer `null` (app/src-tauri commands.rs `device_pair`): the
+// pairings reach the page as the snapshot channel's `devices` (`ui`, stream/uiBackend.ts; core.rs `Core::device_pair`
+// and core.rs `Core::device_forget` call ui.rs `Ui::set_paired`), also when the pair's later store step fails.
+// `ui_open` and `ui_ack` go to that backend, installed first.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   ApiError,
-  DeviceLinkInfo,
   DeviceRole,
   PairedDevice,
   ScannedDevice,
 } from "../bindings";
+import {
+  devicesOf,
+  installUi,
+  type UiBackend,
+  type UiOptions,
+} from "../stream/uiBackend";
 
 export const trainer: ScannedDevice = {
   id: "neo-1",
@@ -67,8 +75,6 @@ export interface DevicesState {
   /** A connect failure for `device_pair` (after the adapter check). */
   connect: ApiError | null;
   rideLoaded: boolean;
-  /** A failure of `device_links` (the store); `null` is healthy. */
-  linksError: ApiError | null;
   /** A failure of the store behind `devices_scan`, `device_pair` and `device_forget`; `null` is healthy. */
   store: ApiError | null;
   /** A failure of `device_pair` after its row was written (the replaced-pairing cleanup); `null` is healthy. */
@@ -81,15 +87,27 @@ export interface DevicesState {
   core: "sim" | "radio";
   paired: Partial<Record<DeviceRole, PairedDevice>>;
   calls: { cmd: string; args: Record<string, unknown> }[];
+  /** The window's snapshot channel, which carries the pairings. */
+  ui: UiBackend;
 }
 
-export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
+export function installDevices(
+  init: Partial<Omit<DevicesState, "ui">> = {},
+  uiOptions: UiOptions = {},
+): DevicesState {
+  const ui = installUi(uiOptions);
+  const prev = (
+    window as unknown as {
+      __TAURI_INTERNALS__: {
+        invoke: (cmd: string, args?: unknown) => Promise<unknown>;
+      };
+    }
+  ).__TAURI_INTERNALS__.invoke;
   const st: DevicesState = {
     nearby: [],
     adapter: null,
     connect: null,
     rideLoaded: false,
-    linksError: null,
     store: null,
     storeAfterWrite: null,
     gate: null,
@@ -98,7 +116,17 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
     paired: {},
     calls: [],
     ...init,
+    ui,
   };
+  /** The pairings changed: the channel's next frame carries them (ui.rs `Ui::set_paired`). */
+  const show = () => {
+    ui.truth.devices = devicesOf({
+      trainer: st.paired.trainer,
+      strap: st.paired.heart_rate,
+    });
+    ui.changed();
+  };
+  show();
   const fail = (code: ApiError["code"], message: string): never => {
     throw { code, message } satisfies ApiError;
   };
@@ -106,6 +134,7 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
     if (st.rideLoaded) fail("conflict", "a ride is loaded: end it first");
   };
   mockIPC(async (cmd, args) => {
+    if (cmd === "ui_open" || cmd === "ui_ack") return prev(cmd, args);
     const a = (args ?? {}) as Record<string, unknown>;
     st.calls.push({ cmd, args: a });
     switch (cmd) {
@@ -145,8 +174,9 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
           model: role === "trainer" ? "Neo" : null,
         };
         st.paired[role] = p;
+        show();
         if (st.storeAfterWrite) throw st.storeAfterWrite;
-        return p;
+        return null;
       }
       case "device_forget": {
         noRide();
@@ -155,19 +185,9 @@ export function installDevices(init: Partial<DevicesState> = {}): DevicesState {
         const role = a.role as DeviceRole;
         if (!st.paired[role]) fail("not_found", "nothing paired for that role");
         delete st.paired[role];
+        show();
         return null;
       }
-      case "device_links":
-        if (st.linksError) throw st.linksError;
-        return (["trainer", "heart_rate"] as const).map(
-          (role): DeviceLinkInfo => ({
-            role,
-            device: st.paired[role] ?? null,
-            link: null,
-            // no ride here: the keeper's phase, `cold` until a warm view's intent (core.rs `Core::device_links`)
-            phase: st.paired[role] ? "cold" : null,
-          }),
-        );
     }
     return fail("internal", `unmocked command ${cmd}`);
   });

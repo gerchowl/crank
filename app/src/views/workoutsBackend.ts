@@ -1,17 +1,18 @@
-// The core's workout commands behind `mockIPC` (`workouts_list`, `workout_get`, `ride_load`, `ride_status`, and the
-// editor's `parse_dsl`, `print_dsl` and `compile_workout` from editorFixture.ts), for the Workouts tests and the design fixtures (app/e2e/design/fixture.tsx, #457).
+// The core's workout commands behind `mockIPC` (`workouts_list`, `workout_get`, `ride_load`, and the editor's
+// `parse_dsl`, `print_dsl` and `compile_workout` from editorFixture.ts), for the Workouts tests and the design fixtures
+// (app/e2e/design/fixture.tsx, #457). With a snapshot channel (`ui`, stream/uiBackend.ts) a load shows there as the core
+// shows it (ADR-0001 §4.3.3): `loading` and no ride from its start, the ride once installed, `loading` off at its end.
+// Any other command goes to the backend installed before this one.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   CompiledView,
-  LoadProgress,
-  RideLoaded,
   WorkoutDetail,
   Workout,
   WorkoutIssue,
   WorkoutNode,
   WorkoutSummary,
 } from "../bindings";
-import { status as idleStatus } from "../stream/testBackend";
+import { rideView, type UiBackend } from "../stream/uiBackend";
 import { DRAFTS, editorCommands } from "./editorFixture";
 export const apiError = (code: string, message: string) => ({ code, message });
 
@@ -59,9 +60,9 @@ export const WARNING: WorkoutIssue = {
 export interface Backend {
   calls: { cmd: string; args: Record<string, unknown> }[];
   /**
-   * Per-command failures, thrown when the call arrives. `workouts_list` and `ride_status` never fail in the core today
-   * (core.rs `Core::workouts_list` (~1480), core.rs `Core::ride_status` (~2382)); a failure of either is the store-backed
-   * library to come (#110) or Tauri's own rejection, which the view shows all the same.
+   * Per-command failures, thrown when the call arrives. `workouts_list` never fails in the core today
+   * (core.rs `Core::workouts_list` (~1480)); a failure is the store-backed library to come (#110) or Tauri's own
+   * rejection, which the view shows all the same.
    */
   fail: Record<string, unknown>;
   /**
@@ -87,10 +88,10 @@ export interface Backend {
   loading: number;
   /** Hold the next `ride_load` answer until the gate opens. */
   gate: Promise<void> | null;
-  /** A load started elsewhere is in flight: `ride_status().load` is set (core.rs `ride_status` (~2382)). */
+  /** A load started elsewhere is in flight: the channel's `loading` is set (ui.rs `Ui::load_started`). */
   coreLoading: boolean;
-  /** The phases `ride_status().load` reports while a load is in flight (the keeper's, core.rs `Core::ride_status`). */
-  progress: LoadProgress;
+  /** The window's snapshot channel, which shows the load; `null`: none (a test of the commands alone). */
+  ui: UiBackend | null;
   /** A refusal raised at one stage of `ride_load` (see the doc below), while the load is in flight. */
   stage: Partial<
     Record<"storage" | "driver" | "connect" | "build" | "installed", ApiErr>
@@ -104,11 +105,7 @@ export type ApiErr = { code: string; message: string };
  * - `workout_get`: unknown id, `not_found` (library.rs `Library::detail` (~93), library.rs `Library::get` (~75)). Its
  *   other refusal, `internal` from a block index that does not fit (dto.rs `WorkoutBlock` (~196)), is unreachable
  *   through the API and not modelled.
- * - `ride_status` never fails (core.rs `Core::ride_status` (~2382)). Its `load` is set while the core's one flag is (a
- *   load in flight here, or `coreLoading`), with `progress` as the phases; its `status` is always idle, as no test or
- *   fixture here reads it.
- *
- * `ride_load` refuses, in the core's order (core.rs `Core::ride_load` (~1679)):
+ * `ride_load` answers the ride's id (app/src-tauri commands.rs `ride_load`) and refuses, in the core's order (core.rs `Core::ride_load` (~1679)):
  * - unknown id: `not_found` (library.rs `Library::get` (~75), via core.rs `Core::resolve_workout` (~1633))
  * - error-severity issue: `invalid_input` with the issue's message (`resolve_workout`)
  * - ride in progress: `conflict` (`ride_load`, "a ride is in progress")
@@ -151,10 +148,21 @@ export function install(over: Partial<Backend> = {}): Backend {
     loading: 0,
     gate: null,
     coreLoading: false,
-    progress: { trainer: "searching", strap: null },
+    ui: null,
     stage: {},
     ...over,
   };
+  if (b.coreLoading && b.ui) {
+    b.ui.truth.loading = true;
+    b.ui.changed();
+  }
+  const prev = (
+    window as unknown as {
+      __TAURI_INTERNALS__?: {
+        invoke: (cmd: string, args?: unknown) => Promise<unknown>;
+      };
+    }
+  ).__TAURI_INTERNALS__?.invoke;
   /** The library's entry for `id`: `not_found` with the core's text (`{id:?}` quotes it) when it is not listed. */
   const compiledOf = (id: string): CompiledView => {
     if (!b.summaries.some((w) => w.id === id))
@@ -203,14 +211,15 @@ export function install(over: Partial<Backend> = {}): Backend {
         // `loading.swap(true)`): a load this mock runs, or one started elsewhere (`coreLoading`).
         if (b.loading > 0 || b.coreLoading)
           throw apiError("conflict", "another ride is loading or loaded");
-        const done = () =>
-          ({
-            rideId: "ride-1",
-            workoutId: id,
-            hrLinked: false,
-          }) satisfies RideLoaded;
+        const ui = b.ui;
+        const done = () => {
+          // ui.rs `Ui::install`, then `Ui::load_over`
+          ui?.installed(rideView({ id: "ride-1", workoutId: id }));
+          return "ride-1";
+        };
         // From here the core's `loading` flag is set: the connect, the build and their refusals take time.
         b.loading++;
+        ui?.loadStarted();
         const load = async () => {
           try {
             const gate = b.gate;
@@ -226,6 +235,13 @@ export function install(over: Partial<Backend> = {}): Backend {
             if (b.stage.build) throw b.stage.build;
             if (b.stage.installed) throw b.stage.installed;
             return done();
+          } catch (e) {
+            // a failed load leaves no ride (ui.rs `Ui::load_over`)
+            if (ui) {
+              ui.truth.loading = false;
+              ui.changed();
+            }
+            throw e;
           } finally {
             b.loading--;
           }
@@ -238,12 +254,8 @@ export function install(over: Partial<Backend> = {}): Backend {
         return editor.print_dsl(args.nodes as WorkoutNode[]);
       case "compile_workout":
         return editor.compile_workout(args.workout as Workout);
-      case "ride_status":
-        return {
-          load: b.loading > 0 || b.coreLoading ? b.progress : null,
-          status: idleStatus(),
-        };
       default:
+        if (prev) return prev(cmd, payload);
         throw `command ${cmd} not found`;
     }
   });

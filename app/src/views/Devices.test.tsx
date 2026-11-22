@@ -5,6 +5,8 @@ import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, test } from "vitest";
 import type { PairedDevice } from "../bindings";
+import { UiClient, type Timers } from "../stream/ui";
+import { UiProvider } from "../stream/uiHooks";
 import { Devices } from "./Devices";
 import {
   both,
@@ -22,6 +24,20 @@ const neo: PairedDevice = {
   serial: null,
   model: null,
 };
+
+/** A fake clock so the snapshot channel's 2 s watchdog never fires in these tests. */
+const neverClock: Timers = {
+  setTimeout: () => 0,
+  clearTimeout: () => {},
+};
+
+/** Render Devices behind a fresh UiProvider whose client never times out. */
+const openDevices = () =>
+  render(
+    <UiProvider client={new UiClient(neverClock)}>
+      <Devices />
+    </UiProvider>,
+  );
 
 afterEach(() => {
   cleanup();
@@ -43,7 +59,7 @@ describe("Devices", () => {
   test("scan lists the candidates with their role", async () => {
     installDevices({ nearby: [trainer, strap] });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     const list = await screen.findByRole("list", { name: "Nearby devices" });
     expect(list.textContent).toContain("Tacx Neo 55624");
@@ -55,7 +71,7 @@ describe("Devices", () => {
   test("an empty scan says so", async () => {
     installDevices();
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     expect(await screen.findByText(/No trainer or strap found/)).toBeTruthy();
   });
@@ -63,7 +79,7 @@ describe("Devices", () => {
   test("pair shows the paired state; forget removes it", async () => {
     const st = installDevices({ nearby: [trainer] });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     await user.click(
       await screen.findByRole("button", {
@@ -90,7 +106,7 @@ describe("Devices", () => {
       paired: { trainer: neo },
     });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await screen.findByRole("button", { name: "Forget trainer" });
     await scan(user);
     expect(await screen.findByText("✓ Paired as trainer")).toBeTruthy();
@@ -110,7 +126,7 @@ describe("Devices", () => {
       paired: { trainer: { ...neo, id: "both-1", name: "Dual Thing" } },
     });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await screen.findByRole("button", { name: "Forget trainer" });
     await scan(user);
     expect(await screen.findByText("✓ Paired as trainer")).toBeTruthy();
@@ -124,7 +140,7 @@ describe("Devices", () => {
   test("Forget on a paired device returns it to Pair as", async () => {
     const st = installDevices({ nearby: [trainer], paired: { trainer: neo } });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await screen.findByRole("button", { name: "Forget trainer" });
     await scan(user);
     await forgetIt(user, "Forget Tacx Neo 55624 as trainer");
@@ -142,7 +158,7 @@ describe("Devices", () => {
   test("an unpaired device still offers pairing", async () => {
     installDevices({ nearby: [trainer] });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     expect(
       (
@@ -166,7 +182,7 @@ describe("Devices", () => {
         },
       },
     });
-    render(<Devices />);
+    openDevices();
     expect(await screen.findByText("HRM-Dual")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Forget heart-rate strap" }),
@@ -179,7 +195,7 @@ describe("Devices", () => {
       adapter: { code: "permission_denied", message: "denied" },
     });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain(
@@ -197,7 +213,7 @@ describe("Devices", () => {
       adapter: { code: "device_unavailable", message: "Bluetooth is off" },
     });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Bluetooth off",
@@ -210,7 +226,7 @@ describe("Devices", () => {
       connect: { code: "device_unavailable", message: "connect failed" },
     });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     await user.click(
       await screen.findByRole("button", {
@@ -227,7 +243,7 @@ describe("Devices", () => {
   test("a loaded ride is a conflict the rider can act on", async () => {
     installDevices({ rideLoaded: true });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     expect((await screen.findByRole("alert")).textContent).toContain(
       "End the ride",
@@ -237,7 +253,7 @@ describe("Devices", () => {
   test("a role the device cannot act in is not offered (the core refuses it)", async () => {
     installDevices({ nearby: [strap] });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     await screen.findByText("HRM-Dual");
     expect(screen.queryByRole("button", { name: /as trainer/ })).toBeNull();
@@ -259,7 +275,7 @@ describe("Devices", () => {
   test("Forget asks first; Cancel and Esc keep the pairing", async () => {
     const st = installDevices({ paired: { trainer: neo } });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     const forgetBtn = await screen.findByRole("button", {
       name: "Forget trainer",
     });
@@ -286,7 +302,7 @@ describe("Devices", () => {
   test("a scan or a pair closes an open Forget question", async () => {
     installDevices({ nearby: [trainer], paired: { trainer: neo } });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await user.click(
       await screen.findByRole("button", { name: "Forget trainer" }),
     );
@@ -298,50 +314,24 @@ describe("Devices", () => {
 
   test("before a scan, Nearby says how to find a device", async () => {
     installDevices();
-    render(<Devices />);
+    openDevices();
     expect(
       await screen.findByText(/Scan to find a trainer or a heart-rate strap/),
     ).toBeTruthy();
   });
 
-  test("a failed re-read keeps the last good list; an initial failure is shown", async () => {
-    const st = installDevices({
-      nearby: [trainer],
-      paired: {
-        heart_rate: {
-          role: "heart_rate",
-          id: "hrm-1",
-          name: "HRM-Dual",
-          serial: null,
-          model: null,
-        },
-      },
-    });
-    const user = userEvent.setup();
-    render(<Devices />);
-    expect(await screen.findByText("HRM-Dual")).toBeTruthy();
-    await scan(user);
-    st.linksError = { code: "storage", message: "disk" };
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Pair as trainer: Tacx Neo 55624",
-      }),
-    );
-    expect((await screen.findByRole("alert")).textContent).toContain(
-      "Could not load the paired devices",
-    );
-    // The core paired it, but the read failed: the last good list is still on screen, not "Loading…".
-    expect(screen.queryByText("Loading…")).toBeNull();
-    expect(screen.getByText("HRM-Dual")).toBeTruthy();
-  });
-
-  test("a failed first load is shown, not left on Loading", async () => {
-    installDevices({ linksError: { code: "storage", message: "disk" } });
-    render(<Devices />);
+  test("a channel that cannot open shows the paired list as Unknown with a notice", async () => {
+    // `ui_open` refused with `storage` (the keeper cannot read the pairings): the paired list is Unknown
+    // and a notice says so. The notice carries no Retry; the channel's watchdog retries on its own.
+    installDevices({}, { keeperStorage: true });
+    openDevices();
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Could not load the paired devices",
     );
     expect(screen.queryByText("Loading…")).toBeNull();
+    // The two roles each show "Unknown" since the channel never delivered devices.
+    expect(screen.getAllByText("Unknown").length).toBe(2);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 
   test("a double click pairs once; a double click scans once", async () => {
@@ -351,7 +341,7 @@ describe("Devices", () => {
       gate: new Promise<void>((r) => (open = r)),
     });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await user.dblClick(await screen.findByRole("button", { name: "Scan" }));
     open();
     await screen.findByText("Tacx Neo 55624");
@@ -370,7 +360,11 @@ describe("Devices", () => {
   test("results are announced politely", async () => {
     installDevices();
     const user = userEvent.setup();
-    const { container } = render(<Devices />);
+    const { container } = render(
+      <UiProvider client={new UiClient(neverClock)}>
+        <Devices />
+      </UiProvider>,
+    );
     await scan(user);
     const live = container.querySelector('[aria-live="polite"]');
     expect(live?.textContent).toContain("No trainer or strap found");
@@ -380,7 +374,7 @@ describe("Devices", () => {
     let open!: () => void;
     const st = installDevices({ nearby: [both] });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     await screen.findByText("Dual Thing");
     st.gate = new Promise<void>((r) => (open = r));
@@ -427,7 +421,7 @@ describe("Devices", () => {
       paired: { trainer: { ...neo, id: "neo-2" } },
     });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await screen.findByRole("button", { name: "Forget trainer" });
     // A scan in flight.
     st.gate = new Promise<void>((r) => (open = r));
@@ -520,7 +514,7 @@ describe("Devices", () => {
       store: { code: "storage", message: "disk is full" },
     });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("the pairing store failed");
@@ -533,7 +527,7 @@ describe("Devices", () => {
   test("a store failure on pair says nothing is paired", async () => {
     const st = installDevices({ nearby: [trainer] });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     st.store = { code: "storage", message: "disk is full" };
     await user.click(
@@ -551,7 +545,7 @@ describe("Devices", () => {
   test("a store failure on forget keeps the pairing and says why", async () => {
     const st = installDevices({ paired: { trainer: neo } });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await screen.findByText("Tacx Neo 55624");
     st.store = { code: "storage", message: "disk is full" };
     await forgetIt(user, "Forget trainer");
@@ -562,61 +556,12 @@ describe("Devices", () => {
     expect(screen.getByText("Tacx Neo 55624")).toBeTruthy();
   });
 
-  test("a forget whose refresh fails does not leave the row paired", async () => {
-    const st = installDevices({ paired: { trainer: neo } });
-    const user = userEvent.setup();
-    render(<Devices />);
-    await screen.findByText("Tacx Neo 55624");
-    st.linksError = { code: "storage", message: "disk" };
-    await forgetIt(user, "Forget trainer");
-    expect((await screen.findByRole("alert")).textContent).toContain(
-      "Could not load the paired devices",
-    );
-    expect(st.paired.trainer).toBeUndefined();
-    // The forget succeeded, so the row says so although the re-read failed: no second Forget to offer.
-    expect(screen.queryByRole("button", { name: "Forget trainer" })).toBeNull();
-    expect(screen.queryByText("Tacx Neo 55624")).toBeNull();
-  });
-
-  test("not_found on forget is success: the row is cleared, with no notice", async () => {
-    const st = installDevices({ paired: { trainer: neo } });
-    const user = userEvent.setup();
-    render(<Devices />);
-    await screen.findByText("Tacx Neo 55624");
-    delete st.paired.trainer; // forgotten elsewhere since the last read
-    st.linksError = { code: "storage", message: "disk" };
-    await forgetIt(user, "Forget trainer");
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: "Forget trainer" }),
-      ).toBeNull(),
-    );
-    expect(st.calls.filter((c) => c.cmd === "device_forget").length).toBe(1);
-    const alerts = screen.getAllByRole("alert");
-    expect(alerts.length).toBe(1);
-    expect(alerts[0]?.textContent).not.toContain("Nothing to forget");
-  });
-
-  test("when forget and the refresh both fail, both errors are shown", async () => {
-    const st = installDevices({ paired: { trainer: neo } });
-    const user = userEvent.setup();
-    render(<Devices />);
-    await screen.findByText("Tacx Neo 55624");
-    st.store = { code: "storage", message: "disk is full" };
-    st.linksError = { code: "storage", message: "disk is full" };
-    await forgetIt(user, "Forget trainer");
-    await waitFor(() => expect(screen.getAllByRole("alert").length).toBe(2));
-    const text = screen.getAllByRole("alert").map((a) => a.textContent);
-    expect(text[0]).toContain("Could not forget trainer");
-    expect(text[1]).toContain("Could not load the paired devices");
-    // The forget did not happen, so the pairing stays on screen.
-    expect(screen.getByText("Tacx Neo 55624")).toBeTruthy();
-  });
-
-  test("a pair that fails in the store after writing is re-read: the list shows the truth", async () => {
+  test("a pair that fails in the store after writing shows the pairing on the next frame", async () => {
+    // The pairing is written before the later store step fails: the channel's next frame carries the paired row,
+    // so the list shows the truth alongside the "Could not save the pairing" notice.
     const st = installDevices({ nearby: [trainer] });
     const user = userEvent.setup();
-    render(<Devices />);
+    openDevices();
     await scan(user);
     st.storeAfterWrite = { code: "storage", message: "disk is full" };
     await user.click(
@@ -627,10 +572,23 @@ describe("Devices", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Could not save the pairing",
     );
-    // The core wrote the row before it failed: the re-read shows it paired.
     expect(await screen.findByText(/S\/N 55624/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Forget trainer" })).toBeTruthy();
-    expect(st.calls.filter((c) => c.cmd === "device_links").length).toBe(2);
+  });
+
+  test("not_found on forget is success: no notice, and the frame is still the truth", async () => {
+    // The row was already gone in the core when the rider pressed Forget: the mock's `device_forget` answers
+    // `not_found`, which the view treats as success (the role has no pairing, which is what was asked for). The
+    // paired list follows the channel's frames, so a later frame without the pairing clears the row.
+    const st = installDevices({ paired: { trainer: neo } });
+    const user = userEvent.setup();
+    openDevices();
+    await screen.findByText("Tacx Neo 55624");
+    // Forgotten in the core since the last frame, without a new frame yet.
+    delete st.paired.trainer;
+    await forgetIt(user, "Forget trainer");
+    expect(st.calls.filter((c) => c.cmd === "device_forget").length).toBe(1);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   test("the store is checked where the core checks it: pair after the connect, forget before not_found", async () => {

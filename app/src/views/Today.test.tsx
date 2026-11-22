@@ -21,6 +21,14 @@ import {
 import type { PairedDevice, RideRecord } from "../bindings";
 import { navigate, useRoute } from "../router";
 import { setTimeZone, withTimeZone } from "../testTz";
+import { UiClient, type Timers } from "../stream/ui";
+import {
+  devicesOf,
+  installUi,
+  type UiBackend,
+  type UiOptions,
+} from "../stream/uiBackend";
+import { UiProvider } from "../stream/uiHooks";
 import { apiError, RIDES } from "./historyBackend";
 import { resetRideLoad, startRideLoad } from "./rideLoad";
 import { RideLoadNotice } from "./RideLoadNotice";
@@ -82,7 +90,14 @@ function Routed() {
     </>
   );
 }
-const open = () => render(<Routed />);
+/** A fake clock so the snapshot channel's 2 s watchdog never fires in these tests. */
+const neverClock: Timers = { setTimeout: () => 0, clearTimeout: () => {} };
+const open = () =>
+  render(
+    <UiProvider client={new UiClient(neverClock)}>
+      <Routed />
+    </UiProvider>,
+  );
 /** `el`'s text without the nodes `skip` selects (drawn: no `.sr-only`; read aloud: no `[aria-hidden]`). */
 const text = (el: Element, skip: string) => {
   const copy = el.cloneNode(true) as Element;
@@ -92,18 +107,37 @@ const text = (el: Element, skip: string) => {
 const route = () => screen.getByTestId("route").textContent;
 const panel = (name: string) => within(screen.getByRole("region", { name }));
 
-/** The workouts backend answers the load (`ride_load`), the Today backend the rest, as one core would. */
-const withLoad = (over: Partial<Backend> = {}) => {
-  const w = installWorkouts();
-  const internals = (
-    window as unknown as {
-      __TAURI_INTERNALS__: {
-        invoke: (cmd: string, args: unknown) => Promise<unknown>;
-      };
-    }
-  ).__TAURI_INTERNALS__;
-  const others = internals.invoke.bind(internals);
-  return { w, b: install({ others, ...over }) };
+type Internals = {
+  __TAURI_INTERNALS__: {
+    invoke: (cmd: string, args: unknown) => Promise<unknown>;
+  };
+};
+const forwardOthers = () => {
+  const internals = (window as unknown as Internals).__TAURI_INTERNALS__;
+  return internals.invoke.bind(internals);
+};
+/** A paired `(trainer, strap)` picked by this test. */
+const paired = (
+  over: {
+    trainer?: PairedDevice | null;
+    strap?: PairedDevice | null;
+  } = {},
+) => devicesOf({ trainer: over.trainer, strap: over.strap });
+/** Install the snapshot channel, then the Today backend; a ride load uses `withLoad`. */
+const setup = (todayOver: Partial<Backend> = {}, uiOver: UiOptions = {}) => {
+  const ui = installUi(uiOver);
+  const b = install({ others: forwardOthers(), ...todayOver });
+  return { ui, b };
+};
+/** Install the channel, the workouts backend (for `ride_load`), and the Today backend as one core would. */
+const withLoad = (
+  todayOver: Partial<Backend> = {},
+  uiOver: UiOptions = {},
+): { ui: UiBackend; w: ReturnType<typeof installWorkouts>; b: Backend } => {
+  const ui = installUi(uiOver);
+  const w = installWorkouts({ ui });
+  const b = install({ others: forwardOthers(), ...todayOver });
+  return { ui, w, b };
 };
 
 test("with nothing loaded, today's ride says nothing is planned and leads to Workouts", async () => {
@@ -169,7 +203,7 @@ test("a refused load is the notice's, and today's ride is back to nothing planne
 });
 
 test("devices list who is paired for each role", async () => {
-  install({ paired: { trainer: neo, heart_rate: hrm } });
+  setup({}, { devices: paired({ trainer: neo, strap: hrm }) });
   open();
   const list = await panel("Devices").findByRole("list", {
     name: "Paired devices",
@@ -186,7 +220,7 @@ test("devices list who is paired for each role", async () => {
 });
 
 test("without a paired trainer the devices say a ride needs one and lead to pairing", async () => {
-  install({ paired: { heart_rate: hrm } });
+  setup({}, { devices: paired({ strap: hrm }) });
   open();
   const devices = panel("Devices");
   expect(
@@ -201,40 +235,47 @@ test("without a paired trainer the devices say a ride needs one and lead to pair
   expect(route()).toBe("settings/devices");
 });
 
-test("while a ride is loaded the devices show its links, read again once the load settles", async () => {
-  const { w, b } = withLoad({ paired: { trainer: neo, heart_rate: hrm } });
+test("while a ride is loaded the devices show its links", async () => {
+  const { ui, w } = withLoad(
+    {},
+    { devices: paired({ trainer: neo, strap: hrm }) },
+  );
   let release = () => {};
   w.gate = new Promise<void>((r) => (release = r));
   open();
   await panel("Devices").findAllByText(/paired/);
-  const reads = () => b.calls.filter((c) => c.cmd === "device_links").length;
-  const before = reads();
   const loading = startRideLoad("w-easy", "Easy spin");
-  b.links = { trainer: "ready", heart_rate: "connecting" };
   release();
   await act(() => loading);
-  await waitFor(() => expect(reads()).toBeGreaterThan(before));
-  const rows = panel("Devices").getAllByRole("listitem");
-  await waitFor(() =>
+  // The frame of the loaded ride carries the links on each device the ride holds (ADR-0001 §4.3.6).
+  ui.truth.devices = devicesOf(
+    { trainer: neo, strap: hrm },
+    { trainer: "ready", strap: "connecting" },
+  );
+  ui.changed();
+  await waitFor(() => {
+    const rows = panel("Devices").getAllByRole("listitem");
     expect(rows.map((r) => r.textContent)).toEqual([
       "TrainerTacx Neo 55624✓ connected",
       "Heart-rate strapHRM-Dual↻ connecting",
-    ]),
-  );
+    ]);
+  });
 });
 
-test("a failed device read is a notice with Retry", async () => {
-  const b = install({
-    fail: { device_links: apiError("storage", "database is locked") },
-  });
+test("a channel that cannot open is a notice; Retry opens it again at once", async () => {
+  // `ui_open` refused with `storage` (the keeper cannot read the pairings): the paired list shows the notice. The
+  // watchdog asks again every 2 s; Retry asks now, and the frame that answers it brings the devices.
+  const { ui } = setup({}, { keeperStorage: true });
   open();
   const devices = panel("Devices");
   const alert = await devices.findByRole("alert");
   expect(alert.querySelector("p")?.textContent).toBe("⚠ database is locked");
-  delete b.fail.device_links;
+  ui.truth.keeperStorage = false;
   await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
-  expect(await devices.findByRole("list")).toBeTruthy();
-  expect(devices.queryByRole("alert")).toBeNull();
+  expect(
+    await devices.findByRole("list", { name: "Paired devices" }),
+  ).toBeTruthy();
+  expect(ui.count("ui_open")).toBe(2);
 });
 
 test("the last ride is the newest one, with its figures and a Review named like History's", async () => {
@@ -265,7 +306,7 @@ test("with no rides the last ride says where rides go, and the week is all rest"
 });
 
 test("a failed ride read is one notice with Retry, and the week says it could not be read", async () => {
-  const b = install({
+  const { b } = setup({
     fail: { rides_list: apiError("storage", "disk I/O error") },
   });
   open();
@@ -281,11 +322,13 @@ test("a failed ride read is one notice with Retry, and the week says it could no
 });
 
 test("while the reads are in flight each panel says it is loading", async () => {
+  // The rides are held, and the snapshot channel's first frame has not arrived yet (`stall()`), so the devices panel
+  // is still on "Loading…" too.
+  const ui = installUi();
+  ui.stall();
   install({
-    hold: {
-      rides_list: new Promise(() => {}),
-      device_links: new Promise(() => {}),
-    },
+    others: forwardOthers(),
+    hold: { rides_list: new Promise(() => {}) },
   });
   open();
   for (const name of ["Devices", "Last 7 days", "Last ride"])
