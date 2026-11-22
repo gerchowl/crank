@@ -55,8 +55,9 @@ in brackets has the reasons and the rejected alternatives.
     background when the version changes (§2.2.2, §2.5).
 17. **ADR-0004 is amended** so its `athlete_confirm_ftp` becomes the generic proposal accept of §2.2.6 (§2.2.4).
 18. **A proposal is accepted against the evidence it froze** (the rides, MMP points and analysis version it was
-    computed from), so new rides never make it unacceptable; only a version bump or a deleted ride makes it stale, and
-    then a fresh one is raised (§2.2.4).
+    computed from), so new rides never make it unacceptable; only a version bump, a deleted evidence ride or (for the
+    FTP-from-CP proposal) a replaced CP estimate makes it stale, and then the executor re-evaluates and may raise a
+    fresh one (§2.2.4).
 19. **A gap or a pause never fails a ride's analysis**: each metric has its own gap and coverage rule, rolling windows
     never bridge a gap, and a metric below its coverage is shown as missing with the reason (§2.3.1.1).
 
@@ -143,6 +144,7 @@ pub struct Estimate {
     pub source: Source,          // Prior | SelfReport | Test | Rides | Imported (ONBOARDING §3 names)
     pub method: String,          // "prior_v1", "manual", "ramp_v1_0.75", "peak_hr_v1", "cp_ols_v1", …
     pub ride_id: Option<String>, // the ride the value came from, if any
+    pub proposal_id: Option<i64>,// the accepted proposal that wrote it, if any
     pub n: u32,                  // number of efforts or rides behind it
     pub updated_at: i64,         // UTC seconds
 }
@@ -192,10 +194,10 @@ Core commands (one per facade method, `ApiError` only):
 | Command | Does | Refuses |
 |---|---|---|
 | `athlete_model()` | the current estimate per param, the prior for unset ones, open proposals | — |
-| `athlete_set(param, value, sd?)` | appends a `self_report` row | `InvalidInput` (bounds, `lthr ≥ hr_max`, a non-finite value) |
+| `athlete_set(param, value, sd?)` | appends a `self_report` row and marks every open proposal touching that param `superseded` (§2.2.4 "Manual entry wins") | `InvalidInput` (bounds, `lthr ≥ hr_max`, a non-finite value) |
 | `athlete_history(param)` | every row, newest first | `InvalidInput` (unknown param) |
-| `athlete_revert(estimate_id)` | appends a copy | `NotFound`, `InvalidInput` (a prior row: revert to the prior is "Clear", below) |
-| `athlete_clear(param)` | appends a row of source `prior` with the current prior (or marks the param unset when there is no prior) | `InvalidInput` |
+| `athlete_revert(estimate_id)` | appends a copy; supersedes the param's open proposals as `athlete_set` does | `NotFound`, `InvalidInput` (a prior row: revert to the prior is "Clear", below) |
+| `athlete_clear(param)` | appends a row of source `prior` with the current prior (or marks the param unset when there is no prior); supersedes the param's open proposals as `athlete_set` does | `InvalidInput` |
 
 `athleteHr.ts` is replaced by a read of `athlete_model()`; its signature (`useAthleteHr`) stays, as its header promises.
 The DESIGN §5.9 amendment comes with the app issue.
@@ -294,17 +296,23 @@ does the library search the owner rule requires.
 **Evidence and acceptance.** When a proposal is raised, `evidence_json` freezes everything its value was computed
 from: the `ANALYSIS_VERSION`; the ride ids and, per ride, the inputs used (P1–P4, P7: the ride's seconds range and
 its record version; P5, P6: each fit point as `(ride_id, duration_s, watts, start_s)` and the window's dates; P8: the
-CP estimate id it read); and the value and sd it produced. `athlete_proposal_accept`:
+CP estimate id it read); and the values and sds it produced. `athlete_proposal_accept`:
 
-1. recomputes the value from the frozen evidence with the domain function of its method (a pure function of the
+1. recomputes the values from the frozen evidence with the domain function of its method (a pure function of the
    evidence, so the same inputs give the same value);
-2. checks the evidence still holds: the analysis version equals the frozen one, and every frozen ride still exists
-   with the same `ride_analysis.version` (P5/P6: with the same `ride_mmp` watts at each frozen point);
-3. writes the estimate (method, the triggering ride id, n) and marks the proposal accepted.
+2. checks the evidence still holds: the analysis version equals the frozen one, every frozen ride still exists with
+   the same `ride_analysis.version` (P5/P6: with the same `ride_mmp` watts at each frozen point), and, for P8, the
+   CP estimate it read is still the current `cp`;
+3. writes one estimate per proposed value (method, the triggering ride id, n, the proposal id) and marks the proposal
+   accepted, in one transaction.
 
-A failed check means the evidence is **stale** (a version bump re-analysed the rides, or a ride was deleted): accept
-refuses with `Conflict`, the proposal becomes `stale`, and the executor's re-analysis raises a fresh one if its rule
-still fires. New rides, and old points ageing out of the 90-day window, do **not** make a proposal stale: it states
+A failed check means the evidence is **stale**. Its causes, each recorded in `stale_reason`: `version` (a version bump
+re-analysed the rides), `ride_deleted` (a frozen evidence ride was deleted), `cp_replaced` (P8 only: the CP estimate it
+read is no longer current, because a CP proposal was accepted or the rider set, reverted or cleared CP). Accept refuses
+with `Conflict` and marks the proposal `stale`; the same marking happens eagerly, without waiting for an accept, in the
+transaction that causes it (a ride deletion, a CP change; a version bump marks every open proposal of an older version
+before the backfill starts). The executor then re-evaluates the stale proposal's triggering ride (the rules of this section, at
+the current version and model) and raises a new **generation** of it if its rule still fires. New rides, and old points ageing out of the 90-day window, do **not** make a proposal stale: it states
 what it is based on ("CP 274 ± 6 W from 4 efforts, 12 Aug–3 Nov"), and the rider decides. A proposal older than 30
 days says so beside its Accept button (convention), and a newer proposal for the same parameter supersedes it.
 
@@ -320,10 +328,20 @@ days says so beside its Accept button (convention), and a newer proposal for the
 - **Newer only.** A proposal is raised only if the ride started after the parameter's current `updated_at`, or the
   current value is the prior. Backfilling two years of rides does not bury the rider in old peaks.
 - **One open proposal per param.** A new one for the same param supersedes the open one (`superseded`).
-- **Never raised twice.** Proposals are keyed `(ride_id, param, method, analysis_version)`. The executor raises none
-  for a `(ride_id, param, method)` that already has an `accepted`, `dismissed` or `superseded` row at any version: a
-  superseded proposal lost to a newer value or to a manual entry, and re-raising it would undo that (intended). Only a
-  `stale` row lets a re-analysis at a new version raise the proposal again.
+- **Never raised twice.** Proposals are keyed `(ride_id, method, generation)`. A new generation (`generation + 1`)
+  may be raised only when the latest row for `(ride_id, method)` is `stale`, whatever its cause, at the same analysis
+  version or a new one; the executor raises none when the latest row is `open`, `accepted`, `dismissed` or
+  `superseded`: a superseded proposal lost to a newer value or to a manual entry, and re-raising it would undo that
+  (intended).
+- **Paired values.** P5 and P6 propose CP and W′ together, as one proposal with two values (`values_json`, below):
+  shown together, accepted together (two estimates in one transaction) or dismissed together. "One open proposal per
+  param", "newer only" and "manual entry wins" apply to each of its params: a manual W′ supersedes an open CP/W′
+  proposal.
+- **When the triggering ride is deleted** (no ride-delete command exists today; the issue that adds one must do this
+  in the delete's transaction): its proposal rows are deleted with it (`ON DELETE CASCADE`), whatever their status; an
+  estimate already accepted from one keeps its value, source, method and n, and its `ride_id` and `proposal_id` become
+  NULL (shown as "from a deleted ride"); it is not reverted. Proposals of *other* rides whose frozen evidence includes
+  the deleted ride (a P6 fit point) become `stale` with `ride_deleted` and are re-evaluated as above.
 - **Shown** on that ride's Review ("Peak HR 194 bpm is above your HR max 188 bpm. Use 194 as your HR max?") and in
   Settings → Athlete model, with Accept and Dismiss; Today may show a one-line card (DESIGN amendment with the app issue).
 
@@ -352,7 +370,7 @@ is a proposal; a value that only describes the rider's recent rides is a baselin
 | `ride_analysis(ride_id)` | the stored `RideAnalysis` with its version and status; `pending` while queued | `NotFound` |
 | `analysis_rerun(ride_id)` | queues it first | `NotFound`, `Conflict` (the ride is open) |
 | `athlete_proposals()` | open proposals | — |
-| `athlete_proposal_accept(proposal_id)` | **recomputes** the proposal from the stored ride at the current version; writes the estimate with method, ride id and n; marks it accepted | `NotFound`; `Conflict` if superseded, decided, or the recomputed value differs (stale proposal) |
+| `athlete_proposal_accept(proposal_id)` | recomputes the values from the proposal's **frozen evidence** and checks that evidence still holds (§2.2.4 "Evidence and acceptance"); writes one estimate per value (two for a CP/W′ pair) with method, ride id, n and the proposal id, in one transaction; marks it accepted. New rides and points ageing out of a window never refuse it | `NotFound`; `Conflict` if the proposal is not `open` (superseded, stale, decided) or its evidence check fails (it is then marked `stale`) |
 | `athlete_proposal_dismiss(proposal_id)` | marks it dismissed | `NotFound`, `Conflict` (decided) |
 
 #### 2.2.7 Failure handling
@@ -573,11 +591,15 @@ Two migrations, each with the part that needs it:
   else workout). ADR-0004's `RideKind` writes it.
 - `ALTER TABLE ride ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1` (§2.3.2): every existing ride is
   version 1; the recorder keeps writing 1 until issue 5 makes it 2.
-- `athlete_proposal (id INTEGER PRIMARY KEY, ride_id NOT NULL REFERENCES ride(id), param, value, sd, method,
-  evidence_json NOT NULL, analysis_version INTEGER NOT NULL,
-  status CHECK (status IN ('open','accepted','dismissed','superseded','stale')), created_at, decided_at,
-  estimate_id REFERENCES athlete_estimate(id), UNIQUE (ride_id, param, method, analysis_version))` (the raise rules
-  of §2.2.4 "Never raised twice" sit in the core, not in a constraint).
+- `athlete_proposal (id INTEGER PRIMARY KEY, ride_id TEXT NOT NULL REFERENCES ride(id) ON DELETE CASCADE, method TEXT
+  NOT NULL, generation INTEGER NOT NULL, values_json TEXT NOT NULL` (one or two `{param, value, sd}`: CP and W′ for P5
+  and P6, one param otherwise), `evidence_json TEXT NOT NULL, analysis_version INTEGER NOT NULL, status CHECK (status IN
+  ('open','accepted','dismissed','superseded','stale')), stale_reason CHECK (stale_reason IN ('version','ride_deleted',
+  'cp_replaced')), created_at, decided_at, UNIQUE (ride_id, method, generation))`, plus
+  `athlete_proposal_param (proposal_id REFERENCES athlete_proposal(id) ON DELETE CASCADE, param, PRIMARY KEY
+  (proposal_id, param))` so "open proposals touching param X" is an indexed query. `athlete_estimate` (rebuilt above)
+  gets `proposal_id INTEGER REFERENCES athlete_proposal(id) ON DELETE SET NULL`. The raise rules of §2.2.4 "Never raised
+  twice" sit in the core, not in a constraint.
 
 **`0006_ride_analysis.sql`** (Part 2): `ride_analysis`, `ride_metric`, `ride_mmp`, `ride_zone_time`, `ride_hist`,
 `athlete_baseline (kind, key, value_json, version, computed_at, PRIMARY KEY (kind, key))`, each with
@@ -627,9 +649,13 @@ what this ADR makes available, not what is sent.
 - **Core**: the executor runs on ride end, on rerun, and on backfill (version bump re-runs; a failed ride is not
   retried in a loop; backfill pauses while a ride is loaded); proposals P1–P8 fire and do not fire at their edges, never
   write an estimate, respect "newer only" and supersede; a P6 proposal is still acceptable after new rides arrive and
-  after its oldest point leaves the 90-day window (accept uses the frozen evidence), and becomes `stale` (`Conflict`)
-  after a version bump or a deleted ride, after which re-analysis raises a fresh one; `athlete_set` supersedes the
-  parameter's open proposals; a superseded, accepted or dismissed proposal is not raised again; accept refuses stale,
+  after its oldest point leaves the 90-day window (accept uses the frozen evidence); it becomes `stale` (`Conflict` on
+  accept) after a version bump and after one of its evidence rides is deleted, **at the same analysis version**, and
+  the re-evaluation raises generation 2; a P8 proposal becomes `stale` (`cp_replaced`) when CP is accepted, set,
+  reverted or cleared; deleting a proposal's triggering ride deletes its rows and leaves an accepted estimate with
+  NULL `ride_id`/`proposal_id`; a CP/W′ pair is accepted as two estimates in one transaction and a manual W′
+  supersedes it; `athlete_set`, `athlete_revert` and `athlete_clear` supersede the parameter's open proposals; a
+  superseded, accepted or dismissed proposal is not raised again; accept refuses stale,
   superseded and decided proposals; the snapshot is frozen at load (a Settings change mid-ride does not reach the ride); IF/TSS use the
   snapshot; a model change re-analyses nothing.
 - **App**: each mock backend models every refusal of the commands it calls (repo convention, with the core
