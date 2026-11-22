@@ -197,7 +197,8 @@ its words, an edge in its state's colour, and 32 px buttons (Go to ride, Dismiss
 §5.1.4): the keeper's phase ("– not connected", "↻ searching…", "↻ connecting…", "✓ ready", "⚠ not found" with a hint
 line, "is another app using it?" for the trainer, "keeps looking" for the strap) or, while a ride holds it, the ride's
 link ("✓ connected", "↻ connecting…", "⚠ lost"), a glyph and a word (§18.7 rule 11); **Retry** beside Devices while a
-device is not found. Workouts shows the same chips under Ride this, and Settings → Devices in each paired row, without
+device is not found and no ride is loaded. While a loaded ride holds the links the keeper is inactive: a strap that
+missed the load stays out of it (#450), so its hint is "the ride runs without it" and no Retry is offered. Workouts shows the same chips under Ride this, and Settings → Devices in each paired row, without
 Retry (it releases the devices for pairing); without a paired trainer it says a ride needs one, and **Pair a trainer** opens Settings → Devices
 (**Devices** when one is paired). **Last 7 days** is seven day cells, oldest first, today last and marked, each with its
 weekday, date, the minutes ridden (the stored summary has no TSS yet, #570; an empty day reads "no ride" to a screen reader, not a bare dash) and "rest", "no ride yet" or the number of rides; the days

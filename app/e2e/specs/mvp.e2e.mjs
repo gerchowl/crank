@@ -12,7 +12,9 @@
 // The chips are driven by Ride this, whose load connects the devices whatever the window's intent (ADR-0002 §5.1.4),
 // not by the warm views' `Likely`: a window the run cannot bring to the front (a locked session, #687) is `hidden` to
 // its page, which then tells the keeper `Release(Hidden)`. Retry's effect (a `Likely` too) is therefore the unit
-// tests' (links/chips.test.tsx, links/intent.test.ts); the walk checks that it is offered.
+// tests' (links/chips.test.tsx, links/intent.test.ts); the walk checks that it is offered. No view with link chips is
+// reachable during a ride (the ride screen has no rail): step 7's losses are read from the status bar's device pill,
+// and step 8 checks that the chips come back to the keeper's phases once the ride has ended.
 //
 // The ride is the built-in "Sensor check (3 min)" (crates/crank-core/src/library.rs `BUILTIN`): FTP 250 W, 1 min each at
 // 50 %, 80 % and 40 %, so its plan targets are 125 W, 200 W and 100 W. The simulator's scan offers "crank sim trainer"
@@ -432,8 +434,10 @@ describe("MVP walk (#256 critical path, sim)", () => {
 
   it("7. a trainer dropout, then a strap dropout: each shows its loss, then the reconnect", async () => {
     // #256: "a sim dropout of the trainer […] shows the loss state, then the reconnect". The trainer's banner says it
-    // is lost (banners.tsx, DESIGN §6.5), and so does its chip, the status bar's pill (#681): between attempts it reads
-    // "lost" or "connecting", so its values are recorded and the loss must be among them.
+    // is lost (banners.tsx, DESIGN §6.5), and so does the status bar's device pill (Ride.tsx `Pill`, not a link chip:
+    // the ride screen has no rail, so no view with link chips is reachable during the ride). Between attempts the pill
+    // reads "lost" or "connecting", so its values are recorded and the loss must be among them. The link chips are
+    // checked after the ride, in step 8.
     await watch("neo-pill", sel.pill("NEO"), "data-link");
     expect(await simFault("trainer", DOWN_MS)).toBeNull();
     await expect($(sel.banner("loss-trainer"))).toBeDisplayed({ wait: UI_MS });
@@ -501,7 +505,7 @@ describe("MVP walk (#256 critical path, sim)", () => {
     await expect($(sel.stateLine)).toHaveText("Riding");
   });
 
-  it("8. End → the summary shows the ride's basics", async () => {
+  it("8. End → the summary shows the ride's basics; the link chips are the keeper's again", async () => {
     // #256: "end". End asks first; End ride ends it, and the app lands on the ride's summary (History, #106 MVP).
     await $(sel.key("End")).click();
     await $(sel.confirmEnd).click();
@@ -523,6 +527,29 @@ describe("MVP walk (#256 critical path, sim)", () => {
       join(outDir, "mvp-ride.json"),
       JSON.stringify({ workout: WORKOUT, duration }),
     );
+
+    // #681: after the ride the devices are the keeper's again. The ride's end released both (`cold`, ADR-0002 §5.1.1),
+    // so Today's link chips show the keeper's phase, never the ride's stale "connected" nor step 7's "lost". (On a
+    // visible window the keeper then warms them up; on this host's locked session the page is hidden, #687.)
+    await $(sel.rail("Today")).click();
+    const KEEPER = ["cold", "searching", "connecting", "ready"];
+    for (const role of ["trainer", "strap"]) {
+      let state = null;
+      await browser.waitUntil(
+        async () => {
+          state = await $(sel.linkChip(role)).getAttribute("data-state");
+          return KEEPER.includes(state);
+        },
+        {
+          timeout: UI_MS,
+          timeoutMsg: `the ${role} chip did not come back to the keeper after the ride (last: ${state})`,
+        },
+      );
+      await expect($(sel.linkChip(role))).not.toHaveAttribute(
+        "data-phase",
+        "riding",
+      );
+    }
   });
 
   it("quits the app by closing its window, so step 9 relaunches it", async () => {

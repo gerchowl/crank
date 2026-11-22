@@ -3,10 +3,12 @@
 // modal error or a toast: "Trainer ↻ connecting…", "Trainer ✓ ready", "Trainer ⚠ not found" with the hedged hint "is
 // another app using it?" (until #314 tells a held trainer apart), the same for HR, whose hint is "keeps looking" (the
 // keeper retries it on its next advertisement while a warm view is shown, §5.1.2). A word and a glyph, never colour
-// alone (DESIGN §18.7 rule 11).
+// alone (DESIGN §18.7 rule 11). While a loaded ride holds the links (a device `riding`) the keeper is inactive (§5.1.2):
+// a strap that missed the load stays out of that ride (#450), so its hint says "the ride runs without it", never "keeps
+// looking", and no Retry is offered.
 //
 // Retry (`links_intent(Retry)`, §5.1.2) is offered where the spec offers it: on a warm view (Today, Workouts) while a
-// device is not found. It goes through the window's intent reporter (intent.ts `IntentReporter::retry`), so it keeps
+// device is not found and no ride holds the links. It goes through the window's intent reporter (intent.ts `IntentReporter::retry`), so it keeps
 // the order of the window's other intents. Settings → Devices shows the chips without Retry: it releases the links for
 // pairing (`Release(Devices)`), and a Retry there would connect them again. The Ready sheet has rows of its own
 // (ReadySheet.tsx `DEVICE_WORD`) and no Retry: a loaded ride holds its links and the keeper ignores Retry then
@@ -52,16 +54,29 @@ const HINT: Record<ChipRole, string> = {
   trainer: "is another app using it?",
   strap: "keeps looking",
 };
+/** A device not found while a loaded ride holds the links: it is not in that ride (the core fails a load without a trainer, so only a strap). */
+const NOT_IN_RIDE = "the ride runs without it";
 
-/** The chip of one device: a pure function of its `DeviceView`, tested on its own. */
-export function chipWord(role: ChipRole, d: DeviceView): ChipWord {
+/** A loaded ride holds the links: a device is `riding` (ADR-0001 §4.3.6). */
+export const rideHolds = (devices: DevicesView): boolean =>
+  devices.trainer.phase === "riding" || devices.strap.phase === "riding";
+
+/**
+ * The chip of one device: a pure function of its `DeviceView` and whether a loaded ride holds the links, tested on its
+ * own.
+ */
+export function chipWord(
+  role: ChipRole,
+  d: DeviceView,
+  held = false,
+): ChipWord {
   const state = chipState(d);
   const [glyph, word] = WORD[state];
   return {
     state,
     glyph,
     word,
-    hint: state === "not-found" ? HINT[role] : null,
+    hint: state === "not-found" ? (held ? NOT_IN_RIDE : HINT[role]) : null,
   };
 }
 
@@ -92,9 +107,14 @@ function chipState(d: DeviceView): ChipState {
   }
 }
 
-/** Retry is offered for a device that is not found. */
+/**
+ * Retry is offered for a device that is not found, and only while no loaded ride holds the links: then the keeper
+ * ignores Retry (keeper/mod.rs `Keeper::loaded_intent`), and the device stays out of that ride (#450).
+ */
 export const offersRetry = (devices: DevicesView): boolean =>
-  devices.trainer.phase === "not_found" || devices.strap.phase === "not_found";
+  !rideHolds(devices) &&
+  (devices.trainer.phase === "not_found" ||
+    devices.strap.phase === "not_found");
 
 /** The window's Retry (`links_intent(Retry)` through its intent reporter); `null` outside `LinkIntents`. */
 export const RetryContext = createContext<(() => void) | null>(null);
@@ -145,7 +165,7 @@ export function LinkHints({ devices }: { devices: DevicesView }) {
       ["strap", "HR", devices.strap],
     ] as const
   ).flatMap(([role, label, d]) => {
-    const hint = chipWord(role, d).hint;
+    const hint = chipWord(role, d, rideHolds(devices)).hint;
     return hint === null ? [] : [`${label}: ${hint}`];
   });
   return lines.map((l) => (

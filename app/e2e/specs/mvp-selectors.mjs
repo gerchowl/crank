@@ -46,7 +46,7 @@ export const linkRetry = `button.link-retry`;
 export const linkHint = (text) =>
   `//p[@class="link-hint" and normalize-space(.)=${lit(text)}]`;
 
-// Workouts (src/views/Workouts.tsx `Workouts`).// Workouts (src/views/Workouts.tsx `Workouts`).
+// Workouts (src/views/Workouts.tsx `Workouts`).
 /** A library row, by the workout's name. */
 export const workoutOption = (name) =>
   `//ul[@role="listbox" and @aria-label="Library"]/li[@role="option"][span[@class="workouts-name" and normalize-space(.)=${lit(name)}]]`;
