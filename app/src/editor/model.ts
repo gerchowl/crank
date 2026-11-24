@@ -13,7 +13,8 @@
 //   defaults (`newGroupDelay`, `depth`), the convention text editors follow; time is handed in, so the model stays pure.
 // - The selection is a node id. It survives a commit, undo or redo while that id is in the tree; a text commit gives
 //   every node a fresh id (the core's parser), so the selection follows its path there (docs/DSL.md, "Tree-helper
-//   ownership"); otherwise it collapses to null.
+//   ownership"); otherwise an undo or redo selects the node the restored state was left with (each step records its
+//   selection), else it collapses to null.
 // - `lock` is the AI rewrite's (#112): while it is set every edit, undo, redo and selection change is refused.
 import type { DslParse, DslProblem, Workout, WorkoutNode } from "../bindings";
 
@@ -51,6 +52,12 @@ export interface EditorState {
   readonly selection: string | null;
   readonly past: readonly Saved[];
   readonly future: readonly Saved[];
+  /**
+   * The selection each step of `past` and `future` was left with, index for index: undo or redo selects it again when
+   * the selection does not survive the step (undoing a Delete selects the restored node).
+   */
+  readonly leftPast: readonly (string | null)[];
+  readonly leftFuture: readonly (string | null)[];
   /** The typing burst whose commits share one undo step; null after any other commit, undo or redo. */
   readonly typing: Typing | null;
   readonly lock: Lock | null;
@@ -69,6 +76,8 @@ export function load(workout: Workout, text: string): EditorState {
     selection: null,
     past: [],
     future: [],
+    leftPast: [],
+    leftFuture: [],
     typing: null,
     lock: null,
   };
@@ -257,6 +266,10 @@ function commit(
     selection: has(nodes, selection) ? selection : null,
     past: grouped ? s.past : [...s.past, s.saved].slice(-HISTORY_LIMIT),
     future: [],
+    leftPast: grouped
+      ? s.leftPast
+      : [...s.leftPast, s.selection].slice(-HISTORY_LIMIT),
+    leftFuture: [],
   };
 }
 
@@ -311,31 +324,43 @@ export function select(s: EditorState, id: string | null): EditorState {
   return { ...s, selection: id === null || has(s.saved.nodes, id) ? id : null };
 }
 
-/** Back to the previous saved state; a draft that does not parse is dropped with the state it was typed over. */
+/**
+ * Back to the previous saved state; a draft that does not parse is dropped with the state it was typed over. The
+ * selection stays while its node exists there, else it is the one that state was left with (if it exists), else none.
+ */
 export function undo(s: EditorState): EditorState {
   const prev = s.past.at(-1);
   if (s.lock || !prev) return s;
-  return restore(s, prev, s.past.slice(0, -1), [s.saved, ...s.future]);
+  return {
+    ...restore(s, prev, s.leftPast.at(-1) ?? null),
+    past: s.past.slice(0, -1),
+    future: [s.saved, ...s.future],
+    leftPast: s.leftPast.slice(0, -1),
+    leftFuture: [s.selection, ...s.leftFuture],
+  };
 }
 export function redo(s: EditorState): EditorState {
   const next = s.future[0];
   if (s.lock || !next) return s;
-  return restore(s, next, [...s.past, s.saved], s.future.slice(1));
+  return {
+    ...restore(s, next, s.leftFuture[0] ?? null),
+    past: [...s.past, s.saved],
+    future: s.future.slice(1),
+    leftPast: [...s.leftPast, s.selection],
+    leftFuture: s.leftFuture.slice(1),
+  };
 }
-function restore(
-  s: EditorState,
-  to: Saved,
-  past: readonly Saved[],
-  future: readonly Saved[],
-): EditorState {
+function restore(s: EditorState, to: Saved, left: string | null): EditorState {
   return {
     ...s,
     saved: to,
     draft: to.text,
     problem: null,
-    selection: has(to.nodes, s.selection) ? s.selection : null,
-    past,
-    future,
+    selection: has(to.nodes, s.selection)
+      ? s.selection
+      : has(to.nodes, left)
+        ? left
+        : null,
     typing: null,
   };
 }

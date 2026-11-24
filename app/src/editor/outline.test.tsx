@@ -21,7 +21,9 @@ import { Workouts } from "../views/Workouts";
 import { DRAFTS } from "../views/editorFixture";
 import { resetRideLoad } from "../views/rideLoad";
 import { install, type Backend } from "../views/workoutsBackend";
+import type { WorkoutNode } from "../bindings";
 import { GROUP_MS } from "./model";
+import { nodeFrom } from "./OutlineEdit";
 import { typingClock } from "./WorkoutEditor";
 import { windowClose } from "./windowClose";
 
@@ -341,5 +343,189 @@ describe("drafts and the library", () => {
       (await screen.findAllByRole("option", { name: /Sweet spot 3x12/ }))[0]!,
     );
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+});
+
+describe("round 2: focus, races, read-back, nesting (#653)", () => {
+  test("deleting the only node leaves focus on Add step; Cmd/Ctrl+Z there brings it back, focused", async () => {
+    install({ trees: {} });
+    const user = userEvent.setup();
+    render(
+      <>
+        <Rail view="workouts" />
+        <Workouts />
+      </>,
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "New workout" }),
+    );
+    const box = (await screen.findByRole("textbox", {
+      name: "Text",
+    })) as HTMLTextAreaElement;
+    await user.click(tool("Add step"));
+    await waitFor(() => expect(box.value).toBe(text("one-step")));
+    await user.click(tool("Delete"));
+    await waitFor(() => expect(box.value).toBe(""));
+    await screen.findByText("No steps yet: add one, or write one in Text.");
+    expect(document.activeElement).toBe(tool("Add step"));
+    await user.keyboard("{Control>}z{/Control}");
+    await waitFor(() => expect(box.value).toBe(text("one-step")));
+    // The restored node is selected again (the step was left with it) and focused.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(row(/5:00 · 50 %/)),
+    );
+    expect(row(/5:00 · 50 %/).getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("text typed while the core checks an outline edit is kept: the edit is refused", async () => {
+    const { user, box } = await open();
+    const internals = (
+      window as unknown as {
+        __TAURI_INTERNALS__: {
+          invoke: (c: string, a?: unknown, o?: unknown) => Promise<unknown>;
+        };
+      }
+    ).__TAURI_INTERNALS__;
+    const inner = internals.invoke;
+    let release = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    internals.invoke = async (c, a, o) => {
+      if (c === "print_dsl") await gate;
+      return inner(c, a, o);
+    };
+    await user.click(row(/Cool-down/));
+    await user.click(tool("Delete"));
+    // The rider types while print_dsl is held: a draft the core refuses, so the saved tree does not change.
+    fireEvent.change(box, { target: { value: text("missing-target") } });
+    release();
+    expect(
+      (
+        await screen.findByText(
+          /The text was edited while this edit was checked/,
+        )
+      ).textContent,
+    ).toContain("Nothing was changed.");
+    expect(box.value).toBe(text("missing-target"));
+    expect((undoButton() as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("the tree committed is the one the core read back (its fresh ids)", async () => {
+    const { b, user, box } = await open();
+    await user.click(row(/Warm-up/));
+    await user.click(tool("Duplicate"));
+    await waitFor(() => expect(box.value).toBe(text("dup-warm-up")));
+    await waitFor(() => {
+      const last = calls(b, "compile_workout").at(-1)!.args.workout as {
+        nodes: { id: string }[];
+      };
+      expect(
+        last.nodes.map((n) => n.id).every((id) => id.startsWith("dsl-")),
+      ).toBe(true);
+    });
+  });
+
+  test("move and delete inside a repeat; deleting its last child removes the repeat", async () => {
+    const { user, box } = await open();
+    await user.click(row(/Rest/));
+    await user.click(tool("Move up"));
+    await waitFor(() => expect(box.value).toBe(text("rest-up")));
+    expect((document.activeElement as HTMLElement).textContent).toMatch(/Rest/);
+    await user.click(undoButton());
+    await waitFor(() => expect(box.value).toBe(text("sweet-spot")));
+    await user.click(row(/Sweet spot/));
+    await user.click(tool("Delete"));
+    await waitFor(() => expect(box.value).toBe(text("no-sweet-spot")));
+    expect((document.activeElement as HTMLElement).textContent).toMatch(/Rest/);
+    // Rest is the repeat's only child now: Delete takes the repeat with it.
+    await user.click(tool("Delete"));
+    await waitFor(() => expect(box.value).toBe(text("no-repeat")));
+    expect((document.activeElement as HTMLElement).textContent).toMatch(
+      /Cool-down/,
+    );
+    await user.click(undoButton());
+    await waitFor(() => expect(box.value).toBe(text("no-sweet-spot")));
+    await user.click(undoButton());
+    await waitFor(() => expect(box.value).toBe(text("sweet-spot")));
+  });
+
+  test("durations are whole seconds: 0.1 min is 6 s; a negative part or a fraction of a second is refused", async () => {
+    const { b, user, box } = await open();
+    await user.click(row(/Warm-up/));
+    const min = () => screen.getByRole("textbox", { name: "Minutes" });
+    const sec = () => screen.getByRole("textbox", { name: "Seconds" });
+    const apply = () =>
+      user.click(screen.getByRole("button", { name: "Apply" }));
+    await user.clear(min());
+    await user.type(min(), "5");
+    await user.clear(sec());
+    await user.type(sec(), "-30");
+    await apply();
+    await screen.findByText(/Seconds: not below 0\. Nothing was changed\./);
+    await user.clear(sec());
+    await user.type(sec(), "1.5");
+    await apply();
+    await screen.findByText(
+      /Duration: whole seconds only\. Nothing was changed\./,
+    );
+    expect(calls(b, "print_dsl")).toEqual([]);
+    await user.clear(min());
+    await user.type(min(), "0.1");
+    await user.clear(sec());
+    await user.type(sec(), "0");
+    await apply();
+    await waitFor(() => expect(box.value).toBe(text("warm-up-6s")));
+  });
+
+  test("Cmd/Ctrl+Z in a form box undoes the workout and drops values not applied", async () => {
+    const { user, box } = await open();
+    await user.click(row(/^3 ×$/));
+    const count = screen.getByRole("textbox", { name: "Count" });
+    await user.clear(count);
+    await user.type(count, "4{Enter}");
+    await waitFor(() => expect(box.value).toBe(text("sweet-spot-4x")));
+    // Typed, not applied: Cmd/Ctrl+Z in the box undoes the count; the form shows the restored node's 3, not the 7.
+    await user.clear(count);
+    await user.type(count, "7");
+    expect(document.activeElement).toBe(count);
+    await user.keyboard("{Control>}z{/Control}");
+    await waitFor(() => expect(box.value).toBe(text("sweet-spot")));
+    expect(
+      (screen.getByRole("textbox", { name: "Count" }) as HTMLInputElement)
+        .value,
+    ).toBe("3");
+  });
+});
+
+describe("nodeFrom", () => {
+  const step: WorkoutNode = {
+    type: "step",
+    id: "s",
+    label: "Ramp",
+    end: { kind: "time", s: null },
+    target: { kind: "ramp", from: null, to: 70 },
+    cadence: null,
+  };
+  test("a box left as shown keeps the node's own value, a null one included", () => {
+    const r = nodeFrom(step, {
+      label: "Ramp up",
+      min: "",
+      sec: "",
+      from: "",
+      to: "70",
+    });
+    expect(r).toEqual({ ok: true, node: { ...step, label: "Ramp up" } });
+  });
+  test("a typed value replaces a null one", () => {
+    const r = nodeFrom(step, {
+      label: "Ramp",
+      min: "",
+      sec: "",
+      from: "50",
+      to: "70",
+    });
+    expect(r).toEqual({
+      ok: true,
+      node: { ...step, target: { kind: "ramp", from: 50, to: 70 } },
+    });
   });
 });

@@ -13,7 +13,7 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 const FTP: f64 = 250.0;
 
 /// `(name, text)`: the drafts the app's tests and design scenes type or load.
-const DRAFTS: [(&str, &str); 17] = [
+const DRAFTS: [(&str, &str); 21] = [
     (
         "sweet-spot",
         "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
@@ -72,6 +72,24 @@ const DRAFTS: [(&str, &str); 17] = [
     ),
     // The outline's first step in a new workout.
     ("one-step", "5m 50%"),
+    // A duration of 0.1 min, rounded to whole seconds by the outline's form.
+    (
+        "warm-up-6s",
+        "\"Warm-up\" 6s ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    // Moves and deletes inside the repeat; deleting its last child removes the repeat.
+    (
+        "rest-up",
+        "\"Warm-up\" 10m ramp 45-70%\n3x(\"Rest\" 4m 55%, \"Sweet spot\" 12m 90%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    (
+        "no-sweet-spot",
+        "\"Warm-up\" 10m ramp 45-70%\n3x(\"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    (
+        "no-repeat",
+        "\"Warm-up\" 10m ramp 45-70%\n\"Cool-down\" 5m ramp 60-40%",
+    ),
 ];
 
 /// `(name, draft, pointer, value)`: trees no text gives, the outline's refused edits (#653): the

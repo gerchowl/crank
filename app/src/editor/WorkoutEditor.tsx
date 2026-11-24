@@ -32,6 +32,8 @@ import {
   canUndo,
   flatten,
   load,
+  nodeAt,
+  pathOf,
   parsed,
   redo,
   select,
@@ -94,25 +96,19 @@ export function describe(n: WorkoutNode): string {
 
 /**
  * The outline: the tree as one single-select listbox (WAI-ARIA APG, selection follows focus, as the library), a row
- * per node indented by its depth; a row is as tall as its words need, so a long label wraps and is never cut. After
- * an outline edit focus goes to the edited row (`focus`, a new request each time).
+ * per node indented by its depth; a row is as tall as its words need, so a long label wraps and is never cut.
  */
 function Outline({
   nodes,
   selection,
   onSelect,
-  focus,
 }: {
   nodes: readonly WorkoutNode[];
   selection: string | null;
   onSelect: (id: string) => void;
-  focus: { id: string } | null;
 }) {
   const rows = flatten(nodes);
   const refs = useRef(new Map<string, HTMLLIElement>());
-  useEffect(() => {
-    if (focus) refs.current.get(focus.id)?.focus();
-  }, [focus]);
   const stop = rows.some((r) => r.node.id === selection)
     ? selection
     : (rows[0]?.node.id ?? null);
@@ -302,7 +298,21 @@ export function WorkoutEditor({
     /** Where it is said: under the toolbar, or under the form's Apply (beside the edit that was refused). */
     at: "toolbar" | "form";
   } | null>(null);
-  const [focusRow, setFocusRow] = useState<{ id: string } | null>(null);
+  // Set by a toolbar action or an undo/redo from the outline: once the state has changed, focus goes to the selected
+  // row, or (nothing selected, e.g. the only node deleted) to the toolbar's first enabled button, Add step, so focus is
+  // never dropped to the page and Cmd/Ctrl+Z still reaches the editor.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    const el = root.current;
+    (
+      el?.querySelector<HTMLElement>(
+        '#editor-outline [aria-selected="true"]',
+      ) ??
+      el?.querySelector<HTMLElement>("[role=toolbar] button:not(:disabled)")
+    )?.focus();
+  }, [s]);
   const checking = useRef(false);
   const nextId = useRef(0);
   const fresh = () => `outline-${++nextId.current}`;
@@ -356,8 +366,10 @@ export function WorkoutEditor({
   /**
    * Commit an outline edit (DESIGN §5.7): the core prints the tree (`print_dsl`) and reads that text back
    * (`parse_dsl`); a text it refuses is a tree the text could not hold (a 0 s step, a negative target), so the edit is
-   * refused with the core's message and nothing changes. Otherwise the tree is committed with that text as one undo
-   * step, its edited node selected and focused. An edit checked while the workout changed (typing) is dropped.
+   * refused with the core's message and nothing changes. Otherwise the tree the core read back is committed with that
+   * text as one undo step (so tree and text cannot drift), its edited node selected (by path: the parse gives fresh
+   * ids) and, for a toolbar action, focused. An edit checked while the workout or the text changed (the rider typed)
+   * is refused, so no typed key is lost.
    */
   const outlineEdit = async (
     { nodes, select: to }: OutlineChange,
@@ -376,12 +388,19 @@ export function WorkoutEditor({
         return refuse(back.data.problem.message);
       if (latest.current.saved !== base)
         return refuse("The workout changed while this edit was checked.");
+      if (latest.current.draft !== base.text)
+        return refuse("The text was edited while this edit was checked.");
+      const read = back.data.nodes;
+      const path = to === null ? null : pathOf(nodes, to);
+      const pick = path === null ? null : (nodeAt(read, path)?.id ?? null);
       setOutlineRefusal(null);
-      setS((st) =>
-        st.saved === base ? applied(st, nodes, printed.data, to) : st,
-      );
       // A toolbar action moves focus to the edited row; the form keeps it, as it edits in place.
-      if (at === "toolbar" && to !== null) setFocusRow({ id: to });
+      if (at === "toolbar") refocus.current = true;
+      setS((st) =>
+        st.saved === base && st.draft === base.text
+          ? applied(st, read, printed.data, pick)
+          : st,
+      );
     } finally {
       checking.current = false;
     }
@@ -508,6 +527,9 @@ export function WorkoutEditor({
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== "z")
         return;
       e.preventDefault();
+      // From the outline (a row or the toolbar) focus follows the restored selection.
+      if ((e.target as Element).closest("#editor-outline, [role=toolbar]"))
+        refocus.current = true;
       setS((st) => (e.shiftKey ? redo(st) : undo(st)));
     };
     el.addEventListener("keydown", onKey);
@@ -658,13 +680,14 @@ export function WorkoutEditor({
                 setOutlineRefusal(null);
                 setS((st) => select(st, id));
               }}
-              focus={focusRow}
             />
           )}
           {picked && (
             <BlockForm
-              key={picked.id}
+              // By path, not id: a commit gives every node a fresh id, and the form keeps focus across it.
+              key={pathOf(saved.nodes, picked.id)?.join(".")}
               node={picked}
+              version={saved}
               blocked={outlineBlocked}
               onApply={(next) =>
                 void outlineEdit(

@@ -185,7 +185,7 @@ test("a burst of typing is one undo step; a pause starts the next", async () => 
   ).toBe(true);
 });
 
-test("the profile marks the selected node's blocks; the selection survives undo while its node exists", async () => {
+test("the profile marks the selected node's blocks; the selection survives undo while its node exists, else returns", async () => {
   const { user, box } = await open();
   await user.click(
     within(outline()).getByRole("option", { name: /Cool-down/ }),
@@ -217,10 +217,11 @@ test("the profile marks the selected node's blocks; the selection survives undo 
   expect(
     within(outline()).queryByRole("option", { selected: true }),
   ).toBeNull();
+  // Undo brings Cool-down back, selected again: the step was left with it selected (#653).
   await user.click(screen.getByRole("button", { name: "Undo" }));
   expect(
-    within(outline()).queryByRole("option", { selected: true }),
-  ).toBeNull();
+    within(outline()).getByRole("option", { selected: true }).textContent,
+  ).toMatch(/Cool-down/);
 });
 
 test("a failed parse shows its error until the next parse answers, even one that commits nothing", async () => {

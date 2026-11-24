@@ -127,12 +127,27 @@ export function outlineActions(
     {
       label: "Delete",
       icon: <Trash2 {...icon} />,
-      change: on((n) => ({
-        nodes: removeNode(nodes, n.id),
-        select: afterRemoval(nodes, n.id),
-      })),
+      // A repeat's only child goes with its repeat: an empty repeat is no workout item (the core does not read one).
+      change: on((n) => {
+        const gone = soleChildOf(nodes, n.id) ?? n;
+        return {
+          nodes: removeNode(nodes, gone.id),
+          select: afterRemoval(nodes, gone.id),
+        };
+      }),
     },
   ];
+}
+/** The repeat whose only child is the node with `id`, or null. */
+function soleChildOf(
+  nodes: readonly WorkoutNode[],
+  id: string,
+): WorkoutNode | null {
+  const p = pathOf(nodes, id);
+  const parent = p && p.length > 1 ? nodeAt(nodes, p.slice(0, -1)) : null;
+  return parent?.type === "repeat" && parent.children.length === 1
+    ? parent
+    : null;
 }
 function findNode(nodes: readonly WorkoutNode[], id: string) {
   const p = pathOf(nodes, id);
@@ -270,30 +285,48 @@ function valuesOf(n: WorkoutNode): Record<string, string> {
     out[f.key] = str(t[f.key] as number | null);
   return out;
 }
-/** The node the form's values describe, or why they do not describe one (a field that is no number). */
+/**
+ * The node the form's values `v` describe, or why they describe none. A box left as `valuesOf` showed it keeps the
+ * node's own value (a null value, shown empty, stays null: ADR-0008's `auto` ends land there). A changed duration is
+ * Minutes × 60 + Seconds, neither negative, in whole seconds (0.1 min is 6 s; float noise is rounded away, a fraction
+ * of a second is refused).
+ */
 export function nodeFrom(
   n: WorkoutNode,
   v: Record<string, string>,
 ): { ok: true; node: WorkoutNode } | { ok: false; why: string } {
-  const label = (v.label ?? "").trim() === "" ? null : v.label!.trim();
+  const was = valuesOf(n);
+  const changed = (k: string) => (v[k] ?? "") !== (was[k] ?? "");
+  const label = !changed("label")
+    ? n.label
+    : (v.label ?? "").trim() === ""
+      ? null
+      : v.label!.trim();
   if (n.type === "repeat") {
+    if (!changed("count")) return { ok: true, node: { ...n, label } };
     const count = readValue("Count", v.count ?? "");
     if (!count.ok) return count;
     return { ok: true, node: { ...n, label, count: count.value } };
   }
   let end = n.end;
-  if (end.kind === "time") {
+  if (end.kind === "time" && (changed("min") || changed("sec"))) {
     const min = readValue("Minutes", v.min ?? "");
     if (!min.ok) return min;
     const sec = readValue("Seconds", v.sec ?? "");
     if (!sec.ok) return sec;
-    end = { kind: "time", s: min.value * 60 + sec.value };
+    if (min.value < 0) return { ok: false, why: "Minutes: not below 0" };
+    if (sec.value < 0) return { ok: false, why: "Seconds: not below 0" };
+    const total = min.value * 60 + sec.value;
+    const whole = Math.round(total);
+    if (Math.abs(total - whole) > 1e-6)
+      return { ok: false, why: "Duration: whole seconds only" };
+    end = { kind: "time", s: whole };
   }
   let target = n.target;
   const fields = powerFields(target);
   if (fields) {
     const t: Record<string, unknown> = { ...target };
-    for (const f of fields) {
+    for (const f of fields.filter((f) => changed(f.key))) {
       const r = readValue(f.label, v[f.key] ?? "");
       if (!r.ok) return r;
       t[f.key] = r.value;
@@ -310,12 +343,15 @@ export function nodeFrom(
  */
 export function BlockForm({
   node,
+  version,
   blocked,
   onApply,
   onRefuse,
   refusal,
 }: {
   node: WorkoutNode;
+  /** The saved state the form shows: any change of it (a commit, undo or redo) shows the node's values afresh. */
+  version: unknown;
   blocked: string | null;
   /** Commit `next` in place of `node`. */
   onApply: (next: WorkoutNode) => void;
@@ -325,12 +361,11 @@ export function BlockForm({
   refusal: ReactNode;
 }) {
   const [v, setV] = useState(() => valuesOf(node));
-  // A committed edit or an undo shows the node's new values; a refused edit keeps what was typed. (Another selection
-  // is another form: the editor keys it by the node's id.) Adjusted while rendering, as React advises for state that
-  // follows a prop.
-  const [shown, setShown] = useState(node);
-  if (shown !== node) {
-    setShown(node);
+  // A commit, an undo or a redo shows the node's values afresh (values typed and not applied are dropped); a refused
+  // edit keeps what was typed. Adjusted while rendering, as React advises for state that follows a prop.
+  const [shown, setShown] = useState({ node, version });
+  if (shown.node !== node || shown.version !== version) {
+    setShown({ node, version });
     setV(valuesOf(node));
   }
   const id = useId();

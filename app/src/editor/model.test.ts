@@ -263,7 +263,7 @@ describe("DSL ↔ tree", () => {
 });
 
 describe("selection", () => {
-  it("survives undo and redo while its node exists, else collapses to null", () => {
+  it("survives undo and redo while its node exists, else is the one the restored state was left with", () => {
     const { s, core } = fresh();
     const cool = s.saved.nodes[2]!.id;
     const warm = s.saved.nodes[0]!.id;
@@ -273,7 +273,13 @@ describe("selection", () => {
     expect(redo(undo(b)).selection).toBe(warm);
     const onCool = select(undo(b), cool);
     expect(onCool.selection).toBe(cool);
-    expect(redo(onCool).selection).toBeNull();
+    // Cool-down is gone after the redo: the selection is the one that state was left with (#653).
+    expect(redo(onCool).selection).toBe(warm);
+    // Undoing a removal selects the removed node again; with nothing to fall back on, nothing is selected.
+    const del = applied(select(s, cool), gone, core.print_dsl(gone), null);
+    expect(del.selection).toBeNull();
+    expect(undo(del).selection).toBe(cool);
+    expect(redo(undo(del)).selection).toBeNull();
   });
 
   it("follows its path through a text commit, which gives every node a fresh id", () => {

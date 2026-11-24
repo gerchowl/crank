@@ -474,21 +474,27 @@ buttons (§18.4), wrapping onto as many rows as the pane needs: **Add step** · 
 50 % FTP after the selected node, in its list (with nothing selected, at the end: an empty workout's first step);
 Duplicate inserts a copy (fresh ids) after it; Wrap in repeat puts it in a new 2 × repeat; Unwrap (a repeat) puts its
 children in its place; Move up / Move down swap it with its neighbour in its own list (a node never moves into or out of
-a repeat: wrap or unwrap does that); Delete removes it and its subtree. An action that does not apply to the selection
+a repeat: wrap or unwrap does that); Delete removes it and its subtree, and a repeat's only child goes with its repeat
+(an empty repeat is no workout item: the text cannot hold one). An action that does not apply to the selection
 is disabled (Unwrap on a step, Move up on a first child, all but Add step with nothing selected). Under the outline,
 past a rule, the **selected node's form** ("Selected step" / "Selected repeat"): a step's **Label**, its duration as
 **Minutes** and **Seconds** (a time end) and its power (**Power** in % FTP or W for a flat target, **Ramp from** /
 **Ramp to** for a ramp, **Range low** / **Range high** for a range), a repeat's **Label** and **Count**; each box is
 named by its label, its unit beside it as its description. **Apply** (32 px default; Enter in a box is the same)
-commits the changed node; with nothing changed it commits nothing. What the form does not edit (another end, a
+commits the changed node; with nothing changed it commits nothing. A box left as shown keeps the node's own value (a
+value the core holds as none, shown empty, stays none: ADR-0008's `auto` ends land there); a changed duration is
+Minutes × 60 + Seconds, neither below 0 ("Seconds: not below 0"), in whole seconds (0.1 min is 6 s; a fraction of a
+second is refused: "Duration: whole seconds only"). What the form does not edit (another end, a
 heart-rate or free target, cadence, a repeat's progression or `!last`) is named under it ("Its target is edited in
 Text."); switching a kind from the form is #730. The value boxes are text boxes, not number spinners, so ADR-0008 can make `auto` (a ramp end) and `$name` (a
 variable) further values of the same box; writing a number over a bound value unbinds it (ADR-0008 §2.12). An empty
 workout shows the toolbar, Add step alone enabled, and "No steps yet: add one, or write one in Text."
 **Every outline edit is one commit through the core**: the next tree is printed (`print_dsl`) and that text read back
-(`parse_dsl`); the tree is committed with that canonical text as **one undo step** (a structural edit, above), its
-edited node selected (the new or moved node; after a Delete the next row past it, else the row before), and the text
-view shows the text. A tree whose text the core refuses (a 0 s step: "Duration must be > 0"; a negative target:
+(`parse_dsl`); **the tree the core read back** is committed with that canonical text as **one undo step** (a structural
+edit, above), so tree and text cannot drift, its edited node selected (the new or moved node; after a Delete the next
+row past it, else the row before), and the text view shows the text. If the workout or the text changed while the core
+was checking (the rider typed), the edit is refused ("The text was edited while this edit was checked."), so no typed
+key is lost. A tree whose text the core refuses (a 0 s step: "Duration must be > 0"; a negative target:
 "Unknown token '-10%'") is **refused**: nothing changes, and ⚠, the core's message and "Nothing was changed." show
 beside the edit (a polite live region: under the toolbar for an action, under Apply for the form), the form keeping
 what was typed; a box that holds no number is refused the
@@ -498,8 +504,11 @@ reason under the toolbar ("Fix the text to edit the outline.", "The outline wait
 edit is an unsaved change, as typing is. **Keyboard** (no new shortcut, §5.9): the toolbar is a WAI-ARIA toolbar, one
 tab stop, ← / → / Home / End between its enabled buttons, Enter or Space to act; it comes before the outline in the tab
 order, so Shift+Tab from a row reaches it, and after an action focus is on the edited row (selection follows focus, so
-Tab into the outline selects the row it lands on). Tab from the outline reaches the form; Enter in a box applies and
-focus stays there. The form follows an outline as long as its workout, so it may sit below the window, where the
+Tab into the outline selects the row it lands on); when nothing is left to select (the only node deleted) focus is on
+Add step, never dropped to the page. Undo and redo select the node the restored state was left with when the selection
+does not survive (undoing a Delete selects the restored node), and from a row or the toolbar focus follows it. Tab from the outline reaches the form; Enter in a box applies and
+focus stays there. Cmd/Ctrl+Z in a box is the editor's undo of the whole workout (§5.9's exception), not the box's own:
+values typed and not yet applied are dropped, and the form shows the restored node's values. The form follows an outline as long as its workout, so it may sit below the window, where the
 page scrolls and Tab reaches it (the toolbar stays in the window). A built-in is never edited: Edit is offered only for the rider's own workouts, and Duplicate & edit
 makes the copy the outline edits. Reordering by drag and drop is not offered.
 
