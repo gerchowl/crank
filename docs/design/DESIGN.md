@@ -474,8 +474,9 @@ buttons (§18.4), wrapping onto as many rows as the pane needs: **Add step** · 
 50 % FTP after the selected node, in its list (with nothing selected, at the end: an empty workout's first step);
 Duplicate inserts a copy (fresh ids) after it; Wrap in repeat puts it in a new 2 × repeat; Unwrap (a repeat) puts its
 children in its place; Move up / Move down swap it with its neighbour in its own list (a node never moves into or out of
-a repeat: wrap or unwrap does that); Delete removes it and its subtree, and a repeat's only child goes with its repeat
-(an empty repeat is no workout item: the text cannot hold one). An action that does not apply to the selection
+a repeat: wrap or unwrap does that); Delete removes it and its subtree, and a repeat's only child goes with its repeat,
+and so on outwards: every repeat the delete would leave empty is removed with it (an empty repeat is no workout item:
+the text cannot hold one). An action that does not apply to the selection
 is disabled (Unwrap on a step, Move up on a first child, all but Add step with nothing selected). Under the outline,
 past a rule, the **selected node's form** ("Selected step" / "Selected repeat"): a step's **Label**, its duration as
 **Minutes** and **Seconds** (a time end) and its power (**Power** in % FTP or W for a flat target, **Ramp from** /
@@ -483,7 +484,7 @@ past a rule, the **selected node's form** ("Selected step" / "Selected repeat"):
 named by its label, its unit beside it as its description. **Apply** (32 px default; Enter in a box is the same)
 commits the changed node; with nothing changed it commits nothing. A box left as shown keeps the node's own value (a
 value the core holds as none, shown empty, stays none: ADR-0008's `auto` ends land there); a changed duration is
-Minutes × 60 + Seconds, neither below 0 ("Seconds: not below 0"), in whole seconds (0.1 min is 6 s; a fraction of a
+Minutes × 60 + Seconds (an empty box beside a filled one counts as 0), neither below 0 ("Seconds: not below 0"), in whole seconds (0.1 min is 6 s; a fraction of a
 second is refused: "Duration: whole seconds only"). What the form does not edit (another end, a
 heart-rate or free target, cadence, a repeat's progression or `!last`) is named under it ("Its target is edited in
 Text."); switching a kind from the form is #730. The value boxes are text boxes, not number spinners, so ADR-0008 can make `auto` (a ramp end) and `$name` (a

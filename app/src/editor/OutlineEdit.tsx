@@ -138,16 +138,23 @@ export function outlineActions(
     },
   ];
 }
-/** The repeat whose only child is the node with `id`, or null. */
-function soleChildOf(
+/**
+ * The outermost repeat that deleting the node with `id` would leave empty: its parent when it is that repeat's only
+ * child, then that repeat's parent when it is the only child there, and so on (DESIGN §5.7); null when none.
+ */
+export function soleChildOf(
   nodes: readonly WorkoutNode[],
   id: string,
 ): WorkoutNode | null {
-  const p = pathOf(nodes, id);
-  const parent = p && p.length > 1 ? nodeAt(nodes, p.slice(0, -1)) : null;
-  return parent?.type === "repeat" && parent.children.length === 1
-    ? parent
-    : null;
+  let p = pathOf(nodes, id);
+  let empty: WorkoutNode | null = null;
+  while (p && p.length > 1) {
+    const parent = nodeAt(nodes, p.slice(0, -1));
+    if (parent?.type !== "repeat" || parent.children.length !== 1) break;
+    empty = parent;
+    p = p.slice(0, -1);
+  }
+  return empty;
 }
 function findNode(nodes: readonly WorkoutNode[], id: string) {
   const p = pathOf(nodes, id);
@@ -310,9 +317,17 @@ export function nodeFrom(
   }
   let end = n.end;
   if (end.kind === "time" && (changed("min") || changed("sec"))) {
-    const min = readValue("Minutes", v.min ?? "");
+    // An empty box beside a filled one counts as 0 (a step whose duration the core holds as none shows both empty).
+    const [rawMin, rawSec] = [(v.min ?? "").trim(), (v.sec ?? "").trim()];
+    const min =
+      rawMin === "" && rawSec !== ""
+        ? { ok: true as const, value: 0 }
+        : readValue("Minutes", rawMin);
     if (!min.ok) return min;
-    const sec = readValue("Seconds", v.sec ?? "");
+    const sec =
+      rawSec === "" && rawMin !== ""
+        ? { ok: true as const, value: 0 }
+        : readValue("Seconds", rawSec);
     if (!sec.ok) return sec;
     if (min.value < 0) return { ok: false, why: "Minutes: not below 0" };
     if (sec.value < 0) return { ok: false, why: "Seconds: not below 0" };

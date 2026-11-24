@@ -394,13 +394,13 @@ export function WorkoutEditor({
       const path = to === null ? null : pathOf(nodes, to);
       const pick = path === null ? null : (nodeAt(read, path)?.id ?? null);
       setOutlineRefusal(null);
-      // A toolbar action moves focus to the edited row; the form keeps it, as it edits in place.
-      if (at === "toolbar") refocus.current = true;
-      setS((st) =>
-        st.saved === base && st.draft === base.text
-          ? applied(st, read, printed.data, pick)
-          : st,
-      );
+      // A toolbar action moves focus to the edited row; the form keeps it, as it edits in place. The flag is set only
+      // with the commit itself, so a state that did not change never leaves it set for a later keystroke.
+      setS((st) => {
+        if (st.saved !== base || st.draft !== base.text) return st;
+        if (at === "toolbar") refocus.current = true;
+        return applied(st, read, printed.data, pick);
+      });
     } finally {
       checking.current = false;
     }
@@ -527,10 +527,16 @@ export function WorkoutEditor({
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== "z")
         return;
       e.preventDefault();
-      // From the outline (a row or the toolbar) focus follows the restored selection.
-      if ((e.target as Element).closest("#editor-outline, [role=toolbar]"))
-        refocus.current = true;
-      setS((st) => (e.shiftKey ? redo(st) : undo(st)));
+      // From the outline (a row or the toolbar) focus follows the restored selection, only when there was a step to
+      // undo or redo (nothing to undo, or the lock, changes nothing and must not move focus later).
+      const fromOutline =
+        (e.target as Element).closest("#editor-outline, [role=toolbar]") !==
+        null;
+      setS((st) => {
+        const next = e.shiftKey ? redo(st) : undo(st);
+        if (next !== st && fromOutline) refocus.current = true;
+        return next;
+      });
     };
     el.addEventListener("keydown", onKey);
     return () => el.removeEventListener("keydown", onKey);

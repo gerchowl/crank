@@ -23,7 +23,7 @@ import { resetRideLoad } from "../views/rideLoad";
 import { install, type Backend } from "../views/workoutsBackend";
 import type { WorkoutNode } from "../bindings";
 import { GROUP_MS } from "./model";
-import { nodeFrom } from "./OutlineEdit";
+import { nodeFrom, outlineActions, soleChildOf } from "./OutlineEdit";
 import { typingClock } from "./WorkoutEditor";
 import { windowClose } from "./windowClose";
 
@@ -526,6 +526,74 @@ describe("nodeFrom", () => {
     expect(r).toEqual({
       ok: true,
       node: { ...step, target: { kind: "ramp", from: 50, to: 70 } },
+    });
+  });
+});
+
+describe("round 3 (#653)", () => {
+  test("Cmd/Ctrl+Z with nothing to undo leaves no stale refocus: a later text commit keeps focus in Text", async () => {
+    const { user, box } = await open();
+    await user.click(row(/Warm-up/));
+    expect((undoButton() as HTMLButtonElement).disabled).toBe(true);
+    await user.keyboard("{Control>}z{/Control}"); // focus on a row, nothing to undo
+    await user.keyboard("{Control>}{Shift>}z{/Shift}{/Control}"); // nothing to redo
+    box.focus();
+    fireEvent.change(box, { target: { value: text("sweet-spot-4x") } });
+    await waitFor(() => expect(row(/^4 ×$/)).toBeTruthy());
+    expect(document.activeElement).toBe(box);
+  });
+
+  const rest: WorkoutNode = {
+    type: "step",
+    id: "rest",
+    label: "Rest",
+    end: { kind: "time", s: 240 },
+    target: { kind: "pct_ftp", value: 55 },
+    cadence: null,
+  };
+  const warm: WorkoutNode = { ...rest, id: "warm", label: "Warm-up" };
+  const rep = (id: string, children: WorkoutNode[]): WorkoutNode => ({
+    type: "repeat",
+    id,
+    label: null,
+    count: 2,
+    children,
+    progression: null,
+    skipLastRest: null,
+  });
+  const del = (nodes: WorkoutNode[], id: string) =>
+    outlineActions(nodes, id).find((a) => a.label === "Delete")!.change!(
+      () => "x",
+    );
+
+  test("deleting the only child of nested single-child repeats removes every repeat it would leave empty", () => {
+    const nodes = [warm, rep("outer", [rep("inner", [rest])])];
+    expect(soleChildOf(nodes, "rest")?.id).toBe("outer");
+    expect(del(nodes, "rest")).toEqual({ nodes: [warm], select: "warm" });
+    // An outer repeat with another child keeps it; only the emptied inner repeat goes.
+    const other = { ...rest, id: "easy", label: "Easy" };
+    const mixed = [warm, rep("outer", [rep("inner", [rest]), other])];
+    expect(soleChildOf(mixed, "rest")?.id).toBe("inner");
+    expect(del(mixed, "rest").nodes).toEqual([warm, rep("outer", [other])]);
+    expect(soleChildOf(mixed, "easy")).toBeNull();
+  });
+
+  test("an empty duration box beside a filled one counts as 0", () => {
+    const none: WorkoutNode = { ...rest, end: { kind: "time", s: null } };
+    const at = (min: string, sec: string) => {
+      const r = nodeFrom(none, { label: "Rest", min, sec, value: "55" });
+      return r.ok && r.node.type === "step" && r.node.end.kind === "time"
+        ? r.node.end.s
+        : r;
+    };
+    expect(at("5", "")).toBe(300);
+    expect(at("", "45")).toBe(45);
+    expect(at("", "")).toBe(null); // left as shown: stays none
+    expect(
+      nodeFrom(rest, { label: "Rest", min: "", sec: "", value: "55" }),
+    ).toEqual({
+      ok: false,
+      why: "Minutes: enter a number",
     });
   });
 });
