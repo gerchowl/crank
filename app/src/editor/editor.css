@@ -134,3 +134,36 @@
 .editor-pane .workouts-stats div:first-child {
   grid-column: 1 / -1;
 }
+
+/* Saving (DESIGN §5.7, #110): the name, then Save, Save as new and Ride this; a reason under them when one cannot act. */
+.editor-store {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+.editor-store .workouts-blocked {
+  flex-basis: 100%;
+  max-width: 70ch;
+}
+.editor-name {
+  display: flex;
+  flex: 1 1 240px;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.editor-name input {
+  flex: 1;
+  min-width: 0;
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-m);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+.editor-name input[aria-invalid="true"] {
+  border-color: var(--status-critical);
+}

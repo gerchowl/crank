@@ -7,8 +7,11 @@
 //!   handle gone" end path would not run and ERG could stay applied (S1). Two paths end it
 //!   ([`Core::shutdown`], bounded by [`QUIT_CAP`]):
 //!   1. **Exit requests** (last window closed, `app.exit`, the Quit menu item, which is
-//!      replaced by one that calls `app.exit(0)`): the first `ExitRequested` is held back,
-//!      the ride is ended, and only then does the app exit.
+//!      replaced by one that asks each window to close ([`quit`]; the last one closed is an
+//!      exit request, and with no window it calls `app.exit(0)`)): the first `ExitRequested`
+//!      is held back, the ride is ended, and only then does the app exit. A close request
+//!      lets the page ask first: the workout editor with unsaved changes refuses it and asks
+//!      Save / Discard / Cancel (DESIGN §5.7, #110), then closes the window itself.
 //!   2. **The backstop**: `NSApp terminate:` (Dock Quit, logout, system shutdown) reaches
 //!      tao's `applicationWillTerminate:` and produces only [`RunEvent::Exit`], with no
 //!      `ExitRequested` to hold back. If the shutdown has not run, `Exit` runs it
@@ -103,7 +106,7 @@ impl<R: Runtime> Wire<R> for tauri::Builder<R> {
 /// Register the window and page-load handlers on `builder`, and on macOS the Quit menu
 /// (`menu`, which exists on macOS only, and [`menu_event`]). The run-event handler is registered by [`run`].
 ///
-/// Per platform: macOS gets the replaced Quit item, so Cmd+Q goes through `app.exit(0)`.
+/// Per platform: macOS gets the replaced Quit item, so Cmd+Q goes through [`quit`].
 /// Windows and Linux get no custom menu (Tauri adds none there, so installing one would add
 /// a menu bar with a built-in Quit that bypasses the ride end); their quits are the exit
 /// requests of the module docs, held back by the run-event handler of [`run`]
@@ -131,9 +134,9 @@ pub fn install_with<R: Runtime, W: Wire<R>>(
         })
         .on_window_event(window_event);
     #[cfg(target_os = "macos")]
-    let builder = builder
-        .menu(menu)
-        .on_menu_event(move |app, event| menu_event(event.id(), |code| exit(app, code)));
+    let builder = builder.menu(menu).on_menu_event(move |app, event| {
+        menu_event(event.id(), || quit(app, |code| exit(app, code)));
+    });
     // Only macOS has a menu to replace; Windows and Linux get no menu from Tauri and none here.
     #[cfg(not(target_os = "macos"))]
     drop(exit);
@@ -237,7 +240,7 @@ impl<R: Runtime> ApplicationMenu for Application<'_, R> {
 /// [`install`] registers it nowhere else.
 ///
 /// The default item sends `NSApp terminate:`, which exits without an `ExitRequested` the
-/// shutdown could hold back; the replacement goes through `app.exit(0)` ([`menu_event`]).
+/// shutdown could hold back; the replacement goes through [`quit`] ([`menu_event`]).
 /// The Quit item is the last of the first (application) submenu; it is replaced only after
 /// [`replace_quit`] verified it, otherwise the default menu stays as it is.
 ///
@@ -258,9 +261,27 @@ pub fn menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     Ok(menu)
 }
 
-/// A menu item was chosen: the Quit item exits through `exit`.
-pub fn menu_event(id: &MenuId, exit: impl FnOnce(i32)) {
+/// A menu item was chosen: the Quit item runs `quit`.
+pub fn menu_event(id: &MenuId, quit: impl FnOnce()) {
     if id.as_ref() == QUIT_ITEM_ID {
+        quit();
+    }
+}
+
+/// The Quit item (Cmd+Q): ask every window to close, as its close button does, so a page can
+/// keep its window open to ask first (the workout editor's unsaved changes, DESIGN §5.7); the
+/// last window closed is an exit request (path 1 of the module docs). With no window open, or
+/// a close Tauri refuses, it exits through `exit` at once: a quit is never lost.
+pub fn quit<R: Runtime>(app: &AppHandle<R>, exit: impl FnOnce(i32)) {
+    let windows = app.webview_windows();
+    let mut failed = windows.is_empty();
+    for (label, window) in windows {
+        if let Err(error) = window.close() {
+            tracing::warn!(%label, %error, "quit: the window did not take the close request");
+            failed = true;
+        }
+    }
+    if failed {
         exit(0);
     }
 }

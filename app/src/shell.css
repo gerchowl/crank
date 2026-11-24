@@ -219,7 +219,8 @@ main.mode {
   color: var(--accent-ink);
 }
 
-.keys-scrim {
+.keys-scrim,
+.dialog-scrim {
   position: fixed;
   inset: 0;
   z-index: 150;
@@ -227,7 +228,8 @@ main.mode {
   place-items: center;
   background: var(--scrim);
 }
-.keys-dialog {
+.keys-dialog,
+.dialog {
   width: min(480px, 90vw);
   padding: var(--space-5);
   border-radius: var(--radius-l);
@@ -243,6 +245,36 @@ main.mode {
 }
 .keys-dialog dd {
   margin: 0;
+}
+
+/* A question with its answers (Dialog.tsx, DESIGN §5.7 "Unsaved changes"): the title, what is at stake, then the answers
+   in one row, the recommended one primary; a disabled answer says why under the row. */
+.dialog {
+  display: grid;
+  gap: var(--space-4);
+}
+.dialog h2 {
+  margin: 0;
+  font-size: var(--text-m);
+}
+.dialog p {
+  margin: 0;
+}
+.dialog-answers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.dialog-answers button {
+  height: var(--control-h);
+  min-height: 0;
+  padding: 0 var(--space-3);
+  border-color: var(--edge);
+  border-radius: var(--radius-m);
+  font-size: var(--text-s);
+}
+.dialog-reason {
+  color: var(--ink-2);
 }
 
 /* Cold-start screen: brand pair of the mark, deliberately not the app tokens (BRAND.md §Colour). */

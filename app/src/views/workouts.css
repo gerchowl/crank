@@ -11,6 +11,14 @@
   margin: 0;
   font-size: var(--text-l);
 }
+/* The page title and New workout, which opens the editor on an empty workout (§5.7, #110). */
+.workouts-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
 .workouts p {
   margin: 0;
 }

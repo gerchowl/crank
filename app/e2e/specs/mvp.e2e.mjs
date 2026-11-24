@@ -16,8 +16,10 @@
 // reachable during a ride (the ride screen has no rail): step 7's losses are read from the status bar's device pill,
 // and step 8 checks that the chips come back to the keeper's phases once the ride has ended.
 //
-// The ride is the built-in "Sensor check (3 min)" (crates/crank-core/src/library.rs `BUILTIN`): FTP 250 W, 1 min each at
-// 50 %, 80 % and 40 %, so its plan targets are 125 W, 200 W and 100 W. The simulator's scan offers "crank sim trainer"
+// The ride is a workout the walk writes and saves first (step 0, #110): New workout, the text of the built-in "Sensor
+// check (3 min)" (crates/crank-core/src/library.rs `BUILTIN`), a name, Save. It is ridden through the library's Ride
+// this by its id (#643): FTP 250 W (the new workout's reference FTP), 1 min each at 50 %, 80 % and 40 %, so its plan
+// targets are 125 W, 200 W and 100 W. The simulator's scan offers "crank sim trainer"
 // and "crank sim strap" (crates/crank-core/src/backend.rs `Backend::scan`), and its rider pedals on its own.
 //
 // Step 9 (the ride is in History after a relaunch) is mvp-relaunch.e2e.mjs. This spec ends by closing the window,
@@ -30,8 +32,10 @@ import { browser, $, $$, expect } from "@wdio/globals";
 import * as sel from "./mvp-selectors.mjs";
 
 const outDir = process.env.CRANK_E2E_OUT ?? "e2e-out";
-const WORKOUT = "Sensor check (3 min)";
-/** The plan's target per block, W (library.rs `BUILTIN`: 50 %, 80 %, 40 % of 250 W). */
+const WORKOUT = "My sensor check";
+/** Its text: the built-in sensor check's (library.rs `BUILTIN`). */
+const WORKOUT_DSL = '"Warm-up" 1m 50%, "Work" 1m 80%, "Cool-down" 1m 40%';
+/** The plan's target per block, W (50 %, 80 %, 40 % of 250 W). */
 const PLAN_W = [125, 200, 100];
 const TRAINER = "crank sim trainer";
 const STRAP = "crank sim strap";
@@ -189,6 +193,30 @@ function runs(entries, slot) {
 }
 
 describe("MVP walk (#256 critical path, sim)", () => {
+  it("0. writes a workout: New workout, its text and name, Save; it is in the library", async () => {
+    // #110: the library's save loop through the real core (`workout_new`, `parse_dsl`, `compile_workout`,
+    // `workout_save`), before any device is paired: the editor needs none.
+    await $(sel.rail("Workouts")).click();
+    await $(sel.newWorkout).click();
+    await expect($(sel.editorChip)).toHaveText("Not saved");
+    // An empty workout has an error (the core's "Workout is empty"): nothing to save or ride yet.
+    await expect($(sel.editorButton("Save"))).toBeDisabled({ wait: UI_MS });
+    await expect($(sel.editorButton("Ride this"))).toBeDisabled();
+    await $(sel.editorText).setValue(WORKOUT_DSL);
+    await $(sel.editorName).setValue(WORKOUT);
+    await expect($(sel.editorText)).toHaveValue(WORKOUT_DSL);
+    await expect($(sel.editorName)).toHaveValue(WORKOUT);
+    await expect($(sel.editorButton("Save"))).toBeEnabled({ wait: UI_MS });
+    await $(sel.editorButton("Save")).click();
+    await expect($(sel.editorChip)).toHaveText("Saved", { wait: UI_MS });
+    // Saved: Ride this rides it by its id (step 2 rides it from the library, as a rider who saved it earlier would).
+    await expect($(sel.editorButton("Ride this"))).toBeEnabled();
+    await $(sel.backToLibrary).click();
+    await expect($(sel.workoutOption(WORKOUT))).toBeDisplayed({ wait: UI_MS });
+    // The built-in it copies is unchanged beside it.
+    await expect($(sel.workoutOption("Sensor check (3 min)"))).toBeDisplayed();
+  });
+
   it("1. pairs the trainer and the strap from Settings → Devices", async () => {
     // #256: "connect the trainer and HR strap": Settings → Devices, Scan, then Pair per role, all by the UI's buttons.
     await $(sel.rail("Settings")).click();

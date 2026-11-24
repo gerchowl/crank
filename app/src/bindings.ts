@@ -91,6 +91,27 @@ export const commands = {
 	 */
 	workoutGet: (id: string) => typedError<WorkoutDetail, ApiError>(__TAURI_INVOKE("workout_get", { id })),
 	/**
+	 *  The draft a new workout starts from.
+	 * 
+	 *  # Errors
+	 *  As [`Core::workout_new`].
+	 */
+	workoutNew: () => typedError<WorkoutDraft, ApiError>(__TAURI_INVOKE("workout_new")),
+	/**
+	 *  Save a workout to the library: update `id`, or store a new one for `None`; answers its id.
+	 * 
+	 *  # Errors
+	 *  As [`Core::workout_save`].
+	 */
+	workoutSave: (id: string | null, draft: WorkoutDraft) => typedError<string, ApiError>(__TAURI_INVOKE("workout_save", { id, draft })),
+	/**
+	 *  Delete one of the rider's workouts.
+	 * 
+	 *  # Errors
+	 *  As [`Core::workout_delete`].
+	 */
+	workoutDelete: (id: string) => typedError<null, ApiError>(__TAURI_INVOKE("workout_delete", { id })),
+	/**
 	 *  Parse workout DSL text for the editor.
 	 * 
 	 *  # Errors
@@ -164,6 +185,13 @@ export const commands = {
 	 *  As [`Core::ride_status`].
 	 */
 	rideStatus: () => typedError<RideStatusView, ApiError>(__TAURI_INVOKE("ride_status")),
+	/**
+	 *  The workout a loaded ride runs, as loaded: what the ride screen draws.
+	 * 
+	 *  # Errors
+	 *  As [`Core::ride_plan`].
+	 */
+	ridePlan: (rideId: string) => typedError<RidePlan, ApiError>(__TAURI_INVOKE("ride_plan", { rideId })),
 	/**
 	 *  Open the calling window's multiplexed stream on the loaded ride.
 	 * 
@@ -779,6 +807,20 @@ export type RideOutcome =
 /**  Closed by crash recovery. */
 "aborted";
 
+/**
+ *  The workout a loaded ride runs, as the core took it at `ride_load` (#110): the ride screen
+ *  draws it (profile, blocks, targets, name), so editing or deleting the library workout after
+ *  the load never changes what the ride shows. Read with `ride_plan` by the frame's ride id.
+ */
+export type RidePlan = {
+	/**  The ride it belongs to (`RideView.id`). */
+	rideId: string,
+	/**  The workout as loaded; the free ride's has no steps. */
+	workout: Workout,
+	/**  Its compiled timeline, the blocks the engine runs. */
+	compiled: CompiledView,
+};
+
 /**  A stored ride (`rides_list`, `ride_summary`). */
 export type RideRecord = {
 	/**  Ride id. */
@@ -1293,6 +1335,21 @@ export type WorkoutDetail = {
 	dsl: string,
 	/**  The compiled timeline. */
 	compiled: CompiledView,
+	/**  One of crank's own workouts: read-only (`workout_save` and `workout_delete` refuse its id). */
+	builtin: boolean,
+};
+
+/**
+ *  What `workout_save` stores: a workout without its id, which the library owns (#110). The
+ *  editor's new workout starts as one (`workout_new`).
+ */
+export type WorkoutDraft = {
+	/**  Display name: not blank, and at most 120 characters once trimmed. */
+	name: string,
+	/**  Reference FTP, W. */
+	ftp: number | null,
+	/**  The workout tree. */
+	nodes: WorkoutNode[],
 };
 
 /**  A prescription diagnostic of the compiled workout. */
@@ -1330,6 +1387,8 @@ export type WorkoutSummary = {
 	tss: number | null,
 	/**  Reference FTP, W. */
 	ftp: number | null,
+	/**  One of crank's own workouts: read-only, so editing it means a copy (DESIGN §5.7, #110). */
+	builtin: boolean,
 };
 
 /* Tauri Specta runtime */

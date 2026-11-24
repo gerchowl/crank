@@ -1,5 +1,5 @@
 // The labelled icon rail (DESIGN §16.3): icon over its word, never an icon alone.
-import { navigate, PLACES, type Place, type View } from "../router";
+import { leave, PLACES, type Place, type View } from "../router";
 
 const RAIL: Record<Place, [label: string, icon: string]> = {
   today: ["Today", "◉"],
@@ -17,7 +17,7 @@ export function Rail({ view }: { view: View }) {
           key={p}
           type="button"
           aria-current={view === p ? "page" : undefined}
-          onClick={() => navigate(p)}
+          onClick={() => leave(p)}
         >
           <span className="rail-icon" aria-hidden>
             {RAIL[p][1]}

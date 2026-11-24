@@ -28,6 +28,25 @@ export function navigate(view: View, sub?: string): void {
   current = sub === undefined ? { view } : { view, sub };
   for (const l of [...listeners]) l();
 }
+/**
+ * Asked before the rider leaves the place they are in through the rail (`leave`): the workout editor's unsaved
+ * changes (DESIGN §5.7). It answers `true` when it takes over: it asks, and calls `go` once the rider chose to leave.
+ * App-scope routing (a ride load completing, a mode) never asks: it calls `navigate`.
+ */
+export type LeaveGuard = (go: () => void) => boolean;
+let guard: LeaveGuard | null = null;
+/** Install the guard (one at a time); returns its removal. */
+export function setLeaveGuard(g: LeaveGuard): () => void {
+  guard = g;
+  return () => {
+    if (guard === g) guard = null;
+  };
+}
+/** The rider asks to go elsewhere (the rail): the guard may ask first. */
+export function leave(view: View, sub?: string): void {
+  const go = () => navigate(view, sub);
+  if (!guard?.(go)) go();
+}
 const subscribe = (l: () => void) => {
   listeners.add(l);
   return () => {

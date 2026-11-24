@@ -72,8 +72,9 @@ the log can carry device names in error text and its resource carries `host.name
 or its page (re)loads (a reload keeps the webview, so the old channel would not fail). The window's link channel (`links_open`,
 `Channel<LinkFrame>`, ADR-0002 §5.1.4, `crates/crank-core/src/keeper/channel.rs`) follows the same rules; it works with
 or without a ride, has one frame in flight until `links_ack`, and coalesces changes into the next frame (each is the
-complete state, so there is no resync); it is the only way the keeper's state reaches the page: `links_intent` answers `null` (#597), its effect arrives as the next frame, and the page applies and acks every frame, with no ordering rule; `LinkFrame.seq` is the keeper state's number, used only by `links_ack`; each device has one source, from the hand-over to a load on: a device in `riding` (held by the ride) is read from `StreamFrame.links`, every other one (a strap that missed the load included) from `LinkFrame`. **Quitting ends a ride**: an exit request (last window closed, `app.exit`, Cmd+Q, whose menu item replaces the default one, on macOS only and only after it is verified as the built-in Quit, so it calls
-`app.exit(0)`; Windows and Linux get no custom menu and quit through the run-event hold-back, #306) is held back, `Core::shutdown` ends the ride (end mode `Resistance{0}`, ADR-0002 §7.9) and waits at most 2.5 s for the
+complete state, so there is no resync); it is the only way the keeper's state reaches the page: `links_intent` answers `null` (#597), its effect arrives as the next frame, and the page applies and acks every frame, with no ordering rule; `LinkFrame.seq` is the keeper state's number, used only by `links_ack`; each device has one source, from the hand-over to a load on: a device in `riding` (held by the ride) is read from `StreamFrame.links`, every other one (a strap that missed the load included) from `LinkFrame`. **Quitting ends a ride**: an exit request (last window closed, `app.exit`, Cmd+Q, whose menu item replaces the default one, on macOS only and only after it is verified as the built-in Quit, so it asks each window to close
+(`lifecycle.rs` `quit`: a page may keep its window open to ask first, the workout editor's unsaved changes, #110; the last window
+closed is the exit request, and with no window it calls `app.exit(0)`); Windows and Linux get no custom menu and quit through the run-event hold-back, #306) is held back, `Core::shutdown` ends the ride (end mode `Resistance{0}`, ADR-0002 §7.9) and waits at most 2.5 s for the
 devices to be released, vigil shuts down within what is left of 3 s, then the app exits (`app/src-tauri/src/lifecycle.rs`). Exits that never ask (Dock Quit, logout, system shutdown:
 `NSApp terminate:` gives tao only `applicationWillTerminate:`, hence `RunEvent::Exit` and no `ExitRequested`) hit a backstop that runs
 the same shutdown synchronously on `Exit`; macOS may kill a terminating app a few seconds in, so the cap must stay at or below 3 s.
@@ -191,7 +192,9 @@ The workout editor's commands (`parse_dsl`, `print_dsl`, `compile_workout`, #111
 no DSL parser. Their mock (`app/src/views/editorFixture.ts`, behind `workoutsBackend.ts`) answers only from
 `crates/crank-core/tests/fixtures/editor.json`, which the `editor_fixture` test checks against the core; a draft a test
 types must be added to that test's `DRAFTS` and the file regenerated with `just editor-fixture`. A draft not in the file
-throws in the test, never a guessed answer.
+throws in the test, never a guessed answer. The library's own commands (`workout_new`, `workout_save`, `workout_delete`, #110) are mocked in
+`workoutsBackend.ts` with the core's refusals (library.rs `Library::save`); a saved tree is compiled through the same
+fixture, so a test saves only drafts that are in it.
 
 Citing Rust from app/ (comments, docs, test backends): always `<name>.rs <symbol>` with an optional ` (~N)` line hint directly after
 the symbol, e.g. ``core.rs `Core::end_ride` (~1742)``; the symbol is an identifier path (`A::b`), in backticks or not. Never a bare

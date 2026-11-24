@@ -22,6 +22,7 @@ import { resetRideLoad } from "../views/rideLoad";
 import { apiError, install } from "../views/workoutsBackend";
 import { GROUP_MS } from "./model";
 import { lineColumn, typingClock } from "./WorkoutEditor";
+import { windowClose } from "./windowClose";
 
 afterEach(() => {
   cleanup();
@@ -34,6 +35,9 @@ beforeEach(() => {
   navigate("workouts");
   now = 0;
   typingClock.now = () => (now += GROUP_MS);
+  // No Tauri window here: the close-request listener of an editor with unsaved changes is held by nobody.
+  windowClose.listen = () => Promise.resolve(() => {});
+  windowClose.destroy = () => Promise.resolve();
 });
 const text = (name: string) => DRAFTS[name]!.text;
 const problemOf = (name: string) => {
@@ -75,7 +79,7 @@ test("Duplicate & edit opens a copy with its three views; Back returns to the li
   expect(screen.getByRole("heading", { level: 1 }).textContent).toContain(
     "Sweet spot 3x12 (copy)",
   );
-  expect(screen.getByText("Draft, not saved")).toBeTruthy();
+  expect(screen.getByText("Not saved")).toBeTruthy();
   expect(box.value).toBe(text("sweet-spot"));
   expect(rows()).toEqual([
     "Warm-up · 10:00 · ramp 45–70 %",

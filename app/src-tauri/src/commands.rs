@@ -4,8 +4,9 @@
 use crate::logging::Logging;
 use crank_core::{
     ApiError, CompiledView, Core, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, FrameSink,
-    LinkFrame, LinkIntent, LinkSink, LinksId, RideRecord, RideStatusView, ScannedDevice,
-    SinkClosed, UiChannelId, UiFrame, UiSink, Workout, WorkoutDetail, WorkoutNode, WorkoutSummary,
+    LinkFrame, LinkIntent, LinkSink, LinksId, RidePlan, RideRecord, RideStatusView, ScannedDevice,
+    SinkClosed, UiChannelId, UiFrame, UiSink, Workout, WorkoutDetail, WorkoutDraft, WorkoutNode,
+    WorkoutSummary,
 };
 use crank_engine::{MetricId, StreamFrame, StreamId, StreamSnapshot, SubId, SubscribeOpts};
 use tauri::{State, ipc::Channel};
@@ -183,6 +184,40 @@ pub async fn workout_get(core: State<'_, Core>, id: String) -> Result<WorkoutDet
     core.workout_get(id).await
 }
 
+/// The draft a new workout starts from.
+///
+/// # Errors
+/// As [`Core::workout_new`].
+#[tauri::command]
+#[specta::specta]
+pub async fn workout_new(core: State<'_, Core>) -> Result<WorkoutDraft, ApiError> {
+    core.workout_new().await
+}
+
+/// Save a workout to the library: update `id`, or store a new one for `None`; answers its id.
+///
+/// # Errors
+/// As [`Core::workout_save`].
+#[tauri::command]
+#[specta::specta]
+pub async fn workout_save(
+    core: State<'_, Core>,
+    id: Option<String>,
+    draft: WorkoutDraft,
+) -> Result<String, ApiError> {
+    core.workout_save(id, draft).await
+}
+
+/// Delete one of the rider's workouts.
+///
+/// # Errors
+/// As [`Core::workout_delete`].
+#[tauri::command]
+#[specta::specta]
+pub async fn workout_delete(core: State<'_, Core>, id: String) -> Result<(), ApiError> {
+    core.workout_delete(id).await
+}
+
 /// Parse workout DSL text for the editor.
 ///
 /// # Errors
@@ -349,6 +384,16 @@ pub async fn ride_end(core: State<'_, Core>, logging: State<'_, Logging>) -> Res
 #[specta::specta]
 pub async fn ride_status(core: State<'_, Core>) -> Result<RideStatusView, ApiError> {
     core.ride_status().await
+}
+
+/// The workout a loaded ride runs, as loaded: what the ride screen draws.
+///
+/// # Errors
+/// As [`Core::ride_plan`].
+#[tauri::command]
+#[specta::specta]
+pub async fn ride_plan(core: State<'_, Core>, ride_id: String) -> Result<RidePlan, ApiError> {
+    core.ride_plan(ride_id).await
 }
 
 /// Open the calling window's multiplexed stream on the loaded ride.

@@ -115,6 +115,25 @@ export const SCENARIOS = [
       },
     ],
   },
+  // The rider's own workout picked (#110): Edit and Delete beside Ride this and Duplicate & edit.
+  {
+    name: "workouts-mine",
+    ready: "role=button[name='Delete']",
+    picks: ["Easy spin"],
+  },
+  // Delete asks first, in a dialog with the safe answer focused.
+  {
+    name: "workouts-delete-confirm",
+    ready: "role=dialog[name='Delete Easy spin?']",
+    picks: ["Easy spin"],
+    clicks: ["Delete"],
+  },
+  // New workout (#110): an empty draft, not saved; the reasons Save and Ride this wait are under them.
+  {
+    name: "workouts-editor-new",
+    ready: "#editor-unridden",
+    clicks: ["New workout"],
+  },
   { name: "devices-empty", ready: "role=button[name='Scan']" },
   {
     name: "devices-scanning",
@@ -269,6 +288,9 @@ export const WORKOUTS_SCENARIOS: readonly ScenarioName[] = [
   "workouts-long",
   "workouts-editor",
   "workouts-editor-invalid",
+  "workouts-mine",
+  "workouts-delete-confirm",
+  "workouts-editor-new",
 ];
 
 /** The fixtures of History and Review (#529): nothing on them is cut, and every control is inside the window. */

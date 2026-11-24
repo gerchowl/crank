@@ -404,6 +404,8 @@ pub struct WorkoutSummary {
     pub tss: f64,
     /// Reference FTP, W.
     pub ftp: f64,
+    /// One of crank's own workouts: read-only, so editing it means a copy (DESIGN §5.7, #110).
+    pub builtin: bool,
 }
 
 /// A workout with its compiled form.
@@ -416,6 +418,21 @@ pub struct WorkoutDetail {
     pub dsl: String,
     /// The compiled timeline.
     pub compiled: CompiledView,
+    /// One of crank's own workouts: read-only (`workout_save` and `workout_delete` refuse its id).
+    pub builtin: bool,
+}
+
+/// What `workout_save` stores: a workout without its id, which the library owns (#110). The
+/// editor's new workout starts as one (`workout_new`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkoutDraft {
+    /// Display name: not blank, and at most 120 characters once trimmed.
+    pub name: String,
+    /// Reference FTP, W.
+    pub ftp: f64,
+    /// The workout tree.
+    pub nodes: Vec<WorkoutNode>,
 }
 
 /// One compiled block. The boundary owns this type: `crank-domain`'s `FlatBlock` indexes
@@ -575,6 +592,20 @@ pub enum DslParse {
         /// The first problem in the text.
         problem: DslProblem,
     },
+}
+
+/// The workout a loaded ride runs, as the core took it at `ride_load` (#110): the ride screen
+/// draws it (profile, blocks, targets, name), so editing or deleting the library workout after
+/// the load never changes what the ride shows. Read with `ride_plan` by the frame's ride id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RidePlan {
+    /// The ride it belongs to (`RideView.id`).
+    pub ride_id: String,
+    /// The workout as loaded; the free ride's has no steps.
+    pub workout: Workout,
+    /// Its compiled timeline, the blocks the engine runs.
+    pub compiled: CompiledView,
 }
 
 /// Answer of `ride_load`.

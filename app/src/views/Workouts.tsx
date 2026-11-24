@@ -1,13 +1,14 @@
-// Workouts library, MVP subset of #110 (DESIGN §5.7): the list from the core, a pick shows the compiled summary
-// (duration range, TSS, IF, zone time, issues), "Ride this" loads the ride and routes to it, and "Duplicate & edit"
-// opens the editor on a copy (../editor/WorkoutEditor.tsx, #111). Not here yet, by decision (#256): the AI diff (#112),
-// search and tags, and the health-stop guard.
+// Workouts library (DESIGN §5.7, #110): the list from the core, built-ins first, then the rider's own; a pick shows the
+// compiled summary (duration range, TSS, IF, zone time, issues), "Ride this" loads the ride and routes to it. New
+// workout, Edit (the rider's own) and "Duplicate & edit" (any; a built-in is read-only) open the editor
+// (../editor/WorkoutEditor.tsx, #111), which saves to the library; Delete removes one of the rider's own after asking.
+// Not here yet, by decision (#256): the AI diff (#112), search and tags, and the health-stop guard.
 // Direction A (§18, #528): the page title, then on the 12-column grid (§18.2) the library in 7 columns and the picked
 // workout in one panel in 5. The library is a single-select listbox whose selection follows focus (WAI-ARIA APG): a row
 // is a workout of any name length, not a 32 px button (§18.4), and Up/Down/Home/End walk it. The panel puts "Ride this"
 // right under the workout's profile and figures, so it stays in the window however long the block list runs, with the
 // link chips under it (links/chips.tsx, #681): the devices warming up while the view shows, Retry when one is not found.
-import { Copy, Play } from "lucide-react";
+import { Copy, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -23,7 +24,9 @@ import {
   type WorkoutDetail,
   type WorkoutIssue,
 } from "../bindings";
-import { WorkoutEditor } from "../editor/WorkoutEditor";
+import { api } from "../api";
+import { WorkoutEditor, type EditorStart } from "../editor/WorkoutEditor";
+import { Dialog } from "../shell/Dialog";
 import { PHASE_NAME, watts } from "../ride/Timeline";
 import { LinkChips } from "../links/chips";
 import { useCommand } from "../stream";
@@ -224,9 +227,12 @@ export function Workouts() {
   const get = useCommand(commands.workoutGet);
   const load = useRideLoad();
   const [picked, setPicked] = useState<string | null>(null);
-  // The editor is a state of this place (DESIGN §16.3 as amended for direction A, #111): it works on a copy of the
-  // picked workout, and Back to library returns here with that workout still picked.
-  const [editing, setEditing] = useState<WorkoutDetail | null>(null);
+  // The editor is a state of this place (DESIGN §16.3 as amended for direction A, #111): Back to library returns here
+  // with the workout it saved picked, else the one picked before.
+  const [editing, setEditing] = useState<EditorStart | null>(null);
+  // The workout Delete asks about, and a failed New or Delete.
+  const [deleting, setDeleting] = useState<WorkoutDetail | null>(null);
+  const [failure, setFailure] = useState<ApiError | null>(null);
   const { run: runList } = list;
   const { run: runGet } = get;
   useEffect(() => {
@@ -307,11 +313,65 @@ export function Workouts() {
     detail?.compiled.issues.find((i) => i.severity === "error") ?? null;
   // A pending Ride this names what it is doing (§5.9, §18.4), as Devices' "Scanning…" does: its own load is in flight.
   const busy = load.phase === "loading" && load.workoutId === picked;
+  const open = (d: WorkoutDetail, copy: boolean) =>
+    setEditing({
+      id: copy ? null : d.workout.id,
+      name: copy ? `${d.workout.name} (copy)` : d.workout.name,
+      ftp: d.workout.ftp,
+      nodes: d.workout.nodes,
+      dsl: d.dsl,
+      compiled: d.compiled,
+    });
+  const create = async () => {
+    const r = await api(commands.workoutNew());
+    if (r.status !== "ok") return setFailure(r.error);
+    setFailure(null);
+    setEditing({
+      id: null,
+      name: r.data.name,
+      ftp: r.data.ftp,
+      nodes: r.data.nodes,
+      dsl: "",
+      compiled: null,
+    });
+  };
+  const remove = async (id: string) => {
+    setDeleting(null);
+    const r = await api(commands.workoutDelete(id));
+    if (r.status !== "ok") return setFailure(r.error);
+    setFailure(null);
+    setPicked(null);
+    void runList();
+  };
   if (editing)
-    return <WorkoutEditor from={editing} onBack={() => setEditing(null)} />;
+    return (
+      <WorkoutEditor
+        start={editing}
+        onBack={(saved) => {
+          setEditing(null);
+          void runList();
+          if (saved !== null) pick(saved);
+          else if (picked !== null) void runGet(picked);
+        }}
+        onRide={rideThis}
+        loading={{
+          any: loading,
+          workoutId: load.phase === "loading" ? load.workoutId : null,
+        }}
+        refusal={refusal}
+      />
+    );
   return (
     <div className="page workouts">
-      <h1>Workouts</h1>
+      <div className="workouts-head">
+        <h1>Workouts</h1>
+        {/* Not while a load is in flight: its success routes to the ride and would drop the new draft (#320). */}
+        <button type="button" disabled={loading} onClick={() => void create()}>
+          <Plus {...icon} />
+          New workout
+        </button>
+      </div>
+      {failure && <ErrorLine error={failure} />}
       {list.error && (
         <ErrorLine error={list.error} onRetry={() => void runList()} />
       )}
@@ -403,6 +463,9 @@ export function Workouts() {
             <>
               <div className="workouts-detail-head">
                 <h2>{detail.workout.name}</h2>
+                {detail.builtin && (
+                  <span className="workouts-chip">Built-in, read-only</span>
+                )}
                 {detail.workout.ftp !== null && (
                   <span className="workouts-chip num">
                     FTP {detail.workout.ftp} W
@@ -429,14 +492,34 @@ export function Workouts() {
                     {busy ? "Loading ride…" : "Ride this"}
                   </button>
                   {/* Not while a load is in flight: its success routes to the ride and would drop the draft (#320). */}
+                  {!detail.builtin && (
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => open(detail, false)}
+                    >
+                      <Pencil {...icon} />
+                      Edit
+                    </button>
+                  )}
                   <button
                     type="button"
                     disabled={loading}
-                    onClick={() => setEditing(detail)}
+                    onClick={() => open(detail, true)}
                   >
                     <Copy {...icon} />
                     Duplicate &amp; edit
                   </button>
+                  {!detail.builtin && (
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => setDeleting(detail)}
+                    >
+                      <Trash2 {...icon} />
+                      Delete
+                    </button>
+                  )}
                 </div>
                 {/* The links the ride will take (ADR-0002 §5.1.4): warming up while this view shows, then the load's. */}
                 {ui.devices && <LinkChips devices={ui.devices} />}
@@ -453,6 +536,28 @@ export function Workouts() {
           )}
         </div>
       </div>
+      {deleting && (
+        <Dialog
+          title={`Delete ${deleting.workout.name}?`}
+          answers={[
+            {
+              label: "Delete",
+              onClick: () => void remove(deleting.workout.id),
+            },
+            {
+              label: "Cancel",
+              kind: "primary",
+              onClick: () => setDeleting(null),
+            },
+          ]}
+          focus={["Cancel"]}
+          onCancel={() => setDeleting(null)}
+        >
+          <p>
+            It leaves the library for good. Your rides of it stay in History.
+          </p>
+        </Dialog>
+      )}
     </div>
   );
 }

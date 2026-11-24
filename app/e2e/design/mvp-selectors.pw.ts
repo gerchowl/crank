@@ -97,6 +97,21 @@ test("mvp selectors: Workouts, pick and Ride this", async ({ page }) => {
     await one(page, sel.linkChip(role));
 });
 
+test("mvp selectors: New workout, the editor, Save and Back", async ({
+  page,
+}) => {
+  await open(page, "workouts");
+  await (await one(page, sel.newWorkout)).click();
+  await expect(await one(page, sel.editorChip)).toHaveText("Not saved");
+  await expect(await one(page, sel.editorName)).toHaveValue("New workout");
+  await one(page, sel.editorText);
+  await expect(await one(page, sel.editorButton("Save"))).toBeDisabled();
+  await expect(await one(page, sel.editorButton("Ride this"))).toBeDisabled();
+  await expect(page.locator(sel.editorButton("Save as new"))).toHaveCount(0);
+  await (await one(page, sel.backToLibrary)).click();
+  await one(page, sel.newWorkout);
+});
+
 test("mvp selectors: the Ready sheet", async ({ page }) => {
   await open(page, "ready");
   await one(page, sel.ride);

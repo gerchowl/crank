@@ -549,11 +549,31 @@ fn run_holds_its_value_until_the_quit_starts() {
 // ---- the Quit menu item (the replacement itself is checked by `examples/quit_check.rs`) ----
 
 #[test]
-fn the_quit_menu_item_exits_with_status_zero_and_others_do_not() {
+fn the_quit_menu_item_quits_and_others_do_not() {
+    let mut quits = 0;
+    lifecycle::menu_event(&"crank-quit".into(), || quits += 1);
+    lifecycle::menu_event(&"something-else".into(), || quits += 1);
+    assert_eq!(quits, 1);
+}
+
+/// #110: Quit asks each window to close (its page may keep it open to ask about unsaved
+/// changes), so with a window open it does not exit itself; with none it exits with status 0.
+#[test]
+fn quit_closes_the_windows_and_exits_only_without_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
     let mut exits = Vec::new();
-    lifecycle::menu_event(&"crank-quit".into(), |c| exits.push(c));
-    lifecycle::menu_event(&"something-else".into(), |c| exits.push(c));
-    assert_eq!(exits, [0]);
+    lifecycle::quit(app.handle(), |c| exits.push(c));
+    assert_eq!(exits, [0], "no window: exit at once");
+    WebviewWindowBuilder::new(&app, "main", WebviewUrl::default())
+        .data_directory(dir.path().join("webview"))
+        .build()
+        .expect("window");
+    let mut exits = Vec::new();
+    lifecycle::quit(app.handle(), |c| exits.push(c));
+    assert!(exits.is_empty(), "a window: its close request decides");
 }
 
 /// #344: the application runs each ride's engine on its own thread, so an engine blocked in

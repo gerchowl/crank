@@ -18,9 +18,9 @@ pub mod version;
 use commands::{
     compile_workout, core_ready, device_forget, device_links, device_pair, devices_scan, links_ack,
     links_intent, links_open, open_stream, parse_dsl, print_dsl, ride_end, ride_load, ride_pause,
-    ride_resume, ride_skip, ride_start, ride_status, ride_summary, rides_list, stream_ack,
-    stream_snapshot, stream_subscribe, stream_unsubscribe, ui_ack, ui_open, workout_get,
-    workouts_list,
+    ride_plan, ride_resume, ride_skip, ride_start, ride_status, ride_summary, rides_list,
+    stream_ack, stream_snapshot, stream_subscribe, stream_unsubscribe, ui_ack, ui_open,
+    workout_delete, workout_get, workout_new, workout_save, workouts_list,
 };
 pub use config::RuntimeConfig;
 use crank_core::{ApiError, Core, CoreConfig, DeviceMode, EngineHost, ErrorCode};
@@ -47,6 +47,9 @@ macro_rules! registry {
             ui_ack::<tauri::Wry>,
             workouts_list,
             workout_get,
+            workout_new,
+            workout_save,
+            workout_delete,
             parse_dsl,
             print_dsl,
             compile_workout,
@@ -57,6 +60,7 @@ macro_rules! registry {
             ride_skip,
             ride_end,
             ride_status,
+            ride_plan,
             open_stream::<tauri::Wry>,
             stream_subscribe::<tauri::Wry>,
             stream_unsubscribe::<tauri::Wry>,
