@@ -1,6 +1,7 @@
 # ADR-0009: Athlete model, post-ride analysis executor, ride analysis, comparison and set statistics
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-24; decisions 1–7 and 9–19 as written, decision 8 amended: FTP may also be
+  proposed down, on evidence of inability only; not implemented)
 - **Date:** 2026-11-22
 - **Issue:** filed on acceptance (owner request 2026-11-22; the brief is this ADR's §1)
 - **Related:** ADR-0001 §2 (crate boundaries), §4 (contract), §6 (persistence), §9.4 (lock-less writers); ADR-0002 §7.8
@@ -10,8 +11,9 @@
 
 ## For the owner
 
-This proposal is docs only; nothing is implemented. Each line is a decision that needs a yes or a no. The section
-in brackets has the reasons and the rejected alternatives.
+Accepted by the owner on 2026-11-24: decisions 1–7 and 9–19 as written; decision 8 amended at the owner's request
+("why not downward on degradation? it's a suggestion after all"). Nothing is implemented yet. The section in brackets
+has the reasons and the rejected alternatives.
 
 1. **The athlete model holds eight parameters the rider can see and set**: FTP, CP, W′, Pmax, HR max, LTHR, resting
    HR and weight, each an estimate with ± sd, source, method, date and full history (§2.1.1).
@@ -34,8 +36,12 @@ in brackets has the reasons and the rejected alternatives.
    steady ERG blocks at threshold. A value typed in Settings wins: it is current until the rider accepts a later
    proposal, and it supersedes every open proposal for that parameter. Resting HR and weight are typed in only
    (§2.1.1, §2.2.4).
-8. **An upward FTP proposal from a valid CP fit** ("from your power-duration curve"), never downward. Recommended: yes
-   (§2.2.4, row P8).
+8. **FTP may be proposed up and down, always as a suggestion the rider confirms** (amended by the owner 2026-11-24).
+   Up: from a valid CP fit ("from your power-duration curve", P8) or a test (P7). Down: only on **evidence of
+   inability**, never on the mere absence of hard efforts (a 90-day curve without maximal efforts, as in an endurance
+   block, says nothing about decline): a verified test below the current FTP (P7 ramp, P9 CP assessment), repeated
+   failed threshold intervals in ERG (P10), or a sustained rise of HR at a fixed power across several rides (P11, the
+   weakest, convention). Every downward proposal offers a ramp retest beside Accept (§2.2.4, rows P7–P11).
 9. **Re-analysing an old ride never proposes over a newer estimate**: a proposal needs a ride newer than the
    parameter's current value (or a current value that is still the prior) (§2.2.4).
 10. **ERG seconds never feed the CP fit**: in ERG the power is the target, not what the rider could do; only
@@ -284,7 +290,26 @@ A proposal is a value the analysis derived for one of the eight parameters; noth
 | P5 | `cp` + `w_prime`, test (`cp_assessment_v1`) | a valid CP assessment (its own ADR, ADR-0004 "next") | the fit of its efforts, as below | evidence [L22, leo2021] |
 | P6 | `cp` + `w_prime`, rides (`cp_ols_v1`) | a self-paced MMP point of this ride between 2 and 15 min exceeds the current CP model's prediction `CP + W′/t` by more than 2 sd of the prediction | CP and W′ from the 90-day fit below, each with its standard error | evidence for the model and the effort range [L22, leo2021]; the 2 sd trigger is convention |
 | P7 | `ftp`, test (`ramp_v1_0.75`) | an assessment ride with a valid ramp result (ADR-0004 §2.5) | ADR-0004's value, sd 8 % (the owner's convention floor) | as ADR-0004 |
-| P8 | `ftp`, rides (`ftp_from_cp_v1`) | the current CP estimate came from P5 or P6 (n ≥ 3 efforts, relative se ≤ 5 %) and exceeds the current FTP by > 5 %. Its triggering `ride_id` is that CP estimate's `ride_id`; P8 is not raised when it is NULL (a deleted ride) | the CP, sd = the fit's se combined with the 13 W spread of [K21] | convention: CP ≈ FTP on the mean with wide LoA [K21]; only upward (owner decision 8) |
+| P8 | `ftp`, rides (`ftp_from_cp_v1`) | the current CP estimate came from P5 or P6 (n ≥ 3 efforts, relative se ≤ 5 %) and exceeds the current FTP by > 5 %. Its triggering `ride_id` is that CP estimate's `ride_id`; P8 is not raised when it is NULL (a deleted ride) | the CP, sd = the fit's se combined with the 13 W spread of [K21] | convention: CP ≈ FTP on the mean with wide LoA [K21]; **upward only**: a ride-based CP fit only rises (P6 fires only when a point beats the model), and a missing effort is no evidence of decline (owner decision 8) |
+| P9 | `ftp`, test (`ftp_down_from_cp_test_v1`) | the current CP estimate came from a CP assessment (P5, source `test`) and is below the current FTP by > 5 %. Its triggering `ride_id` is that CP estimate's `ride_id`; not raised when it is NULL | the CP, sd as P8 | convention as P8 (CP ≈ FTP on the mean [K21]); downward from a **test** only, never from a ride-based fit |
+| P10 | `ftp`, rides (`ftp_down_failed_intervals_v1`) | within 28 days, ≥ 3 rides each with ≥ 1 **failed threshold interval**: an ERG work block with a given target ≥ 90 % of the snapshot FTP lasting ≥ 3 min, that the rider either did not hold (on target < 70 % of its counted seconds with the mean shortfall below the target, not above), ended early (skip, End, or a §7.4 low-cadence release inside it), or lowered with ± by ≥ 5 %. Excluded: a block with a trainer dropout or a rider pause, any ride with a power coverage below §2.3.1.1's minimum, and any ride on a day the check-in answered "Unwell today" (ONBOARDING §3); a block the coach eased counts against the eased target. No completed threshold block of the same rides offsets it | FTP × the median, over the failed blocks, of (mean power ridden ÷ given target), rounded; at most −10 % per proposal; sd 8 % | convention: the 70 %, 3 rides, 28 days and −10 % cap are this ADR's; failing a prescribed target repeatedly is direct evidence the prescription is too high, but not of how much |
+| P11 | `ftp`, rides (`ftp_down_hr_at_power_v1`) | within 28 days, ≥ 4 rides on ≥ 14 distinct days each with a steady ERG block at 85–105 % of the snapshot FTP lasting ≥ 10 min, whose mean HR after its first 5 min exceeds the HR-at-power baseline (§2.2.5) at that power by ≥ 5 bpm, with decoupling valid on the block and ≥ 95 % HR coverage; the same exclusions as P10 (dropouts, pauses, unwell days). The baseline used is the one frozen at the first ride of the set, so the rides cannot pull it up as they enter it | FTP × the median, over the blocks, of (block power ÷ the baseline power that gave the block's HR), rounded; at most −10 % per proposal; sd 10 % | **convention, the weakest trigger**: HR at a fixed power rises with heat, dehydration, cadence and fatigue as well as with lost fitness (09); 5 bpm is above the ~3 bpm day-to-day noise of submaximal HR [lamberts2009]; the several-ride, several-day rule is what keeps it from reacting to one hot day |
+
+**Downward FTP proposals** (owner decision 8, amended 2026-11-24):
+
+- **Inability, never absence.** P9–P11 and a lower P7 are the only ways FTP is proposed down. No rule reads a
+  missing effort as decline: P6 and P8 can only go up, and a ride with no threshold work counts for nothing in P10 or
+  P11. P7 (the ramp) proposes its result whether it is above or below the current FTP.
+- **Retest offered.** Every downward proposal says what it is based on and offers the ramp test beside Accept: "Your
+  last 3 threshold sessions fell short (median 92 % of target). Use 268 W as your FTP, or take a ramp test (~25 min)
+  to measure it." **Take the test** opens the ramp test card (ADR-0004 §2.7) and leaves the proposal open; the test's own
+  P7 then supersedes it (one open proposal per param).
+- **Newer only, applied to every counted ride.** P10 and P11 count only rides that started after FTP's current
+  `updated_at`, so a new FTP (accepted, typed or tested) restarts the count. Their triggering `ride_id` is the latest
+  counted ride; the frozen evidence holds every counted block. Staleness follows the general rule: `version`,
+  `ride_deleted` (any counted ride deleted), and for P9 `cp_replaced`, as for P8.
+- **Capped.** P10 and P11 move FTP by at most 10 % per proposal; a larger drop takes a test or a second proposal
+  after the first is accepted.
 
 **The CP fit** (P5, P6): P6 takes, over the last 90 days of `ride_mmp` rows flagged `self_paced` (§2.3.2), the best
 point per duration for durations 2–15 min; P5 takes the assessment's efforts. Both require ≥ 3 points spanning at least
@@ -295,8 +320,9 @@ does the library search the owner rule requires.
 
 **Evidence and acceptance.** When a proposal is raised, `evidence_json` freezes everything its value was computed
 from: the `ANALYSIS_VERSION`; the ride ids and, per ride, the inputs used (P1–P4, P7: the ride's seconds range and
-its record version; P5, P6: each fit point as `(ride_id, duration_s, watts, start_s)` and the window's dates; P8: the
-CP estimate id it read); and the values and sds it produced. `athlete_proposal_accept`:
+its record version; P5, P6: each fit point as `(ride_id, duration_s, watts, start_s)` and the window's dates; P8, P9: the
+CP estimate id it read; P10, P11: each counted block as `(ride_id, block index, given target, mean power, outcome)`
+and, for P11, the frozen baseline values it compared against); and the values and sds it produced. `athlete_proposal_accept`:
 
 1. recomputes the values from the frozen evidence with the domain function of its method (a pure function of the
    evidence, so the same inputs give the same value);
@@ -651,7 +677,7 @@ what this ADR makes available, not what is sent.
 - **Store**: migrations 0005 and 0006 on a v4 database with rows (weight copied, kinds back-filled, estimates kept);
   the derived rows of one ride are replaced atomically; `EstimateOrigin` is the only way to append an estimate.
 - **Core**: the executor runs on ride end, on rerun, and on backfill (version bump re-runs; a failed ride is not
-  retried in a loop; backfill pauses while a ride is loaded); proposals P1–P8 fire and do not fire at their edges, never
+  retried in a loop; backfill pauses while a ride is loaded); proposals P1–P11 fire and do not fire at their edges, never
   write an estimate, respect "newer only" and supersede; a P6 proposal is still acceptable after new rides arrive and
   after its oldest point leaves the 90-day window (accept uses the frozen evidence); it becomes `stale` (`Conflict` on
   accept) after a version bump and after one of its evidence rides is deleted, **at the same analysis version**, and
@@ -662,7 +688,13 @@ what this ADR makes available, not what is sent.
   NULL `ride_id`/`proposal_id`; a CP/W′ pair is accepted as two estimates in one transaction and a manual W′
   supersedes it; `athlete_set`, `athlete_revert` and `athlete_clear` supersede the parameter's open proposals; a
   superseded, accepted or dismissed proposal is not raised again; accept refuses stale,
-  superseded and decided proposals; the snapshot is frozen at load (a Settings change mid-ride does not reach the ride); IF/TSS use the
+  superseded and decided proposals; downward FTP: P7 proposes a ramp result below the current FTP; P9 fires on a CP
+  assessment below FTP and never on a ride-based fit; P10 fires on its 3rd qualifying ride within 28 days and not on
+  the 2nd, not on a block with a dropout or pause or on an unwell day, not when the shortfall is above the target, and
+  caps at −10 %; P11 needs 4 rides on 14 days and ignores one hot day, uses the baseline frozen at the set's first
+  ride, and caps at −10 %; a 90-day history with no hard efforts raises no downward proposal; rides before FTP's
+  `updated_at` are not counted; every downward proposal carries the retest offer, and a ramp test's P7 supersedes it;
+  the snapshot is frozen at load (a Settings change mid-ride does not reach the ride); IF/TSS use the
   snapshot; a model change re-analyses nothing.
 - **App**: each mock backend models every refusal of the commands it calls (repo convention, with the core
   `file.rs symbol`); Settings → Athlete model edit, revert, clear, proposals; History filter, selection, Compare;
@@ -725,9 +757,9 @@ what this ADR makes available, not what is sent.
    `summarize` moves onto it), intervals, the self-paced rule, `ANALYSIS_VERSION`, golden fixture.
 7. store + core: migration 0006, the executor (triggers, backfill, failure handling), `lap` rows, `ride_analysis`,
    `analysis_rerun`, baselines (§2.2.5).
-8. domain + core: proposals P1, P2, P4, P6, P7, P8, the CP fit, frozen evidence and accept against it,
+8. domain + core: proposals P1, P2, P4, P6, P7, P8, P10, P11, the CP fit, frozen evidence and accept against it,
    `athlete_proposals`, accept and dismiss, manual entry superseding; the ADR-0004 amendment applied. P3 (LTHR from a
-   30-min effort, the ride-segment form) lands here; its test form and P5 land with the self-paced test ADR.
+   30-min effort, the ride-segment form) lands here; its test form, P5 and P9 land with the self-paced test ADR.
 
 **Part 3: ride analysis**
 
@@ -763,7 +795,7 @@ Follow-ups filed on acceptance: rider tags (§2.4.3); OmPD and Pmax fit, with th
 - [K21] Karsten et al. (2021), *Front Physiol* 11:613151 (as ADR-0004).
 - [L22] Leo et al. (2022), *Eur J Appl Physiol* 122(2):301–316 (as ADR-0004).
 - Knowledge pack (`spec/knowledge-pack/references.bib`): [leo2021], [skiba2012], [vanerp2019], [busso2023],
-  [vermeire2022], [treff2019], [rothschild2025], [stevenson2022], [barsumyan2026], [mateomarch2025reliability];
+  [vermeire2022], [treff2019], [lamberts2009], [rothschild2025], [stevenson2022], [barsumyan2026], [mateomarch2025reliability];
   files 01, 02, 03, 06, 08, 09, 13.
 - In repo: `spec/ONBOARDING.md` §2–§5; DESIGN §5.5, §5.6, §5.9, §18.3, §18.4, §18.7; ADR-0001 §4.3.10, §6, §9.4;
   ADR-0002 §7.8; ADR-0004 (branch `docs/486-threshold-test-decision`); `crates/crank-store/migrations/0001_initial.sql`,
