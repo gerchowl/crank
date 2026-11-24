@@ -143,18 +143,27 @@ async fn entry(core: &Core, text: &str) -> Value {
 /// (a `problem`, or nothing when it parses), then the tree's own answers as a draft's.
 async fn tree_entry(core: &Core, draft: &str, pointer: &str, value: f64) -> Value {
     let (_, text) = DRAFTS.iter().find(|(n, _)| *n == draft).expect("a draft");
-    let DslParse::Parsed { nodes } = core.parse_dsl((*text).into(), FTP).await.unwrap() else {
+    let DslParse::Parsed { nodes } = core
+        .parse_dsl((*text).into(), FTP)
+        .await
+        .expect("parse answers")
+    else {
         panic!("{draft} parses");
     };
-    let mut v = serde_json::to_value(nodes).unwrap();
+    let mut v = serde_json::to_value(nodes).expect("serialisable");
     *v.pointer_mut(pointer).expect("the pointer names a value") = json!(value);
-    let nodes: Vec<WorkoutNode> = serde_json::from_value(v).unwrap();
-    let printed = core.print_dsl(nodes.clone()).await.unwrap();
+    let nodes: Vec<WorkoutNode> = serde_json::from_value(v).expect("a tree");
+    let printed = core.print_dsl(nodes.clone()).await.expect("print answers");
     let mut out = Map::new();
     out.insert("text".into(), json!(printed));
     out.insert("ftp".into(), json!(FTP));
-    if let DslParse::Invalid { problem } = core.parse_dsl(printed, FTP).await.unwrap() {
-        out.insert("problem".into(), serde_json::to_value(problem).unwrap());
+    if let DslParse::Invalid { problem } =
+        core.parse_dsl(printed, FTP).await.expect("parse answers")
+    {
+        out.insert(
+            "problem".into(),
+            serde_json::to_value(problem).expect("serialisable"),
+        );
     }
     tree(core, nodes, &mut out).await;
     Value::Object(out)
