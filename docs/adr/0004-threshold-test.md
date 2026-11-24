@@ -5,7 +5,7 @@
 - **Issue:** #486
 - **Related:** ADR-0002 §7 (ERG behaviour, §7.4 low-cadence release, §7.5 soft start, §7.9 end mode),
   ADR-0001 §5 (loss and stopped pedalling), DESIGN §5.8 and §15.2 (medical stop, health cap), #247 (athlete
-  inputs), #81 (single start guard), ADR-0009 (athlete model and analysis executor, PR #701, in review),
+  inputs), #81 (single start guard), ADR-0009 (athlete model and analysis executor, accepted, PR #701),
   `spec/ONBOARDING.md` §2–§3, knowledge pack `03-power-duration-models.md`
 
 ## 1. Context
@@ -202,51 +202,43 @@ it `Exhausted` once a fresh sample confirms the trainer.
   peak HR, every validity check with a tick or its reason, and the current FTP with the change
   ("250 → 287 W, +15 %"). A change of more than ±30 % adds "much different from your current FTP: was
   the test maximal?". It does not block.
-- **Explicit confirm, in ADR-0009's terms.** The result is a **proposal** of the post-ride analysis executor
-  (ADR-0009 §2.2.4, P3, method `ramp_v1_0.75`, source `test`, `n` = 1, `ride_id` set). Nothing is written until
-  the rider accepts it: two buttons, **Use 287 W as my FTP** and **Keep 250 W**, on the summary and in
-  Settings → Athlete model. Accept is ADR-0009's `athlete_proposal_accept { proposal_id }` (it replaces the
-  `athlete_confirm_ftp` of the first draft). The guarantees stay: the executor **recomputes** the result from
-  the stored ride, so a UI can never write a value the core did not derive; a void result raises no proposal,
-  a ride that is not a ramp test raises none, and an accepted or dismissed proposal is never raised again.
-  **Manual entry wins:** a value the rider types in Settings is the current estimate from then on, and
-  ADR-0009's "newer only" rule raises no proposal from a ride older than it.
+- **Explicit confirm, in ADR-0009's terms.** ADR-0004 defines the result (value, sd, validity, end); what
+  happens to it is ADR-0009's. A valid result is ADR-0009 proposal **P7** (§2.2.4, method `ramp_v1_0.75`,
+  source `test`), raised, superseded, displaced and accepted under ADR-0009's rules, and nothing is written
+  until the rider accepts it. The summary and Settings → Athlete model show two buttons, **Use 287 W as my
+  FTP** (`athlete_proposal_accept { proposal_id }`) and **Keep 250 W** (`athlete_proposal_dismiss
+  { proposal_id }`), ADR-0009 §2.2.4 and §2.2.6; they replace the `athlete_confirm_ftp` of the first draft.
+  The executor recomputes the result from the stored ride, so a UI can never write a value the core did not
+  derive; a void result, or a ride that is not a ramp test, is no valid ramp result and raises no P7.
 
-#### 2.5.1 Heart rate: HR max from the ramp; LTHR is not a ramp output
+#### 2.5.1 Heart rate: the ramp's HR outputs; HR max is ADR-0009 P1; LTHR is not a ramp output
 
-**HR max (a lower-bound estimate).** A ramp to exhaustion is a maximal effort, so its peak HR is an
-**observed** HR max: by definition a lower bound of the true maximum, never above it. The executor proposes it
-to the athlete model (`hr_max`, source `test`, method `ramp_peak_hr_v1`), alongside the FTP proposal and on the
-same terms (ADR-0009 §2.2.4: a proposal, accepted by the rider, newer only, manual entry wins). It is raised
-only when all of these hold:
+HR is never an input to FTP (§2.5). For the athlete model, the ramp outputs, with its result:
 
-1. the end is `Exhausted` (a `RiderStopped` ramp may not have been maximal);
-2. HR is **gap-free** from 2 min before the end to 30 s after it (every second has an HR value);
-3. the HR signal is clean by ADR-0009 P1's guard: no step > 15 bpm between seconds in the 30 s before the peak;
-4. the value, the highest 5 s mean HR in that window, exceeds the current `hr_max`, or the current value is
-   the prior or unset. A lower bound never proposes a decrease.
+- **the per-second HR series** of the ride as recorded (null where no HR arrived), with the ramp's seconds
+  marked, and its peak (shown on the summary, §2.7);
+- **the end classification** (`AssessmentEnd`, §2.4) and **the ramp's end tick**: for an end through the
+  §7.4 release, the release tick `R` (§2.4), not the later tick on which the classification settles; for
+  Done, Pause or End, the tick the command is applied; for a loss, the tick it is detected. The ramp's
+  seconds end at that tick;
+- **the result's validity** (§2.5: valid, or void with its named reasons).
 
-The proposed value is that peak, rounded, with sd 2 bpm (ADR-0009 P1). The window runs 30 s past the end
-because HR keeps rising for some seconds after a maximal effort stops. That 30 s, the 5 s mean and the step guard
-are convention, chosen against strap artefacts. The lower-bound reading is by definition. For an assessment
-ride, this proposal takes the place of ADR-0009's generic P1 (one open proposal per param). **Alignment
-needed in ADR-0009:** its §2.1.1 lists `prior, self_report, rides, imported` as `hr_max` sources, and `test`
-must be added.
+**HR max is proposed by ADR-0009 P1** (`hr_max`, source `test`, method `ramp_peak_hr_v1`) under P1's rules,
+from these outputs. ADR-0004 restates none of P1's conditions or numbers. Two readings tie P1 to this ADR:
+P1's "last 3 min of the ramp" are the ramp seconds that end at the end tick above, and P1's `Exhausted` and
+"valid result" are §2.4's classification and §2.5's validity. So what follows the end (the cool-down, or End
+finishing the ride at once) neither makes nor fills an HR gap for P1, and Done, Pause or End in the ramp is
+`RiderStopped`, which raises no P1. Rides that are not assessments are P2's (ADR-0009 §2.2.4), not this ADR's.
 
 **LTHR is not derivable from a ramp.** Lactate-threshold HR is the HR of a sustained steady effort near
 threshold. A 1-min-step ramp has no steady state, and HR lags power (its on-kinetics take minutes, knowledge
 pack 09), so the HR at any ramp power is below the steady HR at that power. The ramp's FTP is itself a 0.75
-convention, so "HR at the ramp's FTP" would stack two errors. What provides LTHR:
+convention, so "HR at the ramp's FTP" would stack two errors.
 
-- **a self-paced 30-min time trial, with the mean HR of its last 20 min** (Friel [Fr2]): convention. Related
-  evidence: in 27 runners and triathletes, a 30-min TT's HR did not differ from HR at a 4 mmol/L lactate
-  criterion (SEE 8 bpm) [MG05]. That was running, not cycling;
-- **a lab lactate test**, entered by hand;
-- **post-ride analysis of steady near-threshold efforts** (ADR-0009 §2.2.5 HR-at-power baselines), which
-  would describe the rider but sets no zone.
-
-LTHR is **handed to ADR-0009**: it stays manual-only there (§2.2.4), and its open question on a 30-min-effort
-LTHR proposal belongs with the self-paced test that comes with the CP assessment (O1). ADR-0004 derives no LTHR.
+LTHR comes from **ADR-0009 P3** (a 30-min self-paced effort, after Friel [Fr2]: an LTHR test ride with the
+self-paced test ADR, or a qualifying ride segment) and **P4** (a steady ERG block near FTP), or from manual
+entry (e.g. a lab lactate test); an accepted LTHR sets the HR zones (ADR-0009 §2.1.1, DESIGN §18.3). Related
+evidence for the 30-min form, in runners and triathletes, not cyclists: [MG05]. ADR-0004 derives no LTHR.
 
 ### 2.6 Safety (ADR-0002 §7, DESIGN §5.8)
 
@@ -286,7 +278,7 @@ LTHR proposal belongs with the self-paced test that comes with the CP assessment
   Start.
 - **Ride view, ramp phase:** current target, the next step's target, time left in the step, cadence, and
   **Done** ("I've had enough, end the test"). Pause reads "Pause ends the test".
-- **Summary:** the result block of §2.5 and its two buttons; peak HR, and the HR max proposal of §2.5.1 with
+- **Summary:** the result block of §2.5 and its two buttons; peak HR, and the HR max proposal (ADR-0009 P1, §2.5.1) with
   its own Accept and Dismiss when one is raised.
 
 ### 2.8 Sim and test strategy
@@ -311,9 +303,9 @@ LTHR proposal belongs with the self-paced test that comes with the CP assessment
   the physiology.
 - **Core:** the start guard (stop, injury cap, unwell, no maximal-effort acknowledgement) each refused with its
   reason; an unacknowledged over-45 advisory is refused without its tick and admitted with it, and the
-  acknowledgement is logged. The executor raises the FTP and HR max proposals from a stored ride and raises
-  none for a void result, a non-test ride, a `RiderStopped` end (HR max), an HR gap, a peak at or below a
-  non-prior `hr_max`, or a ride older than a manual entry.
+  acknowledgement is logged. The executor raises P7 and P1 from a stored ramp ride whose outputs (§2.5,
+  §2.5.1) meet their rules, and raises no P7 for a void result or a non-test ride; P1's and P7's own edges
+  are ADR-0009 §2.8's tests, not restated here.
 - **App:** test-backend mocks model each core refusal of the start and confirm commands (repo convention).
 - **HIL (owner):** one ramp on the NEO, pedalled by the owner, checking that ERG holds at the high steps and
   that the release ends the test. A batched owner request, never assumed.
@@ -348,11 +340,11 @@ LTHR proposal belongs with the self-paced test that comes with the CP assessment
 
 **Phase 2 sub-issues, in order (filed on acceptance, 2026-11-22):**
 
-1. #702 domain: `assessment` module: `RampProtocol::V1`, `schedule`, `RampSecond`, `ramp_result`, the validity checks and the ramp HR max candidate (§2.2, §2.3, §2.5, §2.5.1).
+1. #702 domain: `assessment` module: `RampProtocol::V1`, `schedule`, `RampSecond`, `ramp_result`, the validity checks and the ramp's HR outputs and end tick (§2.2, §2.3, §2.5, §2.5.1).
 2. #703 safety: the FMEA `assessment` phase rows (terminal release, the end classification of §2.4, void on loss, the start guard with O5), before or alongside 4.
 3. #704 devices: `SimRider` exhaustion from W′bal, and a peak HR at exhaustion (§2.8).
 4. #705 engine: `RideSetup.kind`, `RideKind::Assessment`, the exhaustion counter on `last_sent`, alive confirmation and the end classification of §2.4, `AssessmentEnd`, the by-phase rules, the engine-owned cool-down phase and the drop of the remaining ramp blocks, `EngineCmd::EndRamp`, the terminal release, no resume after any end, no ± or coach (§2.3, §2.4, §2.6).
-5. #706 core: the start command with its guard (medical stop, injury cap, unwell, maximal-effort acknowledgement, the over-45 advisory acknowledgement of O5), the result DTO, and the FTP (P3) and HR max proposals through ADR-0009's executor (after ADR-0009's store and executor issues).
+5. #706 core: the start command with its guard (medical stop, injury cap, unwell, maximal-effort acknowledgement, the over-45 advisory acknowledgement of O5), the result DTO, and the FTP (ADR-0009 P7) and HR max (ADR-0009 P1) proposals through ADR-0009's executor (after ADR-0009's store and executor issues).
 6. #707 app: test card with both acknowledgements, ramp view, summary result and the proposals' Accept and Dismiss; bindings; design amendment (§2.7).
 7. #708 HIL: the owner-pedalled ramp on the NEO (ERG at the high steps, the release ends the test, peak HR captured).
 
