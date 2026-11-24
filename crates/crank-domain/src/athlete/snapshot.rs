@@ -54,8 +54,9 @@ pub struct AthleteSnapshot {
 
 impl AthleteSnapshot {
     /// Resolves every parameter from its rows: the newest row (largest `updated_at`, then largest `id`: rows are
-    /// append-only, so of two rows written in the same second the later one has the larger id); with no row, the
-    /// parameter's prior ([`super::prior::prior`], HR max from `age_years`) with no estimate id; with neither, unset.
+    /// append-only, so of two rows written in the same second the later one has the larger id); with no row, or
+    /// when the newest is a clear marker ([`Estimate::cleared`]), the parameter's prior ([`super::prior::prior`],
+    /// HR max from `age_years`) with no estimate id; with neither, unset.
     ///
     /// `estimates` may hold several parameters in any order. The rows are trusted as stored: every append is
     /// checked by [`super::check_estimate`].
@@ -66,7 +67,8 @@ impl AthleteSnapshot {
             let newest = estimates
                 .iter()
                 .filter(|e| e.param == param)
-                .max_by_key(|e| (e.updated_at, e.id));
+                .max_by_key(|e| (e.updated_at, e.id))
+                .filter(|e| !e.is_cleared());
             *snapshot.slot(param) = match newest {
                 Some(e) => Some(Resolved {
                     value: e.value,

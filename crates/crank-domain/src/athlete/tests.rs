@@ -226,6 +226,65 @@ fn a_prior_hr_max_does_not_refuse_a_measured_lthr() {
 }
 
 #[test]
+fn a_measured_lthr_does_not_refuse_a_prior_hr_max_row() {
+    // Clear on HR max for a 60-year-old with a typed LTHR of 170: the new row is the Tanaka prior of 166 bpm.
+    let snap = AthleteSnapshot::resolve(
+        &[row(1, AthleteParam::Lthr, 170., Source::SelfReport, 1)],
+        Some(60),
+    );
+    let clear = Estimate::prior_row(2, AthleteParam::HrMax, Some(60), 2);
+    let clear = clear.map(|e| (e.value, e.sd, e.source));
+    assert_eq!(clear, Some((166., 10., Source::Prior)));
+    assert_eq!(
+        check_estimate(AthleteParam::HrMax, 166., 10., Source::Prior, &snap),
+        Ok(())
+    );
+    // A measured HR max at the same value is still refused.
+    assert_eq!(
+        check_estimate(AthleteParam::HrMax, 166., 10., Source::SelfReport, &snap),
+        Err(AthleteError::LthrNotBelowHrMax {
+            lthr: 170.,
+            hr_max: 166.
+        })
+    );
+}
+
+#[test]
+fn a_clear_marker_resolves_unset_or_to_the_prior() {
+    let rows = [
+        row(1, AthleteParam::Lthr, 165., Source::SelfReport, 10),
+        Estimate::cleared(2, AthleteParam::Lthr, 20),
+        row(3, AthleteParam::Weight, 70., Source::SelfReport, 10),
+        Estimate::cleared(4, AthleteParam::Weight, 20),
+        row(5, AthleteParam::Weight, 68., Source::SelfReport, 30),
+        row(6, AthleteParam::HrMax, 190., Source::Test, 10),
+        Estimate::cleared(7, AthleteParam::HrMax, 20),
+    ];
+    assert!(rows[1].is_cleared() && !rows[0].is_cleared());
+    assert_eq!(
+        Estimate::prior_row(9, AthleteParam::Lthr, Some(40), 1),
+        None
+    );
+    let snap = AthleteSnapshot::resolve(&rows, None);
+    // Cleared and no prior: unset, never the marker's 0.
+    assert_eq!(snap.lthr, None);
+    // A later row after the marker is the current value again.
+    assert_eq!(
+        snap.weight.map(|r| (r.value, r.estimate_id)),
+        Some((68., Some(5)))
+    );
+    // HR max cleared with no age: unset; with an age, the prior with no estimate id.
+    assert_eq!(snap.hr_max, None);
+    let aged = AthleteSnapshot::resolve(&rows, Some(40)).hr_max;
+    assert_eq!(
+        aged.map(|r| (r.value, r.source, r.estimate_id)),
+        Some((180., Source::Prior, None))
+    );
+    let json = serde_json::to_value(snap).unwrap_or_default();
+    assert_eq!(json.get("lthr"), Some(&serde_json::Value::Null));
+}
+
+#[test]
 fn resolution_picks_the_newest_row_per_param() {
     let rows = [
         row(1, AthleteParam::Ftp, 240., Source::SelfReport, 100),

@@ -171,9 +171,17 @@ impl FromStr for Source {
 pub const METHOD_PRIOR: &str = "prior_v1";
 /// The method name of a value typed in by the rider.
 pub const METHOD_MANUAL: &str = "manual";
+/// The method name of a clear marker ([`Estimate::cleared`]).
+pub const METHOD_CLEARED: &str = "cleared";
 
 /// One row of a parameter's append-only history (ADR-0009 §2.1.1). The current value of a parameter is its newest
-/// row ([`AthleteSnapshot::resolve`]); a manual change, an accepted proposal or a revert each add a row.
+/// row ([`AthleteSnapshot::resolve`]); a manual change, an accepted proposal, a revert or a clear each add a row.
+///
+/// **Clear** (`athlete_clear`, ADR-0009 §2.1.3) appends a row of source [`Source::Prior`]: the prior's value
+/// ([`Estimate::prior_row`]) when the parameter has one, else a clear marker ([`Estimate::cleared`], method
+/// [`METHOD_CLEARED`]), which marks the parameter unset. For the store (#714): the marker is an ordinary row (source
+/// `prior`, method `cleared`, value and sd 0 and never read, `n` 0), so `athlete_estimate` needs no new column or
+/// source; history lists it as "cleared", and revert refuses it as it refuses every prior row.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
@@ -198,6 +206,55 @@ pub struct Estimate {
     pub n: u32,
     /// When the row was written, UTC seconds.
     pub updated_at: i64,
+}
+
+impl Estimate {
+    /// A prior row of `param` with the prior's value (Clear on a parameter that has a prior), or `None` when the
+    /// parameter has no prior for `age_years` (then Clear appends [`Estimate::cleared`]).
+    #[must_use]
+    pub fn prior_row(
+        id: i64,
+        param: AthleteParam,
+        age_years: Option<u32>,
+        updated_at: i64,
+    ) -> Option<Self> {
+        prior::prior(param, age_years).map(|p| Self {
+            id,
+            param,
+            value: p.value,
+            sd: p.sd,
+            source: Source::Prior,
+            method: METHOD_PRIOR.to_owned(),
+            ride_id: None,
+            proposal_id: None,
+            n: 0,
+            updated_at,
+        })
+    }
+
+    /// A clear marker of `param`: while it is the newest row the parameter resolves as if it had no row (its prior
+    /// if it has one, else unset), never to the marker's value.
+    #[must_use]
+    pub fn cleared(id: i64, param: AthleteParam, updated_at: i64) -> Self {
+        Self {
+            id,
+            param,
+            value: 0.,
+            sd: 0.,
+            source: Source::Prior,
+            method: METHOD_CLEARED.to_owned(),
+            ride_id: None,
+            proposal_id: None,
+            n: 0,
+            updated_at,
+        }
+    }
+
+    /// Whether this row is a clear marker ([`Estimate::cleared`]).
+    #[must_use]
+    pub fn is_cleared(&self) -> bool {
+        self.source == Source::Prior && self.method == METHOD_CLEARED
+    }
 }
 
 /// Why a parameter value is refused; the core answers each with `InvalidInput`.
@@ -288,9 +345,9 @@ pub fn check_value(param: AthleteParam, value: f64, sd: f64) -> Result<(), Athle
 }
 
 /// Checks a new row before it is appended: [`check_value`], the source is allowed for the parameter, and LTHR stays
-/// below HR max against the `current` model. The cross check reads only a measured (non-prior) LTHR or HR max of
-/// `current`: a prior is never a zone reference (ADR-0009 decision 5, §2.1.2), so a Tanaka HR max does not refuse a
-/// measured LTHR.
+/// below HR max against the `current` model. The cross check compares two measured (non-prior) values only: a
+/// prior is never a zone reference (ADR-0009 decision 5, §2.1.2), so neither a Tanaka HR max in `current` refuses a
+/// measured LTHR nor a new prior HR max row (Clear) is refused by a measured LTHR.
 ///
 /// # Errors
 /// Any [`check_value`] error, [`AthleteError::SourceNotAllowed`] or [`AthleteError::LthrNotBelowHrMax`].
@@ -304,6 +361,9 @@ pub fn check_estimate(
     check_value(param, value, sd)?;
     if !param.allows(source) {
         return Err(AthleteError::SourceNotAllowed { param, source });
+    }
+    if source == Source::Prior {
+        return Ok(());
     }
     let pair = match param {
         AthleteParam::Lthr => current
