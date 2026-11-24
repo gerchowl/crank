@@ -20,6 +20,18 @@ fn row(id: i64, param: AthleteParam, value: f64, source: Source, updated_at: i64
     }
 }
 
+fn entry(id: i64, param: AthleteParam, value: f64, source: Source, updated_at: i64) -> Entry {
+    Entry::Estimate(row(id, param, value, source, updated_at))
+}
+
+fn cleared(id: i64, param: AthleteParam, updated_at: i64) -> Entry {
+    Entry::Cleared(Cleared {
+        id,
+        param,
+        updated_at,
+    })
+}
+
 fn measured(value: f64) -> Resolved {
     Resolved {
         value,
@@ -226,10 +238,10 @@ fn a_prior_hr_max_does_not_refuse_a_measured_lthr() {
 }
 
 #[test]
-fn a_measured_lthr_does_not_refuse_a_prior_hr_max_row() {
+fn a_measured_lthr_does_not_refuse_a_prior_hr_max_entry() {
     // Clear on HR max for a 60-year-old with a typed LTHR of 170: the new row is the Tanaka prior of 166 bpm.
     let snap = AthleteSnapshot::resolve(
-        &[row(1, AthleteParam::Lthr, 170., Source::SelfReport, 1)],
+        &[entry(1, AthleteParam::Lthr, 170., Source::SelfReport, 1)],
         Some(60),
     );
     let clear = Estimate::prior_row(2, AthleteParam::HrMax, Some(60), 2);
@@ -250,30 +262,51 @@ fn a_measured_lthr_does_not_refuse_a_prior_hr_max_row() {
 }
 
 #[test]
-fn a_clear_marker_resolves_unset_or_to_the_prior() {
+fn clear_appends_the_prior_or_a_valueless_cleared_entry() {
+    // ADR-0009 §2.1.3: Clear appends the prior's row when the param has one, else marks it unset; exactly one.
+    for p in AthleteParam::ALL {
+        for age in [None, Some(40), Some(130)] {
+            let e = Entry::clear(9, p, age, 50);
+            assert_eq!(
+                (e.id(), e.param(), e.updated_at()),
+                (9, p, 50),
+                "{p} {age:?}"
+            );
+            match (&e, prior::prior(p, age)) {
+                (Entry::Estimate(est), Some(pr)) => {
+                    assert_eq!(
+                        (est.value, est.sd, est.source),
+                        (pr.value, pr.sd, Source::Prior)
+                    );
+                    assert_eq!(est.method, METHOD_PRIOR);
+                }
+                (Entry::Cleared(_), None) => {}
+                other => panic!("{p} {age:?}: {other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn a_cleared_entry_resolves_unset_or_to_the_prior() {
     let rows = [
-        row(1, AthleteParam::Lthr, 165., Source::SelfReport, 10),
-        Estimate::cleared(2, AthleteParam::Lthr, 20),
-        row(3, AthleteParam::Weight, 70., Source::SelfReport, 10),
-        Estimate::cleared(4, AthleteParam::Weight, 20),
-        row(5, AthleteParam::Weight, 68., Source::SelfReport, 30),
-        row(6, AthleteParam::HrMax, 190., Source::Test, 10),
-        Estimate::cleared(7, AthleteParam::HrMax, 20),
+        entry(1, AthleteParam::Lthr, 165., Source::SelfReport, 10),
+        cleared(2, AthleteParam::Lthr, 20),
+        entry(3, AthleteParam::Weight, 70., Source::SelfReport, 10),
+        cleared(4, AthleteParam::Weight, 20),
+        entry(5, AthleteParam::Weight, 68., Source::SelfReport, 30),
+        entry(6, AthleteParam::HrMax, 190., Source::Test, 10),
+        cleared(7, AthleteParam::HrMax, 20),
     ];
-    assert!(rows[1].is_cleared() && !rows[0].is_cleared());
-    assert_eq!(
-        Estimate::prior_row(9, AthleteParam::Lthr, Some(40), 1),
-        None
-    );
     let snap = AthleteSnapshot::resolve(&rows, None);
-    // Cleared and no prior: unset, never the marker's 0.
+    // Cleared and no prior: unset.
     assert_eq!(snap.lthr, None);
-    // A later row after the marker is the current value again.
+    // A later value after the clear is the current value again.
     assert_eq!(
         snap.weight.map(|r| (r.value, r.estimate_id)),
         Some((68., Some(5)))
     );
-    // HR max cleared with no age: unset; with an age, the prior with no estimate id.
+    // HR max cleared with no age: unset; once the age is known, the prior with no estimate id.
     assert_eq!(snap.hr_max, None);
     let aged = AthleteSnapshot::resolve(&rows, Some(40)).hr_max;
     assert_eq!(
@@ -285,15 +318,54 @@ fn a_clear_marker_resolves_unset_or_to_the_prior() {
 }
 
 #[test]
+fn every_appendable_entry_passes_its_check() {
+    // The store contract (#714): what Clear and a measurement append passes check_entry, so "trusted as stored"
+    // holds for the rows resolve reads.
+    let lthr_170 = AthleteSnapshot::resolve(
+        &[entry(1, AthleteParam::Lthr, 170., Source::SelfReport, 1)],
+        Some(60),
+    );
+    for current in [AthleteSnapshot::default(), lthr_170] {
+        for p in AthleteParam::ALL {
+            for age in [None, Some(40), Some(60), Some(130)] {
+                let e = Entry::clear(2, p, age, 2);
+                assert_eq!(check_entry(&e, &current), Ok(()), "{p} {age:?}");
+            }
+            assert_eq!(check_entry(&cleared(3, p, 3), &current), Ok(()), "{p}");
+        }
+    }
+    let bad = entry(4, AthleteParam::Weight, 0., Source::SelfReport, 4);
+    assert!(matches!(
+        check_entry(&bad, &AthleteSnapshot::default()),
+        Err(AthleteError::OutOfRange { .. })
+    ));
+}
+
+#[test]
+fn entries_round_trip_with_their_kind() {
+    let c = cleared(5, AthleteParam::HrRest, 1_700_000_000);
+    let json = serde_json::to_string(&c).unwrap_or_default();
+    assert_eq!(
+        json,
+        r#"{"kind":"cleared","id":5,"param":"hr_rest","updatedAt":1700000000}"#
+    );
+    assert_eq!(serde_json::from_str::<Entry>(&json).ok(), Some(c));
+    let e = entry(6, AthleteParam::Ftp, 280., Source::Test, 7);
+    let json = serde_json::to_string(&e).unwrap_or_default();
+    assert!(json.starts_with(r#"{"kind":"estimate","id":6,"#), "{json}");
+    assert_eq!(serde_json::from_str::<Entry>(&json).ok(), Some(e));
+}
+
+#[test]
 fn resolution_picks_the_newest_row_per_param() {
     let rows = [
-        row(1, AthleteParam::Ftp, 240., Source::SelfReport, 100),
-        row(4, AthleteParam::Ftp, 260., Source::Test, 300),
-        row(3, AthleteParam::Ftp, 250., Source::Rides, 200),
-        row(2, AthleteParam::Weight, 72., Source::SelfReport, 150),
+        entry(1, AthleteParam::Ftp, 240., Source::SelfReport, 100),
+        entry(4, AthleteParam::Ftp, 260., Source::Test, 300),
+        entry(3, AthleteParam::Ftp, 250., Source::Rides, 200),
+        entry(2, AthleteParam::Weight, 72., Source::SelfReport, 150),
         // Same second: the later append (larger id) wins.
-        row(5, AthleteParam::Lthr, 165., Source::SelfReport, 400),
-        row(6, AthleteParam::Lthr, 168., Source::Test, 400),
+        entry(5, AthleteParam::Lthr, 165., Source::SelfReport, 400),
+        entry(6, AthleteParam::Lthr, 168., Source::Test, 400),
     ];
     let snap = AthleteSnapshot::resolve(&rows, None);
     let ftp = snap.ftp.map(|r| (r.value, r.source, r.estimate_id));
@@ -313,8 +385,8 @@ fn resolution_picks_the_newest_row_per_param() {
 fn a_newer_prior_row_wins_over_an_older_measurement() {
     // "Clear" appends a prior row (ADR-0009 §2.1.3): it is the newest, so it is the current value.
     let rows = [
-        row(1, AthleteParam::Ftp, 300., Source::Test, 100),
-        row(2, AthleteParam::Ftp, 250., Source::Prior, 200),
+        entry(1, AthleteParam::Ftp, 300., Source::Test, 100),
+        entry(2, AthleteParam::Ftp, 250., Source::Prior, 200),
     ];
     let ftp = AthleteSnapshot::resolve(&rows, None).ftp;
     assert_eq!(
@@ -362,7 +434,7 @@ fn hr_zones_never_come_from_a_prior_hr_max() {
     assert_eq!(new_rider.hr_zone(Some(150.)), None);
 
     let typed = AthleteSnapshot::resolve(
-        &[row(1, AthleteParam::HrMax, 190., Source::SelfReport, 1)],
+        &[entry(1, AthleteParam::HrMax, 190., Source::SelfReport, 1)],
         Some(30),
     );
     let zone = typed.hr_zone(Some(150.)).map(|z| (z.label, z.model));
@@ -370,8 +442,8 @@ fn hr_zones_never_come_from_a_prior_hr_max() {
 
     let both = AthleteSnapshot::resolve(
         &[
-            row(1, AthleteParam::HrMax, 190., Source::SelfReport, 1),
-            row(2, AthleteParam::Lthr, 160., Source::Test, 1),
+            entry(1, AthleteParam::HrMax, 190., Source::SelfReport, 1),
+            entry(2, AthleteParam::Lthr, 160., Source::Test, 1),
         ],
         None,
     );
@@ -384,9 +456,9 @@ fn hr_zones_never_come_from_a_prior_hr_max() {
 #[test]
 fn snapshot_round_trips_through_athlete_json() {
     let rows = [
-        row(7, AthleteParam::Ftp, 287., Source::Test, 10),
-        row(8, AthleteParam::WPrime, 18_500., Source::Rides, 11),
-        row(9, AthleteParam::Weight, 71.5, Source::Imported, 12),
+        entry(7, AthleteParam::Ftp, 287., Source::Test, 10),
+        entry(8, AthleteParam::WPrime, 18_500., Source::Rides, 11),
+        entry(9, AthleteParam::Weight, 71.5, Source::Imported, 12),
     ];
     let snap = AthleteSnapshot::resolve(&rows, Some(41));
     let json = serde_json::to_string(&snap).unwrap_or_default();
@@ -453,22 +525,29 @@ proptest! {
 
     #[test]
     fn resolution_equals_the_max_by_time_then_id(
-        rows in prop::collection::vec((any_param(), 0..5_i64, 50.0..200.0_f64), 0..24),
+        rows in prop::collection::vec((any_param(), 0..5_i64, 50.0..200.0_f64, prop::bool::weighted(0.2)), 0..24),
     ) {
-        let rows: Vec<Estimate> = rows
+        let rows: Vec<Entry> = rows
             .into_iter()
             .enumerate()
-            .map(|(i, (p, t, v))| row(i64::try_from(i).unwrap_or(i64::MAX), p, v, Source::SelfReport, t))
+            .map(|(i, (p, t, v, clear))| {
+                let id = i64::try_from(i).unwrap_or(i64::MAX);
+                if clear { cleared(id, p, t) } else { entry(id, p, v, Source::SelfReport, t) }
+            })
             .collect();
         let snap = AthleteSnapshot::resolve(&rows, None);
         for p in AthleteParam::ALL {
-            let mut newest: Option<&Estimate> = None;
-            for e in rows.iter().filter(|e| e.param == p) {
-                if newest.is_none_or(|n| (e.updated_at, e.id) > (n.updated_at, n.id)) {
+            let mut newest: Option<&Entry> = None;
+            for e in rows.iter().filter(|e| e.param() == p) {
+                if newest.is_none_or(|n| (e.updated_at(), e.id()) > (n.updated_at(), n.id())) {
                     newest = Some(e);
                 }
             }
-            let expected = newest.map_or_else(|| prior::prior(p, None).map(|_| None), |e| Some(Some(e.id)));
+            let from_prior = || prior::prior(p, None).map(|_| None);
+            let expected = match newest {
+                Some(Entry::Estimate(e)) => Some(Some(e.id)),
+                Some(Entry::Cleared(_)) | None => from_prior(),
+            };
             prop_assert_eq!(snap.get(p).map(|r| r.estimate_id), expected);
         }
     }

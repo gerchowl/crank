@@ -1,6 +1,6 @@
 //! The athlete model: parameters, estimates, sources, plausibility bounds, priors and the ride's snapshot
 //! (ADR-0009 §2.1.1, §2.1.2, §2.1.4). Pure: the store keeps the append-only estimate rows (#714), the core
-//! appends and resolves them (#715).
+//! appends and resolves them (#715). A history row is an [`Entry`]: a value ([`Estimate`]) or a clear ([`Cleared`]).
 //!
 //! A value outside its bounds is refused, never clamped ([`check_estimate`]); a parameter with neither a row nor a
 //! prior is unset ([`AthleteSnapshot`]), never 0.
@@ -171,17 +171,8 @@ impl FromStr for Source {
 pub const METHOD_PRIOR: &str = "prior_v1";
 /// The method name of a value typed in by the rider.
 pub const METHOD_MANUAL: &str = "manual";
-/// The method name of a clear marker ([`Estimate::cleared`]).
-pub const METHOD_CLEARED: &str = "cleared";
 
-/// One row of a parameter's append-only history (ADR-0009 §2.1.1). The current value of a parameter is its newest
-/// row ([`AthleteSnapshot::resolve`]); a manual change, an accepted proposal, a revert or a clear each add a row.
-///
-/// **Clear** (`athlete_clear`, ADR-0009 §2.1.3) appends a row of source [`Source::Prior`]: the prior's value
-/// ([`Estimate::prior_row`]) when the parameter has one, else a clear marker ([`Estimate::cleared`], method
-/// [`METHOD_CLEARED`]), which marks the parameter unset. For the store (#714): the marker is an ordinary row (source
-/// `prior`, method `cleared`, value and sd 0 and never read, `n` 0), so `athlete_estimate` needs no new column or
-/// source; history lists it as "cleared", and revert refuses it as it refuses every prior row.
+/// A value row of a parameter's history (ADR-0009 §2.1.1); see [`Entry`] for the history itself.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
@@ -209,8 +200,8 @@ pub struct Estimate {
 }
 
 impl Estimate {
-    /// A prior row of `param` with the prior's value (Clear on a parameter that has a prior), or `None` when the
-    /// parameter has no prior for `age_years` (then Clear appends [`Estimate::cleared`]).
+    /// The prior row of `param` (source [`Source::Prior`], method [`METHOD_PRIOR`], `n` 0), or `None` when the
+    /// parameter has no prior for `age_years`.
     #[must_use]
     pub fn prior_row(
         id: i64,
@@ -231,29 +222,83 @@ impl Estimate {
             updated_at,
         })
     }
+}
 
-    /// A clear marker of `param`: while it is the newest row the parameter resolves as if it had no row (its prior
-    /// if it has one, else unset), never to the marker's value.
+/// A Clear of a parameter that has no prior: it carries no value, and while it is the parameter's newest entry the
+/// parameter is unset (ADR-0009 §2.1.3 "marks the param unset when there is no prior").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct Cleared {
+    /// The row; stable, in the same id sequence as the estimates.
+    pub id: i64,
+    /// The parameter.
+    pub param: AthleteParam,
+    /// When the row was written, UTC seconds.
+    pub updated_at: i64,
+}
+
+/// One row of a parameter's append-only history (ADR-0009 §2.1.1): a value, or a clear. The current state of a
+/// parameter is its newest entry ([`AthleteSnapshot::resolve`]); a manual change, an accepted proposal, a revert or
+/// a Clear each append one.
+///
+/// **Clear** (`athlete_clear`, ADR-0009 §2.1.3) appends exactly one entry, [`Entry::clear`]: the prior's row
+/// ([`Estimate::prior_row`]) when the parameter has a prior, else [`Entry::Cleared`].
+///
+/// **Store contract (#714):** every entry is checked with [`check_entry`] before it is appended, so every stored
+/// entry passes it. A [`Cleared`] has no value, sd, source, method, ride, proposal or count: the table needs a row
+/// kind (`estimate` or `cleared`) with those columns NULL exactly for `cleared`, never a placeholder value. History
+/// lists a cleared row as "cleared"; revert refuses it (`InvalidInput`), as it refuses a prior row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Entry {
+    /// A value of the parameter.
+    Estimate(Estimate),
+    /// The parameter was cleared and has no prior: unset.
+    Cleared(Cleared),
+}
+
+impl Entry {
+    /// The entry Clear appends for `param` (ADR-0009 §2.1.3): the prior's row if the parameter has a prior for
+    /// `age_years`, else [`Entry::Cleared`].
     #[must_use]
-    pub fn cleared(id: i64, param: AthleteParam, updated_at: i64) -> Self {
-        Self {
-            id,
-            param,
-            value: 0.,
-            sd: 0.,
-            source: Source::Prior,
-            method: METHOD_CLEARED.to_owned(),
-            ride_id: None,
-            proposal_id: None,
-            n: 0,
-            updated_at,
+    pub fn clear(id: i64, param: AthleteParam, age_years: Option<u32>, updated_at: i64) -> Self {
+        Estimate::prior_row(id, param, age_years, updated_at).map_or(
+            Self::Cleared(Cleared {
+                id,
+                param,
+                updated_at,
+            }),
+            Self::Estimate,
+        )
+    }
+
+    /// The row id.
+    #[must_use]
+    pub fn id(&self) -> i64 {
+        match self {
+            Self::Estimate(e) => e.id,
+            Self::Cleared(c) => c.id,
         }
     }
 
-    /// Whether this row is a clear marker ([`Estimate::cleared`]).
+    /// The parameter.
     #[must_use]
-    pub fn is_cleared(&self) -> bool {
-        self.source == Source::Prior && self.method == METHOD_CLEARED
+    pub fn param(&self) -> AthleteParam {
+        match self {
+            Self::Estimate(e) => e.param,
+            Self::Cleared(c) => c.param,
+        }
+    }
+
+    /// When the row was written, UTC seconds.
+    #[must_use]
+    pub fn updated_at(&self) -> i64 {
+        match self {
+            Self::Estimate(e) => e.updated_at,
+            Self::Cleared(c) => c.updated_at,
+        }
     }
 }
 
@@ -381,6 +426,18 @@ pub fn check_estimate(
             Err(AthleteError::LthrNotBelowHrMax { lthr, hr_max })
         }
         _ => Ok(()),
+    }
+}
+
+/// Checks an entry before it is appended: an estimate with [`check_estimate`]; a [`Cleared`] is allowed for every
+/// parameter (it holds no value to check). The store appends only entries that pass (#714).
+///
+/// # Errors
+/// Any [`check_estimate`] error of an [`Entry::Estimate`].
+pub fn check_entry(entry: &Entry, current: &AthleteSnapshot) -> Result<(), AthleteError> {
+    match entry {
+        Entry::Estimate(e) => check_estimate(e.param, e.value, e.sd, e.source, current),
+        Entry::Cleared(_) => Ok(()),
     }
 }
 

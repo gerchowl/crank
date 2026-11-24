@@ -1,6 +1,6 @@
 //! The athlete model a ride is loaded with (ADR-0009 §2.1.4), stored as `ride.athlete_json`.
 use super::prior::prior;
-use super::{AthleteParam, Estimate, Source};
+use super::{AthleteParam, Entry, Source};
 use crate::hr_zone::{HrRefs, HrZone, hr_zone};
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +16,7 @@ pub struct Resolved {
     /// Where it came from.
     pub source: Source,
     /// The estimate row it was read from; `None` for a prior of [`super::prior`] that no row holds (a parameter
-    /// never set nor cleared).
+    /// never set, or a [`super::Cleared`] whose prior became known later, e.g. HR max once the age is given).
     pub estimate_id: Option<i64>,
 }
 
@@ -53,30 +53,29 @@ pub struct AthleteSnapshot {
 }
 
 impl AthleteSnapshot {
-    /// Resolves every parameter from its rows: the newest row (largest `updated_at`, then largest `id`: rows are
-    /// append-only, so of two rows written in the same second the later one has the larger id); with no row, or
-    /// when the newest is a clear marker ([`Estimate::cleared`]), the parameter's prior ([`super::prior::prior`],
-    /// HR max from `age_years`) with no estimate id; with neither, unset.
+    /// Resolves every parameter from its entries: the newest entry (largest `updated_at`, then largest `id`: rows
+    /// are append-only, so of two rows written in the same second the later one has the larger id). A newest
+    /// [`Entry::Estimate`] is the value; with no entry, or a newest [`Entry::Cleared`], the parameter's prior
+    /// ([`super::prior::prior`], HR max from `age_years`) with no estimate id, else unset.
     ///
-    /// `estimates` may hold several parameters in any order. The rows are trusted as stored: every append is
-    /// checked by [`super::check_estimate`].
+    /// `entries` may hold several parameters in any order. They are trusted as stored: every append is checked by
+    /// [`super::check_entry`].
     #[must_use]
-    pub fn resolve(estimates: &[Estimate], age_years: Option<u32>) -> Self {
+    pub fn resolve(entries: &[Entry], age_years: Option<u32>) -> Self {
         let mut snapshot = Self::default();
         for param in AthleteParam::ALL {
-            let newest = estimates
+            let newest = entries
                 .iter()
-                .filter(|e| e.param == param)
-                .max_by_key(|e| (e.updated_at, e.id))
-                .filter(|e| !e.is_cleared());
+                .filter(|e| e.param() == param)
+                .max_by_key(|e| (e.updated_at(), e.id()));
             *snapshot.slot(param) = match newest {
-                Some(e) => Some(Resolved {
+                Some(Entry::Estimate(e)) => Some(Resolved {
                     value: e.value,
                     sd: e.sd,
                     source: e.source,
                     estimate_id: Some(e.id),
                 }),
-                None => prior(param, age_years).map(|p| Resolved {
+                Some(Entry::Cleared(_)) | None => prior(param, age_years).map(|p| Resolved {
                     value: p.value,
                     sd: p.sd,
                     source: Source::Prior,
