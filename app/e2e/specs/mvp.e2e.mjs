@@ -16,8 +16,10 @@
 // reachable during a ride (the ride screen has no rail): step 7's losses are read from the status bar's device pill,
 // and step 8 checks that the chips come back to the keeper's phases once the ride has ended.
 //
-// The ride is a workout the walk writes and saves first (step 0, #110): New workout, the text of the built-in "Sensor
-// check (3 min)" (crates/crank-core/src/library.rs `BUILTIN`), a name, Save. It is ridden through the library's Ride
+// The ride is a workout the walk builds and saves first (step 0, #110, #653): New workout, then the built-in "Sensor
+// check (3 min)" (crates/crank-core/src/library.rs `BUILTIN`) step by step from the outline (Add step, the step's form,
+// Apply; a Duplicate and a Delete on the way), which the real core prints as the text; a name, Save. It is ridden
+// through the library's Ride
 // this by its id (#643): FTP 250 W (the new workout's reference FTP), 1 min each at 50 %, 80 % and 40 %, so its plan
 // targets are 125 W, 200 W and 100 W. The simulator's scan offers "crank sim trainer"
 // and "crank sim strap" (crates/crank-core/src/backend.rs `Backend::scan`), and its rider pedals on its own.
@@ -33,8 +35,14 @@ import * as sel from "./mvp-selectors.mjs";
 
 const outDir = process.env.CRANK_E2E_OUT ?? "e2e-out";
 const WORKOUT = "My sensor check";
-/** Its text: the built-in sensor check's (library.rs `BUILTIN`). */
-const WORKOUT_DSL = '"Warm-up" 1m 50%, "Work" 1m 80%, "Cool-down" 1m 40%';
+/** Its steps, as the outline's form takes them: the built-in sensor check's (library.rs `BUILTIN`). */
+const WORKOUT_STEPS = [
+  ["Warm-up", "50"],
+  ["Work", "80"],
+  ["Cool-down", "40"],
+];
+/** Its text as the core prints it (docs/DSL.md "Canonical printing": one top-level step per line). */
+const WORKOUT_DSL = '"Warm-up" 1m 50%\n"Work" 1m 80%\n"Cool-down" 1m 40%';
 /** The plan's target per block, W (50 %, 80 %, 40 % of 250 W). */
 const PLAN_W = [125, 200, 100];
 const TRAINER = "crank sim trainer";
@@ -193,16 +201,48 @@ function runs(entries, slot) {
 }
 
 describe("MVP walk (#256 critical path, sim)", () => {
-  it("0. writes a workout: New workout, its text and name, Save; it is in the library", async () => {
-    // #110: the library's save loop through the real core (`workout_new`, `parse_dsl`, `compile_workout`,
-    // `workout_save`), before any device is paired: the editor needs none.
+  it("0. builds a workout from the outline: New workout, its steps and name, Save; it is in the library", async () => {
+    // #110: the library's save loop through the real core (`workout_new`, `print_dsl`, `parse_dsl`, `compile_workout`,
+    // `workout_save`), before any device is paired: the editor needs none. #653: the steps are built from the outline.
     await $(sel.rail("Workouts")).click();
     await $(sel.newWorkout).click();
     await expect($(sel.editorChip)).toHaveText("Not saved");
     // An empty workout has an error (the core's "Workout is empty"): nothing to save or ride yet.
     await expect($(sel.editorButton("Save"))).toBeDisabled({ wait: UI_MS });
     await expect($(sel.editorButton("Ride this"))).toBeDisabled();
-    await $(sel.editorText).setValue(WORKOUT_DSL);
+    /** Waits until the outline has `n` rows. */
+    const rows = (n, what) =>
+      browser.waitUntil(async () => (await $$(sel.outlineRows).length) === n, {
+        timeout: UI_MS,
+        timeoutMsg: `${what}: the outline never had ${n} rows`,
+      });
+    /** Sets a box of the selected node's form. */
+    const set = async (label, value) => {
+      await $(sel.blockField(label)).clearValue();
+      await $(sel.blockField(label)).setValue(value);
+    };
+    for (const [i, [label, power]] of WORKOUT_STEPS.entries()) {
+      // Add step inserts a 5 min step at 50 % after the selected one (the first: at the end), selected and focused.
+      await $(sel.outlineTool("Add step")).click();
+      await rows(i + 1, `Add step ${i + 1}`);
+      await expect($(sel.outlineSelected)).toBeFocused();
+      await expect($(sel.outlineSelected)).toHaveText("5:00 · 50 %");
+      await set("Label", label);
+      await set("Minutes", "1");
+      await set("Power", power);
+      await $(sel.blockApply).click();
+      await expect($(sel.outlineSelected)).toHaveText(
+        `${label} · 1:00 · ${power} %`,
+        { wait: UI_MS },
+      );
+    }
+    // A Duplicate, then a Delete of the copy: back to the three steps.
+    await $(sel.outlineTool("Duplicate")).click();
+    await rows(4, "Duplicate");
+    await $(sel.outlineTool("Delete")).click();
+    await rows(3, "Delete");
+    // The real core printed every step: the text view holds the canonical text.
+    await expect($(sel.editorText)).toHaveValue(WORKOUT_DSL, { wait: UI_MS });
     await $(sel.editorName).setValue(WORKOUT);
     await expect($(sel.editorText)).toHaveValue(WORKOUT_DSL);
     await expect($(sel.editorName)).toHaveValue(WORKOUT);

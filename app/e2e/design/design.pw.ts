@@ -60,8 +60,12 @@ async function open(page: Page, s: Scenario) {
     await page.getByRole("option", { name }).first().click();
   for (const name of s.clicks ?? [])
     await page.getByRole("button", { name }).first().click();
+  for (const name of s.rows ?? [])
+    await page.getByRole("option", { name }).first().click();
   for (const f of s.fills ?? [])
     await page.getByRole("textbox", { name: f.label }).fill(f.text);
+  for (const name of s.after ?? [])
+    await page.getByRole("button", { name }).first().click();
   await expect(page.locator(s.ready).first()).toBeVisible();
   if (s.scrollTo) await page.locator(s.scrollTo).scrollIntoViewIfNeeded();
   await page.evaluate(() => window.__fixture.settled());
@@ -266,7 +270,9 @@ test("every control on Settings or Devices is in the window, in any of their fix
   }
 });
 
-// Workouts (#528) too: with a long name or a long workout, Ride this stays in the window.
+// Workouts (#528) too: with a long name or a long workout, Ride this stays in the window. The editor's form of the
+// selected node (#653) sits under the outline, a list as long as the workout: it is the flow, as History's rows are. A
+// fixture that clicked Apply was scrolled to it, so it is checked from the top, as History's are.
 test("every control on Workouts is in the window, in any of its fixtures", async ({
   page,
 }) => {
@@ -274,8 +280,9 @@ test("every control on Workouts is in the window, in any of its fixtures", async
     const s = SCENARIOS.find((x) => x.name === name);
     if (!s) throw new Error(`no fixture ${name}`);
     await open(page, s);
+    await page.evaluate(() => scrollTo(0, 0));
     expect(
-      await controlsFit(page, "#root"),
+      await controlsFit(page, "#root", ".editor-block"),
       `${name}: controls outside the window`,
     ).toEqual([]);
   }

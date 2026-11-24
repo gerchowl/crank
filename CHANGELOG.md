@@ -17,6 +17,12 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   ([#713](https://github.com/gerchowl/crank/issues/713)). The heart-rate zone tables (Friel's seven % LTHR zones, five
   % HR max zones) move into `crank-domain`; the snapshot's HR zone never reads a prior HR max
   ([#645](https://github.com/gerchowl/crank/issues/645))
+- Workout editor: edit the tree from the outline (#653, DESIGN §5.7 "Outline editing"): a toolbar (Add step, Duplicate,
+  Wrap in repeat, Unwrap, Move up, Move down, Delete) and the selected node's form (label, duration, power: flat, watts,
+  range or ramp ends; a repeat's label and count). Each edit is printed and read back by the core and committed with its
+  canonical text as one undo step; one the core refuses (a 0 s step, a negative target) changes nothing and shows the
+  core's message. Keyboard: an APG toolbar before the outline, focus on the edited row. The MVP walk builds its workout
+  from the outline ([#653](https://github.com/gerchowl/crank/issues/653))
 - Workouts save (#110, DESIGN §5.7): **New workout** opens the editor on an empty workout; the editor has a name box,
   **Save** and **Save as new**, which store the workout in the library (the store's `workout` table), and **Ride this**,
   which rides the saved workout by its id (#643: no draft riding). Leaving the editor (Back or the rail) or riding with

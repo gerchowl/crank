@@ -27,8 +27,10 @@ import { Dialog } from "../shell/Dialog";
 import { windowClose } from "./windowClose";
 import { ErrorLine, Profile, Summary, formatDuration } from "../views/Workouts";
 import {
+  applied,
   canRedo,
   canUndo,
+  flatten,
   load,
   parsed,
   redo,
@@ -38,6 +40,13 @@ import {
   type EditorState,
   type Saved,
 } from "./model";
+import {
+  BlockForm,
+  OutlineToolbar,
+  outlineActions,
+  withNode,
+  type OutlineChange,
+} from "./OutlineEdit";
 import "./editor.css";
 
 const icon = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
@@ -83,32 +92,27 @@ export function describe(n: WorkoutNode): string {
     .join(" · ");
 }
 
-/** The tree in reading order, each node with its depth (0 = top level). */
-function flatten(
-  nodes: readonly WorkoutNode[],
-  depth = 0,
-): { node: WorkoutNode; depth: number }[] {
-  return nodes.flatMap((node) => [
-    { node, depth },
-    ...(node.type === "repeat" ? flatten(node.children, depth + 1) : []),
-  ]);
-}
-
 /**
  * The outline: the tree as one single-select listbox (WAI-ARIA APG, selection follows focus, as the library), a row
- * per node indented by its depth; a row is as tall as its words need, so a long label wraps and is never cut.
+ * per node indented by its depth; a row is as tall as its words need, so a long label wraps and is never cut. After
+ * an outline edit focus goes to the edited row (`focus`, a new request each time).
  */
 function Outline({
   nodes,
   selection,
   onSelect,
+  focus,
 }: {
   nodes: readonly WorkoutNode[];
   selection: string | null;
   onSelect: (id: string) => void;
+  focus: { id: string } | null;
 }) {
   const rows = flatten(nodes);
   const refs = useRef(new Map<string, HTMLLIElement>());
+  useEffect(() => {
+    if (focus) refs.current.get(focus.id)?.focus();
+  }, [focus]);
   const stop = rows.some((r) => r.node.id === selection)
     ? selection
     : (rows[0]?.node.id ?? null);
@@ -132,6 +136,7 @@ function Outline({
   };
   return (
     <ul
+      id="editor-outline"
       role="listbox"
       aria-label="Outline"
       className="editor-outline"
@@ -149,6 +154,8 @@ function Outline({
           tabIndex={stop === node.id ? 0 : -1}
           data-depth={Math.min(depth, 2)}
           onClick={() => onSelect(node.id)}
+          // Selection follows focus (APG): Tab into the outline selects the row it lands on.
+          onFocus={() => selection !== node.id && onSelect(node.id)}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
@@ -161,6 +168,19 @@ function Outline({
         </li>
       ))}
     </ul>
+  );
+}
+
+/** An outline edit refused (#653): the core's message (no full stop of its own), or a box that holds no number. */
+function Refused({ why }: { why: string }) {
+  return (
+    <p
+      id="editor-outline-refused"
+      className="editor-problem"
+      data-state="error"
+    >
+      <span data-state-label>⚠</span> {why}. Nothing was changed.
+    </p>
   );
 }
 
@@ -275,6 +295,21 @@ export function WorkoutEditor({
   const [ask, setAsk] = useState<Ask | null>(null);
   const failure = saveFailure ?? parseFailure ?? compileFailure;
   const root = useRef<HTMLDivElement>(null);
+  // Outline edits (#653): why the last one was refused; the row to focus once one is committed; whether one is being
+  // checked by the core (another waits for it: a second click is dropped); fresh ids for the nodes they add.
+  const [outlineRefusal, setOutlineRefusal] = useState<{
+    why: string;
+    /** Where it is said: under the toolbar, or under the form's Apply (beside the edit that was refused). */
+    at: "toolbar" | "form";
+  } | null>(null);
+  const [focusRow, setFocusRow] = useState<{ id: string } | null>(null);
+  const checking = useRef(false);
+  const nextId = useRef(0);
+  const fresh = () => `outline-${++nextId.current}`;
+  const latest = useRef(s);
+  useEffect(() => {
+    latest.current = s;
+  });
 
   // The summary and the profile follow the saved tree: each change is compiled by the core; an answer for a tree that
   // is no longer saved is dropped. A copy's first tree is the library's, already compiled; a new workout's is not.
@@ -307,6 +342,49 @@ export function WorkoutEditor({
         setS((st) => parsed(st, text, r.data));
       } else setParseFailure(r.error);
     });
+  };
+
+  // Why the outline cannot be edited now: an edit commits a tree with its canonical text, which would drop a draft the
+  // rider typed and the core has not read, or one it refused.
+  const outlineBlocked = s.lock
+    ? "Accept or reject the suggestion to edit the outline."
+    : s.problem
+      ? "Fix the text to edit the outline."
+      : s.draft !== s.saved.text
+        ? "The outline waits until the text is read."
+        : null;
+  /**
+   * Commit an outline edit (DESIGN §5.7): the core prints the tree (`print_dsl`) and reads that text back
+   * (`parse_dsl`); a text it refuses is a tree the text could not hold (a 0 s step, a negative target), so the edit is
+   * refused with the core's message and nothing changes. Otherwise the tree is committed with that text as one undo
+   * step, its edited node selected and focused. An edit checked while the workout changed (typing) is dropped.
+   */
+  const outlineEdit = async (
+    { nodes, select: to }: OutlineChange,
+    at: "toolbar" | "form",
+  ) => {
+    if (checking.current || outlineBlocked) return;
+    const refuse = (why: string) => setOutlineRefusal({ why, at });
+    checking.current = true;
+    const base = latest.current.saved;
+    try {
+      const printed = await api(commands.printDsl(nodes));
+      if (printed.status !== "ok") return refuse(printed.error.message);
+      const back = await api(commands.parseDsl(printed.data, s.workout.ftp));
+      if (back.status !== "ok") return refuse(back.error.message);
+      if (back.data.outcome === "invalid")
+        return refuse(back.data.problem.message);
+      if (latest.current.saved !== base)
+        return refuse("The workout changed while this edit was checked.");
+      setOutlineRefusal(null);
+      setS((st) =>
+        st.saved === base ? applied(st, nodes, printed.data, to) : st,
+      );
+      // A toolbar action moves focus to the edited row; the form keeps it, as it edits in place.
+      if (at === "toolbar" && to !== null) setFocusRow({ id: to });
+    } finally {
+      checking.current = false;
+    }
   };
 
   // Unsaved: the name, the tree or a text typed past it differs from the library's version (undoing back to it is
@@ -437,6 +515,11 @@ export function WorkoutEditor({
   }, []);
 
   const marked = subtree(saved.nodes, s.selection);
+  const picked =
+    s.selection === null
+      ? null
+      : (flatten(saved.nodes).find((r) => r.node.id === s.selection)?.node ??
+        null);
   const at = s.problem
     ? problemLine(s.draft, s.problem.offset, s.problem.length)
     : null;
@@ -552,13 +635,49 @@ export function WorkoutEditor({
       <div className="editor-panes">
         <section className="editor-pane" aria-labelledby="editor-outline-h">
           <h2 id="editor-outline-h">Outline</h2>
+          <OutlineToolbar
+            actions={outlineActions(saved.nodes, s.selection)}
+            blocked={outlineBlocked}
+            controls={saved.nodes.length > 0 ? "editor-outline" : undefined}
+            onRun={(change) => void outlineEdit(change(fresh), "toolbar")}
+          />
+          <div aria-live="polite">
+            {outlineRefusal?.at === "toolbar" && (
+              <Refused why={outlineRefusal.why} />
+            )}
+          </div>
           {saved.nodes.length === 0 ? (
-            <p className="workouts-hint">No steps yet: write one in Text.</p>
+            <p className="workouts-hint">
+              No steps yet: add one, or write one in Text.
+            </p>
           ) : (
             <Outline
               nodes={saved.nodes}
               selection={s.selection}
-              onSelect={(id) => setS((st) => select(st, id))}
+              onSelect={(id) => {
+                setOutlineRefusal(null);
+                setS((st) => select(st, id));
+              }}
+              focus={focusRow}
+            />
+          )}
+          {picked && (
+            <BlockForm
+              key={picked.id}
+              node={picked}
+              blocked={outlineBlocked}
+              onApply={(next) =>
+                void outlineEdit(
+                  { nodes: withNode(saved.nodes, next), select: next.id },
+                  "form",
+                )
+              }
+              onRefuse={(why) => setOutlineRefusal({ why, at: "form" })}
+              refusal={
+                outlineRefusal?.at === "form" ? (
+                  <Refused why={outlineRefusal.why} />
+                ) : null
+              }
             />
           )}
         </section>

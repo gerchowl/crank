@@ -167,6 +167,75 @@ export const wrapNode = (
     ...l.slice(i + 1),
   ]);
 
+/** Move the node with `id` one place earlier (`by` -1) or later (+1) among its siblings; past either end, unchanged. */
+export const moveNode = (
+  nodes: readonly WorkoutNode[],
+  id: string,
+  by: -1 | 1,
+) =>
+  editAround(nodes, id, (l, i) => {
+    const j = i + by;
+    if (j < 0 || j >= l.length) return [...l];
+    const out = [...l];
+    [out[i], out[j]] = [out[j]!, out[i]!];
+    return out;
+  });
+/** Replace the repeat with `id` by its children (they keep their ids); any other node is left as it is. */
+export const unwrapNode = (nodes: readonly WorkoutNode[], id: string) =>
+  editAround(nodes, id, (l, i) => {
+    const n = l[i]!;
+    return n.type === "repeat"
+      ? [...l.slice(0, i), ...n.children, ...l.slice(i + 1)]
+      : [...l];
+  });
+/** A deep copy of `node` with a fresh id from `fresh` for it and every node under it, in tree order. */
+export function copyNode(node: WorkoutNode, fresh: () => string): WorkoutNode {
+  return node.type === "repeat"
+    ? {
+        ...node,
+        id: fresh(),
+        children: node.children.map((c) => copyNode(c, fresh)),
+      }
+    : { ...node, id: fresh() };
+}
+/** Where the node with `id` sits among its siblings: its index and their count; null when it is not in the tree. */
+export function siblingsOf(
+  nodes: readonly WorkoutNode[],
+  id: string,
+): { index: number; count: number } | null {
+  const path = pathOf(nodes, id);
+  if (!path) return null;
+  const parent = path.length === 1 ? null : nodeAt(nodes, path.slice(0, -1));
+  const list =
+    parent === null ? nodes : parent.type === "repeat" ? parent.children : [];
+  return { index: path.at(-1)!, count: list.length };
+}
+/** The tree in reading order (a repeat before its children), each node with its depth (0 = top level). */
+export function flatten(
+  nodes: readonly WorkoutNode[],
+  depth = 0,
+): { node: WorkoutNode; depth: number }[] {
+  return nodes.flatMap((node) => [
+    { node, depth },
+    ...(node.type === "repeat" ? flatten(node.children, depth + 1) : []),
+  ]);
+}
+/**
+ * What is selected once the node with `id` is removed: the next row in reading order past its subtree, else the row
+ * before it, else nothing.
+ */
+export function afterRemoval(
+  nodes: readonly WorkoutNode[],
+  id: string,
+): string | null {
+  const rows = flatten(nodes);
+  const at = rows.findIndex((r) => r.node.id === id);
+  if (at < 0) return null;
+  const depth = rows[at]!.depth;
+  const next = rows.slice(at + 1).find((r) => r.depth <= depth);
+  return next?.node.id ?? rows[at - 1]?.node.id ?? null;
+}
+
 // ---- editor transitions -------------------------------------------------------------------------------------------
 
 /**
@@ -223,14 +292,18 @@ export function parsed(
   return { ...next, typing: s.typing && { ...s.typing, open: true } };
 }
 
-/** A tree op's result `nodes` with the core's canonical `text` for it (`print_dsl`), committed. */
+/**
+ * A tree op's result `nodes` with the core's canonical `text` for it (`print_dsl`), committed as one undo step, with
+ * `selection` selected (the edited node; by default the selection stays).
+ */
 export function applied(
   s: EditorState,
   nodes: readonly WorkoutNode[],
   text: string,
+  selection: string | null = s.selection,
 ): EditorState {
   if (s.lock) return s;
-  return { ...commit(s, nodes, text, s.selection, false), typing: null };
+  return { ...commit(s, nodes, text, selection, false), typing: null };
 }
 
 export function select(s: EditorState, id: string | null): EditorState {

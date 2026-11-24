@@ -10,8 +10,12 @@ import {
   canUndo,
   GROUP_MS,
   HISTORY_LIMIT,
+  afterRemoval,
+  copyNode,
+  flatten,
   insertAfter,
   load,
+  moveNode,
   nodeAt,
   parsed,
   pathOf,
@@ -20,8 +24,10 @@ import {
   replaceNode,
   select,
   setLock,
+  siblingsOf,
   typed,
   undo,
+  unwrapNode,
   wrapNode,
   type EditorState,
 } from "./model";
@@ -87,6 +93,48 @@ describe("tree ops", () => {
     expect(out[0]).toMatchObject({ type: "repeat", id: "rep-1", count: 2 });
     expect(out[0]!.type === "repeat" && out[0]!.children[0]).toBe(warm);
     expect(ids(out)).toEqual(["rep-1", ...ids(nodes)]);
+  });
+
+  it("move swaps a node with its neighbour in its own list; past either end nothing moves (#653)", () => {
+    expect(ids(moveNode(nodes, cool.id, -1))).toEqual([
+      warm.id,
+      cool.id,
+      ...ids([sets]),
+    ]);
+    expect(moveNode(nodes, warm.id, -1)).toEqual(nodes);
+    expect(moveNode(nodes, cool.id, 1)).toEqual(nodes);
+    const [a, b] = ids([sets]).slice(1);
+    const inner = moveNode(nodes, b!, -1);
+    expect(ids(inner)).toEqual([warm.id, sets.id, b, a, cool.id]);
+    expect(siblingsOf(nodes, b!)).toEqual({ index: 1, count: 2 });
+    expect(siblingsOf(nodes, cool.id)).toEqual({ index: 2, count: 3 });
+    expect(siblingsOf(nodes, "nope")).toBeNull();
+  });
+
+  it("unwrap puts a repeat's children (their ids) in its place; a step is left as it is", () => {
+    expect(ids(unwrapNode(nodes, sets.id))).toEqual(
+      ids(nodes).filter((i) => i !== sets.id),
+    );
+    expect(unwrapNode(nodes, warm.id)).toEqual(nodes);
+  });
+
+  it("copy gives the node and every node under it a fresh id, in tree order", () => {
+    let n = 0;
+    const copy = copyNode(sets, () => `c${++n}`);
+    expect(ids([copy])).toEqual(["c1", "c2", "c3"]);
+    expect({
+      ...copy,
+      id: sets.id,
+      children: sets.type === "repeat" ? sets.children : [],
+    }).toEqual(sets);
+  });
+
+  it("after a removal the next row past the subtree is selected, else the row before, else none", () => {
+    const rows = flatten(nodes).map((r) => r.node.id);
+    expect(afterRemoval(nodes, sets.id)).toBe(cool.id);
+    expect(afterRemoval(nodes, warm.id)).toBe(sets.id);
+    expect(afterRemoval(nodes, cool.id)).toBe(rows.at(-2));
+    expect(afterRemoval([warm], warm.id)).toBeNull();
   });
 
   it("an id not in the tree changes nothing", () => {
@@ -326,6 +374,55 @@ function run(
 }
 
 describe("properties", () => {
+  // The outline's moves and copies (#653) on every tree of the fixture, at every node.
+  const trees = Object.values(DRAFTS).flatMap((d) =>
+    "nodes" in d ? [d.nodes] : [],
+  );
+  const at = fc
+    .tuple(fc.constantFrom(...trees), fc.nat())
+    .filter(([t]) => t.length > 0)
+    .map(([t, i]) => {
+      const all = ids(t);
+      return { t, id: all[i % all.length]! };
+    });
+  it("moving a node down then up (or up then down) is the same tree, when it moved", () => {
+    fc.assert(
+      fc.property(
+        at,
+        fc.constantFrom(-1 as const, 1 as const),
+        ({ t, id }, by) => {
+          const once = moveNode(t, id, by);
+          const back = moveNode(once, id, by === 1 ? -1 : 1);
+          const moved = JSON.stringify(once) !== JSON.stringify(t);
+          if (moved) expect(back).toEqual(t);
+          // A move keeps every node, only reordering one list.
+          expect(ids(once).sort()).toEqual(ids(t).sort());
+        },
+      ),
+    );
+  });
+  it("unwrapping a node wrapped in a repeat is the same tree", () => {
+    fc.assert(
+      fc.property(at, ({ t, id }) => {
+        expect(unwrapNode(wrapNode(t, id, 2, "w"), "w")).toEqual(t);
+      }),
+    );
+  });
+  it("a copy shares no id with the tree and has its shape", () => {
+    fc.assert(
+      fc.property(at, ({ t, id }) => {
+        let n = 0;
+        const node = flatten(t).find((r) => r.node.id === id)!.node;
+        const copy = copyNode(node, () => `copy-${++n}`);
+        const out = insertAfter(t, id, copy);
+        expect(new Set(ids(out)).size).toBe(ids(out).length);
+        const strip = (x: unknown) =>
+          JSON.stringify(x, (k, v: unknown) => (k === "id" ? undefined : v));
+        expect(strip(copy)).toBe(strip(node));
+      }),
+    );
+  });
+
   it("the selection is always null or a node of the saved tree", () => {
     fc.assert(
       fc.property(

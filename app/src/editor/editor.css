@@ -82,6 +82,60 @@
   font-weight: 600;
 }
 
+/* Outline editing (DESIGN §5.7, #653): the toolbar's 32 px buttons wrap onto as many rows as the pane needs; the
+   selected node's form sits under the outline, past a rule, each field's label over its box and unit. */
+.editor-outline-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.editor-block {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+.editor-block h3 {
+  margin: 0;
+  font-size: var(--text-s);
+  font-weight: 600;
+}
+.editor-field-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.editor-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.editor-field label {
+  grid-column: 1 / -1;
+  color: var(--ink-2);
+  font-size: var(--text-xs);
+}
+.editor-field input {
+  min-width: 0;
+  height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-m);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.editor-field input:disabled {
+  color: var(--ink-3);
+}
+.editor-unit {
+  color: var(--ink-2);
+  font-size: var(--text-s);
+}
+
 /* The text: the DSL in the mono face; a draft that does not parse is edged in the error colour, its problem under it. */
 .editor-text textarea {
   padding: var(--space-2) var(--space-3);
