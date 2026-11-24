@@ -10,6 +10,13 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- `crank-domain` holds the athlete model (ADR-0009 §2.1.1, §2.1.2, §2.1.4): the eight parameters, append-only
+  estimates with their source, the plausibility bounds (refused, never clamped; LTHR below a measured HR max), the
+  named priors (FTP 250 W ± 25 %, CP, W′ 20 kJ ± 30 %, Tanaka HR max ± 10 bpm) and the self-report sd by origin, and the
+  ride's `AthleteSnapshot` resolved from the newest row per parameter, with unset parameters unset, never 0
+  ([#713](https://github.com/gerchowl/crank/issues/713)). The heart-rate zone tables (Friel's seven % LTHR zones, five
+  % HR max zones) move into `crank-domain`; the snapshot's HR zone never reads a prior HR max
+  ([#645](https://github.com/gerchowl/crank/issues/645))
 - Workouts save (#110, DESIGN §5.7): **New workout** opens the editor on an empty workout; the editor has a name box,
   **Save** and **Save as new**, which store the workout in the library (the store's `workout` table), and **Ride this**,
   which rides the saved workout by its id (#643: no draft riding). Leaving the editor (Back or the rail) or riding with

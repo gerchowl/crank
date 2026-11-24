@@ -5,9 +5,11 @@
 /// Intentional divergences from the frozen TS reference (`DIVERGENCES.md`).
 #[doc = include_str!("../DIVERGENCES.md")]
 pub mod divergences {}
+pub mod athlete;
 pub mod distributions;
 pub mod filters;
 pub mod history;
+pub mod hr_zone;
 pub mod metric_error;
 pub mod route;
 pub mod scales;
