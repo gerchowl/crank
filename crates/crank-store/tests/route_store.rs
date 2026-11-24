@@ -280,7 +280,7 @@ fn a_v3_ride_migrates_with_no_route() {
     )
     .expect("copy");
     let store = Store::open_owner(dir.path()).expect("migrates");
-    assert_eq!(store.schema_version().expect("version"), 4);
+    assert_eq!(store.schema_version().expect("version"), 5);
     let rides = store.rides().expect("rides");
     assert_eq!(
         rides.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),

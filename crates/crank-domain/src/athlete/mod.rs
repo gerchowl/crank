@@ -337,6 +337,12 @@ pub enum AthleteError {
         /// The refused source.
         source: Source,
     },
+    /// A [`Cleared`] of a parameter whose prior needs no age (FTP, CP, W′): Clear appends the prior's row for those
+    /// ([`Entry::clear`]), so a stored [`Cleared`] of one would be a row no path writes.
+    ClearedWithPrior {
+        /// The parameter.
+        param: AthleteParam,
+    },
     /// LTHR would be at or above HR max.
     LthrNotBelowHrMax {
         /// The LTHR, bpm.
@@ -361,6 +367,12 @@ impl fmt::Display for AthleteError {
             ),
             Self::SourceNotAllowed { param, source } => {
                 write!(f, "{param}: no {source} value allowed")
+            }
+            Self::ClearedWithPrior { param } => {
+                write!(
+                    f,
+                    "{param}: has a prior, so it is cleared to the prior, not unset"
+                )
             }
             Self::LthrNotBelowHrMax { lthr, hr_max } => {
                 write!(f, "LTHR {lthr} must be below HR max {hr_max}")
@@ -429,14 +441,19 @@ pub fn check_estimate(
     }
 }
 
-/// Checks an entry before it is appended: an estimate with [`check_estimate`]; a [`Cleared`] is allowed for every
-/// parameter (it holds no value to check). The store appends only entries that pass (#714).
+/// Checks an entry before it is appended: an estimate with [`check_estimate`]; a [`Cleared`] only for a parameter
+/// whose prior is not always known ([`prior::prior`] with no age): LTHR, resting HR, Pmax, weight, and HR max (its
+/// prior needs the age, and the age may be given after the Clear). For FTP, CP and W′, [`Entry::clear`] appends the
+/// prior's row, never a [`Cleared`]. The store appends only entries that pass (#714).
 ///
 /// # Errors
-/// Any [`check_estimate`] error of an [`Entry::Estimate`].
+/// Any [`check_estimate`] error of an [`Entry::Estimate`]; [`AthleteError::ClearedWithPrior`].
 pub fn check_entry(entry: &Entry, current: &AthleteSnapshot) -> Result<(), AthleteError> {
     match entry {
         Entry::Estimate(e) => check_estimate(e.param, e.value, e.sd, e.source, current),
+        Entry::Cleared(c) if prior::prior(c.param, None).is_some() => {
+            Err(AthleteError::ClearedWithPrior { param: c.param })
+        }
         Entry::Cleared(_) => Ok(()),
     }
 }

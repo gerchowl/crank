@@ -2,10 +2,16 @@
 //! Owners acquire `ride.lock` before migrating/recovering on one writer thread.
 //! Query processes use read-only WAL connections and never recover rides.
 //! Coordinates are session seconds; timestamps are UTC Unix seconds.
+mod athlete;
 mod json;
 mod route;
 mod workout;
 mod writer;
+pub use athlete::{
+    EstimateOrigin, METHOD_LEGACY, METHOD_PROFILE, NewProposal, Proposal, ProposalClose,
+    ProposalStatus, ProposedValue, StaleReason,
+};
+use crank_domain::athlete::{AthleteError, AthleteParam, AthleteSnapshot, Entry};
 pub use json::*;
 pub use route::{RouteListing, RouteOriginal, StoredRoute, decode_points, encode_points};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -65,6 +71,15 @@ pub enum StoreError {
     /// A stored `ride.state` is not one of the known values.
     #[error("unknown ride state {0:?}")]
     UnknownRideState(String),
+    /// An athlete-model row the domain refuses (`crank_domain::athlete::check_entry`, `check_value`).
+    #[error(transparent)]
+    Athlete(AthleteError),
+    /// The row named does not exist.
+    #[error("not found: {0}")]
+    NotFound(String),
+    /// The row is not in a state that allows the change (a proposal that is no longer open, a taken key).
+    #[error("conflict: {0}")]
+    Conflict(String),
     /// Writer terminated or reader mutex poisoned.
     #[error("store worker unavailable")]
     WorkerStopped,
@@ -594,6 +609,101 @@ impl Store {
     pub fn delete_workout(&self, id: &str) -> Result<bool, StoreError> {
         let id = id.to_owned();
         self.write(move |w| workout::delete(&w.db, &id))
+    }
+    /// Append athlete-model rows through `origin`, the only way to write an estimate (ADR-0009 §2.2.4 "Never
+    /// silent"), and return them with their ids: one row, or one per value of an accepted proposal. Every row passes
+    /// `crank_domain::athlete::check_entry` against the stored model; in the same transaction, a path other than
+    /// accept marks the parameter's open proposals `superseded`, and accept marks its proposal `accepted`.
+    /// # Errors
+    /// `Athlete` for a row the domain refuses; `InvalidInput` for a revert to a prior or cleared row, an onboarding
+    /// prior of a parameter with none, an import without a method, or accepted values that do not match the
+    /// proposal; `NotFound` for an unknown estimate or proposal; `Conflict` for a proposal that is not open;
+    /// read-only, SQL or worker errors.
+    pub fn append_athlete(
+        &self,
+        origin: EstimateOrigin,
+        now: i64,
+    ) -> Result<Vec<Entry>, StoreError> {
+        self.write(move |w| {
+            let tx = w.db.transaction()?;
+            let entries = athlete::append(&tx, origin, now)?;
+            tx.commit()?;
+            Ok(entries)
+        })
+    }
+    /// The newest athlete-model row of each parameter that has one (ADR-0009 §2.1.1), in
+    /// `AthleteParam::ALL`'s order.
+    /// # Errors
+    /// `InvalidInput` or `Athlete` for a row that does not decode; SQL or worker errors.
+    pub fn athlete_current(&self) -> Result<Vec<Entry>, StoreError> {
+        self.read(athlete::current)
+    }
+    /// The athlete model as stored: each parameter's newest row, else its prior (HR max's from
+    /// `athlete_profile.age`), else unset (`AthleteSnapshot::resolve`).
+    /// # Errors
+    /// As [`Store::athlete_current`], and `InvalidInput` for a negative stored age.
+    pub fn athlete_snapshot(&self) -> Result<AthleteSnapshot, StoreError> {
+        self.read(athlete::snapshot)
+    }
+    /// Every row of `param`, newest first; a cleared row is an `Entry::Cleared`.
+    /// # Errors
+    /// As [`Store::athlete_current`].
+    pub fn athlete_history(&self, param: AthleteParam) -> Result<Vec<Entry>, StoreError> {
+        self.read(|db| athlete::history(db, param))
+    }
+    /// One athlete-model row; `None` for an unknown id.
+    /// # Errors
+    /// As [`Store::athlete_current`].
+    pub fn athlete_entry(&self, id: i64) -> Result<Option<Entry>, StoreError> {
+        self.read(|db| athlete::entry(db, id))
+    }
+    /// Raise a proposal (stored `open`) and return its id. The raise rules (ADR-0009 §2.2.4) are the caller's.
+    /// # Errors
+    /// `InvalidInput` for an empty method, generation 0, or values that are not one or two of different
+    /// parameters; `Athlete` for a value the domain refuses (`check_value`); `NotFound` for an unknown ride;
+    /// `Conflict` when the ride already has that generation of the method; read-only, SQL or worker errors.
+    pub fn insert_proposal(&self, proposal: NewProposal) -> Result<i64, StoreError> {
+        self.write(move |w| {
+            let tx = w.db.transaction()?;
+            let id = athlete::insert_proposal(&tx, &proposal)?;
+            tx.commit()?;
+            Ok(id)
+        })
+    }
+    /// One proposal, whatever its status; `None` for an unknown id.
+    /// # Errors
+    /// `InvalidJson` or `InvalidInput` for a row that does not decode; SQL or worker errors.
+    pub fn proposal(&self, id: i64) -> Result<Option<Proposal>, StoreError> {
+        self.read(|db| athlete::proposal(db, id))
+    }
+    /// Every open proposal, oldest first.
+    /// # Errors
+    /// As [`Store::proposal`].
+    pub fn open_proposals(&self) -> Result<Vec<Proposal>, StoreError> {
+        self.read(athlete::open_proposals)
+    }
+    /// The open proposals with a value for `param`, oldest first; an indexed query (ADR-0009 §2.5).
+    /// # Errors
+    /// As [`Store::proposal`].
+    pub fn open_proposals_for(&self, param: AthleteParam) -> Result<Vec<Proposal>, StoreError> {
+        self.read(|db| athlete::open_proposals_for(db, param))
+    }
+    /// Close an open proposal at `now` without accepting it (accepting is
+    /// [`EstimateOrigin::ProposalAccept`]).
+    /// # Errors
+    /// `NotFound` for an unknown id; `Conflict` when it is not open; read-only, SQL or worker errors.
+    pub fn close_proposal(
+        &self,
+        id: i64,
+        close: ProposalClose,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        self.write(move |w| {
+            let tx = w.db.transaction()?;
+            athlete::close_proposal(&tx, id, close, now)?;
+            tx.commit()?;
+            Ok(())
+        })
     }
     /// Decode persisted metric chunks ordered by session second.
     /// # Errors
