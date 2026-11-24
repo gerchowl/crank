@@ -41,14 +41,17 @@ has the reasons and the rejected alternatives.
    inability**, never on the mere absence of hard efforts (a 90-day curve without maximal efforts, as in an endurance
    block, says nothing about decline): a verified test below the current FTP (P7 ramp, P9 CP assessment), repeated
    failed threshold intervals in ERG (P10), or a sustained rise of HR at a fixed power across several rides (P11, the
-   weakest, convention). Every downward proposal offers a ramp retest beside Accept (§2.2.4, rows P7–P11).
+   weakest, convention). The two ride-evidence proposals (P10, P11) offer a ramp retest beside Accept; P7 and P9 are
+   tests themselves and offer none. A test proposal **displaces** an open ride-based FTP proposal (§2.2.4, rows
+   P7–P11).
 9. **Re-analysing an old ride never proposes over a newer estimate**: a proposal needs a ride newer than the
    parameter's current value (or a current value that is still the prior) (§2.2.4).
 10. **ERG seconds never feed the CP fit**: in ERG the power is the target, not what the rider could do; only
     self-paced seconds (free ride, resistance, SIM, a self-paced test) count. Rides recorded before the per-second
     target existed count as self-paced only when the whole ride was (a free or route ride) (§2.2.4, §2.3.2).
-11. **The record gains two per-second metrics**, the controlled target and the on-target class, so compliance and
-    per-interval comparison work on stored rides, not only live (§2.3.2).
+11. **The record gains five per-second metrics** (the controlled target, the on-target class, the rider's and the
+    coach's adjustment, and a block-end marker) and the ride an end cause, so compliance, per-interval comparison and
+    the downward-FTP rules work on stored rides, not only live (§2.3.2).
 12. **Fitness / fatigue / form (CTL/ATL/TSB) is shown as a descriptive trend** with the generic 42/7-day constants and
     that label, never as a prediction (§2.3).
 13. **Aerobic decoupling is shown with no verdict**: no "under 5 % is good" rule, because no study backs it (§2.3).
@@ -293,24 +296,30 @@ A proposal is a value the analysis derived for one of the eight parameters; noth
 | P7 | `ftp`, test (`ramp_v1_0.75`) | an assessment ride with a valid ramp result (ADR-0004 §2.5) | ADR-0004's value, sd 8 % (the owner's convention floor) | as ADR-0004 |
 | P8 | `ftp`, rides (`ftp_from_cp_v1`) | the current CP estimate came from P5 or P6 (n ≥ 3 efforts, relative se ≤ 5 %) and exceeds the current FTP by > 5 %. Its triggering `ride_id` is that CP estimate's `ride_id`; P8 is not raised when it is NULL (a deleted ride) | the CP, sd = the fit's se combined with the 13 W spread of [K21] | convention: CP ≈ FTP on the mean with wide LoA [K21]; **upward only**: a ride-based CP fit only rises (P6 fires only when a point beats the model), and a missing effort is no evidence of decline (owner decision 8) |
 | P9 | `ftp`, test (`ftp_down_from_cp_test_v1`) | the current CP estimate came from a CP assessment (P5, source `test`) and is below the current FTP by > 5 %. Its triggering `ride_id` is that CP estimate's `ride_id`; not raised when it is NULL | the CP, sd as P8 | convention as P8 (CP ≈ FTP on the mean [K21]); downward from a **test** only, never from a ride-based fit |
-| P10 | `ftp`, rides (`ftp_down_failed_intervals_v1`) | ≥ 3 rides within 28 days, each with ≥ 1 **failed threshold interval**: an ERG work block whose planned target (before any adjustment) is ≥ 90 % of the snapshot FTP, planned ≥ 3 min, that is **evidence** (below) and **failed** (below). Excluded rides: power coverage below §2.3.1.1's minimum, a day the check-in answered "Unwell today" (§2.5), rides before FTP's `updated_at` or before the last dismissal of a P10 (§ "Downward FTP proposals"). No completed threshold block of the same rides offsets it | FTP × the median, over the failed blocks, of (mean power over the block's counted seconds ÷ its given target), rounded; at most −10 % per proposal; sd 8 % | convention: the 30 %, 80 %, 3 rides, 28 days and −10 % cap are this ADR's; failing a prescribed target repeatedly is direct evidence the prescription is too high, but not of how much |
-| P11 | `ftp`, rides (`ftp_down_hr_at_power_v1`) | ≥ 4 rides within 28 days whose first and last are ≥ 14 days apart, each with a steady ERG block at 85–105 % of the snapshot FTP lasting ≥ 10 min, whose mean HR after its first 5 min exceeds the HR-at-power baseline (§2.2.5) at that power by ≥ 5 bpm, with decoupling valid on the block and ≥ 95 % HR coverage; the block is evidence by P10's rule (no dropout, pause or rider adjustment); the same ride exclusions as P10. **Baseline:** P11 computes its own HR-at-power comparison from the 90 days that end just **before** the first counted ride starts (the §2.2.5 rule over that window; none of the counted rides is in it), frozen in the evidence. A block whose 10 W band has fewer than 20 min of steady seconds from ≥ 3 rides in that window is not evidence (no interpolation from neighbouring bands) | FTP × the median, over the blocks, of (block power ÷ the baseline power that gave the block's HR), rounded; at most −10 % per proposal; sd 10 % | **convention, the weakest trigger**: HR at a fixed power rises with heat, dehydration, cadence and fatigue as well as with lost fitness (09); 5 bpm is above the ~3 bpm day-to-day noise of submaximal HR [lamberts2009]; the several-ride, several-day rule is what keeps it from reacting to one hot day |
+| P10 | `ftp`, rides (`ftp_down_failed_intervals_v1`) | ≥ 3 rides within 28 days, each with ≥ 1 **failed threshold interval**: an ERG work block whose planned target (before any adjustment) is ≥ 90 % of the snapshot FTP, planned ≥ 3 min, that is **evidence** (below) and **failed** (below). Excluded rides: `record_version` < 2, power coverage below §2.3.1.1's minimum, an unwell day (§2.5), `end_cause` `safety`, rides before FTP's `updated_at` or before the last dismissal of a P10 (§ "Downward FTP proposals"). No completed threshold block of the same rides offsets it | FTP × the median, over the failed blocks, of (mean power over the block's counted seconds ÷ its **reference target**), rounded; the reference target is the planned target with only the coach's adjustment applied (`planned × (1 + adj_coach_pct/100)`), never the rider's ±, so a rider who lowered by 10 % and held the lowered target gives a ratio of ≈ 0.90, not 1.00. At most −10 % per proposal; **never raised when the value is ≥ the current FTP** (e.g. blocks ended early at full power: evidence of not lasting, not of a lower FTP); sd 8 % | convention: the 30 %, 80 %, 3 rides, 28 days and −10 % cap are this ADR's; failing a prescribed target repeatedly is direct evidence the prescription is too high, but not of how much |
+| P11 | `ftp`, rides (`ftp_down_hr_at_power_v1`) | ≥ 4 rides within 28 days whose first and last are ≥ 14 days apart, each with a steady ERG block at 85–105 % of the snapshot FTP lasting ≥ 10 min, whose mean HR after its first 5 min exceeds the HR-at-power baseline (§2.2.5) at that power by ≥ 5 bpm, with decoupling valid on the block and ≥ 95 % HR coverage; the block is evidence by P10's rule (no dropout, pause or rider adjustment); the same ride exclusions as P10, `record_version` ≥ 2 included; never raised when its value is ≥ the current FTP. **Baseline:** P11 computes its own HR-at-power comparison from the 90 days that end just **before** the first counted ride starts (the §2.2.5 rule over that window; none of the counted rides is in it), frozen in the evidence. A block whose 10 W band has fewer than 20 min of steady seconds from ≥ 3 rides in that window is not evidence (no interpolation from neighbouring bands) | FTP × the median, over the blocks, of (block power ÷ the baseline power that gave the block's HR), rounded; at most −10 % per proposal; sd 10 % | **convention, the weakest trigger**: HR at a fixed power rises with heat, dehydration, cadence and fatigue as well as with lost fitness (09); 5 bpm is above the ~3 bpm day-to-day noise of submaximal HR [lamberts2009]; the several-ride, several-day rule is what keeps it from reacting to one hot day |
 
 **Downward FTP proposals** (owner decision 8, amended 2026-11-24):
 
 - **Inability, never absence.** P9–P11 and a lower P7 are the only ways FTP is proposed down. No rule reads a
   missing effort as decline: P6 and P8 can only go up, and a ride with no threshold work counts for nothing in P10 or
   P11. P7 (the ramp) proposes its result whether it is above or below the current FTP.
-- **When a block is evidence** (P10, P11), from the record of §2.3.2: the block ran in ERG; it has no trainer-loss,
-  paused, suspect or not-following second (classes 6–8, and no trainer-loss gap); its counted seconds (classes 1–3)
-  are ≥ 80 % of its riding seconds; and it was ridden for ≥ 80 % of its planned duration, unless the rider ended it
-  (below). A coach adjustment (`adj_coach_pct ≠ 0`) keeps the block as evidence, measured against the eased target
-  the rider was given; a rider ± in either direction (`adj_rider_pct ≠ 0`) makes it evidence only of "lowered" (below)
-  when lowered, and not evidence at all when raised.
+- **When a block is evidence** (P10, P11), from the record of §2.3.2 (`record_version` ≥ 2): the block ran in ERG;
+  it has no trainer-loss, paused, suspect or not-following second (classes 6–8, and no trainer-loss gap); its counted
+  seconds (classes 1–3) are ≥ 80 % of its riding seconds; and it was ridden for ≥ 80 % of its planned duration, unless
+  the rider ended it (below). A class-0 second inside an ERG block (no target yet, e.g. before the first target is
+  commanded at the block's start) is treated like an excluded second: never failure, and not counted, so many of them
+  make the block no evidence through the 80 % rule. A ride that ended `forced` or `recovered` (§2.5 `end_cause`) makes
+  the block it ended no evidence. A coach adjustment (`adj_coach_pct ≠ 0`) keeps the block as evidence, measured against the eased target
+  the rider was given; a rider + (`adj_rider_pct` > 0 at any riding second) makes the block no evidence; a rider − of
+  5 % or more is a failure ("lowered", below); a rider − **under** 5 % leaves the block ordinary evidence: "not held"
+  is judged against the given (lowered) target the rider saw, and the value's ratio uses the reference target, so the
+  small lowering still shows in it.
 - **When an evidence block failed** (P10): any of
   1. **not held**: counted seconds below the target (class 2) are ≥ 30 % of its counted seconds;
-  2. **ended by the rider**: a skip, End or end-set (DESIGN §17) before 90 % of its planned duration, with ≥ 60 s
-     ridden and ≥ 80 % of those seconds counted;
+  2. **ended by the rider**: a skip or end-set (`block_end` 2 or 4) or the rider's End (`block_end` 3 with the
+     ride's `end_cause` `rider_end`) before 90 % of its planned duration, with ≥ 60 s ridden and ≥ 80 % of those
+     seconds counted;
   3. **lowered by the rider**: `adj_rider_pct` ≤ −5 at any riding second of the block.
 
   Seconds the engine excludes from on target are **never** failure: settling (class 4), a §7.4 low-cadence release
@@ -318,16 +327,17 @@ A proposal is a value the analysis derived for one of the eight parameters; noth
   ADR-0002's `not_following` is the *trainer* not confirming the commanded target, a device or link fault, not the
   rider). A release and re-engage only shrinks the counted seconds; if that drops them below 80 %, the block is not
   evidence. Over-target seconds (class 3) are never failure.
-- **What the text offers.** A downward proposal says what it is based on. P10 and P11 offer the ramp test beside
-  Accept: "Your last 3 threshold sessions fell short (median 92 % of target). Use 268 W as your FTP, or take a ramp
+- **What the text offers.** A downward proposal says what it is based on. Only the ride-evidence proposals, P10 and
+  P11, offer the ramp test beside Accept: "Your last 3 threshold sessions fell short (median 92 % of target). Use 268 W as your FTP, or take a ramp
   test (~25 min) to measure it." **Take the test** opens the ramp test card (ADR-0004 §2.7) and leaves the proposal
-  open; the test's P7 then displaces it (below). P7 and P9 *are* tests and offer no test: a lower result says "Use
+  open; the test's P7 then **displaces** it (below). P7 and P9 *are* tests and offer no test: a lower result says "Use
   243 W as your FTP? If the test did not feel maximal, keep 255 W and test again on a rested day."
 - **One open FTP proposal; priority.** At most one FTP proposal is open. Test proposals (P7, P9) outrank ride
   proposals (P8, P10, P11); within a class the one with the newer triggering ride wins. A new proposal that outranks
   the open one marks it `stale` with `stale_reason = displaced`; a new proposal that does not outrank it is not
   raised. Neither is lost: whenever FTP has no open proposal (the winner was accepted, dismissed, superseded or went
-  stale), the executor re-evaluates P8–P11 against the current model and raises the highest-priority one that fires.
+  stale), the executor re-evaluates every FTP rule, P7–P11 (a displaced P7 included), against the current model and
+  raises the highest-priority one that fires.
 - **Newer only, new evidence only.** P10 and P11 count only rides that started after FTP's current `updated_at`, so
   a new FTP (accepted, typed or tested) restarts the count, **and** after the `decided_at` of the last dismissed
   proposal of the same method, so a dismissal is not followed by the same proposal on the next ride: it takes a fresh
@@ -372,7 +382,8 @@ re-raised and an estimate's `proposal_id` always points at an `accepted` row. Th
 proposal's triggering ride (the rules of this section, at the current version and model; for P8 and P9, against the current
 CP estimate and its ride; for a displaced proposal, only once FTP has no open proposal) and raises a new **generation** of it if its rule still fires. New rides, and old points ageing out of the 90-day window, do **not** make a proposal stale: it states
 what it is based on ("CP 274 ± 6 W from 4 efforts, 12 Aug–3 Nov"), and the rider decides. A proposal older than 30
-days says so beside its Accept button (convention), and a newer proposal for the same parameter supersedes it.
+days says so beside its Accept button (convention), and a newer proposal for the same parameter supersedes it (for
+FTP, the priority rule of "Downward FTP proposals" decides instead, and the loser is `displaced`).
 
 **Rules for every proposal:**
 
@@ -520,7 +531,8 @@ Pmax fit, AEPF/CPV/torque, stamina and fuel (#18), HR reserve zones.
 
 #### 2.3.2 Recording what compliance and comparison need
 
-The record gains two per-second metrics in `record.rs` `METRICS` (no schema change: `ride_chunk.metric` is text):
+The record gains five per-second metrics in `record.rs` `METRICS` (no schema change: `ride_chunk.metric` is text),
+and the ride an end cause (§2.5):
 
 - `target_w`: the controlled target at the last riding tick of the second (after easing, ± and coach changes, the
   target the rider was given); NaN outside ERG.
@@ -545,6 +557,15 @@ The record gains two per-second metrics in `record.rs` `METRICS` (no schema chan
   second, in percent of the planned target (0 when none; the given target is the planned one with both applied, as
   ADR-0002 §7 composes them). The source of a change is known to the engine when it applies it; recording it is
   what lets P10 tell a rider's − from a coach's easing.
+- `block_end`: NaN except on a block's last riding second, where it says how the block ended, from the engine's
+  `lap.rs` `LapEnd` plus the live edit: 1 completed (its time ran out), 2 skipped by the rider, 3 stopped (the ride
+  ended during it), 4 ended by a live end-set edit (DESIGN §17).
+
+**Ride end cause.** `ride.state` cannot tell a rider's End from other ends: `finished` covers both the rider's End and
+the workout running out, and `aborted` covers crash recovery and the core's forced end (`dto.rs` `RideOutcome`,
+`RideEnding`). Migration 0005 adds `ride.end_cause`, written by the core when the ride is closed: `completed` (the
+workout ran out), `rider_end` (End), `safety` (Report symptom or a medical stop, DESIGN §5.2), `forced` (#331),
+`recovered` (closed by crash recovery); NULL for older rides.
 
 The executor's per-interval stats come from one pure domain function over the record, segmented by the recorded
 `block` and the workout's node path and iteration, and are written to `lap`. The engine's live lap stats (#12) must
@@ -554,8 +575,9 @@ recorded before this change have no `target_w`: their on-target is `invalid { re
 
 **Record version and `self_paced`.** A NaN `target_w` must not be read as "outside ERG" on a ride that never recorded
 the target. So `ride.record_version` (migration 0005: `INTEGER NOT NULL DEFAULT 1`, every existing ride is 1) says
-which metrics the record holds; the recorder writes **2** from the change that adds `target_w` and `compliance`, and
-any later record change bumps it again. A second is self-paced when:
+which metrics the record holds; the recorder writes **2** from the change that adds `target_w`, `compliance`,
+`adj_rider_pct`, `adj_coach_pct` and `block_end` (all five together), and any later record change bumps it again.
+P10 and P11 count only rides with `record_version` ≥ 2. A second is self-paced when:
 
 - **record version ≥ 2**: it is a riding second and its `target_w` is NaN (no ERG target: free ride, resistance, SIM,
   a self-paced test, the ADR-0004 cool-down);
@@ -672,8 +694,12 @@ Two migrations, each with the part that needs it:
 - `ALTER TABLE checkin ADD COLUMN unwell INTEGER CHECK (unwell IN (0, 1))`. Today nothing stores the "Unwell today"
   answer: DESIGN §5.8 makes it a day state that resets the next day, and `checkin` has no column for it. P10 and P11
   need it after the ride, so the daily check-in (#94, the Today check-in) writes it on the check-in row of that day;
-  the executor reads the rider's local date of `checkin.at` and of `ride.started_at`. A day with no check-in row is not
-  unwell (the guard of #81 only refuses rides on a day answered yes).
+  the executor reads the rider's local date of `checkin.at` and of `ride.started_at`. `checkin` can hold several rows on
+  one day (`0001_initial.sql`, keyed by `id`): the day is unwell if **any** of its rows has `unwell = 1`, so a later
+  "no" the same day does not clear it. A day with no check-in row is not unwell (the guard of #81 only refuses rides
+  on a day answered yes).
+- `ALTER TABLE ride ADD COLUMN end_cause TEXT CHECK (end_cause IN ('completed','rider_end','safety','forced',
+  'recovered'))` (§2.3.2 "Ride end cause"); NULL for older rides.
 - `ALTER TABLE ride ADD COLUMN record_version INTEGER NOT NULL DEFAULT 1` (§2.3.2): every existing ride is
   version 1; the recorder keeps writing 1 until issue 5 makes it 2.
 - `athlete_proposal (id INTEGER PRIMARY KEY, ride_id TEXT NOT NULL REFERENCES ride(id) ON DELETE CASCADE, method TEXT
@@ -756,8 +782,14 @@ what this ADR makes available, not what is sent.
   (`cp_replaced`), accept refuses it with `Conflict`, and re-evaluation against CP 260 W raises no downward proposal;
   with P10 open, a ramp test's P7 displaces it (`displaced`) and, after P7 is dismissed, re-evaluation raises P10's
   next generation if it still fires; a P8 that would fire while a P10 is open (both ride-based) is raised only if its
-  triggering ride is newer; a downward P7 offers no test; a 90-day history with no hard efforts raises no downward proposal; rides before FTP's
-  `updated_at` are not counted; every downward proposal carries the retest offer, and a ramp test's P7 supersedes it;
+  triggering ride is newer; a downward P7 or P9 offers no test while P10 and P11 offer
+  the ramp test; three rides whose threshold blocks the rider lowered by 10 % with − and then held give a P10 at
+  ≈ FTP × 0.90 (reference target, not the lowered one); three rides whose blocks were ended early by the rider at full
+  power compute a value ≥ FTP and raise nothing; a rider − of 3 % is ordinary evidence, judged against the lowered
+  target; class-0 seconds in an ERG block count as excluded; a ride whose `end_cause` is `safety` is not counted, and
+  a block stopped by a `forced` end is no evidence; a version-1 ride is never counted; a day with a "no" and a later
+  "yes" unwell row is unwell; a 90-day history with no hard efforts raises no downward proposal; rides before FTP's
+  `updated_at` are not counted; a ramp test's P7 displaces an open P10 or P11;
   the snapshot is frozen at load (a Settings change mid-ride does not reach the ride); IF/TSS use the
   snapshot; a model change re-analyses nothing.
 - **App**: each mock backend models every refusal of the commands it calls (repo convention, with the core
@@ -797,7 +829,7 @@ what this ADR makes available, not what is sent.
   function.
 - Proposals put the rider in the loop for every change that rescales targets.
 - Comparison and set statistics are SQL over small derived tables, cheap at any history length.
-- The record grows by two metrics (~8 bytes per second); a 3 h ride grows by ~86 kB.
+- The record grows by five metrics (~20 bytes per second as `f32`); a 3 h ride grows by ~216 kB.
 - Harder: every metric change needs a version bump and a fixture regeneration (intended).
 - ADR-0004 needs the small amendment of §2.2.4 before its core issue is implemented.
 
@@ -815,7 +847,8 @@ what this ADR makes available, not what is sent.
 
 **Part 2: executor**
 
-5. engine + store: record `target_w` and `compliance` per second and the adjustment metrics, and write `record_version = 2` (§2.3.2; the
+5. engine + store + core: record `target_w`, `compliance`, the adjustment metrics and `block_end` per second, write
+   `ride.end_cause`, and write `record_version = 2` (§2.3.2; the
    column comes with migration 0005), with the engine/domain lap tie test.
 6. domain: `analysis` module, metrics of §2.3.1 with the gap rules of §2.3.1.1 (run-wise NP; `recorder.rs`
    `summarize` moves onto it), intervals, the self-paced rule, `ANALYSIS_VERSION`, golden fixture.
