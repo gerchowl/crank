@@ -28,19 +28,34 @@ const press = async (selector, names) => {
 await press("[role=option]", job.picks ?? []);
 await press("button", job.clicks ?? []);
 await press("[role=option]", job.rows ?? []);
-// Fills as Playwright's `fill`: the box's own value setter (React tracks the value it last rendered), then one input
-// event. A text box is found by its label, as `getByRole("textbox", { name })`.
+// Fills as Playwright's `fill`. A text box is found by its label, as `getByRole("textbox", { name })`: an input by its
+// `<label>`, the DSL text (CodeMirror's contenteditable, ADR-0011 §2.1) by the element its `aria-labelledby` names.
+// An input gets its own value setter (React tracks the value it last rendered), then one input event; the
+// contenteditable gets its content selected and replaced by `insertText`, the editing command a paste or a keystroke
+// runs, which CodeMirror reads back from the DOM as it reads typing.
+const labelled = (e, name) =>
+  [
+    ...(e.labels ?? []),
+    ...(e.getAttribute("aria-labelledby") ?? "")
+      .split(" ")
+      .map((id) => document.getElementById(id))
+      .filter(Boolean),
+  ].some((l) => l.textContent.toLowerCase().includes(name.toLowerCase()));
 for (const f of job.fills ?? []) {
   const box = await until(f.label, () =>
-    [...document.querySelectorAll("textarea, input")].find((e) =>
-      [...(e.labels ?? [])].some((l) =>
-        l.textContent.toLowerCase().includes(f.label.toLowerCase()),
-      ),
-    ),
+    [
+      ...document.querySelectorAll("textarea, input, [contenteditable=true]"),
+    ].find((e) => labelled(e, f.label)),
   );
-  const proto = Object.getPrototypeOf(box);
-  Object.getOwnPropertyDescriptor(proto, "value").set.call(box, f.text);
-  box.dispatchEvent(new Event("input", { bubbles: true }));
+  if (box.isContentEditable) {
+    box.focus();
+    document.execCommand("selectAll");
+    document.execCommand("insertText", false, f.text);
+  } else {
+    const proto = Object.getPrototypeOf(box);
+    Object.getOwnPropertyDescriptor(proto, "value").set.call(box, f.text);
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  }
   await window.__fixture.settled();
 }
 await press("button", job.after ?? []);

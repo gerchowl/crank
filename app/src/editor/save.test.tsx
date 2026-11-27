@@ -4,8 +4,8 @@
 // before riding; a built-in is read-only and Duplicate & edit makes the rider's own copy; Delete asks first. On the
 // workouts backend, whose `workout_save` refuses as the core does (workoutsBackend.ts).
 import {
+  act,
   cleanup,
-  fireEvent,
   render,
   screen,
   waitFor,
@@ -28,6 +28,7 @@ import {
   type Backend,
 } from "../views/workoutsBackend";
 import { GROUP_MS } from "./model";
+import { setText as setViewText, textOf } from "./TextView";
 import { typingClock } from "./WorkoutEditor";
 import { windowClose, type CloseRequest } from "./windowClose";
 
@@ -84,10 +85,10 @@ function open(over: Partial<Backend> = {}) {
   return { b, user: userEvent.setup() };
 }
 const text = (name: string) => DRAFTS[name]!.text;
-const box = () =>
-  screen.getByRole("textbox", { name: "Text" }) as HTMLTextAreaElement;
-const setText = (t: string) =>
-  fireEvent.change(box(), { target: { value: t } });
+const box = () => screen.getByRole("textbox", { name: "Text" }) as HTMLElement;
+/** Replace the whole text, as a paste would: one transaction from the rider (TextView.tsx `setText`). */
+const setText = (box: HTMLElement, t: string) => act(() => setViewText(box, t));
+const type = (t: string) => setText(box(), t);
 const button = (name: string) => screen.getByRole("button", { name });
 const calls = (b: Backend, cmd: string) =>
   b.calls.filter((c) => c.cmd === cmd).map((c) => c.args);
@@ -115,7 +116,7 @@ test("New → edit → Save → listed → Ride this loads that id", async () =>
   expect((button("Ride this") as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText("Save the workout to ride it.")).toBeTruthy();
 
-  setText(text("sweet-spot"));
+  type(text("sweet-spot"));
   await waitFor(() =>
     expect((button("Save") as HTMLButtonElement).disabled).toBe(false),
   );
@@ -157,7 +158,7 @@ test("Ride this in the editor rides the saved workout; with unsaved changes it a
   const { b, user } = open();
   await edit(user, /Easy spin/);
   expect(screen.getByText("Saved")).toBeTruthy();
-  setText(text("sweet-spot-4x"));
+  type(text("sweet-spot-4x"));
   await screen.findByText("Unsaved changes");
   await user.click(button("Ride this"));
   expect(within(dialog()).getByRole("heading").textContent).toBe(
@@ -185,7 +186,7 @@ test("Ride this in the editor rides the saved workout; with unsaved changes it a
 test("Discard before riding rides the workout as last saved and stores nothing", async () => {
   const { b, user } = open();
   await edit(user, /Easy spin/);
-  setText(text("sweet-spot-4x"));
+  type(text("sweet-spot-4x"));
   await screen.findByText("Unsaved changes");
   await user.click(button("Ride this"));
   await user.click(within(dialog()).getByRole("button", { name: "Discard" }));
@@ -205,7 +206,7 @@ test("leaving with unsaved changes asks: Cancel stays, Discard drops them, Save 
   await screen.findByRole("listbox", { name: "Library" });
 
   await user.click(await screen.findByRole("button", { name: "Edit" }));
-  setText(text("sweet-spot-4x"));
+  type(text("sweet-spot-4x"));
   await screen.findByText("Unsaved changes");
   await user.click(button("Back to library"));
   expect(within(dialog()).getByRole("heading").textContent).toBe(
@@ -214,7 +215,7 @@ test("leaving with unsaved changes asks: Cancel stays, Discard drops them, Save 
   // Escape is Cancel.
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(box().value).toBe(text("sweet-spot-4x"));
+  expect(textOf(box())).toBe(text("sweet-spot-4x"));
 
   await user.click(button("Back to library"));
   await user.click(within(dialog()).getByRole("button", { name: "Discard" }));
@@ -223,12 +224,12 @@ test("leaving with unsaved changes asks: Cancel stays, Discard drops them, Save 
 
   // Undoing back to the saved version is clean again: nothing to ask.
   await user.click(await screen.findByRole("button", { name: "Edit" }));
-  setText(text("sweet-spot-4x"));
+  type(text("sweet-spot-4x"));
   await screen.findByText("Unsaved changes");
   await user.click(button("Undo"));
   await screen.findByText("Saved");
 
-  setText(text("sweet-spot-4x"));
+  type(text("sweet-spot-4x"));
   await user.click(button("Back to library"));
   await user.click(within(dialog()).getByRole("button", { name: "Save" }));
   await screen.findByRole("listbox", { name: "Library" });
@@ -238,7 +239,7 @@ test("leaving with unsaved changes asks: Cancel stays, Discard drops them, Save 
 test("the rail asks too, and goes where the rider asked once they answer", async () => {
   const { user } = open();
   await edit(user, /Easy spin/);
-  setText(text("sweet-spot-4x"));
+  type(text("sweet-spot-4x"));
   await screen.findByText("Unsaved changes");
   await user.click(screen.getByRole("button", { name: /History/ }));
   expect(screen.getByTestId("route").textContent).toBe("workouts");
@@ -266,23 +267,23 @@ test("Save is refused while the workout has an error or no name, and the core's 
   expect((button("Save") as HTMLButtonElement).disabled).toBe(true);
   await user.type(name, "Easy spin");
   // An empty workout is an error-severity issue: Save waits for it to be fixed.
-  setText(text("empty"));
+  type(text("empty"));
   await screen.findByText(
     "Can’t save until the error is fixed: Workout is empty",
   );
   expect((button("Save") as HTMLButtonElement).disabled).toBe(true);
   expect((button("Save as new") as HTMLButtonElement).disabled).toBe(true);
   // A tree the core cannot compile at all cannot be saved.
-  setText(text("too-long"));
+  type(text("too-long"));
   await screen.findByText("A workout that does not compile cannot be saved.");
   expect((button("Save") as HTMLButtonElement).disabled).toBe(true);
   // A text that does not parse cannot be saved either.
-  setText(text("missing-target"));
+  type(text("missing-target"));
   await screen.findByText("Fix the text to save the workout.");
   expect(calls(b, "workout_save")).toEqual([]);
 
   // The core's own refusal (here the store failing) is shown, and nothing is marked saved.
-  setText(text("sweet-spot-4x"));
+  type(text("sweet-spot-4x"));
   b.fail.workout_save = { code: "storage", message: "database is locked" };
   await waitFor(() =>
     expect((button("Save") as HTMLButtonElement).disabled).toBe(false),
@@ -394,7 +395,7 @@ test("the mock's library commands refuse what the core refuses", async () => {
 test("with Save disabled the dialog focuses Cancel, so one Enter discards nothing", async () => {
   const { b, user } = open();
   await edit(user, /Easy spin/);
-  setText(text("missing-target"));
+  type(text("missing-target"));
   await screen.findByText("Fix the text to save the workout.");
   await user.click(button("Back to library"));
   const save = within(dialog()).getByRole("button", { name: "Save" });
@@ -404,7 +405,7 @@ test("with Save disabled the dialog focuses Cancel, so one Enter discards nothin
   );
   await user.keyboard("{Enter}");
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(box().value).toBe(text("missing-target"));
+  expect(textOf(box())).toBe(text("missing-target"));
   expect(calls(b, "workout_save")).toEqual([]);
 });
 
@@ -426,7 +427,7 @@ test("Save waits for the text being read, so it stores the last keystrokes, also
       ? held.then(() => inner(cmd, payload))
       : inner(cmd, payload),
   );
-  setText(text("sweet-spot-4x"));
+  type(text("sweet-spot-4x"));
   expect(screen.getByText("Reading the text…")).toBeTruthy();
   expect((button("Save") as HTMLButtonElement).disabled).toBe(true);
   await user.click(button("Back to library"));
@@ -451,7 +452,7 @@ test("closing the window with unsaved changes asks first; Discard then closes it
   await edit(user, /Easy spin/);
   // No unsaved changes: nothing holds the close request, the window closes as always.
   expect(closing).toBeNull();
-  setText(text("sweet-spot-4x"));
+  type(text("sweet-spot-4x"));
   await screen.findByText("Unsaved changes");
   await waitFor(() => expect(closing).not.toBeNull());
   let prevented = false;

@@ -145,6 +145,13 @@ export const SCENARIOS = [
     fills: [{ label: "Minutes", text: "0" }],
     after: ["Apply"],
   },
+  // The text locked by a pending AI rewrite (#112, ADR-0011 §2.2): read-only, so not a tab stop. Nothing in the app
+  // sets the lock before #112, so the fixture mounts the editor's text pane alone with the lock set (fixture.tsx).
+  {
+    name: "workouts-editor-locked",
+    ready: "#editor-dsl[aria-readonly='true']",
+    noControls: true,
+  },
   // The rider's own workout picked (#110): Edit and Delete beside Ride this and Duplicate & edit.
   {
     name: "workouts-mine",
@@ -348,6 +355,7 @@ export const WORKOUTS_SCENARIOS: readonly ScenarioName[] = [
   "workouts-editor-step",
   "workouts-editor-repeat",
   "workouts-editor-refused",
+  "workouts-editor-locked",
   "workouts-mine",
   "workouts-delete-confirm",
   "workouts-editor-new",

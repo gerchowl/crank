@@ -22,6 +22,7 @@ import {
   type StepEnd,
   type WorkoutNode,
 } from "../bindings";
+import { TextView } from "./TextView";
 import { setLeaveGuard } from "../router";
 import { Dialog } from "../shell/Dialog";
 import { windowClose } from "./windowClose";
@@ -714,17 +715,23 @@ export function WorkoutEditor({
           className="editor-pane editor-text"
           aria-labelledby="editor-text-h"
         >
-          <h2 id="editor-text-h">
-            <label htmlFor="editor-dsl">Text</label>
-          </h2>
-          <textarea
-            id="editor-dsl"
-            rows={12}
-            spellCheck={false}
-            value={s.draft}
-            aria-invalid={s.problem !== null || undefined}
-            aria-describedby={s.problem ? "editor-problem" : undefined}
-            onChange={(e) => edit(e.target.value, typingClock.now())}
+          <h2 id="editor-text-h">Text</h2>
+          <TextView
+            draft={s.draft}
+            locked={s.lock !== null}
+            attributes={{
+              id: "editor-dsl",
+              "aria-labelledby": "editor-text-h",
+              ...(s.problem
+                ? {
+                    "aria-invalid": "true",
+                    "aria-describedby": "editor-problem",
+                  }
+                : {}),
+            }}
+            onEdit={(text) => edit(text, typingClock.now())}
+            onUndo={() => setS(undo)}
+            onRedo={() => setS(redo)}
           />
           {s.problem && at && (
             <p

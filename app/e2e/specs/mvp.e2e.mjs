@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { browser, $, $$, expect } from "@wdio/globals";
+import { Key } from "webdriverio";
 import * as sel from "./mvp-selectors.mjs";
 
 const outDir = process.env.CRANK_E2E_OUT ?? "e2e-out";
@@ -44,6 +45,8 @@ const WORKOUT_STEPS = [
 ];
 /** Its text as the core prints it (docs/DSL.md "Canonical printing": one top-level step per line). */
 const WORKOUT_DSL = '"Warm-up" 1m 50%\n"Work" 1m 80%\n"Cool-down" 1m 40%';
+/** A step step 0 types at the end of the text, then undoes (#759). */
+const TYPED_STEP = '"Spin" 1m 30%';
 /** The FTP step 0b types in, W: not the prior's 250 W, so the ride's targets show which one they were set from. */
 const FTP_W = 300;
 /** The plan's target per block, W (50 %, 80 %, 40 % of the FTP typed in). */
@@ -245,9 +248,19 @@ describe("MVP walk (#256 critical path, sim)", () => {
     await $(sel.outlineTool("Delete")).click();
     await rows(3, "Delete");
     // The real core printed every step: the text view holds the canonical text.
-    await expect($(sel.editorText)).toHaveValue(WORKOUT_DSL, { wait: UI_MS });
+    await expect($(sel.editorText)).toHaveText(WORKOUT_DSL, { wait: UI_MS });
+    // #759, ADR-0011 §2.2: typing in the text box (CodeMirror in WKWebView) is read by the real core, one burst is one
+    // undo step, and Cmd+Z in the box undoes it in the text and the outline alike (the model's history, not the DOM's).
+    await $(sel.editorText).click();
+    await browser.keys([Key.Command, Key.ArrowDown]);
+    await browser.keys([Key.Enter, ...TYPED_STEP]);
+    await rows(4, "a step typed in the text");
+    await expect($(sel.editorText)).toHaveText(`${WORKOUT_DSL}\n${TYPED_STEP}`);
+    await browser.keys([Key.Command, "z"]);
+    await rows(3, "Cmd+Z after typing");
+    await expect($(sel.editorText)).toHaveText(WORKOUT_DSL);
     await $(sel.editorName).setValue(WORKOUT);
-    await expect($(sel.editorText)).toHaveValue(WORKOUT_DSL);
+    await expect($(sel.editorText)).toHaveText(WORKOUT_DSL);
     await expect($(sel.editorName)).toHaveValue(WORKOUT);
     await expect($(sel.editorButton("Save"))).toBeEnabled({ wait: UI_MS });
     await $(sel.editorButton("Save")).click();

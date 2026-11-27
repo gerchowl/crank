@@ -5,8 +5,8 @@
 // built-in is changed only through its copy. On the workouts backend, which answers `print_dsl` and `parse_dsl` only
 // with the core's own answers (editorFixture.ts, crates/crank-core/tests/fixtures/editor.json).
 import {
+  act,
   cleanup,
-  fireEvent,
   render,
   screen,
   waitFor,
@@ -24,6 +24,7 @@ import { install, type Backend } from "../views/workoutsBackend";
 import type { WorkoutNode } from "../bindings";
 import { GROUP_MS } from "./model";
 import { nodeFrom, outlineActions, soleChildOf } from "./OutlineEdit";
+import { setText as setViewText, textOf } from "./TextView";
 import { typingClock } from "./WorkoutEditor";
 import { windowClose } from "./windowClose";
 
@@ -41,6 +42,8 @@ beforeEach(() => {
   windowClose.destroy = () => Promise.resolve();
 });
 const text = (name: string) => DRAFTS[name]!.text;
+/** Replace the whole text, as a paste would: one transaction from the rider (TextView.tsx `setText`). */
+const setText = (box: HTMLElement, t: string) => act(() => setViewText(box, t));
 const problemOf = (name: string) => {
   const d = DRAFTS[name]!;
   if (!("problem" in d)) throw new Error(`${name} parses`);
@@ -68,7 +71,7 @@ async function open(how: "copy" | "own" = "copy") {
   );
   const box = (await screen.findByRole("textbox", {
     name: "Text",
-  })) as HTMLTextAreaElement;
+  })) as HTMLElement;
   return { b, user, box };
 }
 const outline = () => screen.getByRole("listbox", { name: "Outline" });
@@ -82,15 +85,15 @@ const calls = (b: Backend, cmd: string) => b.calls.filter((c) => c.cmd === cmd);
 /** Exactly one undo step back to `before`, and redo forward to `after`, each with its own text. */
 async function oneUndoStep(
   user: ReturnType<typeof userEvent.setup>,
-  box: HTMLTextAreaElement,
+  box: HTMLElement,
   before: string,
   after: string,
 ) {
   await user.click(undoButton());
-  await waitFor(() => expect(box.value).toBe(before));
+  await waitFor(() => expect(textOf(box)).toBe(before));
   expect((undoButton() as HTMLButtonElement).disabled).toBe(true);
   await user.click(redoButton());
-  await waitFor(() => expect(box.value).toBe(after));
+  await waitFor(() => expect(textOf(box)).toBe(after));
   expect((redoButton() as HTMLButtonElement).disabled).toBe(true);
 }
 
@@ -112,7 +115,7 @@ describe("toolbar actions", () => {
       const { user, box } = await open();
       await user.click(row(on));
       await user.click(tool(action));
-      await waitFor(() => expect(box.value).toBe(text(draft)));
+      await waitFor(() => expect(textOf(box)).toBe(text(draft)));
       const focused = document.activeElement as HTMLElement;
       expect(focused.getAttribute("role")).toBe("option");
       expect(focused.getAttribute("aria-selected")).toBe("true");
@@ -135,7 +138,7 @@ describe("toolbar actions", () => {
       while (document.activeElement !== tool(action))
         await user.keyboard("{ArrowRight}");
       await user.keyboard("{Enter}");
-      await waitFor(() => expect(box.value).toBe(text(draft)));
+      await waitFor(() => expect(textOf(box)).toBe(text(draft)));
       expect((document.activeElement as HTMLElement).textContent).toMatch(
         edited,
       );
@@ -167,7 +170,7 @@ describe("the selected node's form", () => {
     await user.clear(count);
     await user.type(count, "4");
     await user.click(screen.getByRole("button", { name: "Apply" }));
-    await waitFor(() => expect(box.value).toBe(text("sweet-spot-4x")));
+    await waitFor(() => expect(textOf(box)).toBe(text("sweet-spot-4x")));
     // The form edits in place: focus stays in it, the row stays selected.
     expect(row(/^4 ×$/).getAttribute("aria-selected")).toBe("true");
     await user.click(row(/Sweet spot/));
@@ -175,16 +178,16 @@ describe("the selected node's form", () => {
     await user.clear(min);
     // Enter in a field applies, as the form's submit.
     await user.type(min, "15{Enter}");
-    await waitFor(() => expect(box.value).toBe(text("sweet-spot-4x-15m")));
+    await waitFor(() => expect(textOf(box)).toBe(text("sweet-spot-4x-15m")));
     await user.click(undoButton());
-    await waitFor(() => expect(box.value).toBe(text("sweet-spot-4x")));
+    await waitFor(() => expect(textOf(box)).toBe(text("sweet-spot-4x")));
     // The form shows the restored node's values.
     expect(
       (screen.getByRole("textbox", { name: "Minutes" }) as HTMLInputElement)
         .value,
     ).toBe("12");
     await user.click(undoButton());
-    await waitFor(() => expect(box.value).toBe(text("sweet-spot")));
+    await waitFor(() => expect(textOf(box)).toBe(text("sweet-spot")));
     expect((undoButton() as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -203,7 +206,7 @@ describe("the selected node's form", () => {
         await user.type(f, value);
       }
       await user.click(screen.getByRole("button", { name: "Apply" }));
-      await waitFor(() => expect(box.value).toBe(text(draft)));
+      await waitFor(() => expect(textOf(box)).toBe(text(draft)));
       await oneUndoStep(user, box, text("sweet-spot"), text(draft));
     },
   );
@@ -218,7 +221,7 @@ describe("the selected node's form", () => {
       screen.getByRole("textbox", { name: "Count" }),
     );
     await user.keyboard("{Control>}a{/Control}4{Enter}");
-    await waitFor(() => expect(box.value).toBe(text("sweet-spot-4x")));
+    await waitFor(() => expect(textOf(box)).toBe(text("sweet-spot-4x")));
   });
 
   test("Apply with nothing changed commits nothing", async () => {
@@ -248,7 +251,7 @@ describe("refused edits", () => {
       });
       expect(refused.id).toBe("editor-outline-refused");
       expect(refused.textContent).toContain("Nothing was changed.");
-      expect(box.value).toBe(text("sweet-spot"));
+      expect(textOf(box)).toBe(text("sweet-spot"));
       expect((undoButton() as HTMLButtonElement).disabled).toBe(true);
       // What was typed stays, to be corrected.
       expect(
@@ -269,14 +272,14 @@ describe("refused edits", () => {
       (await screen.findByText(/Power: enter a number\./)).textContent,
     ).toContain("Nothing was changed.");
     expect(calls(b, "print_dsl")).toEqual([]);
-    expect(box.value).toBe(text("sweet-spot"));
+    expect(textOf(box)).toBe(text("sweet-spot"));
   });
 
   test("while the text does not parse, the outline cannot be edited, and says why", async () => {
     const { user, box } = await open();
     await user.click(row(/Rest/));
     // The whole text at once, as a paste would (one change event).
-    fireEvent.change(box, { target: { value: text("missing-target") } });
+    setText(box, text("missing-target"));
     await screen.findByText("Fix the text to edit the outline.");
     for (const b of within(toolbar()).getAllByRole("button"))
       expect((b as HTMLButtonElement).disabled).toBe(true);
@@ -302,7 +305,7 @@ describe("drafts and the library", () => {
     );
     const box = (await screen.findByRole("textbox", {
       name: "Text",
-    })) as HTMLTextAreaElement;
+    })) as HTMLElement;
     await screen.findByText("No steps yet: add one, or write one in Text.");
     const enabled = within(toolbar())
       .getAllByRole("button")
@@ -310,7 +313,7 @@ describe("drafts and the library", () => {
       .map((b) => b.textContent);
     expect(enabled).toEqual(["Add step"]);
     await user.click(tool("Add step"));
-    await waitFor(() => expect(box.value).toBe(text("one-step")));
+    await waitFor(() => expect(textOf(box)).toBe(text("one-step")));
     expect(document.activeElement).toBe(row(/5:00 · 50 %/));
     await oneUndoStep(user, box, "", text("one-step"));
   });
@@ -321,7 +324,7 @@ describe("drafts and the library", () => {
     await user.click(row(/Cool-down/));
     await user.click(tool("Delete"));
     await waitFor(() =>
-      expect(box.value).toBe(text("sweet-spot-no-cool-down")),
+      expect(textOf(box)).toBe(text("sweet-spot-no-cool-down")),
     );
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
     await user.click(undoButton());
@@ -333,7 +336,7 @@ describe("drafts and the library", () => {
     expect(b.summaries.find((s) => s.id === "w-ss")?.builtin).toBe(true);
     await user.click(row(/Warm-up/));
     await user.click(tool("Duplicate"));
-    await waitFor(() => expect(box.value).toBe(text("dup-warm-up")));
+    await waitFor(() => expect(textOf(box)).toBe(text("dup-warm-up")));
     await user.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText("Saved");
     expect(calls(b, "workout_save").map((c) => c.args.id)).toEqual([null]);
@@ -361,15 +364,15 @@ describe("round 2: focus, races, read-back, nesting (#653)", () => {
     );
     const box = (await screen.findByRole("textbox", {
       name: "Text",
-    })) as HTMLTextAreaElement;
+    })) as HTMLElement;
     await user.click(tool("Add step"));
-    await waitFor(() => expect(box.value).toBe(text("one-step")));
+    await waitFor(() => expect(textOf(box)).toBe(text("one-step")));
     await user.click(tool("Delete"));
-    await waitFor(() => expect(box.value).toBe(""));
+    await waitFor(() => expect(textOf(box)).toBe(""));
     await screen.findByText("No steps yet: add one, or write one in Text.");
     expect(document.activeElement).toBe(tool("Add step"));
     await user.keyboard("{Control>}z{/Control}");
-    await waitFor(() => expect(box.value).toBe(text("one-step")));
+    await waitFor(() => expect(textOf(box)).toBe(text("one-step")));
     // The restored node is selected again (the step was left with it) and focused.
     await waitFor(() =>
       expect(document.activeElement).toBe(row(/5:00 · 50 %/)),
@@ -396,7 +399,7 @@ describe("round 2: focus, races, read-back, nesting (#653)", () => {
     await user.click(row(/Cool-down/));
     await user.click(tool("Delete"));
     // The rider types while print_dsl is held: a draft the core refuses, so the saved tree does not change.
-    fireEvent.change(box, { target: { value: text("missing-target") } });
+    setText(box, text("missing-target"));
     release();
     expect(
       (
@@ -405,7 +408,7 @@ describe("round 2: focus, races, read-back, nesting (#653)", () => {
         )
       ).textContent,
     ).toContain("Nothing was changed.");
-    expect(box.value).toBe(text("missing-target"));
+    expect(textOf(box)).toBe(text("missing-target"));
     expect((undoButton() as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -413,7 +416,7 @@ describe("round 2: focus, races, read-back, nesting (#653)", () => {
     const { b, user, box } = await open();
     await user.click(row(/Warm-up/));
     await user.click(tool("Duplicate"));
-    await waitFor(() => expect(box.value).toBe(text("dup-warm-up")));
+    await waitFor(() => expect(textOf(box)).toBe(text("dup-warm-up")));
     await waitFor(() => {
       const last = calls(b, "compile_workout").at(-1)!.args.workout as {
         nodes: { id: string }[];
@@ -428,24 +431,24 @@ describe("round 2: focus, races, read-back, nesting (#653)", () => {
     const { user, box } = await open();
     await user.click(row(/Rest/));
     await user.click(tool("Move up"));
-    await waitFor(() => expect(box.value).toBe(text("rest-up")));
+    await waitFor(() => expect(textOf(box)).toBe(text("rest-up")));
     expect((document.activeElement as HTMLElement).textContent).toMatch(/Rest/);
     await user.click(undoButton());
-    await waitFor(() => expect(box.value).toBe(text("sweet-spot")));
+    await waitFor(() => expect(textOf(box)).toBe(text("sweet-spot")));
     await user.click(row(/Sweet spot/));
     await user.click(tool("Delete"));
-    await waitFor(() => expect(box.value).toBe(text("no-sweet-spot")));
+    await waitFor(() => expect(textOf(box)).toBe(text("no-sweet-spot")));
     expect((document.activeElement as HTMLElement).textContent).toMatch(/Rest/);
     // Rest is the repeat's only child now: Delete takes the repeat with it.
     await user.click(tool("Delete"));
-    await waitFor(() => expect(box.value).toBe(text("no-repeat")));
+    await waitFor(() => expect(textOf(box)).toBe(text("no-repeat")));
     expect((document.activeElement as HTMLElement).textContent).toMatch(
       /Cool-down/,
     );
     await user.click(undoButton());
-    await waitFor(() => expect(box.value).toBe(text("no-sweet-spot")));
+    await waitFor(() => expect(textOf(box)).toBe(text("no-sweet-spot")));
     await user.click(undoButton());
-    await waitFor(() => expect(box.value).toBe(text("sweet-spot")));
+    await waitFor(() => expect(textOf(box)).toBe(text("sweet-spot")));
   });
 
   test("durations are whole seconds: 0.1 min is 6 s; a negative part or a fraction of a second is refused", async () => {
@@ -473,7 +476,7 @@ describe("round 2: focus, races, read-back, nesting (#653)", () => {
     await user.clear(sec());
     await user.type(sec(), "0");
     await apply();
-    await waitFor(() => expect(box.value).toBe(text("warm-up-6s")));
+    await waitFor(() => expect(textOf(box)).toBe(text("warm-up-6s")));
   });
 
   test("Cmd/Ctrl+Z in a form box undoes the workout and drops values not applied", async () => {
@@ -482,13 +485,13 @@ describe("round 2: focus, races, read-back, nesting (#653)", () => {
     const count = screen.getByRole("textbox", { name: "Count" });
     await user.clear(count);
     await user.type(count, "4{Enter}");
-    await waitFor(() => expect(box.value).toBe(text("sweet-spot-4x")));
+    await waitFor(() => expect(textOf(box)).toBe(text("sweet-spot-4x")));
     // Typed, not applied: Cmd/Ctrl+Z in the box undoes the count; the form shows the restored node's 3, not the 7.
     await user.clear(count);
     await user.type(count, "7");
     expect(document.activeElement).toBe(count);
     await user.keyboard("{Control>}z{/Control}");
-    await waitFor(() => expect(box.value).toBe(text("sweet-spot")));
+    await waitFor(() => expect(textOf(box)).toBe(text("sweet-spot")));
     expect(
       (screen.getByRole("textbox", { name: "Count" }) as HTMLInputElement)
         .value,
@@ -538,7 +541,7 @@ describe("round 3 (#653)", () => {
     await user.keyboard("{Control>}z{/Control}"); // focus on a row, nothing to undo
     await user.keyboard("{Control>}{Shift>}z{/Shift}{/Control}"); // nothing to redo
     box.focus();
-    fireEvent.change(box, { target: { value: text("sweet-spot-4x") } });
+    setText(box, text("sweet-spot-4x"));
     await waitFor(() => expect(row(/^4 ×$/)).toBeTruthy());
     expect(document.activeElement).toBe(box);
   });

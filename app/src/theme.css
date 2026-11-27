@@ -62,6 +62,9 @@
   /* The labelled rail item (DESIGN §18.4, #555): border 1 + --space-2 8 + icon 20 (--text-l at line-height 1)
      + gap --space-1 4 + word 13.2 (--text-xs at line-height 1.1) + --space-2 8 + border 1 = 55.2, to the whole pixel. */
   --control-h-rail: 55px;
+  /* The workout editor's text box (#759): as tall as the textarea it replaced (rows 12), twelve lines of --text-l
+     (its line height) plus --space-2 above and below, 12 × 20 + 2 × 8 = 256. */
+  --dsl-box-h: 256px;
 
   /* Side padding of .page: 20 px at 1024 wide to 32 px at 1440, with no breakpoint (DESIGN §16.3). */
   --page-gutter: clamp(20px, calc(2.885vw - 9.5px), 32px);

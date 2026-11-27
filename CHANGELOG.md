@@ -171,6 +171,12 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Changed
 
+- The workout editor's text box is a CodeMirror 6 view (ADR-0011 §2.1, §2.2, §2.7), with today's behaviour: the
+  editor's one history (Cmd/Ctrl+Z, and Edit ▸ Undo / Redo through `beforeinput`), the model's draft as the truth (its
+  changes shown as one replacement that keeps the cursor outside it, never read back), nothing sent mid-composition,
+  read-only under the AI rewrite's lock, Tab still moving focus on. `@codemirror/view` 6.44.2 and `@codemirror/state`
+  6.7.6 (MIT) add 206.6 kB minified / 67.7 kB gzip to the app bundle
+  ([#759](https://github.com/gerchowl/crank/issues/759))
 - The app reads its live state from the snapshot channel only (ADR-0001 §4.3, step 3b of #598): each window opens
   one channel when the core is up, applies every frame by the one client rule and acks it; the ride, its devices
   (the strap row of the Ready sheet follows `devices.strap`), how it ended, the load in flight and the traces

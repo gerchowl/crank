@@ -136,20 +136,42 @@
   font-size: var(--text-s);
 }
 
-/* The text: the DSL in the mono face; a draft that does not parse is edged in the error colour, its problem under it. */
-.editor-text textarea {
-  padding: var(--space-2) var(--space-3);
+/* The text (CodeMirror, ADR-0011 §2.1): the DSL in the mono face, as tall as twelve lines and resizable as the textarea
+   was; a draft that does not parse is edged in the error colour, its problem under it. CodeMirror's base theme is
+   scoped by one generated class, so these rules (two classes and more) win over it. The focused element is the
+   content, inside the scroller (which would clip an outer ring), so its ring is drawn inset, on the content, in place
+   of the base theme's dotted outline round the editor. */
+.editor-dsl .cm-editor {
   border: 1px solid var(--edge);
   border-radius: var(--radius-m);
   background: var(--bg);
   color: var(--ink);
+  resize: vertical;
+  overflow: hidden;
+}
+.editor-dsl .cm-editor.cm-focused {
+  outline-color: transparent;
+}
+.editor-dsl .cm-editor .cm-scroller {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--text-s);
   line-height: var(--text-l);
-  resize: vertical;
 }
-.editor-text textarea[aria-invalid="true"] {
+.editor-dsl .cm-editor .cm-content {
+  min-height: var(--dsl-box-h);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-m);
+  caret-color: var(--ink);
+}
+.editor-dsl .cm-editor .cm-content:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: -3px;
+}
+.editor-dsl .cm-editor .cm-line {
+  padding: 0;
+}
+.editor-dsl .cm-editor:has([aria-invalid="true"]) {
   border-color: var(--status-critical);
 }
 .editor-problem {
