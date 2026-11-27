@@ -1108,8 +1108,9 @@ fn an_engagement_settles_the_ramp_plus_five_seconds() {
     pedal(&r, 16, 72, 200, 90);
     r.through(71);
     let c = r.status().compliance;
-    // 4 free seconds, then the 5 s soft start and 5 s more are settle: 14 excluded, 4 counted
-    assert_eq!((c.excluded_s, c.counted_s), (14, 4), "{c:?}");
+    // 4 free seconds (class 0: no ERG target, in no count, ADR-0009 §2.3.2), then the 5 s
+    // soft start and 5 s more are settle: 10 excluded, 4 counted
+    assert_eq!((c.excluded_s, c.counted_s), (10, 4), "{c:?}");
 }
 #[test]
 fn paused_and_released_seconds_are_excluded() {

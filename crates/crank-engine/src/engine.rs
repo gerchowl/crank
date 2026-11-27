@@ -2,7 +2,9 @@
 use crate::control::{PolicyContext, PolicyStatus, RideActivity, TargetPolicy};
 use crate::erg::{Compliance, Component, ErgPolicy, Machine, TrainerFollowing};
 use crate::lap::{Lap, LapEnd, Laps};
-use crate::record::{METRICS, Mean, RecordError, RideRecorder, SecondRow};
+use crate::record::{
+    METRICS, Mean, RecordError, RideFinish, RideRecorder, SecondControl, SecondRow,
+};
 use crate::series::{Live, Series, SeriesStore};
 use crate::stream::hub::Hub;
 use crate::stream::types::StreamError;
@@ -19,6 +21,7 @@ use crank_devices::{
     SeqSource, TrainerCommand, TrainerEvent, TrainerLink, TrainerObservation, TrainerSample,
 };
 use crank_domain::athlete::AthleteSnapshot;
+use crank_domain::record::{BlockEnd, ComplianceClass};
 use crank_domain::workout::{FlatBlock, Phase as BlockPhase};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -513,6 +516,12 @@ struct Session {
     observations: BTreeMap<(u64, u64), TrainerObservation>,
     observed: u64,
     acc: SecondAcc,
+    /// The second the current tick closed, until the policy has classified it.
+    closing: Option<(u32, SecondRow)>,
+    /// The session second and block of the last riding second recorded: a block's end is known
+    /// only after it (the next block's first tick, a skip, the ride's end), and then set on it
+    /// (`block_end`, ADR-0009 §2.3.2).
+    last_riding: Option<(u32, u32)>,
     record_error: Option<String>,
     late: u64,
     /// Session tick at which the current trainer loss began.
@@ -598,11 +607,54 @@ impl Session {
                 .riding
                 .then(|| u32::try_from(self.block_idx).ok())
                 .flatten(),
+            // Set once the policy has classified the second (`record_closing`).
+            control: None,
         };
         self.laps.on_second(&row);
         let second = u32::try_from(self.clock_ticks / TICKS_PER_SECOND - 1).unwrap_or(u32::MAX);
+        self.closing = Some((second, row));
+    }
+    /// The policy has classified the second this tick closed: record it with its class and
+    /// target. Called after the policy, before a block that ended on this tick closes its lap.
+    fn record_closing(&mut self) {
+        let Some((second, mut row)) = self.closing.take() else {
+            return;
+        };
+        let classified = self.policy.status().last_second;
+        #[expect(clippy::cast_possible_truncation, reason = "the record is f32")]
+        let target_w = classified.and_then(|c| c.target_w).map(|t| t as f32);
+        row.control = Some(SecondControl {
+            target_w,
+            compliance: classified.map_or(ComplianceClass::NoTarget, |c| c.class),
+            adj_rider_pct: 0.0,
+            adj_coach_pct: 0.0,
+            block_end: None,
+        });
+        if row.workout_s.is_some() {
+            self.last_riding = row.block.map(|b| (second, b));
+        }
         if self.record_error.is_none()
             && let Err(e) = self.recorder.append_second(second, &row)
+        {
+            self.record_error = Some(e.to_string());
+        }
+    }
+    /// The open lap's block ended as `end`: its last riding second, when it is the block's,
+    /// says so. A ride without blocks has no block ends.
+    fn mark_block_end(&mut self, end: LapEnd) {
+        let Some(block) = self.laps.open_block() else {
+            return;
+        };
+        let Some((second, _)) = self.last_riding.filter(|(_, b)| *b == block) else {
+            return;
+        };
+        let end = match end {
+            LapEnd::Completed => BlockEnd::Completed,
+            LapEnd::Skipped => BlockEnd::Skipped,
+            LapEnd::Stopped => BlockEnd::Stopped,
+        };
+        if self.record_error.is_none()
+            && let Err(e) = self.recorder.set_block_end(second, end)
         {
             self.record_error = Some(e.to_string());
         }
@@ -642,6 +694,7 @@ impl Session {
     }
     /// The current block (or free-ride lap) ends now, at the session and workout time reached.
     fn close_lap(&mut self, end: LapEnd) {
+        self.mark_block_end(end);
         self.laps.close(end, self.clock_ticks, self.ride_ticks);
     }
     /// The end of a tick, after the policy: it has now classified the second this tick closed
@@ -1238,6 +1291,7 @@ impl Engine {
             }
             s.end_after_loss();
         }
+        s.record_closing();
         s.laps_after_policy(second_closed, advanced && !finished);
         self.session = Some(s);
         if finished {
@@ -1412,7 +1466,10 @@ impl Engine {
                 log.applied = log.received;
             }
             if s.record_error.is_none()
-                && let Err(e) = s.recorder.finish()
+                && let Err(e) = s.recorder.finish(match end {
+                    LapEnd::Completed | LapEnd::Skipped => RideFinish::Completed,
+                    LapEnd::Stopped => RideFinish::Stopped,
+                })
             {
                 s.record_error = Some(e.to_string());
             }
@@ -1471,6 +1528,8 @@ impl Engine {
                     observations: BTreeMap::new(),
                     observed: 0,
                     acc: SecondAcc::default(),
+                    closing: None,
+                    last_riding: None,
                     record_error: None,
                     late: 0,
                     lost_at: None,

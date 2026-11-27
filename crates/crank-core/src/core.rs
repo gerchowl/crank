@@ -1072,8 +1072,15 @@ impl crank_engine::RideRecorder for BlockingRecorder {
         *self.block.late.lock().unwrap() = Some(late.clone());
         late
     }
-    fn finish(&mut self) -> Result<(), crank_engine::RecordError> {
-        self.inner.finish()
+    fn set_block_end(
+        &mut self,
+        session_s: u32,
+        end: crank_domain::record::BlockEnd,
+    ) -> Result<(), crank_engine::RecordError> {
+        self.inner.set_block_end(session_s, end)
+    }
+    fn finish(&mut self, how: crank_engine::RideFinish) -> Result<(), crank_engine::RecordError> {
+        self.inner.finish(how)
     }
 }
 /// A rendezvous between a test and the core: when enabled, the core announces that it has
@@ -4359,6 +4366,85 @@ mod tests {
         assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Ended);
     }
 
+    /// The stored ride `id` and its record, decoded (ADR-0009 §2.3.2).
+    fn stored(core: &Core, id: &str) -> (crank_store::Ride, Vec<crank_engine::SecondRow>) {
+        let ride = core.0.store.ride(id).unwrap().expect("the ride row");
+        let record = core.0.store.record(id).unwrap().expect("the record");
+        assert_eq!(record.record_version, ride.record_version);
+        let rows = crank_engine::decode_record(record.record_version, &record.metrics).unwrap();
+        (ride, rows)
+    }
+    fn block_ends(rows: &[crank_engine::SecondRow]) -> Vec<(u32, crank_domain::record::BlockEnd)> {
+        rows.iter()
+            .filter_map(|r| {
+                let c = r.control.expect("version 2");
+                Some((r.block?, c.block_end?))
+            })
+            .collect()
+    }
+    /// #717: the rider's End records `rider_end` and a version-2 record whose every second
+    /// holds the control metrics; the block it ended in is `stopped`.
+    #[tokio::test(start_paused = true)]
+    async fn a_rider_end_records_rider_end_and_a_version_2_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = riding(&radio, dir.path()).await;
+        let id = core.ride_end().await.unwrap().expect("a started ride");
+        let (ride, rows) = stored(&core, &id);
+        assert_eq!(ride.end_cause, Some(crank_store::EndCause::RiderEnd));
+        assert_eq!(ride.record_version, crank_engine::RECORD_VERSION);
+        assert!(rows.len() >= 19, "{}", rows.len());
+        assert!(rows.iter().all(|r| r.control.is_some()));
+        assert!(
+            rows.iter()
+                .filter_map(|r| r.control.and_then(|c| c.target_w))
+                .count()
+                > 0,
+            "an ERG ride records its target"
+        );
+        assert_eq!(
+            block_ends(&rows),
+            vec![(0, crank_domain::record::BlockEnd::Stopped)]
+        );
+    }
+    /// #717: a workout that runs out records `completed`, each block ending `completed`.
+    #[tokio::test(start_paused = true)]
+    async fn a_workout_that_runs_out_records_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = riding(&radio, dir.path()).await;
+        tokio::time::sleep(Duration::from_mins(3)).await;
+        let finished = async {
+            while core.ride_status().await.unwrap().status.state
+                != crank_engine::StreamRideState::Finished
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), finished)
+            .await
+            .expect("the workout finishes");
+        let id = core.ride_end().await.unwrap().expect("the finished ride");
+        let (ride, rows) = stored(&core, &id);
+        assert_eq!(ride.end_cause, Some(crank_store::EndCause::Completed));
+        let completed = crank_domain::record::BlockEnd::Completed;
+        assert_eq!(
+            block_ends(&rows),
+            vec![(0, completed), (1, completed), (2, completed)]
+        );
+    }
+    /// #717: quitting ends the ride as the rider's End.
+    #[tokio::test(start_paused = true)]
+    async fn quitting_records_rider_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let radio = fake(vec![], false);
+        let core = riding(&radio, dir.path()).await;
+        let id = core.rides_list().await.unwrap()[0].id.clone();
+        assert_eq!(core.shutdown(Duration::from_secs(3)).await, Shutdown::Ended);
+        let (ride, _) = stored(&core, &id);
+        assert_eq!(ride.end_cause, Some(crank_store::EndCause::RiderEnd));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn quitting_waits_for_a_trainer_that_never_confirms_only_up_to_the_cap() {
         let dir = tempfile::tempdir().unwrap();
@@ -4599,6 +4685,9 @@ mod tests {
         assert!(took <= Duration::from_secs(2), "{took:?}");
         let rides = core.rides_list().await.unwrap();
         assert_eq!(rides[0].outcome, RideOutcome::Aborted, "{rides:?}");
+        // #717: the forced end is the ride's end cause
+        let ride = core.0.store.ride(&rides[0].id).unwrap().unwrap();
+        assert_eq!(ride.end_cause, Some(crank_store::EndCause::Forced));
         assert!(!core.ride_status().await.unwrap().status.loaded);
         assert_eq!(radio.disconnects.lock().unwrap().len(), 1, "released");
         // the dead engine's ride-active signal is cleared for it: no reconnect loop is told

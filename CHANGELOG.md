@@ -10,6 +10,15 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- Record version 2 (ADR-0009 §2.3.2): every ride second now records `target_w` (the controlled target the rider was
+  given, NaN outside ERG), `compliance` (the second's class: no target, within, below, above, settling, released until
+  its re-engage settles, paused, suspect, not following, and the new class 9, no 3 s power), `adj_rider_pct` and
+  `adj_coach_pct` (0 until the rider ± #761 and coach changes #248 exist) and `block_end` (completed, skipped, stopped,
+  on the block's last riding second), and the ride its `end_cause` (`completed`, `rider_end`, `forced`, `recovered`;
+  `safety` is stored but written by no path yet, #762) and `record_version = 2`. `Store::record` reads a ride's whole
+  record and `crank_engine::decode_record` decodes both versions; a version-1 ride decodes unchanged. The domain's
+  `interval_stats` is the one definition of an interval's statistics, tied to the live lap statistics by a test
+  ([#717](https://github.com/gerchowl/crank/issues/717))
 - Settings → Athlete model (ADR-0009 §2.1.3, DESIGN §5.9): every parameter with its value ± sd, where it came from in
   words and when, its age and a stale mark after 6 weeks; Edit (a value and an optional ±, Save, Cancel; the core's
   refusal stays in the open draft), History with Use this value, and Clear back to the estimate or to Not set. The
@@ -171,6 +180,9 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Changed
 
+- Live compliance: a second without an ERG target (a free or SIM block, a ride without blocks) no longer counts as
+  excluded; `StreamCompliance.excludedS` now counts only classes 4–9 of ADR-0009 §2.3.2, as the ADR defines it. The
+  counted and within seconds are unchanged ([#717](https://github.com/gerchowl/crank/issues/717))
 - The app reads its live state from the snapshot channel only (ADR-0001 §4.3, step 3b of #598): each window opens
   one channel when the core is up, applies every frame by the one client rule and acks it; the ride, its devices
   (the strap row of the Ready sheet follows `devices.strap`), how it ended, the load in flight and the traces

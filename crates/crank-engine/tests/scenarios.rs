@@ -42,7 +42,20 @@ impl RideRecorder for Recorder {
         self.0.lock().expect("test mutex").rows.push((s, *row));
         Ok(())
     }
-    fn finish(&mut self) -> Result<(), RecordError> {
+    fn set_block_end(
+        &mut self,
+        s: u32,
+        end: crank_domain::record::BlockEnd,
+    ) -> Result<(), RecordError> {
+        let mut rec = self.0.lock().expect("test mutex");
+        if let Some((_, row)) = rec.rows.iter_mut().find(|(at, _)| *at == s)
+            && let Some(c) = row.control.as_mut()
+        {
+            c.block_end = Some(end);
+        }
+        Ok(())
+    }
+    fn finish(&mut self, _how: crank_engine::RideFinish) -> Result<(), RecordError> {
         self.0.lock().expect("test mutex").finished = true;
         Ok(())
     }
@@ -313,7 +326,15 @@ async fn dropout_mid_interval_freezes_ride_time_and_the_block_timer() {
     assert_eq!(paused_only(&rows), (100..=111).collect::<Vec<_>>());
     for (s, row) in rows.iter().filter(|(s, _)| (100..=111).contains(s)) {
         assert_eq!(
-            *row,
+            row.control.map(|c| (c.compliance, c.target_w)),
+            Some((crank_domain::record::ComplianceClass::Paused, None)),
+            "second {s}: paused, no target"
+        );
+        assert_eq!(
+            SecondRow {
+                control: None,
+                ..*row
+            },
             SecondRow::default(),
             "second {s}: gaps, never interpolated"
         );
@@ -369,7 +390,17 @@ async fn silent_dropout_keeps_the_two_second_window_in_workout_time() {
         "tick 406 is the first paused"
     );
     // second 102 holds ticks 408..=411: all paused
-    assert_eq!(rows[102].1, SecondRow::default());
+    assert_eq!(
+        SecondRow {
+            control: None,
+            ..rows[102].1
+        },
+        SecondRow::default()
+    );
+    assert_eq!(
+        rows[102].1.control.map(|c| c.compliance),
+        Some(crank_domain::record::ComplianceClass::Paused)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -576,6 +607,7 @@ impl RideRecorder for StoreRecorder {
             hr_device_id: None,
             telemetry_source: "sim".into(),
             metrics: metrics.iter().map(|m| (*m).to_owned()).collect(),
+            record_version: crank_engine::RECORD_VERSION,
         };
         self.store
             .start_ride(ride)
@@ -595,11 +627,25 @@ impl RideRecorder for StoreRecorder {
             .append_second("ride", s, samples)
             .map_err(|e| RecordError(e.to_string()))
     }
-    fn finish(&mut self) -> Result<(), RecordError> {
+    fn set_block_end(
+        &mut self,
+        s: u32,
+        end: crank_domain::record::BlockEnd,
+    ) -> Result<(), RecordError> {
+        self.store
+            .amend_second("ride", s, "block_end", Some(f32::from(end.code())))
+            .map_err(|e| RecordError(e.to_string()))
+    }
+    fn finish(&mut self, _how: crank_engine::RideFinish) -> Result<(), RecordError> {
         let summary =
             RideSummaryJson::parse(r#"{"v":1}"#).map_err(|e| RecordError(e.to_string()))?;
         self.store
-            .finish_ride("ride", 1_700_000_200, summary)
+            .finish_ride(
+                "ride",
+                1_700_000_200,
+                summary,
+                crank_store::EndCause::Completed,
+            )
             .map_err(|e| RecordError(e.to_string()))
     }
 }

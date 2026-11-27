@@ -11,6 +11,7 @@ pub mod filters;
 pub mod history;
 pub mod hr_zone;
 pub mod metric_error;
+pub mod record;
 pub mod route;
 pub mod scales;
 /// Workout trees and text DSL.

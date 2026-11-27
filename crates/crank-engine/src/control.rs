@@ -4,6 +4,7 @@
 //! `Link(Ready)` the driver restores nothing, the engine re-issues the mode); *what* is
 //! sent is a [`TargetPolicy`]: [`crate::erg::ErgPolicy`] is the decided ERG policy
 //! (ADR-0002 §7). Open-ended block end rules are #224, not this policy.
+use crate::erg::compliance::SecondCompliance;
 use crate::erg::{Compliance, TrainerFollowing};
 use crank_devices::ControlMode;
 use crank_domain::workout::FlatBlock;
@@ -57,6 +58,10 @@ pub struct PolicyStatus {
     pub released: bool,
     /// The compliance tally (ADR-0002 §7.8).
     pub compliance: Compliance,
+    /// The class and controlled target of the last second the policy closed (ADR-0009
+    /// §2.3.2): the engine records them with that second. `None` before the first second,
+    /// and always for a policy that does not classify (the second is then class 0).
+    pub last_second: Option<SecondCompliance>,
     /// While a soft start is owed and the ride is in an ERG block (not paused, not released):
     /// the block's target in watts the ramp is heading for. The engine decides whether to show
     /// it (only after a recovered trainer loss).

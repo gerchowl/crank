@@ -35,6 +35,7 @@ pub(crate) struct Log {
     finished: bool,
     rows: Vec<(u32, SecondRow)>,
     fail_after: Option<usize>,
+    how: Option<crate::record::RideFinish>,
 }
 pub(crate) struct Recorder(pub(crate) Arc<Mutex<Log>>);
 impl RideRecorder for Recorder {
@@ -51,8 +52,24 @@ impl RideRecorder for Recorder {
         log.rows.push((s, *row));
         Ok(())
     }
-    fn finish(&mut self) -> Result<(), RecordError> {
-        self.0.lock().unwrap().finished = true;
+    fn set_block_end(
+        &mut self,
+        s: u32,
+        end: crank_domain::record::BlockEnd,
+    ) -> Result<(), RecordError> {
+        let mut log = self.0.lock().unwrap();
+        let (_, row) = log
+            .rows
+            .iter_mut()
+            .find(|(at, _)| *at == s)
+            .expect("a recorded second");
+        row.control.as_mut().expect("version 2").block_end = Some(end);
+        Ok(())
+    }
+    fn finish(&mut self, how: crate::record::RideFinish) -> Result<(), RecordError> {
+        let mut log = self.0.lock().unwrap();
+        log.finished = true;
+        log.how = Some(how);
         Ok(())
     }
 }
@@ -282,6 +299,10 @@ impl Rig {
     }
     pub(crate) fn rows(&self) -> Vec<(u32, SecondRow)> {
         self.log.lock().unwrap().rows.clone()
+    }
+    /// How the engine finished the ride, once it has.
+    pub(crate) fn finished_how(&self) -> Option<crate::record::RideFinish> {
+        self.log.lock().unwrap().how
     }
 }
 pub(crate) fn erg(w: u16) -> ControlMode {
@@ -2005,6 +2026,7 @@ mod soft_start_property {
                 r.engine.command(EngineCmd::Stop).expect("unload");
                 continue;
             }
+            let first_row = r.rows().len();
             let mut m = Model::new(blocks.clone(), *cap, erg);
             let mut mon = Monitor::new(*cap, erg);
             // `valid`: the tick's valid sample, which the monitor sees as an input
@@ -2113,11 +2135,21 @@ mod soft_start_property {
                     mon.end(&r.modes())?;
                 }
             }
-            // every second of the ride is in exactly one compliance bucket (§7.8)
+            // every second of the ride is recorded with one class, and the live counts are the
+            // sums of the classes (ADR-0009 §2.3.2): class 0 (no ERG target) is in none of them
             let st = r.status();
+            let rows = r.rows();
+            let classes: Vec<_> = rows[first_row..]
+                .iter()
+                .map(|(_, row)| row.control.expect("version 2").compliance)
+                .collect();
+            prop_assert_eq!(classes.len() as u64, st.session.0 / 4);
             prop_assert_eq!(
                 u64::from(st.compliance.counted_s + st.compliance.excluded_s),
-                st.session.0 / 4,
+                classes
+                    .iter()
+                    .filter(|c| **c != crank_domain::record::ComplianceClass::NoTarget)
+                    .count() as u64,
                 "{:?}",
                 st.compliance
             );

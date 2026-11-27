@@ -39,7 +39,10 @@ pub use engine::{
 };
 pub use erg::{Compliance, Component, ErgPolicy, TrainerFollowing};
 pub use lap::{Lap, LapBlock, LapEnd, LapGaps, LapStats};
-pub use record::{METRICS, RecordError, RideRecorder, SecondRow};
+pub use record::{
+    BLOCK_METRIC, METRICS, METRICS_V1, RECORD_VERSION, RecordError, RideFinish, RideRecorder,
+    SecondControl, SecondRow, decode_record,
+};
 pub use series::{Live, Series, SeriesStore, Track};
 pub use stream::types::{
     StreamCap, StreamCommanded, StreamCompliance, StreamComponent, StreamError, StreamFollowing,
@@ -58,5 +61,7 @@ mod erg_tests;
 mod hold_tests;
 #[cfg(test)]
 mod lap_tests;
+#[cfg(test)]
+mod record_tests;
 #[cfg(test)]
 mod tests;

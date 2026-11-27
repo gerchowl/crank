@@ -358,6 +358,7 @@ async fn manual_entry_supersedes_the_parameters_open_proposals() {
                 hr_device_id: None,
                 telemetry_source: "sim".into(),
                 metrics: vec!["power".into()],
+                record_version: 1,
             })
             .expect("ride");
         store
@@ -365,6 +366,7 @@ async fn manual_entry_supersedes_the_parameters_open_proposals() {
                 "r",
                 160,
                 RideSummaryJson::parse(r#"{"v":1}"#).expect("summary"),
+                crank_store::EndCause::Completed,
             )
             .expect("finish");
         let hr_max_row = store
