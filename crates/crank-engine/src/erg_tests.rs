@@ -892,6 +892,7 @@ fn a_tuning_out_of_bounds_is_refused_at_load() {
             recorder: Box::new(Recorder(Arc::default())),
             cap_w: None,
             tuning,
+            athlete: Box::default(),
         })),
         Err(CommandError::Tuning(crate::TuningError::Hysteresis { .. }))
     ));
@@ -940,6 +941,7 @@ fn capped(
             recorder: Box::new(Recorder(Arc::default())),
             cap_w: cap,
             tuning: crate::Tuning::default(),
+            athlete: Box::default(),
         }))
         .expect("load");
     let started = r.engine.command(EngineCmd::Start);

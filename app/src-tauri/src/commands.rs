@@ -3,10 +3,10 @@
 //! [`ApiError`] is the only error that crosses.
 use crate::logging::Logging;
 use crank_core::{
-    ApiError, CompiledView, Core, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, FrameSink,
-    LinkFrame, LinkIntent, LinkSink, LinksId, RidePlan, RideRecord, RideStatusView, ScannedDevice,
-    SinkClosed, UiChannelId, UiFrame, UiSink, Workout, WorkoutDetail, WorkoutDraft, WorkoutNode,
-    WorkoutSummary,
+    ApiError, AthleteModel, CompiledView, Core, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse,
+    FrameSink, HistoryEntry, LinkFrame, LinkIntent, LinkSink, LinksId, RidePlan, RideRecord,
+    RideStatusView, ScannedDevice, SinkClosed, UiChannelId, UiFrame, UiSink, Workout,
+    WorkoutDetail, WorkoutDraft, WorkoutNode, WorkoutSummary,
 };
 use crank_engine::{MetricId, StreamFrame, StreamId, StreamSnapshot, SubId, SubscribeOpts};
 use tauri::{State, ipc::Channel};
@@ -253,6 +253,65 @@ pub async fn compile_workout(
     workout: Workout,
 ) -> Result<CompiledView, ApiError> {
     core.compile_workout(workout).await
+}
+
+/// The athlete model: each parameter's current value and the open proposals.
+///
+/// # Errors
+/// As [`Core::athlete_model`].
+#[tauri::command]
+#[specta::specta]
+pub async fn athlete_model(core: State<'_, Core>) -> Result<AthleteModel, ApiError> {
+    core.athlete_model().await
+}
+
+/// Set a parameter to a typed-in value (`sd` by default 20 % of it); answers nothing: the
+/// model is read again with `athlete_model`.
+///
+/// # Errors
+/// As [`Core::athlete_set`].
+#[tauri::command]
+#[specta::specta]
+pub async fn athlete_set(
+    core: State<'_, Core>,
+    param: String,
+    value: f64,
+    sd: Option<f64>,
+) -> Result<(), ApiError> {
+    core.athlete_set(param, value, sd).await
+}
+
+/// A parameter's history, newest first.
+///
+/// # Errors
+/// As [`Core::athlete_history`].
+#[tauri::command]
+#[specta::specta]
+pub async fn athlete_history(
+    core: State<'_, Core>,
+    param: String,
+) -> Result<Vec<HistoryEntry>, ApiError> {
+    core.athlete_history(param).await
+}
+
+/// "Use this value": append a copy of an earlier value row.
+///
+/// # Errors
+/// As [`Core::athlete_revert`].
+#[tauri::command]
+#[specta::specta]
+pub async fn athlete_revert(core: State<'_, Core>, estimate_id: u32) -> Result<(), ApiError> {
+    core.athlete_revert(estimate_id).await
+}
+
+/// Clear a parameter back to its prior, or to unset when it has none.
+///
+/// # Errors
+/// As [`Core::athlete_clear`].
+#[tauri::command]
+#[specta::specta]
+pub async fn athlete_clear(core: State<'_, Core>, param: String) -> Result<(), ApiError> {
+    core.athlete_clear(param).await
 }
 
 /// Load a workout, or a free ride for `None`; answers the ride's id, for logs and tests.

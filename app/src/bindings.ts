@@ -133,6 +133,42 @@ export const commands = {
 	 */
 	compileWorkout: (workout: Workout) => typedError<CompiledView, ApiError>(__TAURI_INVOKE("compile_workout", { workout })),
 	/**
+	 *  The athlete model: each parameter's current value and the open proposals.
+	 * 
+	 *  # Errors
+	 *  As [`Core::athlete_model`].
+	 */
+	athleteModel: () => typedError<AthleteModel, ApiError>(__TAURI_INVOKE("athlete_model")),
+	/**
+	 *  Set a parameter to a typed-in value (`sd` by default 20 % of it); answers nothing: the
+	 *  model is read again with `athlete_model`.
+	 * 
+	 *  # Errors
+	 *  As [`Core::athlete_set`].
+	 */
+	athleteSet: (param: string, value: number | null, sd: number | null) => typedError<null, ApiError>(__TAURI_INVOKE("athlete_set", { param, value, sd })),
+	/**
+	 *  A parameter's history, newest first.
+	 * 
+	 *  # Errors
+	 *  As [`Core::athlete_history`].
+	 */
+	athleteHistory: (param: string) => typedError<HistoryEntry[], ApiError>(__TAURI_INVOKE("athlete_history", { param })),
+	/**
+	 *  "Use this value": append a copy of an earlier value row.
+	 * 
+	 *  # Errors
+	 *  As [`Core::athlete_revert`].
+	 */
+	athleteRevert: (estimateId: number) => typedError<null, ApiError>(__TAURI_INVOKE("athlete_revert", { estimateId })),
+	/**
+	 *  Clear a parameter back to its prior, or to unset when it has none.
+	 * 
+	 *  # Errors
+	 *  As [`Core::athlete_clear`].
+	 */
+	athleteClear: (param: string) => typedError<null, ApiError>(__TAURI_INVOKE("athlete_clear", { param })),
+	/**
 	 *  Load a workout, or a free ride for `None`; answers the ride's id, for logs and tests.
 	 *  What is drawn comes from the snapshot channel: `ride.workout_id`, and the strap's link in
 	 *  `devices.strap` (ADR-0001 §4.3.8).
@@ -262,6 +298,92 @@ export type ApiError = {
 	message: string,
 };
 
+/**
+ *  The athlete model as Settings → Athlete model shows it (`athlete_model`, ADR-0009 §2.1.3):
+ *  the current value per parameter, the prior for an unset one, and the open proposals.
+ */
+export type AthleteModel = {
+	/**  Every parameter, in ADR-0009 §2.1.1's order. */
+	params: AthleteParamState[],
+	/**  The open proposals, oldest first. */
+	proposals: AthleteProposalView[],
+};
+
+/**
+ *  One of the eight rider-visible parameters of ADR-0009 §2.1.1. The serde and [`AthleteParam::as_str`] names are
+ *  the store's `athlete_estimate.param` values.
+ */
+export type AthleteParam = 
+/**  Functional threshold power, W. */
+"ftp" | 
+/**  Critical power, W. */
+"cp" | 
+/**  W′, the work capacity above CP, J. */
+"w_prime" | 
+/**  Peak one-second power, W. */
+"pmax" | 
+/**  Maximum heart rate, bpm. */
+"hr_max" | 
+/**  Lactate-threshold heart rate, bpm. */
+"lthr" | 
+/**  Resting heart rate, bpm. */
+"hr_rest" | 
+/**  Body weight, kg. */
+"weight";
+
+/**  One parameter of the athlete model (`athlete_model`, ADR-0009 §2.1.3). */
+export type AthleteParamState = {
+	/**  The parameter. */
+	param: AthleteParam,
+	/**
+	 *  What the model resolves it to: its newest row, else its prior, else `null` (unset,
+	 *  shown as "Not set").
+	 */
+	resolved: ResolvedView | null,
+	/**
+	 *  The row `resolved` was read from (its source, method, ride and date); `null` for a prior
+	 *  no row holds and for an unset parameter.
+	 */
+	estimate: EstimateView | null,
+};
+
+/**  An open proposal (ADR-0009 §2.2.4): a value the analysis derived, waiting for the rider. */
+export type AthleteProposalView = {
+	/**  The proposal (`athlete_proposal_accept` and `athlete_proposal_dismiss` take it, #720). */
+	id: number,
+	/**  The ride that raised it. */
+	rideId: string,
+	/**  The rule's method (`peak_hr_v1`, `cp_ols_v1`, …). */
+	method: string,
+	/**  One value, or two (CP and W′). */
+	values: ProposedValueView[],
+	/**  When it was raised, UTC Unix seconds. */
+	createdAt: number | null,
+};
+
+/**
+ *  The athlete model frozen at `ride_load` ([`AthleteSnapshot`], ADR-0009 §2.1.4): each
+ *  parameter resolved, or `null` when unset (never 0).
+ */
+export type AthleteSnapshotView = {
+	/**  Functional threshold power, W. */
+	ftp: ResolvedView | null,
+	/**  Critical power, W. */
+	cp: ResolvedView | null,
+	/**  W′, J. */
+	wPrime: ResolvedView | null,
+	/**  Peak one-second power, W. */
+	pmax: ResolvedView | null,
+	/**  Maximum heart rate, bpm. */
+	hrMax: ResolvedView | null,
+	/**  Lactate-threshold heart rate, bpm. */
+	lthr: ResolvedView | null,
+	/**  Resting heart rate, bpm. */
+	hrRest: ResolvedView | null,
+	/**  Body weight, kg. */
+	weight: ResolvedView | null,
+};
+
 /**  Planned vs actual for one block. */
 export type BlockSummary = {
 	/**  Index into the compiled blocks. */
@@ -300,6 +422,12 @@ export type CompiledView = {
 	timeInZoneS: [number, number, number, number, number, number, number],
 	/**  Prescription diagnostics. */
 	issues: WorkoutIssue[],
+	/**
+	 *  The FTP it was compiled at, W: the watts, TSS, IF and zones above assume it. A preview
+	 *  (the library, the editor) is at the athlete model's current FTP, a loaded ride at its
+	 *  frozen snapshot's (ADR-0009 §2.1.4).
+	 */
+	ftpW: number | null,
 };
 
 /**  What the running core is: answered by `core_ready`. */
@@ -458,6 +586,30 @@ export type ErrorCode =
  */
 "engine_unresponsive";
 
+/**  A value row of a parameter's history ([`Estimate`], ADR-0009 §2.1.1). */
+export type EstimateView = {
+	/**  The row: `athlete_revert` takes it. */
+	id: number,
+	/**  The parameter. */
+	param: AthleteParam,
+	/**  The value, in the parameter's unit. */
+	value: number | null,
+	/**  Its standard deviation, same unit. */
+	sd: number | null,
+	/**  Where it came from. */
+	source: Source,
+	/**  How it was derived: `prior_v1`, `manual`, `ramp_v1_0.75`, …. */
+	method: string,
+	/**  The ride the value came from, if any. */
+	rideId: string | null,
+	/**  The accepted proposal that wrote it, if any. */
+	proposalId: number | null,
+	/**  Number of efforts or rides behind it. */
+	n: number,
+	/**  When the row was written, UTC Unix seconds. */
+	updatedAt: number | null,
+};
+
 /**
  *  A display filter. Parameters use seconds or Hz; median uses a sample count.
  *  Non-finite parameters are rejected by `FilterChain::new`. Finite negative
@@ -489,6 +641,22 @@ minCutoff: number | null;
 beta: number | null } | 
 /**  Replace missing samples with the last value, initially missing. */
 { kind: "hold" };
+
+/**
+ *  One row of a parameter's history (`athlete_history`): a value, or a Clear of a parameter
+ *  with no prior (ADR-0009 §2.1.3), which "Use this value" (`athlete_revert`) refuses.
+ */
+export type HistoryEntry = 
+/**  A value of the parameter. */
+{
+	kind: "estimate",
+} & EstimateView | 
+/**  The parameter was cleared and has no prior: unset from then on. */
+{ kind: "cleared"; 
+/**  The row. */
+id: number; 
+/**  When the row was written, UTC Unix seconds. */
+updatedAt: number | null };
 
 /**  The latest state of one device link. */
 export type LinkChange = {
@@ -758,6 +926,16 @@ export type Progression = {
 	pctPerRep: number | null,
 };
 
+/**  One value of a proposal. */
+export type ProposedValueView = {
+	/**  The parameter. */
+	param: AthleteParam,
+	/**  The proposed value, in the parameter's unit. */
+	value: number | null,
+	/**  Its sd. */
+	sd: number | null,
+};
+
 /**  Why the keeper's links are released at once (ADR-0002 §5.1.3). */
 export type ReleaseReason = 
 /**  The window is minimised or the app is hidden. */
@@ -786,6 +964,18 @@ export type RepeatNode = {
 	progression: Progression | null,
 	/**  Skip the last child on the final iteration. */
 	skipLastRest: boolean | null,
+};
+
+/**  A resolved parameter value ([`Resolved`]) as it crosses the boundary. */
+export type ResolvedView = {
+	/**  The value, in the parameter's unit. */
+	value: number | null,
+	/**  Its standard deviation. */
+	sd: number | null,
+	/**  Where it came from. */
+	source: Source,
+	/**  The estimate row it was read from; `null` for a prior no row holds. */
+	estimateId: number | null,
 };
 
 /**  How a ride ended. */
@@ -817,8 +1007,15 @@ export type RidePlan = {
 	rideId: string,
 	/**  The workout as loaded; the free ride's has no steps. */
 	workout: Workout,
-	/**  Its compiled timeline, the blocks the engine runs. */
+	/**  Its compiled timeline, the blocks the engine runs, at the snapshot's FTP (`ftp_w`). */
 	compiled: CompiledView,
+	/**
+	 *  The athlete model frozen at the load (ADR-0009 §2.1.4): the ride's FTP, CP, W′ and HR
+	 *  references. The ride reads its zones from it, never from Settings, so the live label
+	 *  and the stored ride (`ride.athlete_json`) agree; the HR zone uses only its measured
+	 *  (non-prior) LTHR, else HR max (`AthleteSnapshot::hr_refs`).
+	 */
+	athlete: AthleteSnapshotView,
 };
 
 /**  A stored ride (`rides_list`, `ride_summary`). */
@@ -915,6 +1112,22 @@ export type Severity =
 "error" | 
 /**  Potentially unsuitable prescription. */
 "warning";
+
+/**
+ *  Where an estimate came from (ONBOARDING §3's names). The serde and [`Source::as_str`] names are the store's
+ *  `athlete_estimate.source` values.
+ */
+export type Source = 
+/**  A named prior of [`prior`], not a measurement. */
+"prior" | 
+/**  Typed in by the rider (Settings, onboarding). */
+"self_report" | 
+/**  The result of a dedicated assessment ride (ADR-0004). */
+"test" | 
+/**  From the analysis of ordinary rides (ADR-0009 §2.2.4). */
+"rides" | 
+/**  Imported from another service. */
+"imported";
 
 /**  Condition ending a workout step; boundary times are seconds (ADR-0001 §4). */
 export type StepEnd = 
@@ -1346,7 +1559,11 @@ export type WorkoutDetail = {
 export type WorkoutDraft = {
 	/**  Display name: not blank, and at most 120 characters once trimmed. */
 	name: string,
-	/**  Reference FTP, W. */
+	/**
+	 *  The FTP the editor previewed it at, W, stored as the informative `ftp_at_creation`;
+	 *  the library and `ride_load` compile it at the athlete model's FTP instead (ADR-0009
+	 *  §2.1.4).
+	 */
 	ftp: number | null,
 	/**  The workout tree. */
 	nodes: WorkoutNode[],
@@ -1385,7 +1602,7 @@ export type WorkoutSummary = {
 	totalS: number | null,
 	/**  Estimated training stress. */
 	tss: number | null,
-	/**  Reference FTP, W. */
+	/**  The FTP it is compiled at, W: the athlete model's current FTP (ADR-0009 §2.1.4). */
 	ftp: number | null,
 	/**  One of crank's own workouts: read-only, so editing it means a copy (DESIGN §5.7, #110). */
 	builtin: boolean,

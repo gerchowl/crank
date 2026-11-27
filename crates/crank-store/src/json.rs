@@ -191,3 +191,58 @@ column!(
     ["id"],
     "A proposal's frozen evidence (ADR-0009 §2.2.4 \"Evidence and acceptance\"); owner #720."
 );
+/// Envelope version of [`RideAthleteJson`].
+const ATHLETE_SCHEMA_VERSION: u32 = 1;
+/// The athlete model a ride was loaded with (`ride.athlete_json`, ADR-0009 §2.1.4, §2.5): the snapshot every
+/// per-ride analysis reads, so a later change to the model never changes a stored ride. Validated through
+/// crank-domain's `AthleteSnapshot` with integer `v`; NULL for rides recorded before it existed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RideAthleteJson {
+    text: String,
+    snapshot: crank_domain::athlete::AthleteSnapshot,
+}
+impl RideAthleteJson {
+    /// Serialize a snapshot, adding the `v` envelope; the result is re-parsed, so it satisfies exactly the contract
+    /// the read path enforces.
+    /// # Errors
+    /// Returns `InvalidJson` if the snapshot cannot round-trip (a non-finite number).
+    pub fn new(snapshot: &crank_domain::athlete::AthleteSnapshot) -> Result<Self, StoreError> {
+        let invalid = |reason: String| StoreError::InvalidJson {
+            table: "ride",
+            column: "athlete_json",
+            reason,
+        };
+        let mut value = serde_json::to_value(snapshot).map_err(|e| invalid(e.to_string()))?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| invalid("snapshot did not serialize to an object".into()))?;
+        object.insert("v".into(), ATHLETE_SCHEMA_VERSION.into());
+        <Self as JsonColumn>::parse(&value.to_string())
+    }
+    /// The validated snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> &crank_domain::athlete::AthleteSnapshot {
+        &self.snapshot
+    }
+}
+impl sealed::Sealed for RideAthleteJson {}
+impl JsonColumn for RideAthleteJson {
+    const TABLE: &'static str = "ride";
+    const COLUMN: &'static str = "athlete_json";
+    const KEYS: &'static [&'static str] = &["id"];
+    fn parse(text: &str) -> Result<Self, StoreError> {
+        validate(text, Self::TABLE, Self::COLUMN)?;
+        let snapshot = serde_json::from_str(text).map_err(|e| StoreError::InvalidJson {
+            table: Self::TABLE,
+            column: Self::COLUMN,
+            reason: e.to_string(),
+        })?;
+        Ok(Self {
+            text: text.into(),
+            snapshot,
+        })
+    }
+    fn as_str(&self) -> &str {
+        &self.text
+    }
+}

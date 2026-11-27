@@ -152,9 +152,9 @@ impl Writer {
             // one: the core's free ride has workout id `free-ride`, anything else this path starts is a workout (no
             // path starts a route ride yet). #705's `RideKind` replaces the rule with the kind the core rides.
             "INSERT INTO ride(id,started_at,workout_json,compiled_json,
-             trainer_device_id,hr_device_id,telemetry_source,kind)
+             trainer_device_id,hr_device_id,telemetry_source,kind,athlete_json)
              VALUES (?1,?2,?3,?4,?5,?6,?7,
-             CASE WHEN json_extract(?3, '$.id') = 'free-ride' THEN 'free' ELSE 'workout' END)",
+             CASE WHEN json_extract(?3, '$.id') = 'free-ride' THEN 'free' ELSE 'workout' END,?8)",
             params![
                 ride.id,
                 ride.started_at,
@@ -162,7 +162,8 @@ impl Writer {
                 ride.compiled.as_str(),
                 ride.trainer_device_id,
                 ride.hr_device_id,
-                ride.telemetry_source
+                ride.telemetry_source,
+                ride.athlete.as_str()
             ],
         )?;
         self.active = Some(Active {

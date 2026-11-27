@@ -1,7 +1,7 @@
 //! ADR-0009 §2.8 "Store" (#714): migration 0005 on a v4 database with rows, the estimate history appended only
 //! through `EstimateOrigin` and checked by the domain, cleared rows, proposals and their ON DELETE behaviour.
 use crank_domain::athlete::{
-    AthleteError, AthleteParam, Entry, METHOD_MANUAL, METHOD_PRIOR, Source, prior,
+    AthleteError, AthleteParam, AthleteSnapshot, Entry, METHOD_MANUAL, METHOD_PRIOR, Source, prior,
 };
 use crank_store::*;
 use rusqlite::{Connection, params};
@@ -23,6 +23,7 @@ fn ride(store: &Store, id: &str, started_at: i64) {
             started_at,
             workout: RideWorkoutJson::parse(WORKOUT_JSON).expect("test step"),
             compiled: CompiledJson::parse(r#"{"v":1}"#).expect("test step"),
+            athlete: RideAthleteJson::new(&AthleteSnapshot::default()).expect("valid test setup"),
             trainer_device_id: None,
             hr_device_id: None,
             telemetry_source: "sim".into(),
@@ -1356,6 +1357,7 @@ fn a_new_ride_records_its_kind() {
             )
             .expect("test step"),
             compiled: CompiledJson::parse(r#"{"v":1}"#).expect("test step"),
+            athlete: RideAthleteJson::new(&AthleteSnapshot::default()).expect("valid test setup"),
             trainer_device_id: None,
             hr_device_id: None,
             telemetry_source: "sim".into(),
@@ -1402,5 +1404,84 @@ fn an_undecodable_stored_athlete_row_is_corruption() {
     assert!(matches!(
         store.athlete_snapshot(),
         Err(StoreError::CorruptAthlete(_))
+    ));
+}
+
+/// A ride stores the athlete model it was loaded with (`ride.athlete_json`, ADR-0009 §2.1.4) and reads it back; a ride
+/// recorded before the column was written reads as `None`, and a stored snapshot that does not decode is refused.
+#[test]
+fn a_ride_keeps_the_athlete_snapshot_it_was_loaded_with() {
+    let (dir, store) = store();
+    store
+        .append_athlete(
+            EstimateOrigin::Set {
+                param: AthleteParam::Ftp,
+                value: 287.,
+                sd: 20.,
+            },
+            500,
+        )
+        .expect("test step");
+    let loaded = store.athlete_snapshot().expect("test step");
+    store
+        .start_ride(NewRide {
+            id: "now".into(),
+            started_at: 1_000,
+            workout: RideWorkoutJson::parse(WORKOUT_JSON).expect("test step"),
+            compiled: CompiledJson::parse(r#"{"v":1}"#).expect("test step"),
+            athlete: RideAthleteJson::new(&loaded).expect("test step"),
+            trainer_device_id: None,
+            hr_device_id: None,
+            telemetry_source: "sim".into(),
+            metrics: vec!["power".into()],
+        })
+        .expect("test step");
+    // A later change to the model does not reach the stored ride.
+    store
+        .append_athlete(
+            EstimateOrigin::Set {
+                param: AthleteParam::Ftp,
+                value: 301.,
+                sd: 20.,
+            },
+            2_000,
+        )
+        .expect("test step");
+    let stored = store.ride("now").expect("test step").expect("test step");
+    let snapshot = *stored.athlete.expect("stored snapshot").snapshot();
+    assert_eq!(snapshot, loaded);
+    assert_eq!(snapshot.ftp.map(|f| f.value), Some(287.));
+
+    store
+        .finish_ride(
+            "now",
+            1_060,
+            RideSummaryJson::parse(r#"{"v":1}"#).expect("test step"),
+        )
+        .expect("test step");
+    ride(&store, "older", 100);
+    raw(dir.path())
+        .execute("UPDATE ride SET athlete_json = NULL WHERE id = 'older'", [])
+        .expect("test step");
+    assert!(
+        store
+            .ride("older")
+            .expect("test step")
+            .expect("test step")
+            .athlete
+            .is_none()
+    );
+    raw(dir.path())
+        .execute(
+            r#"UPDATE ride SET athlete_json = '{"v":1,"ftp":"high"}' WHERE id = 'older'"#,
+            [],
+        )
+        .expect("test step");
+    assert!(matches!(
+        store.ride("older"),
+        Err(StoreError::InvalidJson {
+            column: "athlete_json",
+            ..
+        })
     ));
 }

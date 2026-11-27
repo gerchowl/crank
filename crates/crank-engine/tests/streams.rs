@@ -84,6 +84,7 @@ async fn launch_at(dur_s: f64, speed: u32) -> (EngineHandle, Arc<Mutex<Vec<u32>>
             recorder: Box::new(rows),
             cap_w: None,
             tuning: crank_engine::Tuning::default(),
+            athlete: Box::default(),
         }))
         .await
         .expect("sim setup");

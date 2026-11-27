@@ -1,10 +1,12 @@
 //! The ride record on `crank-store`, and the summary written when a ride finishes
 //! (ADR-0001 §5–6). The engine calls the recorder synchronously on its task.
 use crate::dto::{BlockSummary, RideSummary};
+use crank_domain::athlete::AthleteSnapshot;
 use crank_domain::workout::{CompiledWorkout, FlatBlock, Workout, normalized_power};
 use crank_engine::{METRICS, RecordError, RideRecorder, SecondRow};
 use crank_store::{
-    CompiledJson, JsonColumn, NewRide, RideSummaryJson, RideWorkoutJson, Sample, Store, StoreError,
+    CompiledJson, JsonColumn, NewRide, RideAthleteJson, RideSummaryJson, RideWorkoutJson, Sample,
+    Store, StoreError,
 };
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,6 +28,8 @@ pub(crate) struct RideMeta {
     pub(crate) id: String,
     pub(crate) workout: Workout,
     pub(crate) compiled: CompiledWorkout,
+    /// The athlete model frozen at load: stored as `ride.athlete_json` (ADR-0009 §2.1.4).
+    pub(crate) athlete: AthleteSnapshot,
     pub(crate) trainer_device_id: Option<String>,
     pub(crate) hr_device_id: Option<String>,
     pub(crate) telemetry_source: &'static str,
@@ -59,6 +63,7 @@ impl RideRecorder for StoreRecorder {
                 started_at: unix_now(),
                 workout: RideWorkoutJson::new(&m.workout).map_err(|e| record_error(&e))?,
                 compiled: compiled.map_err(|e| record_error(&e))?,
+                athlete: RideAthleteJson::new(&m.athlete).map_err(|e| record_error(&e))?,
                 trainer_device_id: m.trainer_device_id.clone(),
                 hr_device_id: m.hr_device_id.clone(),
                 telemetry_source: m.telemetry_source.into(),

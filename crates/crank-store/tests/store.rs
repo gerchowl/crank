@@ -1,4 +1,5 @@
 //! ADR-0001 §6 persistence acceptance and crash-process regression tests.
+use crank_domain::athlete::AthleteSnapshot;
 use crank_store::*;
 use rusqlite::{Connection, params};
 use std::io::{BufRead, BufReader, Write};
@@ -50,6 +51,7 @@ fn ride() -> NewRide {
         started_at: 1_700_000_000,
         workout: RideWorkoutJson::parse(WORKOUT_JSON).expect("valid test setup"),
         compiled: CompiledJson::parse(r#"{"v":1}"#).expect("valid test setup"),
+        athlete: RideAthleteJson::new(&AthleteSnapshot::default()).expect("valid test setup"),
         trainer_device_id: None,
         hr_device_id: None,
         telemetry_source: "sim".into(),

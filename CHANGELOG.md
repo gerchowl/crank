@@ -10,6 +10,15 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- The core reads and writes the athlete model (ADR-0009 §2.1.3, §2.1.4): the commands `athlete_model`, `athlete_set`
+  (a typed-in value, by default ± 20 %), `athlete_history`, `athlete_revert` and `athlete_clear`, each refusing what the
+  model refuses (`InvalidInput`: bounds, LTHR at or above HR max, a non-finite value, an unknown parameter, a revert to
+  a prior or cleared row; `NotFound`), and each superseding the parameter's open proposals. `ride_load` freezes the
+  model once: the workout compiles at its FTP, and the same snapshot reaches the engine (`RideSetup.athlete`, CP and W′
+  for #243), the ride's plan (`RidePlan.athlete`) and the record (`ride.athlete_json`), so a change in Settings never
+  reaches a loaded ride. The 250 W `FTP_W` constant is gone: the library, the editor's previews and a new workout use
+  the model's current FTP, and the compiled summary says which ("At FTP 250 W", `CompiledView.ftpW`)
+  ([#715](https://github.com/gerchowl/crank/issues/715))
 - `crank-domain` holds the athlete model (ADR-0009 §2.1.1, §2.1.2, §2.1.4): the eight parameters, append-only
   estimates with their source, the plausibility bounds (refused, never clamped; LTHR below a measured HR max), the
   named priors (FTP 250 W ± 25 %, CP, W′ 20 kJ ± 30 %, Tanaka HR max ± 10 bpm) and the self-report sd by origin, and the

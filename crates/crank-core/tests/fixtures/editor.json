@@ -138,6 +138,7 @@
           "startS": 3780.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.79,
       "issues": [],
       "timeInZoneS": [
@@ -370,6 +371,7 @@
           "startS": 3540.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.803,
       "issues": [],
       "timeInZoneS": [
@@ -601,6 +603,7 @@
           "startS": 4080.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.783,
       "issues": [],
       "timeInZoneS": [
@@ -711,6 +714,7 @@
   "empty": {
     "compiled": {
       "blocks": [],
+      "ftpW": 250.0,
       "if": 0.0,
       "issues": [
         {
@@ -885,6 +889,7 @@
           "startS": 3480.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.448,
       "issues": [],
       "timeInZoneS": [
@@ -1012,6 +1017,7 @@
           "startS": 600.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.568,
       "issues": [],
       "timeInZoneS": [
@@ -1144,6 +1150,7 @@
           "startS": 1320.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.56,
       "issues": [],
       "timeInZoneS": [
@@ -1239,6 +1246,7 @@
           "startS": 0.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.5,
       "issues": [],
       "timeInZoneS": [
@@ -1403,6 +1411,7 @@
           "startS": 3480.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.804,
       "issues": [],
       "timeInZoneS": [
@@ -1621,6 +1630,7 @@
           "startS": 3480.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.803,
       "issues": [],
       "timeInZoneS": [
@@ -1839,6 +1849,7 @@
           "startS": 3480.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.804,
       "issues": [],
       "timeInZoneS": [
@@ -2089,6 +2100,7 @@
           "startS": 4440.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.813,
       "issues": [],
       "timeInZoneS": [
@@ -2339,6 +2351,7 @@
           "startS": 5160.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.826,
       "issues": [],
       "timeInZoneS": [
@@ -2557,6 +2570,7 @@
           "startS": 3480.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.844,
       "issues": [],
       "timeInZoneS": [
@@ -2762,6 +2776,7 @@
           "startS": 3240.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.818,
       "issues": [],
       "timeInZoneS": [
@@ -2920,6 +2935,7 @@
           "startS": 1560.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.751,
       "issues": [],
       "timeInZoneS": [
@@ -3128,6 +3144,7 @@
           "startS": 3480.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.807,
       "issues": [],
       "timeInZoneS": [
@@ -3346,6 +3363,7 @@
           "startS": 2886.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.828,
       "issues": [],
       "timeInZoneS": [
@@ -3583,6 +3601,7 @@
           "startS": 3780.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.791,
       "issues": [],
       "timeInZoneS": [
@@ -3811,6 +3830,7 @@
           "startS": 2880.0
         }
       ],
+      "ftpW": 250.0,
       "if": 0.828,
       "issues": [
         {

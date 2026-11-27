@@ -143,6 +143,7 @@ impl Rig {
                     erg,
                     ..crate::Tuning::default()
                 },
+                athlete: Box::default(),
             }))
             .unwrap();
     }
@@ -747,6 +748,7 @@ fn commands_are_checked_against_the_state() {
             recorder: Box::new(Recorder(r.log.clone())),
             cap_w: None,
             tuning: crate::Tuning::default(),
+            athlete: Box::default(),
         })),
         Err(CommandError::WrongState)
     );
@@ -945,6 +947,7 @@ fn start_needs_a_ready_trainer() {
         recorder: Box::new(Recorder(Arc::default())),
         cap_w: None,
         tuning: crate::Tuning::default(),
+        athlete: Box::default(),
     };
     engine.command(EngineCmd::Load(setup())).unwrap();
     assert_eq!(
@@ -1983,6 +1986,7 @@ mod soft_start_property {
                         erg: *erg,
                         ..crate::Tuning::default()
                     },
+                    athlete: Box::default(),
                 }))
                 .expect("load");
             let expected = match cap {
