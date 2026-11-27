@@ -10,7 +10,6 @@ import {
 import userEvent from "@testing-library/user-event";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { setAthleteHr } from "../athleteHr";
 import { commands } from "../bindings";
 import type { LiveValues, StreamStatus } from "../bindings";
 import { navigate, useRoute } from "../router";
@@ -19,7 +18,15 @@ import { UiClient, WATCHDOG_MS, type Timers } from "../stream/ui";
 import { UiProvider } from "../stream/uiHooks";
 import { rideView } from "../stream/uiBackend";
 import { Ride, clock, targetNow } from "./Ride";
-import { BLOCKS, block, installRide, type RideWorld } from "./rideBackend";
+import { forgetAthleteModel, refreshAthleteModel } from "../athleteHr";
+import { estimate, install as installAthlete } from "../views/athleteBackend";
+import {
+  BLOCKS,
+  PRIOR_SNAPSHOT,
+  block,
+  installRide,
+  type RideWorld,
+} from "./rideBackend";
 import { resetLeft } from "./session";
 
 /** A clock the watchdog cannot fire on: tests that are not about it. */
@@ -1458,10 +1465,20 @@ describe("reconnect rows and the rider pause under a loss (#100, #327 item 3; DE
   });
 });
 
-describe("the heart-rate zone (DESIGN §18.3, #586)", () => {
-  afterEach(() => setAthleteHr(null));
-  const riding = async (hr: number | null) => {
-    const { rig } = await open({ phase: "active" });
+describe("the heart-rate zone (DESIGN §18.3, #586), from the loaded ride's snapshot (ADR-0009 §2.1.4)", () => {
+  const measured = (value: number) =>
+    ({ value, sd: 5, source: "self_report", estimateId: 1 }) as const;
+  /** The snapshot frozen at the load: `PRIOR_SNAPSHOT` with these HR references. */
+  const at = (lthr: number | null, hrMax: number | null) => ({
+    athlete: {
+      ...PRIOR_SNAPSHOT,
+      lthr: lthr === null ? null : measured(lthr),
+      hrMax: hrMax === null ? null : measured(hrMax),
+    },
+  });
+  const riding = async (hr: number | null, world: Partial<RideWorld> = {}) => {
+    const { rig } = await open({ phase: "active", ...world });
+    await waitFor(() => expect(rig.count("ride_plan")).toBeGreaterThan(0));
     await push(
       rig,
       { workoutS: 100, blockIndex: 1, blockElapsedS: 65 },
@@ -1471,12 +1488,12 @@ describe("the heart-rate zone (DESIGN §18.3, #586)", () => {
   };
   const sub = () =>
     slot("hr")?.closest(".readout")?.querySelector(".readout-sub");
+  afterEach(forgetAthleteModel);
 
   test("with an LTHR the HR tile names Friel's zone of the value it shows", async () => {
-    setAthleteHr({ lthrBpm: 165, hrMaxBpm: 190 });
-    const rig = await riding(141.6);
+    const rig = await riding(141.6, at(165, 190));
+    await waitFor(() => expect(slot("hr-zone")?.textContent).toBe("Z2 · LTHR"));
     expect(slot("hr")?.textContent).toBe("142");
-    expect(slot("hr-zone")?.textContent).toBe("Z2 · LTHR");
     await push(
       rig,
       { workoutS: 101, blockIndex: 1, blockElapsedS: 66 },
@@ -1486,9 +1503,29 @@ describe("the heart-rate zone (DESIGN §18.3, #586)", () => {
   });
 
   test("with only an HR max it names the five-zone zone", async () => {
-    setAthleteHr({ hrMaxBpm: 190 });
-    await riding(142);
-    expect(slot("hr-zone")?.textContent).toBe("Z3 · HRmax");
+    await riding(142, at(null, 190));
+    await waitFor(() =>
+      expect(slot("hr-zone")?.textContent).toBe("Z3 · HRmax"),
+    );
+  });
+
+  test("a free ride reads its snapshot too", async () => {
+    await riding(142, { ...at(null, 190), workoutId: null });
+    await waitFor(() =>
+      expect(slot("hr-zone")?.textContent).toBe("Z3 · HRmax"),
+    );
+  });
+
+  test("a prior HR max is no zone reference: the tile shows no zone", async () => {
+    await riding(142, {
+      athlete: {
+        ...PRIOR_SNAPSHOT,
+        hrMax: { value: 180, sd: 10, source: "prior", estimateId: null },
+      },
+    });
+    expect(slot("hr")?.textContent).toBe("142");
+    expect(slot("hr-zone")).toBeNull();
+    expect(sub()?.textContent).toBe("");
   });
 
   test("with neither reference the tile shows no zone", async () => {
@@ -1498,9 +1535,32 @@ describe("the heart-rate zone (DESIGN §18.3, #586)", () => {
     expect(sub()?.textContent).toBe("");
   });
 
+  test("Settings is not read: an LTHR typed in before or during the ride does not move the live zone", async () => {
+    // The model has an LTHR of 140 now (typed in after this ride was loaded with only an HR max of 190).
+    const model = installAthlete({ rows: [estimate(1, "lthr", 140)] });
+    await refreshAthleteModel();
+    const rig = await riding(150, at(null, 190));
+    await waitFor(() =>
+      expect(slot("hr-zone")?.textContent).toBe("Z3 · HRmax"),
+    );
+    // Mid-ride the rider types another one; the ride keeps its snapshot.
+    await act(async () => {
+      await commands.athleteSet("lthr", 150, null);
+      await refreshAthleteModel();
+    });
+    await push(
+      rig,
+      { workoutS: 101, blockIndex: 1, blockElapsedS: 66 },
+      { hrBpm: 150 },
+    );
+    expect(slot("hr-zone")?.textContent).toBe("Z3 · HRmax");
+    expect(model.calls.filter((c) => c.cmd === "athlete_model")).toHaveLength(
+      2,
+    );
+  });
+
   test("no HR yet, or the strap lost: no zone; the loss says why", async () => {
-    setAthleteHr({ lthrBpm: 165 });
-    const rig = await riding(null);
+    const rig = await riding(null, at(165, null));
     expect(slot("hr-zone")).toBeNull();
     await act(async () => {
       Object.assign(rig.world, { hrLost: true });

@@ -2,11 +2,8 @@
 // the open section in one panel (9 columns). A section is a heading and its rows; a row is a label and its control, so a
 // later setting is one more row, and a later section one more entry in `SECTIONS`. Devices is the pairing section (#92);
 // Appearance is the theme choice (THEMES.md): the manual choice overrides Auto. Controls are 32 px (§18.4).
-// Athlete model shows the heart-rate references the ride's HR zone reads (§18.3 "Heart-rate zone", #586) and, with
-// neither known, the one-line hint; its estimates and manual overrides are #113.
+// Athlete model is the rider's parameters with their source, Edit, History and Clear (Athlete.tsx, ADR-0009 §2.1.3).
 import { Bluetooth, HeartPulse, SunMoon, type LucideIcon } from "lucide-react";
-import { useAthleteHr } from "../athleteHr";
-import { Num } from "../Num";
 import { navigate } from "../router";
 import {
   THEME_PREFS,
@@ -14,6 +11,7 @@ import {
   useThemePref,
   type ThemePref,
 } from "../theme";
+import { Athlete } from "./Athlete";
 import { Devices } from "./Devices";
 import "./settings.css";
 
@@ -30,36 +28,6 @@ const SECTIONS: readonly [Section, string, LucideIcon][] = [
   ["appearance", "Appearance", SunMoon],
 ];
 const icon = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
-
-/** The ride's HR-zone hint (§18.3 "Heart-rate zone"): one line, shown while neither reference is known. */
-export const NO_HR_REFS =
-  "No max or threshold heart rate yet, so the ride shows no heart-rate zone.";
-
-function Athlete() {
-  const { hrMaxBpm, lthrBpm } = useAthleteHr();
-  const rows: [string, string, number | null][] = [
-    ["hrmax", "Max heart rate", hrMaxBpm],
-    ["lthr", "Threshold heart rate (LTHR)", lthrBpm],
-  ];
-  return (
-    <section className="settings-section" aria-labelledby="athlete-h">
-      <h2 id="athlete-h">Athlete model</h2>
-      <div className="setting-rows">
-        {rows.map(([id, label, bpm]) => (
-          <div key={id} className="setting-row">
-            <span className="setting-label">{label}</span>
-            <span data-testid={id}>
-              {bpm === null ? "Not set" : <Num>{`${bpm} bpm`}</Num>}
-            </span>
-          </div>
-        ))}
-      </div>
-      {hrMaxBpm === null && lthrBpm === null && (
-        <p className="settings-note">{NO_HR_REFS}</p>
-      )}
-    </section>
-  );
-}
 
 function Appearance() {
   const { pref, notice } = useThemePref();

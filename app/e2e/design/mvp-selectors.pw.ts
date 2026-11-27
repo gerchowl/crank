@@ -52,6 +52,22 @@ test("mvp selectors: Settings → Devices, scan and pair", async ({ page }) => {
   await expect(await one(page, sel.scanButton)).toHaveText("Scan again");
 });
 
+test("mvp selectors: Settings → Athlete model, Edit FTP and Save", async ({
+  page,
+}) => {
+  await open(page, "settings-athlete");
+  await one(page, sel.settingsSection("Athlete model"));
+  await expect(await one(page, sel.athleteValue("ftp"))).toHaveText(
+    "estimate: 250 W (no test yet)",
+  );
+  await (await one(page, sel.athleteEdit("FTP"))).click();
+  await (await one(page, sel.athleteField("FTP, W"))).fill("300");
+  await (await one(page, sel.athleteSave)).click();
+  await expect(await one(page, sel.athleteValue("ftp"))).toHaveText(
+    "300 W ± 60",
+  );
+});
+
 test("mvp selectors: both paired", async ({ page }) => {
   await open(page, "devices-paired");
   await (await one(page, sel.scanButton)).click();

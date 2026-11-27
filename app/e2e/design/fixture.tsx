@@ -21,13 +21,18 @@ import type {
   RideView,
 } from "../../src/bindings";
 import { navigate } from "../../src/router";
-import { setAthleteHr } from "../../src/athleteHr";
 import {
   BLOCKS,
+  PRIOR_SNAPSHOT,
   block,
   installRide,
   type RideWorld,
 } from "../../src/ride/rideBackend";
+import {
+  estimate,
+  install as installAthlete,
+  type AthleteState,
+} from "../../src/views/athleteBackend";
 import {
   installDevices,
   strap,
@@ -487,6 +492,73 @@ const longLibrary = (
   ...over,
 });
 
+/** A value the rider typed in, as a ride's snapshot holds it. */
+const typedIn = (value: number) =>
+  ({ value, sd: 5, source: "self_report", estimateId: 1 }) as const;
+/** The fixtures' "now" (`FROZEN`), UTC seconds. */
+const NOW_S = MIDNIGHT + 8 * HOUR;
+const DAY_S = 24 * HOUR;
+/** An athlete model with every parameter set, each source shown, the weight stale and one suggested CP and W′. */
+const MEASURED: Partial<AthleteState> = {
+  rows: [
+    estimate(1, "ftp", 270, { updatedAt: NOW_S - 40 * DAY_S }),
+    estimate(2, "ftp", 287, {
+      sd: 12,
+      source: "test",
+      method: "ramp_v1_0.75",
+      updatedAt: NOW_S - 3 * DAY_S,
+    }),
+    estimate(3, "cp", 281, {
+      sd: 9,
+      source: "rides",
+      method: "cp_ols_v1",
+      n: 6,
+      updatedAt: NOW_S - 9 * DAY_S,
+    }),
+    estimate(4, "w_prime", 18400, {
+      sd: 2100,
+      source: "rides",
+      method: "cp_ols_v1",
+      n: 6,
+      updatedAt: NOW_S - 9 * DAY_S,
+    }),
+    estimate(5, "pmax", 1120, {
+      sd: 60,
+      source: "rides",
+      method: "peak_power_v1",
+      updatedAt: NOW_S - 20 * DAY_S,
+    }),
+    estimate(6, "hr_max", 192, { sd: 4, updatedAt: NOW_S - 12 * DAY_S }),
+    estimate(7, "lthr", 171, {
+      sd: 3,
+      source: "test",
+      method: "lthr_30min_v1",
+      updatedAt: NOW_S - 12 * DAY_S,
+    }),
+    estimate(8, "hr_rest", 48, { sd: 3, updatedAt: NOW_S - 12 * DAY_S }),
+    estimate(9, "weight", 72.5, { sd: 1, updatedAt: NOW_S - 60 * DAY_S }),
+  ],
+  proposals: [
+    {
+      id: 1,
+      rideId: "ride-3",
+      method: "cp_ols_v1",
+      values: [
+        { param: "cp", value: 288, sd: 8 },
+        { param: "w_prime", value: 17900, sd: 1900 },
+      ],
+      createdAt: NOW_S - DAY_S,
+    },
+  ],
+};
+/** Settings → Athlete model on the athlete commands' backend, over the base channel. */
+const athlete =
+  (over: Partial<AthleteState> = {}) =>
+  () => {
+    installAthlete({ now: NOW_S, ...over });
+    navigate("settings", "athlete");
+  };
+
 const SETUPS: Record<ScenarioName, () => void> = {
   today: today(),
   "today-empty": today({ rides: [] }, undefined, { paired: {} }),
@@ -671,14 +743,15 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "ride-work-step": ride(active),
   // The HR zone (DESIGN §18.3 "Heart-rate zone", #586): 142 bpm is 101 % of an LTHR of 140, Friel's Z5a, the widest
   // label ("Z5a · LTHR"); and with only an HR max of 190 it is 75 %, Z3 of the five zones.
-  "ride-hr-zone": () => {
-    setAthleteHr({ lthrBpm: 140, hrMaxBpm: 190 });
-    ride(active)();
-  },
-  "ride-hr-zone-max": () => {
-    setAthleteHr({ hrMaxBpm: 190 });
-    ride(active)();
-  },
+  // The references are the loaded ride's snapshot (`RidePlan.athlete`, ADR-0009 §2.1.4), typed in before the load.
+  "ride-hr-zone": ride({
+    ...active,
+    athlete: { ...PRIOR_SNAPSHOT, lthr: typedIn(140), hrMax: typedIn(190) },
+  }),
+  "ride-hr-zone-max": ride({
+    ...active,
+    athlete: { ...PRIOR_SNAPSHOT, hrMax: typedIn(190) },
+  }),
   "ride-short-block": ride({
     phase: "active",
     blockIdx: 0,
@@ -764,7 +837,18 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "history-selected": history("ride-3"),
   settings: () => navigate("settings"),
   // Neither HR reference known: the one-line hint (§18.3 "Heart-rate zone").
-  "settings-athlete": () => navigate("settings", "athlete"),
+  "settings-athlete": athlete(),
+  // Every parameter measured or typed in, from each source, the weight over 6 weeks old (stale), one suggested value.
+  "settings-athlete-set": athlete(MEASURED),
+  // Edit FTP: the draft with a value typed in.
+  "settings-athlete-edit": athlete(),
+  // The core refused the draft (outside FTP's bounds): the reason, the draft still open.
+  "settings-athlete-refused": athlete(),
+  // FTP's history: typed in, then a ramp test, the current one marked, Use this value on the earlier one.
+  "settings-athlete-history": athlete(MEASURED),
+  "settings-athlete-error": athlete({
+    store: { code: "storage", message: "database is locked" },
+  }),
   "settings-ride-loaded": () => {
     navigate("settings");
     installWorkouts({ ...longLibrary(), ui: base() });
