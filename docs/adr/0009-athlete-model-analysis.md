@@ -535,9 +535,14 @@ The record gains five per-second metrics in `record.rs` `METRICS` (no schema cha
 and the ride an end cause (§2.5):
 
 - `target_w`: the controlled target at the last riding tick of the second (after easing, ± and coach changes, the
-  target the rider was given); NaN outside ERG.
+  target the rider was given); NaN outside ERG. It is the target compliance compares with (ADR-0002 §7.8): during a
+  soft start or a release it is the block's target, not the ramp step or the 0 % resistance, and a paused second
+  without a riding tick has none. (Amended, #717: when the eased ERG target of #693/#712 lands, `target_w` stays the
+  §7.8 target, the plan line with ± and coach changes applied; the ticks on which the commanded target is off that
+  line are §7.10.5 settle, class 4, so the record needs no change.)
 - `compliance`: the second's class, one value per cause, so stored data can separate them (the live
-  `StreamCompliance` counts are sums of these classes: `within_s` = 1, `counted_s` = 1 + 2 + 3, `excluded_s` = 4–8):
+  `StreamCompliance` counts are sums of these classes: `within_s` = 1, `counted_s` = 1 + 2 + 3, `excluded_s` = 4–9;
+  class 0 is in none of them, amended in #717: before it a second without an ERG target counted as excluded):
 
   | Class | Meaning |
   |---|---|
@@ -550,22 +555,35 @@ and the ride an end cause (§2.5):
   | 6 | excluded: paused by the rider (or by the engine on a trainer loss) |
   | 7 | excluded: trainer verdict `suspect` (ADR-0002 A5) |
   | 8 | excluded: trainer verdict `not_following` (ADR-0002 A3) |
+  | 9 | excluded: no 3 s power (amended, #717): an ERG second nothing above excludes, with no power sample in the last 3 s (page 25 keeps arriving with an invalid power field, so the ride is not paused for a loss); there is nothing to compare with the target. P10 and P11 treat it like every other excluded class (a block with such a second is a block with a dropout) |
 
   When several excluded causes hold in one second, the precedence is 6, 8, 7, 5, 4 (pause and trainer verdicts
-  first), so a release during a trainer fault is recorded as the fault.
+  first), so a release during a trainer fault is recorded as the fault; class 9 applies only when none of them holds,
+  and a paused second is 6 also in a free block. A second's class is the highest-precedence cause among its four
+  ticks (6, 8, 7, 5, 4, then 0); only a second with none of them is judged by its 3 s power (1, 2, 3 or 9) against the
+  target of its last tick. Class 5 runs from the release until the soft start after its re-engage is over and its
+  settle has run out (§7.4, §7.5, §7.8 c).
 - `adj_rider_pct` and `adj_coach_pct`: the rider's (±) and the coach's cumulative adjustment of the target at that
   second, in percent of the planned target (0 when none; the given target is the planned one with both applied, as
   ADR-0002 §7 composes them). The source of a change is known to the engine when it applies it; recording it is
-  what lets P10 tell a rider's − from a coach's easing.
+  what lets P10 tell a rider's − from a coach's easing. (Amended, #717: the engine has neither a rider ± nor a coach
+  change yet, so both are written as 0, which is what holds without one; the rider ± command (#761) and the coach's
+  changes (#248) start writing them.)
 - `block_end`: NaN except on a block's last riding second, where it says how the block ended, from the engine's
   `lap.rs` `LapEnd` plus the live edit: 1 completed (its time ran out), 2 skipped by the rider, 3 stopped (the ride
-  ended during it), 4 ended by a live end-set edit (DESIGN §17).
+  ended during it), 4 ended by a live end-set edit (DESIGN §17). (Amended, #717: 4 is not written until the engine
+  has live edits, #240; a ride without blocks, a free ride, has no block ends; the paused seconds after a block's last
+  riding second are no block's. The engine holds back the last riding row until the next riding second or the end of
+  the ride, so a crash can lose that one second's values with the store's unflushed seconds.)
 
 **Ride end cause.** `ride.state` cannot tell a rider's End from other ends: `finished` covers both the rider's End and
 the workout running out, and `aborted` covers crash recovery and the core's forced end (`dto.rs` `RideOutcome`,
 `RideEnding`). Migration 0005 adds `ride.end_cause`, written by the core when the ride is closed: `completed` (the
 workout ran out), `rider_end` (End), `safety` (Report symptom or a medical stop, DESIGN §5.2), `forced` (#331),
-`recovered` (closed by crash recovery); NULL for older rides.
+`recovered` (closed by crash recovery); NULL for older rides. (Amended, #717: skipping the last block runs the workout
+out, `completed`; quitting the app ends the ride as the rider's End, `rider_end`; `forced` is written by the store's
+`abort_ride`, `recovered` by its recovery at open. No core path writes `safety` yet: the in-ride symptom report and
+medical stop are #762.)
 
 The executor's per-interval stats come from one pure domain function over the record, segmented by the recorded
 `block` and the workout's node path and iteration, and are written to `lap`. The engine's live lap stats (#12) must

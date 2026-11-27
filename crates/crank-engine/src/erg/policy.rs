@@ -19,7 +19,10 @@
 //!    above-cap origin included: the cap is on actual power, so the soft start may not
 //!    command what the rider happens to be producing.
 use crate::control::{PolicyContext, PolicyStatus, SOFT_START_TICKS, TargetPolicy};
-use crate::erg::compliance::{Accumulator, BLOCK_SETTLE_TICKS, ENGAGE_SETTLE_TICKS, TickFacts};
+use crate::erg::TrainerFollowing;
+use crate::erg::compliance::{
+    Accumulator, BLOCK_SETTLE_TICKS, ENGAGE_SETTLE_TICKS, TickCause, TickFacts,
+};
 use crate::ticks::TICKS_PER_SECOND;
 use crate::tuning::{ErgTuning, ticks};
 use crank_devices::ControlMode;
@@ -40,6 +43,18 @@ struct Ramp {
     start: u64,
     origin: f64,
 }
+/// The block the policy last saw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Previous {
+    /// None yet.
+    Nothing,
+    /// An ERG block: its index and its end target, W.
+    Erg { index: usize, end_w: f64 },
+    /// A free block, or a ride without blocks. Leaving it owes a soft start, which settles the
+    /// next ERG block (§7.8 c), so its target is no boundary discontinuity.
+    Free,
+}
+
 /// The ERG policy. Stateful: one per ride.
 #[derive(Debug)]
 pub struct ErgPolicy {
@@ -52,9 +67,16 @@ pub struct ErgPolicy {
     ramp: Option<Ramp>,
     release: Release,
     released: bool,
+    /// A release (§7.4) is in force or its re-engage has not settled yet: from the release
+    /// until the soft start after its re-engage is over and its settle has run out. Its
+    /// seconds are class 5 (ADR-0009 §2.3.2), not settling.
+    after_release: bool,
     low: u64,
     high: u64,
-    block: Option<(usize, f64)>,
+    /// The block of the last tick that was not paused by the rider.
+    previous: Previous,
+    /// The controlled target of the last ERG tick accounted.
+    last_target: Option<f64>,
     /// Settle seconds are excluded from compliance: ticks `settle.0 .. settle.1`.
     settle: (u64, u64),
     compliance: Accumulator,
@@ -104,9 +126,11 @@ impl ErgPolicy {
                 reengage_ticks: ticks(tuning.reengage_after_s),
             },
             released: false,
+            after_release: false,
             low: 0,
             high: 0,
-            block: None,
+            previous: Previous::Nothing,
+            last_target: None,
             settle: (0, 0),
             compliance: Accumulator::default(),
         }
@@ -160,6 +184,7 @@ impl ErgPolicy {
             };
             if self.low >= r.below_ticks {
                 self.released = true;
+                self.after_release = true;
                 self.high = 0;
             }
         }
@@ -171,17 +196,35 @@ impl ErgPolicy {
         self.ramp = None;
         self.low = 0;
     }
-    fn account(&mut self, ctx: &PolicyContext<'_>, erg: bool, target_w: f64) {
-        let counted = ctx.riding
-            && erg
-            && !self.released
-            && !self.owed
-            && !(self.settle.0..self.settle.1).contains(&ctx.tick)
-            && !ctx.following.excludes_compliance();
+    /// Account tick `ctx.tick` for compliance. `target_w` is the controlled target the
+    /// rider was given, `None` outside ERG.
+    fn account(&mut self, ctx: &PolicyContext<'_>, target_w: Option<f64>) {
+        let settling = self.owed || (self.settle.0..self.settle.1).contains(&ctx.tick);
+        if self.after_release && !self.released && !settling {
+            self.after_release = false;
+        }
+        let cause = if !ctx.riding {
+            TickCause::Paused
+        } else if target_w.is_none() {
+            TickCause::NoTarget
+        } else if ctx.following == TrainerFollowing::NotFollowing {
+            TickCause::NotFollowing
+        } else if ctx.following == TrainerFollowing::Suspect {
+            TickCause::Suspect
+        } else if self.after_release {
+            TickCause::Released
+        } else if settling {
+            TickCause::Settling
+        } else {
+            TickCause::Erg
+        };
+        if target_w.is_some() {
+            self.last_target = target_w;
+        }
         self.compliance.tick(
             ctx.tick,
             TickFacts {
-                excluded: !counted,
+                cause,
                 power_3s_w: ctx.power_3s_w,
                 target_w,
             },
@@ -211,13 +254,21 @@ impl TargetPolicy for ErgPolicy {
             // only by §7.4, also while paused.
             self.leave_erg();
             self.update_release(ctx, false);
-            self.account(ctx, false, 0.0);
+            self.account(ctx, None);
             return Some(ControlMode::Resistance { pct: 0.0 });
         }
         let Some(block) = ctx.block.filter(|b| b.phase != Phase::Free) else {
+            // On the boundary tick from an ERG block the engine has already advanced the index,
+            // but the tick is the ERG block's (its record second is that block's): it keeps
+            // that block's target, as an ERG boundary keeps the previous end (below).
+            let erg_tail = (ctx.block_elapsed_ticks == 0
+                && matches!(self.previous, Previous::Erg { index, .. } if index != ctx.block_index))
+            .then_some(self.last_target)
+            .flatten();
+            self.account(ctx, erg_tail);
+            self.previous = Previous::Free;
             self.leave_erg();
             self.update_release(ctx, false);
-            self.account(ctx, false, 0.0);
             return Some(ControlMode::Free);
         };
         // A block boundary is a discontinuity when its start target differs from the
@@ -227,15 +278,22 @@ impl TargetPolicy for ErgPolicy {
         // advanced the index (the new target is sent on it, §7.2) but the tick is still the
         // old block's: compliance keeps its target.
         let boundary = ctx.block_elapsed_ticks == 0;
+        // The boundary tick from a free block is still the free block's: no ERG target.
+        let from_free = self.previous == Previous::Free && boundary;
         let mut previous_end = None;
-        if let Some((_, end)) = self.block.filter(|(i, _)| *i != ctx.block_index) {
+        if let Previous::Erg { index, end_w: end } = self.previous
+            && index != ctx.block_index
+        {
             if (block.power_from - end).abs() >= 0.5 {
                 let first = ctx.tick + u64::from(boundary);
                 self.settle(ctx.tick, first, first + BLOCK_SETTLE_TICKS);
             }
             previous_end = boundary.then_some(end);
         }
-        self.block = Some((ctx.block_index, block.power_to));
+        self.previous = Previous::Erg {
+            index: ctx.block_index,
+            end_w: block.power_to,
+        };
         let frac = if block.dur_s > 0.0 {
             (seconds(ctx.block_elapsed_ticks) / block.dur_s).clamp(0.0, 1.0)
         } else {
@@ -250,7 +308,7 @@ impl TargetPolicy for ErgPolicy {
 
         self.update_release(ctx, true);
         if self.released {
-            self.account(ctx, true, shown);
+            self.account(ctx, (!from_free).then_some(shown));
             return Some(ControlMode::Resistance { pct: 0.0 });
         }
 
@@ -261,7 +319,7 @@ impl TargetPolicy for ErgPolicy {
                 // No torque for a rider who is not pedalling (§7.4, #231). A ramp already
                 // running holds its last step.
                 self.ramp = None;
-                self.account(ctx, true, shown);
+                self.account(ctx, (!from_free).then_some(shown));
                 return if matches!(ctx.last_sent, Some(ControlMode::Erg { .. })) {
                     None
                 } else {
@@ -290,19 +348,20 @@ impl TargetPolicy for ErgPolicy {
                 command = ramp.origin + (target - ramp.origin) * (step / 5.0);
             }
         }
-        self.account(ctx, true, shown);
+        self.account(ctx, (!from_free).then_some(shown));
         Some(ControlMode::Erg {
             target_w: watts(command, max),
         })
     }
     fn skipped(&mut self, ctx: &PolicyContext<'_>) {
         // No control this tick (link not ready): the second still lands in a bucket.
-        self.account(ctx, false, 0.0);
+        self.account(ctx, None);
     }
     fn status(&self) -> PolicyStatus {
         PolicyStatus {
             released: self.released,
             compliance: self.compliance.tally(),
+            last_second: self.compliance.last_second(),
             soft_start_target_w: self.soft_target,
         }
     }

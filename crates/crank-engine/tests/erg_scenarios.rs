@@ -26,7 +26,14 @@ impl RideRecorder for Null {
     fn append_second(&mut self, _: u32, _: &SecondRow) -> Result<(), RecordError> {
         Ok(())
     }
-    fn finish(&mut self) -> Result<(), RecordError> {
+    fn set_block_end(
+        &mut self,
+        _: u32,
+        _: crank_domain::record::BlockEnd,
+    ) -> Result<(), RecordError> {
+        Ok(())
+    }
+    fn finish(&mut self, _how: crank_engine::RideFinish) -> Result<(), RecordError> {
         Ok(())
     }
 }

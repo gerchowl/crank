@@ -2,17 +2,20 @@
 //! (ADR-0001 §5–6). The engine calls the recorder synchronously on its task.
 use crate::dto::{BlockSummary, RideSummary};
 use crank_domain::athlete::AthleteSnapshot;
+use crank_domain::record::BlockEnd;
 use crank_domain::workout::{CompiledWorkout, FlatBlock, Workout, normalized_power};
-use crank_engine::{METRICS, RecordError, RideRecorder, SecondRow};
+use crank_engine::{
+    BLOCK_METRIC, METRICS, RECORD_VERSION, RecordError, RideFinish, RideRecorder, SecondRow,
+};
 use crank_store::{
-    CompiledJson, JsonColumn, NewRide, RideAthleteJson, RideSummaryJson, RideWorkoutJson, Sample,
-    Store, StoreError,
+    CompiledJson, EndCause, JsonColumn, NewRide, RideAthleteJson, RideSummaryJson, RideWorkoutJson,
+    Sample, Store, StoreError,
 };
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The record metric holding the engine's block index per second.
-pub(crate) const BLOCK_METRIC: &str = "block";
+/// The record metric of [`SecondRow`]'s block end ([`METRICS`]'s last).
+const BLOCK_END_METRIC: &str = METRICS[9];
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// UTC Unix seconds now.
 pub(crate) fn unix_now() -> i64 {
@@ -75,6 +78,7 @@ impl RideRecorder for StoreRecorder {
                     .chain([BLOCK_METRIC])
                     .map(str::to_owned)
                     .collect(),
+                record_version: RECORD_VERSION,
             })
             .map_err(|e| record_error(&e))
     }
@@ -103,14 +107,42 @@ impl RideRecorder for StoreRecorder {
         self.rows.push(*row);
         Ok(())
     }
-    fn finish(&mut self) -> Result<(), RecordError> {
+    fn set_block_end(&mut self, session_s: u32, end: BlockEnd) -> Result<(), RecordError> {
+        self.store
+            .amend_second(
+                &self.meta.id,
+                session_s,
+                BLOCK_END_METRIC,
+                Some(f32::from(end.code())),
+            )
+            .map_err(|e| record_error(&e))?;
+        if let Some(c) = usize::try_from(session_s)
+            .ok()
+            .and_then(|i| self.rows.get_mut(i))
+            .and_then(|r| r.control.as_mut())
+        {
+            c.block_end = Some(end);
+        }
+        Ok(())
+    }
+    fn finish(&mut self, how: RideFinish) -> Result<(), RecordError> {
         let summary = summarize(&self.rows, &self.meta.compiled.blocks);
         let json = with_version(&summary)
             .and_then(|v| RideSummaryJson::parse(&v))
             .map_err(|e| record_error(&e))?;
         self.store
-            .finish_ride(&self.meta.id, unix_now(), json)
+            .finish_ride(&self.meta.id, unix_now(), json, end_cause(how))
             .map_err(|e| record_error(&e))
+    }
+}
+/// The ride's end cause for how the engine finished it (ADR-0009 §2.3.2): the engine's `Stop`
+/// is the rider's End (the app quitting, `Core::shutdown`, ends the ride the same way). A forced
+/// end is written by `Store::abort_ride`, a crash by the store's recovery; no path ends a ride
+/// for safety yet (#762).
+fn end_cause(how: RideFinish) -> EndCause {
+    match how {
+        RideFinish::Completed => EndCause::Completed,
+        RideFinish::Stopped => EndCause::RiderEnd,
     }
 }
 /// Serialize `value` as a JSON object with the `v` envelope of the store's columns.

@@ -268,7 +268,8 @@ pub struct StreamCompliance {
     pub counted_s: u32,
     /// Of those, seconds within ±5 % of the controlled target.
     pub within_s: u32,
-    /// Seconds excluded (settle, released, paused, suspect or not following).
+    /// Seconds excluded (ADR-0009 §2.3.2 classes 4–9: settle, released, paused, suspect, not
+    /// following, no 3 s power). A second without an ERG target is in none of the three counts.
     pub excluded_s: u32,
 }
 /// The active health cap (DESIGN §15.4).

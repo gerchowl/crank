@@ -28,6 +28,7 @@ fn ride(store: &Store, id: &str, started_at: i64) {
             hr_device_id: None,
             telemetry_source: "sim".into(),
             metrics: vec!["power".into()],
+            record_version: 1,
         })
         .expect("test step");
     store
@@ -35,6 +36,7 @@ fn ride(store: &Store, id: &str, started_at: i64) {
             id,
             started_at + 60,
             RideSummaryJson::parse(r#"{"v":1}"#).expect("test step"),
+            crank_store::EndCause::Completed,
         )
         .expect("test step");
 }
@@ -1362,6 +1364,7 @@ fn a_new_ride_records_its_kind() {
             hr_device_id: None,
             telemetry_source: "sim".into(),
             metrics: vec!["power".into()],
+            record_version: 1,
         })
         .expect("test step");
     let kinds: Vec<(String, Option<String>)> = raw(dir.path())
@@ -1434,6 +1437,7 @@ fn a_ride_keeps_the_athlete_snapshot_it_was_loaded_with() {
             hr_device_id: None,
             telemetry_source: "sim".into(),
             metrics: vec!["power".into()],
+            record_version: 1,
         })
         .expect("test step");
     // A later change to the model does not reach the stored ride.
@@ -1457,6 +1461,7 @@ fn a_ride_keeps_the_athlete_snapshot_it_was_loaded_with() {
             "now",
             1_060,
             RideSummaryJson::parse(r#"{"v":1}"#).expect("test step"),
+            crank_store::EndCause::Completed,
         )
         .expect("test step");
     ride(&store, "older", 100);

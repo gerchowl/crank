@@ -256,6 +256,13 @@ impl Laps {
     pub(crate) fn live_power(&self) -> Option<f64> {
         self.open.as_ref().and_then(|l| l.power_sum.mean())
     }
+    /// The block index of the open lap; `None` without one and in a free ride.
+    pub(crate) fn open_block(&self) -> Option<u32> {
+        self.open
+            .as_ref()
+            .and_then(|l| l.block.as_ref())
+            .map(|b| b.index)
+    }
     /// The closed laps, in order.
     pub(crate) fn closed(&self) -> &[Lap] {
         &self.closed

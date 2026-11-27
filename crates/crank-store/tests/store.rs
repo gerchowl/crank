@@ -56,6 +56,7 @@ fn ride() -> NewRide {
         hr_device_id: None,
         telemetry_source: "sim".into(),
         metrics: METRICS.iter().map(|name| (*name).to_owned()).collect(),
+        record_version: 1,
     }
 }
 fn samples(second: u32) -> Vec<Sample> {
@@ -159,6 +160,7 @@ fn two_hour_ride_round_trip() {
             "ride",
             1_700_007_200,
             RideSummaryJson::parse(r#"{"v":1}"#).unwrap(),
+            crank_store::EndCause::Completed,
         )
         .unwrap();
     drop(store);
@@ -223,6 +225,7 @@ fn an_aborted_live_ride_keeps_its_seconds_and_frees_the_writer() {
                 "ride",
                 1_700_000_300,
                 RideSummaryJson::parse(r#"{"v":1}"#).unwrap(),
+                crank_store::EndCause::Completed,
             )
             .is_err_and(not_live)
     );
@@ -289,6 +292,11 @@ fn kill_during_ride_recovers_only_with_lock() {
     assert_eq!(
         owner.ride("ride").unwrap().unwrap().state,
         RideState::Aborted
+    );
+    // #717: closed by crash recovery
+    assert_eq!(
+        owner.ride("ride").unwrap().unwrap().end_cause,
+        Some(EndCause::Recovered)
     );
     for (metric, name) in METRICS.iter().enumerate() {
         let chunks = owner.chunks("ride", name).unwrap();
@@ -484,6 +492,7 @@ fn boundaries_final_flush_and_invalid_samples() {
             "ride",
             1_700_000_100,
             RideSummaryJson::parse(r#"{"v":1}"#).unwrap(),
+            crank_store::EndCause::Completed,
         )
         .unwrap();
     assert_eq!(store.chunks("ride", METRICS[0]).unwrap()[1].values.len(), 2);
@@ -726,6 +735,7 @@ fn lock_release_new_ride_reset_and_foreign_keys() {
             "ride",
             1_700_000_100,
             RideSummaryJson::parse(r#"{"v":1}"#).unwrap(),
+            crank_store::EndCause::Completed,
         )
         .unwrap();
     let mut next = ride();
@@ -748,6 +758,7 @@ fn lock_release_new_ride_reset_and_foreign_keys() {
             "next",
             1_700_000_100,
             RideSummaryJson::parse(r#"{"v":1}"#).unwrap(),
+            crank_store::EndCause::Completed,
         )
         .unwrap();
     assert_eq!(
@@ -857,6 +868,7 @@ fn rides_lists_newest_first_and_forget_device_unlinks_history() {
                 id,
                 started_at + 5,
                 RideSummaryJson::parse(r#"{"v":1}"#).unwrap(),
+                crank_store::EndCause::Completed,
             )
             .unwrap();
     }
@@ -901,5 +913,155 @@ fn rides_lists_newest_first_and_forget_device_unlinks_history() {
         store.rides().unwrap().len(),
         2,
         "history survives the pairing"
+    );
+}
+
+/// #717 (ADR-0009 §2.3.2): each way a ride is closed writes its end cause; the record version
+/// is the one the ride was started with; the whole record reads back by second.
+#[test]
+fn end_causes_record_version_and_the_whole_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_owner(dir.path()).unwrap();
+    let summary = || RideSummaryJson::parse(r#"{"v":1}"#).unwrap();
+    for (i, cause) in [EndCause::Completed, EndCause::RiderEnd, EndCause::Safety]
+        .into_iter()
+        .enumerate()
+    {
+        let id = format!("ride-{i}");
+        let mut new = ride();
+        new.id.clone_from(&id);
+        new.record_version = 2;
+        store.start_ride(new).unwrap();
+        for second in 0..62 {
+            store.append_second(&id, second, samples(second)).unwrap();
+        }
+        let open = store.ride(&id).unwrap().unwrap();
+        assert_eq!((open.end_cause, open.record_version), (None, 2));
+        for refused in [EndCause::Forced, EndCause::Recovered] {
+            assert!(matches!(
+                store.finish_ride(&id, 1_700_000_100, summary(), refused),
+                Err(StoreError::InvalidInput(_))
+            ));
+        }
+        store
+            .finish_ride(&id, 1_700_000_100, summary(), cause)
+            .unwrap();
+        let done = store.ride(&id).unwrap().unwrap();
+        assert_eq!(
+            (done.end_cause, done.state),
+            (Some(cause), RideState::Finished)
+        );
+        let record = store.record(&id).unwrap().unwrap();
+        assert_eq!(record.record_version, 2);
+        assert_eq!(record.metrics.len(), METRICS.len());
+        for (n, name) in METRICS.iter().enumerate() {
+            let values = &record.metrics[*name];
+            assert_eq!(values.len(), 62);
+            for (second, value) in values.iter().enumerate() {
+                let want = samples(u32::try_from(second).unwrap()).remove(n).value;
+                assert_eq!(value.map(f32::to_bits), want.map(f32::to_bits));
+            }
+        }
+    }
+    let mut new = ride();
+    new.id = "forced".into();
+    store.start_ride(new).unwrap();
+    store.abort_ride("forced", 1_700_000_100).unwrap();
+    assert_eq!(
+        store.ride("forced").unwrap().unwrap().end_cause,
+        Some(EndCause::Forced)
+    );
+    let mut new = ride();
+    new.id = "zero".into();
+    new.record_version = 0;
+    assert!(matches!(
+        store.start_ride(new),
+        Err(StoreError::InvalidInput(_))
+    ));
+    assert!(store.record("none").unwrap().is_none());
+    // a record whose chunks leave a hole is corrupt, never read as shorter
+    drop(store);
+    let db = Connection::open(dir.path().join("crank.db")).unwrap();
+    db.execute(
+        "DELETE FROM ride_chunk WHERE ride_id='ride-0' AND metric='power' AND start_s=0",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE ride SET end_cause=NULL WHERE id='ride-1'", [])
+        .unwrap();
+    drop(db);
+    let store = Store::open_owner(dir.path()).unwrap();
+    assert!(matches!(
+        store.record("ride-0"),
+        Err(StoreError::CorruptChunk(_))
+    ));
+    assert_eq!(store.ride("ride-1").unwrap().unwrap().end_cause, None);
+    for cause in EndCause::ALL {
+        assert_eq!(
+            EndCause::from_column(Some(cause.as_column())).unwrap(),
+            Some(cause)
+        );
+    }
+    assert!(matches!(
+        EndCause::from_column(Some("bored")),
+        Err(StoreError::UnknownEndCause(_))
+    ));
+}
+
+/// #717: a second's value can be replaced after it was appended, in the buffered minute and in
+/// a minute already stored; nothing else changes, and what cannot be amended is refused.
+#[test]
+fn an_appended_second_is_amended_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open_owner(dir.path()).unwrap();
+    store.start_ride(ride()).unwrap();
+    for second in 0..63 {
+        store
+            .append_second("ride", second, samples(second))
+            .unwrap();
+    }
+    store.amend_second("ride", 10, "hr", Some(150.0)).unwrap();
+    store.amend_second("ride", 61, "hr", Some(151.0)).unwrap();
+    store.amend_second("ride", 62, "power", None).unwrap();
+    let refused = |r: Result<(), StoreError>| matches!(r, Err(StoreError::InvalidInput(_)));
+    assert!(
+        refused(store.amend_second("ride", 63, "hr", Some(1.0))),
+        "not appended"
+    );
+    assert!(refused(store.amend_second("ride", 1, "nope", Some(1.0))));
+    assert!(refused(store.amend_second("ride", 1, "hr", Some(f32::NAN))));
+    assert!(refused(store.amend_second("other", 1, "hr", Some(1.0))));
+    // read while still live: the amendments are written at once
+    let record = store.record("ride").unwrap().unwrap();
+    for (n, name) in METRICS.iter().enumerate() {
+        for (second, value) in record.metrics[*name].iter().enumerate() {
+            let want = match (*name, second) {
+                ("hr", 10) => Some(150.0),
+                ("hr", 61) => Some(151.0),
+                ("power", 62) => None,
+                _ => samples(u32::try_from(second).unwrap()).remove(n).value,
+            };
+            assert_eq!(
+                value.map(f32::to_bits),
+                want.map(f32::to_bits),
+                "{name} {second}"
+            );
+        }
+    }
+    store
+        .finish_ride(
+            "ride",
+            1_700_000_100,
+            RideSummaryJson::parse(r#"{"v":1}"#).unwrap(),
+            EndCause::Completed,
+        )
+        .unwrap();
+    assert!(
+        refused(store.amend_second("ride", 1, "hr", Some(1.0))),
+        "closed"
+    );
+    assert_eq!(
+        store.record("ride").unwrap().unwrap().metrics["hr"][61],
+        Some(151.0)
     );
 }

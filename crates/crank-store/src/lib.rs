@@ -15,6 +15,7 @@ use crank_domain::athlete::{AthleteError, AthleteParam, AthleteSnapshot, Entry};
 pub use json::*;
 pub use route::{RouteListing, RouteOriginal, StoredRoute, decode_points, encode_points};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{
     Mutex,
@@ -71,6 +72,9 @@ pub enum StoreError {
     /// A stored `ride.state` is not one of the known values.
     #[error("unknown ride state {0:?}")]
     UnknownRideState(String),
+    /// A stored `ride.end_cause` is not one of the known values.
+    #[error("unknown ride end cause {0:?}")]
+    UnknownEndCause(String),
     /// A stored athlete-model row (`athlete_estimate`, `athlete_proposal`, `athlete_profile`) that does not decode:
     /// the database is corrupt, not the caller's input (#739).
     #[error("corrupt athlete row: {0}")]
@@ -124,6 +128,56 @@ impl RideState {
         }
     }
 }
+/// Why a ride ended, the `ride.end_cause` column (ADR-0009 §2.3.2 "Ride end cause"). NULL for a
+/// ride closed before migration 0005's column was written (`None` in [`Ride::end_cause`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndCause {
+    /// The workout ran out.
+    Completed,
+    /// The rider's End.
+    RiderEnd,
+    /// Report symptom or a medical stop (DESIGN §5.2). No path writes it yet (#762).
+    Safety,
+    /// The core ended the ride because its engine could not (#331); written by
+    /// [`Store::abort_ride`].
+    Forced,
+    /// Closed by crash recovery when the next lock owner opened the store.
+    Recovered,
+}
+impl EndCause {
+    /// Every cause.
+    pub const ALL: [Self; 5] = [
+        Self::Completed,
+        Self::RiderEnd,
+        Self::Safety,
+        Self::Forced,
+        Self::Recovered,
+    ];
+    /// The stored string.
+    #[must_use]
+    pub fn as_column(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::RiderEnd => "rider_end",
+            Self::Safety => "safety",
+            Self::Forced => "forced",
+            Self::Recovered => "recovered",
+        }
+    }
+    /// Decode the nullable `ride.end_cause` column.
+    /// # Errors
+    /// Returns `UnknownEndCause` for any other string.
+    pub fn from_column(stored: Option<&str>) -> Result<Option<Self>, StoreError> {
+        stored
+            .map(|v| {
+                Self::ALL
+                    .into_iter()
+                    .find(|c| c.as_column() == v)
+                    .ok_or_else(|| StoreError::UnknownEndCause(v.to_owned()))
+            })
+            .transpose()
+    }
+}
 /// One second's per-metric mean (ADR-0001 §5–6).
 #[derive(Clone, Debug)]
 pub struct Sample {
@@ -165,6 +219,16 @@ pub struct NewRide {
     pub telemetry_source: String,
     /// Engine metric ids, including `workout_s` when provided.
     pub metrics: Vec<String>,
+    /// Which metrics the record holds (`ride.record_version`, ADR-0009 §2.3.2); at least 1.
+    pub record_version: u32,
+}
+/// A ride's whole record ([`Store::record`]).
+#[derive(Debug)]
+pub struct StoredRecord {
+    /// The ride's `record_version`.
+    pub record_version: u32,
+    /// Each stored metric's values by session second, from 0; NaN decodes to `None`.
+    pub metrics: BTreeMap<String, Vec<Option<f32>>>,
 }
 /// Ride metadata with validated snapshots.
 #[derive(Debug)]
@@ -186,6 +250,11 @@ pub struct Ride {
     pub athlete: Option<RideAthleteJson>,
     /// Optional summary.
     pub summary: Option<RideSummaryJson>,
+    /// Why it ended; `None` while live and for rides closed before it was recorded.
+    pub end_cause: Option<EndCause>,
+    /// Which metrics its record holds (ADR-0009 §2.3.2): 1 for every ride recorded before
+    /// version 2.
+    pub record_version: u32,
 }
 /// One row of the ride list ([`Store::rides`]).
 #[derive(Debug)]
@@ -434,20 +503,46 @@ impl Store {
         let id = ride_id.to_owned();
         self.write(move |w| w.append(&id, session_s, samples))
     }
-    /// Atomically flush final partial chunks and close a ride as finished.
+    /// Replace one metric's value of an already appended second of the live ride (the engine's
+    /// `block_end`, known only after the block's last second, ADR-0009 §2.3.2). It is written
+    /// at once, also when that second's chunk is already stored.
     /// # Errors
-    /// Returns `InvalidInput` if not live or end precedes start, or write errors.
+    /// Returns `InvalidInput` if the ride is not live, the second not appended yet, the metric
+    /// not one of the ride's or the value not finite, or write errors.
+    pub fn amend_second(
+        &self,
+        ride_id: &str,
+        session_s: u32,
+        metric: &str,
+        value: Option<f32>,
+    ) -> Result<(), StoreError> {
+        let (id, metric) = (ride_id.to_owned(), metric.to_owned());
+        self.write(move |w| w.amend(&id, session_s, &metric, value))
+    }
+    /// Atomically flush final partial chunks and close a ride as finished, ended by `cause`
+    /// (`Completed`, `RiderEnd` or `Safety`; the other two belong to [`Store::abort_ride`] and
+    /// crash recovery).
+    /// # Errors
+    /// Returns `InvalidInput` if not live, end precedes start, or `cause` is `Forced` or
+    /// `Recovered`, or write errors.
     pub fn finish_ride(
         &self,
         ride_id: &str,
         ended_at: i64,
         summary: RideSummaryJson,
+        cause: EndCause,
     ) -> Result<(), StoreError> {
+        if matches!(cause, EndCause::Forced | EndCause::Recovered) {
+            return Err(StoreError::InvalidInput(format!(
+                "a finished ride cannot end as {}",
+                cause.as_column()
+            )));
+        }
         let id = ride_id.to_owned();
-        self.write(move |w| w.finish(&id, ended_at, &summary))
+        self.write(move |w| w.finish(&id, ended_at, &summary, cause))
     }
     /// Close the live ride as aborted at `ended_at`, keeping what was recorded (the buffered
-    /// seconds are flushed) and writing no summary. For a ride whose engine can no longer
+    /// seconds are flushed) and writing no summary; its end cause is [`EndCause::Forced`]. For a ride whose engine can no longer
     /// finish it; the next ride may start afterwards.
     /// # Errors
     /// Returns `InvalidInput` if the ride is not live, or write errors.
@@ -715,7 +810,57 @@ impl Store {
             Ok(())
         })
     }
-    /// Decode persisted metric chunks ordered by session second.
+    /// The whole record of ride `id`: its version and every metric's values by session second;
+    /// `None` without such a ride.
+    /// # Errors
+    /// Returns `CorruptChunk` for invalid binary data or chunks that do not follow each other
+    /// from second 0 (a full 60 s chunk before each next one), or read errors.
+    pub fn record(&self, id: &str) -> Result<Option<StoredRecord>, StoreError> {
+        self.read(|db| {
+            // One read transaction: a live ride's writer cannot move the chunks between reads.
+            let tx = db.unchecked_transaction()?;
+            let Some(record_version) = tx
+                .query_row("SELECT record_version FROM ride WHERE id=?1", [id], |r| {
+                    r.get::<_, u32>(0)
+                })
+                .optional()?
+            else {
+                return Ok(None);
+            };
+            let mut stmt = tx.prepare(
+                "SELECT metric,start_s,n,data,estimated FROM ride_chunk
+                 WHERE ride_id=?1 ORDER BY metric,start_s",
+            )?;
+            let rows = stmt.query_map([id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, u32>(1)?,
+                    r.get::<_, u8>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ))
+            })?;
+            let mut metrics: BTreeMap<String, Vec<Option<f32>>> = BTreeMap::new();
+            for row in rows {
+                let (name, start, n, data, estimated) = row?;
+                let chunk = writer::decode(start, usize::from(n), &data, &estimated)?;
+                let values = metrics.entry(name.clone()).or_default();
+                if usize::try_from(chunk.start_s).ok() != Some(values.len()) {
+                    return Err(StoreError::CorruptChunk(format!(
+                        "{name}: chunk at {} s after {} s",
+                        chunk.start_s,
+                        values.len()
+                    )));
+                }
+                values.extend(chunk.values);
+            }
+            Ok(Some(StoredRecord {
+                record_version,
+                metrics,
+            }))
+        })
+    }
+    /// The chunks of one metric of ride `ride_id`, in order.
     /// # Errors
     /// Returns `CorruptChunk` for invalid binary data, or read errors.
     pub fn chunks(&self, ride_id: &str, metric: &str) -> Result<Vec<Chunk>, StoreError> {
@@ -741,7 +886,7 @@ impl Store {
     }
 }
 
-const RIDE_SELECT: &str = "SELECT id,started_at,ended_at,state,workout_json,compiled_json,summary_json,athlete_json FROM ride";
+const RIDE_SELECT: &str = "SELECT id,started_at,ended_at,state,workout_json,compiled_json,summary_json,athlete_json,end_cause,record_version FROM ride";
 type RideRow = (
     String,
     i64,
@@ -751,6 +896,8 @@ type RideRow = (
     String,
     Option<String>,
     Option<String>,
+    Option<String>,
+    u32,
 );
 fn ride_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RideRow> {
     Ok((
@@ -762,11 +909,24 @@ fn ride_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RideRow> {
         r.get(5)?,
         r.get(6)?,
         r.get(7)?,
+        r.get(8)?,
+        r.get(9)?,
     ))
 }
 impl Ride {
     fn try_from_row(
-        (id, started_at, ended_at, state, workout, compiled, summary, athlete): RideRow,
+        (
+            id,
+            started_at,
+            ended_at,
+            state,
+            workout,
+            compiled,
+            summary,
+            athlete,
+            end_cause,
+            record_version,
+        ): RideRow,
     ) -> Result<Self, StoreError> {
         Ok(Self {
             id,
@@ -777,6 +937,8 @@ impl Ride {
             compiled: CompiledJson::parse(&compiled)?,
             athlete: athlete.map(|a| RideAthleteJson::parse(&a)).transpose()?,
             summary: summary.map(|s| RideSummaryJson::parse(&s)).transpose()?,
+            end_cause: EndCause::from_column(end_cause.as_deref())?,
+            record_version,
         })
     }
 }

@@ -1,5 +1,5 @@
 //! Writer, advisory lock and binary codec (ADR-0001 §6).
-use crate::{Chunk, JsonColumn, NewRide, RideSummaryJson, Sample, StoreError};
+use crate::{Chunk, EndCause, JsonColumn, NewRide, RideSummaryJson, Sample, StoreError};
 use rusqlite::{Connection, Transaction, params};
 use rusqlite_migration::{M, Migrations};
 use std::collections::BTreeMap;
@@ -71,8 +71,9 @@ impl WriterHandle {
                         .map_err(|e| StoreError::InvalidInput(e.to_string()))?;
                     // Only a newly acquired lock owner may close unfinished rides.
                     db.execute(
-                        "UPDATE ride SET ended_at=?1,state='aborted' WHERE ended_at IS NULL",
-                        [now],
+                        "UPDATE ride SET ended_at=?1,state='aborted',end_cause=?2
+                         WHERE ended_at IS NULL",
+                        params![now, EndCause::Recovered.as_column()],
                     )?;
                     Ok(Writer { db, active: None })
                 };
@@ -142,9 +143,10 @@ impl Writer {
             || metrics.is_empty()
             || metrics.len() != ride.metrics.len()
             || metrics.keys().any(String::is_empty)
+            || ride.record_version == 0
         {
             return Err(StoreError::InvalidInput(
-                "live ride, empty id, or invalid metric set".into(),
+                "live ride, empty id, invalid metric set, or record version 0".into(),
             ));
         }
         self.db.execute(
@@ -152,9 +154,9 @@ impl Writer {
             // one: the core's free ride has workout id `free-ride`, anything else this path starts is a workout (no
             // path starts a route ride yet). #705's `RideKind` replaces the rule with the kind the core rides.
             "INSERT INTO ride(id,started_at,workout_json,compiled_json,
-             trainer_device_id,hr_device_id,telemetry_source,kind,athlete_json)
+             trainer_device_id,hr_device_id,telemetry_source,kind,athlete_json,record_version)
              VALUES (?1,?2,?3,?4,?5,?6,?7,
-             CASE WHEN json_extract(?3, '$.id') = 'free-ride' THEN 'free' ELSE 'workout' END,?8)",
+             CASE WHEN json_extract(?3, '$.id') = 'free-ride' THEN 'free' ELSE 'workout' END,?8,?9)",
             params![
                 ride.id,
                 ride.started_at,
@@ -163,7 +165,8 @@ impl Writer {
                 ride.trainer_device_id,
                 ride.hr_device_id,
                 ride.telemetry_source,
-                ride.athlete.as_str()
+                ride.athlete.as_str(),
+                ride.record_version
             ],
         )?;
         self.active = Some(Active {
@@ -225,11 +228,71 @@ impl Writer {
         }
         Ok(())
     }
+    /// Replace `metric`'s value of the already appended `second` of the live ride `id`.
+    pub(crate) fn amend(
+        &mut self,
+        id: &str,
+        second: u32,
+        metric: &str,
+        value: Option<f32>,
+    ) -> Result<(), StoreError> {
+        let active = self
+            .active
+            .as_mut()
+            .filter(|a| a.id == id)
+            .ok_or_else(|| StoreError::InvalidInput("ride is not live".into()))?;
+        let invalid = || {
+            StoreError::InvalidInput(
+                "expected an appended second, a metric of the ride and a finite value".into(),
+            )
+        };
+        if second >= active.next_s || value.is_some_and(|v| !v.is_finite()) {
+            return Err(invalid());
+        }
+        let next_s = active.next_s;
+        let values = active.metrics.get_mut(metric).ok_or_else(invalid)?;
+        // The buffer holds the seconds of the current minute; an earlier minute is stored whole.
+        let buffered_from = next_s - u32::try_from(values.len()).map_err(|_| invalid())?;
+        if second >= buffered_from {
+            let i = usize::try_from(second - buffered_from).map_err(|_| invalid())?;
+            let old = std::mem::replace(&mut values[i].0, value);
+            let result = (|| {
+                let tx = self.db.transaction()?;
+                flush(&tx, active)?;
+                tx.commit()?;
+                Ok::<_, StoreError>(())
+            })();
+            if result.is_err()
+                && let Some(v) = active.metrics.get_mut(metric)
+            {
+                v[i].0 = old;
+            }
+            return result;
+        }
+        let start = second / 60 * 60;
+        let tx = self.db.transaction()?;
+        let mut data: Vec<u8> = tx.query_row(
+            "SELECT data FROM ride_chunk WHERE ride_id=?1 AND metric=?2 AND start_s=?3",
+            params![id, metric, start],
+            |r| r.get(0),
+        )?;
+        let at = usize::try_from(second - start).map_err(|_| invalid())? * 4;
+        data.get_mut(at..at + 4)
+            .ok_or_else(|| StoreError::CorruptChunk("chunk shorter than its seconds".into()))?
+            .copy_from_slice(&value.unwrap_or(f32::NAN).to_le_bytes());
+        tx.execute(
+            "UPDATE ride_chunk SET data=?4 WHERE ride_id=?1 AND metric=?2 AND start_s=?3",
+            params![id, metric, start, data],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
     pub(crate) fn finish(
         &mut self,
         id: &str,
         ended: i64,
         summary: &RideSummaryJson,
+        cause: EndCause,
     ) -> Result<(), StoreError> {
         let active = self
             .active
@@ -242,8 +305,8 @@ impl Writer {
         let tx = self.db.transaction()?;
         flush(&tx, active)?;
         tx.execute(
-            "UPDATE ride SET ended_at=?1,state='finished',summary_json=?2 WHERE id=?3",
-            params![ended, summary.as_str(), id],
+            "UPDATE ride SET ended_at=?1,state='finished',summary_json=?2,end_cause=?3 WHERE id=?4",
+            params![ended, summary.as_str(), cause.as_column(), id],
         )?;
         tx.commit()?;
         self.active = None;
@@ -260,8 +323,12 @@ impl Writer {
         let tx = self.db.transaction()?;
         flush(&tx, active)?;
         tx.execute(
-            "UPDATE ride SET ended_at=?1,state='aborted' WHERE id=?2",
-            params![ended.max(active.started_at), id],
+            "UPDATE ride SET ended_at=?1,state='aborted',end_cause=?2 WHERE id=?3",
+            params![
+                ended.max(active.started_at),
+                EndCause::Forced.as_column(),
+                id
+            ],
         )?;
         tx.commit()?;
         self.active = None;
