@@ -1,6 +1,6 @@
 # ADR-0011: Workout text editor: diagnostics with fixes, "did you mean", and completion from the core
 
-- **Status:** Proposed (for owner review); not implemented
+- **Status:** Accepted (owner, 2026-11-27: all 10 items approved as written); not implemented yet
 - **Date:** 2026-11-27
 - **Issue:** #732
 - **Related:** DESIGN §5.7 (editor, undo groups, outline edits #653), §5.9 (desk keys), `docs/DSL.md` (grammar, errors),
@@ -10,8 +10,8 @@
 
 ## For the owner
 
-Nothing is implemented. Each line is a decision that needs a yes or a no; the section in brackets has the reasons and
-the rejected alternatives.
+Accepted by the owner on 2026-11-27: all 10 items approved as written. Nothing is implemented. Each line is a decision;
+the section in brackets has the reasons and the rejected alternatives.
 
 1. **Replace the text box with CodeMirror 6** (`@codemirror/view`, `state`, `lint`, `autocomplete`; MIT), not a
    hand-rolled overlay on the `<textarea>` and not Monaco. It adds about 310 KB minified / 101 KB gzip to the app
