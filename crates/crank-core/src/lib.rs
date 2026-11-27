@@ -24,8 +24,9 @@ mod ui;
 
 pub use backend::DeviceMode;
 pub use core::{Core, CoreConfig, EngineHost, FrameSink, RideEnd, Shutdown, SinkClosed};
-/// The workout tree the editor commands (`parse_dsl`, `print_dsl`, `compile_workout`) carry.
-pub use crank_domain::workout::{Workout, WorkoutNode};
+/// The workout tree and declarations the editor commands (`parse_dsl`, `print_dsl`,
+/// `compile_workout`) carry.
+pub use crank_domain::workout::{VarDecl, Workout, WorkoutNode};
 pub use dto::*;
 pub use error::{ApiError, ErrorCode};
 pub use keeper::channel::LinkSink;

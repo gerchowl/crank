@@ -130,6 +130,7 @@ test("New → edit → Save → listed → Ride this loads that id", async () =>
         name: "Threshold",
         ftp: 250,
         nodes: expect.any(Array) as unknown,
+        vars: [],
       },
     },
   ]);
@@ -349,7 +350,12 @@ test("the mock's library commands refuse what the core refuses", async () => {
   installBackend({ trees: { "w-easy": "sweet-spot" } });
   const nodes = DRAFTS["sweet-spot"]!;
   if (!("nodes" in nodes)) throw new Error("sweet-spot parses");
-  const draft = (name: string) => ({ name, ftp: 250, nodes: nodes.nodes });
+  const draft = (name: string) => ({
+    name,
+    ftp: 250,
+    nodes: nodes.nodes,
+    vars: nodes.vars,
+  });
   const refused = (cmd: string, args: Record<string, unknown>) =>
     invoke(cmd, args).then(
       () => null,
@@ -359,6 +365,7 @@ test("the mock's library commands refuse what the core refuses", async () => {
     name: "New workout",
     ftp: 250,
     nodes: [],
+    vars: [],
   });
   expect(
     await refused("workout_save", { id: null, draft: draft("  ") }),
@@ -372,7 +379,7 @@ test("the mock's library commands refuse what the core refuses", async () => {
   expect(
     await refused("workout_save", { id: "w-gone", draft: draft("Mine") }),
   ).toEqual({ code: "not_found", message: 'no workout "w-gone"' });
-  const empty = { name: "Empty", ftp: 250, nodes: [] };
+  const empty = { name: "Empty", ftp: 250, nodes: [], vars: [] };
   expect(await refused("workout_save", { id: null, draft: empty })).toEqual({
     code: "invalid_input",
     message: "Workout is empty",

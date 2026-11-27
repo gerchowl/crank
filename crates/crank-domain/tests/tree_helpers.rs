@@ -1,8 +1,8 @@
 //! `re_id` / `find_node` parity with the frozen TS reference (`shared/src/workout/model.ts`),
 //! duplicate-ID and missing-ID behaviour, bounded properties, and deep-tree safety.
 use crank_domain::workout::{
-    Cadence, MAX_NESTING_DEPTH, PowerTarget, RepeatNode, StepEnd, StepNode, TreeError, WorkoutNode,
-    find_node, re_id,
+    Cadence, MAX_NESTING_DEPTH, Num, PowerTarget, RepeatNode, StepEnd, StepNode, TreeError,
+    WorkoutNode, find_node, re_id,
 };
 use proptest::prelude::*;
 use serde::Deserialize;
@@ -150,7 +150,7 @@ fn step(id: String) -> WorkoutNode {
     WorkoutNode::Step(StepNode {
         id,
         label: None,
-        end: StepEnd::Time { s: 60.0 },
+        end: StepEnd::Time { s: Num::from(60.0) },
         target: PowerTarget::Free,
         cadence: None,
     })
@@ -161,7 +161,7 @@ fn nest(depth: usize) -> Vec<WorkoutNode> {
         nodes = vec![WorkoutNode::Repeat(RepeatNode {
             id: format!("r{i}"),
             label: None,
-            count: 1.0,
+            count: Num::from(1.0),
             children: nodes,
             progression: None,
             skip_last_rest: None,
@@ -216,8 +216,8 @@ fn arb_tree() -> impl Strategy<Value = Vec<WorkoutNode>> {
             label: Some("l".into()),
             end: StepEnd::Lap,
             target: PowerTarget::Ramp {
-                from: 50.0,
-                to: 80.0,
+                from: Num::from(50.0),
+                to: Num::from(80.0),
             },
             cadence: Some(Cadence { lo: 80.0, hi: 90.0 }),
         })
@@ -233,7 +233,7 @@ fn arb_tree() -> impl Strategy<Value = Vec<WorkoutNode>> {
                 WorkoutNode::Repeat(RepeatNode {
                     id,
                     label: None,
-                    count: f64::from(count),
+                    count: Num::from(f64::from(count)),
                     children,
                     progression: None,
                     skip_last_rest: skip.then_some(true),

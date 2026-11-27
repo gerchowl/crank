@@ -323,6 +323,7 @@ export function Workouts() {
       name: copy ? `${d.workout.name} (copy)` : d.workout.name,
       ftp: d.workout.ftp,
       nodes: d.workout.nodes,
+      vars: d.workout.vars ?? [],
       dsl: d.dsl,
       compiled: d.compiled,
     });
@@ -335,6 +336,7 @@ export function Workouts() {
       name: r.data.name,
       ftp: r.data.ftp,
       nodes: r.data.nodes,
+      vars: r.data.vars,
       dsl: "",
       compiled: null,
     });

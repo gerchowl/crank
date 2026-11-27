@@ -4,7 +4,7 @@ use crate::error::{ApiError, ErrorCode};
 use crank_domain::athlete::{AthleteParam, AthleteSnapshot, Entry, Estimate, Resolved, Source};
 use crank_domain::workout::{
     CompiledWorkout, DslError, FlatBlock, Phase, Severity, ValidationIssue, ValidationKind,
-    Workout, WorkoutNode,
+    VarDecl, Workout, WorkoutNode,
 };
 use crank_engine::{LinkStatus, StreamStatus};
 use crank_store::Proposal;
@@ -437,6 +437,9 @@ pub struct WorkoutDraft {
     pub ftp: f64,
     /// The workout tree.
     pub nodes: Vec<WorkoutNode>,
+    /// The tree's variable declarations, in order (ADR-0008 §2.6, §2.10), used or not: they
+    /// are stored with the tree and printed with it.
+    pub vars: Vec<VarDecl>,
 }
 
 /// One compiled block. The boundary owns this type: `crank-domain`'s `FlatBlock` indexes
@@ -598,6 +601,11 @@ pub enum DslParse {
     Parsed {
         /// The workout tree.
         nodes: Vec<WorkoutNode>,
+        /// The text's variable declarations, in order (ADR-0008 §2.6); empty for a text
+        /// without variables.
+        #[serde(default)]
+        #[specta(optional)]
+        vars: Vec<VarDecl>,
     },
     /// The text does not parse.
     Invalid {

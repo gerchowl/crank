@@ -210,9 +210,12 @@ fn a_label_with_an_escaped_newline_prints_back() {
         250.0,
         &mut String::new,
     )
-    .expect("parses");
-    let printed = print_dsl(&workout);
-    let back = parse_dsl(&printed, 250.0, &mut String::new).expect("reparses");
+    .expect("parses")
+    .nodes;
+    let printed = print_dsl(&[], &workout);
+    let back = parse_dsl(&printed, 250.0, &mut String::new)
+        .expect("reparses")
+        .nodes;
     assert_eq!(labels(&back), labels(&workout), "{printed:?}");
     assert_eq!(
         labels(&back),
@@ -266,14 +269,15 @@ proptest! {
         let printed = print_grade_profile(&items);
         prop_assert_eq!(parse_grade_profile(&printed), Ok(items));
         let mut workout = parse_dsl("\"x\" 1m 50%, \"y\" 2x(1m 50%)", 250.0, &mut String::new)
-            .expect("parses");
+            .expect("parses")
+    .nodes;
         for (node, l) in workout.iter_mut().zip([&a, &b]) {
             match node {
                 WorkoutNode::Step(s) => s.label = Some(l.clone()),
                 WorkoutNode::Repeat(r) => r.label = Some(l.clone()),
             }
         }
-        let back = parse_dsl(&print_dsl(&workout), 250.0, &mut String::new).expect("reparses");
+        let back = parse_dsl(&print_dsl(&[], &workout), 250.0, &mut String::new).expect("reparses").nodes;
         prop_assert_eq!(labels(&back), vec![Some(a), Some(b)]);
     }
 }

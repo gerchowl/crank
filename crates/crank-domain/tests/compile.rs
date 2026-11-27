@@ -34,14 +34,17 @@ fn workout(nodes: Vec<WorkoutNode>, ftp: f64) -> Workout {
         name: "test".into(),
         ftp,
         nodes,
+        vars: Vec::new(),
     }
 }
 fn step(s: f64, value: f64) -> WorkoutNode {
     WorkoutNode::Step(StepNode {
         id: "s".into(),
         label: None,
-        end: StepEnd::Time { s },
-        target: PowerTarget::PctFtp { value },
+        end: StepEnd::Time { s: Num::from(s) },
+        target: PowerTarget::PctFtp {
+            value: Num::from(value),
+        },
         cadence: None,
     })
 }
@@ -49,11 +52,11 @@ fn repeat(children: Vec<WorkoutNode>, count: f64) -> WorkoutNode {
     WorkoutNode::Repeat(RepeatNode {
         id: "r".into(),
         label: None,
-        count,
+        count: Num::from(count),
         children,
         progression: Some(Progression {
-            watts_per_rep: Some(3.0),
-            pct_per_rep: Some(-1.0),
+            watts_per_rep: Some(Num::from(3.0)),
+            pct_per_rep: Some(Num::from(-1.0)),
         }),
         skip_last_rest: Some(true),
     })
@@ -61,25 +64,25 @@ fn repeat(children: Vec<WorkoutNode>, count: f64) -> WorkoutNode {
 fn valid_tree() -> impl Strategy<Value = Vec<WorkoutNode>> {
     let target = prop_oneof![
         (0u32..180).prop_map(|v| PowerTarget::PctFtp {
-            value: f64::from(v)
+            value: Num::from(f64::from(v))
         }),
         (0u32..600).prop_map(|v| PowerTarget::Watts {
-            value: f64::from(v)
+            value: Num::from(f64::from(v))
         }),
         (0u32..100, 100u32..180).prop_map(|(lo, hi)| PowerTarget::Range {
-            lo: f64::from(lo),
-            hi: f64::from(hi)
+            lo: Num::from(f64::from(lo)),
+            hi: Num::from(f64::from(hi))
         }),
         (0u32..180, 0u32..180).prop_map(|(from, to)| PowerTarget::Ramp {
-            from: f64::from(from),
-            to: f64::from(to)
+            from: Num::from(f64::from(from)),
+            to: Num::from(f64::from(to))
         }),
         (90u32..180).prop_map(|v| PowerTarget::Hr { bpm: f64::from(v) }),
         Just(PowerTarget::Free),
     ];
     let end = prop_oneof![
         (1u32..30).prop_map(|s| StepEnd::Time {
-            s: f64::from(s) / 3.
+            s: Num::from(f64::from(s) / 3.)
         }),
         (1u32..10).prop_map(|kj| StepEnd::Kj {
             kj: f64::from(kj) / 10.
@@ -87,8 +90,8 @@ fn valid_tree() -> impl Strategy<Value = Vec<WorkoutNode>> {
         Just(StepEnd::Lap),
         (90u32..150, 1u32..10, 10u32..30).prop_map(|(bpm, min, max)| StepEnd::HrRecovery {
             target_bpm: f64::from(bpm),
-            min_s: f64::from(min),
-            max_s: f64::from(max),
+            min_s: Num::from(f64::from(min)),
+            max_s: Num::from(f64::from(max)),
             on_unreachable: OnUnreachable::Cap
         }),
     ];
@@ -127,23 +130,33 @@ fn adversarial_tree(finite_only: bool) -> impl Strategy<Value = Vec<WorkoutNode>
         any::<f64>().boxed()
     };
     let target = (0u8..6, number.clone(), number.clone()).prop_map(|(kind, a, b)| match kind {
-        0 => PowerTarget::PctFtp { value: a },
-        1 => PowerTarget::Watts { value: a },
-        2 => PowerTarget::Range { lo: a, hi: b },
-        3 => PowerTarget::Ramp { from: a, to: b },
+        0 => PowerTarget::PctFtp {
+            value: Num::from(a),
+        },
+        1 => PowerTarget::Watts {
+            value: Num::from(a),
+        },
+        2 => PowerTarget::Range {
+            lo: Num::from(a),
+            hi: Num::from(b),
+        },
+        3 => PowerTarget::Ramp {
+            from: Num::from(a),
+            to: Num::from(b),
+        },
         4 => PowerTarget::Hr { bpm: a },
         _ => PowerTarget::Free,
     });
     let end =
         (0u8..4, number.clone(), number.clone(), number.clone()).prop_map(|(kind, a, b, c)| {
             match kind {
-                0 => StepEnd::Time { s: a },
+                0 => StepEnd::Time { s: Num::from(a) },
                 1 => StepEnd::Kj { kj: a },
                 2 => StepEnd::Lap,
                 _ => StepEnd::HrRecovery {
                     target_bpm: a,
-                    min_s: b,
-                    max_s: c,
+                    min_s: Num::from(b),
+                    max_s: Num::from(c),
                     on_unreachable: OnUnreachable::Cap,
                 },
             }
@@ -169,8 +182,8 @@ fn adversarial_tree(finite_only: bool) -> impl Strategy<Value = Vec<WorkoutNode>
                     let mut node = repeat(nodes, count);
                     if let WorkoutNode::Repeat(r) = &mut node {
                         r.progression = Some(Progression {
-                            watts_per_rep: Some(watts),
-                            pct_per_rep: Some(pct),
+                            watts_per_rep: Some(Num::from(watts)),
+                            pct_per_rep: Some(Num::from(pct)),
                         });
                     }
                     node
@@ -204,6 +217,8 @@ proptest! {
             match error {
                 CompileError::NonFinite => prop_assert!(!finite_input, "finite input rejected as NonFinite: {:?}", w),
                 CompileError::InvalidArithmetic | CompileError::NestingTooDeep | CompileError::ExpansionLimit | CompileError::TraceLimit | CompileError::TimelinePrecision => {}
+                // The generator writes no variables, so resolution never runs.
+                CompileError::Resolve(e) => return Err(TestCaseError::fail(format!("literal tree refused by resolve_vars: {e}"))),
             }
         }
         if let Ok(c)=result {
@@ -248,16 +263,30 @@ fn explicit_nonfinite_and_helper_edges() {
             Err(CompileError::NonFinite)
         );
         assert_eq!(
-            target_watts(&PowerTarget::Watts { value }, 280., Offset::default(), &a),
+            target_watts(
+                &PowerTarget::Watts {
+                    value: Num::from(value)
+                },
+                280.,
+                Offset::default(),
+                &a
+            ),
             Err(CompileError::NonFinite)
         );
         assert_eq!(normalized_power(&[value]), Err(CompileError::NonFinite));
     }
     let off = Offset { watts: 5., pct: 2. };
     assert_eq!(
-        target_watts(&PowerTarget::PctFtp { value: 100. }, 280., off, &a)
-            .unwrap()
-            .map(f64::to_bits),
+        target_watts(
+            &PowerTarget::PctFtp {
+                value: Num::from(100.)
+            },
+            280.,
+            off,
+            &a
+        )
+        .unwrap()
+        .map(f64::to_bits),
         [290.6_f64, 290.6].map(f64::to_bits)
     );
     assert_eq!(
@@ -269,8 +298,8 @@ fn explicit_nonfinite_and_helper_edges() {
     assert_eq!(
         target_pct(
             &PowerTarget::Ramp {
-                from: 110.,
-                to: 90.
+                from: Num::from(110.),
+                to: Num::from(90.)
             },
             280.,
             &a
@@ -285,8 +314,10 @@ fn explicit_nonfinite_and_helper_edges() {
                 id: "s".into(),
                 label: None,
                 cadence: None,
-                end: StepEnd::Time { s: 1. },
-                target: PowerTarget::PctFtp { value: 80. }
+                end: StepEnd::Time { s: Num::from(1.) },
+                target: PowerTarget::PctFtp {
+                    value: Num::from(80.)
+                }
             },
             280.
         )
@@ -336,7 +367,7 @@ fn assert_review_cases(indices: &[usize]) {
         if index == 7 {
             // JSON.stringify normalizes -0; supply its original sign to Rust.
             if let WorkoutNode::Repeat(r) = &mut w.nodes[0] {
-                r.count = -0.;
+                r.count = Num::from(-0.);
             }
         }
         let options = serde_json::from_value(input["options"].clone()).expect("valid TS options");
@@ -393,11 +424,13 @@ fn zero_ftp_hard_step_then_hr_recovery_is_invalid_arithmetic() {
         label: None,
         end: StepEnd::HrRecovery {
             target_bpm: 120.,
-            min_s: 60.,
-            max_s: 240.,
+            min_s: Num::from(60.),
+            max_s: Num::from(240.),
             on_unreachable: OnUnreachable::Cap,
         },
-        target: PowerTarget::PctFtp { value: 40. },
+        target: PowerTarget::PctFtp {
+            value: Num::from(40.),
+        },
         cadence: None,
     });
     let options = CompileOptions::default();
@@ -423,25 +456,27 @@ fn zero_ftp_hard_step_then_hr_recovery_is_invalid_arithmetic() {
 }
 
 fn nodes_are_finite(nodes: &[WorkoutNode]) -> bool {
+    // The generator writes literals only.
+    let fin = |n: &Num| n.lit().is_some_and(f64::is_finite);
     nodes.iter().all(|node| match node {
         WorkoutNode::Repeat(r) => {
-            r.count.is_finite()
+            fin(&r.count)
                 && r.progression.as_ref().is_none_or(|p| {
-                    p.watts_per_rep.is_none_or(f64::is_finite)
-                        && p.pct_per_rep.is_none_or(f64::is_finite)
+                    p.watts_per_rep.as_ref().is_none_or(fin)
+                        && p.pct_per_rep.as_ref().is_none_or(fin)
                 })
                 && nodes_are_finite(&r.children)
         }
         WorkoutNode::Step(s) => {
-            let target = match s.target {
-                PowerTarget::PctFtp { value } | PowerTarget::Watts { value } => value.is_finite(),
-                PowerTarget::Range { lo, hi } => lo.is_finite() && hi.is_finite(),
-                PowerTarget::Ramp { from, to } => from.is_finite() && to.is_finite(),
+            let target = match &s.target {
+                PowerTarget::PctFtp { value } | PowerTarget::Watts { value } => fin(value),
+                PowerTarget::Range { lo, hi } => fin(lo) && fin(hi),
+                PowerTarget::Ramp { from, to } => fin(from) && fin(to),
                 PowerTarget::Hr { bpm } => bpm.is_finite(),
                 PowerTarget::Free => true,
             };
-            let end = match s.end {
-                StepEnd::Time { s } => s.is_finite(),
+            let end = match &s.end {
+                StepEnd::Time { s } => fin(s),
                 StepEnd::Kj { kj } => kj.is_finite(),
                 StepEnd::Lap => true,
                 StepEnd::HrRecovery {
@@ -449,7 +484,7 @@ fn nodes_are_finite(nodes: &[WorkoutNode]) -> bool {
                     min_s,
                     max_s,
                     ..
-                } => target_bpm.is_finite() && min_s.is_finite() && max_s.is_finite(),
+                } => target_bpm.is_finite() && fin(min_s) && fin(max_s),
             };
             target && end
         }
@@ -459,10 +494,10 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
     fn finite_invalid_ftp_is_a_diagnostic(ftp in -500i32..=0, watts in 0u32..1000, hr_target in any::<bool>()) {
-        let target=if hr_target { PowerTarget::Hr { bpm:120. } } else { PowerTarget::Watts { value:f64::from(watts) } };
+        let target=if hr_target { PowerTarget::Hr { bpm:120. } } else { PowerTarget::Watts { value:Num::from(f64::from(watts)) } };
         // Include zero in every case so this class cannot miss its boundary.
         for ftp in [f64::from(ftp),0.] {
-            let w=workout(vec![WorkoutNode::Step(StepNode { id:"s".into(),label:None,cadence:None,end:StepEnd::Time { s:60. },target:target.clone() })],ftp);
+            let w=workout(vec![WorkoutNode::Step(StepNode { id:"s".into(),label:None,cadence:None,end:StepEnd::Time { s:Num::from(60.) },target:target.clone() })],ftp);
             let compiled=compile_workout(&w,&CompileOptions::default()).unwrap();
             prop_assert_eq!(compiled.issues[0].kind,ValidationKind::InvalidFtp);
             prop_assert!(compiled.total_s.is_finite());

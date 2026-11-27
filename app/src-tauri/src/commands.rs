@@ -5,7 +5,7 @@ use crate::logging::Logging;
 use crank_core::{
     ApiError, AthleteModel, CompiledView, Core, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse,
     FrameSink, HistoryEntry, LinkFrame, LinkIntent, LinkSink, LinksId, RidePlan, RideRecord,
-    RideStatusView, ScannedDevice, SinkClosed, UiChannelId, UiFrame, UiSink, Workout,
+    RideStatusView, ScannedDevice, SinkClosed, UiChannelId, UiFrame, UiSink, VarDecl, Workout,
     WorkoutDetail, WorkoutDraft, WorkoutNode, WorkoutSummary,
 };
 use crank_engine::{MetricId, StreamFrame, StreamId, StreamSnapshot, SubId, SubscribeOpts};
@@ -232,14 +232,18 @@ pub async fn parse_dsl(
     core.parse_dsl(text, ftp).await
 }
 
-/// The canonical DSL text of a workout tree.
+/// The canonical DSL text of a workout tree and its declarations.
 ///
 /// # Errors
 /// As [`Core::print_dsl`].
 #[tauri::command]
 #[specta::specta]
-pub async fn print_dsl(core: State<'_, Core>, nodes: Vec<WorkoutNode>) -> Result<String, ApiError> {
-    core.print_dsl(nodes).await
+pub async fn print_dsl(
+    core: State<'_, Core>,
+    vars: Vec<VarDecl>,
+    nodes: Vec<WorkoutNode>,
+) -> Result<String, ApiError> {
+    core.print_dsl(vars, nodes).await
 }
 
 /// Compile a workout draft to its timeline and summary.

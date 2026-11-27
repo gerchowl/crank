@@ -30,7 +30,9 @@ fn maximum_nesting_is_safe_on_a_small_stack() {
     std::thread::Builder::new()
         .stack_size(256 * 1024)
         .spawn(|| {
-            let nodes = parse_dsl(&nested(MAX_NESTING_DEPTH), 280.0, &mut String::new).unwrap();
+            let nodes = parse_dsl(&nested(MAX_NESTING_DEPTH), 280.0, &mut String::new)
+                .unwrap()
+                .nodes;
             assert_eq!(nodes.len(), 1);
         })
         .unwrap()

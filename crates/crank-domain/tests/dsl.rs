@@ -1,17 +1,22 @@
 //! Frozen TypeScript DSL parity and the reference tests (ADR-0001 §3).
 use crank_domain::workout::{
-    Cadence, DslError, DslErrorKind as K, OnUnreachable, PowerTarget, Progression, RepeatNode,
+    Cadence, DslError, DslErrorKind as K, Num, OnUnreachable, PowerTarget, Progression, RepeatNode,
     StepEnd, StepNode, WorkoutNode, format_duration, parse_dsl, parse_duration_word, print_dsl,
 };
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
+// Today's texts declare nothing (ADR-0008 §2.15): the tree alone, asserting no declarations.
 fn parse(text: &str, ftp: f64) -> Result<Vec<WorkoutNode>, DslError> {
     let mut next = 0;
     parse_dsl(text, ftp, &mut || {
         next += 1;
         format!("n:{next}")
+    })
+    .map(|doc| {
+        assert!(doc.vars.is_empty(), "{text}");
+        doc.nodes
     })
 }
 
@@ -261,7 +266,7 @@ fn frozen_vectors() {
                 context,
             )
             .unwrap();
-            let text = print_dsl(&nodes);
+            let text = print_dsl(&[], &nodes);
             assert_eq!(
                 text,
                 case["output"]["printed"].as_str().unwrap(),
@@ -273,7 +278,7 @@ fn frozen_vectors() {
             )
             .unwrap();
             assert_eq!(without_ids(&back), without_ids(&nodes), "{context}");
-            assert_eq!(print_dsl(&back), text, "{context}");
+            assert_eq!(print_dsl(&[], &back), text, "{context}");
             assert_eq!(
                 serde_json::from_value::<Vec<WorkoutNode>>(serde_json::to_value(&nodes).unwrap())
                     .unwrap(),
@@ -392,7 +397,9 @@ fn ids_are_fresh_and_unique_and_separators_equivalent() {
     };
     for _ in 0..2 {
         ids(
-            &parse_dsl("2x(1m 100%, 1m 50%)", 280.0, &mut source).unwrap(),
+            &parse_dsl("2x(1m 100%, 1m 50%)", 280.0, &mut source)
+                .unwrap()
+                .nodes,
             &mut all,
         );
     }
@@ -413,18 +420,18 @@ fn label() -> impl Strategy<Value = Option<String>> {
 fn target() -> impl Strategy<Value = PowerTarget> {
     prop_oneof![
         (0..=200_000u32).prop_map(|v| PowerTarget::PctFtp {
-            value: f64::from(v) / 1000.0
+            value: Num::from(f64::from(v) / 1000.0)
         }),
         (0..=900u32).prop_map(|v| PowerTarget::Watts {
-            value: f64::from(v)
+            value: Num::from(f64::from(v))
         }),
         (30_000..=120_000u32, 0..=30_000u32).prop_map(|(lo, d)| PowerTarget::Range {
-            lo: f64::from(lo) / 1000.0,
-            hi: f64::from(lo + d) / 1000.0
+            lo: Num::from(f64::from(lo) / 1000.0),
+            hi: Num::from(f64::from(lo + d) / 1000.0)
         }),
         (30_000..=150_000u32, 30_000..=150_000u32).prop_map(|(from, to)| PowerTarget::Ramp {
-            from: f64::from(from) / 1000.0,
-            to: f64::from(to) / 1000.0
+            from: Num::from(f64::from(from) / 1000.0),
+            to: Num::from(f64::from(to) / 1000.0)
         }),
         (100..=180u32).prop_map(|bpm| PowerTarget::Hr {
             bpm: f64::from(bpm)
@@ -434,7 +441,9 @@ fn target() -> impl Strategy<Value = PowerTarget> {
 }
 fn end() -> impl Strategy<Value = StepEnd> {
     prop_oneof![
-        (1..=7200u32).prop_map(|s| StepEnd::Time { s: f64::from(s) }),
+        (1..=7200u32).prop_map(|s| StepEnd::Time {
+            s: Num::from(f64::from(s))
+        }),
         (1..=300_000u32).prop_map(|kj| StepEnd::Kj {
             kj: f64::from(kj) / 1000.0
         }),
@@ -451,8 +460,8 @@ fn end() -> impl Strategy<Value = StepEnd> {
         )
             .prop_map(|(bpm, min, max, policy)| StepEnd::HrRecovery {
                 target_bpm: f64::from(bpm),
-                min_s: f64::from(min),
-                max_s: f64::from(max),
+                min_s: Num::from(f64::from(min)),
+                max_s: Num::from(f64::from(max)),
                 on_unreachable: policy
             }),
     ]
@@ -476,16 +485,16 @@ fn tree() -> impl Strategy<Value = Vec<WorkoutNode>> {
         // no DSL representation, as do false skipLastRest and fractional times.
         let progression = proptest::option::of(prop_oneof![
             (-100..=100i32).prop_map(|w| Progression {
-                watts_per_rep: Some(f64::from(w) / 10.0),
+                watts_per_rep: Some(Num::from(f64::from(w) / 10.0)),
                 pct_per_rep: None
             }),
             (-300..=300i32).prop_map(|p| Progression {
                 watts_per_rep: None,
-                pct_per_rep: Some(f64::from(p) / 10.0)
+                pct_per_rep: Some(Num::from(f64::from(p) / 10.0))
             }),
             (-10..=10i32, -300..=300i32).prop_map(|(w, p)| Progression {
-                watts_per_rep: Some(f64::from(w)),
-                pct_per_rep: Some(f64::from(p) / 10.0)
+                watts_per_rep: Some(Num::from(f64::from(w))),
+                pct_per_rep: Some(Num::from(f64::from(p) / 10.0))
             }),
         ]);
         (
@@ -498,7 +507,7 @@ fn tree() -> impl Strategy<Value = Vec<WorkoutNode>> {
             .prop_map(|(count, children, label, progression, skip)| {
                 WorkoutNode::Repeat(RepeatNode {
                     id: "r".into(),
-                    count: f64::from(count),
+                    count: Num::from(f64::from(count)),
                     children,
                     label,
                     progression,
@@ -512,10 +521,10 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(300))]
     #[test]
     fn generated_workouts_round_trip(nodes in tree()) {
-        let text = print_dsl(&nodes);
+        let text = print_dsl(&[], &nodes);
         let back = parse(&text,280.0).unwrap();
         prop_assert_eq!(without_ids(&back),without_ids(&nodes));
-        prop_assert_eq!(print_dsl(&back),text);
+        prop_assert_eq!(print_dsl(&[], &back),text);
     }
 }
 

@@ -11,4 +11,9 @@ pub use compile::{
 };
 pub use compiled::*;
 mod tree;
+mod vars;
 pub use tree::{TreeError, find_node, re_id};
+pub use vars::{
+    DslDoc, Expr, MAX_EXPRESSION_DEPTH, MAX_VARIABLE_NAME, MAX_VARIABLES, Num, Op, ResolveError,
+    Unit, VarDecl, print_expr, resolve_vars,
+};

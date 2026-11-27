@@ -16,7 +16,13 @@
 //   ownership"); otherwise an undo or redo selects the node the restored state was left with (each step records its
 //   selection), else it collapses to null.
 // - `lock` is the AI rewrite's (#112): while it is set every edit, undo, redo and selection change is refused.
-import type { DslParse, DslProblem, Workout, WorkoutNode } from "../bindings";
+import type {
+  DslParse,
+  DslProblem,
+  VarDecl,
+  Workout,
+  WorkoutNode,
+} from "../bindings";
 
 /** A pending AI rewrite (#112 owns its contents): while one is set the editor refuses every edit. */
 /** A pause this long (ms) between two keystrokes ends an undo group (prosemirror-history's `newGroupDelay`). */
@@ -34,15 +40,19 @@ export interface Lock {
   readonly kind: "pending" | "diff";
 }
 
-/** One saved state of the workout: its tree and the text it was committed with. */
+/**
+ * One saved state of the workout: its tree, its declarations (ADR-0008 §2.6: used or not, they are kept) and the text
+ * it was committed with.
+ */
 export interface Saved {
   readonly nodes: readonly WorkoutNode[];
+  readonly vars: readonly VarDecl[];
   readonly text: string;
 }
 
 export interface EditorState {
-  /** The workout's identity and reference FTP; its `nodes` are `saved.nodes`. */
-  readonly workout: Omit<Workout, "nodes">;
+  /** The workout's identity and reference FTP; its `nodes` and `vars` are `saved`'s. */
+  readonly workout: Omit<Workout, "nodes" | "vars">;
   readonly saved: Saved;
   /** The text view's content: `saved.text`, or a draft typed since. */
   readonly draft: string;
@@ -67,10 +77,10 @@ export interface EditorState {
 export type Path = readonly number[];
 
 export function load(workout: Workout, text: string): EditorState {
-  const { nodes, ...rest } = workout;
+  const { nodes, vars = [], ...rest } = workout;
   return {
     workout: rest,
-    saved: { nodes, text },
+    saved: { nodes, vars, text },
     draft: text,
     problem: null,
     selection: null,
@@ -87,6 +97,7 @@ export function load(workout: Workout, text: string): EditorState {
 export const savedWorkout = (s: EditorState): Workout => ({
   ...s.workout,
   nodes: [...s.saved.nodes],
+  vars: [...s.saved.vars],
 });
 export const canUndo = (s: EditorState) => !s.lock && s.past.length > 0;
 export const canRedo = (s: EditorState) => !s.lock && s.future.length > 0;
@@ -254,13 +265,14 @@ export function afterRemoval(
 function commit(
   s: EditorState,
   nodes: readonly WorkoutNode[],
+  vars: readonly VarDecl[],
   text: string,
   selection: string | null,
   grouped: boolean,
 ): EditorState {
   return {
     ...s,
-    saved: { nodes, text },
+    saved: { nodes, vars, text },
     draft: text,
     problem: null,
     selection: has(nodes, selection) ? selection : null,
@@ -301,22 +313,31 @@ export function parsed(
   const at = s.selection === null ? null : pathOf(s.saved.nodes, s.selection);
   const follow = at === null ? null : (nodeAt(answer.nodes, at)?.id ?? null);
   const grouped = s.typing?.open ?? false;
-  const next = commit(s, answer.nodes, text, follow, grouped);
+  const next = commit(
+    s,
+    answer.nodes,
+    answer.vars ?? [],
+    text,
+    follow,
+    grouped,
+  );
   return { ...next, typing: s.typing && { ...s.typing, open: true } };
 }
 
 /**
  * A tree op's result `nodes` with the core's canonical `text` for it (`print_dsl`), committed as one undo step, with
- * `selection` selected (the edited node; by default the selection stays).
+ * `selection` selected (the edited node; by default the selection stays). A tree op edits blocks only, so the
+ * declarations are the saved ones (used or not, ADR-0008 §2.6), unless the text the core read back gives its own.
  */
 export function applied(
   s: EditorState,
   nodes: readonly WorkoutNode[],
   text: string,
   selection: string | null = s.selection,
+  vars: readonly VarDecl[] = s.saved.vars,
 ): EditorState {
   if (s.lock) return s;
-  return { ...commit(s, nodes, text, selection, false), typing: null };
+  return { ...commit(s, nodes, vars, text, selection, false), typing: null };
 }
 
 export function select(s: EditorState, id: string | null): EditorState {

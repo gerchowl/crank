@@ -1,3 +1,4 @@
+use super::{Num, VarDecl};
 use serde::{Deserialize, Serialize};
 
 /// Requested power or heart-rate intensity.
@@ -8,26 +9,26 @@ pub enum PowerTarget {
     /// Fixed percentage of FTP.
     PctFtp {
         /// Percentage.
-        value: f64,
+        value: Num,
     },
     /// Fixed watts.
     Watts {
         /// Watts.
-        value: f64,
+        value: Num,
     },
     /// Percentage range; ERG uses its midpoint.
     Range {
         /// Lower percentage.
-        lo: f64,
+        lo: Num,
         /// Upper percentage.
-        hi: f64,
+        hi: Num,
     },
     /// Linear percentage ramp, possibly descending.
     Ramp {
         /// Initial percentage.
-        from: f64,
+        from: Num,
         /// Final percentage.
-        to: f64,
+        to: Num,
     },
     /// Heart-rate target.
     Hr {
@@ -63,7 +64,7 @@ pub enum StepEnd {
     /// Fixed duration.
     Time {
         /// Seconds.
-        s: f64,
+        s: Num,
     },
     /// Accumulated work.
     Kj {
@@ -77,9 +78,9 @@ pub enum StepEnd {
         /// Threshold in beats per minute.
         target_bpm: f64,
         /// Earliest end, seconds.
-        min_s: f64,
+        min_s: Num,
         /// Latest end, seconds.
-        max_s: f64,
+        max_s: Num,
         /// Unreachable threshold policy.
         on_unreachable: OnUnreachable,
     },
@@ -101,9 +102,9 @@ pub struct Cadence {
 #[serde(rename_all = "camelCase")]
 pub struct Progression {
     /// Additional watts per iteration.
-    pub watts_per_rep: Option<f64>,
+    pub watts_per_rep: Option<Num>,
     /// Additional percentage points per iteration.
-    pub pct_per_rep: Option<f64>,
+    pub pct_per_rep: Option<Num>,
 }
 
 /// A single workout step.
@@ -132,7 +133,7 @@ pub struct RepeatNode {
     /// Optional display label.
     pub label: Option<String>,
     /// Number of iterations; represented as a JS number for reference parity.
-    pub count: f64,
+    pub count: Num,
     /// Nested sequence.
     pub children: Vec<WorkoutNode>,
     /// Optional progression increments.
@@ -164,6 +165,12 @@ pub struct Workout {
     pub ftp: f64,
     /// Workout tree.
     pub nodes: Vec<WorkoutNode>,
+    /// Variable declarations, in order (ADR-0008 §2.6); a workout stored before variables
+    /// existed has none and reads unchanged (`default`). Always written: `skip_serializing_if`
+    /// would split the generated TypeScript type into serialize and deserialize twins.
+    #[serde(default)]
+    #[cfg_attr(feature = "specta", specta(optional))]
+    pub vars: Vec<VarDecl>,
 }
 
 /// Machine-readable parser failure classes; token text remains available via the error span.
@@ -243,6 +250,63 @@ pub enum DslErrorKind {
         /// Computed intensity before message rounding.
         pct: f64,
     },
+    /// A use or a declaration names a variable that is not declared above it.
+    UnknownVariable,
+    /// A declaration follows a block, or sits inside a repeat.
+    DeclarationAfterBlock,
+    /// A declaration has a label (`"lbl" $a = 5m`).
+    LabelledDeclaration,
+    /// A name is declared twice.
+    DuplicateVariable,
+    /// A name does not start with a letter or holds a character other than a letter, digit or `_`.
+    InvalidVariableName,
+    /// A name is longer than the bound.
+    VariableNameTooLong {
+        /// Most characters after the `$`.
+        max: usize,
+    },
+    /// More declarations than the bound.
+    TooManyVariables {
+        /// Most declarations.
+        max: usize,
+    },
+    /// An expression nests deeper than the bound.
+    ExpressionTooDeep {
+        /// Most levels.
+        max: usize,
+    },
+    /// A variable's type does not fit the position that uses it.
+    VariableTypeMismatch,
+    /// `+` or `-` of two values of different types.
+    MismatchedUnits,
+    /// `*` of two values neither of which is a plain number.
+    InvalidProduct,
+    /// `/` by a value that is not a plain number.
+    InvalidQuotient,
+    /// `/` by zero.
+    DivisionByZero,
+    /// A duration variable's value is a fraction of a second.
+    FractionalDuration,
+    /// A duration variable's value is negative.
+    NegativeDuration,
+    /// A power variable's value is negative.
+    NegativePower,
+    /// An operator inside a word of an expression (`$b-30s`).
+    UnspacedOperator,
+    /// `=` without spaces around it (`$thr=95%`).
+    UnspacedEquals,
+    /// A number next to a variable in a range or ramp has no `%`.
+    MissingPercent,
+    /// A range or ramp between two numbers writes `%` on both.
+    RedundantPercent,
+    /// A progression variable is written `-$p` or `$p` instead of `+$p`.
+    InvalidProgressionVariable,
+    /// An expression needs a value or a variable here.
+    ExpectedExpression,
+    /// An expression needs an operator or the end of the declaration here.
+    ExpectedOperator,
+    /// An expression's `(` has no closing `)`.
+    UnclosedParenthesis,
 }
 
 /// Parse failure selecting a span in the original text using UTF-16 code units.

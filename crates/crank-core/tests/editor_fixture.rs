@@ -3,7 +3,9 @@
 //! workoutsBackend.ts`) answers from this file and nothing else, so it can never accept a
 //! text the core refuses, or parse one differently. `CRANK_WRITE_EDITOR_FIXTURE=1` rewrites
 //! it from the core (`just editor-fixture`); otherwise the test fails on any difference.
-use crank_core::{Core, CoreConfig, DeviceMode, DslParse, EngineHost, Workout, WorkoutNode};
+use crank_core::{
+    Core, CoreConfig, DeviceMode, DslParse, EngineHost, VarDecl, Workout, WorkoutNode,
+};
 use crank_devices::sim::SimConfig;
 use crank_engine::VirtualClock;
 use serde_json::{Map, Value, json};
@@ -13,7 +15,7 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 const FTP: f64 = 250.0;
 
 /// `(name, text)`: the drafts the app's tests and design scenes type or load.
-const DRAFTS: [(&str, &str); 21] = [
+const DRAFTS: [(&str, &str); 23] = [
     (
         "sweet-spot",
         "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
@@ -90,6 +92,15 @@ const DRAFTS: [(&str, &str); 21] = [
         "no-repeat",
         "\"Warm-up\" 10m ramp 45-70%\n\"Cool-down\" 5m ramp 60-40%",
     ),
+    // Declarations (ADR-0008 §2.6): `$spare` is unused and kept by an outline edit.
+    (
+        "with-vars",
+        "$spare = 5w\n$sst = 90%\n\n\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m $sst, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    (
+        "with-vars-no-cool-down",
+        "$spare = 5w\n$sst = 90%\n\n\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m $sst, \"Rest\" 4m 55%)",
+    ),
 ];
 
 /// `(name, draft, pointer, value)`: trees no text gives, the outline's refused edits (#653): the
@@ -152,7 +163,7 @@ async fn entry(core: &Core, text: &str) -> Value {
                 serde_json::to_value(problem).expect("serialisable"),
             );
         }
-        DslParse::Parsed { nodes } => tree(core, nodes, &mut out).await,
+        DslParse::Parsed { nodes, vars } => tree(core, vars, nodes, &mut out).await,
     }
     Value::Object(out)
 }
@@ -161,7 +172,7 @@ async fn entry(core: &Core, text: &str) -> Value {
 /// (a `problem`, or nothing when it parses), then the tree's own answers as a draft's.
 async fn tree_entry(core: &Core, draft: &str, pointer: &str, value: f64) -> Value {
     let (_, text) = DRAFTS.iter().find(|(n, _)| *n == draft).expect("a draft");
-    let DslParse::Parsed { nodes } = core
+    let DslParse::Parsed { nodes, vars } = core
         .parse_dsl((*text).into(), FTP)
         .await
         .expect("parse answers")
@@ -171,7 +182,10 @@ async fn tree_entry(core: &Core, draft: &str, pointer: &str, value: f64) -> Valu
     let mut v = serde_json::to_value(nodes).expect("serialisable");
     *v.pointer_mut(pointer).expect("the pointer names a value") = json!(value);
     let nodes: Vec<WorkoutNode> = serde_json::from_value(v).expect("a tree");
-    let printed = core.print_dsl(nodes.clone()).await.expect("print answers");
+    let printed = core
+        .print_dsl(vars.clone(), nodes.clone())
+        .await
+        .expect("print answers");
     let mut out = Map::new();
     out.insert("text".into(), json!(printed));
     out.insert("ftp".into(), json!(FTP));
@@ -183,18 +197,32 @@ async fn tree_entry(core: &Core, draft: &str, pointer: &str, value: f64) -> Valu
             serde_json::to_value(problem).expect("serialisable"),
         );
     }
-    tree(core, nodes, &mut out).await;
+    tree(core, vars, nodes, &mut out).await;
     Value::Object(out)
 }
 
-/// A tree's answers: its nodes (ids renamed), its printed text, and its compiled view or refusal.
-async fn tree(core: &Core, nodes: Vec<WorkoutNode>, out: &mut Map<String, Value>) {
-    let printed = core.print_dsl(nodes.clone()).await.expect("print answers");
+/// A tree's answers: its declarations, its nodes (ids renamed), its printed text, and its
+/// compiled view or refusal.
+async fn tree(
+    core: &Core,
+    vars: Vec<VarDecl>,
+    nodes: Vec<WorkoutNode>,
+    out: &mut Map<String, Value>,
+) {
+    let printed = core
+        .print_dsl(vars.clone(), nodes.clone())
+        .await
+        .expect("print answers");
+    out.insert(
+        "vars".into(),
+        serde_json::to_value(&vars).expect("serialisable"),
+    );
     let workout = Workout {
         id: "draft".into(),
         name: "Draft".into(),
         ftp: FTP,
         nodes: nodes.clone(),
+        vars,
     };
     let mut map = HashMap::new();
     let mut tree = serde_json::to_value(&nodes).expect("serialisable");
