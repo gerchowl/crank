@@ -2339,8 +2339,8 @@ input rules say otherwise.
 
 ## 19. Amendment (#585): the eased ERG target
 
-The engine eases every change of the ERG target into an S-curve (ADR-0002 §7.10, a jerk-limited trajectory from
-the Ruckig library). The **commanded** target is what the trainer is told. The **plan line** is what the plan says
+The engine eases every change of the ERG target into an S-curve (ADR-0002 §7.10, a closed-form jerk-limited
+trajectory). The **commanded** target is what the trainer is told. The **plan line** is what the plan says
 after ± and the coach. The commanded target moves towards the plan line:
 - at most at the rider's rise rate going up, and at twice that by default coming down;
 - reaching full rate over a 2 s ease.
@@ -2407,12 +2407,12 @@ prediction and behind it as ridden. Whether the editor warns about such blocks i
   catching up is the power row's job.
 - **Pause, ERG released, end, free ride:** unchanged, and immediate: none of them waits for an ease (ADR-0002
   §7.10.5).
-- **Easer degraded** (ADR-0002 §7.10.2 X5, `ergEaserDegraded`, round 13; also a plan or cap that is not a number,
-  round 14): a warning banner in row 4, "⚠ ERG easing
+- **Invalid ERG input** (ADR-0002 §7.10.2 X5, `ergInputInvalid`, round 19; rounds 13–18's `ergEaserDegraded`: a plan,
+  cap or state that is not a number): a warning banner in row 4, "⚠ ERG input
   fault · target held at 253 W", with the warning tone of §6.5, for as long as the status is raised. The target holds
   (after easing to rest) instead of following the plan, so the power row says "settling" and those seconds are
-  excluded from compliance, as any off-line second. When the easer recovers the banner goes and the target eases back
-  onto the plan; the ride's log records each degraded run.
+  excluded from compliance, as any off-line second. When the input is valid again the banner goes and the target
+  eases back onto the plan; the ride's log records each invalid input.
 
 ### 19.5 Settings
 
