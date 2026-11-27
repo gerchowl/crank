@@ -202,6 +202,198 @@ fn migrated_profile_ride_and_checkin_columns(dir: &Path) {
     assert_eq!(violations, 0);
 }
 
+/// The v4 fixture copied into a fresh data directory, with `extra` run on it first (raw, as an older build or a
+/// hand edit could have left it).
+fn v4_with(extra: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("test step");
+    std::fs::write(
+        dir.path().join("crank.db"),
+        include_bytes!("fixtures/v4.db"),
+    )
+    .expect("test step");
+    Connection::open(dir.path().join("crank.db"))
+        .expect("test step")
+        .execute_batch(extra)
+        .expect("test step");
+    dir
+}
+
+type SkippedRow = (String, String, Option<String>, String);
+
+/// #739 item 1: a v4 ride whose `workout_json` is not JSON never aborts migration 0005 (`json_extract` raises
+/// on it): the ride is a `workout`.
+#[test]
+fn migration_five_reads_a_malformed_workout_json_as_a_workout() {
+    let dir = v4_with(
+        "INSERT INTO ride (id, started_at, ended_at, state, workout_json, compiled_json, telemetry_source)
+             VALUES ('broken-ride', 1700000500, 1700000560, 'finished', '{not json', '{}', 'sim');",
+    );
+    let store = Store::open_owner(dir.path()).expect("migration 0005 opens the store");
+    assert_eq!(store.schema_version().expect("test step"), 5);
+    drop(store);
+    let kind: String = raw(dir.path())
+        .query_row("SELECT kind FROM ride WHERE id = 'broken-ride'", [], |r| {
+            r.get(0)
+        })
+        .expect("test step");
+    assert_eq!(kind, "workout");
+}
+
+/// #739 item 1: legacy estimate rows outside 0005's lists or types never abort migration 0005: they are kept
+/// verbatim in `athlete_estimate_skipped` with their reason, and every other row is carried over as before.
+#[test]
+fn migration_five_skips_legacy_estimates_it_cannot_hold() {
+    let dir = v4_with(
+        "INSERT INTO athlete_estimate (param, value, sd, source, n, updated_at) VALUES
+             ('vo2max', 55, 3, 'test', 1, 1700000100),
+             ('ftp', 250, 10, 'guess', 1, 1700000200),
+             ('ftp', 255, 10, 'test', -1, 1700000300),
+             ('lthr', 'high', 5, 'test', 1, 1700000400);",
+    );
+    let store = Store::open_owner(dir.path()).expect("migration 0005 opens the store");
+    assert_eq!(store.schema_version().expect("test step"), 5);
+    let ftp = store.athlete_history(AthleteParam::Ftp).expect("test step");
+    assert_eq!(
+        ftp.len(),
+        1,
+        "only the fixture's in-list FTP row is carried over"
+    );
+    assert_eq!(
+        estimate(&ftp[0]).updated_at,
+        1_700_000_000,
+        "the fixture's FTP row"
+    );
+    assert!(
+        store
+            .athlete_history(AthleteParam::Lthr)
+            .expect("test step")
+            .is_empty()
+    );
+    store
+        .athlete_snapshot()
+        .expect("every carried-over row decodes");
+    drop(store);
+    let db = raw(dir.path());
+    let skipped: Vec<SkippedRow> = db
+        .prepare(
+            "SELECT from_table, param, source, reason FROM athlete_estimate_skipped ORDER BY from_rowid",
+        )
+        .expect("test step")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .expect("test step")
+        .collect::<Result<_, _>>()
+        .expect("test step");
+    let row = |param: &str, source: &str, reason: &str| {
+        (
+            "athlete_estimate".to_owned(),
+            param.to_owned(),
+            Some(source.to_owned()),
+            reason.to_owned(),
+        )
+    };
+    assert_eq!(
+        skipped,
+        [
+            row("vo2max", "test", "param"),
+            row("ftp", "guess", "source"),
+            row("ftp", "test", "number"),
+            row("lthr", "test", "number"),
+        ]
+    );
+    // Verbatim: the value that did not fit is kept as it was stored.
+    let lthr: String = db
+        .query_row(
+            "SELECT value FROM athlete_estimate_skipped WHERE param = 'lthr'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("test step");
+    assert_eq!(lthr, "high");
+}
+
+/// #739 item 1: a profile weight that is not a number is skipped (kept in `athlete_estimate_skipped`), never
+/// copied into a row that would not decode.
+#[test]
+fn migration_five_skips_a_profile_weight_that_is_not_a_number() {
+    let dir = v4_with("UPDATE athlete_profile SET weight = 'seventy' WHERE id = 1;");
+    let store = Store::open_owner(dir.path()).expect("migration 0005 opens the store");
+    assert!(
+        store
+            .athlete_history(AthleteParam::Weight)
+            .expect("test step")
+            .is_empty()
+    );
+    store.athlete_snapshot().expect("test step");
+    drop(store);
+    let skipped: (String, String, String, String) = raw(dir.path())
+        .query_row(
+            "SELECT from_table, param, value, reason FROM athlete_estimate_skipped",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .expect("test step");
+    assert_eq!(
+        skipped,
+        (
+            "athlete_profile".into(),
+            "weight".into(),
+            "seventy".into(),
+            "number".into()
+        )
+    );
+}
+
+/// Every table's rows (as debug text) and the schema, for comparing a database before and after.
+fn dump(db: &Connection) -> Vec<String> {
+    let mut out = vec![format!(
+        "user_version {}",
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .expect("test step")
+    )];
+    let tables: Vec<(String, Option<String>)> = db
+        .prepare("SELECT name, sql FROM sqlite_master ORDER BY type, name")
+        .expect("test step")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("test step")
+        .collect::<Result<_, _>>()
+        .expect("test step");
+    for (name, sql) in tables {
+        out.push(format!("{name}: {sql:?}"));
+        let Ok(mut rows) = db.prepare(&format!("SELECT * FROM \"{name}\" ORDER BY rowid")) else {
+            continue; // an index
+        };
+        let width = rows.column_count();
+        let rows: Vec<String> = rows
+            .query_map([], |r| {
+                (0..width)
+                    .map(|i| r.get::<_, rusqlite::types::Value>(i))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|v| format!("{name} {v:?}"))
+            })
+            .expect("test step")
+            .collect::<Result<_, _>>()
+            .expect("test step");
+        out.extend(rows);
+    }
+    out
+}
+
+/// #739 item 2: a migration 0005 that fails at its last statement (here a v4 database that already has
+/// `checkin.unwell`) leaves the database exactly as it was: the schema, every row and `user_version` 4.
+#[test]
+fn a_failed_migration_five_leaves_the_v4_database_unchanged() {
+    let dir = v4_with("ALTER TABLE checkin ADD COLUMN unwell INTEGER;");
+    let before = dump(&raw(dir.path()));
+    assert!(before.contains(&"user_version 4".to_owned()));
+    let failed = Store::open_owner(dir.path());
+    assert!(
+        matches!(failed, Err(StoreError::Migration(_))),
+        "{:?}",
+        failed.err()
+    );
+    assert_eq!(dump(&raw(dir.path())), before);
+}
+
 #[test]
 fn each_origin_appends_its_row_and_the_newest_row_is_current() {
     let (_dir, store) = store();
@@ -1184,4 +1376,31 @@ fn a_new_ride_records_its_kind() {
             ("workout".into(), Some("workout".into())),
         ]
     );
+}
+
+/// #739 item 4: a stored athlete row that does not decode is a corrupt store (`CorruptAthlete`, a storage error
+/// in the core), never `InvalidInput`, which the core reports as the caller's input.
+#[test]
+fn an_undecodable_stored_athlete_row_is_corruption() {
+    let (dir, store) = store();
+    raw(dir.path())
+        .execute_batch(
+            "INSERT INTO athlete_estimate (param, kind, value, sd, source, method, n, updated_at)
+                 VALUES ('ftp', 'estimate', 250, 10, 'test', 'manual', 1099511627776, 1);",
+        )
+        .expect("test step");
+    assert!(matches!(
+        store.athlete_history(AthleteParam::Ftp),
+        Err(StoreError::CorruptAthlete(_))
+    ));
+    raw(dir.path())
+        .execute_batch(
+            "DELETE FROM athlete_estimate;
+             INSERT OR REPLACE INTO athlete_profile (id, age) VALUES (1, -1);",
+        )
+        .expect("test step");
+    assert!(matches!(
+        store.athlete_snapshot(),
+        Err(StoreError::CorruptAthlete(_))
+    ));
 }

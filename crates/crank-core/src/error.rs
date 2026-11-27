@@ -182,6 +182,11 @@ mod tests {
         let code = |e: ApiError| e.code;
         assert_eq!(code(StoreError::LockBusy.into()), ErrorCode::Conflict);
         assert_eq!(code(StoreError::ReadOnly.into()), ErrorCode::Storage);
+        // A stored athlete row that does not decode is the store's fault, not the caller's input (#739).
+        assert_eq!(
+            code(StoreError::CorruptAthlete(String::new()).into()),
+            ErrorCode::Storage
+        );
         assert_eq!(
             code(StoreError::Conflict(String::new()).into()),
             ErrorCode::Conflict

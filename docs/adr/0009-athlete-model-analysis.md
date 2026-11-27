@@ -681,16 +681,27 @@ Two migrations, each with the part that needs it:
 **`0005_athlete_model.sql`** (Part 1):
 
 - Rebuild `athlete_estimate` (no row has ever been written by code, §1.1) with `id INTEGER PRIMARY KEY` (a rowid alias
-  survives `VACUUM`), `method TEXT NOT NULL`, `ride_id TEXT REFERENCES ride(id) ON DELETE SET NULL`, `proposal_id INTEGER REFERENCES
+  survives `VACUUM`), `kind TEXT NOT NULL CHECK (kind IN ('estimate','cleared'))`, `method TEXT` (amended, #739:
+  NULL exactly for a `cleared` row, which has no value, sd, source, method or n either; a kind CHECK enforces both
+  shapes), `ride_id TEXT REFERENCES ride(id) ON DELETE SET NULL`, `proposal_id INTEGER REFERENCES
   athlete_proposal(id) ON DELETE SET NULL` (the accepted proposal that wrote it), `param` checked
   against the eight names, `source` against the five; copy any existing rows (method `legacy`); keep the
   `(param, updated_at DESC)` index.
-- Copy a non-NULL `athlete_profile.weight` into `athlete_estimate` (`weight`, `self_report`, method `profile`) and drop
+- **The migration never aborts on a legacy row** (#739: a failed migration fails every launch, so the app never
+  opens). A legacy `athlete_estimate` row whose `param` is not one of the eight, whose `source` is not one of the
+  five, or whose numbers would not decode (value or sd not a number, `n` not a non-negative integer, `updated_at`
+  not an integer) is **skipped**, not mapped: there is no rule that would map an unknown name or source to a known
+  one, and no code ever wrote such a row (§1.1). It is kept verbatim in `athlete_estimate_skipped (id, from_table,
+  from_rowid, param, value, sd, source, n, updated_at, reason)`, untyped, with `reason` `param`, `source` or
+  `number` (the first that applies); that table is the migration's log, and nothing reads or writes it after 0005.
+- Copy a numeric `athlete_profile.weight` into `athlete_estimate` (`weight`, `self_report`, method `profile`; a weight
+  that is not a number is skipped into `athlete_estimate_skipped`, reason `number`) and drop
   the column (`ALTER TABLE … DROP COLUMN`, SQLite ≥ 3.35, guaranteed by the bundled `rusqlite`).
 - `ALTER TABLE ride ADD COLUMN athlete_json TEXT` (the snapshot; NULL for older rides) and
   `ADD COLUMN kind TEXT CHECK (kind IN ('workout','free','assessment','route'))`, back-filled from what each row
   holds (`route_json` → route; the free-ride workout id `free-ride`, as `core.rs` maps it to a `null` `workout_id` → free;
-  else workout). ADR-0004's `RideKind` writes it.
+  else workout; a `workout_json` that is not valid JSON is read as a workout, never passed to `json_extract`, which
+  raises on it, #739). ADR-0004's `RideKind` writes it.
 - `ALTER TABLE checkin ADD COLUMN unwell INTEGER CHECK (unwell IN (0, 1))`. Today nothing stores the "Unwell today"
   answer: DESIGN §5.8 makes it a day state that resets the next day, and `checkin` has no column for it. P10 and P11
   need it after the ride, so the daily check-in (#94, the Today check-in) writes it on the check-in row of that day;
