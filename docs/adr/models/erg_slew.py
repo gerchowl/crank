@@ -37,6 +37,13 @@ TOL = 1e-6         # floating-point tolerance of the checks
 ROUND_SNAP = 1e-9  # W: a landing this close outside [0, M] is floating-point rounding, snapped, not cut (round 12)
 TWIN = 2 ** -20    # X5a: the twin's margin; every limit tightened by TWIN·max(1, |limit|) (round 13)
 TARGET_SCALE = 1 - 2 ** -20   # a target velocity stays this far inside its limit (Ruckig 0.19.4 segfault, §7.10.2)
+# The fault gate (round 18, fix round 2, the owner's ruling of 2026-11-26: the honest promise). A degraded episode
+# (consecutive degraded ticks after Ruckig and its twin refused) is a numerical event, counted, not a rider-facing
+# fault; `erg_easer_degraded` is raised only while an episode has lasted longer than FAULT_EPISODE_TICKS, or while
+# more than FAULT_RECUR episodes started within the last FAULT_WINDOW_TICKS. §7.10.2 (X5) derives the numbers.
+FAULT_EPISODE_TICKS = 8       # 2 s: an episode of up to 8 ticks is not a fault; the 9th consecutive tick is
+FAULT_RECUR = 3               # more than 3 episodes ...
+FAULT_WINDOW_TICKS = 240      # ... within 60 s raise the fault (held while the window holds more than 3)
 
 
 @dataclass(frozen=True)
@@ -297,16 +304,26 @@ def rises(st: "State", t: Tuning) -> bool:
     return st.v > 1e-9 or (st.a > 1e-9 and st.v + st.a * st.a / (2 * t.j_max) > 1e-9)
 
 
-def trackable(s: float, t) -> bool:
-    """A line Ruckig can land on in its frame: its slope strictly inside the rates by at least two twin margins,
-    2·TWIN·max(1, r). Round 18 (fix round 1, the falsifier of PR #712): in the line's frame the velocity limits are
-    r↑ − s and −r↓ − s, and the twin tightens each rate by TWIN·max(1, r). A slope at the rate plus floating-point
-    noise (−119.9999999999988 W/s against r↓ = 120 W/s) was "strictly inside", so Ruckig got a frame minimum velocity
-    of −1.2e-12 W/s and refused, and the twin's was +1.1e-4 W/s, positive, refused as well: degraded with no fault.
-    Inside this band the twin's frame keeps at least one twin margin (TWIN·r) of velocity room on that side and
-    Ruckig's at least two. A slope within it of the rate is the rate: chased like a line at or beyond the rate (step 4),
-    where the frame is the command's own (no limit moves with the line)."""
-    return (-t.r_dn + 2 * TWIN * max(1.0, t.r_dn)) < s < (t.r_up - 2 * TWIN * max(1.0, t.r_up))
+def landable(s: float, n: int, t) -> bool:
+    """A piece of the line the easer lands on in the line's own frame (round 18, fix round 2: the near-rate case, chased
+    by construction; it replaces fix round 1's band of two twin margins). The piece has slope s and n ticks.
+
+    In the line's frame Ruckig's velocity budget on the side the line moves is b = r↑ − s (s ≥ 0) or r↓ + s (s < 0):
+    the speed at which the command can close a gap to the line from behind it. A piece is landable iff
+    b·n·Δt > ε/2. Otherwise:
+    - landing gains nothing: a gap of more than ε (the only gap P7 and D5 bound) closes at most at b, so it takes
+      more than ε/b ≥ 2·n·Δt, longer than the piece, and ramp_bound > ε/b too: P7 and D5 never apply to the piece;
+    - chasing at the rate (step 4) is the time-optimal catch-up, and it drifts from the line by at most b·n·Δt ≤ ε/2
+      over the whole piece, inside "on the line" (ε) and inside the ε/2 safe braking already allows above it;
+    - the frame is degenerate: its velocity limit r↑ − s (or −r↓ − s) is within b of 0. The falsifier of PR #712 at
+      047fe9f found Ruckig and its twin refusing such frames on every tick for up to 54 ticks (band.py seed 504 plan
+      1412: s = 49.99974 W/s, r↑ = 50, frame limit 2.6e-4 W/s), and fix round 1's band only moved that edge.
+    A landable piece's budget is never small against its rate: |s|·n·Δt ≤ M (a piece lies inside [0, M]), so
+    b/r ≥ ε/(2·M·r/|s|) ≈ ε/(2M), 1.25e-4 at M = 2 000 W, where the refusals were all at b/r ≤ 1.5e-5. That
+    covers fix round 1's band too (b ≤ 2·2⁻²⁰·r gives b·n·Δt ≤ 2·2⁻²⁰·M < ε/2 for every M ≤ 65 535 W, the u16
+    max_target_w): a line at the rate plus floating-point noise is chased."""
+    b = (t.r_up - s) if s >= 0 else (t.r_dn + s)
+    return b > 0 and b * n * DT > EPS / 2
 
 
 class StopTrajectory:
@@ -316,11 +333,13 @@ class StopTrajectory:
     so it cannot be refused and never runs under other limits than the probe's (finding 1 of PR #693: a
     brake answered by the twin ran with limits 2⁻²⁰ tighter, braked longer than its probe and ended past
     0 W, or overshot rest from a state on the probe's boundary and rose above the line). Same interface as
-    Ruckig's Trajectory for _sample: `duration` and `at_time`."""
+    Ruckig's Trajectory for _sample: `duration` and `at_time`.
+    Fix round 2: with a target slope it is step 4's chase too (the same closed-form slope change, the velocity
+    interface's time-optimal profile), so no velocity target is ever a Ruckig calculation."""
 
-    def __init__(self, v: float, a: float, t: Tuning):
+    def __init__(self, v: float, a: float, t: Tuning, target: float = 0.0):
         self.v0, self.a0 = v, a
-        self.prof = slope_change(v, a, 0.0, t)
+        self.prof = slope_change(v, a, target, t)
         self.duration = sum(d for d, _ in self.prof)
 
     def at_time(self, tt: float):
@@ -394,6 +413,8 @@ class Easer:
         self.spare = Trajectory(1)
         self.errors = 0            # Ruckig refusals, the twin's included, and answers not accepted as slow
         self.twins = 0             # refusals the twin recovered
+        self.limit_twins = 0       # calculations from a state on a velocity limit, given to the twin alone (fix round 2)
+        self.frame_landable = True    # the frame's piece is landable (set by step each tick; the slow-answer rule reads it)
         self.plan_failures = 0     # needed calculations refused by Ruckig and the twin: degraded
         self.slow = 0              # Ruckig answers slower than P4/P7's bound for the move, not accepted
         self.degraded = False      # `erg_easer_degraded` on the current tick: the status the UI shows as a fault
@@ -456,18 +477,25 @@ class Easer:
             bool(self.inject) and self.k >= self.inject_from
             and (self.inject_until is None or self.k < self.inject_until)
             and self.inject_rng.random() < self.inject)
-        for twin in (False, True):
+        # Fix round 2: Ruckig is never called with the current velocity on a velocity limit (within half a twin margin of
+        # it, either side): Ruckig 0.19.4 segfaults from such a state (the falsifier of PR #712, the meet below a rising
+        # line: frame velocity exactly max_velocity; pinned). The twin's limits are a twin margin inside, so for the
+        # twin that state is at least half a margin outside its limit, a case Ruckig brakes from. The state is not moved.
+        cv, hi, lo = st.v - fs, vmax - fs, vmin - fs
+        on_limit = (abs(cv - hi) <= TWIN * max(1.0, abs(vmax)) / 2 or abs(cv - lo) <= TWIN * max(1.0, abs(vmin)) / 2)
+        self.limit_twins += on_limit
+        for twin in ((True,) if on_limit else (False, True)):
             ok = self._one(traj, st, rel, fs, vmax, vmin, vel_target, twin,
                            injected and not (twin and self.twin_answers), meet)
             lim = TwinLimits.of(self.t) if twin else self.t   # judged under the limits it ran with (round 18)
             if (ok and vel_target is None and vmax == self.t.r_up and vmin == -self.t.r_dn
-                    and trackable(fs, self.t)
+                    and self.frame_landable
                     and traj.duration > (answer_bound(lim, -rel, st.v, st.a) if fs == 0.0
                                          else ramp_bound(lim, -rel, st.v, st.a, fs))):
                 ok = False
                 self.slow += 1
             if ok:
-                self.twins += twin
+                self.twins += twin and not on_limit
                 return True
             self.errors += 1
         return False
@@ -478,6 +506,9 @@ class Easer:
         limits) is the closed-form stop (round 18): no calculation, so nothing to refuse."""
         if vel_target == 0.0:
             self.traj = StopTrajectory(st.v, st.a, self.t)
+            return True
+        if vel_target is not None:   # the chase (fix round 2): closed form, never refused
+            self.traj = StopTrajectory(st.v, st.a, self.t, vel_target)
             return True
         if not self._calc(self.spare, st, rel, fs, vmax, vmin, vel_target, meet):
             self.plan_failures += 1     # Ruckig and its twin refused a trajectory the command needed
@@ -527,7 +558,7 @@ class Easer:
             return None
         c, fs, lead = self.frame
         rel = st.y - (c + fs * (k - 1) * DT)
-        if lead or not (trackable(fs, t) and fs < 0) or rel >= 0:
+        if lead or not (self.frame_landable and fs < 0) or rel >= 0:
             return None
         # Ruckig (and its twin), not _plan: a refused meet is not a needed calculation, braking follows. The
         # target is one tick of the line's fall below it (fs·Δt in the line's frame): planned in a frame shifted
@@ -627,10 +658,10 @@ class Easer:
         r_k = clamp(cur.at(k), m)
         s_cur = cur.s
         within = lambda s: -t.r_dn <= s <= t.r_up
-        # Trackable (module level, round 18): strictly inside the rates by two twin margins. A line at the rate
-        # cannot be caught after an eased start (that would need a slope above the rate), so it is chased like a
-        # steeper one; within two twin margins of it, the frame would leave Ruckig or its twin no velocity room.
-        track = lambda s: trackable(s, t)
+        # Landable (module level, fix round 2): a piece whose velocity budget over its duration exceeds ε/2. A line at
+        # the rate cannot be caught after an eased start (that would need a slope above the rate), so it is chased like
+        # a steeper one; so is a piece too close to the rate for landing to gain anything within ε (landable()).
+        track = lambda q: landable(q.s, q.n, t)
         # The frame: the line in force at tick k (c + fs·k·Δt).
         fs = s_cur
         c = r_k - fs * k * DT
@@ -654,7 +685,7 @@ class Easer:
             # command above the plan; from below the cap would hold it back from the line. A fall's
             # end aims below the current line: no condition.
             off = st.y - (r_k - s_cur * DT)
-            leads = (nxt.joined and track(nxt.s)
+            leads = (nxt.joined and track(nxt)
                      and ((nxt.s < s_cur and abs(off) <= EPS) or (s_cur < 0 and s_cur < nxt.s <= 0)))
             cap_v = lambda: ((min(t.r_up, s_cur), -t.r_dn) if nxt.s < s_cur else (t.r_up, max(-t.r_dn, s_cur)))
             if (self.key is not None and self.key[0][0] == "frame" and self.lead_id is not None
@@ -671,20 +702,22 @@ class Easer:
                     fs, c = nxt.s, nv - nxt.s * nxt.k0 * DT
                     vmax, vmin = cap_v() if within(s_cur) else (t.r_up, -t.r_dn)
         lead = fs != s_cur or c != r_k - s_cur * k * DT
+        tracked = track(segs[1]) if lead else track(cur)   # the piece whose line is the frame
+        self.frame_landable = tracked
         line = lambda kk: c + fs * kk * DT
         brake = self.braking
         meet = False
         self.frame = (c, fs, lead)
         if brake:
             vel_target = 0.0
-        elif track(fs) and fs > 0 and st.y - line(k) > EPS:
+        elif tracked and fs > 0 and st.y - line(k) > EPS:
             # Above a rising line (round 14, f625i): the command comes down to it at the descent rate and
             # meets it at rest (a position target on the line, zero slope there), so it never rises above
             # the plan (P5); from on the line, the next tick tracks it from below. Rounds 1-13 held and let
             # the line come up: after a -50 % offset onto a 0.17 W/s ramp it held 151 W high for 280 s.
             vel_target = None
             meet = True
-        elif track(fs):
+        elif tracked:
             vel_target = None
         else:
             # A line steeper than the rider's rate: chase it at the full rate, never away from it.
@@ -779,6 +812,33 @@ class Easer:
 
 # ---------------------------------------------------------------- running a plan
 
+class FaultGate:
+    """The status `erg_easer_degraded` from the easer's degraded mode (round 18, fix round 2; §7.10.2, X5). A plan,
+    cap or state that is not a number is a fault on every such tick: it is the input's fault, not a numerical event.
+    Degraded mode after Ruckig and its twin refused is a numerical event: each episode (a run of consecutive
+    degraded ticks) is logged and counted, and the fault is raised only on a tick where
+    - the episode in progress has lasted more than FAULT_EPISODE_TICKS ticks (from its 9th tick on), or
+    - more than FAULT_RECUR episodes started within the last FAULT_WINDOW_TICKS ticks, this one included (held
+      while the window holds that many, degraded or not: the easer keeps failing, so the rider is told).
+    A function of the degraded history alone, so the port computes the same bit on every tick."""
+
+    def __init__(self):
+        self.run = 0             # ticks of the episode in progress (0: not degraded)
+        self.starts: list[int] = []   # the ticks each episode started on
+        self.longest = 0         # the longest episode, in ticks
+
+    def step(self, k: int, degraded: bool, invalid: bool) -> bool:
+        if degraded and not invalid:
+            if self.run == 0:
+                self.starts.append(k)
+            self.run += 1
+            self.longest = max(self.longest, self.run)
+        else:
+            self.run = 0
+        recent = sum(1 for k0 in self.starts if k - FAULT_WINDOW_TICKS < k0 <= k)
+        return invalid or self.run > FAULT_EPISODE_TICKS or recent > FAULT_RECUR
+
+
 @dataclass
 class Trace:
     r: list = field(default_factory=list)
@@ -795,7 +855,10 @@ class Trace:
     origin: list = field(default_factory=list)       # the engagement origin on a reset tick
     wasteful: int = 0
     failed: list = field(default_factory=list)       # Ruckig and its twin refused on this tick (X5 must act)
-    degraded: list = field(default_factory=list)     # `erg_easer_degraded` on this tick (X5)
+    degraded: list = field(default_factory=list)     # degraded mode on this tick (X5): the stop, then a hold
+    fault: list = field(default_factory=list)        # `erg_easer_degraded` raised on this tick (FaultGate)
+    invalid: list = field(default_factory=list)      # the plan, cap or state was not a number on this tick
+    episodes: list = field(default_factory=list)     # (start tick, ticks) of each degraded episode (refusals)
     flat: list = field(default_factory=list)
     piece: list = field(default_factory=list)        # (start tick, slope, last tick, starts with a jump) of the piece in force         # (value, last tick) of a flat piece starting here, else None
     events: list = field(default_factory=list)       # an event happened on this tick
@@ -829,6 +892,7 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
     m_line = max(m0, 0.0) if cap_ok(m0) else math.inf   # the cap in force
     cap_bad, off_bad = not cap_ok(m0), False             # the latest cap / offset was invalid
     tr = Trace()
+    gate = FaultGate()
     st = None
     pending = origin is not None
     unforeseen = origin is not None      # an engagement is not known before it happens
@@ -892,9 +956,11 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
         if any(e.kind == "cap" for e in ev.get(k, [])) and prev_r is not None and r > prev_r + prev_s * DT + 1e-6:
             disc = True    # a raised cap lets the line jump up
         origin_k = st.y if reset else None
-        failures_before = ez.plan_failures
+        failures_before, invalid_before = ez.plan_failures, ez.invalid
         st, exc = ez.step(st, k, segs, me, reset or disc)
         failed_now = ez.plan_failures > failures_before
+        invalid_now = ez.invalid > invalid_before
+        fault_now = gate.step(k, ez.degraded, invalid_now)
         on = abs(r - st.y) <= EPS
         unforeseen_now = unforeseen
         landed = on and abs(st.v - segs[0].s) <= 1e-6 and abs(st.a) <= 1e-5   # on the line, moving with it
@@ -913,7 +979,7 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
                          (tr.settle, settle), (tr.exc, exc), (tr.reset, reset),
                          (tr.fell, prev_r is not None and r < prev_r - 1e-12), (tr.m, me),
                          (tr.unforeseen, unforeseen_now), (tr.origin, origin_k),
-                         (tr.failed, failed_now), (tr.degraded, ez.degraded),
+                         (tr.failed, failed_now), (tr.degraded, ez.degraded), (tr.fault, fault_now), (tr.invalid, invalid_now),
                          (tr.flat, (r, segs[0].k0 + segs[0].n - 1) if segs[0].s == 0.0 else None),
                          (tr.piece, (segs[0].k0, segs[0].s, segs[0].k0 + segs[0].n - 1, segs[0].k0 == k and not segs[0].joined)),
                          (tr.events, bool(ev.get(k)))):
@@ -925,7 +991,24 @@ def run(blocks, events=(), t: Tuning = DEFAULT, origin: float | None = None, m0=
     tr.wasteful = ez.wasteful
     tr.slow = ez.slow
     tr.twins = ez.twins
+    tr.episodes = episodes_of(tr)
     return tr
+
+
+def episodes_of(tr: Trace) -> list[tuple[int, int]]:
+    """The degraded episodes of a trace (runs of consecutive degraded ticks after refusals; a tick whose input is
+    not a number is the input's fault, not an episode): (start tick, ticks)."""
+    out, k, n = [], 0, len(tr.degraded)
+    while k < n:
+        if tr.degraded[k] and not tr.invalid[k]:
+            j = k
+            while j < n and tr.degraded[j] and not tr.invalid[j]:
+                j += 1
+            out.append((k, j - k))
+            k = j
+        else:
+            k += 1
+    return out
 
 
 # ---------------------------------------------------------------- checks (§7.10.6)
@@ -943,6 +1026,12 @@ class Report:
         self.above_checked = 0    # downward steps whose time above the line was checked (P7, round 14)
         self.plans = 0
         self.plans_with_errors = 0
+        self.episodes = 0         # degraded episodes (runs of degraded ticks after refusals), every plan
+        self.fault_ticks = 0      # ticks with `erg_easer_degraded` raised, every plan
+        self.ff_plans = 0         # fault-free plans held to the honest promise (P8)
+        self.ff_episodes = 0      # ... their degraded episodes, all at most FAULT_EPISODE_TICKS long
+        self.ff_ticks = 0         # ... their degraded ticks
+        self.ff_longest = 0       # ... their longest episode, in ticks
 
     def fail(self, msg):
         self.nfail = getattr(self, "nfail", 0) + 1
@@ -1061,7 +1150,7 @@ def ramp_bound(t: Tuning, delta: float, v0: float, a0: float, s: float) -> float
     """P7 (round 14) and D5 onto a line of slope s strictly within the rates: landing_bound in the line's
     frame, with the real closing rates r↑ − s (catching up from below) and r↓ + s (coming down from
     above), the slope taken relative to the line, and the ease to the rider's full falling rate. Both
-    stay finite and positive for every trackable s, so the bound stays finite and tight as s → 0±
+    stay finite and positive for every landable s, so the bound stays finite and tight as s → 0±
     (round 14: rounds 11–13 closed a gap above a rising line at s, the command holding while the line
     came up to it; f625i: at 0.17 W/s the line never reached it).
     - The catch-up's direction is the sign of the gap left once the relative slope is stopped (round
@@ -1117,7 +1206,7 @@ def check_recovery(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
             if abs(delta) <= EPS and abs(v0) < 1e-9:
                 continue
             bound = landing_bound(t, delta, v0, a0)
-        elif trackable(s, t):
+        elif landable(s, last - k0 + 1, t):
             delta = (tr.r[k] - s * DT) - y0
             if abs(delta) <= EPS and abs(v0 - s) < 1e-9:
                 continue
@@ -1145,7 +1234,7 @@ def check_above(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
     n = len(tr.y)
     for k in range(1, n):
         k0, s, last, jumped = tr.piece[k]
-        if tr.reset[k] or not (tr.events[k] or jumped) or not trackable(s, t):
+        if tr.reset[k] or not (tr.events[k] or jumped) or not landable(s, last - k0 + 1, t):
             continue
         y0, v0, a0 = tr.y[k - 1], tr.v[k - 1], tr.a[k - 1]
         delta = (tr.r[k] - s * DT) - y0
@@ -1239,6 +1328,42 @@ def check_degraded(tr: Trace, t: Tuning, rep: Report, name: str) -> None:
                 break
             j += 1
         k = max(j, k + 1)
+
+
+def check_fault(tr: Trace, rep: Report, name: str) -> None:
+    """The status `erg_easer_degraded`, restated from the trace (round 18, fix round 2): raised on a tick whose input is
+    not a number, on a degraded tick from the 9th of its episode on, and on any tick while more than FAULT_RECUR
+    episodes started within the last FAULT_WINDOW_TICKS ticks; never otherwise."""
+    run, starts = 0, []
+    for k in range(len(tr.y)):
+        if tr.degraded[k] and not tr.invalid[k]:
+            if run == 0:
+                starts.append(k)
+            run += 1
+        else:
+            run = 0
+        want = (tr.invalid[k] or run > FAULT_EPISODE_TICKS
+                or len([k0 for k0 in starts if k0 > k - FAULT_WINDOW_TICKS]) > FAULT_RECUR)
+        if tr.fault[k] != want:
+            rep.fail(f"{name} k={k}: erg_easer_degraded {tr.fault[k]}, the rule says {want}"
+                     f" (episode tick {run}, {len(starts)} episodes so far)")
+            return
+    rep.episodes += len(tr.episodes)
+    rep.fault_ticks += sum(tr.fault)
+
+
+def honest(tr: Trace, rep: Report, name: str) -> None:
+    """P8, the honest promise (round 18, fix round 2), on a plan with no fault (no injected refusal, every input valid):
+    every degraded episode is short (at most FAULT_EPISODE_TICKS ticks) and `erg_easer_degraded` is never raised.
+    The safety promises inside an episode (finite, [0, max(M, 0)], P7 after it as D5, D1-D5) are check()'s."""
+    rep.ff_plans += 1
+    rep.ff_episodes += len(tr.episodes)
+    rep.ff_ticks += sum(n for _, n in tr.episodes)
+    rep.ff_longest = max([rep.ff_longest] + [n for _, n in tr.episodes])
+    long_ = [(k, n) for k, n in tr.episodes if n > FAULT_EPISODE_TICKS]
+    if long_ or any(tr.fault):
+        rep.fail(f"{name}: P8 fault-free, episodes longer than {FAULT_EPISODE_TICKS} ticks {long_[:3]},"
+                 f" erg_easer_degraded on {sum(tr.fault)} ticks")
 
 
 def check(tr: Trace, t: Tuning, rep: Report, name: str, y_start: float) -> None:
@@ -1355,6 +1480,7 @@ def check(tr: Trace, t: Tuning, rep: Report, name: str, y_start: float) -> None:
     check_cap_floor(tr, t, rep, name)
     check_recovery(tr, t, rep, name)
     check_degraded(tr, t, rep, name)
+    check_fault(tr, rep, name)
 
 
 # ---------------------------------------------------------------- the port's generator (round 18, fix round 1)
@@ -1734,48 +1860,52 @@ GOLDEN = {
     'degraded mid-rise, 100 -> 400 W, defaults': (25575.0, 160, 160),
     'degraded mid-fall, 400 -> 100 W, (50, x4, 4)': (59470.3125, 160, 160),
     'degraded 20 ticks mid-fall, 600 -> 100 W, (5, x4, 4)': (79770.025, 157, 177),
-    'ramp 100->400 W over 60 s': (87839.925566, 6, 6),
-    'fall 300->100 W over 60 s': (66100.0, 0, 0),
-    'ramp at the rate 100->300 W over 10 s': (35099.996567, 45, 45),
-    'steep 100->400 W over 10 s': (55649.993349, 65, 65),
-    'steep 400->100 W over 5 s': (28450.000924, 39, 39),
-    'steep rise behind a fall': (47653.361105, 59, 79),
+    'ramp 100->400 W over 60 s': (87839.925561, 6, 6),
+    'fall 300->100 W over 60 s': (66100.000001, 0, 0),
+    'ramp at the rate 100->300 W over 10 s': (35100.000019, 45, 45),
+    'steep 100->400 W over 10 s': (55649.998633, 65, 65),
+    'steep 400->100 W over 5 s': (28450.002491, 39, 39),
+    'steep rise behind a fall': (47653.360748, 59, 79),
     'jump 100->400 W': (39950.0, 65, 85),
     'jump 400->100 W': (26150.0, 39, 59),
     '5 s at 400 W then 150 W': (24675.396732, 27, 47),
     'ramp 37 -> 49.5 W/s (50, x2, 1)': (103768.044493, 29, 29),
-    'rise into a falling ramp (15, x2, 2)': (16319.294248, 20, 20),
+    'rise into a falling ramp (15, x2, 2)': (16319.294252, 20, 20),
     'engagement 0->250 W': (22875.0, 55, 75),
-    'engagement above a rising ramp (50, x1.5, 1)': (9214.604031, 10, 21),
-    'cap drop mid-fall': (32440.0, 30, 50),
-    'skip mid-rise': (14775.0, 15, 35),
-    'fall -171.8 then -145.7 W/s (50, x4, 1.5)': (14198.054637, 33, 53),
-    'engaged on a short fall (40, x1.25, 2.75)': (36451.869461, 43, 49),
-    'engaged just above a steep rise': (49669.334359, 65, 66),
+    'engagement above a rising ramp (50, x1.5, 1)': (9214.604017, 10, 21),
+    'cap drop mid-fall': (32440.00014, 30, 50),
+    'skip mid-rise': (14774.999921, 15, 35),
+    'fall -171.8 then -145.7 W/s (50, x4, 1.5)': (14198.055821, 33, 53),
+    'engaged on a short fall (40, x1.25, 2.75)': (36451.872577, 43, 49),
+    'engaged just above a steep rise': (49669.33964, 65, 66),
     'engaged just below a steep fall (50, x4, 1)': (3387.42123, 17, 37),
-    'engaged 0.98 W above a gentle rise (8, x3, 1)': (28406.615467, 1, 21),
-    'ramp 5 -> 5.004 W/s': (140803.204816, 6, 6),
-    'ramp 5 -> 5.004 W/s at 1000 W': (375115.704816, 6, 6),
-    'jump onto a ramp that bends 5 -> 5.004 W/s mid-landing': (148302.450899, 22, 42),
+    'engaged 0.98 W above a gentle rise (8, x3, 1)': (28406.615465, 1, 21),
+    'ramp 5 -> 5.004 W/s': (140803.204811, 6, 6),
+    'ramp 5 -> 5.004 W/s at 1000 W': (375115.704811, 6, 6),
+    'jump onto a ramp that bends 5 -> 5.004 W/s mid-landing': (148302.450894, 22, 42),
     'cap 250: 300 W, ramp to 150 W in 0.25 s': (28541.515139, 55, 81),
-    'persistent error mid-fall, then a jump up': (69325.094007, 161, 161),
+    'persistent error mid-fall, then a jump up': (69325.094005, 161, 161),
     'persistent error mid-rise on a ramp': (93739.925566, 86, 86),
-    'persistent error while chasing a steep fall': (63180.02264, 135, 135),
-    'planned fall #29 with refusals 29..68': (86839.674771, 106, 126),
+    'persistent error while chasing a steep fall': (63180.0, 135, 135),
+    "finding 1: the twin on a brake's tick, X2 (30, x3, 1.5)": (36789.373518, 54, 69),
+    "finding 1: the twin on a brake's tick, X4 (15, x4, 3)": (5170.582306, 47, 67),
+    'finding 2: fault-free, a jump up while falling (10, x4, 1.5)': (89816.945444, 56, 76),
+    "round 18: the twin's landing onto M, X3 (50, x1.5, 2), 18585+12602": (262417.283934, 65, 109),
+    'round 18: the twin on a ramp near r↑, judged under its limits (40, x1.25, 2), 18585+16175': (58810.366594, 132, 192),
+    'round 18: the twin on a ramp near r↓, judged under its limits (40, x1.25, 1), 18585+1882': (172737.188486, 171, 251),
+    "PR #693 finding 1, the port's plan (50, x3, 1), seed 1996470693720483841": (61016.310538, 87, 154),
+    "PR #693 finding 2, the port's plan (10, x4, 1.5), seed 4795051404215482607": (36251.245179, 56, 76),
+    'fix 1: a slope at r↓ plus noise, then a skip (40, x3, 2), seed 105 plan 194': (693.858879, 18, 18),
+    'fix 1: a slope at r↓ plus noise (40, x2, 1), seed 108 plan 2789': (35568.752607, 70, 130),
+    "fix 1: the lead's handover on the velocity boundary (8, x3, 3), seed 1001 plan 4468": (28815.692363, 200, 260),
+    "fix 2: the current velocity at max_velocity, Ruckig's segfault (50, x4, 2.75)": (13011.497545, 47, 48),
+    'fix 2: a rising ramp 5.5 band widths inside r↑, the meet refused 54 ticks at 047fe9f (50, x3, 4), band 504#1412': (120443.411992, 115, 115),
+    'fix 2: a rising ramp 1.01 band widths inside r↑, after a fall (50, x4, 2.75)': (29250.487096, 59, 59),
+    'fix 2: a falling ramp 1.01 band widths inside r↓, from an engagement (50, x4, 2.75)': (1582.925134, 12, 12),
+    'planned fall #29 with refusals 29..68': (86839.677958, 106, 126),
     'planned fall #202 with refusals 35..74': (45390.863494, 52, 52),
     'planned fall #358 with refusals 65..67': (66150.415011, 71, 71),
-    'random 56000+87 (the lead from a moving state)': (164859.775134, 124, 161),
-    "finding 1: the twin on a brake's tick, X2 (30, x3, 1.5)": (36789.373511, 54, 69),
-    "finding 1: the twin on a brake's tick, X4 (15, x4, 3)": (5170.582089, 47, 67),
-    'finding 2: fault-free, a jump up while falling (10, x4, 1.5)': (89816.945472, 56, 76),
-    "round 18: the twin's landing onto M, X3 (50, x1.5, 2), 18585+12602": (262417.284193, 65, 109),
-    'round 18: the twin on a ramp near r↑, judged under its limits (40, x1.25, 2), 18585+16175': (58810.364785, 132, 192),
-    'round 18: the twin on a ramp near r↓, judged under its limits (40, x1.25, 1), 18585+1882': (172737.193925, 171, 251),
-    "PR #693 finding 1, the port's plan (50, x3, 1), seed 1996470693720483841": (61015.212001, 86, 172),
-    "PR #693 finding 2, the port's plan (10, x4, 1.5), seed 4795051404215482607": (36251.245206, 56, 76),
-    'fix 1: a slope at r↓ plus noise, then a skip (40, x3, 2), seed 105 plan 194': (693.858879, 18, 18),
-    'fix 1: a slope at r↓ plus noise (40, x2, 1), seed 108 plan 2789': (35568.752591, 70, 130),
-    "fix 1: the lead's handover on the velocity boundary (8, x3, 3), seed 1001 plan 4468": (28815.692363, 200, 260),
+    'random 56000+87 (the lead from a moving state)': (164859.77506, 124, 161),
 }
 
 
@@ -1783,7 +1913,8 @@ def persistent(rep: Report, report: bool):
     """X5 under a persistent refusal: Ruckig and its twin refuse every calculation from the tick a
     step starts, or from an offset mid-landing (a re-plan the command needs). Degraded mode follows
     the closed-form stop and holds (check_degraded), at the defaults and the corners, from the first
-    refused tick on every tick (the status stays raised), at rest at the end; never rising while
+    refused tick on every tick, the status raised from the episode's 9th tick on (fix round 2), at rest at the end;
+    never rising while
     above the line, within [0, M] and the band (check)."""
     n = 0
     for t in [DEFAULT] + CORNERS:
@@ -1796,6 +1927,9 @@ def persistent(rep: Report, report: bool):
                 first = next((k for k in range(len(tr.y)) if tr.failed[k]), None)
                 if first is None or not all(tr.degraded[first:]) or any(tr.degraded[:first]):
                     rep.fail(f"{name}: degraded not raised from the first refusal ({first}) on every tick")
+                # The status (fix round 2): raised from the episode's 9th tick on, on every tick, never before.
+                elif any(tr.fault[:first + FAULT_EPISODE_TICKS]) or not all(tr.fault[first + FAULT_EPISODE_TICKS:]):
+                    rep.fail(f"{name}: erg_easer_degraded not raised from tick {first + FAULT_EPISODE_TICKS} on")
                 if abs(tr.v[-1]) > 1e-9 or abs(tr.y[-1] - tr.y[-2]) > 1e-9:
                     rep.fail(f"{name}: not at rest at the end ({tr.v[-1]:.3g} W/s)")
                 n += 1
@@ -1810,6 +1944,9 @@ def constants(rep: Report, report: bool):
     # ramp_bound: the real closing rates (finite as s -> 0±, the held line's rates at s = 0), and the slower rate where
     # the catch-up's direction is not known: 2 W below a line falling at 15 W/s, at rest (the relative slope may carry
     # the command past the line, then it comes down at r↓ + s).
+    # Fix round 2: the fault gate's numbers, as §7.10.2 (X5) derives them.
+    if (FAULT_EPISODE_TICKS, FAULT_RECUR, FAULT_WINDOW_TICKS) != (8, 3, 240) or FAULT_EPISODE_TICKS * DT != 2.0:
+        rep.fail(f"constants: the fault gate {FAULT_EPISODE_TICKS, FAULT_RECUR, FAULT_WINDOW_TICKS}, pinned (8, 3, 240)")
     t = DEFAULT
     over = lambda s, r: abs(s) * (abs(s) / t.a_max + t.a_max / t.j_max) / 2 / r + abs(s) / t.a_max + t.a_max / t.j_max
     for s in (1e-9, -1e-9, 0.17, -2.0):
@@ -1962,28 +2099,32 @@ def constants(rep: Report, report: bool):
     if not ez._calc(tr3, st3, rel3, 0.0, t3.r_up, -t3.r_dn, None) or ez.slow != 1 or ez.twins != 1 or tr3.duration > 16.0:
         rep.fail(f"constants: the velocity-boundary input of seed 1001 plan 4468: slow {ez.slow}, twin {ez.twins},"
                  f" {tr3.duration:.2f} s (expected Ruckig's 26.40 s refused, the twin's 15.45 s taken)")
-    # Fix round 1: trackable's band. The falsifier's slopes (the rate plus noise) are the rate; a slope at the band's edge
-    # (1e-12 to 1e-3 inside it) is landed on by Ruckig, and the twin too, from moving states (no refusal at all).
+    # Fix round 2: landable's edge. The falsifier's slopes (the rate plus noise) are chased on any piece the clamp allows;
+    # a piece just landable (b·n·Δt = 1.01·ε/2) is landed on by Ruckig and by the twin from moving states without a
+    # refusal, and one just below (0.99·ε/2) is not landable.
     for tt, sl in ((Tuning(40, 3.0, 2.0), -119.9999999999988), (Tuning(40, 2.0, 1.0), -79.99999999999925)):
-        if trackable(sl, tt):
-            rep.fail(f"constants: slope {sl!r} at {tt} is trackable (the rate plus noise is the rate)")
+        if landable(sl, int(2000 / abs(sl) / DT), tt):
+            rep.fail(f"constants: slope {sl!r} at {tt} is landable on a piece spanning 2 000 W (the rate plus noise)")
     rng = random.Random(1819)
     refused = 0
     for tt in [DEFAULT] + CORNERS:
         for side in (1, -1):
             r = tt.r_up if side > 0 else tt.r_dn
-            for f in (1 - 1e-12, 1 - 1e-9, 1 - 1e-6, 1 - 1e-3):
-                sl = side * (r - 2 * TWIN * max(1.0, r)) * f
-                if not trackable(sl, tt):
-                    rep.fail(f"constants: slope {sl!r} inside the band's edge at {tt} is not trackable")
-                for _ in range(5):
-                    v0 = sl + rng.uniform(-1, 1) * min(2.0, 0.1 * r)
-                    rel0 = rng.choice([rng.uniform(-50, 50), 0.3, -0.3])
-                    for tw in (False, True):
-                        refused += not Easer(tt)._one(Trajectory(1), State(500.0, v0), rel0, sl, tt.r_up, -tt.r_dn, None,
-                                                      tw, False)
+            for n in (4, 40, 400, 4000):
+                for f, want in ((1.01, True), (2.0, True), (0.99, False)):
+                    sl = side * (r - f * EPS / (2 * n * DT))
+                    if landable(sl, n, tt) != want:
+                        rep.fail(f"constants: slope {sl!r} over {n} ticks at {tt}: landable {not want}")
+                    if not want:
+                        continue
+                    for _ in range(3):
+                        v0 = sl + rng.uniform(-1, 1) * min(2.0, 0.1 * r)
+                        rel0 = rng.choice([rng.uniform(-50, 50), 0.3, -0.3])
+                        for tw in (False, True):
+                            refused += not Easer(tt)._one(Trajectory(1), State(500.0, v0), rel0, sl, tt.r_up, -tt.r_dn,
+                                                          None, tw, False)
     if refused:
-        rep.fail(f"constants: {refused} refusals of landings on lines at trackable's edge (Ruckig or the twin)")
+        rep.fail(f"constants: {refused} refusals of landings on lines at landable's edge (Ruckig or the twin)")
     # Safe braking's slack: a stop may pass the line by up to ε/2, not more (strictly inside X2's ε).
     ez = Easer(DEFAULT)
     segs = segments([steady(100, 60)], 0, 1.0, 2000.0)
@@ -2104,7 +2245,7 @@ def split_equivalence(rep: Report, report: bool, n: int = 300):
 def golden(rep: Report, report: bool, emit: bool = False):
     """Golden traces: Σ y over each plan (to 1e-6 W), its off-line ticks and its settle ticks. They pin behaviour
     the properties allow to vary, such as the lead's timing and cap, the chase, the will-rise
-    test and the boundary of `trackable`. #620's golden vectors carry the same plans tick by tick."""
+    test and the boundary of `landable`. #620's golden vectors carry the same plans tick by tick."""
     got = {}
     for name, spec in {**GOLDEN_PLANS, **golden_random()}.items():
         t, blocks, events, origin = spec[:4]
@@ -2128,7 +2269,8 @@ def golden(rep: Report, report: bool, emit: bool = False):
 def boundary(rep: Report, report: bool, stride: int = 35):
     """Rest-to-rest steps of exactly Δ = rise·ease (and 2·, 3·) up and down, every `stride`-th
     tuning of the full valid set: the input class Ruckig 0.19.4 refuses (§7.10.2, X5). Each must
-    land within P4/P7's bound (check_landing): the twin recovers every refusal, never degraded."""
+    land within P4/P7's bound (check_landing): the twin recovers every refusal, never degraded (a pin, stronger
+    than P8's honest promise, which these plans also keep)."""
     ts = [Tuning(r, f / 4, e / 4) for r in range(5, 51) for f in range(4, 17) for e in range(4, 17)
           if Tuning(r, f / 4, e / 4).valid()][::stride]
     errs = n = twins = 0
@@ -2140,6 +2282,7 @@ def boundary(rep: Report, report: bool, stride: int = 35):
                     continue
                 tr = run([steady(a, 5), steady(b, landing_bound(t, b - a, 0.0) + 10)], t=t)
                 check(tr, t, rep, f"boundary Δ = {mul}·rise·ease {a:g}->{b:g} {t}", a)
+                honest(tr, rep, f"boundary Δ = {mul}·rise·ease {a:g}->{b:g} {t}")
                 if any(tr.degraded):
                     rep.fail(f"boundary Δ = {mul}·rise·ease {a:g}->{b:g} {t}: degraded (the twin did not recover)")
                 errs += tr.errors
@@ -2335,6 +2478,16 @@ def repros(rep: Report, report: bool) -> None:
         if (any(e in CUTS for e in tr.exc) and not ev) or any(tr.degraded) or (tr.slow and not ev):
             rep.fail(f"repro: {name}: cuts {[(k, e) for k, e in enumerate(tr.exc) if e in CUTS]}, degraded"
                      f" {sum(tr.degraded)} ticks, slow answers {tr.slow}")
+    # The segfault input itself (the falsifier's seg3; fix round 2): the meet below a rising line at (50, x4, 2.75), frame
+    # slope -33.33 W/s, so the frame's max_velocity is 83.33 W/s and the state's velocity, 50 W/s, is exactly at it.
+    # Ruckig 0.19.4 segfaults on it (the suite would die). It must never reach Ruckig: the twin alone calculates it.
+    ez, calls = Easer(_T2), []
+    one = ez._one
+    ez._one = lambda *a, **kw: calls.append(a[7]) or one(*a, **kw)   # a[7]: the twin flag
+    ok = ez._calc(Trajectory(1), State(0.0, 50.0, 0.0), -160.41668156786292, -33.333333333333336, _T2.r_up, -_T2.r_dn,
+                  None, True)
+    if not ok or calls != [True] or ez.limit_twins != 1:
+        rep.fail(f"repro: the segfault input: calculated {ok}, calls (twin?) {calls} (expected the twin alone)")
     # The port's finding 1 with its own fault-injection draws (SplitMix from the seed, 20 % of first calculations, the twin
     # answering): round 17's model cuts X4 at tick 404 with no event pending, as the port did.
     t1, b1, e1, o1, m1 = port_plan(1996470693720483841)
@@ -2353,6 +2506,28 @@ def repros(rep: Report, report: bool) -> None:
     once = run(plan, ev, t=DEFAULT, inject=1.0, inject_from=25, refuse_until=26)
     if not (once.degraded[25] and once.exc[25] == "X5" and not any(once.degraded[26:])):
         rep.fail(f"repro: a single refusal at tick 25: {once.exc[24:28]} (one degraded tick, then Ruckig)")
+    # Fix round 2, the fault gate: one-tick episodes (an offset forcing a re-plan on each refused tick) at ticks 25, 40, 55,
+    # 70 and 85. The fourth within 60 s raises erg_easer_degraded from tick 70; it clears on tick 280, when the window
+    # (k - 240, k] holds three again. A single episode raises nothing; persistent() pins the 9th tick of a long one.
+    rt = [25, 40, 55, 70, 85]
+    ev = [Event(k_, "offset", 1.1 if i_ % 2 == 0 else 1.0) for i_, k_ in enumerate(rt)]
+    rec = run([steady(100, 5), steady(300, 80)], ev, t=DEFAULT, refuse_ticks=set(rt))
+    check(rec, DEFAULT, rep, "repro: the fault gate's recurrence", 100.0)
+    want = [70 <= k_ < 280 for k_ in range(len(rec.y))]
+    if [k0 for k0, _ in rec.episodes] != rt or rec.fault != want:
+        rep.fail(f"repro: the fault gate's recurrence: episodes {rec.episodes}, status on ticks"
+                 f" {[k_ for k_, f in enumerate(rec.fault) if f][:3]}… (expected 70..279)")
+    # An input that is not a number is not an episode: NaN offsets on ticks 20, 40, 60 and 80 (each cleared by a valid one
+    # on the next tick) raise the status on exactly those four ticks, and never the recurrence rule.
+    ev_nan = [e for k_ in (20, 40, 60, 80) for e in (Event(k_, "offset", math.nan), Event(k_ + 1, "offset", 1.0))]
+    nn = run([steady(200, 80)], ev_nan, t=DEFAULT)
+    check(nn, DEFAULT, rep, "repro: NaN offsets four times in 60 s", 200.0)
+    if [k_ for k_, f in enumerate(nn.fault) if f] != [20, 40, 60, 80] or nn.episodes:
+        rep.fail(f"repro: NaN offsets four times in 60 s: status on {[k_ for k_, f in enumerate(nn.fault) if f][:8]},"
+                 f" episodes {nn.episodes} (expected ticks 20, 40, 60, 80 and no episode)")
+    one = run([steady(100, 5), steady(300, 80)], ev[:1], t=DEFAULT, refuse_ticks={25})
+    if one.episodes != [(25, 1)] or any(one.fault):
+        rep.fail(f"repro: a single one-tick episode: {one.episodes}, status on {sum(one.fault)} ticks (expected none)")
     # The twin recovers a refusal of the first calculation on the same tick: never degraded.
     tw = run(plan, ev, t=DEFAULT, inject=1.0, inject_from=25, twin_answers=True)
     check(tw, DEFAULT, rep, "repro: every first calculation refused from tick 25, the twin answering", 100.0)
@@ -2645,10 +2820,10 @@ def cap_events(rep: Report, report: bool, n: int = 400):
 
 def injected(rep: Report, report: bool, n: int = 300, share: float = 0.2):
     """Random plans with a share of Ruckig calculations forced to fail, intermittently: with the twin
-    failing too (degraded mode, then the recovery), and with the twin answering (never degraded,
-    P1-P7 and P4/P7's landing bound everywhere)."""
+    failing too (degraded mode, then the recovery), and with the twin answering (P1-P7 and P4/P7's landing bound
+    outside degraded mode, D1-D5 inside; its episodes counted)."""
     rng = random.Random(1585)
-    deg = twins = 0
+    deg = twins = tw_eps = tw_long = 0
     for i in range(n):
         t = rng.choice(GRID)
         blocks, events = random_plan(rng, t)
@@ -2659,13 +2834,14 @@ def injected(rep: Report, report: bool, n: int = 300, share: float = 0.2):
         tw = run(blocks, events, t=t, m0=m0, inject=share, inject_seed=i, twin_answers=True)
         check(tw, t, rep, f"injected, the twin answering, #{i} {t} {blocks} {events}", tw.y[0])
         twins += tw.twins
-        # Round 18 (fix round 1): with the twin answering, degraded mode is allowed only on a double fault, the twin's own
-        # answer refused as slow (as in twin_answering); any other degradation fails.
-        if any(tw.degraded) and tw.slow == 0:
-            rep.fail(f"injected, the twin answering, #{i}: degraded without a slow twin answer")
+        # Fix round 2 (the honest promise): with the twin answering, degraded episodes are counted, not failed; D1-D5
+        # hold in them (check). They are a fault plan's, so P8 does not apply; the status follows the gate (check).
+        tw_eps += len(tw.episodes)
+        tw_long = max([tw_long] + [n for _, n in tw.episodes])
     if report:
         print(f"Fault injection: {n} random plans with {share:.0%} of Ruckig calculations failing: twin too"
-              f" ({deg} degraded ticks), twin answering ({twins} recoveries, never degraded)")
+              f" ({deg} degraded ticks), twin answering ({twins} recoveries, {tw_eps} degraded episodes,"
+              f" longest {tw_long} ticks)")
 
 
 def twin_answering(rep: Report, report: bool, n: int = 2000, share: float = 0.2, seed: int = 18585):
@@ -2673,11 +2849,11 @@ def twin_answering(rep: Report, report: bool, n: int = 2000, share: float = 0.2,
     with a share of first calculations refused and the twin answering every one. Every property holds, X2-X4 only
     in their domain. Before round 18 the twin answered brakes, under limits 2⁻²⁰ tighter than the probes': 0.23 % of
     the port's plans cut outside the domain (29 X4, 15 X2, 1 X3 in 20 000).
-    Degraded mode may run here, and only on a double fault: the injected refusal, then the twin's own answer refused
-    as slow (the twin's limits carry the same boundary, shifted: a state on the twin's velocity boundary, as the
-    pinned slow-twin input in constants()). It is counted, not failed; D1-D5 hold there as everywhere."""
+    Degraded mode may run here: on a double fault (the injected refusal, then the twin's own answer refused as slow from
+    a state on the twin's velocity boundary, as the pinned slow-twin input in constants()), or as the numerical event
+    P8 allows fault-free (fix round 2). Its episodes are counted, not failed; D1-D5 hold there as everywhere."""
     rng = random.Random(seed)
-    twins = deg = 0
+    twins = deg = eps = longest = faults = 0
     for i in range(n):
         t = rng.choice(GRID)
         blocks, events = random_plan_v7(rng, t)
@@ -2690,15 +2866,17 @@ def twin_answering(rep: Report, report: bool, n: int = 2000, share: float = 0.2,
         name = f"twin answering {seed}#{i} {t} {blocks} {events} origin {origin} m0={m0}"
         check(tr, t, rep, name, tr.y[0])
         twins += tr.twins
+        eps += len(tr.episodes)
+        longest = max([longest] + [n_ for _, n_ in tr.episodes])
+        faults += any(tr.fault)
         if any(tr.degraded):
             deg += 1
             if report:
-                print(f"  degraded (the twin's own answer refused as slow): {name[:60]}… tick {tr.degraded.index(True)}")
-            if tr.slow == 0:
-                rep.fail(f"{name}: degraded at tick {tr.degraded.index(True)} with the twin answering and no slow answer")
+                print(f"  degraded (slow answers {tr.slow}): {name[:60]}… episodes {tr.episodes}")
     if report:
         print(f"The twin answering (round 18): {n} random plans with {share:.0%} of first calculations refused,"
-              f" {twins} twin answers; X2-X4 in their domain; {deg} plans degraded on a slow twin answer")
+              f" {twins} twin answers; X2-X4 in their domain; {deg} plans degraded ({eps} episodes, longest {longest}"
+              f" ticks; erg_easer_degraded in {faults} plans)")
 
 
 def ramp_pairs(rep: Report, report: bool):
@@ -2857,7 +3035,7 @@ FIX1 = {
     "PR #693 finding 1, the port's plan (50, x3, 1), seed 1996470693720483841": _pin(
         port_plan(1996470693720483841), refuse_ticks={261, 381, 400}, twin_answers=True),
     "PR #693 finding 2, the port's plan (10, x4, 1.5), seed 4795051404215482607": _pin(port_plan(4795051404215482607)),
-    # A slope at the rate plus noise (-119.9999999999988 W/s, r↓ = 120 W/s) landed on as trackable: degraded fault-free.
+    # A slope at the rate plus noise (-119.9999999999988 W/s, r↓ = 120 W/s) landed on (round 18): degraded fault-free.
     "fix 1: a slope at r↓ plus noise, then a skip (40, x3, 2), seed 105 plan 194": _pin(seeded_plan(105, 194)),
     "fix 1: a slope at r↓ plus noise (40, x2, 1), seed 108 plan 2789": _pin(seeded_plan(108, 2789)),
     # The lead→line handover re-planned on Ruckig's velocity boundary, a slow answer let through: P4 missed.
@@ -2865,6 +3043,35 @@ FIX1 = {
 }
 FINDINGS.update(FIX1)
 GOLDEN_PLANS.update(FIX1)
+
+# Fix round 2 (the falsifier of PR #712 at 047fe9f; the owner's ruling of 2026-11-26, the honest promise).
+_T2 = Tuning(50, 4.0, 2.75)
+_K = 2 * TWIN * 50          # one band width at r↑ = 50 W/s
+_S_UP = 50 - 1.01 * _K      # a rising slope 1.01 band widths inside r↑: fix round 1's band edge, now chased
+_S_DN = -(200 - 1.01 * 2 * TWIN * 200)
+FIX2 = {
+    # Ruckig 0.19.4 segfaulted (exit 139) on a current velocity exactly at max_velocity, in the meet below a rising line
+    # (step 6). The current velocity is guarded like the target velocity (Easer._input). No event, no fault: never degraded.
+    "fix 2: the current velocity at max_velocity, Ruckig's segfault (50, x4, 2.75)": (
+        _T2, [Block(8, 100, 233.33333333333334), Block(60, 500, 0.0), Block(40, 0.0, 0.0)], [], None, {}),
+}
+# Fault-free plans at fix round 1's band edge that degraded (the falsifier's min2 and dn, briefly; band.py 504 plan 1412,
+# 54 ticks). Their near-rate pieces are not landable (landable()): chased, never degraded (FINDINGS), golden.
+EDGE = {
+    "fix 2: a rising ramp 5.5 band widths inside r↑, the meet refused 54 ticks at 047fe9f (50, x3, 4), band 504#1412": (
+        Tuning(50, 3.0, 4.0), [Block(3, 1265.0195316450024, 1152.519531645003), Block(9, 1152.519531645003, 815.019531645003),
+                              Block(3, 815.019531645003, 702.5195316450024), Block(61, 702.5195316450024, 1465.0155490144605),
+                              Block(40, 1465.0155490144605, 1465.0155490144605)], [], None, {}),
+    "fix 2: a rising ramp 1.01 band widths inside r↑, after a fall (50, x4, 2.75)": (
+        _T2, [Block(6, 300.0, 0.0), Block(40, 0.0, _S_UP * 10), Block(40, _S_UP * 10, _S_UP * 10)], [], None, {}),
+    "fix 2: a falling ramp 1.01 band widths inside r↓, from an engagement (50, x4, 2.75)": (
+        _T2, [Block(1, 447.9, 447.9), Block(7, 447.9, 447.9 + _S_DN * 1.75),
+              Block(4, 447.9 + _S_DN * 1.75, 447.9 + _S_DN * 1.75)], [], 127.8, {}),
+}
+FINDINGS.update(FIX2)
+FINDINGS.update(EDGE)
+GOLDEN_PLANS.update(FIX2)
+GOLDEN_PLANS.update(EDGE)
 
 
 def randoms(rep: Report, n: int, report: bool, seed: int = 585):
@@ -2879,11 +3086,9 @@ def randoms(rep: Report, n: int, report: bool, seed: int = 585):
         if tr.y:
             check(tr, t, rep, f"random#{i} {t} {blocks} {events} origin {origin}", tr.y[0])
             ticks += len(tr.y)
-            # Round 18 (finding 2 of PR #693): a fault-free plan is never degraded. Ruckig refusals the twin recovers
-            # and slow answers the twin answers in time are not faults; the status is a fault only where both fail.
-            if any(tr.degraded):
-                rep.fail(f"random#{i} seed {seed}: degraded without a fault at tick {tr.degraded.index(True)}"
-                         f" {t} {blocks} {events} origin {origin}")
+            # P8 (round 18, fix round 2: the honest promise): a fault-free plan's degraded episodes are short and the
+            # status is never raised. Refusals the twin recovers and slow answers it answers in time are not episodes.
+            honest(tr, rep, f"random#{i} seed {seed} {t} {blocks} {events} origin {origin}")
     if report:
         print(f"Random plans, seed {seed}: {n} plans, {ticks} ticks, every property checked on every tick;"
               f" Ruckig errors {rep.errors - errors0} in {rep.plans_with_errors - with0} plans"
@@ -2946,7 +3151,8 @@ def above(rep: Report, report: bool):
         tr = run(bl, ev, t=DEFAULT, m0=400.0)
         caps = [400.0] + [e.value for e in ev if e.kind == "cap" and not math.isnan(e.value) and e.value != -inf]
         bad = [k for k in range(len(tr.y)) if not (math.isfinite(tr.y[k]) and 0.0 <= tr.y[k] <= max(caps) + 1e-9)]
-        if bad or not all(tr.degraded[k0:k1]) or any(tr.exc[k] != "X5" for k in range(k0, k1)):
+        if (bad or not all(tr.degraded[k0:k1]) or not all(tr.fault[k0:k1])
+                or any(tr.exc[k] != "X5" for k in range(k0, k1))):
             rep.fail(f"not a number, {name}: output out of range at {bad[:3]}, degraded {sum(tr.degraded[k0:k1])}/{k1 - k0}"
                      f" ticks {k0}..{k1 - 1}")
         if k1 < len(tr.y) and any(tr.degraded[k1 + 1:]):
@@ -2974,7 +3180,7 @@ def above(rep: Report, report: bool):
         tr = run(bl, ev, t=DEFAULT, **kw)
         bad = [k for k in range(len(tr.y)) if not (math.isfinite(tr.y[k]) and math.isfinite(tr.v[k]) and math.isfinite(tr.a[k])
                                                    and 0.0 <= tr.y[k] <= tr.m[k] + 1e-9)]
-        if bad or not any(tr.degraded):
+        if bad or not any(tr.degraded) or not any(tr.fault):
             rep.fail(f"state not a number, {name}: output not a number or out of range on ticks {bad[:3]},"
                      f" degraded {sum(tr.degraded)} ticks")
     # A cap drop below a command falling fast (f625j, also at 3ace732): the command steps to M and settles there,
@@ -3244,6 +3450,11 @@ def main(argv):
                         for k in ("X2", "X3", "X4")) + f"; X5a: {rep.twins} refusals recovered by the twin;"
               f" X5 degraded {rep.cuts['X5']} ticks ({rep.degraded_runs} runs checked against the stop,"
               f" {rep.recoveries} recoveries' landings checked); P7 on every line: {rep.above_checked} downward steps checked")
+    if report:
+        print(f"Degraded episodes (fix round 2): {rep.episodes} over every plan, erg_easer_degraded on {rep.fault_ticks}"
+              f" ticks (persistent refusals and inputs that are not numbers). P8, fault-free: {rep.ff_plans} plans,"
+              f" {rep.ff_episodes} episodes ({rep.ff_ticks} ticks), longest {rep.ff_longest} of {FAULT_EPISODE_TICKS}"
+              f" allowed ticks, erg_easer_degraded never raised")
     if rep.fails:
         print("FAIL", rep.nfail, "failures by kind:", rep.kinds)
         for f in rep.fails:
