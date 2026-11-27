@@ -144,9 +144,14 @@ the Tauri bundle, so this is load and memory, not network; the implementation PR
   `historyRedo` (how WebKit delivers Edit ▸ Undo and the menu's Cmd+Z to a contenteditable): it calls
   `preventDefault()` and routes them to the model's `undo` / `redo`, so the DOM's own undo never runs; the §2.1 owner
   check confirms the menu path.
-- **The model's `draft` is the truth; the view follows it.** A change made in CodeMirror (a keystroke, a completion)
-  calls `edit(text, at)` as today. A change that comes from the model (undo, redo, an outline edit, Accept of an AI
-  rewrite) is dispatched into the view as one replacement of the changed region: the common prefix and suffix of the
+- **The model's `draft` is the truth; the view follows it.** A change the rider makes in CodeMirror (a keystroke, an
+  accepted completion) calls `edit(text, at)` as today. A change that comes from the model (undo, redo, an outline
+  edit, **a fix**, Accept of an AI rewrite) is made in the model first (`undo`, `applied`, `fixed`, …) and then
+  dispatched into the view, annotated as external (a CodeMirror `Annotation`), and the view's update listener never
+  calls `edit` for an external transaction, so following the model never starts a typing burst. **A fix is never
+  dispatched into the view by itself:** its button and CodeMirror's diagnostic action both call `fixed` only, and the
+  view follows the new draft like any model change. The fix's `edits` are used by the core to check it and by the view
+  only to mark which range the fix replaces. The dispatch is one replacement of the changed region: the common prefix and suffix of the
   old and new text are kept, so the cursor stays put when it lies outside the change. That trim is a few lines with a
   property test (old text with the region replaced equals the new text); a diff library would only improve where the
   cursor lands after an edit made elsewhere, so it is not worth a dependency (`@codemirror/merge`'s `diff` was
@@ -159,7 +164,10 @@ the Tauri bundle, so this is load and memory, not network; the implementation PR
   its own, committed synchronously**, through one new model function, `fixed(s, base, fix)`. The core offers a fix only
   after parsing the whole fixed text (§2.5), with the core's own id source, so the fix carries that parse's result:
   `DslFix.result = { text, nodes, spans, hints }`. `fixed` applies only if `s.draft === base`, the draft the fix was
-  offered for (a fix from an older answer is refused: its edits are in that text's coordinates); then it commits
+  offered for (a fix from an older answer is refused: its edits are in that text's coordinates). The rider never sees
+  a stale fix: when the draft moves on, the marks and fix buttons of the previous answer are removed at once, and the
+  next answer brings its own, so the refusal is only the model's guard for a click racing a keystroke, a no-op with
+  nothing shown. Then it commits
   `fix.result` with today's `commit(…, grouped = false)`, the selection following its path as `parsed` does, and
   sets `typing: null`. There is no parse round-trip: the saved tree is the fixed one at once, so Save and the outline
   never wait for it, and nothing is in flight for a keystroke to make stale. The next keystroke finds `typing: null`,
@@ -183,8 +191,9 @@ Diagnostics stay the core's: spans, severity and message come from Rust; TypeScr
 pub struct DslEdit { pub offset: usize, pub length: usize, pub insert: String }
 /// A fix the core has checked (§2.5): what the UI shows after "Did you mean", and its edits.
 /// `edits` are sorted by offset and never overlap or touch, all in the original text's coordinates: exactly
-/// CodeMirror's `ChangeSpec[]` semantics, so the view dispatches them as one transaction; the core applies them
-/// last-to-first when it checks the fix, and `result.text` is exactly the text they produce.
+/// CodeMirror's `ChangeSpec[]` semantics. The core applies them last-to-first when it checks the fix, and
+/// `result.text` is exactly the text they produce; the view never applies them itself (it shows their range, and
+/// accepting the fix commits `result` through the model, §2.2).
 /// `result` is the parse of the fixed text that made the fix offerable (§2.5), so the editor commits it without
 /// parsing again (§2.2).
 pub struct DslFix { pub label: String, pub edits: Vec<DslEdit>, pub result: FixedText }
@@ -225,7 +234,7 @@ the text and no re-parse is needed.
 | Commit | Spans from | Extra cost |
 |---|---|---|
 | typing (`parsed`) | that parse answer | none |
-| a fix (`fixed`) | the fix's `result`, from the check parse (§2.5) | none (that parse was needed to offer the fix; the answer grows by up to 3 trees, only while the text does not parse) |
+| a fix (`fixed`) | the fix's `result`, from the check parse (§2.5) | no extra parse (that parse was needed to offer the fix); the answer grows by up to 3 trees, only while the text does not parse, and only for texts up to 64 KiB (§2.6 "Cost per keystroke") |
 | an outline edit (`applied`, #653/#731) | the read-back parse of the printed text: `outlineEdit` already prints (`print_dsl`) and parses the result (`parse_dsl`) and commits **the tree the core read back** (DESIGN §5.7), so `applied` takes that answer's `spans` too | none |
 | opening the editor (`load`) | `WorkoutDetail.spans`: the core's `workout_get` already returns the canonical text (`dsl`) beside the tree, and now also the spans of parsing that text; a new workout's empty text has none (`[]`) | one parse per `workout_get` in the core; spans are by pre-order index and `parse(print(t)) == t` structurally (docs/DSL.md), so they match the stored tree although that parse's ids are discarded. The editor opens with its spans in hand and never waits |
 | Accept of an AI rewrite (#112, not built yet) | the parse of the accepted text: #112 commits through `parsed` or `applied` like every other change, so it takes the answer's spans | none |
@@ -350,6 +359,12 @@ all of them. Options follow table order; a typed prefix filters them (CodeMirror
   as its property tests use) within **50 ms**. **Coalescing, not a timer:** the view keeps at most one parse in flight;
   keystrokes made meanwhile only move the draft, and when the answer returns the latest draft is sent if it differs
   (the stale answer is dropped by `parsed` as today). So a slow parse never queues, and a fast one adds no delay.
+  **The budget includes serialising the answer and the IPC**, measured end to end from `invoke` to the answer in the
+  page, with up to 3 fixes each carrying its `result` tree and text. To keep that bounded at the stress size, fixes
+  are offered only for texts up to **64 KiB** (about 2 000 items, 4 × the large workout above): a longer text that does
+  not parse gets the core's message and no fix, so the answer at 256 KiB stays one error and no trees. **Rejected:**
+  sending a fix's result lazily on acceptance: a round-trip after the click brings back the fix-then-type race
+  that §2.2's synchronous commit removes.
   CodeMirror's completion source is one-in-flight with abort by itself. The announcement waits for `GROUP_MS` (§2.7).
   If the benchmark misses the budget, the implementation PR says so with its numbers and is a design question, not a
   silent debounce.
@@ -451,12 +466,19 @@ hand-written distance, unchecked fixes (§2.5); a style lint and a format fix (�
   completed at the cut offers that token.
 - **Hints:** unused variable reported, chained unused reported on each, the Remove fix parses.
 - **Benchmark** (`crates/crank-domain/examples/dsl_editor_bench.rs`, `just bench-editor`, release): the budget of
-  §2.6 on the 500-item workout and the 256 KiB text, for a valid text, an invalid one with 3 fix candidates, and
-  completion at the end of the text; numbers reported in the implementation PR. It is not a CI gate (shared runners
+  §2.6 on the 500-item workout, a 64 KiB text and the 256 KiB text, for a valid text, an invalid one with 3 fix
+  candidates, and completion at the end of the text, timing the core's work plus `serde_json` serialising of the DTO
+  answer; the IPC leg is timed once in the real app (sim, `invoke` to answer in the page) on the same texts; numbers
+  reported in the implementation PR. It is not a CI gate (shared runners
   make timing gates flaky); the CI-checked bounds are deterministic: at most 3 check parses per answer, and
   `dsl_complete` reads no token past the cursor (a test with a lexer that counts tokens).
+- **The 64 KiB cut-off:** a text of 64 KiB that does not parse gets its fixes; one byte more gets the message and no
+  fix (so no `result` tree is serialised past it).
 
-**App (Vitest):** model: a fix is one undo step committed by `fixed` alone (no parse); keys typed right after it form
+**App (Vitest):** model: a fix is one undo step committed by `fixed` alone (no parse); the fix button and the
+diagnostic action call `fixed` and never `edit`, and the view follows with an external transaction that starts no
+typing burst (an update listener spy sees no `edit` call); the previous answer's fix buttons are gone as soon as the
+draft moves on; keys typed right after it form
 a new step (fix, type, Cmd+Z leaves the fix; Cmd+Z again removes it); a fix whose `base` is no longer the draft is
 refused; Save is enabled right after a fix with no "Reading the text…"; an accepted completion joins the burst; `load` and
 `applied` keep spans, and after an outline move a compile warning is underlined on the moved block; the view sends no
