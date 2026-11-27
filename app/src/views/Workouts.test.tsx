@@ -117,6 +117,18 @@ test("picking a workout shows the compiled summary from the core", async () => {
   expect(s.getAllByRole("listitem").length).toBeGreaterThanOrEqual(7);
 });
 
+test("the summary names the FTP the core compiled it at (ADR-0009 §2.1.4)", async () => {
+  install({ compiled: { "w-ss": compiled({ ftpW: 287 }) } });
+  open();
+  await userEvent.click(
+    await screen.findByRole("option", { name: /Sweet spot 3x12/ }),
+  );
+  const s = within(await summary());
+  expect((await s.findByTestId("compiled-ftp")).textContent).toBe(
+    "At FTP 287 W",
+  );
+});
+
 test("a validation warning renders with its message", async () => {
   install({
     compiled: {

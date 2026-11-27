@@ -1,11 +1,13 @@
 //! Wire types of the facade (ADR-0001 §4.1: camelCase structs, `snake_case` enums,
 //! seconds as `f64`, `Option` as `T | null`).
 use crate::error::{ApiError, ErrorCode};
+use crank_domain::athlete::{AthleteParam, AthleteSnapshot, Entry, Estimate, Resolved, Source};
 use crank_domain::workout::{
     CompiledWorkout, DslError, FlatBlock, Phase, Severity, ValidationIssue, ValidationKind,
     Workout, WorkoutNode,
 };
 use crank_engine::{LinkStatus, StreamStatus};
+use crank_store::Proposal;
 use serde::{Deserialize, Serialize};
 
 /// What the running core is: answered by `core_ready`.
@@ -402,7 +404,7 @@ pub struct WorkoutSummary {
     pub total_s: f64,
     /// Estimated training stress.
     pub tss: f64,
-    /// Reference FTP, W.
+    /// The FTP it is compiled at, W: the athlete model's current FTP (ADR-0009 §2.1.4).
     pub ftp: f64,
     /// One of crank's own workouts: read-only, so editing it means a copy (DESIGN §5.7, #110).
     pub builtin: bool,
@@ -429,7 +431,9 @@ pub struct WorkoutDetail {
 pub struct WorkoutDraft {
     /// Display name: not blank, and at most 120 characters once trimmed.
     pub name: String,
-    /// Reference FTP, W.
+    /// The FTP the editor previewed it at, W, stored as the informative `ftp_at_creation`;
+    /// the library and `ride_load` compile it at the athlete model's FTP instead (ADR-0009
+    /// §2.1.4).
     pub ftp: f64,
     /// The workout tree.
     pub nodes: Vec<WorkoutNode>,
@@ -527,11 +531,19 @@ pub struct CompiledView {
     pub time_in_zone_s: [u32; 7],
     /// Prescription diagnostics.
     pub issues: Vec<WorkoutIssue>,
+    /// The FTP it was compiled at, W: the watts, TSS, IF and zones above assume it. A preview
+    /// (the library, the editor) is at the athlete model's current FTP, a loaded ride at its
+    /// frozen snapshot's (ADR-0009 §2.1.4).
+    pub ftp_w: f64,
 }
-impl TryFrom<&CompiledWorkout> for CompiledView {
-    type Error = ApiError;
-    fn try_from(c: &CompiledWorkout) -> Result<Self, ApiError> {
+impl CompiledView {
+    /// The view of `c`, compiled at `ftp_w`.
+    ///
+    /// # Errors
+    /// `Internal` if a block index exceeds `u32`.
+    pub fn new(c: &CompiledWorkout, ftp_w: f64) -> Result<Self, ApiError> {
         Ok(Self {
+            ftp_w,
             blocks: c
                 .blocks
                 .iter()
@@ -604,8 +616,235 @@ pub struct RidePlan {
     pub ride_id: String,
     /// The workout as loaded; the free ride's has no steps.
     pub workout: Workout,
-    /// Its compiled timeline, the blocks the engine runs.
+    /// Its compiled timeline, the blocks the engine runs, at the snapshot's FTP (`ftp_w`).
     pub compiled: CompiledView,
+    /// The athlete model frozen at the load (ADR-0009 §2.1.4): the ride's FTP, CP, W′ and HR
+    /// references. The ride reads its zones from it, never from Settings, so the live label
+    /// and the stored ride (`ride.athlete_json`) agree; the HR zone uses only its measured
+    /// (non-prior) LTHR, else HR max (`AthleteSnapshot::hr_refs`).
+    pub athlete: AthleteSnapshotView,
+}
+
+/// A row id of the athlete model as it crosses: `athlete_estimate.id` and
+/// `athlete_proposal.id` are `i64` rowids, which TypeScript cannot carry without precision
+/// loss, so they are converted with a checked cast.
+fn row_id(id: i64) -> Result<u32, ApiError> {
+    u32::try_from(id)
+        .map_err(|_| ApiError::new(ErrorCode::Internal, format!("row id {id} exceeds u32")))
+}
+
+/// A resolved parameter value ([`Resolved`]) as it crosses the boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedView {
+    /// The value, in the parameter's unit.
+    pub value: f64,
+    /// Its standard deviation.
+    pub sd: f64,
+    /// Where it came from.
+    pub source: Source,
+    /// The estimate row it was read from; `null` for a prior no row holds.
+    pub estimate_id: Option<u32>,
+}
+impl TryFrom<Resolved> for ResolvedView {
+    type Error = ApiError;
+    fn try_from(r: Resolved) -> Result<Self, ApiError> {
+        Ok(Self {
+            value: r.value,
+            sd: r.sd,
+            source: r.source,
+            estimate_id: r.estimate_id.map(row_id).transpose()?,
+        })
+    }
+}
+
+/// The athlete model frozen at `ride_load` ([`AthleteSnapshot`], ADR-0009 §2.1.4): each
+/// parameter resolved, or `null` when unset (never 0).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AthleteSnapshotView {
+    /// Functional threshold power, W.
+    pub ftp: Option<ResolvedView>,
+    /// Critical power, W.
+    pub cp: Option<ResolvedView>,
+    /// W′, J.
+    pub w_prime: Option<ResolvedView>,
+    /// Peak one-second power, W.
+    pub pmax: Option<ResolvedView>,
+    /// Maximum heart rate, bpm.
+    pub hr_max: Option<ResolvedView>,
+    /// Lactate-threshold heart rate, bpm.
+    pub lthr: Option<ResolvedView>,
+    /// Resting heart rate, bpm.
+    pub hr_rest: Option<ResolvedView>,
+    /// Body weight, kg.
+    pub weight: Option<ResolvedView>,
+}
+impl TryFrom<&AthleteSnapshot> for AthleteSnapshotView {
+    type Error = ApiError;
+    fn try_from(s: &AthleteSnapshot) -> Result<Self, ApiError> {
+        let v = |r: Option<Resolved>| r.map(ResolvedView::try_from).transpose();
+        Ok(Self {
+            ftp: v(s.ftp)?,
+            cp: v(s.cp)?,
+            w_prime: v(s.w_prime)?,
+            pmax: v(s.pmax)?,
+            hr_max: v(s.hr_max)?,
+            lthr: v(s.lthr)?,
+            hr_rest: v(s.hr_rest)?,
+            weight: v(s.weight)?,
+        })
+    }
+}
+
+/// A value row of a parameter's history ([`Estimate`], ADR-0009 §2.1.1).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EstimateView {
+    /// The row: `athlete_revert` takes it.
+    pub id: u32,
+    /// The parameter.
+    pub param: AthleteParam,
+    /// The value, in the parameter's unit.
+    pub value: f64,
+    /// Its standard deviation, same unit.
+    pub sd: f64,
+    /// Where it came from.
+    pub source: Source,
+    /// How it was derived: `prior_v1`, `manual`, `ramp_v1_0.75`, ….
+    pub method: String,
+    /// The ride the value came from, if any.
+    pub ride_id: Option<String>,
+    /// The accepted proposal that wrote it, if any.
+    pub proposal_id: Option<u32>,
+    /// Number of efforts or rides behind it.
+    pub n: u32,
+    /// When the row was written, UTC Unix seconds.
+    pub updated_at: f64,
+}
+impl TryFrom<&Estimate> for EstimateView {
+    type Error = ApiError;
+    fn try_from(e: &Estimate) -> Result<Self, ApiError> {
+        Ok(Self {
+            id: row_id(e.id)?,
+            param: e.param,
+            value: e.value,
+            sd: e.sd,
+            source: e.source,
+            method: e.method.clone(),
+            ride_id: e.ride_id.clone(),
+            proposal_id: e.proposal_id.map(row_id).transpose()?,
+            n: e.n,
+            updated_at: unix_secs(e.updated_at),
+        })
+    }
+}
+
+/// One row of a parameter's history (`athlete_history`): a value, or a Clear of a parameter
+/// with no prior (ADR-0009 §2.1.3), which "Use this value" (`athlete_revert`) refuses.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HistoryEntry {
+    /// A value of the parameter.
+    Estimate(EstimateView),
+    /// The parameter was cleared and has no prior: unset from then on.
+    Cleared {
+        /// The row.
+        id: u32,
+        /// When the row was written, UTC Unix seconds.
+        #[serde(rename = "updatedAt")]
+        updated_at: f64,
+    },
+}
+impl TryFrom<&Entry> for HistoryEntry {
+    type Error = ApiError;
+    fn try_from(e: &Entry) -> Result<Self, ApiError> {
+        Ok(match e {
+            Entry::Estimate(e) => Self::Estimate(EstimateView::try_from(e)?),
+            Entry::Cleared(c) => Self::Cleared {
+                id: row_id(c.id)?,
+                updated_at: unix_secs(c.updated_at),
+            },
+        })
+    }
+}
+
+/// One parameter of the athlete model (`athlete_model`, ADR-0009 §2.1.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AthleteParamState {
+    /// The parameter.
+    pub param: AthleteParam,
+    /// What the model resolves it to: its newest row, else its prior, else `null` (unset,
+    /// shown as "Not set").
+    pub resolved: Option<ResolvedView>,
+    /// The row `resolved` was read from (its source, method, ride and date); `null` for a prior
+    /// no row holds and for an unset parameter.
+    pub estimate: Option<EstimateView>,
+}
+
+/// One value of a proposal.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposedValueView {
+    /// The parameter.
+    pub param: AthleteParam,
+    /// The proposed value, in the parameter's unit.
+    pub value: f64,
+    /// Its sd.
+    pub sd: f64,
+}
+
+/// An open proposal (ADR-0009 §2.2.4): a value the analysis derived, waiting for the rider.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AthleteProposalView {
+    /// The proposal (`athlete_proposal_accept` and `athlete_proposal_dismiss` take it, #720).
+    pub id: u32,
+    /// The ride that raised it.
+    pub ride_id: String,
+    /// The rule's method (`peak_hr_v1`, `cp_ols_v1`, …).
+    pub method: String,
+    /// One value, or two (CP and W′).
+    pub values: Vec<ProposedValueView>,
+    /// When it was raised, UTC Unix seconds.
+    pub created_at: f64,
+}
+impl TryFrom<&Proposal> for AthleteProposalView {
+    type Error = ApiError;
+    fn try_from(p: &Proposal) -> Result<Self, ApiError> {
+        Ok(Self {
+            id: row_id(p.id)?,
+            ride_id: p.ride_id.clone(),
+            method: p.method.clone(),
+            values: p
+                .values
+                .iter()
+                .map(|v| ProposedValueView {
+                    param: v.param,
+                    value: v.value,
+                    sd: v.sd,
+                })
+                .collect(),
+            created_at: unix_secs(p.created_at),
+        })
+    }
+}
+
+/// The athlete model as Settings → Athlete model shows it (`athlete_model`, ADR-0009 §2.1.3):
+/// the current value per parameter, the prior for an unset one, and the open proposals.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AthleteModel {
+    /// Every parameter, in ADR-0009 §2.1.1's order.
+    pub params: Vec<AthleteParamState>,
+    /// The open proposals, oldest first.
+    pub proposals: Vec<AthleteProposalView>,
+}
+
+#[expect(clippy::cast_precision_loss, reason = "UTC seconds are far below 2^53")]
+fn unix_secs(unix: i64) -> f64 {
+    unix as f64
 }
 
 /// Answer of `ride_load`.

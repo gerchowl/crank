@@ -199,6 +199,10 @@ export function Summary({ compiled }: { compiled: CompiledView }) {
           <dd className="num">{number(compiled.if, 2)}</dd>
         </div>
       </dl>
+      {/* The FTP the watts, TSS, IF and zones assume (ADR-0009 §2.1.4): the athlete model's current FTP. */}
+      <p className="workouts-hint" data-testid="compiled-ftp">
+        At FTP <span className="num">{number(compiled.ftpW, 0)}</span> W
+      </p>
       <Issues issues={compiled.issues} />
       <section className="workouts-part" aria-labelledby="workouts-zones-h">
         <h3 id="workouts-zones-h">Time in zone</h3>
@@ -465,11 +469,6 @@ export function Workouts() {
                 <h2>{detail.workout.name}</h2>
                 {detail.builtin && (
                   <span className="workouts-chip">Built-in, read-only</span>
-                )}
-                {detail.workout.ftp !== null && (
-                  <span className="workouts-chip num">
-                    FTP {detail.workout.ftp} W
-                  </span>
                 )}
               </div>
               <Profile

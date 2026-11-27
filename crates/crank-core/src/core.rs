@@ -12,15 +12,16 @@
 //! loaded ride's engine and to a window label; they end with the ride.
 use crate::backend::{Backend, DeviceMode};
 use crate::dto::{
-    CompiledView, CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, DslProblem, KnownDevice,
-    LinkIntent, LinkPhase, LinksId, PairedDevice, ReleaseReason, RideEnding, RideLoaded,
-    RideOutcome, RidePlan, RideRecord, RideStatusView, RideSummary, ScannedDevice, UiChannelId,
-    UiState, WorkoutDetail, WorkoutDraft, WorkoutSummary,
+    AthleteModel, AthleteParamState, AthleteProposalView, AthleteSnapshotView, CompiledView,
+    CoreInfo, DeviceLinkInfo, DeviceRole, DslParse, DslProblem, EstimateView, HistoryEntry,
+    KnownDevice, LinkIntent, LinkPhase, LinksId, PairedDevice, ReleaseReason, ResolvedView,
+    RideEnding, RideLoaded, RideOutcome, RidePlan, RideRecord, RideStatusView, RideSummary,
+    ScannedDevice, UiChannelId, UiState, WorkoutDetail, WorkoutDraft, WorkoutSummary,
 };
 use crate::error::{ApiError, ErrorCode};
 use crate::keeper::channel::{Channels, LinkSink};
 use crate::keeper::run::{self as keeper, Hold, Note};
-use crate::library::{Library, refuse_errors};
+use crate::library::{Entry as LibraryEntry, Library, refuse_errors};
 use crate::recorder::{RideMeta, StoreRecorder};
 use crate::ui::{RideSlot, Ui, UiSink};
 use crank_ble::{Pairing, RideGate};
@@ -29,14 +30,13 @@ use crank_devices::{
     TrainerCommand, TrainerEvent, TrainerLink,
     sim::{SimLatency, SimLoss},
 };
-use crank_domain::workout::{
-    CompileOptions, CompiledWorkout, Workout, WorkoutNode, compile_workout, parse_dsl, print_dsl,
-};
+use crank_domain::athlete::{AthleteParam, AthleteSnapshot, Entry, prior::SelfReportOrigin};
+use crank_domain::workout::{CompiledWorkout, Workout, WorkoutNode, parse_dsl, print_dsl};
 use crank_engine::{
     CommandError, Engine, EngineCmd, EngineHandle, MetricId, MonotonicClock, RideSetup, RideState,
     SeriesStore, StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts, Tuning,
 };
-use crank_store::{Device, JsonColumn, RideListing, SettingJson, Store};
+use crank_store::{Device, EstimateOrigin, JsonColumn, RideListing, SettingJson, Store};
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use std::{
     collections::BTreeMap,
@@ -1090,6 +1090,24 @@ struct Rendezvous {
 #[derive(Clone)]
 pub struct Core(Arc<Inner>);
 
+/// The FTP of a snapshot, W. FTP always resolves: it has a prior that needs no age
+/// (ADR-0009 §2.1.2), so an unset FTP is a bug, never a silent default.
+fn snapshot_ftp(snapshot: &AthleteSnapshot) -> Result<f64, ApiError> {
+    snapshot
+        .ftp
+        .map(|f| f.value)
+        .ok_or_else(|| ApiError::new(ErrorCode::Internal, "the athlete model has no FTP"))
+}
+
+/// An athlete parameter by its stored name (`ftp`, `w_prime`, …).
+///
+/// # Errors
+/// `InvalidInput` for a name that is none of the eight (ADR-0009 §2.1.3).
+fn athlete_param(name: &str) -> Result<AthleteParam, ApiError> {
+    name.parse()
+        .map_err(|e| ApiError::new(ErrorCode::InvalidInput, format!("{e}: {name:?}")))
+}
+
 #[expect(clippy::cast_precision_loss, reason = "UTC seconds are far below 2^53")]
 fn secs(unix: i64) -> f64 {
     unix as f64
@@ -1784,7 +1802,7 @@ impl Core {
         reason = "every facade method is async (ADR-0001 §4)"
     )]
     pub async fn workouts_list(&self) -> Result<Vec<WorkoutSummary>, ApiError> {
-        self.0.library.summaries(&self.0.store)
+        self.0.library.summaries(&self.0.store, self.current_ftp()?)
     }
 
     /// One workout with its DSL and compiled timeline.
@@ -1796,19 +1814,22 @@ impl Core {
         reason = "every facade method is async (ADR-0001 §4)"
     )]
     pub async fn workout_get(&self, id: String) -> Result<WorkoutDetail, ApiError> {
-        self.0.library.detail(&self.0.store, &id)
+        self.0
+            .library
+            .detail(&self.0.store, &id, self.current_ftp()?)
     }
 
-    /// The draft the editor's new workout starts from: a name, the reference FTP, no steps.
+    /// The draft the editor's new workout starts from: a name, the athlete model's current FTP,
+    /// no steps.
     ///
     /// # Errors
-    /// Never fails; async and fallible as every facade method.
+    /// `Storage` when the athlete model does not read.
     #[expect(
         clippy::unused_async,
         reason = "every facade method is async (ADR-0001 §4)"
     )]
     pub async fn workout_new(&self) -> Result<WorkoutDraft, ApiError> {
-        Ok(Library::new_draft())
+        Ok(Library::new_draft(self.current_ftp()?))
     }
 
     /// Save a workout to the library (#110, DESIGN §5.7): update the rider's workout `id`, or
@@ -1829,7 +1850,13 @@ impl Core {
         id: Option<String>,
         draft: WorkoutDraft,
     ) -> Result<String, ApiError> {
-        Library::save(&self.0.store, id.as_deref(), draft, unix_now())
+        Library::save(
+            &self.0.store,
+            id.as_deref(),
+            draft,
+            self.current_ftp()?,
+            unix_now(),
+        )
     }
 
     /// Delete the rider's workout `id`. Its rides keep their own copy of it.
@@ -1879,18 +1906,153 @@ impl Core {
     }
 
     /// Compile a workout (an editor draft) to its timeline and summary, issues included: an
-    /// error-severity issue is part of the answer, not a failure.
+    /// error-severity issue is part of the answer, not a failure. A preview: it is compiled at
+    /// the athlete model's current FTP, never the draft's own `ftp`, and labelled with it
+    /// (`CompiledView::ftp_w`, ADR-0009 §2.1.4).
     ///
     /// # Errors
     /// `InvalidInput` when the workout does not compile (a nonfinite input, nesting, expansion
     /// or timeline bounds, [`crank_domain::workout::CompileError`]); `Internal` if a block
-    /// index exceeds `u32`.
+    /// index exceeds `u32`; `Storage` when the athlete model does not read.
     #[expect(
         clippy::unused_async,
         reason = "every facade method is async (ADR-0001 §4)"
     )]
     pub async fn compile_workout(&self, workout: Workout) -> Result<CompiledView, ApiError> {
-        CompiledView::try_from(&compile_workout(&workout, &CompileOptions::default())?)
+        let ftp = self.current_ftp()?;
+        CompiledView::new(&LibraryEntry::at(workout, ftp, false)?.compiled, ftp)
+    }
+
+    // ---- athlete model (ADR-0009 §2.1.3) ---------------------------------------
+
+    /// The athlete model: per parameter, what it resolves to now (its newest row, else its
+    /// prior, else unset) and the row that value came from; and the open proposals. A query
+    /// of durable data (ADR-0001 §4.2): Settings reads it again after each change.
+    ///
+    /// # Errors
+    /// `Storage` when the store fails or holds a row that does not decode.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn athlete_model(&self) -> Result<AthleteModel, ApiError> {
+        let snapshot = self.athlete_now()?;
+        let mut params = Vec::with_capacity(AthleteParam::ALL.len());
+        for param in AthleteParam::ALL {
+            let resolved = snapshot.get(param);
+            // Rows are append-only and never change, so the row the snapshot names is the
+            // one it resolved from, whatever was appended since.
+            let estimate = match resolved.and_then(|r| r.estimate_id) {
+                None => None,
+                Some(id) => match self.0.store.athlete_entry(id)? {
+                    Some(Entry::Estimate(e)) => Some(EstimateView::try_from(&e)?),
+                    _ => {
+                        return Err(ApiError::new(
+                            ErrorCode::Storage,
+                            format!("{param}: the current row {id} is not a value row"),
+                        ));
+                    }
+                },
+            };
+            params.push(AthleteParamState {
+                param,
+                resolved: resolved.map(ResolvedView::try_from).transpose()?,
+                estimate,
+            });
+        }
+        let proposals = self
+            .0
+            .store
+            .open_proposals()?
+            .iter()
+            .map(AthleteProposalView::try_from)
+            .collect::<Result<_, _>>()?;
+        Ok(AthleteModel { params, proposals })
+    }
+
+    /// Set a parameter to a value the rider typed in: appends a `self_report` row (method
+    /// `manual`) with `sd`, by default the self-report "guess" sd of ADR-0009 §2.1.2 (20 %
+    /// of the value), and marks every open proposal of the parameter `superseded` in the same
+    /// transaction (§2.2.4 "Manual entry wins"). The new value shows in `athlete_model`; a
+    /// ride already loaded keeps its snapshot.
+    ///
+    /// # Errors
+    /// `InvalidInput` for an unknown parameter, a non-finite value or sd, a value outside the
+    /// parameter's bounds, an sd not above 0 or above 50 % of the value, or an LTHR at or
+    /// above a measured HR max (and an HR max at or below a measured LTHR); `Storage`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn athlete_set(
+        &self,
+        param: String,
+        value: f64,
+        sd: Option<f64>,
+    ) -> Result<(), ApiError> {
+        let param = athlete_param(&param)?;
+        let sd = sd.unwrap_or_else(|| SelfReportOrigin::Guess.sd(value));
+        self.0
+            .store
+            .append_athlete(EstimateOrigin::Set { param, value, sd }, unix_now())?;
+        Ok(())
+    }
+
+    /// Every row of a parameter's history, newest first: values and Clears.
+    ///
+    /// # Errors
+    /// `InvalidInput` for an unknown parameter; `Storage`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn athlete_history(&self, param: String) -> Result<Vec<HistoryEntry>, ApiError> {
+        self.0
+            .store
+            .athlete_history(athlete_param(&param)?)?
+            .iter()
+            .map(HistoryEntry::try_from)
+            .collect()
+    }
+
+    /// "Use this value": appends a copy of the value row `estimate_id` (its source, method,
+    /// ride, proposal and n kept, with a new time), so the history shows the revert, and
+    /// supersedes the parameter's open proposals as `athlete_set` does.
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown row; `InvalidInput` for a prior row (going back to the prior
+    /// is `athlete_clear`), a cleared row, or a value the current model refuses (an LTHR at or
+    /// above a measured HR max); `Storage`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn athlete_revert(&self, estimate_id: u32) -> Result<(), ApiError> {
+        self.0.store.append_athlete(
+            EstimateOrigin::Revert {
+                estimate_id: estimate_id.into(),
+            },
+            unix_now(),
+        )?;
+        Ok(())
+    }
+
+    /// Clear a parameter: appends the prior's row (HR max's from the profile's age), or, for a
+    /// parameter with no prior, a cleared row that leaves it unset; supersedes its open
+    /// proposals as `athlete_set` does.
+    ///
+    /// # Errors
+    /// `InvalidInput` for an unknown parameter; `Storage`.
+    #[expect(
+        clippy::unused_async,
+        reason = "every facade method is async (ADR-0001 §4)"
+    )]
+    pub async fn athlete_clear(&self, param: String) -> Result<(), ApiError> {
+        let param = athlete_param(&param)?;
+        self.0
+            .store
+            .append_athlete(EstimateOrigin::Clear { param }, unix_now())?;
+        Ok(())
     }
 
     // ---- ride -------------------------------------------------------------------
@@ -2049,13 +2211,18 @@ impl Core {
         })
     }
 
-    /// The workout and compiled timeline to ride; `None` is a free ride.
-    fn resolve_workout(&self, id: Option<&str>) -> Result<(Workout, CompiledWorkout), ApiError> {
+    /// The workout and compiled timeline to ride, at `ftp` (the ride's snapshot, ADR-0009
+    /// §2.1.4: `Workout.ftp` is what it is ridden at); `None` is a free ride.
+    fn resolve_workout(
+        &self,
+        id: Option<&str>,
+        ftp: f64,
+    ) -> Result<(Workout, CompiledWorkout), ApiError> {
         let Some(id) = id else {
             let workout = Workout {
                 id: "free-ride".into(),
                 name: "Free ride".into(),
-                ftp: 0.0,
+                ftp,
                 nodes: Vec::new(),
             };
             let compiled = CompiledWorkout {
@@ -2069,9 +2236,22 @@ impl Core {
             };
             return Ok((workout, compiled));
         };
-        let e = self.0.library.get(&self.0.store, id)?;
+        let e = self.0.library.get(&self.0.store, id, ftp)?;
         refuse_errors(&e.compiled)?;
         Ok((e.workout, e.compiled))
+    }
+
+    // ---- athlete model ----------------------------------------------------------
+
+    /// The athlete model as stored now (ADR-0009 §2.1.4): read once per load, and for each
+    /// preview.
+    fn athlete_now(&self) -> Result<AthleteSnapshot, ApiError> {
+        Ok(self.0.store.athlete_snapshot()?)
+    }
+
+    /// The athlete model's current FTP, W, which previews compile at.
+    fn current_ftp(&self) -> Result<f64, ApiError> {
+        snapshot_ftp(&self.athlete_now()?)
     }
 
     /// The first step of a load: a loaded-but-unstarted or finished ride is replaced, but only
@@ -2139,6 +2319,12 @@ impl Core {
     /// it and waits for its devices): if connecting then fails, nothing is loaded and
     /// the status is idle. A cancelled or panicking load leaves the core usable.
     ///
+    /// **The athlete model is frozen here** (ADR-0009 §2.1.4): the snapshot is read from the
+    /// store once, before anything else; the workout is compiled at its FTP, and the same
+    /// snapshot goes to the engine (`RideSetup.athlete`, #247), the plan (`ride_plan`) and
+    /// the record (`ride.athlete_json`). A change to the model afterwards (`athlete_set`)
+    /// never reaches the loaded ride.
+    ///
     /// # Errors
     /// `Conflict` if a ride is in progress; `NotFound` for an unknown workout;
     /// `DeviceUnavailable` without a paired or reachable trainer; `Storage` if the stored
@@ -2147,8 +2333,14 @@ impl Core {
     pub async fn ride_load(&self, workout_id: Option<String>) -> Result<RideLoaded, ApiError> {
         // Nothing is touched until the request is known to be good: a failed load leaves
         // the previous status as it was.
-        let (workout, compiled) = self.resolve_workout(workout_id.as_deref())?;
-        let plan_view = (workout.clone(), CompiledView::try_from(&compiled)?);
+        let athlete = self.athlete_now()?;
+        let ftp = snapshot_ftp(&athlete)?;
+        let (workout, compiled) = self.resolve_workout(workout_id.as_deref(), ftp)?;
+        let plan_view = (
+            workout.clone(),
+            CompiledView::new(&compiled, ftp)?,
+            AthleteSnapshotView::try_from(&athlete)?,
+        );
         let tuning = self.resolve_tuning()?;
         self.ensure_start_allowed()?;
         self.replace_unstarted().await?;
@@ -2171,7 +2363,7 @@ impl Core {
         let mut quits = self.0.quits.subscribe();
         let asked = tokio::time::Instant::now();
         let built = tokio::select! {
-            built = self.build_session(workout, compiled, tuning) => built,
+            built = self.build_session(workout, compiled, &athlete, tuning) => built,
             _ = quits.changed() => Err(ApiError::new(
                 ErrorCode::Conflict,
                 "the application is quitting",
@@ -2194,11 +2386,12 @@ impl Core {
         st.forcing = None;
         st.starting = None;
         let ride_id = session.ride_id.clone();
-        let (workout, compiled) = plan_view;
+        let (workout, compiled, athlete) = plan_view;
         st.plan = Some(RidePlan {
             ride_id: ride_id.clone(),
             workout,
             compiled,
+            athlete,
         });
         self.0.ui.install(RideSlot::new(
             ride_id.clone(),
@@ -2348,6 +2541,7 @@ impl Core {
         &self,
         workout: Workout,
         compiled: CompiledWorkout,
+        athlete: &AthleteSnapshot,
         tuning: Tuning,
     ) -> Result<(Session, bool, [&'static str; 2]), ApiError> {
         let ride_id = format!(
@@ -2358,7 +2552,7 @@ impl Core {
         );
         let spans = RideSpans::new(&ride_id);
         let span = spans.ride.clone();
-        self.build_session_in(ride_id, spans, workout, compiled, tuning)
+        self.build_session_in(ride_id, spans, workout, compiled, athlete, tuning)
             .instrument(span)
             .await
     }
@@ -2368,6 +2562,7 @@ impl Core {
         mut spans: RideSpans,
         workout: Workout,
         compiled: CompiledWorkout,
+        athlete: &AthleteSnapshot,
         tuning: Tuning,
     ) -> Result<(Session, bool, [&'static str; 2]), ApiError> {
         let Links {
@@ -2417,6 +2612,7 @@ impl Core {
                 id: ride_id.clone(),
                 workout,
                 compiled: compiled.clone(),
+                athlete: *athlete,
                 trainer_device_id,
                 hr_device_id,
                 telemetry_source: self.0.backend.telemetry_source(),
@@ -2436,6 +2632,7 @@ impl Core {
             // The health cap is derived from the athlete profile (#244).
             cap_w: None,
             tuning,
+            athlete: Box::new(*athlete),
         })))
         .await;
         if let Err(e) = loaded {

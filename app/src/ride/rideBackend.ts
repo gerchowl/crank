@@ -57,6 +57,7 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   ApiError,
+  AthleteSnapshotView,
   DeviceLinkView,
   DeviceView,
   LinkIntent,
@@ -130,6 +131,17 @@ export const HRM: PairedDevice = {
   name: "HRM-Dual",
   serial: null,
   model: null,
+};
+/** A fresh store's athlete model (crank-domain `athlete::prior`): FTP and CP 250 W ± 25 %, W′ 20 kJ ± 30 %, the rest unset. */
+export const PRIOR_SNAPSHOT: AthleteSnapshotView = {
+  ftp: { value: 250, sd: 62.5, source: "prior", estimateId: null },
+  cp: { value: 250, sd: 62.5, source: "prior", estimateId: null },
+  wPrime: { value: 20000, sd: 6000, source: "prior", estimateId: null },
+  pmax: null,
+  hrMax: null,
+  lthr: null,
+  hrRest: null,
+  weight: null,
 };
 const NO_LIVE: LiveValues = { powerW: null, cadenceRpm: null, hrBpm: null };
 
@@ -618,12 +630,14 @@ export function installRide(over: Partial<RideWorld> = {}, ui: UiOptions = {}) {
           (end, b) => Math.max(end, (b.startS ?? 0) + (b.durS ?? 0)),
           0,
         );
-        // A free ride's plan is the core's free ride (core.rs `Core::resolve_workout`): no steps, FTP 0.
+        // A free ride's plan is the core's free ride (core.rs `Core::resolve_workout`): no steps, at the snapshot's
+        // FTP. The snapshot is a fresh store's: the priors of FTP, CP and W′ (crank-domain `athlete::prior`).
         const free = world.workoutId === null;
         return {
           rideId: world.rideId,
+          athlete: PRIOR_SNAPSHOT,
           workout: free
-            ? { id: "free-ride", name: "Free ride", ftp: 0, nodes: [] }
+            ? { id: "free-ride", name: "Free ride", ftp: 250, nodes: [] }
             : {
                 id: world.workoutId,
                 name: world.workoutName,
@@ -638,6 +652,7 @@ export function installRide(over: Partial<RideWorld> = {}, ui: UiOptions = {}) {
             if: 0.7,
             timeInZoneS: [0, 0, 0, 0, 0, 0, 0],
             issues: [],
+            ftpW: 250,
           },
         } as unknown as RidePlan;
       }
@@ -661,6 +676,7 @@ export function installRide(over: Partial<RideWorld> = {}, ui: UiOptions = {}) {
             if: 0.7,
             timeInZoneS: [0, 0, 0, 0, 0, 0, 0],
             issues: [],
+            ftpW: 250,
           },
         } as unknown as WorkoutDetail;
       }

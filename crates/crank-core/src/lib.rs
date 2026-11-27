@@ -7,9 +7,11 @@
 //! Scope (#34, MVP #256): discover and pair a trainer and strap, the workout library,
 //! start/pause/resume/skip/end a ride, live frames, the ride history, and the workout
 //! editor's DSL parse/print and compile (#111).
-//! Deferred, each with its own issue: coach and planner commands (#248), the medical
-//! stop (#81), athlete inputs (#247), the health cap (#244), live edits (#240), live
-//! device readings before a ride (#267).
+//! The athlete model (ADR-0009 §2.1.3, #715): its commands, and the snapshot each ride is
+//! loaded with. Deferred, each with its own issue: coach and planner commands (#248), the
+//! medical stop (#81), the analysis executor and proposals (#717–#720), the compile's CP, W′
+//! and HR-recovery τ (#247), the health cap (#244), live edits (#240), live device readings
+//! before a ride (#267).
 mod backend;
 mod core;
 mod dto;

@@ -43,6 +43,7 @@ export const compiled = (over: Partial<CompiledView> = {}): CompiledView => ({
   if: 0.78,
   timeInZoneS: [300, 1200, 900, 600, 30, 120, 3661],
   issues: [],
+  ftpW: 250,
   ...over,
 });
 export const detail = (

@@ -101,6 +101,7 @@ async fn load(handle: &crank_engine::EngineHandle, dur_s: f64) {
             recorder: Box::new(NullRecord),
             cap_w: None,
             tuning: crank_engine::Tuning::default(),
+            athlete: Box::default(),
         }))
         .await
         .unwrap();

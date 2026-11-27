@@ -20,7 +20,7 @@
 // check (3 min)" (crates/crank-core/src/library.rs `BUILTIN`) step by step from the outline (Add step, the step's form,
 // Apply; a Duplicate and a Delete on the way), which the real core prints as the text; a name, Save. It is ridden
 // through the library's Ride
-// this by its id (#643): FTP 250 W (the new workout's reference FTP), 1 min each at 50 %, 80 % and 40 %, so its plan
+// this by its id (#643): FTP 250 W (the athlete model's FTP on a fresh store, its prior, ADR-0009 §2.1.2), 1 min each at 50 %, 80 % and 40 %, so its plan
 // targets are 125 W, 200 W and 100 W. The simulator's scan offers "crank sim trainer"
 // and "crank sim strap" (crates/crank-core/src/backend.rs `Backend::scan`), and its rider pedals on its own.
 //

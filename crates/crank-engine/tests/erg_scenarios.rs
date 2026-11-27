@@ -133,6 +133,7 @@ async fn launch_tuned(blocks: Vec<FlatBlock>, faults: Vec<SimFault>, erg: ErgTun
                 erg,
                 ..Tuning::default()
             },
+            athlete: Box::default(),
         }))
         .await
         .expect("sim setup");

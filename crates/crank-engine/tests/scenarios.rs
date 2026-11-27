@@ -5,14 +5,15 @@ use crank_devices::{
     ControlMode, DeviceRef, HeartRateDriver, LinkState, RiderConfig, TrainerCommand, TrainerDriver,
     TrainerEvent,
 };
+use crank_domain::athlete::AthleteSnapshot;
 use crank_domain::workout::{FlatBlock, Phase};
 use crank_engine::{
     Engine, EngineCmd, EngineHandle, METRICS, PauseReason, RecordError, RideRecorder, RideSetup,
     RideState, SecondRow, VirtualClock,
 };
 use crank_store::{
-    CompiledJson, JsonColumn, NewRide, RideState as StoredState, RideSummaryJson, RideWorkoutJson,
-    Sample, Store,
+    CompiledJson, JsonColumn, NewRide, RideAthleteJson, RideState as StoredState, RideSummaryJson,
+    RideWorkoutJson, Sample, Store,
 };
 use std::{
     sync::{Arc, Mutex},
@@ -160,6 +161,7 @@ async fn launch_with(
             recorder: recorder.unwrap_or_else(|| Box::new(Recorder(rec.clone()))),
             cap_w: None,
             tuning: crank_engine::Tuning::default(),
+            athlete: Box::default(),
         }))
         .await
         .expect("sim setup");
@@ -568,6 +570,8 @@ impl RideRecorder for StoreRecorder {
             )
             .map_err(|e| RecordError(e.to_string()))?,
             compiled: CompiledJson::parse(r#"{"v":1}"#).map_err(|e| RecordError(e.to_string()))?,
+            athlete: RideAthleteJson::new(&AthleteSnapshot::default())
+                .map_err(|e| RecordError(e.to_string()))?,
             trainer_device_id: None,
             hr_device_id: None,
             telemetry_source: "sim".into(),

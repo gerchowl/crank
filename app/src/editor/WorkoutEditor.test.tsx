@@ -104,6 +104,11 @@ test("typing a valid text updates the outline, the profile and the summary", asy
   await waitFor(() => expect(rows()[1]).toBe("4 ×"));
   await screen.findByRole("img", { name: /^Profile: 10 blocks/ });
   expect(b.calls.some((c) => c.cmd === "compile_workout")).toBe(true);
+  // The preview names the FTP the core compiled it at: the athlete model's (ADR-0009 §2.1.4).
+  const summary = screen.getByRole("region", { name: "Compiled summary" });
+  expect(within(summary).getByTestId("compiled-ftp").textContent).toBe(
+    "At FTP 250 W",
+  );
 });
 
 test("an invalid draft shows the problem and leaves the saved state, the outline and the profile alone", async () => {

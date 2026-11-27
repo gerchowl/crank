@@ -155,6 +155,8 @@ pub struct NewRide {
     pub workout: RideWorkoutJson,
     /// Compiled snapshot.
     pub compiled: CompiledJson,
+    /// The athlete model the ride was loaded with (ADR-0009 §2.1.4).
+    pub athlete: RideAthleteJson,
     /// Paired trainer id, if any.
     pub trainer_device_id: Option<String>,
     /// Paired HR id, if any.
@@ -179,6 +181,9 @@ pub struct Ride {
     pub workout: RideWorkoutJson,
     /// Compiled snapshot.
     pub compiled: CompiledJson,
+    /// The athlete model the ride was loaded with; `None` for a ride recorded before it was stored
+    /// (ADR-0009 §2.1.4: such a ride falls back to the FTP inside its workout).
+    pub athlete: Option<RideAthleteJson>,
     /// Optional summary.
     pub summary: Option<RideSummaryJson>,
 }
@@ -736,8 +741,7 @@ impl Store {
     }
 }
 
-const RIDE_SELECT: &str =
-    "SELECT id,started_at,ended_at,state,workout_json,compiled_json,summary_json FROM ride";
+const RIDE_SELECT: &str = "SELECT id,started_at,ended_at,state,workout_json,compiled_json,summary_json,athlete_json FROM ride";
 type RideRow = (
     String,
     i64,
@@ -745,6 +749,7 @@ type RideRow = (
     Option<String>,
     String,
     String,
+    Option<String>,
     Option<String>,
 );
 fn ride_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RideRow> {
@@ -756,11 +761,12 @@ fn ride_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RideRow> {
         r.get(4)?,
         r.get(5)?,
         r.get(6)?,
+        r.get(7)?,
     ))
 }
 impl Ride {
     fn try_from_row(
-        (id, started_at, ended_at, state, workout, compiled, summary): RideRow,
+        (id, started_at, ended_at, state, workout, compiled, summary, athlete): RideRow,
     ) -> Result<Self, StoreError> {
         Ok(Self {
             id,
@@ -769,6 +775,7 @@ impl Ride {
             state: RideState::from_column(state.as_deref())?,
             workout: RideWorkoutJson::parse(&workout)?,
             compiled: CompiledJson::parse(&compiled)?,
+            athlete: athlete.map(|a| RideAthleteJson::parse(&a)).transpose()?,
             summary: summary.map(|s| RideSummaryJson::parse(&s)).transpose()?,
         })
     }

@@ -18,6 +18,7 @@ use crank_devices::{
     Clock, CommandSeq, ControlMode, HeartRateLink, HrEvent, HrSample, LinkState, MonoTime, Reading,
     SeqSource, TrainerCommand, TrainerEvent, TrainerLink, TrainerObservation, TrainerSample,
 };
+use crank_domain::athlete::AthleteSnapshot;
 use crank_domain::workout::{FlatBlock, Phase as BlockPhase};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -153,6 +154,12 @@ pub struct RideSetup {
     /// The ride's rider tuning, resolved by core (ADR-0001 §7.2); `Load` refuses one that
     /// does not [`validate`](Tuning::validate). The engine reads no other source.
     pub tuning: Tuning,
+    /// The athlete model frozen at load, resolved by core from the store (ADR-0009 §2.1.4,
+    /// #247): the CP and W′ the ride's W′bal and the coach will read, the same snapshot the
+    /// ride's compile and record use. The engine reads none of it yet: the W′bal floor and
+    /// the thresholds that consume it are #243 part 2, the coach's judge #248. Boxed: it is
+    /// larger than every other command.
+    pub athlete: Box<AthleteSnapshot>,
 }
 /// The mode a ride ends in: 0 % resistance, one control page, the same mode as the user
 /// pause (DESIGN §5.2) and the §7.4 release (ADR-0002 §7.9 as amended: "an FE-C trainer
