@@ -45,17 +45,22 @@ export async function refreshAthleteModel(): Promise<void> {
   );
 }
 
+/** The read under way, which views mounting together share. */
+let inflight: Promise<void> | null = null;
+const readOnMount = () => {
+  inflight ??= refreshAthleteModel().finally(() => (inflight = null));
+};
+
 /** Forgets the model read (tests: each starts from a fresh core). */
 export function forgetAthleteModel(): void {
   asked++;
+  inflight = null;
   publish(NONE);
 }
 
-/** The athlete model, read when the calling view mounts. */
+/** The athlete model, read when the calling view mounts (one read for the views that mount together). */
 export function useAthleteModel(): AthleteRead {
-  useEffect(() => {
-    void refreshAthleteModel();
-  }, []);
+  useEffect(readOnMount, []);
   return useSyncExternalStore(
     (l) => {
       listeners.add(l);

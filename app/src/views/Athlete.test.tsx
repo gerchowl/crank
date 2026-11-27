@@ -42,7 +42,9 @@ const sets = (b: { calls: { cmd: string; args: unknown }[] }) =>
 
 describe("Settings → Athlete model: what each row says", () => {
   test("a fresh store: FTP is the prior, said as an estimate; the rest not set; the HR hint shows", async () => {
-    await open();
+    const b = await open();
+    // The section and its HR hint share one read.
+    expect(b.calls.filter((c) => c.cmd === "athlete_model")).toHaveLength(1);
     expect(value("ftp")).toBe("estimate: 250 W (no test yet)");
     expect(source("ftp")).toBe("not measured yet");
     expect(value("w_prime")).toBe("estimate: 20.0 kJ (no test yet)");
