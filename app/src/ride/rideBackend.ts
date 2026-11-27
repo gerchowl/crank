@@ -228,7 +228,7 @@ export interface RideWorld {
   /** The workout's name as `workout_get` answers it. */
   workoutName: string;
   /**
-   * The athlete model frozen at the load (`RidePlan.athlete`, core.rs `Core::ride_load`, ADR-0009 §2.1.4); a fresh
+   * The athlete model frozen at the load (`RidePlan.athlete`, ADR-0009 §2.1.4; core.rs `Core::ride_load`); a fresh
    * store's by default. A later change to the model (Settings) never reaches it.
    */
   athlete: AthleteSnapshotView;

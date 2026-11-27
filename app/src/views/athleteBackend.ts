@@ -1,7 +1,7 @@
 // The core's athlete-model commands behind `mockIPC` (ADR-0009 §2.1.3), for the Settings → Athlete model tests and
 // the design fixtures. It keeps the store's append-only rows (crank-store athlete.rs `append`) and resolves the model
-// as the domain does (crank-domain snapshot.rs `AthleteSnapshot::resolve`: a parameter's newest row by time then id,
-// else its prior, else unset), so a test sees what the real core would answer, and accepts nothing the core refuses:
+// as the domain does (a parameter's newest row by time then id, else its prior, else
+// unset; crank-domain snapshot.rs `AthleteSnapshot::resolve`), so a test sees what the real core would answer, and accepts nothing the core refuses:
 //
 //   athlete_model    a failed store read            storage        core.rs `Core::athlete_model` (`store`)
 //   athlete_set      unknown param                  invalid_input  core.rs `athlete_param` (~1106)
@@ -59,7 +59,7 @@ const BOUNDS: Record<AthleteParam, [number, number]> = {
   weight: [30, 200],
 };
 
-/** athlete/prior.rs `prior`: FTP and CP 250 W ± 25 %, W′ 20 kJ ± 30 %, HR max 208 − 0.7 × age ± 10 bpm. */
+/** The priors (FTP and CP 250 W ± 25 %, W′ 20 kJ ± 30 %, HR max 208 − 0.7 × age ± 10 bpm), as athlete/prior.rs `prior` gives them. */
 function prior(
   param: AthleteParam,
   age: number | null,
@@ -219,7 +219,7 @@ export function install(over: Partial<AthleteState> = {}): Backend {
     ...over,
   };
   const b: Backend = { state, calls: [], hold: {} };
-  /** athlete.rs `append`: one row at `now` (or its parameter's newest time), superseding the param's proposals. */
+  /** One row at `now` (or its parameter's newest time), superseding the param's proposals, as athlete.rs `append` does. */
   const append = (row: Row) => {
     const at = state.rows
       .filter((r) => r.param === row.param)
