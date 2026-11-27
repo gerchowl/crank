@@ -349,7 +349,14 @@ impl Parser<'_> {
         }
     }
     fn item(&mut self, depth: usize) -> Result<WorkoutNode, DslError> {
-        let label = (self.peek().kind == 's').then(|| self.next().text);
+        let label = (self.peek().kind == 's').then(|| self.next());
+        if let Some(l) = label.as_ref().filter(|_| self.at_declaration()) {
+            return Err(l.error(
+                DslErrorKind::LabelledDeclaration,
+                "A declaration has no label — put the label on a block",
+            ));
+        }
+        let label = label.map(|l| l.text);
         let t = self.next();
         if t.kind != 'w' {
             // Bare EOF is excluded by seq; only a dangling label reaches EOF here.

@@ -184,7 +184,7 @@ async fn the_editor_parses_prints_and_compiles_drafts() {
         "a repeat, its two steps and the warm-up: {first:?}"
     );
     assert!(first.iter().all(|id| id.starts_with("dsl-")), "{first:?}");
-    let text = core.print_dsl(nodes.clone()).await.unwrap();
+    let text = core.print_dsl(Vec::new(), nodes.clone()).await.unwrap();
     assert_eq!(text, "\"Warm-up\" 1m30s 50%\n2x(1m 100%, 1m 50%)");
     let DslParse::Parsed { nodes: again, .. } = parse(&text).await.unwrap() else {
         panic!("canonical text parses");
@@ -195,7 +195,7 @@ async fn the_editor_parses_prints_and_compiles_drafts() {
         "ids are never reused: {second:?}"
     );
     assert_eq!(
-        core.print_dsl(again).await.unwrap(),
+        core.print_dsl(Vec::new(), again).await.unwrap(),
         text,
         "the round trip is byte-identical"
     );

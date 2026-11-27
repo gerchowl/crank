@@ -6,6 +6,7 @@
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type {
   CompiledView,
+  VarDecl,
   WorkoutDetail,
   WorkoutDraft,
   Workout,
@@ -229,7 +230,13 @@ export function install(over: Partial<Backend> = {}): Backend {
     const listed = b.summaries.find((w) => w.id === id);
     if (id !== null && listed?.builtin) throw readOnly(id);
     const saved = id ?? `workout-${b.nextId++}`;
-    const workout = { id: saved, name, ftp: draft.ftp, nodes: draft.nodes };
+    const workout = {
+      id: saved,
+      name,
+      ftp: draft.ftp,
+      nodes: draft.nodes,
+      vars: draft.vars,
+    };
     const c = editor.compile_workout(workout);
     const issue = c.issues.find((i) => i.severity === "error");
     if (issue) throw apiError("invalid_input", issue.message);
@@ -237,7 +244,7 @@ export function install(over: Partial<Backend> = {}): Backend {
       throw apiError("not_found", `no workout "${id}"`);
     b.stored[saved] = {
       workout,
-      dsl: editor.print_dsl(draft.nodes),
+      dsl: editor.print_dsl(draft.vars, draft.nodes),
       compiled: c,
       builtin: false,
     };
@@ -273,7 +280,12 @@ export function install(over: Partial<Backend> = {}): Backend {
         if (!("compiled" in tree))
           throw new Error(`fixture: draft ${b.trees[id]} does not compile`);
         return {
-          workout: { ...d.workout, ftp: tree.ftp, nodes: tree.nodes },
+          workout: {
+            ...d.workout,
+            ftp: tree.ftp,
+            nodes: tree.nodes,
+            vars: tree.vars,
+          },
           dsl: tree.printed,
           compiled: tree.compiled,
           builtin: d.builtin,
@@ -336,6 +348,7 @@ export function install(over: Partial<Backend> = {}): Backend {
           name: "New workout",
           ftp: 250,
           nodes: [],
+          vars: [],
         } satisfies WorkoutDraft;
       case "workout_save":
         return save(args.id as string | null, args.draft as WorkoutDraft);
@@ -352,7 +365,10 @@ export function install(over: Partial<Backend> = {}): Backend {
       case "parse_dsl":
         return editor.parse_dsl(args.text as string, args.ftp as number | null);
       case "print_dsl":
-        return editor.print_dsl(args.nodes as WorkoutNode[]);
+        return editor.print_dsl(
+          args.vars as VarDecl[],
+          args.nodes as WorkoutNode[],
+        );
       case "compile_workout":
         return editor.compile_workout(args.workout as Workout);
       default:

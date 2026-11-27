@@ -21,6 +21,7 @@ import {
   type Num,
   type PowerTarget,
   type StepEnd,
+  type VarDecl,
   type WorkoutNode,
 } from "../bindings";
 import { setLeaveGuard } from "../router";
@@ -234,7 +235,9 @@ export interface EditorStart {
   /** Reference FTP, W. */
   ftp: number | null;
   nodes: WorkoutNode[];
-  /** The canonical text of `nodes`. */
+  /** The declarations of `nodes`, used or not (ADR-0008 §2.6). */
+  vars: VarDecl[];
+  /** The canonical text of `vars` and `nodes`. */
   dsl: string;
   /** The compiled view of `nodes`; null for a new workout, which the editor compiles on opening. */
   compiled: CompiledView | null;
@@ -275,6 +278,7 @@ export function WorkoutEditor({
         name: start.name,
         ftp: start.ftp,
         nodes: start.nodes,
+        vars: start.vars,
       },
       start.dsl,
     ),
@@ -335,7 +339,11 @@ export function WorkoutEditor({
     if (compiledFor.current === saved) return;
     let current = true;
     void api(
-      commands.compileWorkout({ ...meta, nodes: [...saved.nodes] }),
+      commands.compileWorkout({
+        ...meta,
+        nodes: [...saved.nodes],
+        vars: [...saved.vars],
+      }),
     ).then((r) => {
       if (!current) return;
       compiledFor.current = saved;
@@ -385,7 +393,7 @@ export function WorkoutEditor({
     checking.current = true;
     const base = latest.current.saved;
     try {
-      const printed = await api(commands.printDsl(nodes));
+      const printed = await api(commands.printDsl([...base.vars], nodes));
       if (printed.status !== "ok") return refuse(printed.error.message);
       const back = await api(commands.parseDsl(printed.data, s.workout.ftp));
       if (back.status !== "ok") return refuse(back.error.message);
@@ -395,7 +403,7 @@ export function WorkoutEditor({
         return refuse("The workout changed while this edit was checked.");
       if (latest.current.draft !== base.text)
         return refuse("The text was edited while this edit was checked.");
-      const read = back.data.nodes;
+      const { nodes: read, vars = [] } = back.data;
       const path = to === null ? null : pathOf(nodes, to);
       const pick = path === null ? null : (nodeAt(read, path)?.id ?? null);
       setOutlineRefusal(null);
@@ -404,7 +412,7 @@ export function WorkoutEditor({
       setS((st) => {
         if (st.saved !== base || st.draft !== base.text) return st;
         if (at === "toolbar") refocus.current = true;
-        return applied(st, read, printed.data, pick);
+        return applied(st, read, printed.data, pick, vars);
       });
     } finally {
       checking.current = false;
@@ -448,6 +456,7 @@ export function WorkoutEditor({
         name: trimmed,
         ftp: s.workout.ftp,
         nodes: [...tree.nodes],
+        vars: [...tree.vars],
       }),
     );
     setSaving(false);

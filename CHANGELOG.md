@@ -33,8 +33,10 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   `{ "var": name }`, `Workout.vars`), `parse_dsl` returns a `DslDoc { vars, nodes }`, `print_dsl` takes the
   declarations, and `compile_workout` resolves them first (`resolve_vars`, refusing a directly built tree as
   `CompileError::Resolve`). Every parse error carries its kind and UTF-16 span; 100 declarations, expression depth 32
-  and 32-character names are the bounds. Texts without variables parse and print exactly as before. The editor
-  shows a bound field by its `$name`; its handling of declarations is #744
+  and 32-character names are the bounds. Texts without variables parse and print exactly as before. A declaration's
+  literal prints exactly (`0.0004%` stays `0.0004%`); a labelled declaration is its own error. Declarations, used or
+  not, are kept end to end: `WorkoutDraft.vars`, `print_dsl(vars, nodes)`, library save and load, and the editor's
+  text and outline edits. The editor shows a bound field by its `$name`; editing declarations themselves is #744
   ([#742](https://github.com/gerchowl/crank/issues/742))
 - `crank-domain` holds the athlete model (ADR-0009 §2.1.1, §2.1.2, §2.1.4): the eight parameters, append-only
   estimates with their source, the plausibility bounds (refused, never clamped; LTHR below a measured HR max), the

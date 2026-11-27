@@ -344,6 +344,35 @@ describe("drafts and the library", () => {
     );
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
   });
+
+  test("an outline edit and Save keep the declarations, the unused one too (ADR-0008 §2.6)", async () => {
+    const b = install({ trees: { "w-easy": "with-vars" } });
+    const user = userEvent.setup();
+    render(
+      <>
+        <Rail view="workouts" />
+        <Workouts />
+      </>,
+    );
+    await user.click(await screen.findByRole("option", { name: /Easy spin/ }));
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    const box = (await screen.findByRole("textbox", {
+      name: "Text",
+    })) as HTMLTextAreaElement;
+    expect(box.value).toBe(text("with-vars"));
+    await user.click(row(/Cool-down/));
+    await user.click(tool("Delete"));
+    await waitFor(() => expect(box.value).toBe(text("with-vars-no-cool-down")));
+    expect(box.value).toMatch(/^\$spare = 5w\n/);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    const [saved] = calls(b, "workout_save");
+    const draft = saved!.args.draft as { vars: { name: string }[] };
+    expect(draft.vars.map((v) => v.name)).toEqual(["spare", "sst"]);
+    expect(b.stored[saved!.args.id as string]?.dsl).toBe(
+      text("with-vars-no-cool-down"),
+    );
+  });
 });
 
 describe("round 2: focus, races, read-back, nesting (#653)", () => {

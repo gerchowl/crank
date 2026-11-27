@@ -1,8 +1,8 @@
 //! The workout library's save loop (#110, DESIGN §5.7): a new draft, save, update, list,
 //! delete, persistence across a reopen, the refusals, and riding a saved workout by its id.
 use crank_core::{
-    Core, CoreConfig, DeviceMode, DeviceRole, DslParse, EngineHost, ErrorCode, WorkoutDraft,
-    WorkoutNode,
+    Core, CoreConfig, DeviceMode, DeviceRole, DslParse, EngineHost, ErrorCode, VarDecl,
+    WorkoutDraft, WorkoutNode,
 };
 use crank_devices::sim::SimConfig;
 use crank_domain::workout::Severity;
@@ -20,22 +20,24 @@ fn config(dir: &Path) -> CoreConfig {
     }
 }
 
-async fn nodes(core: &Core, dsl: &str) -> Vec<WorkoutNode> {
+async fn parsed(core: &Core, dsl: &str) -> (Vec<VarDecl>, Vec<WorkoutNode>) {
     match core
         .parse_dsl(dsl.into(), 250.0)
         .await
         .expect("parse_dsl answers")
     {
-        DslParse::Parsed { nodes, .. } => nodes,
+        DslParse::Parsed { vars, nodes } => (vars, nodes),
         DslParse::Invalid { problem } => panic!("{dsl}: {problem:?}"),
     }
 }
 
 async fn draft(core: &Core, name: &str, dsl: &str) -> WorkoutDraft {
+    let (vars, nodes) = parsed(core, dsl).await;
     WorkoutDraft {
         name: name.into(),
         ftp: 250.0,
-        nodes: nodes(core, dsl).await,
+        nodes,
+        vars,
     }
 }
 
@@ -132,6 +134,61 @@ async fn save_update_list_delete_and_survive_a_reopen() {
     let d = core.workout_get(id.clone()).await.unwrap();
     assert_eq!(d.workout.name, "Openers v2");
     assert_eq!(d.dsl, "\"Go\" 3m 70%");
+}
+
+/// ADR-0008 §2.6: unused variables are kept. A draft's declarations, used or not, are stored
+/// with its tree, read back after a reopen, and kept by an outline edit (#731), which prints
+/// the edited tree with them and reads that text back.
+#[tokio::test(start_paused = true)]
+async fn declarations_used_or_not_survive_save_reopen_and_an_outline_edit() {
+    const TEXT: &str = "$spare = 5w\n$sst = 90%\n\n\"Go\" 5m $sst\n\"Easy\" 1m 50%";
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(config(dir.path())).unwrap();
+    let id = core
+        .workout_save(None, draft(&core, "Vars", TEXT).await)
+        .await
+        .unwrap();
+    assert_eq!(core.workout_get(id.clone()).await.unwrap().dsl, TEXT);
+
+    drop(core);
+    let core = Core::open(config(dir.path())).unwrap();
+    let d = core.workout_get(id.clone()).await.unwrap();
+    assert_eq!(d.dsl, TEXT, "the declarations are stored with the tree");
+    let names: Vec<_> = d.workout.vars.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(names, ["spare", "sst"]);
+
+    // An outline edit: delete the last block, print the tree with the workout's
+    // declarations, read it back and save what was read.
+    let mut edited = d.workout.nodes.clone();
+    edited.pop();
+    let printed = core
+        .print_dsl(d.workout.vars.clone(), edited)
+        .await
+        .unwrap();
+    assert_eq!(printed, "$spare = 5w\n$sst = 90%\n\n\"Go\" 5m $sst");
+    core.workout_save(Some(id.clone()), draft(&core, "Vars", &printed).await)
+        .await
+        .unwrap();
+    let d = core.workout_get(id).await.unwrap();
+    assert_eq!(d.dsl, printed, "the unused $spare is kept");
+
+    // A tree whose declarations were left out still refuses, typed, rather than storing
+    // a tree that cannot compile.
+    let (_, nodes) = parsed(&core, TEXT).await;
+    let refused = core
+        .workout_save(
+            None,
+            WorkoutDraft {
+                name: "No vars".into(),
+                ftp: 250.0,
+                nodes,
+                vars: Vec::new(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InvalidInput);
+    assert!(refused.message.contains("sst"), "{}", refused.message);
 }
 
 #[tokio::test(start_paused = true)]

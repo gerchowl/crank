@@ -31,7 +31,7 @@ use crank_devices::{
     sim::{SimLatency, SimLoss},
 };
 use crank_domain::athlete::{AthleteParam, AthleteSnapshot, Entry, prior::SelfReportOrigin};
-use crank_domain::workout::{CompiledWorkout, Workout, WorkoutNode, parse_dsl, print_dsl};
+use crank_domain::workout::{CompiledWorkout, VarDecl, Workout, WorkoutNode, parse_dsl, print_dsl};
 use crank_engine::{
     CommandError, Engine, EngineCmd, EngineHandle, MetricId, MonotonicClock, RideSetup, RideState,
     SeriesStore, StreamFrame, StreamId, StreamSnapshot, StreamStatus, SubId, SubscribeOpts, Tuning,
@@ -1896,10 +1896,10 @@ impl Core {
         })
     }
 
-    /// The canonical DSL text of a workout tree (docs/DSL.md, "Canonical printing"), printed
-    /// without declarations: a tree that uses a variable prints its `$name`, which `parse_dsl`
-    /// then refuses as undeclared. The editor's handling of declarations, and the
-    /// declarations this command takes for it, are #744 (ADR-0008 §2.12).
+    /// The canonical DSL text of a workout tree and its declarations (docs/DSL.md, "Canonical
+    /// printing"): the declarations in their order, used or not (ADR-0008 §2.6), a blank line,
+    /// then the blocks. A tree that uses a variable `vars` does not declare prints its `$name`,
+    /// which `parse_dsl` then refuses as undeclared.
     ///
     /// # Errors
     /// Never fails; async and fallible as every facade method.
@@ -1907,8 +1907,12 @@ impl Core {
         clippy::unused_async,
         reason = "every facade method is async (ADR-0001 §4)"
     )]
-    pub async fn print_dsl(&self, nodes: Vec<WorkoutNode>) -> Result<String, ApiError> {
-        Ok(print_dsl(&[], &nodes))
+    pub async fn print_dsl(
+        &self,
+        vars: Vec<VarDecl>,
+        nodes: Vec<WorkoutNode>,
+    ) -> Result<String, ApiError> {
+        Ok(print_dsl(&vars, &nodes))
     }
 
     /// Compile a workout (an editor draft) to its timeline and summary, issues included: an

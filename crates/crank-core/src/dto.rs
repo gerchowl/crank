@@ -437,6 +437,9 @@ pub struct WorkoutDraft {
     pub ftp: f64,
     /// The workout tree.
     pub nodes: Vec<WorkoutNode>,
+    /// The tree's variable declarations, in order (ADR-0008 §2.6, §2.10), used or not: they
+    /// are stored with the tree and printed with it.
+    pub vars: Vec<VarDecl>,
 }
 
 /// One compiled block. The boundary owns this type: `crank-domain`'s `FlatBlock` indexes

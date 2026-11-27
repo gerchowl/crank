@@ -438,7 +438,10 @@ result exactly as today. The ride snapshot stores the workout as authored (names
 
 - Declarations first, one per line, `$name = expr`, one space around `=` and every binary operator, parentheses only
   where precedence needs them (`$a - ($b - $c)` keeps them, `($a * 2) + $b` prints `$a * 2 + $b`), literals in today's
-  canonical forms (`90s` → `1m30s`, `%` to three decimals).
+  canonical forms (`90s` → `1m30s`), except that a declaration's number, `%` or `w` literal prints exactly, as the
+  shortest decimal of its value (`0.0004%` stays `0.0004%`), so printing a declaration and reading it back gives the
+  same exact value; a block's literals keep today's rule (`%` to three decimals). *Amended 2026-11-27 (#742 review):
+  this said "`%` to three decimals" for declarations too, which turned `$a = 0.0004% * 10000` (4 %) into 0 %.*
 - A blank line separates the declarations from the blocks; blocks print as today.
 - Uses print the name, never the value: `print_dsl(parse_dsl(t))` keeps every `$name`.
 - `auto` prints lower case in its position.
@@ -570,6 +573,7 @@ All carry `offset` / `length` (UTF-16) of the token named in the message, and a 
 | `4m $thr` (not declared) | Unknown variable '$thr' — declare it before the first block, e.g. $thr = 95% | `$thr` |
 | `$a = $b * 2` then `$b = 1m` | Unknown variable '$b' — a declaration can use only variables declared above it | `$b` |
 | `3m 60%` then `$x = 1m` | Variables are declared before the first block | `$x` |
+| `"lbl" $a = 5m` | A declaration has no label — put the label on a block (added 2026-11-27, #742 review) | `"lbl"` |
 | `$thr = 95%` twice | '$thr' is already declared | the second `$thr` |
 | `$d = 4m` and `10m $d` | '$d' is a duration (4m); a power target is expected here, e.g. 95% or 250w | `$d` |
 | `$p = 250w` and `ramp $p-auto` | '$p' is in watts; a ramp is in % FTP | `$p-auto` |

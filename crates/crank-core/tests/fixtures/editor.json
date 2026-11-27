@@ -243,7 +243,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%\n5m 50%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%\n5m 50%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%\n5m 50%",
+    "vars": []
   },
   "cool-down-up": {
     "compiled": {
@@ -462,7 +463,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n\"Cool-down\" 5m ramp 60-40%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n\"Cool-down\" 5m ramp 60-40%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n\"Cool-down\" 5m ramp 60-40%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)",
+    "vars": []
   },
   "dup-warm-up": {
     "compiled": {
@@ -709,7 +711,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "empty": {
     "compiled": {
@@ -743,7 +746,8 @@
     "ftp": 250.0,
     "nodes": [],
     "printed": "",
-    "text": ""
+    "text": "",
+    "vars": []
   },
   "implausible": {
     "ftp": 250.0,
@@ -985,7 +989,8 @@
       "message": "Unknown token '-10%'",
       "offset": 46
     },
-    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m -10%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m -10%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "no-repeat": {
     "compiled": {
@@ -1070,7 +1075,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "no-sweet-spot": {
     "compiled": {
@@ -1227,7 +1233,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "one-step": {
     "compiled": {
@@ -1283,7 +1290,8 @@
       }
     ],
     "printed": "5m 50%",
-    "text": "5m 50%"
+    "text": "5m 50%",
+    "vars": []
   },
   "rest-recover": {
     "compiled": {
@@ -1502,7 +1510,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Recover\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Recover\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Recover\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "rest-up": {
     "compiled": {
@@ -1721,7 +1730,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Rest\" 4m 55%, \"Sweet spot\" 12m 90%)\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Rest\" 4m 55%, \"Sweet spot\" 12m 90%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Rest\" 4m 55%, \"Sweet spot\" 12m 90%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "sweet-spot": {
     "compiled": {
@@ -1940,7 +1950,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "sweet-spot-4x": {
     "compiled": {
@@ -2191,7 +2202,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n4x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n4x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n4x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "sweet-spot-4x-15m": {
     "compiled": {
@@ -2442,7 +2454,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n4x(\"Sweet spot\" 15m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n4x(\"Sweet spot\" 15m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n4x(\"Sweet spot\" 15m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "sweet-spot-95": {
     "compiled": {
@@ -2661,7 +2674,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 95%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 95%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 95%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "sweet-spot-no-cool-down": {
     "compiled": {
@@ -2852,7 +2866,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)",
+    "vars": []
   },
   "too-long": {
     "ftp": 250.0,
@@ -2877,7 +2892,8 @@
       "code": "invalid_input",
       "message": "workout does not compile: TraceLimit"
     },
-    "text": "200h 50%"
+    "text": "200h 50%",
+    "vars": []
   },
   "unwrapped": {
     "compiled": {
@@ -3016,7 +3032,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n\"Sweet spot\" 12m 90%\n\"Rest\" 4m 55%\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n\"Sweet spot\" 12m 90%\n\"Rest\" 4m 55%\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n\"Sweet spot\" 12m 90%\n\"Rest\" 4m 55%\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "warm-up-50-75": {
     "compiled": {
@@ -3235,7 +3252,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 50-75%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 10m ramp 50-75%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 10m ramp 50-75%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   },
   "warm-up-6s": {
     "compiled": {
@@ -3454,7 +3472,458 @@
       }
     ],
     "printed": "\"Warm-up\" 6s ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
-    "text": "\"Warm-up\" 6s ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 6s ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
+  },
+  "with-vars": {
+    "compiled": {
+      "blocks": [
+        {
+          "durRangeS": null,
+          "durS": 600.0,
+          "iteration": [],
+          "nodeId": "n1",
+          "path": [
+            0
+          ],
+          "phase": "warmup",
+          "powerFrom": 112.5,
+          "powerTo": 175.0,
+          "startS": 0.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 720.0,
+          "iteration": [
+            0
+          ],
+          "nodeId": "n3",
+          "path": [
+            1,
+            0
+          ],
+          "phase": "work",
+          "powerFrom": 225.0,
+          "powerTo": 225.0,
+          "startS": 600.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 240.0,
+          "iteration": [
+            0
+          ],
+          "nodeId": "n4",
+          "path": [
+            1,
+            1
+          ],
+          "phase": "recovery",
+          "powerFrom": 137.5,
+          "powerTo": 137.5,
+          "startS": 1320.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 720.0,
+          "iteration": [
+            1
+          ],
+          "nodeId": "n3",
+          "path": [
+            1,
+            0
+          ],
+          "phase": "work",
+          "powerFrom": 225.0,
+          "powerTo": 225.0,
+          "startS": 1560.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 240.0,
+          "iteration": [
+            1
+          ],
+          "nodeId": "n4",
+          "path": [
+            1,
+            1
+          ],
+          "phase": "recovery",
+          "powerFrom": 137.5,
+          "powerTo": 137.5,
+          "startS": 2280.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 720.0,
+          "iteration": [
+            2
+          ],
+          "nodeId": "n3",
+          "path": [
+            1,
+            0
+          ],
+          "phase": "work",
+          "powerFrom": 225.0,
+          "powerTo": 225.0,
+          "startS": 2520.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 240.0,
+          "iteration": [
+            2
+          ],
+          "nodeId": "n4",
+          "path": [
+            1,
+            1
+          ],
+          "phase": "cooldown",
+          "powerFrom": 137.5,
+          "powerTo": 137.5,
+          "startS": 3240.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 300.0,
+          "iteration": [],
+          "nodeId": "n5",
+          "path": [
+            2
+          ],
+          "phase": "cooldown",
+          "powerFrom": 150.0,
+          "powerTo": 100.0,
+          "startS": 3480.0
+        }
+      ],
+      "ftpW": 250.0,
+      "if": 0.804,
+      "issues": [],
+      "timeInZoneS": [
+        1193,
+        427,
+        0,
+        2160,
+        0,
+        0,
+        0
+      ],
+      "totalRangeS": [
+        3780.0,
+        3780.0
+      ],
+      "totalS": 3780.0,
+      "tss": 67.8
+    },
+    "ftp": 250.0,
+    "nodes": [
+      {
+        "cadence": null,
+        "end": {
+          "kind": "time",
+          "s": 600.0
+        },
+        "id": "n1",
+        "label": "Warm-up",
+        "target": {
+          "from": 45.0,
+          "kind": "ramp",
+          "to": 70.0
+        },
+        "type": "step"
+      },
+      {
+        "children": [
+          {
+            "cadence": null,
+            "end": {
+              "kind": "time",
+              "s": 720.0
+            },
+            "id": "n3",
+            "label": "Sweet spot",
+            "target": {
+              "kind": "pct_ftp",
+              "value": {
+                "var": "sst"
+              }
+            },
+            "type": "step"
+          },
+          {
+            "cadence": null,
+            "end": {
+              "kind": "time",
+              "s": 240.0
+            },
+            "id": "n4",
+            "label": "Rest",
+            "target": {
+              "kind": "pct_ftp",
+              "value": 55.0
+            },
+            "type": "step"
+          }
+        ],
+        "count": 3.0,
+        "id": "n2",
+        "label": null,
+        "progression": null,
+        "skipLastRest": null,
+        "type": "repeat"
+      },
+      {
+        "cadence": null,
+        "end": {
+          "kind": "time",
+          "s": 300.0
+        },
+        "id": "n5",
+        "label": "Cool-down",
+        "target": {
+          "from": 60.0,
+          "kind": "ramp",
+          "to": 40.0
+        },
+        "type": "step"
+      }
+    ],
+    "printed": "$spare = 5w\n$sst = 90%\n\n\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m $sst, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "text": "$spare = 5w\n$sst = 90%\n\n\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m $sst, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": [
+      {
+        "expr": {
+          "kind": "lit",
+          "unit": "watts",
+          "value": "5"
+        },
+        "name": "spare"
+      },
+      {
+        "expr": {
+          "kind": "lit",
+          "unit": "pct",
+          "value": "90"
+        },
+        "name": "sst"
+      }
+    ]
+  },
+  "with-vars-no-cool-down": {
+    "compiled": {
+      "blocks": [
+        {
+          "durRangeS": null,
+          "durS": 600.0,
+          "iteration": [],
+          "nodeId": "n1",
+          "path": [
+            0
+          ],
+          "phase": "warmup",
+          "powerFrom": 112.5,
+          "powerTo": 175.0,
+          "startS": 0.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 720.0,
+          "iteration": [
+            0
+          ],
+          "nodeId": "n3",
+          "path": [
+            1,
+            0
+          ],
+          "phase": "work",
+          "powerFrom": 225.0,
+          "powerTo": 225.0,
+          "startS": 600.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 240.0,
+          "iteration": [
+            0
+          ],
+          "nodeId": "n4",
+          "path": [
+            1,
+            1
+          ],
+          "phase": "recovery",
+          "powerFrom": 137.5,
+          "powerTo": 137.5,
+          "startS": 1320.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 720.0,
+          "iteration": [
+            1
+          ],
+          "nodeId": "n3",
+          "path": [
+            1,
+            0
+          ],
+          "phase": "work",
+          "powerFrom": 225.0,
+          "powerTo": 225.0,
+          "startS": 1560.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 240.0,
+          "iteration": [
+            1
+          ],
+          "nodeId": "n4",
+          "path": [
+            1,
+            1
+          ],
+          "phase": "recovery",
+          "powerFrom": 137.5,
+          "powerTo": 137.5,
+          "startS": 2280.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 720.0,
+          "iteration": [
+            2
+          ],
+          "nodeId": "n3",
+          "path": [
+            1,
+            0
+          ],
+          "phase": "work",
+          "powerFrom": 225.0,
+          "powerTo": 225.0,
+          "startS": 2520.0
+        },
+        {
+          "durRangeS": null,
+          "durS": 240.0,
+          "iteration": [
+            2
+          ],
+          "nodeId": "n4",
+          "path": [
+            1,
+            1
+          ],
+          "phase": "cooldown",
+          "powerFrom": 137.5,
+          "powerTo": 137.5,
+          "startS": 3240.0
+        }
+      ],
+      "ftpW": 250.0,
+      "if": 0.818,
+      "issues": [],
+      "timeInZoneS": [
+        965,
+        355,
+        0,
+        2160,
+        0,
+        0,
+        0
+      ],
+      "totalRangeS": [
+        3480.0,
+        3480.0
+      ],
+      "totalS": 3480.0,
+      "tss": 64.6
+    },
+    "ftp": 250.0,
+    "nodes": [
+      {
+        "cadence": null,
+        "end": {
+          "kind": "time",
+          "s": 600.0
+        },
+        "id": "n1",
+        "label": "Warm-up",
+        "target": {
+          "from": 45.0,
+          "kind": "ramp",
+          "to": 70.0
+        },
+        "type": "step"
+      },
+      {
+        "children": [
+          {
+            "cadence": null,
+            "end": {
+              "kind": "time",
+              "s": 720.0
+            },
+            "id": "n3",
+            "label": "Sweet spot",
+            "target": {
+              "kind": "pct_ftp",
+              "value": {
+                "var": "sst"
+              }
+            },
+            "type": "step"
+          },
+          {
+            "cadence": null,
+            "end": {
+              "kind": "time",
+              "s": 240.0
+            },
+            "id": "n4",
+            "label": "Rest",
+            "target": {
+              "kind": "pct_ftp",
+              "value": 55.0
+            },
+            "type": "step"
+          }
+        ],
+        "count": 3.0,
+        "id": "n2",
+        "label": null,
+        "progression": null,
+        "skipLastRest": null,
+        "type": "repeat"
+      }
+    ],
+    "printed": "$spare = 5w\n$sst = 90%\n\n\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m $sst, \"Rest\" 4m 55%)",
+    "text": "$spare = 5w\n$sst = 90%\n\n\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m $sst, \"Rest\" 4m 55%)",
+    "vars": [
+      {
+        "expr": {
+          "kind": "lit",
+          "unit": "watts",
+          "value": "5"
+        },
+        "name": "spare"
+      },
+      {
+        "expr": {
+          "kind": "lit",
+          "unit": "pct",
+          "value": "90"
+        },
+        "name": "sst"
+      }
+    ]
   },
   "wrap-cool-down": {
     "compiled": {
@@ -3702,7 +4171,8 @@
       }
     ],
     "printed": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n2x(\"Cool-down\" 5m ramp 60-40%)",
-    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n2x(\"Cool-down\" 5m ramp 60-40%)"
+    "text": "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n2x(\"Cool-down\" 5m ramp 60-40%)",
+    "vars": []
   },
   "zero-duration": {
     "compiled": {
@@ -3933,6 +4403,7 @@
       "message": "Duration must be > 0",
       "offset": 10
     },
-    "text": "\"Warm-up\" 0s ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%"
+    "text": "\"Warm-up\" 0s ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    "vars": []
   }
 }

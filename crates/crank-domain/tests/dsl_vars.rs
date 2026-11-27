@@ -87,6 +87,22 @@ fn a_percent_use_rounds_to_three_decimals() {
     assert_eq!(values(&doc)[0]["target"]["value"], 33.333);
 }
 
+/// ADR-0008 §2.11 (amended): a declaration's literal prints exactly, so a fine `%` literal
+/// is not rounded to three decimals before its use: `0.0004% * 10000` stays 4 %.
+#[test]
+fn a_fine_percent_literal_prints_exactly() {
+    let text = "$a = 0.0004% * 10000\n\n5m $a";
+    let doc = parse(text).unwrap();
+    assert_eq!(print(&doc), text);
+    assert_eq!(
+        values(&parse(&print(&doc)).unwrap())[0]["target"]["value"],
+        4.0
+    );
+    // A literal not in canonical form prints as the shortest decimal of its value.
+    let doc = parse("$a = 090.5000%\n$w = 007.250w\n$n = 02.50\n5m $a").unwrap();
+    assert_eq!(print(&doc), "$a = 90.5%\n$w = 7.25w\n$n = 2.5\n\n5m $a");
+}
+
 #[test]
 fn no_intermediate_value_is_rounded_and_inlining_keeps_it() {
     let text = "$a = 250w / 3\n$b = $a * 3\n5m $b";
@@ -210,7 +226,8 @@ fn canonical_printing_spaces_operators_and_keeps_needed_parentheses() {
         ("$a = 1w\n$b = 2w\n$c = 3w\n$d = 90s * 2", "$d = 1m30s * 2"),
         (
             "$a = 1w\n$b = 2w\n$c = 3w\n$d = 033.50% + 0.1235%",
-            "$d = 33.5% + 0.124%",
+            // Exact (ADR-0008 §2.11 as amended): a declaration's literal is never rounded.
+            "$d = 33.5% + 0.1235%",
         ),
         (
             "$a = 1w\n$b = 2w\n$c = 3w\n$d = 2.50w * 01.10",
@@ -302,6 +319,20 @@ const ERROR_ROWS: &[(&str, K, &str, &str, usize)] = &[
         K::DeclarationAfterBlock,
         "Variables are declared before the first block",
         "$x",
+        0,
+    ),
+    (
+        "\"lbl\" $a = 5m",
+        K::LabelledDeclaration,
+        "A declaration has no label — put the label on a block",
+        "\"lbl\"",
+        0,
+    ),
+    (
+        "3m 60%\n\"lbl\" $a = 5m",
+        K::LabelledDeclaration,
+        "A declaration has no label — put the label on a block",
+        "\"lbl\"",
         0,
     ),
     (
@@ -1448,6 +1479,44 @@ proptest! {
             let back = parse(&text).map_err(|e| TestCaseError::fail(format!("{e}\n{text}")))?;
             prop_assert_eq!(values(&back), values(&doc), "${}\n{}", d.name, text);
         }
+    }
+
+    /// print∘parse is the identity on declarations whose `%`, `w` and plain literals have up
+    /// to nine decimals: printing never rounds a declaration's literal (ADR-0008 §2.11).
+    #[test]
+    fn fine_precision_declarations_print_and_read_back_exactly(
+        decls in proptest::collection::vec(
+            (0..3usize, 0..1000u32, "[0-9]{0,9}", proptest::option::of((any::<bool>(), 0..1000u32, "[0-9]{0,9}"))),
+            1..=6,
+        )
+    ) {
+        let fine = |int: u32, frac: &str| {
+            let frac = frac.trim_end_matches('0');
+            if frac.is_empty() { int.to_string() } else { format!("{int}.{frac}") }
+        };
+        let vars: Vec<VarDecl> = decls
+            .iter()
+            .enumerate()
+            .map(|(i, (u, int, frac, rhs))| {
+                let unit = [Unit::Pct, Unit::Watts, Unit::Number][*u];
+                let l = lit(&fine(*int, frac), unit);
+                let expr = match rhs {
+                    None => l,
+                    // `+`/`-` of two literals of the unit, or `*` by a plain number.
+                    Some((add, int, frac)) => Expr::Bin {
+                        op: if *add { Op::Add } else { Op::Mul },
+                        l: Box::new(l),
+                        r: Box::new(lit(&fine(*int, frac), if *add { unit } else { Unit::Number })),
+                    },
+                };
+                decl(&format!("v{i}"), expr)
+            })
+            .collect();
+        let nodes = parse("5m 50%").unwrap().nodes;
+        let text = print_dsl(&vars, &nodes);
+        let back = parse(&text).map_err(|e| TestCaseError::fail(format!("{e}\n{text}")))?;
+        prop_assert_eq!(&back.vars, &vars, "{}", text);
+        prop_assert_eq!(print(&back), text);
     }
 
     #[test]

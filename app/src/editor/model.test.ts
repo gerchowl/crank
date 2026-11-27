@@ -190,7 +190,7 @@ describe("undo groups and the history cap", () => {
     const a = type(type(s, text("sweet-spot-4x")), text("sweet-spot"), 1);
     expect(a.past).toEqual([s.saved]);
     const gone = removeNode(a.saved.nodes, a.saved.nodes[2]!.id);
-    const b = applied(a, gone, core.print_dsl(gone));
+    const b = applied(a, gone, core.print_dsl([], gone));
     const c = type(b, text("sweet-spot-4x"), 1);
     expect(c.past).toEqual([s.saved, a.saved, b.saved]);
     const d = type(undo(c), text("sweet-spot-4x-15m"), 1);
@@ -224,6 +224,27 @@ describe("DSL ↔ tree", () => {
     expect(next.past).toEqual([s.saved]);
   });
 
+  it("a typed text's declarations are committed with its tree, and a tree op keeps them (ADR-0008 §2.6)", () => {
+    const { s, type, parse, core } = fresh();
+    const next = type(s, text("with-vars"));
+    const want = parse(text("with-vars"));
+    if (want.outcome !== "parsed") throw new Error("parses");
+    expect(next.saved.vars).toEqual(want.vars);
+    expect(next.saved.vars.map((v) => v.name)).toEqual(["spare", "sst"]);
+    const gone = removeNode(next.saved.nodes, next.saved.nodes[2]!.id);
+    const after = applied(
+      next,
+      gone,
+      core.print_dsl([...next.saved.vars], gone),
+    );
+    expect(after.saved.vars).toBe(next.saved.vars);
+    expect(after.saved.text).toBe(text("with-vars-no-cool-down"));
+    expect(undo(after).saved.vars).toBe(next.saved.vars);
+    expect(undo(type(next, text("sweet-spot"))).saved.vars).toBe(
+      next.saved.vars,
+    );
+  });
+
   it("an invalid text keeps the saved state and shows the problem: no partial commit", () => {
     const { s, type } = fresh();
     const bad = type(s, text("missing-target"));
@@ -255,7 +276,7 @@ describe("DSL ↔ tree", () => {
   it("a tree op commits the tree with the core's canonical text", () => {
     const { s, core } = fresh();
     const nodes = removeNode(s.saved.nodes, s.saved.nodes[2]!.id);
-    const next = applied(s, nodes, core.print_dsl(nodes));
+    const next = applied(s, nodes, core.print_dsl([], nodes));
     expect(next.saved.text).toBe(text("sweet-spot-no-cool-down"));
     expect(next.draft).toBe(next.saved.text);
     expect(undo(next).saved).toBe(s.saved);
@@ -268,7 +289,7 @@ describe("selection", () => {
     const cool = s.saved.nodes[2]!.id;
     const warm = s.saved.nodes[0]!.id;
     const gone = removeNode(s.saved.nodes, cool);
-    const b = applied(select(s, warm), gone, core.print_dsl(gone));
+    const b = applied(select(s, warm), gone, core.print_dsl([], gone));
     expect(undo(b).selection).toBe(warm);
     expect(redo(undo(b)).selection).toBe(warm);
     const onCool = select(undo(b), cool);
@@ -276,7 +297,7 @@ describe("selection", () => {
     // Cool-down is gone after the redo: the selection is the one that state was left with (#653).
     expect(redo(onCool).selection).toBe(warm);
     // Undoing a removal selects the removed node again; with nothing to fall back on, nothing is selected.
-    const del = applied(select(s, cool), gone, core.print_dsl(gone), null);
+    const del = applied(select(s, cool), gone, core.print_dsl([], gone), null);
     expect(del.selection).toBeNull();
     expect(undo(del).selection).toBe(cool);
     expect(redo(undo(del)).selection).toBeNull();
@@ -367,7 +388,7 @@ function run(
           : wrapNode(st.saved.nodes, id, 2, `wrap-${++wraps}`);
       let printed: string | null = null;
       try {
-        printed = core.print_dsl(nodes);
+        printed = core.print_dsl([], nodes);
       } catch {
         printed = null;
       }

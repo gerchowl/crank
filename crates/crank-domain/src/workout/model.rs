@@ -254,6 +254,8 @@ pub enum DslErrorKind {
     UnknownVariable,
     /// A declaration follows a block, or sits inside a repeat.
     DeclarationAfterBlock,
+    /// A declaration has a label (`"lbl" $a = 5m`).
+    LabelledDeclaration,
     /// A name is declared twice.
     DuplicateVariable,
     /// A name does not start with a letter or holds a character other than a letter, digit or `_`.

@@ -157,7 +157,8 @@ default `!lower` flag is omitted, labels are re-quoted with `\`, `"` and a newli
 every label prints to text that reads back as the same label. Comments and blank lines are not kept.
 Declarations print first, one per line in declaration order (`$name = expr`, one space around `=` and every binary
 operator, parentheses only where the tree needs them: `$a - ($b - $c)` keeps them, `($a * 2) + $b` prints
-`$a * 2 + $b`; literals in their canonical forms, `90s` → `1m30s`, `%` to three decimals, unary minus attached,
+`$a * 2 + $b`; literals in their canonical forms, `90s` → `1m30s`, numbers, `%` and `w` exactly as the shortest decimal
+of their value (`090.50%` → `90.5%`, `0.0004%` stays `0.0004%`: only a use rounds), unary minus attached,
 `-(…)` before parentheses), then a blank line, then the blocks. A use prints its `$name`, never its value; a
 workout without declarations prints exactly as before.
 
@@ -188,6 +189,7 @@ that variable; a fault of the form selects the word:
 | `4m $thr` (not declared) | `UnknownVariable` | Unknown variable '$thr' — declare it before the first block, e.g. $thr = 95% | `$thr` |
 | `$a = $b * 2`, then `$b = 1m` | `UnknownVariable` | Unknown variable '$b' — a declaration can use only variables declared above it | `$b` |
 | `3m 60%`, then `$x = 1m` | `DeclarationAfterBlock` | Variables are declared before the first block | `$x` |
+| `"lbl" $a = 5m` | `LabelledDeclaration` | A declaration has no label — put the label on a block | `"lbl"` |
 | `$thr = 95%` twice | `DuplicateVariable` | '$thr' is already declared | the second `$thr` |
 | `$d = 4m` and `10m $d` | `VariableTypeMismatch` | '$d' is a duration (4m); a power target is expected here, e.g. 95% or 250w | `$d` |
 | `$p = 250w` and `5m ramp $p-75%` | `VariableTypeMismatch` | '$p' is in watts; a ramp is in % FTP | `$p-75%` |

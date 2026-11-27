@@ -16,7 +16,7 @@ describe("the editor mock", () => {
       throw new Error("parses");
     expect(ids(a.nodes).every((id) => id.startsWith("dsl-"))).toBe(true);
     expect(ids(b.nodes).some((id) => ids(a.nodes).includes(id))).toBe(false);
-    expect(ed.print_dsl(b.nodes)).toBe(text("sweet-spot"));
+    expect(ed.print_dsl([], b.nodes)).toBe(text("sweet-spot"));
   });
 
   it("answers a text that does not parse with the core's problem", () => {
@@ -61,16 +61,19 @@ describe("the editor mock", () => {
   it("never guesses: a draft not in the core's file breaks the test", () => {
     const ed = editorCommands();
     expect(() => ed.parse_dsl("1m 50%", 250)).toThrow(/not in editor.json/);
-    expect(() => ed.print_dsl([])).not.toThrow();
+    expect(() => ed.print_dsl([], [])).not.toThrow();
     expect(() =>
-      ed.print_dsl([
-        {
-          type: "step",
-          id: "x",
-          end: { kind: "lap" },
-          target: { kind: "free" },
-        } as WorkoutNode,
-      ]),
+      ed.print_dsl(
+        [],
+        [
+          {
+            type: "step",
+            id: "x",
+            end: { kind: "lap" },
+            target: { kind: "free" },
+          } as WorkoutNode,
+        ],
+      ),
     ).toThrow(/no draft/);
   });
 });

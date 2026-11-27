@@ -119,12 +119,12 @@ export const commands = {
 	 */
 	parseDsl: (text: string, ftp: number | null) => typedError<DslParse, ApiError>(__TAURI_INVOKE("parse_dsl", { text, ftp })),
 	/**
-	 *  The canonical DSL text of a workout tree.
+	 *  The canonical DSL text of a workout tree and its declarations.
 	 * 
 	 *  # Errors
 	 *  As [`Core::print_dsl`].
 	 */
-	printDsl: (nodes: WorkoutNode[]) => typedError<string, ApiError>(__TAURI_INVOKE("print_dsl", { nodes })),
+	printDsl: (vars: VarDecl[], nodes: WorkoutNode[]) => typedError<string, ApiError>(__TAURI_INVOKE("print_dsl", { vars, nodes })),
 	/**
 	 *  Compile a workout draft to its timeline and summary.
 	 * 
@@ -1648,6 +1648,11 @@ export type WorkoutDraft = {
 	ftp: number | null,
 	/**  The workout tree. */
 	nodes: WorkoutNode[],
+	/**
+	 *  The tree's variable declarations, in order (ADR-0008 §2.6, §2.10), used or not: they
+	 *  are stored with the tree and printed with it.
+	 */
+	vars: VarDecl[],
 };
 
 /**  A prescription diagnostic of the compiled workout. */

@@ -208,6 +208,7 @@ impl Library {
             name: NEW_NAME.into(),
             ftp,
             nodes: Vec::new(),
+            vars: Vec::new(),
         }
     }
     /// Store `draft` as the rider's workout `id` (an update), or as a new one when `id` is
@@ -248,9 +249,7 @@ impl Library {
             name: name.into(),
             ftp: draft.ftp,
             nodes: draft.nodes,
-            // A draft carries no declarations yet (#744): a tree that uses a variable is
-            // refused by the compile below as `Resolve(UnknownVariable)`.
-            vars: Vec::new(),
+            vars: draft.vars,
         };
         // At its own FTP (stored, so it must be one: positive and finite), then at the model's.
         refuse_errors(&compile_workout(&workout, &CompileOptions::default())?)?;

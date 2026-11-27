@@ -397,20 +397,24 @@ async fn the_editor_commands_agree_with_the_library() {
     let core = app.state::<Core>();
     for w in cmd::workouts_list(core.clone()).await.unwrap() {
         let d = cmd::workout_get(core.clone(), w.id.clone()).await.unwrap();
-        let printed = cmd::print_dsl(core.clone(), d.workout.nodes.clone())
-            .await
-            .unwrap();
+        let printed = cmd::print_dsl(
+            core.clone(),
+            d.workout.vars.clone(),
+            d.workout.nodes.clone(),
+        )
+        .await
+        .unwrap();
         assert_eq!(printed, d.dsl, "{}", w.id);
         let parsed = cmd::parse_dsl(core.clone(), d.dsl.clone(), d.workout.ftp)
             .await
             .unwrap();
         let wire = serde_json::to_value(&parsed).expect("serialisable");
         assert_eq!(wire["outcome"], "parsed", "{}", w.id);
-        let DslParse::Parsed { nodes, .. } = parsed else {
+        let DslParse::Parsed { nodes, vars } = parsed else {
             unreachable!("tagged parsed")
         };
         assert_eq!(
-            cmd::print_dsl(core.clone(), nodes).await.unwrap(),
+            cmd::print_dsl(core.clone(), vars, nodes).await.unwrap(),
             d.dsl,
             "{}",
             w.id

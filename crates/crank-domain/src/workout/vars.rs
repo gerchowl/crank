@@ -920,20 +920,21 @@ fn print_expr_into(e: &Expr, out: &mut String) {
         }
     };
     match e {
+        // A declaration's literal prints exactly (ADR-0008 §2.11): the shortest decimal of
+        // its exact value, so printing and reading it back gives the same rational. Only a
+        // use rounds, to its field's precision (`resolve_vars`).
         Expr::Lit { value, unit } => match unit {
-            Unit::Pct => {
-                match decimal(value)
-                    .and_then(Result::ok)
-                    .map(|r| round_scaled(&r, 3))
-                {
-                    Some(Ok(s)) => out.push_str(&scaled_text(s, 3)),
-                    _ => out.push_str(value),
+            Unit::Pct | Unit::Watts | Unit::Number => {
+                if decimal(value).is_some() {
+                    out.push_str(&canonical_decimal(value));
+                } else {
+                    out.push_str(value);
                 }
-                out.push('%');
-            }
-            Unit::Watts => {
-                out.push_str(value);
-                out.push('w');
+                match unit {
+                    Unit::Pct => out.push('%'),
+                    Unit::Watts => out.push('w'),
+                    _ => {}
+                }
             }
             Unit::Seconds => {
                 if let Some(s) = literal(value, Unit::Seconds)
@@ -947,7 +948,6 @@ fn print_expr_into(e: &Expr, out: &mut String) {
                     out.push('s');
                 }
             }
-            Unit::Number => out.push_str(value),
         },
         Expr::Var { name } => {
             out.push('$');

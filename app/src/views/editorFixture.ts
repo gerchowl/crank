@@ -18,13 +18,14 @@ import type {
   CompiledView,
   DslParse,
   DslProblem,
+  VarDecl,
   Workout,
   WorkoutNode,
 } from "../bindings";
 import drafts from "../../../crates/crank-core/tests/fixtures/editor.json";
 
-/** A tree's answers: its nodes, its printed text, and its compiled view or the compiler's refusal. */
-type Tree = { nodes: WorkoutNode[]; printed: string } & (
+/** A tree's answers: its declarations, its nodes, its printed text, and its compiled view or the compiler's refusal. */
+type Tree = { vars: VarDecl[]; nodes: WorkoutNode[]; printed: string } & (
   { compiled: CompiledView } | { refused: ApiError }
 );
 /**
@@ -45,8 +46,8 @@ function ids(nodes: readonly WorkoutNode[]): string[] {
     ...(n.type === "repeat" ? ids(n.children) : []),
   ]);
 }
-/** A tree's structure without its ids, with sorted keys: equal trees give equal strings. */
-function shape(nodes: readonly WorkoutNode[]): string {
+/** A tree's (or declarations') structure without its ids, with sorted keys: equal trees give equal strings. */
+function shape(nodes: readonly (WorkoutNode | VarDecl)[]): string {
   return JSON.stringify(nodes, (key, value: unknown) => {
     if (key === "id") return undefined;
     if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -72,13 +73,20 @@ function reId(
   );
 }
 const parsed = (d: Draft) => ("nodes" in d ? d : null);
-/** The draft whose tree is `nodes` (and whose FTP is `ftp`, when given). */
-function byTree(nodes: readonly WorkoutNode[], ftp?: number) {
-  const s = shape(nodes);
+/** The draft whose tree is `nodes` with declarations `vars` (and whose FTP is `ftp`, when given). */
+function byTree(
+  nodes: readonly WorkoutNode[],
+  vars: readonly VarDecl[],
+  ftp?: number,
+) {
+  const s = shape(nodes) + shape(vars);
   const d = Object.values(DRAFTS)
     .map(parsed)
     .find(
-      (p) => p && shape(p.nodes) === s && (ftp === undefined || p.ftp === ftp),
+      (p) =>
+        p &&
+        shape(p.nodes) + shape(p.vars) === s &&
+        (ftp === undefined || p.ftp === ftp),
     );
   if (!d)
     throw new Error(
@@ -104,15 +112,15 @@ export function editorCommands() {
         );
       return "problem" in d
         ? { outcome: "invalid", problem: d.problem }
-        : { outcome: "parsed", nodes: reId(d.nodes, fresh) };
+        : { outcome: "parsed", nodes: reId(d.nodes, fresh), vars: d.vars };
     },
-    print_dsl(nodes: WorkoutNode[]): string {
-      return byTree(nodes).printed;
+    print_dsl(vars: VarDecl[], nodes: WorkoutNode[]): string {
+      return byTree(nodes, vars).printed;
     },
     compile_workout(workout: Workout): CompiledView {
       if (workout.ftp === null)
         throw "invalid args `workout` for command `compile_workout`: invalid type: null, expected f64";
-      const d = byTree(workout.nodes, workout.ftp);
+      const d = byTree(workout.nodes, workout.vars ?? [], workout.ftp);
       if ("refused" in d) throw d.refused;
       // The file's compiled view names the file's ids; give it the request's.
       const theirs = ids(d.nodes);
