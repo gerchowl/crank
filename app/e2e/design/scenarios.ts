@@ -12,8 +12,12 @@ export interface Scenario {
   picks?: string[];
   /** Buttons the spec clicks, by accessible name, before it waits for `ready` (a scan, Ride this). */
   clicks?: string[];
-  /** Text boxes the spec fills, by accessible name, after its `clicks` (a draft typed in the editor). */
+  /** Listbox options the spec clicks, by accessible name, after its `clicks` (a row of the editor's outline). */
+  rows?: string[];
+  /** Text boxes the spec fills, by accessible name, after its `rows` (a draft typed in the editor). */
   fills?: { label: string; text: string }[];
+  /** Buttons the spec clicks, by accessible name, after its `fills` (Apply in the editor's form). */
+  after?: string[];
   /** Mock answers that stay pending on purpose (a scan in flight): the settle wait ignores this many. */
   held?: number;
   /** A selector the spec scrolls into view once the state is ready (a long list, scrolled to its end). */
@@ -114,6 +118,32 @@ export const SCENARIOS = [
         text: '"Warm-up" 10m ramp 45-70%\n3x("Sweet spot" 12m 90%, "Rest" 4m)',
       },
     ],
+  },
+  // Outline editing (§5.7, #653): a step picked in the outline, its toolbar and its form (label, duration, power).
+  {
+    name: "workouts-editor-step",
+    ready: "role=form[name='Selected step']",
+    picks: ["Sweet spot 3x12"],
+    clicks: ["Duplicate & edit"],
+    rows: ["Sweet spot ·"],
+  },
+  // A repeat picked: Unwrap applies, the form holds its label and count.
+  {
+    name: "workouts-editor-repeat",
+    ready: "role=form[name='Selected repeat']",
+    picks: ["Sweet spot 3x12"],
+    clicks: ["Duplicate & edit"],
+    rows: ["3 ×"],
+  },
+  // An edit the core refuses (a 0 s warm-up, the core's `zero-duration` tree): its message, nothing changed.
+  {
+    name: "workouts-editor-refused",
+    ready: "#editor-outline-refused",
+    picks: ["Sweet spot 3x12"],
+    clicks: ["Duplicate & edit"],
+    rows: ["Warm-up"],
+    fills: [{ label: "Minutes", text: "0" }],
+    after: ["Apply"],
   },
   // The rider's own workout picked (#110): Edit and Delete beside Ride this and Duplicate & edit.
   {
@@ -288,6 +318,9 @@ export const WORKOUTS_SCENARIOS: readonly ScenarioName[] = [
   "workouts-long",
   "workouts-editor",
   "workouts-editor-invalid",
+  "workouts-editor-step",
+  "workouts-editor-repeat",
+  "workouts-editor-refused",
   "workouts-mine",
   "workouts-delete-confirm",
   "workouts-editor-new",

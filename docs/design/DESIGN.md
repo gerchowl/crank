@@ -457,8 +457,7 @@ holds the name as its title (or "Untitled workout" while the name is blank), a c
 saving row; then the profile across the page, the selected node's blocks drawn with a heavier
 edge; then **Outline · Text · Summary** in one row, 4 / 4 / 4 on the grid at 1024 and 1440. The outline is the tree as
 one single-select listbox (selection follows focus, as the library; a nested row is indented and a long label wraps).
-It is read-only for now: selecting a row marks its blocks, and the tree is edited through the text; outline edits
-(delete, insert, wrap in a repeat) are #653. The text is the DSL (docs/DSL.md) in the mono face; the summary is the library panel's. Every edit goes through the
+Selecting a row marks its blocks; the tree is edited from the outline (below) or through the text. The text is the DSL (docs/DSL.md) in the mono face; the summary is the library panel's. Every edit goes through the
 pure editor model (`editor/model.ts`); the core parses (`parse_dsl`) and compiles (`compile_workout`). A draft that
 does not parse keeps the saved workout, edges the text in the error colour and shows ⚠, the core's message, its
 line and column, and that line with the problem's span (`DslProblem` offset and length) underlined in the error colour,
@@ -468,6 +467,51 @@ exists. **Undo groups:** the commits of one burst of typing are one undo step; a
 between two keystrokes, or at any other commit, undo or redo, and a structural edit is a step of its own. The history
 keeps the last 100 steps and drops the oldest past that. Both numbers are the text-editor convention
 (prosemirror-history's `newGroupDelay` and `depth` defaults; `editor/model.ts` `GROUP_MS`, `HISTORY_LIMIT`). Riding a draft is not done (#643, architect decision 2026-11-22): Ride this rides the saved workout by its id.
+
+**Outline editing (#653, `editor/OutlineEdit.tsx`).** Under the Outline heading sits a toolbar of 32 px default
+buttons (§18.4), wrapping onto as many rows as the pane needs: **Add step** · **Duplicate** · **Wrap in repeat** ·
+**Unwrap** · **Move up** · **Move down** · **Delete**, each acting on the selected row. Add step inserts a 5 min step at
+50 % FTP after the selected node, in its list (with nothing selected, at the end: an empty workout's first step);
+Duplicate inserts a copy (fresh ids) after it; Wrap in repeat puts it in a new 2 × repeat; Unwrap (a repeat) puts its
+children in its place; Move up / Move down swap it with its neighbour in its own list (a node never moves into or out of
+a repeat: wrap or unwrap does that); Delete removes it and its subtree, and a repeat's only child goes with its repeat,
+and so on outwards: every repeat the delete would leave empty is removed with it (an empty repeat is no workout item:
+the text cannot hold one). An action that does not apply to the selection
+is disabled (Unwrap on a step, Move up on a first child, all but Add step with nothing selected). Under the outline,
+past a rule, the **selected node's form** ("Selected step" / "Selected repeat"): a step's **Label**, its duration as
+**Minutes** and **Seconds** (a time end) and its power (**Power** in % FTP or W for a flat target, **Ramp from** /
+**Ramp to** for a ramp, **Range low** / **Range high** for a range), a repeat's **Label** and **Count**; each box is
+named by its label, its unit beside it as its description. **Apply** (32 px default; Enter in a box is the same)
+commits the changed node; with nothing changed it commits nothing. A box left as shown keeps the node's own value (a
+value the core holds as none, shown empty, stays none: ADR-0008's `auto` ends land there); a changed duration is
+Minutes × 60 + Seconds (an empty box beside a filled one counts as 0), neither below 0 ("Seconds: not below 0"), in whole seconds (0.1 min is 6 s; a fraction of a
+second is refused: "Duration: whole seconds only"). What the form does not edit (another end, a
+heart-rate or free target, cadence, a repeat's progression or `!last`) is named under it ("Its target is edited in
+Text."); switching a kind from the form is #730. The value boxes are text boxes, not number spinners, so ADR-0008 can make `auto` (a ramp end) and `$name` (a
+variable) further values of the same box; writing a number over a bound value unbinds it (ADR-0008 §2.12). An empty
+workout shows the toolbar, Add step alone enabled, and "No steps yet: add one, or write one in Text."
+**Every outline edit is one commit through the core**: the next tree is printed (`print_dsl`) and that text read back
+(`parse_dsl`); **the tree the core read back** is committed with that canonical text as **one undo step** (a structural
+edit, above), so tree and text cannot drift, its edited node selected (the new or moved node; after a Delete the next
+row past it, else the row before), and the text view shows the text. If the workout or the text changed while the core
+was checking (the rider typed), the edit is refused ("The text was edited while this edit was checked."), so no typed
+key is lost. A tree whose text the core refuses (a 0 s step: "Duration must be > 0"; a negative target:
+"Unknown token '-10%'") is **refused**: nothing changes, and ⚠, the core's message and "Nothing was changed." show
+beside the edit (a polite live region: under the toolbar for an action, under Apply for the form), the form keeping
+what was typed; a box that holds no number is refused the
+same way ("Power: enter a number. Nothing was changed.") before the core is asked. While the text does not parse, or the core has not yet
+read it, the outline cannot be edited (an edit would drop that text): the toolbar and the form are disabled with the
+reason under the toolbar ("Fix the text to edit the outline.", "The outline waits until the text is read."). An outline
+edit is an unsaved change, as typing is. **Keyboard** (no new shortcut, §5.9): the toolbar is a WAI-ARIA toolbar, one
+tab stop, ← / → / Home / End between its enabled buttons, Enter or Space to act; it comes before the outline in the tab
+order, so Shift+Tab from a row reaches it, and after an action focus is on the edited row (selection follows focus, so
+Tab into the outline selects the row it lands on); when nothing is left to select (the only node deleted) focus is on
+Add step, never dropped to the page. Undo and redo select the node the restored state was left with when the selection
+does not survive (undoing a Delete selects the restored node), and from a row or the toolbar focus follows it. Tab from the outline reaches the form; Enter in a box applies and
+focus stays there. Cmd/Ctrl+Z in a box is the editor's undo of the whole workout (§5.9's exception), not the box's own:
+values typed and not yet applied are dropped, and the form shows the restored node's values. The form follows an outline as long as its workout, so it may sit below the window, where the
+page scrolls and Tab reaches it (the toolbar stays in the window). A built-in is never edited: Edit is offered only for the rider's own workouts, and Duplicate & edit
+makes the copy the outline edits. Reordering by drag and drop is not offered.
 
 **Saving (#110).** The saving row holds **Name** (a text box, at most 120 characters), **Save** (32 px primary),
 **Save as new** (once the workout has been saved) and **Ride this**. Save stores the workout in the library

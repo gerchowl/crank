@@ -568,6 +568,10 @@ const SETUPS: Record<ScenarioName, () => void> = {
   // The editor on the core's `sweet-spot` draft (editorFixture.ts): a real tree, text and compiled view.
   "workouts-editor": workouts({ trees: { "w-ss": "sweet-spot" } }),
   "workouts-editor-invalid": workouts({ trees: { "w-ss": "sweet-spot" } }),
+  "workouts-editor-step": workouts({ trees: { "w-ss": "sweet-spot" } }),
+  "workouts-editor-repeat": workouts({ trees: { "w-ss": "sweet-spot" } }),
+  // The refused edit is the core's `zero-duration` tree (editor.json): its printed text does not read back.
+  "workouts-editor-refused": workouts({ trees: { "w-ss": "sweet-spot" } }),
   "workouts-mine": workouts(),
   "workouts-delete-confirm": workouts(),
   // The new workout's empty tree is the core's `empty` draft (editorFixture.ts): compiled, with its error.

@@ -65,6 +65,19 @@ export const editorButton = (word) =>
   `//div[@class="editor-store"]//button[normalize-space(.)=${lit(word)}]`;
 /** The chip saying where the workout stands ("Not saved", "Unsaved changes", "Saved"). */
 export const editorChip = `//div[@class="editor-title"]/span[@class="workouts-chip"]`;
+// Outline editing (src/editor/OutlineEdit.tsx `OutlineToolbar`, `BlockForm`, #653).
+/** A button of the outline's toolbar ("Add step", "Duplicate", "Wrap in repeat", "Unwrap", "Move up", "Move down", "Delete"). */
+export const outlineTool = (word) =>
+  `//div[@role="toolbar" and @aria-label="Outline actions"]/button[normalize-space(.)=${lit(word)}]`;
+/** The outline's rows. */
+export const outlineRows = `//ul[@id="editor-outline"]/li[@role="option"]`;
+/** The outline's selected row. */
+export const outlineSelected = `//ul[@id="editor-outline"]/li[@role="option" and @aria-selected="true"]`;
+/** A box of the selected node's form, by its label ("Label", "Minutes", "Seconds", "Power", "Count", …). */
+export const blockField = (label) =>
+  `//form[@class="editor-block"]//div[@class="editor-field"][label[normalize-space(.)=${lit(label)}]]/input`;
+/** The form's Apply. */
+export const blockApply = `//form[@class="editor-block"]//button[normalize-space(.)="Apply"]`;
 /** Back to library. */
 export const backToLibrary = `//div[@class="editor-head"]//button[normalize-space(.)="Back to library"]`;
 

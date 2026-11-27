@@ -1,6 +1,6 @@
 // The in-page half of the WKWebView run (#630, runner.swift): the body of an async function called with `job` (a
 // scenario of scenarios.ts), `audit` (layout-audit.js's source) and `opts`. It opens the fixture's state as design.pw.ts
-// `open` does (picks, clicks, fills, scrollTo, each followed by `settled()`), then returns the audit's result as JSON.
+// `open` does (picks, clicks, rows, fills, after, scrollTo, each followed by `settled()`), then returns the audit's result as JSON.
 /* global job, audit, opts -- the async function's arguments (runner.swift `callAsyncJavaScript`). */
 const until = async (what, ok) => {
   for (let t = 0; t < 200; t++) {
@@ -19,14 +19,15 @@ const named = (selector, name) =>
   );
 await until("the fixture", () => window.__fixture);
 await window.__fixture.settled();
-for (const [selector, names] of [
-  ["[role=option]", job.picks ?? []],
-  ["button", job.clicks ?? []],
-])
+const press = async (selector, names) => {
   for (const name of names) {
     (await until(name, () => named(selector, name))).click();
     await window.__fixture.settled();
   }
+};
+await press("[role=option]", job.picks ?? []);
+await press("button", job.clicks ?? []);
+await press("[role=option]", job.rows ?? []);
 // Fills as Playwright's `fill`: the box's own value setter (React tracks the value it last rendered), then one input
 // event. A text box is found by its label, as `getByRole("textbox", { name })`.
 for (const f of job.fills ?? []) {
@@ -42,6 +43,7 @@ for (const f of job.fills ?? []) {
   box.dispatchEvent(new Event("input", { bubbles: true }));
   await window.__fixture.settled();
 }
+await press("button", job.after ?? []);
 if (job.scrollTo) {
   document.querySelector(job.scrollTo)?.scrollIntoView({ block: "nearest" });
   await window.__fixture.settled();

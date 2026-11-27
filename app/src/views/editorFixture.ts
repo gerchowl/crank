@@ -23,12 +23,17 @@ import type {
 } from "../bindings";
 import drafts from "../../../crates/crank-core/tests/fixtures/editor.json";
 
-/** One draft text and the core's answers for it. */
+/** A tree's answers: its nodes, its printed text, and its compiled view or the compiler's refusal. */
+type Tree = { nodes: WorkoutNode[]; printed: string } & (
+  { compiled: CompiledView } | { refused: ApiError }
+);
+/**
+ * One draft text and the core's answers for it: a text that does not parse, or one that does, with its tree's. A tree
+ * no text gives (editor_fixture.rs `TREES`, an outline edit the core refuses, #653) has its printed text as `text`,
+ * with the problem of parsing that text back.
+ */
 export type Draft = { text: string; ftp: number } & (
-  | { problem: DslProblem }
-  | ({ nodes: WorkoutNode[]; printed: string } & (
-      { compiled: CompiledView } | { refused: ApiError }
-    ))
+  { problem: DslProblem } | Tree | ({ problem: DslProblem } & Tree)
 );
 /** The drafts by name (the `DRAFTS` of crates/crank-core/tests/editor_fixture.rs). */
 export const DRAFTS = drafts as unknown as Record<string, Draft>;

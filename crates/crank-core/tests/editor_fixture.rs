@@ -13,7 +13,7 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 const FTP: f64 = 250.0;
 
 /// `(name, text)`: the drafts the app's tests and design scenes type or load.
-const DRAFTS: [(&str, &str); 8] = [
+const DRAFTS: [(&str, &str); 21] = [
     (
         "sweet-spot",
         "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
@@ -37,6 +37,72 @@ const DRAFTS: [(&str, &str); 8] = [
     ),
     ("implausible", "\"Warm-up\" 10m ramp 45-70%\n5m 900%"),
     ("too-long", "200h 50%"),
+    // The outline's edits of `sweet-spot` (#653), each as the core prints it.
+    (
+        "dup-warm-up",
+        "\"Warm-up\" 10m ramp 45-70%\n\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    (
+        "add-step",
+        "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%\n5m 50%",
+    ),
+    (
+        "wrap-cool-down",
+        "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n2x(\"Cool-down\" 5m ramp 60-40%)",
+    ),
+    (
+        "unwrapped",
+        "\"Warm-up\" 10m ramp 45-70%\n\"Sweet spot\" 12m 90%\n\"Rest\" 4m 55%\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    (
+        "cool-down-up",
+        "\"Warm-up\" 10m ramp 45-70%\n\"Cool-down\" 5m ramp 60-40%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)",
+    ),
+    (
+        "sweet-spot-95",
+        "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 95%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    (
+        "warm-up-50-75",
+        "\"Warm-up\" 10m ramp 50-75%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    (
+        "rest-recover",
+        "\"Warm-up\" 10m ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Recover\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    // The outline's first step in a new workout.
+    ("one-step", "5m 50%"),
+    // A duration of 0.1 min, rounded to whole seconds by the outline's form.
+    (
+        "warm-up-6s",
+        "\"Warm-up\" 6s ramp 45-70%\n3x(\"Sweet spot\" 12m 90%, \"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    // Moves and deletes inside the repeat; deleting its last child removes the repeat.
+    (
+        "rest-up",
+        "\"Warm-up\" 10m ramp 45-70%\n3x(\"Rest\" 4m 55%, \"Sweet spot\" 12m 90%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    (
+        "no-sweet-spot",
+        "\"Warm-up\" 10m ramp 45-70%\n3x(\"Rest\" 4m 55%)\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+    (
+        "no-repeat",
+        "\"Warm-up\" 10m ramp 45-70%\n\"Cool-down\" 5m ramp 60-40%",
+    ),
+];
+
+/// `(name, draft, pointer, value)`: trees no text gives, the outline's refused edits (#653): the
+/// draft's tree with the JSON value at `pointer` replaced. The entry's text is the tree's printed
+/// text and carries the core's answer for parsing it back (a `problem` when it does not).
+const TREES: [(&str, &str, &str, f64); 2] = [
+    ("zero-duration", "sweet-spot", "/0/end/s", 0.0),
+    (
+        "negative-power",
+        "sweet-spot",
+        "/1/children/0/target/value",
+        -10.0,
+    ),
 ];
 
 const PATH: &str = "tests/fixtures/editor.json";
@@ -75,7 +141,7 @@ async fn entry(core: &Core, text: &str) -> Value {
     let mut out = Map::new();
     out.insert("text".into(), json!(text));
     out.insert("ftp".into(), json!(FTP));
-    let nodes: Vec<WorkoutNode> = match core
+    match core
         .parse_dsl(text.into(), FTP)
         .await
         .expect("parse answers")
@@ -85,10 +151,44 @@ async fn entry(core: &Core, text: &str) -> Value {
                 "problem".into(),
                 serde_json::to_value(problem).expect("serialisable"),
             );
-            return Value::Object(out);
         }
-        DslParse::Parsed { nodes } => nodes,
+        DslParse::Parsed { nodes } => tree(core, nodes, &mut out).await,
+    }
+    Value::Object(out)
+}
+
+/// A tree no text gives (`TREES`): its printed text, the core's answer for parsing that text back
+/// (a `problem`, or nothing when it parses), then the tree's own answers as a draft's.
+async fn tree_entry(core: &Core, draft: &str, pointer: &str, value: f64) -> Value {
+    let (_, text) = DRAFTS.iter().find(|(n, _)| *n == draft).expect("a draft");
+    let DslParse::Parsed { nodes } = core
+        .parse_dsl((*text).into(), FTP)
+        .await
+        .expect("parse answers")
+    else {
+        panic!("{draft} parses");
     };
+    let mut v = serde_json::to_value(nodes).expect("serialisable");
+    *v.pointer_mut(pointer).expect("the pointer names a value") = json!(value);
+    let nodes: Vec<WorkoutNode> = serde_json::from_value(v).expect("a tree");
+    let printed = core.print_dsl(nodes.clone()).await.expect("print answers");
+    let mut out = Map::new();
+    out.insert("text".into(), json!(printed));
+    out.insert("ftp".into(), json!(FTP));
+    if let DslParse::Invalid { problem } =
+        core.parse_dsl(printed, FTP).await.expect("parse answers")
+    {
+        out.insert(
+            "problem".into(),
+            serde_json::to_value(problem).expect("serialisable"),
+        );
+    }
+    tree(core, nodes, &mut out).await;
+    Value::Object(out)
+}
+
+/// A tree's answers: its nodes (ids renamed), its printed text, and its compiled view or refusal.
+async fn tree(core: &Core, nodes: Vec<WorkoutNode>, out: &mut Map<String, Value>) {
     let printed = core.print_dsl(nodes.clone()).await.expect("print answers");
     let workout = Workout {
         id: "draft".into(),
@@ -114,7 +214,6 @@ async fn entry(core: &Core, text: &str) -> Value {
             );
         }
     }
-    Value::Object(out)
 }
 
 #[tokio::test]
@@ -130,6 +229,9 @@ async fn the_editor_fixture_is_the_cores_answer() {
     let mut drafts = Map::new();
     for (name, text) in DRAFTS {
         drafts.insert(name.into(), entry(&core, text).await);
+    }
+    for (name, draft, pointer, value) in TREES {
+        drafts.insert(name.into(), tree_entry(&core, draft, pointer, value).await);
     }
     let want = serde_json::to_string_pretty(&Value::Object(drafts)).unwrap() + "\n";
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(PATH);

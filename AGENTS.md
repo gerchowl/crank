@@ -191,7 +191,7 @@ the PR, and the reviewer looks at each changed image (the check's failure prints
 The workout editor's commands (`parse_dsl`, `print_dsl`, `compile_workout`, #111) have no TypeScript twin: the app holds
 no DSL parser. Their mock (`app/src/views/editorFixture.ts`, behind `workoutsBackend.ts`) answers only from
 `crates/crank-core/tests/fixtures/editor.json`, which the `editor_fixture` test checks against the core; a draft a test
-types must be added to that test's `DRAFTS` and the file regenerated with `just editor-fixture`. A draft not in the file
+types must be added to that test's `DRAFTS` and the file regenerated with `just editor-fixture`; a tree no text gives (an outline edit the core refuses, #653) is a `TREES` entry (a draft's tree with one JSON value replaced), whose text is its printed text with the core's problem for reading it back. A draft not in the file
 throws in the test, never a guessed answer. The library's own commands (`workout_new`, `workout_save`, `workout_delete`, #110) are mocked in
 `workoutsBackend.ts` with the core's refusals (library.rs `Library::save`); a saved tree is compiled through the same
 fixture, so a test saves only drafts that are in it.

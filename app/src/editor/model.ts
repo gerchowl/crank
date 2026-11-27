@@ -13,7 +13,8 @@
 //   defaults (`newGroupDelay`, `depth`), the convention text editors follow; time is handed in, so the model stays pure.
 // - The selection is a node id. It survives a commit, undo or redo while that id is in the tree; a text commit gives
 //   every node a fresh id (the core's parser), so the selection follows its path there (docs/DSL.md, "Tree-helper
-//   ownership"); otherwise it collapses to null.
+//   ownership"); otherwise an undo or redo selects the node the restored state was left with (each step records its
+//   selection), else it collapses to null.
 // - `lock` is the AI rewrite's (#112): while it is set every edit, undo, redo and selection change is refused.
 import type { DslParse, DslProblem, Workout, WorkoutNode } from "../bindings";
 
@@ -51,6 +52,12 @@ export interface EditorState {
   readonly selection: string | null;
   readonly past: readonly Saved[];
   readonly future: readonly Saved[];
+  /**
+   * The selection each step of `past` and `future` was left with, index for index: undo or redo selects it again when
+   * the selection does not survive the step (undoing a Delete selects the restored node).
+   */
+  readonly leftPast: readonly (string | null)[];
+  readonly leftFuture: readonly (string | null)[];
   /** The typing burst whose commits share one undo step; null after any other commit, undo or redo. */
   readonly typing: Typing | null;
   readonly lock: Lock | null;
@@ -69,6 +76,8 @@ export function load(workout: Workout, text: string): EditorState {
     selection: null,
     past: [],
     future: [],
+    leftPast: [],
+    leftFuture: [],
     typing: null,
     lock: null,
   };
@@ -167,6 +176,75 @@ export const wrapNode = (
     ...l.slice(i + 1),
   ]);
 
+/** Move the node with `id` one place earlier (`by` -1) or later (+1) among its siblings; past either end, unchanged. */
+export const moveNode = (
+  nodes: readonly WorkoutNode[],
+  id: string,
+  by: -1 | 1,
+) =>
+  editAround(nodes, id, (l, i) => {
+    const j = i + by;
+    if (j < 0 || j >= l.length) return [...l];
+    const out = [...l];
+    [out[i], out[j]] = [out[j]!, out[i]!];
+    return out;
+  });
+/** Replace the repeat with `id` by its children (they keep their ids); any other node is left as it is. */
+export const unwrapNode = (nodes: readonly WorkoutNode[], id: string) =>
+  editAround(nodes, id, (l, i) => {
+    const n = l[i]!;
+    return n.type === "repeat"
+      ? [...l.slice(0, i), ...n.children, ...l.slice(i + 1)]
+      : [...l];
+  });
+/** A deep copy of `node` with a fresh id from `fresh` for it and every node under it, in tree order. */
+export function copyNode(node: WorkoutNode, fresh: () => string): WorkoutNode {
+  return node.type === "repeat"
+    ? {
+        ...node,
+        id: fresh(),
+        children: node.children.map((c) => copyNode(c, fresh)),
+      }
+    : { ...node, id: fresh() };
+}
+/** Where the node with `id` sits among its siblings: its index and their count; null when it is not in the tree. */
+export function siblingsOf(
+  nodes: readonly WorkoutNode[],
+  id: string,
+): { index: number; count: number } | null {
+  const path = pathOf(nodes, id);
+  if (!path) return null;
+  const parent = path.length === 1 ? null : nodeAt(nodes, path.slice(0, -1));
+  const list =
+    parent === null ? nodes : parent.type === "repeat" ? parent.children : [];
+  return { index: path.at(-1)!, count: list.length };
+}
+/** The tree in reading order (a repeat before its children), each node with its depth (0 = top level). */
+export function flatten(
+  nodes: readonly WorkoutNode[],
+  depth = 0,
+): { node: WorkoutNode; depth: number }[] {
+  return nodes.flatMap((node) => [
+    { node, depth },
+    ...(node.type === "repeat" ? flatten(node.children, depth + 1) : []),
+  ]);
+}
+/**
+ * What is selected once the node with `id` is removed: the next row in reading order past its subtree, else the row
+ * before it, else nothing.
+ */
+export function afterRemoval(
+  nodes: readonly WorkoutNode[],
+  id: string,
+): string | null {
+  const rows = flatten(nodes);
+  const at = rows.findIndex((r) => r.node.id === id);
+  if (at < 0) return null;
+  const depth = rows[at]!.depth;
+  const next = rows.slice(at + 1).find((r) => r.depth <= depth);
+  return next?.node.id ?? rows[at - 1]?.node.id ?? null;
+}
+
 // ---- editor transitions -------------------------------------------------------------------------------------------
 
 /**
@@ -188,6 +266,10 @@ function commit(
     selection: has(nodes, selection) ? selection : null,
     past: grouped ? s.past : [...s.past, s.saved].slice(-HISTORY_LIMIT),
     future: [],
+    leftPast: grouped
+      ? s.leftPast
+      : [...s.leftPast, s.selection].slice(-HISTORY_LIMIT),
+    leftFuture: [],
   };
 }
 
@@ -223,14 +305,18 @@ export function parsed(
   return { ...next, typing: s.typing && { ...s.typing, open: true } };
 }
 
-/** A tree op's result `nodes` with the core's canonical `text` for it (`print_dsl`), committed. */
+/**
+ * A tree op's result `nodes` with the core's canonical `text` for it (`print_dsl`), committed as one undo step, with
+ * `selection` selected (the edited node; by default the selection stays).
+ */
 export function applied(
   s: EditorState,
   nodes: readonly WorkoutNode[],
   text: string,
+  selection: string | null = s.selection,
 ): EditorState {
   if (s.lock) return s;
-  return { ...commit(s, nodes, text, s.selection, false), typing: null };
+  return { ...commit(s, nodes, text, selection, false), typing: null };
 }
 
 export function select(s: EditorState, id: string | null): EditorState {
@@ -238,31 +324,43 @@ export function select(s: EditorState, id: string | null): EditorState {
   return { ...s, selection: id === null || has(s.saved.nodes, id) ? id : null };
 }
 
-/** Back to the previous saved state; a draft that does not parse is dropped with the state it was typed over. */
+/**
+ * Back to the previous saved state; a draft that does not parse is dropped with the state it was typed over. The
+ * selection stays while its node exists there, else it is the one that state was left with (if it exists), else none.
+ */
 export function undo(s: EditorState): EditorState {
   const prev = s.past.at(-1);
   if (s.lock || !prev) return s;
-  return restore(s, prev, s.past.slice(0, -1), [s.saved, ...s.future]);
+  return {
+    ...restore(s, prev, s.leftPast.at(-1) ?? null),
+    past: s.past.slice(0, -1),
+    future: [s.saved, ...s.future],
+    leftPast: s.leftPast.slice(0, -1),
+    leftFuture: [s.selection, ...s.leftFuture],
+  };
 }
 export function redo(s: EditorState): EditorState {
   const next = s.future[0];
   if (s.lock || !next) return s;
-  return restore(s, next, [...s.past, s.saved], s.future.slice(1));
+  return {
+    ...restore(s, next, s.leftFuture[0] ?? null),
+    past: [...s.past, s.saved],
+    future: s.future.slice(1),
+    leftPast: [...s.leftPast, s.selection],
+    leftFuture: s.leftFuture.slice(1),
+  };
 }
-function restore(
-  s: EditorState,
-  to: Saved,
-  past: readonly Saved[],
-  future: readonly Saved[],
-): EditorState {
+function restore(s: EditorState, to: Saved, left: string | null): EditorState {
   return {
     ...s,
     saved: to,
     draft: to.text,
     problem: null,
-    selection: has(to.nodes, s.selection) ? s.selection : null,
-    past,
-    future,
+    selection: has(to.nodes, s.selection)
+      ? s.selection
+      : has(to.nodes, left)
+        ? left
+        : null,
     typing: null,
   };
 }

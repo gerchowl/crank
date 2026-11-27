@@ -108,7 +108,19 @@ test("mvp selectors: New workout, the editor, Save and Back", async ({
   await expect(await one(page, sel.editorButton("Save"))).toBeDisabled();
   await expect(await one(page, sel.editorButton("Ride this"))).toBeDisabled();
   await expect(page.locator(sel.editorButton("Save as new"))).toHaveCount(0);
+  // Outline editing (#653): the empty workout's first step, selected, with its form.
+  await expect(page.locator(sel.outlineRows)).toHaveCount(0);
+  await (await one(page, sel.outlineTool("Add step"))).click();
+  await expect(page.locator(sel.outlineRows)).toHaveCount(1);
+  await expect(await one(page, sel.outlineSelected)).toBeFocused();
+  for (const label of ["Label", "Minutes", "Seconds", "Power"])
+    await one(page, sel.blockField(label));
+  await one(page, sel.blockApply);
+  for (const word of ["Duplicate", "Delete"])
+    await one(page, sel.outlineTool(word));
   await (await one(page, sel.backToLibrary)).click();
+  // The new step is an unsaved change: leaving asks first.
+  await (await one(page, "role=dialog >> role=button[name='Discard']")).click();
   await one(page, sel.newWorkout);
 });
 

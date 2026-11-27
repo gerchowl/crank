@@ -20,6 +20,11 @@ export const editorButton: (
 ) => string;
 export const editorChip: string;
 export const backToLibrary: string;
+export function outlineTool(word: string): string;
+export const outlineRows: string;
+export const outlineSelected: string;
+export function blockField(label: string): string;
+export const blockApply: string;
 export const readySheet: (state: string) => string;
 export const readyDevice: (device: "trainer" | "hr", phase: string) => string;
 export const readyPlan: string;
