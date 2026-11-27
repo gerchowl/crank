@@ -28,8 +28,9 @@ the rejected alternatives.
    against only the words valid in that position, with rustc's threshold (at most ⌊max(len, 3) / 3⌋ edits, so one edit
    for words of 3 to 5 letters and two for 6 to 8), at most 3 suggestions, all at the smallest distance (§2.5);
    ADR-0010's `hr>=` is matched the same way (`hr=>170`, `hr>170` → `hr>=170`).
-6. **A fix is offered only when the core has checked it**: applying it makes the text parse, or moves the first error
-   past the fix. Ambiguous errors (`10 50%`: seconds, minutes, kJ or a repeat?; a rep range with no trigger: which
+6. **A fix is offered only when the core has checked that the whole fixed text parses.** A fix for the first error
+   while a later error remains is not offered (the rider sees the message; the fix appears once the rest parses), so
+   every offered fix commits a tree. Ambiguous errors (`10 50%`: seconds, minutes, kJ or a repeat?; a rep range with no trigger: which
    bpm?) get no fix, only the message. Compile errors (ADR-0008's pins, ADR-0010's `PinAcrossRangedRep`) get none
    either: their example value is a hint in the message, not the rider's intent (§2.5).
 7. **Completion comes from the core by cursor context** (§2.6 table), `hr>=` offered only in a ranged repeat's options
@@ -39,7 +40,9 @@ the rejected alternatives.
    and ADR-0010's `PinAcrossRangedRep`, `TriggerNotWatched`, `TriggerOutsideRange` come the same way);
    ADR-0008's unused variable is a **hint** that never blocks saving, with a "Remove" fix; **no style lint** and
    no "format" fix, because canonical printing drops comments (§2.8).
-9. **A fix is one undo step of its own**; accepting a completion is typing and joins the burst (§2.2).
+9. **A fix is exactly one undo step:** it ends the typing burst, the fixed text is parsed (it parses, by item 6) and
+   committed as a step of its own; Save shows "Reading the text…" until that parse is in, as for typing (#697).
+   Accepting a completion is typing and joins the burst (§2.2).
 10. **Screen readers hear a diagnostic once, when the burst ends** (500 ms pause, the same `GROUP_MS`), through a polite
     live region, not on every keystroke; the message stays the text box's description, with the fix as a button under
     it (§2.7).
@@ -136,8 +139,10 @@ the Tauri bundle, so this is load and memory, not network; the implementation PR
 
 - CodeMirror runs **without** `history()` and binds no undo key. The editor root's existing Cmd/Ctrl+Z listener stays
   the only undo, so tree, text and outline keep one history (DESIGN §5.7: `GROUP_MS` 500, `HISTORY_LIMIT` 100, an
-  outline edit one step). The macOS Edit ▸ Undo path is checked as in §2.1; if it reaches CodeMirror as a
-  `historyUndo` input, the text component routes it to the model, never to the DOM.
+  outline edit one step). The text component also handles `beforeinput` with `inputType` `historyUndo` /
+  `historyRedo` (how WebKit delivers Edit ▸ Undo and the menu's Cmd+Z to a contenteditable): it calls
+  `preventDefault()` and routes them to the model's `undo` / `redo`, so the DOM's own undo never runs; the §2.1 owner
+  check confirms the menu path.
 - **The model's `draft` is the truth; the view follows it.** A change made in CodeMirror (a keystroke, a completion)
   calls `edit(text, at)` as today. A change that comes from the model (undo, redo, an outline edit, Accept of an AI
   rewrite) is dispatched into the view as one replacement of the changed region: the common prefix and suffix of the
@@ -145,9 +150,21 @@ the Tauri bundle, so this is load and memory, not network; the implementation PR
   property test (old text with the region replaced equals the new text); a diff library would only improve where the
   cursor lands after an edit made elsewhere, so it is not worth a dependency (`@codemirror/merge`'s `diff` was
   considered).
-- **Undo steps:** accepting a completion is typing (it joins the burst like the keys it replaces); **a fix is a step of
-  its own** (model: `replaced(s, text)`, a commit that ends the burst, like an outline edit), so Cmd+Z after a fix
-  undoes exactly the fix.
+- **When the view is not touched:** nothing is dispatched when the model's `draft` equals the view's document (the
+  change came from the view itself), and nothing while `view.composing` (an IME or dead-key composition is in
+  progress): an external change that arrives then is applied at `compositionend`, after the composed text has reached
+  the model, so a composition is never cut.
+- **Undo steps:** accepting a completion is typing (it joins the burst like the keys it replaces). **A fix is a step of
+  its own**, through one new model function, `fixed(s, text)`: it sets the draft to the fixed text and ends the burst
+  (`typing: null`, as `applied` does), so the parse answer that follows is committed by today's `parsed` with
+  `grouped = false`, one undo step. The fixed text gets its nodes the way typing does: the view calls
+  `commands.parseDsl` on it and hands the answer to `parsed`; until that answer is in, Save and the outline wait as for
+  any draft not yet read ("Reading the text…", #697). Since the core offers only fixes whose text parses (§2.5), the
+  answer is `parsed` and the step is always committed; if the rider types before it arrives, the answer is stale and
+  dropped as today, and the keystroke starts a new burst after the fix. So Cmd+Z after a fix undoes exactly the fix,
+  and history keeps holding parsed states only (`model.ts`: "History holds saved states only"). **Rejected:** history
+  steps for unparsed text (a fix whose result still has an error): undo would restore drafts with no tree, which the
+  outline, Save and the compiled view cannot show, a larger change to the model than #732 needs.
 - **The AI rewrite lock** (#112, `model.ts` `lock`): the view becomes read-only (`EditorState.readOnly` and
   `EditorView.editable` in a compartment), fix buttons and completion are disabled, selection and copy still work.
   The model already refuses every edit while locked; this keeps the view from showing keys the model drops.
@@ -159,9 +176,13 @@ Diagnostics stay the core's: spans, severity and message come from Rust; TypeScr
 **Domain** (`crank-domain`, new module `workout/lint.rs`, no new public behaviour of `parse_dsl`):
 
 ```rust
-/// A replacement of a UTF-16 span of the text (length 0 = insertion).
+/// A replacement of a UTF-16 span of the text (length 0 = insertion). Offsets are in the text as parsed (before
+/// any edit of the fix is applied).
 pub struct DslEdit { pub offset: usize, pub length: usize, pub insert: String }
 /// A fix the core has checked (§2.5): what the UI shows after "Did you mean", and its edits.
+/// `edits` are sorted by offset and never overlap or touch, all in the original text's coordinates: exactly
+/// CodeMirror's `ChangeSpec[]` semantics, so the view dispatches them as one transaction; the core applies them
+/// last-to-first when it checks the fix.
 pub struct DslFix { pub label: String, pub edits: Vec<DslEdit> }
 /// The UTF-16 span of each node's head, in pre-order of the parsed nodes: a step from its end token to its last
 /// attribute (its label excluded); a repeat its count and options (`3x[+5w]`, `$n x`,
@@ -191,7 +212,22 @@ type DslParse =
 **Compile issues get their place by node:** the editor already compiles the committed tree; an issue's `node_id` is
 found in that tree in pre-order, and the span at that index is the one underlined. The spans are kept beside the tree
 in the model's snapshot (`saved: { nodes, text, spans }`, and so in `past` and `future`), so undo restores them with
-the text and no re-parse is needed. Issues without a node (`EmptyWorkout`, `MissingCooldown`, `InvalidFtp`) stay in
+the text and no re-parse is needed.
+
+**Who produces the spans, for every way a tree is committed:**
+
+| Commit | Spans from | Extra cost |
+|---|---|---|
+| typing, a fix (`parsed`) | that parse answer | none |
+| an outline edit (`applied`, #653/#731) | the read-back parse of the printed text: `outlineEdit` already prints (`print_dsl`) and parses the result (`parse_dsl`) and commits **the tree the core read back** (DESIGN §5.7), so `applied` takes that answer's `spans` too | none |
+| opening the editor (`load`) | one `parse_dsl` of the opening text (`EditorStart.dsl`, the canonical text of the stored tree) | one parse per open; spans are by pre-order index and `parse(print(t)) == t` structurally (docs/DSL.md), so they match the stored tree although the parse's ids differ. Until it answers the view draws no compile marks (the Summary shows the issues as today) |
+| Accept of an AI rewrite (#112, not built yet) | the parse of the accepted text: #112 commits through `parsed` or `applied` like every other change, so it takes the answer's spans | none |
+| undo, redo | the snapshot | none |
+
+`load` and `applied` gain a `spans` argument; a commit without spans is not representable.
+
+- **Rejected:** `print_dsl` returning spans: a second span producer in the printer, to keep equal to the parser's, for
+  a case (outline edits) that already parses its printed text. Issues without a node (`EmptyWorkout`, `MissingCooldown`, `InvalidFtp`) stay in
 the Summary only. While the draft does not parse, only the parse error is drawn (the compile issues describe the saved
 tree, whose spans no longer match the text); the Summary keeps them as today.
 
@@ -258,10 +294,13 @@ variables declared above that position with the right type, never against keywor
 The core's `message` stays as it is (the TS-parity text, docs/DSL.md "Errors"); suggestions are not appended to it. The
 UI writes "Did you mean ramp?" from the fix's `label`, and the fix's button reads "Change to ramp".
 
-**A fix is checked before it is offered:** the core applies each candidate fix to the text and parses the result with
-a throw-away id source; the fix is offered only if that text parses, or its first error starts after the fix's last
-edit (the fix removed this error and the rider meets the next one). A candidate that fails the check is dropped,
-not shown with a warning. That costs at most 3 extra parses, only when the text does not parse.
+**A fix is checked before it is offered:** the core applies each candidate fix's edits to the text (last to first,
+so every offset stays in the original text's coordinates) and parses the result with a throw-away id source; the fix
+is offered only if **the whole fixed text parses**. A candidate that fails the check is dropped, not shown with a
+warning. That costs at most 3 extra parses, only when the text does not parse. **Cost, stated:** with a second error
+later in the text, the first error gets no fix until the later one is fixed; the message still names the problem. It
+buys the guarantee of §2.2 that every fix commits exactly one undo step. **Rejected:** also offering a fix that only
+moves the first error later: its result is a draft with no tree, which cannot be an undo step (§2.2).
 
 ### 2.6 Completion from the core
 
@@ -275,7 +314,7 @@ runs the full parser on the incomplete item.
 | Cursor position | Offered |
 |---|---|
 | start of an item (or after its label) | `lap`, `hr<`; ADR-0008: duration variables, number variables as `$n x(` |
-| after a number at an end position (`10|`) | the units `s m h kj` and `x(` (`10m`, `10kj`, `10x(`) |
+| after a number at an end position (`10|`) | the units `s m h kj` and `x(` (`10m`, `10kj`, `10x(`); ADR-0010: `..` for a rep range (`3..`) |
 | after a step's end, a target not written yet | `ramp`, `free`, after a number `%`, `w`, `bpm`; ADR-0008: power variables |
 | after `ramp` | ADR-0008: `auto`, % FTP variables (numbers are typed, not offered) |
 | after the target | cadence `rpm` after a number; `!lower`, `!cap`, `!coach` only on an `hr<` step |
@@ -290,6 +329,17 @@ all of them. Options follow table order; a typed prefix filters them (CodeMirror
 - **Rejected:** a vocabulary exported to TS and matched there: the position rules are grammar (which unit after which
   number, which flag on which step), and two copies would drift. **Cost, stated:** one IPC call per completion request;
   Tauri `invoke` answers locally, and CodeMirror's async source drops a stale answer when the text moves on.
+- **Cost per keystroke, budgeted.** A keystroke costs one `parse_dsl_report` (linear in the text; plus at most 3
+  fix-check parses, only while the text does not parse) and, while the completion list is open or a word is being
+  typed, one `dsl_complete` (it lexes only up to the cursor). Budget, measured in release on the owner's machine: for a
+  large realistic workout (500 items, nested repeats, ADR-0008 declarations; the built-ins are under 40) the parse with
+  its fix checks within **4 ms** and `dsl_complete` within **1 ms**; for the parser's stress size (256 KiB of DSL text,
+  as its property tests use) within **50 ms**. **Coalescing, not a timer:** the view keeps at most one parse in flight;
+  keystrokes made meanwhile only move the draft, and when the answer returns the latest draft is sent if it differs
+  (the stale answer is dropped by `parsed` as today). So a slow parse never queues, and a fast one adds no delay.
+  CodeMirror's completion source is one-in-flight with abort by itself. The announcement waits for `GROUP_MS` (§2.7).
+  If the benchmark misses the budget, the implementation PR says so with its numbers and is a design question, not a
+  silent debounce.
 - **Order with ADR-0008 and ADR-0010:** this ADR can land before or after their implementations; whichever lands
   second adds the rows marked ADR-0008 or ADR-0010 above to the tables and the tests. ADR-0010 is implemented after
   ADR-0008 (its §4.1), so its variable forms (`$lo..$hi x`) come with whichever of the two is later.
@@ -364,13 +414,16 @@ hand-written distance, unchecked fixes (§2.5); a style lint and a format fix (�
 
 - **Typo corpus** `tests/fixtures/dsl_typos.json`: text → expected fixes, at least: `rmap`, `rapm`, `fre`, `fee`,
   `lpa`, `!lst`, `!cpa`, `!lowr`, `90rmp`, `140bmp`, `4mm`, `10kjj`, `95%%`, `75-50%`, the ADR-0008 and ADR-0010 rows
-  of §2.5 (`hr=>170`, `hr>170`, `5..5x[hr>=170]`, `$lo..$hix`), and the
+  of §2.5 (`hr=>170`, `hr>170`, `5..5x[hr>=170]`, `$lo..$hix`), and the pinned `hr>` cases where both comparison
+  keywords are one edit away: `3..10x[hr>170](…)` suggests only `hr>=170` (the options table has no `hr<`), and
+  `hr>118 2m..4m 40%` at a step end only `hr<118` (the end table has no `hr>=`), so the position filter, not a tie
+  rule, decides; and the
   **no-suggestion** cases that must stay silent: `5q`, `5m xyz`, `5m w`, `5m 50% hello`, `10 50%`, `5m banana`,
   upper-case keywords that are already valid (`RAMP`, no error), and ADR-0010's `3..10x(…)`, `10x[hr>=170](…)`,
   `[hr<120]` (message, no fix).
 - **Every offered fix is checked** (property, 256 cases over generated valid documents with one generated typo: a
-  swap, a dropped or doubled letter in a keyword or unit): applying each fix gives text that parses, or whose first
-  error starts after the fix; and no fix is offered for a word farther than the threshold from every candidate.
+  swap, a dropped or doubled letter in a keyword or unit): applying each fix's edits (sorted, non-overlapping, original
+  coordinates) gives text that parses; and no fix is offered for a word farther than the threshold from every candidate.
 - **The parser and the tables agree:** every table entry, written in its position, parses; every keyword the parser
   accepts is in a table (a test walks the tables against the golden texts of #68).
 - **Spans:** for generated valid documents, `spans.len()` equals the node count in pre-order, each span lies inside the
@@ -380,8 +433,16 @@ hand-written distance, unchecked fixes (§2.5); a style lint and a format fix (�
   **completeness:** for every keyword or unit token in a generated valid text, the text cut inside that token and
   completed at the cut offers that token.
 - **Hints:** unused variable reported, chained unused reported on each, the Remove fix parses.
+- **Benchmark** (`crates/crank-domain/examples/dsl_editor_bench.rs`, `just bench-editor`, release): the budget of
+  §2.6 on the 500-item workout and the 256 KiB text, for a valid text, an invalid one with 3 fix candidates, and
+  completion at the end of the text; numbers reported in the implementation PR. It is not a CI gate (shared runners
+  make timing gates flaky); the CI-checked bounds are deterministic: at most 3 check parses per answer, and
+  `dsl_complete` reads no token past the cursor (a test with a lexer that counts tokens).
 
-**App (Vitest):** model: a fix is one undo step and an accepted completion joins the burst; the controlled view keeps
+**App (Vitest):** model: a fix is one undo step (`fixed` then `parsed`), also when typed over before its answer
+(stale answer dropped), and an accepted completion joins the burst; Save waits for the fix's parse; `load` and
+`applied` keep spans, and after an outline move a compile warning is underlined on the moved block; the view sends no
+change when draft equals document and none during a composition; `historyUndo` / `historyRedo` reach the model; the controlled view keeps
 the cursor outside an external change (prefix/suffix property); the lock makes the view read-only and disables fixes;
 spans survive undo; the mocks model `dsl_complete`'s `InvalidInput` refusals as the core does.
 
