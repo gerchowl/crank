@@ -71,8 +71,8 @@ export const newWorkout = `//div[@class="workouts-head"]/button[normalize-space(
 // The workout editor (src/editor/WorkoutEditor.tsx `WorkoutEditor`, #110).
 /** The workout's name. */
 export const editorName = `//label[@class="editor-name"]/input`;
-/** The DSL text. */
-export const editorText = `textarea#editor-dsl`;
+/** The DSL text: CodeMirror's content (src/editor/TextView.tsx, ADR-0011 §2.1), a multi-line text box. */
+export const editorText = `//div[@id="editor-dsl" and @role="textbox"]`;
 /** A button of the saving row ("Save", "Save as new", "Ride this"). */
 export const editorButton = (word) =>
   `//div[@class="editor-store"]//button[normalize-space(.)=${lit(word)}]`;

@@ -65,6 +65,9 @@ import { status as makeStatus } from "../../src/stream/testBackend";
 import { startRideLoad } from "../../src/views/rideLoad";
 import { SCENARIOS, type ScenarioName } from "./scenarios";
 import { windowClose } from "../../src/editor/windowClose";
+import { TextView } from "../../src/editor/TextView";
+import { DRAFTS } from "../../src/views/editorFixture";
+import "../../src/editor/editor.css";
 
 // The page has no Tauri window here: the editor's close-request listener (windowClose.ts) is held by nobody.
 windowClose.listen = () => Promise.resolve(() => {});
@@ -644,6 +647,8 @@ const SETUPS: Record<ScenarioName, () => void> = {
   "workouts-editor-repeat": workouts({ trees: { "w-ss": "sweet-spot" } }),
   // The refused edit is the core's `zero-duration` tree (editor.json): its printed text does not read back.
   "workouts-editor-refused": workouts({ trees: { "w-ss": "sweet-spot" } }),
+  // The text pane alone (`LockedText` below): no command is called.
+  "workouts-editor-locked": () => {},
   "workouts-mine": workouts(),
   "workouts-delete-confirm": workouts(),
   // The new workout's empty tree is the core's `empty` draft (editorFixture.ts): compiled, with its error.
@@ -915,8 +920,42 @@ document.head.append(still);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Missing app root");
+/**
+ * The editor's text pane (WorkoutEditor.tsx) as the AI rewrite's lock leaves it (#112, ADR-0011 §2.2): the real text
+ * view on the core's `sweet-spot` draft, read-only. Mounted alone, since nothing in the app sets the lock yet.
+ */
+function LockedText() {
+  return (
+    <div className="page workouts editor">
+      <div className="editor-panes">
+        <section
+          className="editor-pane editor-text"
+          aria-labelledby="editor-text-h"
+        >
+          <h2 id="editor-text-h">Text</h2>
+          <TextView
+            draft={DRAFTS["sweet-spot"]!.text}
+            locked
+            attributes={{
+              id: "editor-dsl",
+              "aria-labelledby": "editor-text-h",
+            }}
+            onEdit={() => {}}
+            onUndo={() => {}}
+            onRedo={() => {}}
+          />
+        </section>
+      </div>
+    </div>
+  );
+}
+
 createRoot(root).render(
   <StrictMode>
-    <AppRoot readBuild={readBuild} waitForCore={BOOTS[scenario.name]} />
+    {scenario.name === "workouts-editor-locked" ? (
+      <LockedText />
+    ) : (
+      <AppRoot readBuild={readBuild} waitForCore={BOOTS[scenario.name]} />
+    )}
   </StrictMode>,
 );

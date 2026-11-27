@@ -457,11 +457,15 @@ holds the name as its title (or "Untitled workout" while the name is blank), a c
 saving row; then the profile across the page, the selected node's blocks drawn with a heavier
 edge; then **Outline · Text · Summary** in one row, 4 / 4 / 4 on the grid at 1024 and 1440. The outline is the tree as
 one single-select listbox (selection follows focus, as the library; a nested row is indented and a long label wraps).
-Selecting a row marks its blocks; the tree is edited from the outline (below) or through the text. The text is the DSL (docs/DSL.md) in the mono face; the summary is the library panel's. Every edit goes through the
+Selecting a row marks its blocks; the tree is edited from the outline (below) or through the text. The text is the DSL (docs/DSL.md) in the mono face, in a CodeMirror 6 view (ADR-0011 §2.1, #759) that the model
+controls: the rider's changes reach the model as typing, the model's (undo, redo, an outline edit) are shown as one
+replacement of the changed region and never read back, nothing crosses while a composition (IME, dead key) is in
+progress, and the AI rewrite's lock makes it read-only (§2.2); it has no history of its own, Edit ▸ Undo and Redo reach
+the model's, and Tab moves focus out of it (§2.7). The summary is the library panel's. Every edit goes through the
 pure editor model (`editor/model.ts`); the core parses (`parse_dsl`) and compiles (`compile_workout`). A draft that
 does not parse keeps the saved workout, edges the text in the error colour and shows ⚠, the core's message, its
 line and column, and that line with the problem's span (`DslProblem` offset and length) underlined in the error colour,
-since a textarea cannot mark a range of its own text; it is never committed in part. A tree the core refuses to compile shows the refusal and keeps the
+until the span is marked in the text itself (ADR-0011 §2.9, #760); it is never committed in part. A tree the core refuses to compile shows the refusal and keeps the
 last compiled view. Undo and redo restore a saved tree with its text, and the selection survives while its node
 exists. **Undo groups:** the commits of one burst of typing are one undo step; a burst ends at a pause of 500 ms
 between two keystrokes, or at any other commit, undo or redo, and a structural edit is a step of its own. The history
