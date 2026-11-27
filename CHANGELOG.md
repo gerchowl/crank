@@ -29,7 +29,11 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   version columns, and a check-in's "unwell". Estimates are written only through `EstimateOrigin` and only when the
   domain accepts them; a typed-in, reverted, cleared, onboarding or imported value supersedes the parameter's open
   proposals, and accepting a proposal raised before its parameter's current value is refused. New rides record their
-  kind by the back-fill rule until #705's `RideKind` writes it ([#714](https://github.com/gerchowl/crank/issues/714))
+  kind by the back-fill rule until #705's `RideKind` writes it ([#714](https://github.com/gerchowl/crank/issues/714)).
+  Migration 0005 never aborts on an old row: a ride whose workout is not valid JSON is a workout, and a legacy
+  estimate (or profile weight) it cannot hold is kept aside in `athlete_estimate_skipped` with its reason; a stored
+  athlete row that does not decode is a storage error (`CorruptAthlete`), not invalid input
+  ([#739](https://github.com/gerchowl/crank/issues/739))
 - Workouts save (#110, DESIGN §5.7): **New workout** opens the editor on an empty workout; the editor has a name box,
   **Save** and **Save as new**, which store the workout in the library (the store's `workout` table), and **Ride this**,
   which rides the saved workout by its id (#643: no draft riding). Leaving the editor (Back or the rail) or riding with

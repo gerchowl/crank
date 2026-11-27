@@ -71,6 +71,10 @@ pub enum StoreError {
     /// A stored `ride.state` is not one of the known values.
     #[error("unknown ride state {0:?}")]
     UnknownRideState(String),
+    /// A stored athlete-model row (`athlete_estimate`, `athlete_proposal`, `athlete_profile`) that does not decode:
+    /// the database is corrupt, not the caller's input (#739).
+    #[error("corrupt athlete row: {0}")]
+    CorruptAthlete(String),
     /// An athlete-model row the domain refuses (`crank_domain::athlete::check_entry`, `check_value`).
     #[error(transparent)]
     Athlete(AthleteError),
@@ -635,14 +639,14 @@ impl Store {
     /// The newest athlete-model row of each parameter that has one (ADR-0009 §2.1.1), in
     /// `AthleteParam::ALL`'s order.
     /// # Errors
-    /// `InvalidInput` or `Athlete` for a row that does not decode; SQL or worker errors.
+    /// `CorruptAthlete` for a row that does not decode; SQL or worker errors.
     pub fn athlete_current(&self) -> Result<Vec<Entry>, StoreError> {
         self.read(athlete::current)
     }
     /// The athlete model as stored: each parameter's newest row, else its prior (HR max's from
     /// `athlete_profile.age`), else unset (`AthleteSnapshot::resolve`).
     /// # Errors
-    /// As [`Store::athlete_current`], and `InvalidInput` for a negative stored age.
+    /// As [`Store::athlete_current`], and `CorruptAthlete` for a negative stored age.
     pub fn athlete_snapshot(&self) -> Result<AthleteSnapshot, StoreError> {
         self.read(athlete::snapshot)
     }
@@ -673,7 +677,7 @@ impl Store {
     }
     /// One proposal, whatever its status; `None` for an unknown id.
     /// # Errors
-    /// `InvalidJson` or `InvalidInput` for a row that does not decode; SQL or worker errors.
+    /// `InvalidJson` or `CorruptAthlete` for a row that does not decode; SQL or worker errors.
     pub fn proposal(&self, id: i64) -> Result<Option<Proposal>, StoreError> {
         self.read(|db| athlete::proposal(db, id))
     }

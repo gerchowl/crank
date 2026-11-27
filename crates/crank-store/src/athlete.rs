@@ -163,8 +163,9 @@ impl ProposalStatus {
     }
 
     fn from_columns(status: &str, reason: Option<&str>) -> Result<Self, StoreError> {
-        let corrupt =
-            || StoreError::InvalidInput(format!("stored proposal status {status:?} / {reason:?}"));
+        let corrupt = || {
+            StoreError::CorruptAthlete(format!("stored proposal status {status:?} / {reason:?}"))
+        };
         Ok(match (status, reason) {
             ("open", None) => Self::Open,
             ("accepted", None) => Self::Accepted,
@@ -298,12 +299,12 @@ fn estimate_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EstimateRow> {
 fn decode_entry(
     (id, param, kind, value, sd, source, method, ride_id, proposal_id, n, updated_at): EstimateRow,
 ) -> Result<Entry, StoreError> {
-    let param: AthleteParam = param.parse()?;
     let corrupt = || {
-        StoreError::InvalidInput(format!(
+        StoreError::CorruptAthlete(format!(
             "athlete_estimate row {id} breaks its kind {kind:?}"
         ))
     };
+    let param: AthleteParam = param.parse().map_err(|_| corrupt())?;
     match (kind.as_str(), value, sd, source, method, n) {
         ("estimate", Some(value), Some(sd), Some(source), Some(method), Some(n)) => {
             Ok(Entry::Estimate(Estimate {
@@ -311,7 +312,7 @@ fn decode_entry(
                 param,
                 value,
                 sd,
-                source: source.parse()?,
+                source: source.parse().map_err(|_| corrupt())?,
                 method,
                 ride_id,
                 proposal_id,
@@ -340,7 +341,7 @@ fn age(db: &Connection) -> Result<Option<u32>, StoreError> {
     age.flatten()
         .map(|a| {
             u32::try_from(a)
-                .map_err(|_| StoreError::InvalidInput(format!("stored athlete_profile.age {a}")))
+                .map_err(|_| StoreError::CorruptAthlete(format!("stored athlete_profile.age {a}")))
         })
         .transpose()
 }
@@ -668,7 +669,7 @@ fn decode_proposal(
     }
     let number = |n: i64| {
         u32::try_from(n)
-            .map_err(|_| StoreError::InvalidInput(format!("athlete_proposal row {id}: {n}")))
+            .map_err(|_| StoreError::CorruptAthlete(format!("athlete_proposal row {id}: {n}")))
     };
     Ok(Proposal {
         id,

@@ -89,6 +89,7 @@ fn migrate_empty_database() {
         tables,
         [
             "athlete_estimate",
+            "athlete_estimate_skipped",
             "athlete_profile",
             "athlete_proposal",
             "athlete_proposal_param",
