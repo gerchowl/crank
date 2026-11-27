@@ -8,6 +8,8 @@ aside), and `print_dsl` of that is byte-identical. Loosely inspired by intervals
 Accepted, not implemented: auto ramps pinned to the neighbouring block (`ramp auto-75%`) and variables
 (`$thr = 95%`), [ADR-0008](adr/0008-dsl-auto-ramps-variables.md) (#694, accepted 2026-11-22). This document changes
 when that ADR is implemented; until then the grammar below is the whole grammar.
+Proposed: ranged repeats that end on a ride-time HR condition (`3..10x[hr>=170](…)`) and no script layer,
+[ADR-0010](adr/0010-workout-language-ranged-repeats.md) (#736).
 
 ```text
 "Warm-up" 8m ramp 45-75% 90rpm
