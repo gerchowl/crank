@@ -148,9 +148,13 @@ impl Writer {
             ));
         }
         self.db.execute(
+            // `kind` by migration 0005's back-fill rule (ADR-0009 §2.5), so no ride after it is left without
+            // one: the core's free ride has workout id `free-ride`, anything else this path starts is a workout (no
+            // path starts a route ride yet). #705's `RideKind` replaces the rule with the kind the core rides.
             "INSERT INTO ride(id,started_at,workout_json,compiled_json,
-             trainer_device_id,hr_device_id,telemetry_source)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+             trainer_device_id,hr_device_id,telemetry_source,kind)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,
+             CASE WHEN json_extract(?3, '$.id') = 'free-ride' THEN 'free' ELSE 'workout' END)",
             params![
                 ride.id,
                 ride.started_at,

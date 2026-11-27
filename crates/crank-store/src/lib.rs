@@ -617,7 +617,8 @@ impl Store {
     /// # Errors
     /// `Athlete` for a row the domain refuses; `InvalidInput` for a revert to a prior or cleared row, an onboarding
     /// prior of a parameter with none, an import without a method, or accepted values that do not match the
-    /// proposal; `NotFound` for an unknown estimate or proposal; `Conflict` for a proposal that is not open;
+    /// proposal; `NotFound` for an unknown estimate or proposal; `Conflict` for a proposal that is not open or
+    /// was raised before the current row of one of its parameters;
     /// read-only, SQL or worker errors.
     pub fn append_athlete(
         &self,

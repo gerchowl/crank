@@ -42,7 +42,8 @@ append-only history with a row kind (`estimate`, or `cleared` with every value c
 is the only writer of estimates and takes an `EstimateOrigin` (set, revert, clear, onboarding, import, proposal
 accept): every row passes `crank_domain::athlete::check_entry` against the stored model, and the paths other than
 accept mark the parameter's open proposals `superseded` in the same transaction; accept writes one row per value and
-marks the proposal `accepted` in one transaction. Deleting a ride deletes its proposals (CASCADE) and keeps estimates
+marks the proposal `accepted` in one transaction, and refuses (`Conflict`) a proposal raised before its parameter's
+current row. `start_ride` writes `ride.kind` by the migration's back-fill rule (free or workout). Deleting a ride deletes its proposals (CASCADE) and keeps estimates
 taken from it with NULL `ride_id`/`proposal_id` (SET NULL). `Store::open_proposals_for(param)` is an index search on
 `athlete_proposal_param(param, proposal_id)`. The raise, stale and re-raise rules of proposals are the core's (#720).
 

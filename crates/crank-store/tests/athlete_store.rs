@@ -1095,3 +1095,93 @@ fn estimate_origin_is_the_only_way_to_append_an_estimate() {
     );
     assert!(source[append..insert].contains("origin: EstimateOrigin"));
 }
+
+/// ADR-0009 §2.2.4 "Manual entry wins": accept refuses (`Conflict`) a proposal raised before its parameter's current
+/// `updated_at`, here written by accepting another proposal of the same parameter, which supersedes nothing.
+#[test]
+fn accept_refuses_a_proposal_raised_before_the_current_value() {
+    let (_dir, store) = store();
+    ride(&store, "r", 500);
+    ride(&store, "s", 600);
+    let accept = |proposal_id, value_bpm| {
+        store.append_athlete(
+            EstimateOrigin::ProposalAccept {
+                proposal_id,
+                source: Source::Rides,
+                values: vec![value(AthleteParam::HrMax, value_bpm, 2.)],
+                n: 1,
+            },
+            3_000,
+        )
+    };
+    let old = store
+        .insert_proposal(proposal(
+            "r",
+            "peak_hr_v1",
+            vec![value(AthleteParam::HrMax, 190., 2.)],
+        ))
+        .expect("test step");
+    let newer = store
+        .insert_proposal(NewProposal {
+            created_at: 2_000,
+            ..proposal(
+                "s",
+                "peak_hr_v1",
+                vec![value(AthleteParam::HrMax, 192., 2.)],
+            )
+        })
+        .expect("test step");
+    accept(newer, 192.).expect("raised after every hr_max row");
+    // `old` (raised at 1 000) is still open: accept, not a manual entry, wrote the current hr_max at 3 000.
+    assert!(matches!(accept(old, 190.), Err(StoreError::Conflict(_))));
+    assert_eq!(
+        store
+            .proposal(old)
+            .expect("test step")
+            .expect("test step")
+            .status,
+        ProposalStatus::Open
+    );
+    let hr_max = store
+        .athlete_history(AthleteParam::HrMax)
+        .expect("test step");
+    assert_eq!(hr_max.len(), 1, "the refused accept wrote nothing");
+    let e = estimate(&hr_max[0]);
+    assert_eq!((e.value, e.proposal_id), (192., Some(newer)));
+}
+
+/// A ride started after migration 0005 gets its kind by the back-fill rule (ADR-0009 §2.5), never NULL.
+#[test]
+fn a_new_ride_records_its_kind() {
+    let (dir, store) = store();
+    ride(&store, "workout", 1_000);
+    store
+        .start_ride(NewRide {
+            id: "free".into(),
+            started_at: 2_000,
+            workout: RideWorkoutJson::parse(
+                r#"{"v":1,"id":"free-ride","name":"Free ride","ftp":0,"nodes":[]}"#,
+            )
+            .expect("test step"),
+            compiled: CompiledJson::parse(r#"{"v":1}"#).expect("test step"),
+            trainer_device_id: None,
+            hr_device_id: None,
+            telemetry_source: "sim".into(),
+            metrics: vec!["power".into()],
+        })
+        .expect("test step");
+    let kinds: Vec<(String, Option<String>)> = raw(dir.path())
+        .prepare("SELECT id, kind FROM ride ORDER BY id")
+        .expect("test step")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .expect("test step")
+        .collect::<Result<_, _>>()
+        .expect("test step");
+    assert_eq!(
+        kinds,
+        [
+            ("free".into(), Some("free".into())),
+            ("workout".into(), Some("workout".into())),
+        ]
+    );
+}

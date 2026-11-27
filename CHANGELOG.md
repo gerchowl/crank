@@ -28,7 +28,8 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   (`athlete_proposal`, deleted with their ride) and the ride's snapshot, kind (back-filled), end cause and record
   version columns, and a check-in's "unwell". Estimates are written only through `EstimateOrigin` and only when the
   domain accepts them; a typed-in, reverted, cleared, onboarding or imported value supersedes the parameter's open
-  proposals ([#714](https://github.com/gerchowl/crank/issues/714))
+  proposals, and accepting a proposal raised before its parameter's current value is refused. New rides record their
+  kind by the back-fill rule until #705's `RideKind` writes it ([#714](https://github.com/gerchowl/crank/issues/714))
 - Workouts save (#110, DESIGN §5.7): **New workout** opens the editor on an empty workout; the editor has a name box,
   **Save** and **Save as new**, which store the workout in the library (the store's `workout` table), and **Ride this**,
   which rides the saved workout by its id (#643: no draft riding). Leaving the editor (Back or the rail) or riding with

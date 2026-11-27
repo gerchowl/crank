@@ -78,7 +78,8 @@ pub enum EstimateOrigin {
     /// `athlete_proposal_accept`: one row per proposed value, with the proposal's method and triggering ride and
     /// the proposal's id; the proposal is marked `accepted` in the same transaction. `values` are what the core
     /// recomputed from the frozen evidence (#720) and must name exactly the proposal's parameters. `Conflict` when
-    /// the proposal is not `open`; `NotFound` when there is none.
+    /// the proposal is not `open`, or was raised before the current row of one of its parameters (ADR-0009 §2.2.4
+    /// "Manual entry wins"); `NotFound` when there is none.
     ProposalAccept {
         /// The proposal.
         proposal_id: i64,
@@ -409,6 +410,59 @@ fn value_row(
     }
 }
 
+/// The rows accepting `proposal_id` appends ([`EstimateOrigin::ProposalAccept`]).
+fn accept_rows(
+    tx: &Transaction<'_>,
+    proposal_id: i64,
+    source: Source,
+    values: Vec<ProposedValue>,
+    n: u32,
+    now: i64,
+) -> Result<Vec<Entry>, StoreError> {
+    let invalid = |m: &str| StoreError::InvalidInput(m.to_owned());
+    if !matches!(source, Source::Test | Source::Rides) {
+        return Err(invalid("a proposal's value is from a test or from rides"));
+    }
+    let p = proposal(tx, proposal_id)?
+        .ok_or_else(|| StoreError::NotFound(format!("proposal {proposal_id}")))?;
+    if p.status != ProposalStatus::Open {
+        return Err(StoreError::Conflict(format!(
+            "proposal {proposal_id} is not open"
+        )));
+    }
+    // "Manual entry wins" (ADR-0009 §2.2.4): a proposal raised before its parameter's current value was
+    // written is refused, whatever wrote that value.
+    if let Some(newer) = current(tx)?
+        .iter()
+        .find(|e| p.values.iter().any(|v| v.param == e.param()) && e.updated_at() > p.created_at)
+    {
+        return Err(StoreError::Conflict(format!(
+            "proposal {proposal_id} was raised before the current {}",
+            newer.param()
+        )));
+    }
+    let mut want: Vec<_> = p.values.iter().map(|v| v.param).collect();
+    let mut got: Vec<_> = values.iter().map(|v| v.param).collect();
+    want.sort_unstable();
+    got.sort_unstable();
+    if want != got {
+        return Err(invalid(
+            "the accepted values must name the proposal's parameters",
+        ));
+    }
+    let rows = values
+        .into_iter()
+        .map(|v| {
+            Entry::Estimate(Estimate {
+                ride_id: Some(p.ride_id.clone()),
+                proposal_id: Some(proposal_id),
+                ..value_row(v.param, v.value, v.sd, source, &p.method, n, now)
+            })
+        })
+        .collect();
+    Ok(rows)
+}
+
 /// The rows `origin` appends (ids still 0), and the proposal it accepts, if any.
 fn rows(
     tx: &Transaction<'_>,
@@ -476,38 +530,10 @@ fn rows(
             source,
             values,
             n,
-        } => {
-            if !matches!(source, Source::Test | Source::Rides) {
-                return Err(invalid("a proposal's value is from a test or from rides"));
-            }
-            let p = proposal(tx, proposal_id)?
-                .ok_or_else(|| StoreError::NotFound(format!("proposal {proposal_id}")))?;
-            if p.status != ProposalStatus::Open {
-                return Err(StoreError::Conflict(format!(
-                    "proposal {proposal_id} is not open"
-                )));
-            }
-            let mut want: Vec<_> = p.values.iter().map(|v| v.param).collect();
-            let mut got: Vec<_> = values.iter().map(|v| v.param).collect();
-            want.sort_unstable();
-            got.sort_unstable();
-            if want != got {
-                return Err(invalid(
-                    "the accepted values must name the proposal's parameters",
-                ));
-            }
-            let rows = values
-                .into_iter()
-                .map(|v| {
-                    Entry::Estimate(Estimate {
-                        ride_id: Some(p.ride_id.clone()),
-                        proposal_id: Some(proposal_id),
-                        ..value_row(v.param, v.value, v.sd, source, &p.method, n, now)
-                    })
-                })
-                .collect();
-            (rows, Some(proposal_id))
-        }
+        } => (
+            accept_rows(tx, proposal_id, source, values, n, now)?,
+            Some(proposal_id),
+        ),
     })
 }
 
