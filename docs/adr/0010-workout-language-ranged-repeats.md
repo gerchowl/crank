@@ -16,19 +16,21 @@ Each line needs a yes or a no; the section in brackets has the reasons and the r
    script layer (Starlark or another)** now, neither as a replacement nor as an optional generator in front of it
    (§2.1). The conditions you asked for act during the ride, and a script that runs before the ride cannot express them.
    They belong in the declarative tree in every option (§1.2).
-2. **ADR-0008 stays as accepted**, unchanged, and is implemented first. Its `Num` (literal or `$variable`) also covers
-   the new fields below (§2.2).
+2. **ADR-0008 stays as accepted** and is implemented first. Its `Num` (literal or `$variable`) also covers the new
+   fields below, written with ADR-0008's spaced count form (`$lo..$hi x[hr>=$hrv](…)`). One addition, stated openly:
+   an early end re-pins the ramp after the set, the way ADR-0008 §2.13.1 re-pins for `repeat_once` (§2.2).
 3. **Ranged repeat:** `3..10x[hr>=170](30s 120%, 15s 50%)` means at least 3 and at most 10 reps, ending after the rep in
    which HR reaches 170 bpm. Your example reads:
    `3x("Pump" 3..10x[hr>=170, !last](30s 120%, 15s 50%), "Long rest" 4m 40%)` (§2.3).
 4. **Bounds are mandatory**: a rep range needs a condition, a condition needs a rep range, and `min < max`. Every
    workout keeps a finite, known length range. That one is 18:00 to 33:45 (§2.3, §2.6).
-5. **Triggers in v1:** heart rate only, `hr>=N` (rises to) and `hr<N` (falls below), in bpm. Each must hold for **5
-   consecutive valid seconds**. Cadence, power and time-in-zone triggers are not in v1 (§2.4). Say yes to item 12 if you
-   want cadence too.
-6. **When a set ends:** the condition is watched during the whole set. Once it has held, the set ends at the end of that
-   rep, and never before rep `min`. With `!last`, the short rest of the final rep is dropped and the ride goes straight
-   to the block that follows (§2.5).
+5. **Trigger in v1:** heart rate rising to a value, `hr>=N` in bpm. It must hold for **5 consecutive valid seconds**.
+   There is no `hr<N` set trigger: recovery downwards is already today's `hr<` step. Cadence, power and time-in-zone
+   triggers are not in v1 (§2.4). Say yes to item 13 if you want cadence too.
+6. **When a set ends:** the trigger is watched **only in the work blocks (≥ 80 % FTP) of reps `min` and later**, as FIT
+   counts only active steps. HR still high from the previous set or from a rest therefore cannot end a set early. Once
+   the trigger has held, the set ends at the end of that rep. With `!last`, the short rest of the final rep is dropped
+   and the ride goes straight to the block that follows (§2.5).
 7. **HR lost** (strap gone, or no valid HR for 10 s at a rep's end): the set ends after rep `min`, or after the current
    rep if `min` has passed. A visible note says so. A lost signal always resolves to the bound with **less work**
    (§2.5). For a ranged repeat that is `min`. For today's `hr<` recovery step it is the longer rest (ADR-0001 §5),
@@ -45,7 +47,10 @@ Each line needs a yes or a no; the section in brackets has the reasons and the r
 11. **Analysis records each set's outcome**: reps ridden, why the set ended (`condition_met` with time and value,
     `max_reached`, `signal_lost`, `rider_end_set`) and the trigger value. Reps you didn't need are not counted as
     skipped or missed. "Reps to reach the trigger" becomes a set statistic, shown with no verdict (§2.10).
-12. *(Optional, recommended no for v1)* a cadence trigger `cad<N` ("until I can't hold 80 rpm"), held 10 s and watched
+12. **Effect on #732 and #699:** #732 gains vocabulary (`..x`, `hr>=` in repeat options) and the new errors, not a
+    second tool. #699's generator may write ranged sets in its template families, through the same parser and gates.
+    Neither changes design (§2.11).
+13. *(Optional, recommended no for v1)* a cadence trigger `cad<N` ("until I can't hold 80 rpm"), held 10 s and watched
     only in work blocks after ERG settles (§2.4).
 
 ## 1. Context
@@ -138,6 +143,19 @@ ladder built from a list, or `if ftp < 200`. Each of these is either:
   directly and pass the same gates. A provider (local model, user endpoint) returns **settings** validated against a
   schema, never code.
 
+**The strongest case for (B)** is a one-shot **template wizard**: a script runs once, emits DSL, and the result is
+stored as an ordinary workout, detached from the script by design. That removes the round-trip objection, because
+nothing is ever written back. What is left is still against it:
+
+- The same wizard needs no language. A form in the app (sets, reps, target, rest) or one of #699's Rust template
+  families, filled from settings, emits the same tree through the same gates, and it is tested like the rest of the
+  domain.
+- If users write the wizard scripts, the cost row stands: a second language and toolchain, 37 dependencies and a host
+  API to version. If an AI writes them, generated code gets executed, which is the attack surface #699 avoids by
+  returning settings only.
+- A detached output is only as good as the DSL it emits, so every structure the wizard can produce must exist in the
+  DSL anyway (§2.3 included).
+
 So (B)'s distinct value is **user-written generator programs**. Nobody has asked for that, and it costs a second
 language, a dependency tree larger than the rest of the domain crate, and a one-way trip out of the editor.
 
@@ -149,26 +167,43 @@ language, a dependency tree larger than the rest of the domain crate, and a one-
 
 ### 2.2 ADR-0008 under this decision
 
-**Kept as accepted, implemented first, unchanged.** Two links to this ADR:
+**Kept as accepted and implemented first.** Its grammar and model are unchanged. Two links to this ADR, the second of
+which adds one re-pin case to ADR-0008 §2.13, stated here and not in ADR-0008's text:
 
-- The new numeric fields (`min` reps, the trigger's bpm) are `Num`, so `$min..$maxx[hr>=$hrv]` works under ADR-0008's
-  rules (a use by name, arithmetic only in declarations). In a count position `$n` reads `$n..$mx`. `x` follows the
-  word without a space, as in `3x` today.
-- **A pinned end never pins across a ranged repeat's rep boundary.** A ramp inside a ranged set that pins to the next
-  rep's first block would, on an early end, lead into the block after the set instead. ADR-0008 §2.13.1 shows that this
-  needs re-pinning during the ride, and the frozen-block rule cannot help, because the decision (§2.5) falls at the rep's
-  end, after such a ramp has already started. In the spirit of ADR-0008 §2.3 ("no guessing") it is **an error** that
-  blocks Ride this: a new `ValidationKind::PinAcrossRangedRep` naming the ramp and the repeat. A pin inside one rep, or
-  to a block outside the set, is unaffected.
+- **Variables in a range.** The new numeric fields (`min` reps, the trigger's bpm) are `Num`. A range written with
+  variables uses ADR-0008's spaced count form, because `VAR` takes every letter and digit after `$` (ADR-0008 §2.6),
+  so `$hix` would be the name `hix` (ADR-0008 §2.9: "`$sets x(…)` with a space before `x`"). The forms are
+  `3..10x[…]`, `$lo..$hi x[…]`, `3..$hi x[…]` and `$lo..10 x[…]`, with `[hr>=$hrv]` for the trigger. A range is one word
+  either way, as ADR-0008 already accepts for `hr<118 $z..4m`.
+- **Pins across a ranged set.** An early end changes two neighbours of the timeline, and the ADR treats them
+  differently, depending on whether the pinned block has started by the decision point (§2.5):
+  - **The block played first after the set**: its pinned start takes "the last block played in [the repeat's] last
+    iteration" (ADR-0008 §2.2). That is rep `max` when compiled, but rep `k` when the set ends at `k`. The decision is
+    always taken **before** that block starts (§2.5), so it is upcoming, and `until_met` **re-pins** it exactly as
+    ADR-0008 §2.13.1 step 2b does after `repeat_once`: `effective` runs the same `repin` over the sequence after the
+    suppression, skipping blocks that have started. This is the second exception to ADR-0008 §2.13's "a pin is not
+    re-worked out during the ride", for the same reason as the first: a structural change of the planned sequence.
+    ADR-0008's continuity property (`previous.power_to == ramp.power_from` on every occurrence) then holds on the
+    ridden sequence too. Golden, FTP 280: `10m 50%, 3..10x[hr>=170, +5w, !last](30s 120%, 15s 50%), 2m ramp auto-40%`
+    compiles the ramp from rep 10's 381 W (336 + 9 × 5 W) to 112 W. Ended after rep 4, it is re-pinned to start at
+    351 W, the power just ridden, rather than leaving a 30 W ERG step down.
+  - **The block played last in a rep**: the last child, or with `!last` the second-last one. Its pinned end points at
+    the next rep's first block, or, on an early end, at the block after the set. That block **has started** before
+    the decision is known, so it cannot be re-pinned, and ADR-0008's "a started ramp keeps its target" would leave a
+    step. In the spirit of ADR-0008 §2.3 ("no guessing") a pinned end there is **an error** that blocks Ride this: a
+    new `ValidationKind::PinAcrossRangedRep`, naming the ramp and the repeat. Goldens:
+    `3..10x[hr>=170](30s 120%, 15s ramp 50%-auto)` and `3..10x[hr>=170, !last](30s 120%, 10s ramp 100%-auto, 15s 50%)`.
+    A pinned start on a rep's first child is unaffected: it pins to the previous rep, which was played whole. So is
+    any pin inside one rep, a pinned end before the set (it pins to rep 1's first block), and, with `!last`, a pinned
+    end on the last child (dropped on an early end, pinned to the next rep otherwise).
 
 ### 2.3 The ranged repeat: syntax and model
 
 ```ebnf
 repeat    = ( COUNT | RANGE ) "x" [ "[" option { [","] option } "]" ] "(" workout ")" ;
-RANGE     = COUNT ".." COUNT ;                 (* min..max reps, 1 ≤ min < max *)
+RANGE     = COUNT ".." COUNT ;                 (* min..max reps, 1 ≤ min < max; with a VAR end: "$lo..$hi x", §2.2 *)
 option    = SIGNED "w" | SIGNED "%" | "!last"
-          | "hr>=" INT                         (* until: HR rises to N bpm *)
-          | "hr<"  INT ;                       (* until: HR falls below N bpm *)
+          | "hr>=" INT ;                       (* until: HR rises to N bpm *)
 ```
 
 - `RANGE` and exactly one trigger option go together. A range without a trigger, a trigger without a range, a second
@@ -192,7 +227,7 @@ pub struct RepeatNode {            // as today; `count` is the maximum
 }
 pub struct Until { pub min: Num, pub trigger: Trigger }   // Num from ADR-0008 (f64 until it lands)
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Trigger { HrAtLeast { bpm: Num }, HrBelow { bpm: Num } }
+pub enum Trigger { HrAtLeast { bpm: Num } }                 // tagged, so later variants (§2.4) add without migration
 ```
 
 The owner's example, with `!last` so the final short rest gives way to the long rest:
@@ -210,11 +245,25 @@ One instance is 3 × 45 s − 15 s + 4 min = 6:00 at least, and 10 × 45 s − 1
 
 | Trigger | v1 | Reason |
 |---|---|---|
-| `hr>=N`, `hr<N` (bpm) | **yes** | The owner's case. HR is the one signal that is not the controlled quantity in ERG. It matches `hr<` today and FIT's `repeat_until_hr_*` |
-| `cad<N` (fatigue: "until I can't hold 80 rpm") | owner item 12, recommended **no** for v1 | Meaningful in ERG, where power is held and cadence falls first. But cadence drops at every block change and in ERG's low-cadence release (ADR-0002 §7), so it needs work-block-only evaluation after settle, a 10 s hold, and a design for the release. Worth its own small amendment once HR triggers have been ridden |
+| `hr>=N` (bpm) | **yes** | The owner's case. HR is the one signal that is not the controlled quantity in ERG. It matches FIT's `repeat_until_hr_greater_than` |
+| `hr<N` as a set trigger | **no** | Watched in work blocks (below), HR below a value means "not yet working hard", which is true from rep 1, so the set would always end at `min`. Recovery downwards is today's `hr<` **step** end, which is the right construct for it |
+| `cad<N` (fatigue: "until I can't hold 80 rpm") | owner item 13, recommended **no** for v1 | Meaningful in ERG, where power is held and cadence falls first. But cadence drops at every block change and in ERG's low-cadence release (ADR-0002 §7), so it needs work-block-only evaluation after settle, a 10 s hold, and a design for the release. Worth its own small amendment once HR triggers have been ridden |
 | power (`pwr<N`) | **no** | In ERG the trainer holds power, so the condition says nothing about the rider. In resistance or SIM it would be the rider's own failure; revisit with free/SIM sets |
 | time in zone ("until 3 min accumulated at ≥ 170 bpm") | **no** for v1 | A useful VO2 prescription, but it is a cumulative accumulator, not a threshold. It fits the same evaluator later (one more `Trigger` variant) without changing §2.5–§2.10 |
 | % HR max / % LTHR | **no** (bpm only) | Today's `hr<` is bpm. ADR-0008 variables let a library workout declare `$hrv`. Zone-relative triggers wait for the athlete model's HR references (ADR-0009 Part 1) to be implemented |
+
+**Which seconds are watched.** Only riding seconds inside **work blocks** (phase `work`, ≥ 80 % FTP, the compiler's
+classification) of reps `min` and later. Two reasons:
+
+- FIT's rule: "only the workout steps with an Intensity type Active are part of the criteria to stop or continue"
+  (§1.3).
+- HR lags effort and stays up between sets. In the owner's example, the second instance starts 4 min after a set that
+  ended at ≥ 170 bpm, and in a 30/15 HR keeps rising through the short rest. Watched from rep 1, or during rests, a
+  set would latch on HR left over from earlier work and end at `min` every time. From rep `min` on, the latch
+  reflects the work of the reps that decide.
+
+A rep with no work block cannot be watched. A ranged set whose reps have none is a compile **error**,
+`TriggerNotWatched` (§2.6).
 
 **Signal and debounce.** The trigger reads the same 1 Hz HR the record stores (`SecondRow`, ADR-0009 §2.3.1.1: NaN
 where no valid sample arrived). It **holds** after **5 consecutive riding seconds** with a valid HR meeting the
@@ -229,12 +278,12 @@ it, so there is no chatter at the threshold to suppress. Each new instance (the 
 The decision is made at **rep boundaries**, so a rep is never cut in the middle of its work:
 
 - At the end of rep `k` (1-based; "end" = its last child ends or is skipped), the set **continues** unless one of these
-  holds: (a) `k = max`; (b) `k ≥ min` and the trigger has latched at any time since the instance began (during reps
-  before `min` included); (c) `k ≥ min` and HR is **lost**.
+  holds: (a) `k = max`; (b) `k ≥ min` and the trigger has latched (it is watched only from rep `min`'s work blocks,
+  §2.4); (c) `k ≥ min` and HR is **lost**.
 - **`!last` on a ranged set:** the final rep drops its last child, as today. Because the final rep is only known at run
   time, the decision for rep `k` is taken **when its last child would start**: if the set ends at `k`, that child is
-  suppressed and the ride goes straight to the block after the set. If the trigger latches **during** that last child
-  (and `k ≥ min`), the set ends at once and the child stops there, which is the same rule applied as late as possible.
+  suppressed and the ride goes straight to the block after the set. If that last child is itself a work block and the
+  trigger latches during it, the latch counts at the next decision point (the end of rep `k + 1`). A rep is never cut.
 - **HR lost** means: the engine's HR-loss state (ADR-0001 §5: HR metrics `null`), or no valid HR second in the last
   10 s, at the decision point. HR loss never pauses the ride (ADR-0001 §5), so a set with a lost strap ends after rep
   `max(min, k)`, the bound with less work. The rider sees "HR lost · set ends after this rep" in the target sub-line.
@@ -249,8 +298,9 @@ The decision is made at **rep boundaries**, so a rep is never cut in the middle 
 ### 2.6 Compilation and the gates
 
 - **Expand to `max`.** The compiler treats a ranged repeat as `count = max` repeats with a known index, so the
-  `FlatBlock` list, `path`/`iteration`, progression and phases are exactly today's rules. A block of a rep beyond `min`
-  carries an optional field:
+  `FlatBlock` list, `path`/`iteration`, progression and phases are exactly today's rules. A block the ride may drop
+  carries an optional field: every block of a rep beyond `min`, and with `!last` also the last child of rep `min`
+  (dropped when the set ends there):
 
   ```rust
   /// Set when the block belongs to a rep the ride may drop: rep `rep` (0-based) of a ranged group with bounds `min..max`.
@@ -264,7 +314,8 @@ The decision is made at **rep boundaries**, so a rep is never cut in the middle 
   `TraceLimit`. Because an early end only **removes** whole reps and never creates a target (DESIGN §17.3), the ridden
   sequence is a subsequence of the validated one, which is §17.1's invariant by construction.
 - **Validation added:** `TriggerOutsideRange` (the bpm outside the athlete's rest and max HR, the same check as
-  `RecoveryTargetOutsideRange`); `PinAcrossRangedRep` (§2.2). A trigger that a fixed-count repeat would make
+  `RecoveryTargetOutsideRange`); `PinAcrossRangedRep` (§2.2); `TriggerNotWatched` (no work block in the set's reps,
+  §2.4). All three are errors. A trigger that a fixed-count repeat would make
   pointless (`min >= max`) is a parse error, not a warning.
 - **Phases** are classified on the maximum expansion, as `repeat_once` copies phases today (DESIGN §17.1 step 5, #698).
   An early end changes no block's phase.
@@ -282,6 +333,7 @@ The decision is made at **rep boundaries**, so a rep is never cut in the middle 
   sequence already says. Consequences:
   - §17's machinery does all the rest: `effective()` drops the blocks, the road greys them, laps close and open as at
     any boundary, crash recovery and #50's resume rebuild the overlay from the log, and Review reads the same fold.
+  - After the suppression, `effective` re-pins the block after the set (§2.2), with ADR-0008's `repin`.
   - `until_met` is not on the undo stack. It is the plan's own decision, like a block ending on time.
   - The `ride_edit` table of §17.4 is not migrated yet (#240 open). Its `kind` and `actor` CHECK lists include
     `until_met` and `plan` from the first migration. If #240's migration lands first, a forward migration adds them.
@@ -306,9 +358,9 @@ The decision is made at **rep boundaries**, so a rep is never cut in the middle 
   count in between is expected to fall inside the range. This is not a proof: inserting a rep changes the 30 s NP
   windows that cross its seams. A property test over generated workouts checks it (§4.2). IF and time in zone show at
   the maximum, labelled "at 10 reps".
-- **Ready sheet and library:** the length and TSS ranges (for the owner's sets alone, 18:00–33:45). A ranged workout without a heart-rate strap paired shows on the
-  Ready sheet: "No HR: ranged sets will ride their minimum (3 reps)". This is not a refusal, since §2.5 already defines
-  the ride.
+- **Ready sheet and library:** the length and TSS ranges (for the owner's sets alone, 18:00–33:45). A ranged
+  workout without a heart-rate strap paired shows on the Ready sheet: "No HR: ranged sets will ride their minimum
+  (3 reps)". This is not a refusal, since §2.5 already defines the ride.
 
 ### 2.9 Rider and coach adjustments
 
@@ -332,8 +384,8 @@ The decision is made at **rep boundaries**, so a rep is never cut in the middle 
   shown as a trend with **no verdict**, as decoupling is (ADR-0009 owner decision 13): HR on a given day depends on
   heat, sleep and caffeine, so fewer reps to 170 bpm is not on its own a fitness signal.
 - **FIT activity export** (#257) writes laps as ridden, so a ranged set is just its ridden reps; nothing changes.
-  A future **FIT workout** export (not planned) maps a ranged repeat to `repeat_until_hr_greater_than` / `_less_than`
-  with `count = max` dropped: FIT has no min/max pair (§1.3), so the export would be lossy and must say so. A FIT
+  A future **FIT workout** export (not planned) maps a ranged repeat to `repeat_until_hr_greater_than`
+  with `min` and `max` dropped: FIT has no min/max pair (§1.3), so the export would be lossy and must say so. A FIT
   workout import of `repeat_until_*` must ask for bounds, since this ADR refuses an unbounded set.
 
 ### 2.11 Errors, #732 and #699
@@ -347,8 +399,10 @@ The decision is made at **rep boundaries**, so a rep is never cut in the middle 
   | `10x[hr>=170](30s 120%)` | 'hr>=170' needs a rep range, e.g. 3..10x[hr>=170](…) | `hr>=170` |
   | `5..5x[hr>=170](30s 120%)` | A rep range needs min below max (5..5); write 5x(…) for a fixed count | `5..5x` |
 
-- **#732** gains vocabulary, not a new tool: `..x` after a count, `hr>=`/`hr<` in repeat options, and "did you mean"
-  for `hr=>170` and `hr>170` (suggest `hr>=170`, with "triggers are `hr>=N` or `hr<N`").
+- **#732** gains vocabulary, not a new tool: `..x` after a count (`$lo..$hi x` with
+  variables), `hr>=` in repeat options, and "did you mean" for `hr=>170`, `hr>170` and `$lo..$hix` (suggest `hr>=170`
+  and `$lo..$hi x`). An `hr<N` in repeat options gets its own message: "a set ends on `hr>=N`; for a recovery, use the
+  step end `hr<N min..max`".
 - **#699** may use ranged sets in template families. A provider still returns settings, never text that skips the
   gates.
 
@@ -376,7 +430,7 @@ The decision is made at **rep boundaries**, so a rep is never cut in the middle 
 
 - The owner's structure is writable in one line and rides safely: bounded, validated at its worst case, ending on HR.
   It falls back to less work if the strap drops.
-- **No new language, no new dependency.** ADR-0008 is implemented as accepted.
+- **No new language, no new dependency.** ADR-0008 is implemented as accepted. This ADR adds one re-pin case (`until_met`, §2.2) beside its `repeat_once` one.
 - The domain contract changes: `RepeatNode.until`, `FlatBlock.ranged`, `CompiledWorkout.{ranged_groups, tss_range}`, new
   `DslErrorKind`s and `ValidationKind`s. The TS bindings are regenerated. Stored workouts and snapshots deserialise
   unchanged.
@@ -386,7 +440,7 @@ The decision is made at **rep boundaries**, so a rep is never cut in the middle 
 
 ### 4.1 Implementation issues, in order (filed on acceptance)
 
-1. ADR-0008 implementation (#694), unchanged. Prerequisite for `Num` in the new fields (or `f64` first, `Num` with
+1. ADR-0008 implementation (#694), as accepted. Prerequisite for `Num` in the new fields (or `f64` first, `Num` with
    ADR-0008).
 2. #240 engine step (overlay) and #224 (end rules), with #224 adopting §2.4's HR validity and §2.5's loss principle.
 3. Domain: grammar, model, canonical printing, errors, compile at max, `ranged_groups`, `tss_range`, the two new
@@ -407,17 +461,19 @@ The decision is made at **rep boundaries**, so a rep is never cut in the middle 
   generated workouts, the TSS of every intermediate count lies inside `tss_range` (§2.8). A counterexample reopens §2.8
   before release.
 - **Evaluator (properties and goldens):** latch only after 5 consecutive valid seconds; a NaN or paused second resets.
-  Latched before `min` → ends at `min`. Never past `max`. HR lost at a decision point past `min` → ends there. `!last`:
-  the dropped child is never started when the decision is taken at its start, and stops at once when the latch falls
-  inside it. The verdict depends only on the input seconds (replay equality).
+  Latched before `min` → ends at `min`. Never past `max`. HR lost at a decision point past `min` → ends there. HR ≥ the
+  trigger during reps before `min`, or during rests, never latches. `!last`: the dropped child is never started, and a
+  latch inside a work-block last child counts at the next decision. The verdict depends only on the input seconds (replay equality).
 - **Overlay:** for generated ranged workouts and HR traces, the ridden sequence is a subsequence of the compiled one,
   ends of reps only (never a partial rep, except `!last`'s child), and `effective` after `until_met` equals compiling
   with the ridden counts, phases aside (#698).
 - **Engine scenarios** (simulator, `VirtualClock`): the owner's example with a `SimHeart` that crosses 170 at rep 2, 5
   and never. A strap loss in rep 4. A loss during rep 2 that returns. Pause inside the 5 s hold. End set below `min`.
   `repeat_once` refused `ranged_repeat`.
-- **Errors:** each row of §2.11 (kind, message, span), and `PinAcrossRangedRep` / `TriggerOutsideRange` (kind,
-  severity, node).
+- **Pins (§2.2):** the re-pin golden (ramp 381 → 112 W compiled, 351 → 112 W after an end at rep 4; the ramp's start
+  equals the last ridden block's `power_to` exactly), and the two `PinAcrossRangedRep` goldens.
+- **Errors:** each row of §2.11 (kind, message, span), and `PinAcrossRangedRep` / `TriggerOutsideRange` /
+  `TriggerNotWatched` (kind, severity, node).
 
 ## 5. Open questions
 
