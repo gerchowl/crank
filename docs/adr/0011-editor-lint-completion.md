@@ -40,9 +40,10 @@ the rejected alternatives.
    and ADR-0010's `PinAcrossRangedRep`, `TriggerNotWatched`, `TriggerOutsideRange` come the same way);
    ADR-0008's unused variable is a **hint** that never blocks saving, with a "Remove" fix; **no style lint** and
    no "format" fix, because canonical printing drops comments (§2.8).
-9. **A fix is exactly one undo step:** it ends the typing burst, the fixed text is parsed (it parses, by item 6) and
-   committed as a step of its own; Save shows "Reading the text…" until that parse is in, as for typing (#697).
-   Accepting a completion is typing and joins the burst (§2.2).
+9. **A fix is exactly one undo step, committed at once:** the core already parsed the fixed text to offer the fix
+   (item 6), so the fix carries that tree and its spans and the editor commits them synchronously as a step of their
+   own, ending the typing burst. No parse round-trip, so no wait for Save and no race with the next keystroke, which
+   starts a new burst. Accepting a completion is typing and joins the burst (§2.2).
 10. **Screen readers hear a diagnostic once, when the burst ends** (500 ms pause, the same `GROUP_MS`), through a polite
     live region, not on every keystroke; the message stays the text box's description, with the fix as a button under
     it (§2.7).
@@ -155,14 +156,15 @@ the Tauri bundle, so this is load and memory, not network; the implementation PR
   progress): an external change that arrives then is applied at `compositionend`, after the composed text has reached
   the model, so a composition is never cut.
 - **Undo steps:** accepting a completion is typing (it joins the burst like the keys it replaces). **A fix is a step of
-  its own**, through one new model function, `fixed(s, text)`: it sets the draft to the fixed text and ends the burst
-  (`typing: null`, as `applied` does), so the parse answer that follows is committed by today's `parsed` with
-  `grouped = false`, one undo step. The fixed text gets its nodes the way typing does: the view calls
-  `commands.parseDsl` on it and hands the answer to `parsed`; until that answer is in, Save and the outline wait as for
-  any draft not yet read ("Reading the text…", #697). Since the core offers only fixes whose text parses (§2.5), the
-  answer is `parsed` and the step is always committed; if the rider types before it arrives, the answer is stale and
-  dropped as today, and the keystroke starts a new burst after the fix. So Cmd+Z after a fix undoes exactly the fix,
-  and history keeps holding parsed states only (`model.ts`: "History holds saved states only"). **Rejected:** history
+  its own, committed synchronously**, through one new model function, `fixed(s, base, fix)`. The core offers a fix only
+  after parsing the whole fixed text (§2.5), with the core's own id source, so the fix carries that parse's result:
+  `DslFix.result = { text, nodes, spans, hints }`. `fixed` applies only if `s.draft === base`, the draft the fix was
+  offered for (a fix from an older answer is refused: its edits are in that text's coordinates); then it commits
+  `fix.result` with today's `commit(…, grouped = false)`, the selection following its path as `parsed` does, and
+  sets `typing: null`. There is no parse round-trip: the saved tree is the fixed one at once, so Save and the outline
+  never wait for it, and nothing is in flight for a keystroke to make stale. The next keystroke finds `typing: null`,
+  so it starts a new burst whose first commit is a new step (`grouped = false`), and later keys join that burst, not
+  the fix. So Cmd+Z after a fix undoes exactly the fix, and history keeps holding parsed states only (`model.ts`: "History holds saved states only"). **Rejected:** history
   steps for unparsed text (a fix whose result still has an error): undo would restore drafts with no tree, which the
   outline, Save and the compiled view cannot show, a larger change to the model than #732 needs.
 - **The AI rewrite lock** (#112, `model.ts` `lock`): the view becomes read-only (`EditorState.readOnly` and
@@ -182,8 +184,11 @@ pub struct DslEdit { pub offset: usize, pub length: usize, pub insert: String }
 /// A fix the core has checked (§2.5): what the UI shows after "Did you mean", and its edits.
 /// `edits` are sorted by offset and never overlap or touch, all in the original text's coordinates: exactly
 /// CodeMirror's `ChangeSpec[]` semantics, so the view dispatches them as one transaction; the core applies them
-/// last-to-first when it checks the fix.
-pub struct DslFix { pub label: String, pub edits: Vec<DslEdit> }
+/// last-to-first when it checks the fix, and `result.text` is exactly the text they produce.
+/// `result` is the parse of the fixed text that made the fix offerable (§2.5), so the editor commits it without
+/// parsing again (§2.2).
+pub struct DslFix { pub label: String, pub edits: Vec<DslEdit>, pub result: FixedText }
+pub struct FixedText { pub text: String, pub nodes: Vec<WorkoutNode>, pub spans: Vec<NodeSpan>, pub hints: Vec<DslHint> }
 /// The UTF-16 span of each node's head, in pre-order of the parsed nodes: a step from its end token to its last
 /// attribute (its label excluded); a repeat its count and options (`3x[+5w]`, `$n x`,
 /// ADR-0010's `3..10x[hr>=170, !last]` and `$lo..$hi x[hr>=$hrv]`), not its body.
@@ -207,6 +212,7 @@ parser records each node's head span while it parses, and `parse_dsl` is `parse_
 type DslParse =
   | { outcome: "parsed"; nodes: WorkoutNode[]; spans: NodeSpan[]; hints: DslHint[] }
   | { outcome: "invalid"; problem: DslProblem };          // DslProblem gains `fixes: DslFix[]`
+// DslFix = { label, edits: DslEdit[], result: { text, nodes, spans, hints } }; WorkoutDetail gains `spans: NodeSpan[]`
 ```
 
 **Compile issues get their place by node:** the editor already compiles the committed tree; an issue's `node_id` is
@@ -218,18 +224,24 @@ the text and no re-parse is needed.
 
 | Commit | Spans from | Extra cost |
 |---|---|---|
-| typing, a fix (`parsed`) | that parse answer | none |
+| typing (`parsed`) | that parse answer | none |
+| a fix (`fixed`) | the fix's `result`, from the check parse (§2.5) | none (that parse was needed to offer the fix; the answer grows by up to 3 trees, only while the text does not parse) |
 | an outline edit (`applied`, #653/#731) | the read-back parse of the printed text: `outlineEdit` already prints (`print_dsl`) and parses the result (`parse_dsl`) and commits **the tree the core read back** (DESIGN §5.7), so `applied` takes that answer's `spans` too | none |
-| opening the editor (`load`) | one `parse_dsl` of the opening text (`EditorStart.dsl`, the canonical text of the stored tree) | one parse per open; spans are by pre-order index and `parse(print(t)) == t` structurally (docs/DSL.md), so they match the stored tree although the parse's ids differ. Until it answers the view draws no compile marks (the Summary shows the issues as today) |
+| opening the editor (`load`) | `WorkoutDetail.spans`: the core's `workout_get` already returns the canonical text (`dsl`) beside the tree, and now also the spans of parsing that text; a new workout's empty text has none (`[]`) | one parse per `workout_get` in the core; spans are by pre-order index and `parse(print(t)) == t` structurally (docs/DSL.md), so they match the stored tree although that parse's ids are discarded. The editor opens with its spans in hand and never waits |
 | Accept of an AI rewrite (#112, not built yet) | the parse of the accepted text: #112 commits through `parsed` or `applied` like every other change, so it takes the answer's spans | none |
 | undo, redo | the snapshot | none |
 
-`load` and `applied` gain a `spans` argument; a commit without spans is not representable.
+`load` (from `EditorStart.spans`, filled from `WorkoutDetail.spans`) and `applied` gain a required `spans` argument;
+no state of the model, the opening one included, is without spans.
+
+Issues without a node (`EmptyWorkout`, `MissingCooldown`, `InvalidFtp`) stay in the Summary only. While the draft does
+not parse, only the parse error is drawn (the compile issues describe the saved tree, whose spans no longer match the
+text); the Summary keeps them as today.
 
 - **Rejected:** `print_dsl` returning spans: a second span producer in the printer, to keep equal to the parser's, for
-  a case (outline edits) that already parses its printed text. Issues without a node (`EmptyWorkout`, `MissingCooldown`, `InvalidFtp`) stay in
-the Summary only. While the draft does not parse, only the parse error is drawn (the compile issues describe the saved
-tree, whose spans no longer match the text); the Summary keeps them as today.
+  a case (outline edits) that already parses its printed text. **Rejected:** `load` with optional spans filled by a
+  later parse: a state without spans, and an answer to match against the snapshot it belongs to, for a parse the core
+  can do inside `workout_get`.
 
 **Severity in the view:** a parse error and a compile `Error` are errors (Save and Ride this disabled, as today); a
 compile `Warning` is a warning (saves); a lint hint (§2.8) is a hint, never in the Summary, never blocking.
@@ -295,7 +307,8 @@ The core's `message` stays as it is (the TS-parity text, docs/DSL.md "Errors"); 
 UI writes "Did you mean ramp?" from the fix's `label`, and the fix's button reads "Change to ramp".
 
 **A fix is checked before it is offered:** the core applies each candidate fix's edits to the text (last to first,
-so every offset stays in the original text's coordinates) and parses the result with a throw-away id source; the fix
+so every offset stays in the original text's coordinates) and parses the result with the core's own id source (the same as `parse_dsl`'s, so the ids are fresh and the tree
+can be committed as it is, §2.2); the fix
 is offered only if **the whole fixed text parses**. A candidate that fails the check is dropped, not shown with a
 warning. That costs at most 3 extra parses, only when the text does not parse. **Cost, stated:** with a second error
 later in the text, the first error gets no fix until the later one is fixed; the message still names the problem. It
@@ -386,7 +399,10 @@ The paragraph "**The editor in direction A**" changes where it says the problem'
 textarea cannot mark a range of its own text": the text view is a CodeMirror editor; the problem's span, compile
 warnings and errors (on their block's head) and hints are marked in the text; the message under it keeps the core's
 message, line and column, and adds "Did you mean …?" with a button per checked fix; completion as §2.6 and §2.7. The
-undo-group rules gain: a fix is a step of its own; an accepted completion is typing.
+undo-group rules gain: a fix is a step of its own, committed at once from the core's checked parse; an accepted
+completion is typing. **Parsing while typing changes:** today `edit` in `WorkoutEditor.tsx` sends one `parse_dsl` per
+keystroke; it becomes one parse in flight at a time, the latest draft sent when the answer returns if it differs
+(§2.6 "Cost per keystroke"), and §5.7 says so where it describes the text being read.
 
 ## 3. Alternatives considered
 
@@ -398,7 +414,8 @@ hand-written distance, unchecked fixes (§2.5); a style lint and a format fix (�
 
 - The text view marks problems in place and offers one-click, checked fixes; completion knows the grammar because it
   is the grammar's own tables.
-- The contract changes: `DslParse.parsed` gains `spans` and `hints`, `DslProblem` gains `fixes`, and a new command
+- The contract changes: `DslParse.parsed` gains `spans` and `hints`, `DslProblem` gains `fixes` (each with its parsed
+  `result`), `WorkoutDetail` gains `spans`, and a new command
   `dsl_complete`; `just bindings` regenerates `app/src/bindings.ts`, and the mocks' fixture
   (`crates/crank-core/tests/fixtures/editor.json`) gains typo drafts and completion answers generated by the core.
 - The app gains CodeMirror (§2.1 size); editor tests move from `fireEvent.change` to the `setText` seam plus design
@@ -439,8 +456,9 @@ hand-written distance, unchecked fixes (§2.5); a style lint and a format fix (�
   make timing gates flaky); the CI-checked bounds are deterministic: at most 3 check parses per answer, and
   `dsl_complete` reads no token past the cursor (a test with a lexer that counts tokens).
 
-**App (Vitest):** model: a fix is one undo step (`fixed` then `parsed`), also when typed over before its answer
-(stale answer dropped), and an accepted completion joins the burst; Save waits for the fix's parse; `load` and
+**App (Vitest):** model: a fix is one undo step committed by `fixed` alone (no parse); keys typed right after it form
+a new step (fix, type, Cmd+Z leaves the fix; Cmd+Z again removes it); a fix whose `base` is no longer the draft is
+refused; Save is enabled right after a fix with no "Reading the text…"; an accepted completion joins the burst; `load` and
 `applied` keep spans, and after an outline move a compile warning is underlined on the moved block; the view sends no
 change when draft equals document and none during a composition; `historyUndo` / `historyRedo` reach the model; the controlled view keeps
 the cursor outside an external change (prefix/suffix property); the lock makes the view read-only and disables fixes;
