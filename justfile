@@ -71,6 +71,12 @@ slew-model *ARGS:
 slew-mutants *ARGS:
     python3 docs/adr/models/erg_slew_mutants.py {{ARGS}}
 
+# #620's golden vectors (crates/crank-engine/tests/fixtures/slew_golden.json) against that model, within 1e-6
+# (`--write` regenerates the cases and plans from the model; the Rust test rewrites the vectors with
+# CRANK_SLEW_GOLDEN=write). Same interpreter requirement as `slew-model`.
+slew-vectors *ARGS:
+    cd docs/adr/models && python3 erg_slew_vectors.py {{ARGS}} ../../../crates/crank-engine/tests/fixtures/slew_golden.json
+
 # Regenerate the fixture crank-engine's `refines_the_model` test reads (#218).
 model-fixture:
     python3 docs/adr/models/trainer_following.py --emit-fixture crates/crank-engine/tests/fixtures/following.json

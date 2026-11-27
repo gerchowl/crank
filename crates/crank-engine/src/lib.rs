@@ -14,7 +14,9 @@
 //! * [`lap`]: laps, one per block as ridden, with their statistics (#12, #243).
 //! * [`series`]: the loaded ride's display series, which the core owns and the engine appends
 //!   to (ADR-0001 §4.3.3).
-//! * [`tuning`]: the rider tuning a ride runs with (ADR-0001 §7.2): the ERG release (#589).
+//! * [`tuning`]: the rider tuning a ride runs with (ADR-0001 §7.2): the ERG release (#589) and the
+//!   eased target's rates (#585).
+//! * [`slew`]: the eased ERG target on Ruckig (ADR-0002 §7.10, #620); wired by #621.
 //!
 //! * [`stream`]: subscriptions with filter chains, the multiplexed `StreamFrame`, flow
 //!   control and the status heartbeat (#219).
@@ -27,6 +29,7 @@ pub mod erg;
 pub mod lap;
 pub mod record;
 pub mod series;
+pub mod slew;
 pub mod stream;
 pub mod ticks;
 pub mod tuning;
@@ -50,7 +53,7 @@ pub use stream::{
     StreamSnapshot, StreamStatus, SubId, SubSample, SubscribeOpts,
 };
 pub use ticks::{SessionTicks, WorkoutTicks};
-pub use tuning::{ErgTuning, Tuning, TuningError};
+pub use tuning::{ErgTuning, SlewTuning, Tuning, TuningError};
 
 #[cfg(test)]
 mod erg_tests;

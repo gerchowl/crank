@@ -12,6 +12,9 @@ workspace = true
 crank-domain.workspace = true
 crank-devices.workspace = true
 futures-util = "0.3"
+# The eased ERG target's trajectory generator: the Rust port of Ruckig (MIT), ADR-0002 §7.10.2's
+# spike table (#620). `std` only: the engine is std; no position limits, tracking or waypoints used.
+rsruckig = { version = "=3.0.1", default-features = false, features = ["std"] }
 serde.workspace = true
 serde_json.workspace = true
 specta = { workspace = true, optional = true }
