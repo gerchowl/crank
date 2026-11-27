@@ -66,6 +66,7 @@ import { startRideLoad } from "../../src/views/rideLoad";
 import { SCENARIOS, type ScenarioName } from "./scenarios";
 import { windowClose } from "../../src/editor/windowClose";
 import { TextView } from "../../src/editor/TextView";
+import { useApplyTheme } from "../../src/theme";
 import { DRAFTS } from "../../src/views/editorFixture";
 import "../../src/editor/editor.css";
 
@@ -922,9 +923,11 @@ const root = document.getElementById("root");
 if (!root) throw new Error("Missing app root");
 /**
  * The editor's text pane (WorkoutEditor.tsx) as the AI rewrite's lock leaves it (#112, ADR-0011 §2.2): the real text
- * view on the core's `sweet-spot` draft, read-only. Mounted alone, since nothing in the app sets the lock yet.
+ * view on the core's `sweet-spot` draft, read-only, in the theme the app would apply. Mounted alone, since nothing in
+ * the app sets the lock yet.
  */
 function LockedText() {
+  useApplyTheme();
   return (
     <div className="page workouts editor">
       <div className="editor-panes">
