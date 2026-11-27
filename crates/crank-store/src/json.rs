@@ -184,3 +184,10 @@ column!(
     ["call_id"],
     "Coach features; owner #59."
 );
+column!(
+    ProposalEvidenceJson,
+    "athlete_proposal",
+    "evidence_json",
+    ["id"],
+    "A proposal's frozen evidence (ADR-0009 §2.2.4 \"Evidence and acceptance\"); owner #720."
+);

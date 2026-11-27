@@ -9,11 +9,12 @@ use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{SystemTime, UNIX_EPOCH};
 /// Forward-only migrations; the schema version is their count.
-const MIGRATIONS: [&str; 4] = [
+const MIGRATIONS: [&str; 5] = [
     include_str!("../migrations/0001_initial.sql"),
     include_str!("../migrations/0002_device_platform_id_unique.sql"),
     include_str!("../migrations/0003_health_check_result.sql"),
     include_str!("../migrations/0004_route.sql"),
+    include_str!("../migrations/0005_athlete_model.sql"),
 ];
 /// Newest `user_version` this build reads or writes: derived from [`MIGRATIONS`], so adding a
 /// migration cannot leave the read-only schema check behind (#166).
@@ -147,9 +148,13 @@ impl Writer {
             ));
         }
         self.db.execute(
+            // `kind` by migration 0005's back-fill rule (ADR-0009 §2.5), so no ride after it is left without
+            // one: the core's free ride has workout id `free-ride`, anything else this path starts is a workout (no
+            // path starts a route ride yet). #705's `RideKind` replaces the rule with the kind the core rides.
             "INSERT INTO ride(id,started_at,workout_json,compiled_json,
-             trainer_device_id,hr_device_id,telemetry_source)
-             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+             trainer_device_id,hr_device_id,telemetry_source,kind)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,
+             CASE WHEN json_extract(?3, '$.id') = 'free-ride' THEN 'free' ELSE 'workout' END)",
             params![
                 ride.id,
                 ride.started_at,

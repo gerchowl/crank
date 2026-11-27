@@ -331,7 +331,16 @@ fn every_appendable_entry_passes_its_check() {
                 let e = Entry::clear(2, p, age, 2);
                 assert_eq!(check_entry(&e, &current), Ok(()), "{p} {age:?}");
             }
-            assert_eq!(check_entry(&cleared(3, p, 3), &current), Ok(()), "{p}");
+            // A Cleared only where Clear can produce one: FTP, CP and W′ always have a prior (#714 review).
+            let expected = if matches!(
+                p,
+                AthleteParam::Ftp | AthleteParam::Cp | AthleteParam::WPrime
+            ) {
+                Err(AthleteError::ClearedWithPrior { param: p })
+            } else {
+                Ok(())
+            };
+            assert_eq!(check_entry(&cleared(3, p, 3), &current), expected, "{p}");
         }
     }
     let bad = entry(4, AthleteParam::Weight, 0., Source::SelfReport, 4);

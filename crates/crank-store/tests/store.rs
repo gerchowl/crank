@@ -76,7 +76,7 @@ fn samples(second: u32) -> Vec<Sample> {
 fn migrate_empty_database() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_owner(dir.path()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 4);
+    assert_eq!(store.schema_version().unwrap(), 5);
     let db = Connection::open(dir.path().join("crank.db")).unwrap();
     let tables: Vec<String> = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -90,6 +90,8 @@ fn migrate_empty_database() {
         [
             "athlete_estimate",
             "athlete_profile",
+            "athlete_proposal",
+            "athlete_proposal_param",
             "checkin",
             "coach_decision",
             "device",
@@ -121,12 +123,13 @@ fn migrate_every_released_fixture() {
         include_bytes!("fixtures/v1.db"),
         include_bytes!("fixtures/v2.db"),
         include_bytes!("fixtures/v3.db"),
+        include_bytes!("fixtures/v4.db"),
     ];
     for fixture in FIXTURES {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("crank.db"), fixture).unwrap();
         let store = Store::open_owner(dir.path()).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 4);
+        assert_eq!(store.schema_version().unwrap(), 5);
         assert_eq!(
             store
                 .load_json::<SettingJson>(&["fixture"])
@@ -402,6 +405,11 @@ fn every_json_column_validated_on_read() {
         CoachFeaturesJson,
         "INSERT OR REPLACE INTO coach_decision(call_id,ride_id,t,verdict,band,features_json) VALUES('call','ride',0,'hold','strong',?1)",
         &["call"]
+    );
+    column!(
+        ProposalEvidenceJson,
+        "INSERT OR REPLACE INTO athlete_proposal(id,ride_id,method,generation,values_json,evidence_json,analysis_version,status,created_at) VALUES(1,'ride','m',1,'{\"v\":1,\"values\":[]}',?1,1,'open',0)",
+        &["1"]
     );
     assert!(matches!(
         store.ride("ride"),
@@ -783,7 +791,7 @@ fn read_only_refuses_a_newer_schema() {
         Store::open_read_only(dir.path()),
         Err(StoreError::SchemaTooNew {
             found: 999,
-            supported: 4
+            supported: 5
         })
     ));
 }

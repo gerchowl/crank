@@ -23,6 +23,13 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   canonical text as one undo step; one the core refuses (a 0 s step, a negative target) changes nothing and shows the
   core's message. Keyboard: an APG toolbar before the outline, focus on the edited row. The MVP walk builds its workout
   from the outline ([#653](https://github.com/gerchowl/crank/issues/653))
+- The store keeps the athlete model (ADR-0009 §2.5): migration 0005 turns `athlete_estimate` into an append-only
+  history (existing rows kept as method `legacy`, the profile's weight moved in as a typed-in value), adds proposals
+  (`athlete_proposal`, deleted with their ride) and the ride's snapshot, kind (back-filled), end cause and record
+  version columns, and a check-in's "unwell". Estimates are written only through `EstimateOrigin` and only when the
+  domain accepts them; a typed-in, reverted, cleared, onboarding or imported value supersedes the parameter's open
+  proposals, and accepting a proposal raised before its parameter's current value is refused. New rides record their
+  kind by the back-fill rule until #705's `RideKind` writes it ([#714](https://github.com/gerchowl/crank/issues/714))
 - Workouts save (#110, DESIGN §5.7): **New workout** opens the editor on an empty workout; the editor has a name box,
   **Save** and **Save as new**, which store the workout in the library (the store's `workout` table), and **Ride this**,
   which rides the saved workout by its id (#643: no draft riding). Leaving the editor (Back or the rail) or riding with

@@ -54,8 +54,9 @@ impl ApiError {
 impl From<StoreError> for ApiError {
     fn from(e: StoreError) -> Self {
         let code = match e {
-            StoreError::LockBusy => ErrorCode::Conflict,
-            StoreError::InvalidInput(_) => ErrorCode::InvalidInput,
+            StoreError::LockBusy | StoreError::Conflict(_) => ErrorCode::Conflict,
+            StoreError::InvalidInput(_) | StoreError::Athlete(_) => ErrorCode::InvalidInput,
+            StoreError::NotFound(_) => ErrorCode::NotFound,
             _ => ErrorCode::Storage,
         };
         Self::new(code, e.to_string())
@@ -181,6 +182,18 @@ mod tests {
         let code = |e: ApiError| e.code;
         assert_eq!(code(StoreError::LockBusy.into()), ErrorCode::Conflict);
         assert_eq!(code(StoreError::ReadOnly.into()), ErrorCode::Storage);
+        assert_eq!(
+            code(StoreError::Conflict(String::new()).into()),
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            code(StoreError::NotFound(String::new()).into()),
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            code(StoreError::Athlete(crank_domain::athlete::AthleteError::UnknownParam).into()),
+            ErrorCode::InvalidInput
+        );
         assert_eq!(
             code(DeviceError::PermissionDenied.into()),
             ErrorCode::PermissionDenied
