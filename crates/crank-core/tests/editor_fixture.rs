@@ -152,7 +152,7 @@ async fn entry(core: &Core, text: &str) -> Value {
                 serde_json::to_value(problem).expect("serialisable"),
             );
         }
-        DslParse::Parsed { nodes } => tree(core, nodes, &mut out).await,
+        DslParse::Parsed { nodes, .. } => tree(core, nodes, &mut out).await,
     }
     Value::Object(out)
 }
@@ -161,7 +161,7 @@ async fn entry(core: &Core, text: &str) -> Value {
 /// (a `problem`, or nothing when it parses), then the tree's own answers as a draft's.
 async fn tree_entry(core: &Core, draft: &str, pointer: &str, value: f64) -> Value {
     let (_, text) = DRAFTS.iter().find(|(n, _)| *n == draft).expect("a draft");
-    let DslParse::Parsed { nodes } = core
+    let DslParse::Parsed { nodes, .. } = core
         .parse_dsl((*text).into(), FTP)
         .await
         .expect("parse answers")
@@ -195,6 +195,7 @@ async fn tree(core: &Core, nodes: Vec<WorkoutNode>, out: &mut Map<String, Value>
         name: "Draft".into(),
         ftp: FTP,
         nodes: nodes.clone(),
+        vars: Vec::new(),
     };
     let mut map = HashMap::new();
     let mut tree = serde_json::to_value(&nodes).expect("serialisable");

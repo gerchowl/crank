@@ -1886,14 +1886,20 @@ impl Core {
     pub async fn parse_dsl(&self, text: String, ftp: f64) -> Result<DslParse, ApiError> {
         let mut ids = || format!("dsl-{}", self.0.dsl_ids.fetch_add(1, Ordering::Relaxed));
         Ok(match parse_dsl(&text, ftp, &mut ids) {
-            Ok(nodes) => DslParse::Parsed { nodes },
+            Ok(doc) => DslParse::Parsed {
+                nodes: doc.nodes,
+                vars: doc.vars,
+            },
             Err(e) => DslParse::Invalid {
                 problem: DslProblem::try_from(&e)?,
             },
         })
     }
 
-    /// The canonical DSL text of a workout tree (docs/DSL.md, "Canonical printing").
+    /// The canonical DSL text of a workout tree (docs/DSL.md, "Canonical printing"), printed
+    /// without declarations: a tree that uses a variable prints its `$name`, which `parse_dsl`
+    /// then refuses as undeclared. The editor's handling of declarations, and the
+    /// declarations this command takes for it, are #744 (ADR-0008 §2.12).
     ///
     /// # Errors
     /// Never fails; async and fallible as every facade method.
@@ -1902,7 +1908,7 @@ impl Core {
         reason = "every facade method is async (ADR-0001 §4)"
     )]
     pub async fn print_dsl(&self, nodes: Vec<WorkoutNode>) -> Result<String, ApiError> {
-        Ok(print_dsl(&nodes))
+        Ok(print_dsl(&[], &nodes))
     }
 
     /// Compile a workout (an editor draft) to its timeline and summary, issues included: an
@@ -2224,6 +2230,7 @@ impl Core {
                 name: "Free ride".into(),
                 ftp,
                 nodes: Vec::new(),
+                vars: Vec::new(),
             };
             let compiled = CompiledWorkout {
                 blocks: Vec::new(),

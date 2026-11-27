@@ -19,7 +19,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { PowerTarget, WorkoutNode } from "../bindings";
+import type { Num, PowerTarget, WorkoutNode } from "../bindings";
 import {
   afterRemoval,
   copyNode,
@@ -278,18 +278,21 @@ function powerFields(t: PowerTarget): Field[] | null {
       return null;
   }
 }
-const str = (n: number | null) => (n === null ? "" : String(n));
+// A field bound to a variable shows its name; a changed box writes a number, which unbinds it (ADR-0008 §2.12). The
+// form's own handling of references (the value beside the name, "no longer uses $thr") is #744.
+const str = (n: Num | null) =>
+  n === null ? "" : typeof n === "object" ? `$${n.var}` : String(n);
 /** The form's values for `n`, as the fields show them. */
 function valuesOf(n: WorkoutNode): Record<string, string> {
   if (n.type === "repeat") return { label: n.label ?? "", count: str(n.count) };
   const out: Record<string, string> = { label: n.label ?? "" };
-  if (n.end.kind === "time" && n.end.s !== null) {
+  if (n.end.kind === "time" && typeof n.end.s === "number") {
     out.min = String(Math.floor(n.end.s / 60));
     out.sec = String(n.end.s % 60);
   }
   const t = n.target as Record<string, unknown>;
   for (const f of powerFields(n.target) ?? [])
-    out[f.key] = str(t[f.key] as number | null);
+    out[f.key] = str(t[f.key] as Num | null);
   return out;
 }
 /**

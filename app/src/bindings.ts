@@ -501,7 +501,12 @@ export type DslParse =
 /**  The text parses; every node has a fresh id. */
 { outcome: "parsed"; 
 /**  The workout tree. */
-nodes: WorkoutNode[] } | 
+nodes: WorkoutNode[]; 
+/**
+ *  The text's variable declarations, in order (ADR-0008 §2.6); empty for a text
+ *  without variables.
+ */
+vars?: VarDecl[] } | 
 /**  The text does not parse. */
 { outcome: "invalid"; 
 /**  The first problem in the text. */
@@ -609,6 +614,34 @@ export type EstimateView = {
 	/**  When the row was written, UTC Unix seconds. */
 	updatedAt: number | null,
 };
+
+/**  A declaration's expression (ADR-0008 §2.8); arithmetic is allowed in declarations only. */
+export type Expr = 
+/**
+ *  A literal: its exact, non-negative decimal text in `unit` (`"1.1"`; a duration in
+ *  seconds, `"90"` for `1m30s`). Text keeps it exact and JSON-safe.
+ */
+{ kind: "lit"; 
+/**  Decimal digits with an optional fraction, as `NUMBER` in the DSL grammar. */
+value: string; 
+/**  The literal's unit. */
+unit: Unit } | 
+/**  A variable declared above. */
+{ kind: "var"; 
+/**  The variable's name, without the `$`. */
+name: string } | 
+/**  Unary minus. */
+{ kind: "neg"; 
+/**  The negated expression. */
+expr: Expr } | 
+/**  A binary operation. */
+{ kind: "bin"; 
+/**  The operator. */
+op: Op; 
+/**  Left operand. */
+l: Expr; 
+/**  Right operand. */
+r: Expr };
 
 /**
  *  A display filter. Parameters use seconds or Hz; median uses a sample count.
@@ -841,6 +874,18 @@ export type MetricId =
  */
 "power_lap";
 
+/**
+ *  A literal or a variable reference (ADR-0008 §2.10); serialises as `95` or
+ *  `{ "var": "thr" }`, so every stored tree, whose fields are bare numbers, reads unchanged.
+ */
+export type Num = 
+/**  A literal value in the field's unit. */
+number | null | 
+/**  A reference to a declared variable. */
+{ 
+/**  The variable's name, without the `$`. */
+var: string };
+
 /**  Policy when recovery heart rate is unreachable. */
 export type OnUnreachable = 
 /**  Reduce recovery power. */
@@ -849,6 +894,17 @@ export type OnUnreachable =
 "cap" | 
 /**  Ask the coach. */
 "ask_coach";
+
+/**  A binary operator of a declaration's expression. */
+export type Op = 
+/**  `+`: two values of one type. */
+"add" | 
+/**  `-`: two values of one type. */
+"sub" | 
+/**  `*`: a value and a plain number, in either order. */
+"mul" | 
+/**  `/`: a value divided by a plain number. */
+"div";
 
 /**  A remembered pairing. */
 export type PairedDevice = {
@@ -894,23 +950,23 @@ export type PowerTarget =
 /**  Fixed percentage of FTP. */
 { kind: "pct_ftp"; 
 /**  Percentage. */
-value: number | null } | 
+value: Num } | 
 /**  Fixed watts. */
 { kind: "watts"; 
 /**  Watts. */
-value: number | null } | 
+value: Num } | 
 /**  Percentage range; ERG uses its midpoint. */
 { kind: "range"; 
 /**  Lower percentage. */
-lo: number | null; 
+lo: Num; 
 /**  Upper percentage. */
-hi: number | null } | 
+hi: Num } | 
 /**  Linear percentage ramp, possibly descending. */
 { kind: "ramp"; 
 /**  Initial percentage. */
-from: number | null; 
+from: Num; 
 /**  Final percentage. */
-to: number | null } | 
+to: Num } | 
 /**  Heart-rate target. */
 { kind: "hr"; 
 /**  Beats per minute. */
@@ -921,9 +977,9 @@ bpm: number | null } |
 /**  Intensity increments applied per repeat to work steps. */
 export type Progression = {
 	/**  Additional watts per iteration. */
-	wattsPerRep: number | null,
+	wattsPerRep: Num | null,
 	/**  Additional percentage points per iteration. */
-	pctPerRep: number | null,
+	pctPerRep: Num | null,
 };
 
 /**  One value of a proposal. */
@@ -957,7 +1013,7 @@ export type RepeatNode = {
 	/**  Optional display label. */
 	label: string | null,
 	/**  Number of iterations; represented as a JS number for reference parity. */
-	count: number | null,
+	count: Num,
 	/**  Nested sequence. */
 	children: WorkoutNode[],
 	/**  Optional progression increments. */
@@ -1134,7 +1190,7 @@ export type StepEnd =
 /**  Fixed duration. */
 { kind: "time"; 
 /**  Seconds. */
-s: number | null } | 
+s: Num } | 
 /**  Accumulated work. */
 { kind: "kj"; 
 /**  Kilojoules. */
@@ -1146,9 +1202,9 @@ kj: number | null } |
 /**  Threshold in beats per minute. */
 targetBpm: number | null; 
 /**  Earliest end, seconds. */
-minS: number | null; 
+minS: Num; 
 /**  Latest end, seconds. */
-maxS: number | null; 
+maxS: Num; 
 /**  Unreachable threshold policy. */
 onUnreachable: OnUnreachable };
 
@@ -1471,6 +1527,17 @@ export type UiFrame = {
 	series: SeriesDelta,
 };
 
+/**  A variable's type: the unit of its value (ADR-0008 §2.7). */
+export type Unit = 
+/**  Percent of FTP (`95%`). */
+"pct" | 
+/**  Watts (`250w`). */
+"watts" | 
+/**  A duration in seconds (`4m`, `1m30s`). */
+"seconds" | 
+/**  A plain number (`3`, `0.5`). */
+"number";
+
 /**  Machine-readable prescription diagnostics; messages retain reference wording. */
 export type ValidationKind = 
 /**  FTP is not positive. */
@@ -1502,6 +1569,14 @@ export type ValidationKind =
 /**  A ride longer than 20 minutes lacks 180 seconds of final cooldown. */
 "missing_cooldown";
 
+/**  One `$name = expr` declaration; its value is derived, never stored. */
+export type VarDecl = {
+	/**  The variable's name, without the `$`. */
+	name: string,
+	/**  The expression giving its value. */
+	expr: Expr,
+};
+
 /**  A named workout with its reference FTP. */
 export type Workout = {
 	/**  Workout identity. */
@@ -1512,6 +1587,12 @@ export type Workout = {
 	ftp: number | null,
 	/**  Workout tree. */
 	nodes: WorkoutNode[],
+	/**
+	 *  Variable declarations, in order (ADR-0008 §2.6); a workout stored before variables
+	 *  existed has none and reads unchanged (`default`). Always written: `skip_serializing_if`
+	 *  would split the generated TypeScript type into serialize and deserialize twins.
+	 */
+	vars?: VarDecl[],
 };
 
 /**

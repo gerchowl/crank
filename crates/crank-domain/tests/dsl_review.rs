@@ -41,12 +41,12 @@ fn errors_expose_typed_data_and_keep_the_reference_message() {
 #[test]
 fn cadence_signed_zero_matches_javascript_equality_and_formatting() {
     for (lo, hi) in [(-0.0, 0.0), (0.0, -0.0), (-0.0, -0.0)] {
-        let mut nodes = parse_dsl("1m free", 280.0, &mut source()).unwrap();
+        let mut nodes = parse_dsl("1m free", 280.0, &mut source()).unwrap().nodes;
         let WorkoutNode::Step(step) = &mut nodes[0] else {
             panic!("step");
         };
         step.cadence = Some(Cadence { lo, hi });
-        assert_eq!(print_dsl(&nodes), "1m free 0rpm");
+        assert_eq!(print_dsl(&[], &nodes), "1m free 0rpm");
     }
 }
 
@@ -59,7 +59,7 @@ fn whole_number_printing_uses_shortest_decimal_and_normalizes_zero() {
         ("0.001kj free", "0.001kj free"),
     ] {
         assert_eq!(
-            print_dsl(&parse_dsl(text, 0.0, &mut source()).unwrap()),
+            print_dsl(&[], &parse_dsl(text, 0.0, &mut source()).unwrap().nodes),
             expected
         );
     }

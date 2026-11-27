@@ -162,7 +162,7 @@ async fn the_editor_parses_prints_and_compiles_drafts() {
     let core = Core::open(config(dir.path())).unwrap();
     let parse = |text: &str| core.parse_dsl(text.into(), 250.0);
 
-    let DslParse::Parsed { nodes } = parse("\"Warm-up\" 90s 50%; 2x(1m 100%, 1m 50%)")
+    let DslParse::Parsed { nodes, .. } = parse("\"Warm-up\" 90s 50%; 2x(1m 100%, 1m 50%)")
         .await
         .unwrap()
     else {
@@ -186,7 +186,7 @@ async fn the_editor_parses_prints_and_compiles_drafts() {
     assert!(first.iter().all(|id| id.starts_with("dsl-")), "{first:?}");
     let text = core.print_dsl(nodes.clone()).await.unwrap();
     assert_eq!(text, "\"Warm-up\" 1m30s 50%\n2x(1m 100%, 1m 50%)");
-    let DslParse::Parsed { nodes: again } = parse(&text).await.unwrap() else {
+    let DslParse::Parsed { nodes: again, .. } = parse(&text).await.unwrap() else {
         panic!("canonical text parses");
     };
     let second = ids(&again);
@@ -212,13 +212,14 @@ async fn the_editor_parses_prints_and_compiles_drafts() {
         name: "Draft".into(),
         ftp: 250.0,
         nodes,
+        vars: Vec::new(),
     };
     let view = core.compile_workout(workout(nodes)).await.unwrap();
     assert_eq!(view.blocks.len(), 5);
     assert!((view.total_s - 330.0).abs() < 1e-9, "{}", view.total_s);
     // Compile refusals the editor can reach from a text that parses.
     for text in ["100000x(1s 50%, 1s 50%)", "200h 50%"] {
-        let DslParse::Parsed { nodes } = parse(text).await.unwrap() else {
+        let DslParse::Parsed { nodes, .. } = parse(text).await.unwrap() else {
             panic!("{text} parses");
         };
         let err = core.compile_workout(workout(nodes)).await.unwrap_err();

@@ -18,6 +18,7 @@ import {
   commands,
   type ApiError,
   type CompiledView,
+  type Num,
   type PowerTarget,
   type StepEnd,
   type WorkoutNode,
@@ -55,18 +56,22 @@ const icon = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
 
 /** The clock keystrokes are timed by for undo groups (model.ts `GROUP_MS`); tests set it to step past or within one. */
 export const typingClock = { now: () => performance.now() };
-const num = (n: number | null) => (n === null ? "—" : String(n));
+// A field bound to a variable reads as written (`$thr`, ADR-0008 §2.12); its value beside the name is #744.
+const num = (n: Num | null) =>
+  n === null ? "—" : typeof n === "object" ? `$${n.var}` : String(n);
+const duration = (n: Num) =>
+  typeof n === "object" && n !== null ? `$${n.var}` : formatDuration(n);
 
 function endText(e: StepEnd): string {
   switch (e.kind) {
     case "time":
-      return formatDuration(e.s);
+      return duration(e.s);
     case "kj":
       return `${num(e.kj)} kJ`;
     case "lap":
       return "lap";
     case "hr_recovery":
-      return `HR < ${num(e.targetBpm)} bpm, ${formatDuration(e.minS)}–${formatDuration(e.maxS)}`;
+      return `HR < ${num(e.targetBpm)} bpm, ${duration(e.minS)}–${duration(e.maxS)}`;
   }
 }
 function targetText(t: PowerTarget): string {

@@ -26,7 +26,7 @@ async fn nodes(core: &Core, dsl: &str) -> Vec<WorkoutNode> {
         .await
         .expect("parse_dsl answers")
     {
-        DslParse::Parsed { nodes } => nodes,
+        DslParse::Parsed { nodes, .. } => nodes,
         DslParse::Invalid { problem } => panic!("{dsl}: {problem:?}"),
     }
 }

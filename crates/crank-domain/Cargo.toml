@@ -10,6 +10,10 @@ workspace = true
 
 [dependencies]
 libm = "0.2.16"
+# Exact arithmetic for workout variables (ADR-0008 §2.8): checked `Ratio<i128>`. rust-num, MIT OR Apache-2.0;
+# no bigint (`std` only), so it adds num-integer beside the num-traits already in the lock.
+num-rational = { version = "0.4.2", default-features = false, features = ["std"] }
+num-traits = { version = "0.2.19", default-features = false, features = ["std"] }
 # GPX import (ADR-0005 §2.2.1): a streaming reader that expands no entity; already in the lock via plist.
 quick-xml = { version = "0.42", default-features = false }
 serde.workspace = true

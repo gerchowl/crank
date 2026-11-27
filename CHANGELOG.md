@@ -26,6 +26,16 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
   reaches a loaded ride. The 250 W `FTP_W` constant is gone: the library, the editor's previews and a new workout use
   the model's current FTP, and the compiled summary says which ("At FTP 250 W", `CompiledView.ftpW`)
   ([#715](https://github.com/gerchowl/crank/issues/715))
+- Workout DSL variables (ADR-0008 §2.6–§2.11, §2.14, §2.15): `$name = expr` declarations before the first block, with
+  `+ - * /`, parentheses and unary minus evaluated exactly (`Ratio<i128>`, `num-rational`) and rounded once at each
+  use; a block uses a variable by name in a duration, `hr<` bound, `%`/`w` target, range or ramp end (`$lo-80%`,
+  `ramp $a-$b`), repeat count (`$sets x(…)`) or progression (`[+$p]`). The tree keeps names (`Num` = a number or
+  `{ "var": name }`, `Workout.vars`), `parse_dsl` returns a `DslDoc { vars, nodes }`, `print_dsl` takes the
+  declarations, and `compile_workout` resolves them first (`resolve_vars`, refusing a directly built tree as
+  `CompileError::Resolve`). Every parse error carries its kind and UTF-16 span; 100 declarations, expression depth 32
+  and 32-character names are the bounds. Texts without variables parse and print exactly as before. The editor
+  shows a bound field by its `$name`; its handling of declarations is #744
+  ([#742](https://github.com/gerchowl/crank/issues/742))
 - `crank-domain` holds the athlete model (ADR-0009 §2.1.1, §2.1.2, §2.1.4): the eight parameters, append-only
   estimates with their source, the plausibility bounds (refused, never clamped; LTHR below a measured HR max), the
   named priors (FTP 250 W ± 25 %, CP, W′ 20 kJ ± 30 %, Tanaka HR max ± 10 bpm) and the self-report sd by origin, and the

@@ -131,12 +131,13 @@ impl Library {
                     n += 1;
                     format!("{id}-n{n}")
                 };
-                let nodes = parse_dsl(dsl, ftp, &mut ids).map_err(|e| internal(id, e.message))?;
+                let doc = parse_dsl(dsl, ftp, &mut ids).map_err(|e| internal(id, e.message))?;
                 let workout = Workout {
                     id: (*id).into(),
                     name: (*name).into(),
                     ftp,
-                    nodes,
+                    nodes: doc.nodes,
+                    vars: doc.vars,
                 };
                 let checked =
                     Entry::at(workout.clone(), ftp, true).map_err(|e| internal(id, e.message))?;
@@ -195,7 +196,7 @@ impl Library {
     ) -> Result<WorkoutDetail, ApiError> {
         let e = self.get(store, id, ftp)?;
         Ok(WorkoutDetail {
-            dsl: print_dsl(&e.workout.nodes),
+            dsl: print_dsl(&e.workout.vars, &e.workout.nodes),
             compiled: CompiledView::new(&e.compiled, ftp)?,
             workout: e.workout,
             builtin: e.builtin,
@@ -247,11 +248,14 @@ impl Library {
             name: name.into(),
             ftp: draft.ftp,
             nodes: draft.nodes,
+            // A draft carries no declarations yet (#744): a tree that uses a variable is
+            // refused by the compile below as `Resolve(UnknownVariable)`.
+            vars: Vec::new(),
         };
         // At its own FTP (stored, so it must be one: positive and finite), then at the model's.
         refuse_errors(&compile_workout(&workout, &CompileOptions::default())?)?;
         refuse_errors(&Entry::at(workout.clone(), ftp, false)?.compiled)?;
-        let dsl = print_dsl(&workout.nodes);
+        let dsl = print_dsl(&workout.vars, &workout.nodes);
         let tree = WorkoutTreeJson::new(&workout)?;
         let saved = workout.id;
         if id.is_some() {

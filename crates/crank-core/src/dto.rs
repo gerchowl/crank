@@ -4,7 +4,7 @@ use crate::error::{ApiError, ErrorCode};
 use crank_domain::athlete::{AthleteParam, AthleteSnapshot, Entry, Estimate, Resolved, Source};
 use crank_domain::workout::{
     CompiledWorkout, DslError, FlatBlock, Phase, Severity, ValidationIssue, ValidationKind,
-    Workout, WorkoutNode,
+    VarDecl, Workout, WorkoutNode,
 };
 use crank_engine::{LinkStatus, StreamStatus};
 use crank_store::Proposal;
@@ -598,6 +598,11 @@ pub enum DslParse {
     Parsed {
         /// The workout tree.
         nodes: Vec<WorkoutNode>,
+        /// The text's variable declarations, in order (ADR-0008 §2.6); empty for a text
+        /// without variables.
+        #[serde(default)]
+        #[specta(optional)]
+        vars: Vec<VarDecl>,
     },
     /// The text does not parse.
     Invalid {

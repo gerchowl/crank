@@ -1,9 +1,9 @@
 //! Frozen TS compiler port, ADR-0001 §3. Resource/finite-arithmetic divergences:
 //! <https://github.com/gerchowl/crank/issues/160>.
 use super::{
-    Athlete, CompileError, CompileOptions, CompiledWorkout, FlatBlock, MAX_NESTING_DEPTH, Offset,
-    Phase, PowerTarget, Severity, StepEnd, StepNode, ValidationIssue, ValidationKind, Workout,
-    WorkoutNode,
+    Athlete, CompileError, CompileOptions, CompiledWorkout, FlatBlock, MAX_NESTING_DEPTH, Num,
+    Offset, Phase, PowerTarget, ResolveError, Severity, StepEnd, StepNode, ValidationIssue,
+    ValidationKind, Workout, WorkoutNode, resolve_vars,
 };
 use crate::js_round;
 
@@ -27,6 +27,15 @@ fn finite(x: f64) -> Result<f64, CompileError> {
 }
 fn input_finite(x: f64) -> Result<f64, CompileError> {
     finite(x).map_err(|_| CompileError::NonFinite)
+}
+/// A literal field's value; a reference left in the tree is refused (`resolve_vars` first).
+fn lit(n: &Num) -> Result<f64, CompileError> {
+    match n {
+        Num::Lit(v) => Ok(*v),
+        Num::Var { var } => Err(CompileError::Resolve(ResolveError::Unresolved {
+            name: var.clone(),
+        })),
+    }
 }
 // JavaScript Math.max propagates NaN; f64::max ignores it.
 fn js_max(a: f64, b: f64) -> f64 {
@@ -72,11 +81,11 @@ fn athlete_finite(a: &Athlete) -> Result<(), CompileError> {
     Ok(())
 }
 fn target_finite(t: &PowerTarget) -> Result<(), CompileError> {
-    let values = match *t {
-        PowerTarget::PctFtp { value } | PowerTarget::Watts { value } => [value, 0.],
-        PowerTarget::Range { lo, hi } => [lo, hi],
-        PowerTarget::Ramp { from, to } => [from, to],
-        PowerTarget::Hr { bpm } => [bpm, 0.],
+    let values = match t {
+        PowerTarget::PctFtp { value } | PowerTarget::Watts { value } => [lit(value)?, 0.],
+        PowerTarget::Range { lo, hi } => [lit(lo)?, lit(hi)?],
+        PowerTarget::Ramp { from, to } => [lit(from)?, lit(to)?],
+        PowerTarget::Hr { bpm } => [*bpm, 0.],
         PowerTarget::Free => [0., 0.],
     };
     for x in values {
@@ -89,28 +98,30 @@ fn target_finite(t: &PowerTarget) -> Result<(), CompileError> {
 /// are retained for JavaScript-compatible intensity comparisons (e.g. zero FTP).
 ///
 /// # Errors
-/// Nonfinite input parameters return [`CompileError::NonFinite`].
+/// Nonfinite input parameters return [`CompileError::NonFinite`]; a variable reference
+/// [`CompileError::Resolve`] ([`resolve_vars`] first).
 pub fn target_pct(t: &PowerTarget, ftp: f64, athlete: &Athlete) -> Result<f64, CompileError> {
     target_finite(t)?;
     input_finite(ftp)?;
     athlete_finite(athlete)?;
-    Ok(match *t {
-        PowerTarget::PctFtp { value } => value,
-        PowerTarget::Watts { value } => value / ftp * 100.,
+    Ok(match t {
+        PowerTarget::PctFtp { value } => lit(value)?,
+        PowerTarget::Watts { value } => lit(value)? / ftp * 100.,
         PowerTarget::Range { lo, hi } => {
             // Retain the TS addition order, including overflow used only in comparisons.
-            let sum = lo + hi;
+            let sum = lit(lo)? + lit(hi)?;
             sum / 2.
         }
-        PowerTarget::Ramp { from, to } => from.max(to),
-        PowerTarget::Hr { bpm } => power_for_hr(bpm, ftp, athlete) / ftp * 100.,
+        PowerTarget::Ramp { from, to } => lit(from)?.max(lit(to)?),
+        PowerTarget::Hr { bpm } => power_for_hr(*bpm, ftp, athlete) / ftp * 100.,
         PowerTarget::Free => 50.,
     })
 }
 /// Start/end target watts with progression; HR and free targets ignore offsets.
 ///
 /// # Errors
-/// Nonfinite inputs/results return a typed error (see issue #160).
+/// Nonfinite inputs/results return a typed error (see issue #160); a variable reference
+/// [`CompileError::Resolve`] ([`resolve_vars`] first).
 pub fn target_watts(
     t: &PowerTarget,
     ftp: f64,
@@ -125,19 +136,19 @@ pub fn target_watts(
     let w = |p: f64| -> Result<f64, CompileError> {
         Ok(finite(((p + off.pct) / 100.) * ftp + off.watts)?.max(0.))
     };
-    let pair = match *t {
-        PowerTarget::PctFtp { value } => [w(value)?, w(value)?],
+    let pair = match t {
+        PowerTarget::PctFtp { value } => [w(lit(value)?)?, w(lit(value)?)?],
         PowerTarget::Watts { value } => {
-            let v = finite(value + off.watts + (off.pct / 100.) * ftp)?.max(0.);
+            let v = finite(lit(value)? + off.watts + (off.pct / 100.) * ftp)?.max(0.);
             [v, v]
         }
         PowerTarget::Range { lo, hi } => {
-            let v = w(finite(lo + hi)? / 2.)?;
+            let v = w(finite(lit(lo)? + lit(hi)?)? / 2.)?;
             [v, v]
         }
-        PowerTarget::Ramp { from, to } => [w(from)?, w(to)?],
+        PowerTarget::Ramp { from, to } => [w(lit(from)?)?, w(lit(to)?)?],
         PowerTarget::Hr { bpm } => {
-            let v = finite(power_for_hr(bpm, ftp, athlete))?;
+            let v = finite(power_for_hr(*bpm, ftp, athlete))?;
             [v, v]
         }
         PowerTarget::Free => [0.5 * ftp, 0.5 * ftp],
@@ -210,8 +221,8 @@ impl<'a> Flatten<'a> {
                 if iteration.len() >= MAX_NESTING_DEPTH {
                     return Err(CompileError::NestingTooDeep);
                 }
-                input_finite(r.count)?;
-                if r.count.fract() != 0. || r.count < 1. {
+                let count = input_finite(lit(&r.count)?)?;
+                if count.fract() != 0. || count < 1. {
                     issue(
                         &mut self.issues,
                         ValidationKind::InvalidRepeatCount,
@@ -219,7 +230,7 @@ impl<'a> Flatten<'a> {
                         Some(&r.id),
                         format!(
                             "Repeat count must be a whole number ≥ 1 (got {})",
-                            display_number(r.count)
+                            display_number(count)
                         ),
                     );
                     return Ok(());
@@ -234,21 +245,21 @@ impl<'a> Flatten<'a> {
                     );
                     return Ok(());
                 }
-                if r.count > f64::from(MAX_VISITS) {
+                if count > f64::from(MAX_VISITS) {
                     return Err(CompileError::ExpansionLimit);
                 }
                 let progression = r.progression.clone().unwrap_or_default();
-                let watts = input_finite(progression.watts_per_rep.unwrap_or(0.))?;
-                let pct = input_finite(progression.pct_per_rep.unwrap_or(0.))?;
+                let watts = input_finite(progression.watts_per_rep.as_ref().map_or(Ok(0.), lit)?)?;
+                let pct = input_finite(progression.pct_per_rep.as_ref().map_or(Ok(0.), lit)?)?;
                 // Bounded conversion via iteration avoids unchecked float-to-integer casts.
                 let mut rep = 0u32;
-                while f64::from(rep) < r.count {
+                while f64::from(rep) < count {
                     let next = Offset {
                         watts: finite(off.watts + f64::from(rep) * watts)?,
                         pct: finite(off.pct + f64::from(rep) * pct)?,
                     };
                     for (ci, c) in r.children.iter().enumerate() {
-                        if f64::from(rep) >= r.count - 1.
+                        if f64::from(rep) >= count - 1.
                             && r.skip_last_rest == Some(true)
                             && r.children.len() > 1
                             && ci == r.children.len() - 1
@@ -336,9 +347,9 @@ impl Timeline<'_> {
         pt: f64,
     ) -> Result<(f64, Option<[f64; 2]>), CompileError> {
         let mut range = None;
-        let dur = match s.end {
+        let dur = match &s.end {
             StepEnd::Time { s: seconds } => {
-                input_finite(seconds)?;
+                let seconds = input_finite(lit(seconds)?)?;
                 if seconds <= 0. {
                     self.diagnostic(
                         ValidationKind::InvalidDuration,
@@ -350,7 +361,7 @@ impl Timeline<'_> {
                 seconds
             }
             StepEnd::Kj { kj } => {
-                input_finite(kj)?;
+                let kj = input_finite(*kj)?;
                 if kj <= 0. {
                     self.diagnostic(
                         ValidationKind::InvalidKilojoules,
@@ -371,6 +382,7 @@ impl Timeline<'_> {
                 max_s,
                 ..
             } => {
+                let (target_bpm, min_s, max_s) = (*target_bpm, lit(min_s)?, lit(max_s)?);
                 for x in [target_bpm, min_s, max_s] {
                     input_finite(x)?;
                 }
@@ -602,13 +614,29 @@ fn reserve_diagnostic(
 /// - Diagnostic text normalises signed zero to `0` as JS does; other extreme finite values use
 ///   Rust shortest-decimal formatting, which can differ from JS exponent notation.
 ///
+/// # Variables
+/// [`resolve_vars`] runs first when the workout declares or uses a variable; its refusal is
+/// [`CompileError::Resolve`] (repeats nested too deep stay [`CompileError::NestingTooDeep`]).
+///
 /// # Errors
 /// Returns [`CompileError`] for nonfinite inputs, nonfinite arithmetic needed in output,
-/// or exceeded safety bounds. Comparison-only NaN/Infinity retains TS semantics.
+/// unresolved variables, or exceeded safety bounds. Comparison-only NaN/Infinity retains
+/// TS semantics.
 pub fn compile_workout(
     w: &Workout,
     opts: &CompileOptions,
 ) -> Result<CompiledWorkout, CompileError> {
+    // Variables first (ADR-0008 §2.13); a tree without any is compiled exactly as before.
+    let resolved;
+    let w = if w.vars.is_empty() && !super::vars::has_refs(&w.nodes) {
+        w
+    } else {
+        resolved = resolve_vars(w).map_err(|e| match e {
+            ResolveError::NestingTooDeep { .. } => CompileError::NestingTooDeep,
+            e => CompileError::Resolve(e),
+        })?;
+        &resolved
+    };
     input_finite(w.ftp)?;
     let a = opts.athlete.clone().unwrap_or_default();
     athlete_finite(&a)?;

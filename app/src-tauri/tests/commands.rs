@@ -406,7 +406,7 @@ async fn the_editor_commands_agree_with_the_library() {
             .unwrap();
         let wire = serde_json::to_value(&parsed).expect("serialisable");
         assert_eq!(wire["outcome"], "parsed", "{}", w.id);
-        let DslParse::Parsed { nodes } = parsed else {
+        let DslParse::Parsed { nodes, .. } = parsed else {
             unreachable!("tagged parsed")
         };
         assert_eq!(
