@@ -26,7 +26,7 @@ use crate::erg::compliance::{
 use crate::ticks::TICKS_PER_SECOND;
 use crate::tuning::{ErgTuning, ticks};
 use crank_devices::ControlMode;
-use crank_domain::workout::Phase;
+use crank_domain::workout::{FlatBlock, Phase};
 
 /// The §7.4 release criteria of one ride, from its [`ErgTuning`], in ticks.
 #[derive(Clone, Copy, Debug)]
@@ -170,6 +170,11 @@ impl ErgPolicy {
             };
             if self.high >= r.reengage_ticks {
                 self.released = false;
+                // Re-engaged outside ERG (a free block, a pause): the soft start that follows
+                // is owed for leaving ERG, a settle of its own (class 4), not the release's.
+                if !in_erg {
+                    self.after_release = false;
+                }
                 self.owed = true;
                 self.ramp = None;
                 self.low = 0;
@@ -199,6 +204,12 @@ impl ErgPolicy {
     /// Account tick `ctx.tick` for compliance. `target_w` is the controlled target the
     /// rider was given, `None` outside ERG.
     fn account(&mut self, ctx: &PolicyContext<'_>, target_w: Option<f64>) {
+        self.account_tick(ctx, target_w, true);
+    }
+    /// [`Self::account`]; without `engaged` no control could be sent on the tick, so an ERG
+    /// tick nothing else excludes is settling: the target has not been applied (ADR-0009
+    /// §2.3.2, class 4).
+    fn account_tick(&mut self, ctx: &PolicyContext<'_>, target_w: Option<f64>, engaged: bool) {
         let settling = self.owed || (self.settle.0..self.settle.1).contains(&ctx.tick);
         if self.after_release && !self.released && !settling {
             self.after_release = false;
@@ -213,7 +224,7 @@ impl ErgPolicy {
             TickCause::Suspect
         } else if self.after_release {
             TickCause::Released
-        } else if settling {
+        } else if settling || !engaged {
             TickCause::Settling
         } else {
             TickCause::Erg
@@ -230,6 +241,21 @@ impl ErgPolicy {
             },
         );
     }
+}
+
+/// The block line at the context's tick, rounded to 1 W and clamped to the cap and the
+/// driver's range (§7.3, DESIGN §15.2), and that bound.
+fn line_target(ctx: &PolicyContext<'_>, block: &FlatBlock) -> (f64, u16) {
+    let frac = if block.dur_s > 0.0 {
+        (seconds(ctx.block_elapsed_ticks) / block.dur_s).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let line = block.power_from + (block.power_to - block.power_from) * frac;
+    let max = ctx
+        .cap_w
+        .map_or(ctx.max_target_w, |c| c.min(ctx.max_target_w));
+    (f64::from(watts(line, max)), max)
 }
 
 impl TargetPolicy for ErgPolicy {
@@ -294,16 +320,7 @@ impl TargetPolicy for ErgPolicy {
             index: ctx.block_index,
             end_w: block.power_to,
         };
-        let frac = if block.dur_s > 0.0 {
-            (seconds(ctx.block_elapsed_ticks) / block.dur_s).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let line = block.power_from + (block.power_to - block.power_from) * frac;
-        let max = ctx
-            .cap_w
-            .map_or(ctx.max_target_w, |c| c.min(ctx.max_target_w));
-        let target = f64::from(watts(line, max));
+        let (target, max) = line_target(ctx, block);
         let shown = previous_end.map_or(target, |e| e.min(f64::from(max)));
 
         self.update_release(ctx, true);
@@ -354,8 +371,14 @@ impl TargetPolicy for ErgPolicy {
         })
     }
     fn skipped(&mut self, ctx: &PolicyContext<'_>) {
-        // No control this tick (link not ready): the second still lands in a bucket.
-        self.account(ctx, None);
+        // No control this tick (the link is not ready, or the previous ride's end mode is still
+        // owed): the second still lands in a bucket. In an ERG block it keeps the block's
+        // target, so it is never read as a free second (ADR-0009 §2.3.2 self-paced rule).
+        let target = ctx
+            .block
+            .filter(|b| b.phase != Phase::Free && !ctx.user_paused)
+            .map(|b| line_target(ctx, b).0);
+        self.account_tick(ctx, target, false);
     }
     fn status(&self) -> PolicyStatus {
         PolicyStatus {

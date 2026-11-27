@@ -29,8 +29,7 @@ pub const RECORD_VERSION: u32 = 2;
 /// class 9 applies only to a second none of them excludes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ComplianceClass {
-    /// 0: no ERG target this second (a free, SIM or resistance block, a ride without blocks, a
-    /// tick on which no control could be sent).
+    /// 0: no ERG target this second (a free, SIM or resistance block, a ride without blocks).
     NoTarget,
     /// 1: counted, within ±5 % of the controlled target.
     Within,
@@ -38,9 +37,11 @@ pub enum ComplianceClass {
     Below,
     /// 3: counted, above +5 %.
     Above,
-    /// 4: excluded, settling after a target change or an ERG (re-)engagement (ADR-0002 §7.8).
+    /// 4: excluded, settling after a target change or an ERG (re-)engagement (ADR-0002 §7.8),
+    /// or an ERG tick on which no control could be sent (the target is not applied yet).
     Settling,
-    /// 5: excluded, ERG released for low cadence (ADR-0002 §7.4), until its re-engage settles.
+    /// 5: excluded, ERG released for low cadence (ADR-0002 §7.4), until its re-engage settles; a
+    /// re-engage completed outside ERG ends it there.
     Released,
     /// 6: excluded, paused by the rider, by the engine on a trainer loss, or for stopped
     /// pedalling.

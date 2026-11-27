@@ -434,3 +434,113 @@ fn the_decoder_reads_both_versions() {
     bad.get_mut("power").expect("present").pop();
     assert!(decode_record(2, &bad).is_err());
 }
+
+/// Review of #763: a ride started while the previous ride's end mode is still owed sends no
+/// control for up to 2 s (#279). Those ERG seconds keep the block's target and are settling, so
+/// they are never read as free (self-paced) seconds.
+#[test]
+fn a_start_gated_by_the_previous_end_mode_keeps_its_target_and_settles() {
+    let mut r = rig();
+    r.load(vec![work(600.0, 200.0)]);
+    r.start();
+    ride(&mut r, 0, 39, 200, 90);
+    stop(&mut r); // the end mode is sent and not confirmed: the next ride is gated
+    let first = r.rows().len();
+    r.modes();
+    r.load(vec![work(600.0, 200.0)]);
+    r.start();
+    ride(&mut r, 40, 119, 200, 90);
+    assert!(
+        r.modes().contains(&crate::tests::erg(200)),
+        "ERG once the gate has passed"
+    );
+    stop(&mut r);
+    let rows = r.rows();
+    let second: Vec<_> = rows[first..].iter().map(|(_, row)| control(row)).collect();
+    assert_eq!(second.len(), 20);
+    assert!(
+        second.iter().all(|c| c.target_w == Some(200.0)),
+        "{second:?}"
+    );
+    assert!(
+        second[..10].iter().all(|c| c.compliance == C::Settling),
+        "{second:?}"
+    );
+    assert!(second.iter().all(|c| c.compliance != C::NoTarget));
+}
+
+#[test]
+fn a_target_jump_at_a_block_boundary_settles_for_five_seconds() {
+    let mut r = rig();
+    r.load(vec![work(20.0, 150.0), work(600.0, 250.0)]);
+    r.start();
+    ride(&mut r, 0, 79, 150, 90);
+    ride(&mut r, 80, 159, 250, 90);
+    stop(&mut r);
+    let rows = r.rows();
+    let c = classes(&r);
+    assert!(all(&c[10..20], C::Within), "{c:?}");
+    assert!(all(&c[20..25], C::Settling), "{c:?}");
+    assert!(all(&c[25..], C::Within), "{c:?}");
+    assert_eq!(control(&rows[19].1).target_w, Some(150.0));
+    assert_eq!(control(&rows[20].1).target_w, Some(250.0));
+}
+
+/// A release re-engaged during a pause: the soft start after the resume is owed for the
+/// pause, a settle of its own (class 4), not the release's (class 5).
+#[test]
+fn a_re_engage_during_a_pause_leaves_the_resume_settling_not_released() {
+    let mut r = rig();
+    r.load(vec![work(600.0, 200.0)]);
+    r.start();
+    ride(&mut r, 0, 79, 200, 90);
+    ride(&mut r, 80, 139, 100, 20);
+    assert!(r.status().erg_released);
+    r.engine.command(EngineCmd::Pause).expect("pause");
+    ride(&mut r, 140, 179, 100, 90);
+    assert!(!r.status().erg_released, "re-engaged while paused");
+    r.engine.command(EngineCmd::Resume).expect("resume");
+    ride(&mut r, 180, 279, 200, 90);
+    stop(&mut r);
+    let c = classes(&r);
+    assert!(all(&c[35..45], C::Paused), "{c:?}");
+    assert!(all(&c[45..55], C::Settling), "{c:?}");
+    assert!(all(&c[55..], C::Within), "{c:?}");
+}
+
+/// A trainer dropout that recovers changes nothing of how the ride ends.
+#[test]
+fn a_ride_with_a_recovered_dropout_ends_as_it_would_without_one() {
+    for stopped in [true, false] {
+        let mut r = rig();
+        r.load(vec![work(60.0, 200.0)]);
+        r.start();
+        ride(&mut r, 0, 79, 200, 90);
+        // 20 silent ticks: the trainer is lost and the ride paused
+        r.through(99);
+        assert_eq!(
+            r.state(),
+            crate::RideState::Paused(crate::PauseReason::TrainerLost)
+        );
+        ride(&mut r, 100, 139, 200, 90);
+        assert_eq!(r.state(), crate::RideState::Riding, "recovered");
+        if stopped {
+            stop(&mut r);
+        } else {
+            ride(&mut r, 140, 299, 200, 90);
+            assert_eq!(r.state(), crate::RideState::Finished);
+        }
+        let c = classes(&r);
+        assert!(c.contains(&C::Paused), "{c:?}");
+        let (how, end) = if stopped {
+            (RideFinish::Stopped, BlockEnd::Stopped)
+        } else {
+            (RideFinish::Completed, BlockEnd::Completed)
+        };
+        assert_eq!(r.finished_how(), Some(how));
+        assert_eq!(
+            ends(&r).iter().map(|(_, e)| *e).collect::<Vec<_>>(),
+            vec![end]
+        );
+    }
+}

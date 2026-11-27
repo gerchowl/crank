@@ -546,11 +546,11 @@ and the ride an end cause (§2.5):
 
   | Class | Meaning |
   |---|---|
-  | 0 | no ERG target this second (NaN `target_w`) |
+  | 0 | no ERG target this second (NaN `target_w`): a free, SIM or resistance block, a ride without blocks |
   | 1 | counted, within ±5 % of the target |
   | 2 | counted, below −5 % |
   | 3 | counted, above +5 % |
-  | 4 | excluded: settling after a target change (ADR-0002 §7.8) |
+  | 4 | excluded: settling after a target change (ADR-0002 §7.8); amended, #717: also an ERG tick on which the engine could send no control (the link not ready, or the previous ride's end mode still owed, #279), which keeps the block's `target_w`, since the target has not been applied, so an ERG second is never read as a free one |
   | 5 | excluded: ERG released for low cadence (§7.4), until its re-engage settles |
   | 6 | excluded: paused by the rider (or by the engine on a trainer loss) |
   | 7 | excluded: trainer verdict `suspect` (ADR-0002 A5) |
@@ -562,7 +562,8 @@ and the ride an end cause (§2.5):
   and a paused second is 6 also in a free block. A second's class is the highest-precedence cause among its four
   ticks (6, 8, 7, 5, 4, then 0); only a second with none of them is judged by its 3 s power (1, 2, 3 or 9) against the
   target of its last tick. Class 5 runs from the release until the soft start after its re-engage is over and its
-  settle has run out (§7.4, §7.5, §7.8 c).
+  settle has run out (§7.4, §7.5, §7.8 c); a re-engage completed outside ERG (in a free block or a pause) ends it
+  there, and the soft start owed for leaving ERG is class 4.
 - `adj_rider_pct` and `adj_coach_pct`: the rider's (±) and the coach's cumulative adjustment of the target at that
   second, in percent of the planned target (0 when none; the given target is the planned one with both applied, as
   ADR-0002 §7 composes them). The source of a change is known to the engine when it applies it; recording it is
@@ -573,8 +574,11 @@ and the ride an end cause (§2.5):
   `lap.rs` `LapEnd` plus the live edit: 1 completed (its time ran out), 2 skipped by the rider, 3 stopped (the ride
   ended during it), 4 ended by a live end-set edit (DESIGN §17). (Amended, #717: 4 is not written until the engine
   has live edits, #240; a ride without blocks, a free ride, has no block ends; the paused seconds after a block's last
-  riding second are no block's. The engine holds back the last riding row until the next riding second or the end of
-  the ride, so a crash can lose that one second's values with the store's unflushed seconds.)
+  riding second are no block's. The engine appends every second at once, with `block_end` NaN, and when a block ends
+  (the next block's first tick, a skip, the ride's end) sets it on that block's last riding second
+  (`RideRecorder::set_block_end`, `Store::amend_second`, which rewrites the value in the buffered minute or in the
+  stored chunk and commits at once). A crash loses what it always did, the seconds after the last 5 s flush; a block
+  whose end was not yet set when the crash came has no `block_end`, as a ride closed by recovery has no ending block.)
 
 **Ride end cause.** `ride.state` cannot tell a rider's End from other ends: `finished` covers both the rider's End and
 the workout running out, and `aborted` covers crash recovery and the core's forced end (`dto.rs` `RideOutcome`,
