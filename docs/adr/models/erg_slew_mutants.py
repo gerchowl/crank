@@ -81,9 +81,6 @@ MUTANTS = [
     ("chase only strictly behind the line (round 5's rule)", 'step 4',
      '            vel_target = t.r_up if (gap > -EPS and fs > 0) else (-t.r_dn if (gap < EPS and fs < 0) else 0.0)',
      '            vel_target = t.r_up if (gap > 0 and fs > 0) else (-t.r_dn if (gap < 0 and fs < 0) else 0.0)'),
-    ('a line at the rate landed on, not chased', 'step 4',
-     '        track = lambda q: -t.r_dn < q.s < t.r_up\n',
-     '        track = lambda q: -t.r_dn <= q.s <= t.r_up\n'),
     ('the lead and the line keyed apart (rounds 4-17: a re-plan at the handover with an unchanged frame)', 'step 7 (fix round 1)',
      '                ("frame", c, fs)),\n',
      '                ("lead", c, fs) if lead else ("frame", c, fs)),\n'),
@@ -109,8 +106,11 @@ MUTANTS = [
      '            lines[-1] = Seg(q.k0, q.r0, (end - q.r0) / (n * DT), n, q.joined)',
      '            lines[-1] = Seg(q.k0, q.r0, q.s, n, q.joined)'),
     ('same_key tolerance 1e-3', 'step 7',
-     '        return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))',
-     '        return abs(a - b) <= 1e-3 * max(1.0, abs(a), abs(b))'),
+     '        return a == b or abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))',
+     '        return a == b or abs(a - b) <= 1e-3 * max(1.0, abs(a), abs(b))'),
+    ('same_key without equality first (round 19: +inf caps re-planned every tick)', 'step 7',
+     '        return a == b or abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))',
+     '        return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))'),
     ('merge across a jump (no VALUE_TOL)', 'the line on the tick grid',
      '                and abs(out[-1].at(p.k0) - p.r0) <= VALUE_TOL):',
      '                and True):'),
@@ -184,8 +184,8 @@ MUTANTS = [
      '        return State(*profile_at(st.y, st.v, st.a, slope_change(st.v, st.a, 0.0, self.t), DT))',
      '        return State(st.y + st.v * DT - math.copysign(min(abs(st.v), self.t.a_max * DT), st.v) * DT / 2, st.v - math.copysign(min(abs(st.v), self.t.a_max * DT), st.v), -math.copysign(self.t.a_max, st.v) if st.v else 0.0)'),
     ('X5: the trajectory in force kept after the hold', 'X5',
-     '            self.key, self.braking, self.chasing, self.prev_piece = None, False, False, None\n            return self._after(st, self._stop(st)',
-     '            self.braking, self.chasing, self.prev_piece = False, False, None\n            return self._after(st, self._stop(st)'),
+     '            self.key, self.braking, self.chasing, self.prev_piece = None, False, False, None\n            # The cuts against',
+     '            self.braking, self.chasing, self.prev_piece = False, False, None\n            # The cuts against'),
     ('X5: the hold not reported (the status follows it, P8)', 'X5 (the status)',
      '            self.held = True\n',
      ''),
@@ -285,9 +285,9 @@ MUTANTS = [
     ('landing: no cruise at the rate (a long move ends short)', 'the landing',
      '        return prof(rate, (d - x_r) / (sgn * rate))',
      '        return prof(rate)'),
-    ("landing: the bisection's direction reversed (the peak converges to a bound)", 'the landing',
-     '        lo, hi = (mid, hi) if sgn * (end_of(prof(mid), v, a)[0] - d) < 0 else (lo, mid)',
-     '        lo, hi = (lo, mid) if sgn * (end_of(prof(mid), v, a)[0] - d) < 0 else (mid, hi)'),
+    ("landing: the monotone branch's bracket inverted (the peak converges to a bound)", 'the landing',
+     '        lo, flo, hi, fhi = (pu, fu, hi, fhi) if fu < 0 else (lo, flo, pu, fu)',
+     '        lo, flo, hi, fhi = (pu, fu, hi, fhi) if fu > 0 else (lo, flo, pu, fu)'),
     ("landing: the frame's cap ignored (the rider's rates in a lead)", 'the landing (step 3)',
      'landing(st.v - fs, st.a, -rel, vmax - fs, fs - vmin, t))',
      'landing(st.v - fs, st.a, -rel, t.r_up - fs, fs + t.r_dn, t))'),
@@ -307,7 +307,12 @@ MUTANTS = [
 
 
 # Mutants shown equivalent, not run (each with its evidence; ADR-0002 §7.10.7 item 9).
-EQUIVALENT: list = []
+EQUIVALENT: list = [
+    ('a line at the rate landed on, not chased', 'step 4',
+     'equivalent (round 19): at a slope exactly at the rate the landing frame\'s rate in that direction is 0, so the'
+     ' landing is the stop in the frame, the slope change to the rate: the chase\'s own profile. Beyond the rate'
+     ' the predicate is unchanged. Survived the full run (exit 0); not run since.'),
+]
 
 def run(path: pathlib.Path, n: int) -> tuple[int, str]:
     p = subprocess.run([sys.executable, str(path), "--random", str(n)], capture_output=True, text=True)

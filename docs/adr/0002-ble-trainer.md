@@ -2399,15 +2399,26 @@ about the workout, not the rider.
    eased corner or an unreached short block is excluded, never counted as a miss.
 9. **Mutation.** Deleting or breaking any rule of §7.10.2 must fail the property tests, as it fails the model:
    `just slew-mutants` (`docs/adr/models/erg_slew_mutants.py`) breaks each rule in turn and requires a non-zero exit
-   from the model. Round 19 rewrites the list for the closed form, 93 mutants. It deletes the 28 of Ruckig's machinery (the twin and its
+   from the model. Round 19 rewrites the list for the closed form: 94 mutants. It deletes the 28 of Ruckig's machinery (the twin and its
    limits, the slow-answer rule and `answer_bound`, `landable` and the band, the fault gate, fault injection, the
    target-velocity guard, the on-limit routing, the chase and the brake through Ruckig). It keeps the 77 of crank's own
    rules (the frame, the line on the tick grid and its tolerances, the lead, the meet's rule, safe braking, the cuts and
    their bounds and domains, the input layer, the closed-form helpers, the checks), and retargets 8 to X5 and the meet.
-   It adds 8: the landing without its cruise, the root finder's direction reversed, the frame's cap ignored (the
+   It adds 9: the landing without its cruise, its monotone branch's bracket inverted, the frame's cap ignored (the
    rider's rates in a lead), the rates not relative to the line, the stop's own displacement ignored, the meet
-   ignoring the line's motion, the meet as the stop alone, and X5 without X2 against the last line known.
-   The run on the final model is reported in PR #712 (pending at this commit).
+   ignoring the line's motion, the meet as the stop alone, X5 without X2 against the last line known, and `same_key`
+   without equality first.
+   - The run (`--random 400 --jobs 2`, 93 min): the model passes, and all 93 runnable mutants are killed, 86 on the
+     first run. Three survived it, each a rule the closed form never needs on its own (its landings end on `M` and
+     0 W to well within `ROUND_SNAP`, where Ruckig's ended 1 ulp outside): the snap at `M` and at 0 W, and safe
+     braking's tolerance at `M`. `constants()` now pins each directly (a moving state 10⁻¹² W outside snapped with its
+     slope and no cut; a stop 10⁻⁷ W past `M` refused). `same_key` without equality first was killed only by a pin
+     too (`same_key(∞, ∞)`, and one step under no cap computed in at most 4 trajectories): re-planning every tick from
+     the sampled state breaks no property with the closed form. Three texts moved with later edits and were
+     re-targeted. Those 8 were re-run on the final model: all killed.
+   - One is shown equivalent and listed, not run: a line exactly at the rate landed on instead of chased. There the
+     landing frame's rate in that direction is 0, so the landing is the stop in the frame, the slope change to the
+     rate: the chase's own profile (it survived the full run).
    - The lead's timing from a moving state changes traces without breaking a property, so golden traces pin it (random
      56000 + 87), and X5 traces (planned falls with invalid-input windows). #620 runs a mutation tool
      (`cargo mutants`) over `crank_engine::slew` with the same requirement.

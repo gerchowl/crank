@@ -1873,6 +1873,27 @@ def constants(rep: Report, report: bool):
             rep.fail(f"constants: the meet {tt} from {rel:+.3f} W at {(v, a0)} onto {fs:.4f} W/s ends {p:.3g} W off"
                      f" the line, slope {ve + fs:.3g}")
             break
+    # Round 19: the rules the closed form never needs on its own (its landings end on M and 0 W to well within
+    # ROUND_SNAP, where Ruckig's ended 1 ulp outside), pinned directly. Step 8 snaps a state 1e-12 W above M or below
+    # 0 W to the bound without a cut; safe braking refuses a stop that passes M by 1e-7 W (more than ROUND_SNAP).
+    ez = Easer(DEFAULT)
+    segs = segments([steady(400, 60)], 0, 1.0, 250.0)
+    # (Moving, so the snap is told apart from X3 and X4, which would also stop it: a cut of the slope.)
+    for nst, want in ((State(250.0 + 1e-12, -3.0, 0.0), 250.0), (State(-1e-12, 2.0, 0.0), 0.0)):
+        out, exc = ez._after(State(nst.y), nst, 4, segs, 250.0, 250.0, "", True)
+        if out.y != want or out.v != nst.v or exc:
+            rep.fail(f"constants: step 8 on {nst} gives {out} {exc!r}, expected {want} W snapped with its slope, no cut")
+    # same_key: equal values first, so a cap of +inf (none) is the same input every tick; under no cap a held line is
+    # landed on with one trajectory, not re-planned each tick from the sampled state.
+    if not same_key(math.inf, math.inf):
+        rep.fail("constants: same_key(inf, inf) is False (every tick under no cap a new input)")
+    tr = run([steady(100, 5), steady(300, 30)], [Event(2, "cap", math.inf)], t=DEFAULT)
+    if tr.recalcs > 4:
+        rep.fail(f"constants: {tr.recalcs} trajectories for one step under no cap (expected at most 4)")
+    v = 5.0
+    peak = profile_extrema(0.0, v, 0.0, slope_change(v, 0.0, 0.0, DEFAULT))[1]
+    if ez._brake_ok(State(250.0 + 1e-7 - peak, v, 0.0), 1, segs, 250.0):
+        rep.fail("constants: a stop 1e-7 W past M is accepted (safe braking's tolerance at M is ROUND_SNAP)")
     # Safe braking's slack: a stop may pass the line by up to ε/2, not more (strictly inside X2's ε).
     ez = Easer(DEFAULT)
     segs = segments([steady(100, 60)], 0, 1.0, 2000.0)
