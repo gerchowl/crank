@@ -1,10 +1,11 @@
-# ADR-0010: Workout text editor: diagnostics with fixes, "did you mean", and completion from the core
+# ADR-0011: Workout text editor: diagnostics with fixes, "did you mean", and completion from the core
 
 - **Status:** Proposed (for owner review); not implemented
 - **Date:** 2026-11-27
 - **Issue:** #732
 - **Related:** DESIGN §5.7 (editor, undo groups, outline edits #653), §5.9 (desk keys), `docs/DSL.md` (grammar, errors),
-  ADR-0008 (`auto`, `$variables`, its errors §2.3 / §2.14), ADR-0001 §3–4 (domain contract, bindings), #627 (slew
+  ADR-0008 (`auto`, `$variables`, its errors §2.3 / §2.14), ADR-0010 (ranged repeats `3..10x[hr>=170]`, its errors
+  §2.2 / §2.6 / §2.11; its owner item 12 assigns their editor support here), ADR-0001 §3–4 (domain contract, bindings), #627 (slew
   warnings), #111 (editor), #110 (save)
 
 ## For the owner
@@ -20,17 +21,23 @@ the rejected alternatives.
    controlled view of the model's draft (§2.2).
 3. **The core is the only source of diagnostics, suggestions, fixes and completions.** `parse_dsl`'s answer gains fix
    edits and node spans, and a new command `dsl_complete(text, cursor)` answers completions; TypeScript holds no
-   grammar, no keyword list and no matching (§2.3, §2.6).
+   grammar, no keyword list and no matching (§2.3, §2.6). This covers ADR-0008's and ADR-0010's vocabulary and errors
+   in the same tables, not in a second tool (§2.5, §2.6).
 4. **The first parse error only**, as today: the parser stays fail-fast, with no error recovery (§2.4).
 5. **"Did you mean" uses `strsim` 0.11.1 `osa_distance`** (adjacent swaps count as one edit), compared case-insensitively
    against only the words valid in that position, with rustc's threshold (at most ⌊max(len, 3) / 3⌋ edits, so one edit
-   for words of 3 to 5 letters and two for 6 to 8), at most 3 suggestions, all at the smallest distance (§2.5).
+   for words of 3 to 5 letters and two for 6 to 8), at most 3 suggestions, all at the smallest distance (§2.5);
+   ADR-0010's `hr>=` is matched the same way (`hr=>170`, `hr>170` → `hr>=170`).
 6. **A fix is offered only when the core has checked it**: applying it makes the text parse, or moves the first error
-   past the fix. Ambiguous errors (`10 50%`: seconds, minutes, kJ or a repeat?) get no fix, only the message (§2.5).
-7. **Completion comes from the core by cursor context** (§2.6 table). It opens while typing a word and on Ctrl+Space;
+   past the fix. Ambiguous errors (`10 50%`: seconds, minutes, kJ or a repeat?; a rep range with no trigger: which
+   bpm?) get no fix, only the message. Compile errors (ADR-0008's pins, ADR-0010's `PinAcrossRangedRep`) get none
+   either: their example value is a hint in the message, not the rider's intent (§2.5).
+7. **Completion comes from the core by cursor context** (§2.6 table), `hr>=` offered only in a ranged repeat's options
+   and only once. It opens while typing a word and on Ctrl+Space;
    **Enter accepts, Escape closes, Tab never accepts** (Tab keeps moving focus out of the text box) (§2.7).
-8. **Lint beyond errors:** compile warnings are underlined on their block (and #627's slew warning, once decided, comes the
-   same way); ADR-0008's unused variable is a **hint** that never blocks saving, with a "Remove" fix; **no style lint** and
+8. **Lint beyond errors:** compile warnings and errors are underlined on their block (#627's slew warning, once decided,
+   and ADR-0010's `PinAcrossRangedRep`, `TriggerNotWatched`, `TriggerOutsideRange` come the same way);
+   ADR-0008's unused variable is a **hint** that never blocks saving, with a "Remove" fix; **no style lint** and
    no "format" fix, because canonical printing drops comments (§2.8).
 9. **A fix is one undo step of its own**; accepting a completion is typing and joins the burst (§2.2).
 10. **Screen readers hear a diagnostic once, when the burst ends** (500 ms pause, the same `GROUP_MS`), through a polite
@@ -65,6 +72,12 @@ What exists (checked on `dev` at 0438c9b1):
 - **ADR-0008 (accepted, not implemented)** adds `auto` (a ramp end only), `$name` variables declared before the first
   block, and their errors with spans (§2.14), several of which already name the fix in their message
   ("Put spaces around '=': $thr = 95%").
+- **ADR-0010 (accepted by the owner 2026-11-27, PR #737; not implemented)** adds the ranged repeat
+  `3..10x[hr>=170, !last](…)` (with variables `$lo..10x`, `3..$hi x`, `$lo..$hi x[hr>=$hrv]`: `x` glued after a
+  number, spaced after a variable), the parse errors `RangeWithoutTrigger`, `TriggerWithoutRange`, `DuplicateTrigger`,
+  `InvalidRepRange` (its §2.11), and the compile errors `PinAcrossRangedRep`, `TriggerNotWatched`,
+  `TriggerOutsideRange` (§2.2, §2.6). Its owner item 12: "#732 gains vocabulary (`..x`, `hr>=` in repeat options) and
+  the new errors, not a second tool".
 - **Mocks answer from the core's own answers** (`app/src/views/editorFixture.ts`, `workoutsBackend.ts`, from
   `crates/crank-core/tests/fixtures/editor.json`), never from TypeScript logic.
 
@@ -151,7 +164,8 @@ pub struct DslEdit { pub offset: usize, pub length: usize, pub insert: String }
 /// A fix the core has checked (§2.5): what the UI shows after "Did you mean", and its edits.
 pub struct DslFix { pub label: String, pub edits: Vec<DslEdit> }
 /// The UTF-16 span of each node's head, in pre-order of the parsed nodes: a step from its end token to its last
-/// attribute (its label excluded); a repeat its count and options (`3x[+5w]`, `$n x`), not its body.
+/// attribute (its label excluded); a repeat its count and options (`3x[+5w]`, `$n x`,
+/// ADR-0010's `3..10x[hr>=170, !last]` and `$lo..$hi x[hr>=$hrv]`), not its body.
 pub struct NodeSpan { pub offset: usize, pub length: usize }
 pub enum DslHintKind { UnusedVariable }                          // ADR-0008 §2.6; the only hint (§2.8)
 pub struct DslHint { pub kind: DslHintKind, pub message: String, pub offset: usize, pub length: usize, pub fixes: Vec<DslFix> }
@@ -201,13 +215,15 @@ fixes one error at a time, and the first is the one whose fix can be checked (§
 **Vocabulary, one table per position, used by the parser itself:** the keyword and unit strings become `const` tables in
 `dsl.rs` (step ends: `lap`, `hr<`; targets and attributes: `ramp`, `free`, `!lower`, `!cap`, `!coach`; units after a
 number: ends `s m h kj`, targets `% w bpm`, cadence `rpm`; repeat options `!last`; ADR-0008: `auto` as a ramp end,
-`$names` declared above the position with a type that fits it). The parser matches against these tables, and the
+`$names` declared above the position with a type that fits it; ADR-0010: the rep range `..` with its `x`, and the
+trigger `hr>=` among the repeat options). The parser matches against these tables, and the
 suggester and completion (§2.6) read the same ones, so a keyword cannot exist in one and not the others.
 
 **Matching:** `strsim::osa_distance` (optimal string alignment: insert, delete, substitute, swap two neighbours; the
 algorithm rustc's `edit_distance` uses), on the lower-cased word against each candidate valid where the error is.
-A word that starts with a digit or a sign is a number with a unit (below); any other word is matched against the
-keywords. A candidate is suggested when its distance is at most ⌊max(n, 3) / 3⌋, n the typed word's length in characters
+A word that starts with a digit or a sign is a number with a unit (below); a word of the form letters, comparison,
+number (`hr=>170`) is matched by its part before the number (`hr=>` against `hr>=`, `hr<`); any other word is matched
+against the keywords. A candidate is suggested when its distance is at most ⌊max(n, 3) / 3⌋, n the typed word's length in characters
 (rustc `find_best_match_for_name`'s default), and no other candidate is closer; up to 3 suggestions at the smallest
 distance, in table order. For a number with a unit (`95%%`, `4mm`, `90rmp`), only the unit part is matched, against
 that position's units, and only when it is at least 2 characters long: a one-letter unit (`5q`) is one edit from every
@@ -232,6 +248,11 @@ variables declared above that position with the right type, never against keywor
 | `MissingUnit`, `MissingPowerTarget`, `UnclosedRepeat`, `MissingSeparator`, `DuplicatePowerTarget`, `NestingTooDeep`, numeric bounds | none: the intent is not recoverable from the text | `10 50%` keeps today's message listing the units |
 | ADR-0008: unknown variable | the near declared variable | `4m $thrr` → `$thr` |
 | ADR-0008: `auto` misspelt as a ramp end | `auto` | `ramp aut-75%` → `ramp auto-75%` |
+| ADR-0010: a misspelt trigger in repeat options (`UnknownRepeatOption`) | `hr>=` with the number kept | `3..10x[hr=>170]`, `[hr>170]` → `hr>=170` |
+| ADR-0010: `hr<N` in repeat options | none: its own message ("a set ends on `hr>=N`; for a recovery, use the step end `hr<N min..max`"), since the rider meant something else | `3..10x[hr<120]` |
+| ADR-0010: `InvalidRepRange` with `min = max` | the fixed count its message names, with the trigger removed (two edits, checked as one fix) | `5..5x[hr>=170](…)` → `5x(…)` |
+| ADR-0010: `RangeWithoutTrigger`, `TriggerWithoutRange`, `DuplicateTrigger`, `min > max` | none: which bpm, which minimum, which trigger or which bound is meant is not in the text | `3..10x(…)`, `10x[hr>=170](…)` |
+| ADR-0010: a variable upper end glued to `x` (an unknown variable `$hix`) | the spaced form, when `$hi` is declared | `$lo..$hix[hr>=170]` → `$lo..$hi x[hr>=170]` |
 | ADR-0008: the spelling refusals whose message shows the fix | that spelling | `$thr=95%` → `$thr = 95%`; `ramp 45-auto` → `ramp 45%-auto`; `ramp 45%-75%` → `ramp 45-75%`; `$a = $b-30s` → `$b - 30s` |
 
 The core's `message` stays as it is (the TS-parity text, docs/DSL.md "Errors"); suggestions are not appended to it. The
@@ -258,7 +279,8 @@ runs the full parser on the incomplete item.
 | after a step's end, a target not written yet | `ramp`, `free`, after a number `%`, `w`, `bpm`; ADR-0008: power variables |
 | after `ramp` | ADR-0008: `auto`, % FTP variables (numbers are typed, not offered) |
 | after the target | cadence `rpm` after a number; `!lower`, `!cap`, `!coach` only on an `hr<` step |
-| inside `[ ]` of a repeat | `!last`; after a sign and a number `w`, `%`; ADR-0008: `+$p` with watts or % variables |
+| after a count at an item's start (`3..|`, `3..10|`) | ADR-0010: `x[hr>=` after the upper number (`10x[hr>=`); after a variable upper end, ` x[hr>=` with its space (`$hi x[hr>=`); number variables after `..` |
+| inside `[ ]` of a repeat | `!last`; after a sign and a number `w`, `%`; ADR-0008: `+$p` with watts or % variables; ADR-0010: `hr>=` only in a **ranged** repeat's options and only if it has none yet (offered first, as canonical printing puts it first), and after `hr>=` bpm variables |
 | after `$` | variables declared **above** the cursor whose type fits the position (ADR-0008 §2.6, §2.7); in a declaration, only those above it |
 | inside a label, a comment, or a number's digits | nothing |
 
@@ -268,8 +290,9 @@ all of them. Options follow table order; a typed prefix filters them (CodeMirror
 - **Rejected:** a vocabulary exported to TS and matched there: the position rules are grammar (which unit after which
   number, which flag on which step), and two copies would drift. **Cost, stated:** one IPC call per completion request;
   Tauri `invoke` answers locally, and CodeMirror's async source drops a stale answer when the text moves on.
-- **Order with ADR-0008:** this ADR can land before or after ADR-0008's implementation; whichever lands second adds the
-  `auto` and variable rows to the tables and the tests, as the rows marked ADR-0008 above say.
+- **Order with ADR-0008 and ADR-0010:** this ADR can land before or after their implementations; whichever lands
+  second adds the rows marked ADR-0008 or ADR-0010 above to the tables and the tests. ADR-0010 is implemented after
+  ADR-0008 (its §4.1), so its variable forms (`$lo..$hi x`) come with whichever of the two is later.
 
 ### 2.7 Keyboard and screen readers
 
@@ -294,7 +317,11 @@ all of them. Options follow table order; a typed prefix filters them (CodeMirror
 ### 2.8 Lint beyond errors
 
 - **Compile warnings** (`LongSprint`, `LowReserve`, `UnreachableRecovery`, …) are underlined on their block as
-  warnings (§2.3) and stay in the Summary. **#627** (ERG blocks the slew cannot reach, pending the owner's answer on
+  warnings (§2.3) and stay in the Summary. **Compile errors** are drawn the same way as errors, ADR-0008's
+  (`AutoRampNoNeighbour`, `AutoRampFacing`, …) and ADR-0010's: `PinAcrossRangedRep` on the pinned ramp (its node),
+  `TriggerNotWatched` and `TriggerOutsideRange` on the ranged repeat's head (`3..10x[hr>=170, !last]`). They carry no
+  fix: the message's example power ("e.g. 'ramp 120%-40%'") is an illustration, and which power the rider wants is
+  theirs to write. **#627** (ERG blocks the slew cannot reach, pending the owner's answer on
   #585) needs nothing here: if it becomes a compile warning, it is drawn the same way.
 - **Unused variable (ADR-0008 §2.6):** allowed and kept, so a **hint**, not a warning: faint, never in the Summary,
   never blocking; "$x is declared but not used", with the fix "Remove $x = …" (the declaration's line). A variable used
@@ -336,9 +363,11 @@ hand-written distance, unchecked fixes (§2.5); a style lint and a format fix (�
 **Rust (`crates/crank-domain/tests/`):**
 
 - **Typo corpus** `tests/fixtures/dsl_typos.json`: text → expected fixes, at least: `rmap`, `rapm`, `fre`, `fee`,
-  `lpa`, `!lst`, `!cpa`, `!lowr`, `90rmp`, `140bmp`, `4mm`, `10kjj`, `95%%`, `75-50%`, the ADR-0008 rows of §2.5, and the
+  `lpa`, `!lst`, `!cpa`, `!lowr`, `90rmp`, `140bmp`, `4mm`, `10kjj`, `95%%`, `75-50%`, the ADR-0008 and ADR-0010 rows
+  of §2.5 (`hr=>170`, `hr>170`, `5..5x[hr>=170]`, `$lo..$hix`), and the
   **no-suggestion** cases that must stay silent: `5q`, `5m xyz`, `5m w`, `5m 50% hello`, `10 50%`, `5m banana`,
-  upper-case keywords that are already valid (`RAMP`, no error).
+  upper-case keywords that are already valid (`RAMP`, no error), and ADR-0010's `3..10x(…)`, `10x[hr>=170](…)`,
+  `[hr<120]` (message, no fix).
 - **Every offered fix is checked** (property, 256 cases over generated valid documents with one generated typo: a
   swap, a dropped or doubled letter in a keyword or unit): applying each fix gives text that parses, or whose first
   error starts after the fix; and no fix is offered for a word farther than the threshold from every candidate.
@@ -346,7 +375,8 @@ hand-written distance, unchecked fixes (§2.5); a style lint and a format fix (�
   accepts is in a table (a test walks the tables against the golden texts of #68).
 - **Spans:** for generated valid documents, `spans.len()` equals the node count in pre-order, each span lies inside the
   text and starts at the node's end token or count; `parse_dsl_report`'s nodes equal `parse_dsl`'s.
-- **Completion tables:** one test per row of §2.6 (cursor context → options), variables in scope only, and
+- **Completion tables:** one test per row of §2.6 (cursor context → options), variables in scope only, `hr>=` never in
+  a fixed repeat's options nor twice, and
   **completeness:** for every keyword or unit token in a generated valid text, the text cut inside that token and
   completed at the cut offers that token.
 - **Hints:** unused variable reported, chained unused reported on each, the Remove fix parses.
@@ -384,4 +414,4 @@ Checked 2026-11-27.
 - WAI-ARIA APG, Combobox pattern: https://www.w3.org/WAI/ARIA/apg/patterns/combobox/ ; WCAG 2.1 SC 2.1.2 No Keyboard Trap.
 - In repo: `crates/crank-domain/src/workout/{dsl,model,compiled,compile}.rs`; `crates/crank-core/src/{core,dto}.rs`;
   `app/src-tauri/src/commands.rs`; `app/src/editor/{WorkoutEditor.tsx,model.ts}`; `app/src/views/{editorFixture,workoutsBackend}.ts`;
-  `app/e2e/specs/mvp-selectors.mjs`; DESIGN §5.7, §5.9; ADR-0008.
+  `app/e2e/specs/mvp-selectors.mjs`; DESIGN §5.7, §5.9; ADR-0008; ADR-0010 (PR #737).

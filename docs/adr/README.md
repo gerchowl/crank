@@ -17,7 +17,7 @@ result).
 | [0008](0008-dsl-auto-ramps-variables.md) | Workout DSL: auto ramps pinned to neighbouring blocks, and variables | Accepted (owner, 2026-11-22; not implemented) | #694 |
 | [0009](0009-athlete-model-analysis.md) | Athlete model and manual settings, post-ride analysis executor with confirmed proposals, ride analysis metrics, comparison and set statistics | Accepted (owner, 2026-11-24; decision 8 amended; not implemented) | filed on acceptance |
 | [0010](0010-workout-language-ranged-repeats.md) | Workout language: keep the declarative DSL (no script layer); ranged repeats that end on a ride-time condition | Accepted (owner, 2026-11-27) | #736 |
-| [0010](0010-editor-lint-completion.md) | Workout text editor: diagnostics with checked fixes, "did you mean", and completion from the core (CodeMirror 6) | Proposed (for owner review; not implemented) | #732 |
+| [0011](0011-editor-lint-completion.md) | Workout text editor: diagnostics with checked fixes, "did you mean", and completion from the core (CodeMirror 6) | Proposed (for owner review; not implemented) | #732 |
 
 ## Process
 
