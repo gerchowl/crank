@@ -1,6 +1,6 @@
 # ADR-0010: Workout language: keep the declarative DSL (no script layer); ranged repeats that end on a ride-time condition
 
-- **Status:** Proposed
+- **Status:** Accepted (owner, 2026-11-27: items 1–12 approved as written; item 13, the cadence trigger, declined for v1); not implemented yet
 - **Date:** 2026-11-27
 - **Issue:** #736
 - **Related:** `docs/DSL.md` (grammar), ADR-0008 (variables, pinned ramps; accepted, not implemented), ADR-0009 (analysis,
@@ -201,7 +201,10 @@ except `repeat_once`) stays exactly as written. Two links to this ADR:
      its end power (e.g. 'ramp 100%-50%') or pin its start instead."
 
   Unaffected, because their neighbour is the same whatever `k` is: a pinned start on a rep's first child (rep 1 pins
-  to the block before the set, later reps to the previous rep, which was played whole); any pin between two children of
+  to the block before the set, later reps to the previous rep, which was played whole), except when the set both
+  starts and ends an outer iteration: from the second iteration on, rep 1's first child is then the block played first
+  after the previous iteration's set, refused by item 1 (`3x(3..10x[hr>=170, +5w](ramp auto-120%, 15s 50%))` is
+  refused); any pin between two children of
   one rep, apart from item 2; a pinned end on the block before the set (rep 1's first block); and, with `!last`, a
   pinned end on the last child (it is played only when another rep follows). With both seams refused, an early end
   only removes blocks, so no target is ever created and the ridden sequence stays a subsequence of the validated one
@@ -279,7 +282,8 @@ A rep with no work block cannot be watched. A ranged set whose reps have none is
 **Signal and debounce.** The trigger reads the same 1 Hz HR the record stores (`SecondRow`, ADR-0009 §2.3.1.1: NaN
 where no valid sample arrived). It **holds** after **5 consecutive riding seconds** with a valid HR meeting the
 comparison. A NaN second, a paused second or an **unwatched** second (a rest or other non-work block) resets the
-run, so a run never spans two work blocks. The hold means "HR at or above N for 5 s while working". Carrying a run
+run, so a run never spans two work blocks separated by a rest (adjacent work blocks such as `30s 120%, 30s 110%` keep
+the run). The hold means "HR at or above N for 5 s while working". Carrying a run
 across a rest would let 3 s at the end of one work block and 2 s at the start of the next latch, which are two
 separate touches, the artefact the hold exists to reject. A set whose work blocks are all shorter than the hold
 could never latch, so `TriggerNotWatched` also covers it. This rejects a single-sample strap artefact (#258 "HR
@@ -479,7 +483,8 @@ The decision is made at **rep boundaries**, so a rep is never cut in the middle 
   before release.
 - **Evaluator (properties and goldens):** latch only after 5 consecutive valid, watched seconds; a NaN, paused or rest second
   resets the run.
-  HR at the trigger before rep `min` never latches; a latch in rep `min` ends the set at `min`. Never past `max`. HR lost at a decision point past `min` → ends there. HR ≥ the
+  HR at the trigger before rep `min` never latches; a latch in rep `min` ends the set at `min` (with `!last`, a latch inside rep `min`'s
+  last child counts one rep later, §2.5). Never past `max`. HR lost at a decision point past `min` → ends there. HR ≥ the
   trigger during reps before `min`, or during rests, never latches. `!last`: the dropped child is never started, and a
   latch inside a work-block last child counts at the next decision. The verdict depends only on the input seconds (replay equality).
 - **Overlay:** for generated ranged workouts and HR traces, the ridden sequence is a subsequence of the compiled one,
