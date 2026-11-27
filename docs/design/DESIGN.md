@@ -642,9 +642,29 @@ Cancel focused, Esc cancels; #438's note that Forget sits beside "Pair as strap"
 is a notice under the section head: ⚠ and its title, what to do, and "Try again" where a retry is the fix. The Trainer section (#595) holds the ERG release and the
 easing rows (§19.5). Live
 readings while pairing (#267) are not in this screen yet; Release trainer is End on an unstarted ride (§5.4).
-**Athlete model** (#586) lists the heart-rate references the ride's zone reads, max heart rate and threshold heart
-rate (LTHR), each "Not set" or its value in bpm, and with neither known the one-line hint of §18.3 "Heart-rate zone";
-the estimates, their ± and source, and the manual override are #113.
+**Athlete model** (#716, ADR-0009 §2.1.3; `app/src/views/Athlete.tsx`): a one-line lead ("The numbers your workouts
+and zones are set from. A ride uses the values of the moment it is loaded."), then **Suggested values** (the open
+proposals of ADR-0009 §2.2.4, each its values ± sd and "suggested <day>"; until #720 raises any, "None." and what will
+appear there; Accept and Dismiss are #753), then one table row per parameter in ADR-0009 §2.1.1's order (FTP, CP, W′,
+peak power, max HR, LTHR, resting HR, weight): the label; the value over its source line; Edit, History and Clear. The
+value is "287 W ± 12" (W′ in kJ, weight to 0.1 kg); a prior is "estimate: 250 W (no test yet)" ("(from your age)" for
+HR max); with neither a row nor a prior it is "Not set", never 0. The source line says where the value came from in
+words ("typed in", "ramp test", "test", "from your rides", "imported"), its day and its age ("Oct 30 · 3 days ago",
+`Intl.RelativeTimeFormat`), and after 6 weeks "· stale" in the warning colour (ADR-0009 §2.1.2); a prior or an unset
+value says "not measured yet". **Edit** opens the row's draft in place of its value and actions (the settings-draft
+primitive, `app/src/settings/draft.ts`, the part of #90 this needs): the value in the shown unit, an optional ± (empty:
+the core's 20 %, placeholder "20 %"), Save and Cancel; Save sends `athlete_set`, a refusal (bounds, LTHR at or above a
+measured HR max, an sd above half the value) stays under the open draft as "⚠ Not saved: <the core's reason>", and
+Cancel sends nothing. **History** opens the parameter's rows under it, newest first: value ± sd, source and day; the
+newest says "Current", every earlier value that is not a prior has **Use this value** (`athlete_revert`); a Clear reads
+"cleared to the estimate" or "Cleared · not set from then". **Clear** (`athlete_clear`) is offered only on a measured or
+typed-in value; it needs no confirmation, because History brings the value back. Every command answers nothing: the
+section reads `athlete_model` again (and the open history), and a refused command is a notice in its row, a failed
+read one under the section head with "Try again". Each action's accessible name says the parameter after its visible
+word ("Edit FTP", "History of FTP", "Clear FTP"). With neither a measured max nor a measured threshold heart rate, the
+one-line hint of §18.3 "Heart-rate zone" closes the section: a prior HR max is never a zone reference. The **ride**
+reads none of this: its HR zone and its targets come from the snapshot frozen when it was loaded (`RidePlan.athlete`,
+ADR-0009 §2.1.4), so a change here reaches the next ride, not the one on screen.
 **Version and build (#552; placement from the #558 review, owner decision 2026-11-08: spread out, no "Help & about"
 section).** The build's version string, `<version> · <rev>` (`0.2.0-rc.1 · 7516045`; `-dirty` for a dirty tree;
 `· dev` for a build that is not the flake package, such as `just dev`), shows in two places: the **window title**
@@ -2187,7 +2207,8 @@ and is tight at 1024. At 1024 the 4-column metric column is ≈ 320 px wide, so 
     published bike table is the one cited). Otherwise, with an HR max, five zones as % of HR max: Z1 50–60 %, Z2
     60–70 %, Z3 70–80 %, Z4 80–90 %, Z5 90–100 % (Polar, *Heart Rate Zones*,
     <https://www.polar.com/blog/running-heart-rate-zones-basics/>, read 2026-11-14). The LTHR wins when both are
-    known. The references are the athlete model's (`spec/ONBOARDING.md` §3, `hrMax` and `lthr`).
+    known. The references are the athlete model's (`spec/ONBOARDING.md` §3, `hrMax` and `lthr`) as the loaded ride
+    froze them (`RidePlan.athlete`, ADR-0009 §2.1.4; #716): measured or typed in only, never a prior.
   - **Edges.** Both tables are written in whole percents, so the percent (100 × HR / reference, HR being the value
     the tile shows) is rounded half up to a whole one and the table applies as written: Friel's ranges then leave no
     gap. Polar's adjacent zones share an edge; it belongs to the higher zone (60 % is Z2). Below 50 % of HR max is

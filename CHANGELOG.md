@@ -10,6 +10,13 @@ Releases are cut as described in [RELEASING.md](RELEASING.md); add entries under
 
 ### Added
 
+- Settings → Athlete model (ADR-0009 §2.1.3, DESIGN §5.9): every parameter with its value ± sd, where it came from in
+  words and when, its age and a stale mark after 6 weeks; Edit (a value and an optional ±, Save, Cancel; the core's
+  refusal stays in the open draft), History with Use this value, and Clear back to the estimate or to Not set. The
+  suggested values are listed at the top (Accept and Dismiss come with #753). A prior reads "estimate: 250 W (no test
+  yet)" and an unknown value "Not set", never 0. The ride's HR zone now reads the loaded ride's frozen snapshot, never
+  Settings, so a change reaches the next ride; the MVP walk types in an FTP and rides its targets
+  ([#716](https://github.com/gerchowl/crank/issues/716))
 - The core reads and writes the athlete model (ADR-0009 §2.1.3, §2.1.4): the commands `athlete_model`, `athlete_set`
   (a typed-in value, by default ± 20 %), `athlete_history`, `athlete_revert` and `athlete_clear`, each refusing what the
   model refuses (`InvalidInput`: bounds, LTHR at or above HR max, a non-finite value, an unknown parameter, a revert to

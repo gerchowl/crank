@@ -15,8 +15,8 @@
 // above 100 % is still Z5 (the HR max is an estimate the rider can exceed).
 //
 // The canonical tables are crank-domain's now: hr_zone.rs `hr_zone` (#645, ADR-0009 §2.1.4), with these edge cases as its
-// tests. This copy stays until the live ride reads its zone from the loaded ride's snapshot (#715) and the app reads
-// it through the bindings (#645); keep the two identical until then.
+// tests. The live ride reads its references from the loaded ride's snapshot (`RidePlan.athlete`, #716); this copy of
+// the tables stays until the core answers the live zone itself (#754); keep the two identical until then.
 
 /** A zone: its label ("Z5a") and the model it is read in. */
 export interface HrZone {

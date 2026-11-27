@@ -133,7 +133,7 @@ fixture of `app/e2e/design/scenarios.ts` at 1024×768 and 1440×900 in both them
 (reads the `theme.css` scales; controls are exactly `--control-h` except the rail's `--control-h-rail`, its own height variant, DESIGN §18.4) and runs
 `@axe-core/playwright` (WCAG 2.2 A/AA). `app/e2e/design/index.html?scenario=<name>` is its own Vite root
 (`app/e2e/design/vite.config.ts`), never part of the app build; it mounts the real `AppRoot` on the mockIPC backends
-(`rideBackend.ts`, `devicesBackend.ts`, `workoutsBackend.ts`, `historyBackend.ts`; a new screen state is a scenario entry
+(`rideBackend.ts`, `devicesBackend.ts`, `workoutsBackend.ts`, `historyBackend.ts`, `athleteBackend.ts`; a new screen state is a scenario entry
 plus its setup in `fixture.tsx`). Nothing is measured before the fixture settles (`window.__fixture.settled()`):
 every bundled font face of `theme.css` (Inter 400/600, JetBrains Mono 400/700) is loaded, else the test fails, then
 two frames pass with no mock answer in flight. The faces are `font-display: swap` and fetched lazily, so without that

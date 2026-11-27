@@ -227,6 +227,11 @@ export interface RideWorld {
   blocks: WorkoutBlock[];
   /** The workout's name as `workout_get` answers it. */
   workoutName: string;
+  /**
+   * The athlete model frozen at the load (`RidePlan.athlete`, core.rs `Core::ride_load`, ADR-0009 §2.1.4); a fresh
+   * store's by default. A later change to the model (Settings) never reaches it.
+   */
+  athlete: AthleteSnapshotView;
   /** The link keeper's state of the devices no ride holds (`devices.<role>.phase` and `.sample`). */
   keeper: LinkView;
   /**
@@ -289,6 +294,7 @@ export function installRide(over: Partial<RideWorld> = {}, ui: UiOptions = {}) {
     unreaped: false,
     blocks: BLOCKS,
     workoutName: "Steady 10 min",
+    athlete: PRIOR_SNAPSHOT,
     keeper: COLD_LINKS,
     strapHanded: true,
     keeperStorage: false,
@@ -631,11 +637,11 @@ export function installRide(over: Partial<RideWorld> = {}, ui: UiOptions = {}) {
           0,
         );
         // A free ride's plan is the core's free ride (core.rs `Core::resolve_workout`): no steps, at the snapshot's
-        // FTP. The snapshot is a fresh store's: the priors of FTP, CP and W′ (crank-domain `athlete::prior`).
+        // FTP. The snapshot is the world's (a fresh store's by default: the priors of FTP, CP and W′).
         const free = world.workoutId === null;
         return {
           rideId: world.rideId,
-          athlete: PRIOR_SNAPSHOT,
+          athlete: world.athlete,
           workout: free
             ? { id: "free-ride", name: "Free ride", ftp: 250, nodes: [] }
             : {

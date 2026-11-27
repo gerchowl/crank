@@ -34,6 +34,19 @@ export const pairedRow = (roleLabel) =>
 export const pairedLine = (roleLabel) =>
   `//section[@aria-labelledby="paired-h"]//li[.//strong[normalize-space(.)=${lit(roleLabel)}]]/span[@class="device-line"]`;
 
+// Settings → Athlete model (src/views/Athlete.tsx `Athlete`, ADR-0009 §2.1.3).
+/** A parameter's value ("estimate: 250 W (no test yet)", "300 W ± 60", "Not set"), by its stored name ("ftp"). */
+export const athleteValue = (param) =>
+  `[data-testid=${lit(`athlete-${param}`)}]`;
+/** A parameter row's Edit, by the parameter's label ("FTP"); its name is "Edit FTP". */
+export const athleteEdit = (label) =>
+  `button[aria-label=${lit(`Edit ${label}`)}]`;
+/** The open draft's value box, by its name ("FTP, W"). */
+export const athleteField = (name) =>
+  `form.athlete-edit input[aria-label=${lit(name)}]`;
+/** The open draft's Save. */
+export const athleteSave = `//form[@class="athlete-edit"]//button[normalize-space(.)="Save"]`;
+
 // The link chips (src/links/chips.tsx `LinkChip`, `RetryLinks`) on Today, Workouts and Settings → Devices.
 /**
  * A device's chip ("trainer", "strap"): `data-state` is what it says ("cold", "searching", "connecting", "ready",

@@ -20,8 +20,9 @@
 // check (3 min)" (crates/crank-core/src/library.rs `BUILTIN`) step by step from the outline (Add step, the step's form,
 // Apply; a Duplicate and a Delete on the way), which the real core prints as the text; a name, Save. It is ridden
 // through the library's Ride
-// this by its id (#643): FTP 250 W (the athlete model's FTP on a fresh store, its prior, ADR-0009 §2.1.2), 1 min each at 50 %, 80 % and 40 %, so its plan
-// targets are 125 W, 200 W and 100 W. The simulator's scan offers "crank sim trainer"
+// this by its id (#643): 1 min each at 50 %, 80 % and 40 % of FTP. A fresh store's FTP is its prior, 250 W (ADR-0009
+// §2.1.2); step 0b types in 300 W in Settings → Athlete model (#716), and the load compiles the workout at the model's
+// FTP (ADR-0009 §2.1.4), so its plan targets are 150 W, 240 W and 120 W, not the prior's 125, 200 and 100. The simulator's scan offers "crank sim trainer"
 // and "crank sim strap" (crates/crank-core/src/backend.rs `Backend::scan`), and its rider pedals on its own.
 //
 // Step 9 (the ride is in History after a relaunch) is mvp-relaunch.e2e.mjs. This spec ends by closing the window,
@@ -43,8 +44,10 @@ const WORKOUT_STEPS = [
 ];
 /** Its text as the core prints it (docs/DSL.md "Canonical printing": one top-level step per line). */
 const WORKOUT_DSL = '"Warm-up" 1m 50%\n"Work" 1m 80%\n"Cool-down" 1m 40%';
-/** The plan's target per block, W (50 %, 80 %, 40 % of 250 W). */
-const PLAN_W = [125, 200, 100];
+/** The FTP step 0b types in, W: not the prior's 250 W, so the ride's targets show which one they were set from. */
+const FTP_W = 300;
+/** The plan's target per block, W (50 %, 80 %, 40 % of the FTP typed in). */
+const PLAN_W = [0.5, 0.8, 0.4].map((f) => Math.round(f * FTP_W));
 const TRAINER = "crank sim trainer";
 const STRAP = "crank sim strap";
 /** The waits of this spec. Each one waits for a condition. A slow condition fails with its message; nothing is retried. */
@@ -255,6 +258,25 @@ describe("MVP walk (#256 critical path, sim)", () => {
     await expect($(sel.workoutOption(WORKOUT))).toBeDisplayed({ wait: UI_MS });
     // The built-in it copies is unchanged beside it.
     await expect($(sel.workoutOption("Sensor check (3 min)"))).toBeDisplayed();
+  });
+
+  it("0b. types in an FTP in Settings → Athlete model: the model shows it", async () => {
+    // #716, ADR-0009 §2.1.3: a fresh store's FTP is the prior, said as an estimate; Edit, the value, Save. Steps 3 to 6
+    // check that the ride's targets are set from it (§2.1.4).
+    await $(sel.rail("Settings")).click();
+    await $(sel.settingsSection("Athlete model")).click();
+    await expect($(sel.athleteValue("ftp"))).toHaveText(
+      "estimate: 250 W (no test yet)",
+      { wait: UI_MS },
+    );
+    await $(sel.athleteEdit("FTP")).click();
+    await $(sel.athleteField("FTP, W")).setValue(String(FTP_W));
+    await $(sel.athleteSave).click();
+    // The core's default ± for a typed-in value is 20 % (athlete/prior.rs `SelfReportOrigin::Guess`).
+    await expect($(sel.athleteValue("ftp"))).toHaveText(
+      `${FTP_W} W ± ${FTP_W * 0.2}`,
+      { wait: UI_MS },
+    );
   });
 
   it("1. pairs the trainer and the strap from Settings → Devices", async () => {
@@ -483,7 +505,7 @@ describe("MVP walk (#256 critical path, sim)", () => {
 
   it("6. Skip moves to the next block", async () => {
     // #256: "skip". The ride is still in its first block (well under its minute), so Skip moves to block 2, whose
-    // plan target is 200 W, and the engine commands it.
+    // plan target is 240 W (80 % of the FTP typed in), and the engine commands it.
     await expect($(sel.slot("block"))).toHaveText(/· block 1 of 3$/);
     await $(sel.key("Skip block")).click();
     await textUntil(

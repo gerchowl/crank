@@ -38,6 +38,7 @@ import "./ride.css";
 import { commands } from "../bindings";
 import type {
   ApiError,
+  AthleteSnapshotView,
   DevicesView,
   LinkStatus,
   RideView,
@@ -46,7 +47,7 @@ import type {
   WorkoutBlock,
   WorkoutDetail,
 } from "../bindings";
-import { useAthleteHr } from "../athleteHr";
+import { snapshotHrRefs } from "../athleteHr";
 import { Num } from "../Num";
 import { navigate } from "../router";
 import { useCommand } from "../stream";
@@ -288,29 +289,40 @@ function Pill({
 }
 
 /**
- * The workout the screen draws (profile, blocks, targets, name, FTP). Once a ride is installed it is that ride's own,
- * as the core loaded it (`ride_plan` by the frame's ride id, #110): editing or deleting the library workout afterwards
- * changes nothing here, and the blocks are the ones the engine runs. Before that, while the load runs, it is the
- * library's workout the rider asked for (`workout_get`), for the Ready sheet's loading state.
+ * The workout the screen draws (profile, blocks, targets, name, FTP) and the athlete model it is ridden at. Once a ride
+ * is installed both are that ride's own, as the core loaded it (`ride_plan` by the frame's ride id, #110): editing or
+ * deleting the library workout afterwards changes nothing here, the blocks are the ones the engine runs, and the HR
+ * zone reads the snapshot frozen at the load, never Settings (ADR-0009 §2.1.4). A free ride is asked too: it has no
+ * workout to draw, but it has a snapshot. Before that, while the load runs, the workout is the library's the rider asked
+ * for (`workout_get`), for the Ready sheet's loading state, and there is no snapshot yet.
  */
 function usePlan(
   rideId: string | null,
   workoutId: string | null,
-): Pick<WorkoutDetail, "workout" | "compiled"> | null {
-  const [plan, setPlan] = useState<Pick<
-    WorkoutDetail,
-    "workout" | "compiled"
-  > | null>(null);
+): {
+  detail: Pick<WorkoutDetail, "workout" | "compiled"> | null;
+  athlete: AthleteSnapshotView | null;
+} {
+  const [plan, setPlan] = useState<{
+    detail: Pick<WorkoutDetail, "workout" | "compiled"> | null;
+    athlete: AthleteSnapshotView | null;
+  }>({ detail: null, athlete: null });
   useEffect(() => {
     if (rideId === null && workoutId === null) return;
     let live = true;
-    const asked =
-      rideId !== null
-        ? commands.ridePlan(rideId)
-        : commands.workoutGet(workoutId!);
-    void asked.then((r) => {
-      if (live && r.status === "ok") setPlan(r.data);
-    });
+    if (rideId !== null)
+      void commands.ridePlan(rideId).then((r) => {
+        if (live && r.status === "ok")
+          setPlan({
+            detail: workoutId === null ? null : r.data,
+            athlete: r.data.athlete,
+          });
+      });
+    else
+      void commands.workoutGet(workoutId!).then((r) => {
+        if (live && r.status === "ok")
+          setPlan({ detail: r.data, athlete: null });
+      });
     return () => {
       live = false;
     };
@@ -388,12 +400,12 @@ function Screen({
   const power = ride?.live.powerW ?? null;
   const cadence = ride?.live.cadenceRpm ?? null;
   const hr = ride?.live.hrBpm ?? null;
-  const hrRefs = useAthleteHr();
-  // A free ride has no workout to draw: nothing is asked for it.
-  const detail = usePlan(
-    plan?.workoutId != null ? (ride?.id ?? null) : null,
+  // A free ride has no workout to draw, only its snapshot; a ride whose workout is not known (`plan` null) asks nothing.
+  const { detail, athlete } = usePlan(
+    plan !== null ? (ride?.id ?? null) : null,
     plan?.workoutId ?? null,
   );
+  const hrRefs = snapshotHrRefs(athlete);
   const compiled = detail?.compiled ?? null;
   const series = ui.series;
   const tooSmall = useTooSmall();

@@ -259,7 +259,29 @@ export const SCENARIOS = [
     clicks: ["All rides"],
   },
   { name: "settings", ready: "role=heading[name='Appearance']" },
-  { name: "settings-athlete", ready: "role=heading[name='Athlete model']" },
+  // Settings → Athlete model (ADR-0009 §2.1.3, #716): a fresh store (the priors, the HR hint), every value set,
+  // Edit's draft, a refused draft, a row's history, a failed read.
+  { name: "settings-athlete", ready: "role=list[name='Parameters']" },
+  { name: "settings-athlete-set", ready: "role=list[name='Parameters']" },
+  {
+    name: "settings-athlete-edit",
+    ready: "role=button[name='Save']",
+    clicks: ["Edit FTP"],
+    fills: [{ label: "FTP, W", text: "300" }],
+  },
+  {
+    name: "settings-athlete-refused",
+    ready: "role=alert >> text=Not saved",
+    clicks: ["Edit FTP"],
+    fills: [{ label: "FTP, W", text: "700" }],
+    after: ["Save"],
+  },
+  {
+    name: "settings-athlete-history",
+    ready: "role=list[name='FTP history']",
+    clicks: ["History of FTP"],
+  },
+  { name: "settings-athlete-error", ready: "role=button[name='Try again']" },
   // A load finished while the rider was elsewhere: the ride-load notice offers it (#320).
   {
     name: "settings-ride-loaded",
@@ -295,6 +317,11 @@ export const TODAY_SCENARIOS: readonly ScenarioName[] = [
 export const SETTINGS_SCENARIOS: readonly ScenarioName[] = [
   "settings",
   "settings-athlete",
+  "settings-athlete-set",
+  "settings-athlete-edit",
+  "settings-athlete-refused",
+  "settings-athlete-history",
+  "settings-athlete-error",
   "settings-ride-loaded",
   "devices-empty",
   "devices-scanning",
